@@ -99,6 +99,16 @@ export interface PdfAnalyzeResult {
   error?: string;
 }
 
+export interface OcrResult {
+  text: string;
+  confidence: number;
+}
+
+export interface DeskewResult {
+  angle: number;
+  confidence: number;
+}
+
 export interface ElectronAPI {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
@@ -131,6 +141,12 @@ export interface ElectronAPI {
     import: () => Promise<ProjectsImportResult>;
     export: (projectPath: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     loadFromPath: (filePath: string) => Promise<ProjectLoadResult>;
+  };
+  ocr: {
+    isAvailable: () => Promise<{ success: boolean; available?: boolean; version?: string | null; error?: string }>;
+    getLanguages: () => Promise<{ success: boolean; languages?: string[]; error?: string }>;
+    recognize: (imageData: string) => Promise<{ success: boolean; data?: OcrResult; error?: string }>;
+    detectSkew: (imageData: string) => Promise<{ success: boolean; data?: DeskewResult; error?: string }>;
   };
   platform: string;
 }
@@ -181,6 +197,16 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('projects:export', projectPath),
     loadFromPath: (filePath: string) =>
       ipcRenderer.invoke('projects:load-from-path', filePath),
+  },
+  ocr: {
+    isAvailable: () =>
+      ipcRenderer.invoke('ocr:is-available'),
+    getLanguages: () =>
+      ipcRenderer.invoke('ocr:get-languages'),
+    recognize: (imageData: string) =>
+      ipcRenderer.invoke('ocr:recognize', imageData),
+    detectSkew: (imageData: string) =>
+      ipcRenderer.invoke('ocr:detect-skew', imageData),
   },
   platform: process.platform,
 };

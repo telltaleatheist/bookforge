@@ -661,7 +661,8 @@ export class PDFAnalyzer {
 
         const annot = page.createAnnotation('Redact');
         annot.setRect(rect);
-        annot.setColor([1, 1, 1]); // White fill
+        annot.setInteriorColor([1, 1, 1]); // White fill for redacted area
+        annot.setColor([1, 1, 1]); // White border too
       }
 
       // Apply all redactions on this page

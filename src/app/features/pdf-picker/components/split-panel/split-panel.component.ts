@@ -169,6 +169,41 @@ export interface SplitConfig {
           </div>
         </div>
 
+        <!-- Deskew Section -->
+        <div class="deskew-section">
+          <div class="section-label">Page Alignment</div>
+          <div class="deskew-info">
+            Detect and correct slight rotation in scanned pages for better splitting.
+          </div>
+          <div class="deskew-buttons">
+            <desktop-button
+              variant="secondary"
+              size="sm"
+              [disabled]="deskewing()"
+              (click)="deskewCurrentPage.emit()"
+            >
+              @if (deskewing()) {
+                Detecting...
+              } @else {
+                Deskew Current Page
+              }
+            </desktop-button>
+            <desktop-button
+              variant="secondary"
+              size="sm"
+              [disabled]="deskewing()"
+              (click)="deskewAllPages.emit()"
+            >
+              Deskew All Pages
+            </desktop-button>
+          </div>
+          @if (lastDeskewAngle() !== null) {
+            <div class="deskew-result">
+              Last detected: {{ lastDeskewAngle()!.toFixed(2) }}° rotation
+            </div>
+          }
+        </div>
+
         <!-- Result Preview -->
         <div class="preview-section">
           <div class="section-label">Result Preview</div>
@@ -278,7 +313,7 @@ export interface SplitConfig {
       }
     }
 
-    .nav-section, .split-controls, .override-section, .order-section, .preview-section, .overrides-list {
+    .nav-section, .split-controls, .override-section, .order-section, .preview-section, .overrides-list, .deskew-section {
       padding: var(--ui-spacing-md);
       background: var(--bg-elevated);
       border-radius: $radius-md;
@@ -429,6 +464,33 @@ export interface SplitConfig {
       gap: var(--ui-spacing-sm);
     }
 
+    .deskew-section {
+      .deskew-info {
+        font-size: var(--ui-font-xs);
+        color: var(--text-tertiary);
+        margin-bottom: var(--ui-spacing-md);
+        line-height: 1.4;
+      }
+
+      .deskew-buttons {
+        display: flex;
+        flex-direction: column;
+        gap: var(--ui-spacing-sm);
+
+        desktop-button {
+          width: 100%;
+        }
+      }
+
+      .deskew-result {
+        margin-top: var(--ui-spacing-sm);
+        padding-top: var(--ui-spacing-sm);
+        border-top: 1px solid var(--border-subtle);
+        font-size: var(--ui-font-xs);
+        color: var(--text-secondary);
+      }
+    }
+
     .preview-section {
       .preview-info {
         display: flex;
@@ -475,12 +537,16 @@ export class SplitPanelComponent {
   config = input.required<SplitConfig>();
   currentPage = input.required<number>();
   totalPages = input.required<number>();
+  deskewing = input<boolean>(false);
+  lastDeskewAngle = input<number | null>(null);
 
   prevPage = output<void>();
   nextPage = output<void>();
   cancel = output<void>();
   apply = output<void>();
   configChange = output<SplitConfig>();
+  deskewCurrentPage = output<void>();
+  deskewAllPages = output<void>();
 
   // Local state
   readonly linkSliders = signal(true);

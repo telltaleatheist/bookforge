@@ -371,7 +371,11 @@ export class FilePickerComponent implements OnInit {
 
   loadRecentFiles(): void {
     try {
-      const stored = localStorage.getItem('bookforge-recent-files');
+      // Try new key first, fall back to old one
+      let stored = localStorage.getItem('bookforge-library-books');
+      if (!stored) {
+        stored = localStorage.getItem('bookforge-recent-files');
+      }
       if (stored) {
         this.recentFiles.set(JSON.parse(stored));
       }

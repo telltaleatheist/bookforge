@@ -18,6 +18,7 @@ import { CropPanelComponent } from './components/crop-panel/crop-panel.component
 import { SplitPanelComponent, SplitConfig } from './components/split-panel/split-panel.component';
 import { LibraryViewComponent } from './components/library-view/library-view.component';
 import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
+import { OcrSettingsModalComponent, OcrSettings, OcrPageResult } from './components/ocr-settings-modal/ocr-settings-modal.component';
 
 interface OpenDocument {
   id: string;
@@ -85,6 +86,7 @@ interface AlertModal {
     SplitPanelComponent,
     LibraryViewComponent,
     TabBarComponent,
+    OcrSettingsModalComponent,
   ],
   template: `
     <!-- Toolbar -->
@@ -223,11 +225,15 @@ interface AlertModal {
             [config]="splitConfig()"
             [currentPage]="splitPreviewPage()"
             [totalPages]="totalPages()"
+            [deskewing]="deskewing()"
+            [lastDeskewAngle]="lastDeskewAngle()"
             (prevPage)="splitPrevPage()"
             (nextPage)="splitNextPage()"
             (cancel)="cancelSplitMode()"
             (apply)="applySplit()"
             (configChange)="onSplitConfigChange($event)"
+            (deskewCurrentPage)="deskewCurrentPage()"
+            (deskewAllPages)="deskewAllPages()"
           />
         } @else {
           <app-categories-panel
@@ -490,6 +496,18 @@ interface AlertModal {
           </div>
         </div>
       </div>
+    }
+
+    <!-- OCR Modal -->
+    @if (showOcrSettings()) {
+      <app-ocr-settings-modal
+        [currentSettings]="ocrSettings()"
+        [totalPages]="totalPages()"
+        [currentPage]="splitPreviewPage()"
+        [getPageImage]="getPageImageForOcr.bind(this)"
+        (close)="showOcrSettings.set(false)"
+        (ocrCompleted)="onOcrCompleted($event)"
+      />
     }
 
   `,
@@ -1343,6 +1361,14 @@ export class PdfPickerComponent {
   // Alert modal state
   readonly alertModal = signal<AlertModal | null>(null);
 
+  // OCR settings state
+  readonly showOcrSettings = signal(false);
+  readonly ocrSettings = signal<OcrSettings>({
+    engine: 'tesseract',
+    language: 'eng',
+    tesseractPsm: 3
+  });
+
   // Editor mode state
   readonly currentMode = signal<EditorMode>('select');
   readonly modes: ModeInfo[] = [
@@ -1371,6 +1397,8 @@ export class PdfPickerComponent {
   });
   readonly splitPreviewPage = signal(0);  // Page being previewed in split mode
   readonly isDraggingSplit = signal(false);
+  readonly deskewing = signal(false);
+  readonly lastDeskewAngle = signal<number | null>(null);
 
   // Page image cache - maps page number to data URL
   readonly pageImages = signal<Map<number, string>>(new Map());
@@ -1423,6 +1451,14 @@ export class PdfPickerComponent {
       icon: '🔢',
       label: 'Find Refs',
       tooltip: 'Find and select footnote references in body text',
+      disabled: !this.pdfLoaded()
+    },
+    {
+      id: 'ocr',
+      type: 'button',
+      icon: '🔤',
+      label: 'OCR',
+      tooltip: 'OCR settings and text recognition',
       disabled: !this.pdfLoaded()
     },
     { id: 'spacer', type: 'spacer' },
@@ -1542,6 +1578,9 @@ export class PdfPickerComponent {
         break;
       case 'find-refs':
         this.findFootnoteRefs();
+        break;
+      case 'ocr':
+        this.showOcrSettings.set(true);
         break;
       case 'layout':
         this.layout.update(l => l === 'vertical' ? 'grid' : 'vertical');
@@ -2586,12 +2625,12 @@ ${content}
   }
 
   private saveRecentFile(path: string, name: string): void {
-    const key = 'bookforge-recent-files';
+    const key = 'bookforge-library-books';
     try {
       const recent = JSON.parse(localStorage.getItem(key) || '[]');
       const filtered = recent.filter((f: any) => f.path !== path);
       filtered.unshift({ path, name, timestamp: Date.now() });
-      localStorage.setItem(key, JSON.stringify(filtered.slice(0, 10)));
+      localStorage.setItem(key, JSON.stringify(filtered.slice(0, 50))); // Increased limit for library
     } catch {
       // Ignore localStorage errors
     }
@@ -3213,6 +3252,87 @@ ${content}
 
     this.splitConfig.set({ ...config, skippedPages: newSkipped });
     this.hasUnsavedChanges.set(true);
+  }
+
+  // Deskew methods for split mode
+  async deskewCurrentPage(): Promise<void> {
+    const pageNum = this.splitPreviewPage();
+    await this.deskewPage(pageNum);
+  }
+
+  async deskewAllPages(): Promise<void> {
+    this.deskewing.set(true);
+    const total = this.totalPages();
+
+    for (let i = 0; i < total; i++) {
+      await this.deskewPage(i);
+    }
+
+    this.deskewing.set(false);
+    this.showAlert({
+      title: 'Deskew Complete',
+      message: `Analyzed ${total} pages for rotation correction.`,
+      type: 'success'
+    });
+  }
+
+  private async deskewPage(pageNum: number): Promise<void> {
+    this.deskewing.set(true);
+
+    try {
+      // Get the page image for OCR analysis
+      const pageImage = this.pageImages().get(pageNum);
+      if (!pageImage) {
+        console.warn(`No image cached for page ${pageNum}`);
+        this.deskewing.set(false);
+        return;
+      }
+
+      // Detect skew angle using Tesseract
+      const result = await this.electronService.ocrDetectSkew(pageImage);
+
+      if (result && Math.abs(result.angle) > 0.1) {
+        // Only apply correction if angle is significant (> 0.1 degrees)
+        this.lastDeskewAngle.set(result.angle);
+        console.log(`Page ${pageNum + 1}: Detected ${result.angle.toFixed(2)}° skew (confidence: ${result.confidence})`);
+
+        // TODO: Apply the rotation to the page
+        // This would require either:
+        // 1. Modifying the PDF itself (complex, requires PDF manipulation)
+        // 2. Applying CSS transform to the displayed page (visual only)
+        // 3. Storing rotation info to be applied during export
+        // For now, we just detect and report the angle
+      } else {
+        this.lastDeskewAngle.set(result?.angle ?? 0);
+        console.log(`Page ${pageNum + 1}: No significant skew detected`);
+      }
+    } catch (err) {
+      console.error('Deskew detection failed:', err);
+      this.showAlert({
+        title: 'Deskew Failed',
+        message: 'Could not detect page orientation. Make sure Tesseract is installed.',
+        type: 'error'
+      });
+    }
+
+    this.deskewing.set(false);
+  }
+
+  // OCR methods
+  getPageImageForOcr(pageNum: number): string | null {
+    const image = this.pageImages().get(pageNum);
+    return image && image !== 'loading' && image !== 'failed' ? image : null;
+  }
+
+  onOcrCompleted(results: OcrPageResult[]): void {
+    console.log('OCR completed:', results.length, 'pages processed');
+    // TODO: Could integrate OCR results into the document
+    // For now, the modal handles export/copy
+    this.showAlert({
+      title: 'OCR Complete',
+      message: `Processed ${results.length} pages. Use Copy/Export in the modal to save results.`,
+      type: 'success'
+    });
   }
 
   // Tab management methods

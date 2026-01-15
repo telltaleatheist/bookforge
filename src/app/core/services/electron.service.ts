@@ -113,6 +113,16 @@ interface ProjectsImportResult {
   error?: string;
 }
 
+interface OcrResult {
+  text: string;
+  confidence: number;
+}
+
+interface DeskewResult {
+  angle: number;
+  confidence: number;
+}
+
 /**
  * ElectronService - Provides access to Electron IPC from Angular
  *
@@ -347,5 +357,48 @@ export class ElectronService {
       return (window as any).electron.projects.loadFromPath(filePath);
     }
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  // OCR operations (Tesseract)
+  async ocrIsAvailable(): Promise<{ available: boolean; version: string | null }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ocr.isAvailable();
+      if (result.success) {
+        return { available: result.available ?? false, version: result.version ?? null };
+      }
+    }
+    return { available: false, version: null };
+  }
+
+  async ocrGetLanguages(): Promise<string[]> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ocr.getLanguages();
+      if (result.success && result.languages) {
+        return result.languages;
+      }
+    }
+    return ['eng'];
+  }
+
+  async ocrRecognize(imageData: string): Promise<OcrResult | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ocr.recognize(imageData);
+      if (result.success && result.data) {
+        return result.data;
+      }
+      console.error('OCR failed:', result.error);
+    }
+    return null;
+  }
+
+  async ocrDetectSkew(imageData: string): Promise<DeskewResult | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ocr.detectSkew(imageData);
+      if (result.success && result.data) {
+        return result.data;
+      }
+      console.error('Skew detection failed:', result.error);
+    }
+    return null;
   }
 }

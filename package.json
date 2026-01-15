@@ -42,6 +42,7 @@
     "@angular/platform-browser": "^21.0.0",
     "@angular/router": "^21.0.0",
     "mupdf": "^1.27.0",
+    "node-tesseract-ocr": "^2.2.1",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0"
   },
@@ -64,24 +65,21 @@
     },
     "files": [
       "dist/**/*",
-      "python/**/*"
+      "bookforge-icon.png"
     ],
-    "extraResources": [
-      {
-        "from": "python",
-        "to": "python"
-      }
-    ],
+    "icon": "bookforge-icon.png",
     "mac": {
       "category": "public.app-category.productivity",
-      "target": "dmg"
+      "target": "dmg",
+      "icon": "bookforge-icon.png"
     },
     "win": {
       "target": "nsis",
       "icon": "bookforge-icon.png"
     },
     "linux": {
-      "target": "AppImage"
+      "target": "AppImage",
+      "icon": "bookforge-icon.png"
     }
   }
 }

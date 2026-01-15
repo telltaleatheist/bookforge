@@ -2,17 +2,24 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { pdfAnalyzer } from './pdf-analyzer';
+import { getOcrService } from './ocr-service';
 
 let mainWindow: BrowserWindow | null = null;
 
 const isDev = !app.isPackaged;
 
 function createWindow(): void {
+  // Get icon path - in dev it's in project root, in prod it's in app resources
+  const iconPath = isDev
+    ? path.join(__dirname, '..', '..', 'bookforge-icon.png')  // dist/electron -> project root
+    : path.join(app.getAppPath(), 'bookforge-icon.png');
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 800,
     minHeight: 600,
+    icon: iconPath,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -22,12 +29,30 @@ function createWindow(): void {
     backgroundColor: '#0a0a0a',
   });
 
+  // Set dock icon on macOS
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.setIcon(iconPath);
+  }
+
   // Load Angular app
   if (isDev) {
     mainWindow.loadURL('http://localhost:4250');
     // mainWindow.webContents.openDevTools();  // Uncomment to debug
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../renderer/browser/index.html'));
+    // Use app.getAppPath() for reliable path resolution in packaged apps
+    const appPath = app.getAppPath();
+    const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
+
+    mainWindow.loadFile(indexPath).catch(err => {
+      // Show error in window if file not found
+      mainWindow?.loadURL(`data:text/html,
+        <html><body style="background:#1a1a1a;color:#fff;font-family:system-ui;padding:40px;">
+        <h1>Failed to load app</h1>
+        <p>Error: ${err.message}</p>
+        <p>App path: ${appPath}</p>
+        <p>Index path: ${indexPath}</p>
+        </body></html>`);
+    });
   }
 
   mainWindow.on('closed', () => {
@@ -404,6 +429,50 @@ function setupIpcHandlers(): void {
     try {
       await fs.copyFile(projectPath, result.filePath);
       return { success: true, filePath: result.filePath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // OCR handlers
+  ipcMain.handle('ocr:is-available', async () => {
+    try {
+      const ocr = getOcrService();
+      return {
+        success: true,
+        available: ocr.isAvailable(),
+        version: ocr.getVersion()
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ocr:get-languages', async () => {
+    try {
+      const ocr = getOcrService();
+      const languages = await ocr.getAvailableLanguages();
+      return { success: true, languages };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ocr:recognize', async (_event, imageData: string) => {
+    try {
+      const ocr = getOcrService();
+      const result = await ocr.recognizeBase64(imageData);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ocr:detect-skew', async (_event, imageData: string) => {
+    try {
+      const ocr = getOcrService();
+      const result = await ocr.detectSkewBase64(imageData);
+      return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
