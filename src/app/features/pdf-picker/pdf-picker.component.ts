@@ -233,6 +233,23 @@ interface AlertModal {
       />
     }
 
+    <!-- Library Overlay (when viewing library with PDF still open) -->
+    @if (showLibraryView()) {
+      <div class="library-overlay">
+        <div class="library-overlay-header">
+          <h2>Library</h2>
+          <desktop-button variant="ghost" size="sm" (click)="showLibraryView.set(false)">
+            ← Back to {{ pdfName() || 'Project' }}
+          </desktop-button>
+        </div>
+        <app-library-view
+          (openFile)="onLibraryOpenFile()"
+          (fileSelected)="onLibraryFileSelected($event)"
+          (projectSelected)="onLibraryProjectSelected($event)"
+        />
+      </div>
+    }
+
     <!-- Loading Overlay -->
     @if (loading()) {
       <div class="loading-overlay">
@@ -659,6 +676,48 @@ interface AlertModal {
       justify-content: center;
       z-index: 100;
       animation: overlayFadeIn $duration-fast $ease-out forwards;
+    }
+
+    .library-overlay {
+      position: absolute;
+      inset: 0;
+      background: var(--bg-sunken);
+      z-index: 50;
+      display: flex;
+      flex-direction: column;
+      animation: slideInFromBottom $duration-normal $ease-out forwards;
+    }
+
+    .library-overlay-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: var(--ui-spacing-md) var(--ui-spacing-xl);
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+
+      h2 {
+        margin: 0;
+        font-size: var(--ui-font-lg);
+        font-weight: $font-weight-semibold;
+        color: var(--text-primary);
+      }
+    }
+
+    .library-overlay app-library-view {
+      flex: 1;
+      min-height: 0;
+    }
+
+    @keyframes slideInFromBottom {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .loading-spinner {
@@ -1155,10 +1214,14 @@ export class PdfPickerComponent {
       this.saveProjectAs();
     }
 
-    // Ctrl/Cmd + O for library view
+    // Ctrl/Cmd + O for library view toggle
     if ((event.metaKey || event.ctrlKey) && event.key === 'o') {
       event.preventDefault();
-      this.goToLibrary();
+      if (this.showLibraryView()) {
+        this.showLibraryView.set(false);
+      } else {
+        this.goToLibrary();
+      }
     }
 
     // Mode shortcuts (single keys, no modifiers)
@@ -1199,6 +1262,7 @@ export class PdfPickerComponent {
   }
 
   readonly showFilePicker = signal(false);
+  readonly showLibraryView = signal(false); // Show library overlay without closing PDF
   readonly loading = signal(false);
   readonly loadingText = signal('Loading...');
 
@@ -1255,7 +1319,14 @@ export class PdfPickerComponent {
 
   // Toolbar items (computed based on state)
   readonly toolbarItems = computed<ToolbarItem[]>(() => [
-    { id: 'library', type: 'button', icon: '📚', label: 'Library', tooltip: 'Back to library (Ctrl+O)', disabled: !this.pdfLoaded() },
+    {
+      id: 'library',
+      type: 'button',
+      icon: this.showLibraryView() ? '←' : '📚',
+      label: this.showLibraryView() ? 'Back' : 'Library',
+      tooltip: this.showLibraryView() ? 'Back to project' : 'Back to library (Ctrl+O)',
+      disabled: !this.pdfLoaded() && !this.showLibraryView()
+    },
     { id: 'open', type: 'button', icon: '📂', label: 'Open File', tooltip: 'Open PDF file' },
     {
       id: 'save',
@@ -1371,7 +1442,11 @@ export class PdfPickerComponent {
   onToolbarAction(item: ToolbarItem): void {
     switch (item.id) {
       case 'library':
-        this.goToLibrary();
+        if (this.showLibraryView()) {
+          this.showLibraryView.set(false);
+        } else {
+          this.goToLibrary();
+        }
         break;
       case 'open':
         this.openPdfWithNativeDialog();
@@ -1514,26 +1589,23 @@ export class PdfPickerComponent {
   }
 
   goToLibrary(): void {
-    if (!this.pdfLoaded()) return;
+    // Toggle library view - keeps current PDF open in background
+    this.showLibraryView.set(true);
+  }
 
-    if (this.hasUnsavedChanges()) {
-      this.showAlert({
-        title: 'Unsaved Changes',
-        message: 'You have unsaved changes. Would you like to save before returning to the library?',
-        type: 'warning',
-        confirmText: 'Save & Close',
-        cancelText: 'Discard',
-        onConfirm: async () => {
-          await this.saveProject();
-          this.closePdf();
-        },
-        onCancel: () => {
-          this.closePdf();
-        }
-      });
-    } else {
-      this.closePdf();
-    }
+  onLibraryOpenFile(): void {
+    this.showLibraryView.set(false);
+    this.showFilePicker.set(true);
+  }
+
+  onLibraryFileSelected(path: string): void {
+    this.showLibraryView.set(false);
+    this.loadPdf(path);
+  }
+
+  onLibraryProjectSelected(path: string): void {
+    this.showLibraryView.set(false);
+    this.loadProjectFromPath(path);
   }
 
   private closePdf(): void {

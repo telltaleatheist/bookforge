@@ -81,138 +81,145 @@ type TabType = 'recent' | 'projects';
         </button>
       </div>
 
-      <!-- Content based on active tab -->
-      @if (activeTab() === 'recent') {
-        @if (recentFiles().length > 0) {
-          <div class="section">
-            <div class="section-header">
-              <h2>Recent Files</h2>
-              <div class="size-slider">
-                <span class="slider-icon small">🔹</span>
-                <input
-                  type="range"
-                  min="80"
-                  max="750"
-                  [value]="cardSize()"
-                  (input)="onCardSizeChange(+$any($event.target).value)"
-                />
-                <span class="slider-icon large">🔷</span>
-              </div>
-            </div>
-            <div class="file-grid" [style.--card-size.px]="cardSize()">
-              @for (file of recentFiles(); track file.path) {
-                <div class="file-card" (click)="onFileClick(file)" [title]="file.path">
-                  <div class="card-thumbnail">
-                    @if (file.thumbnail && file.thumbnail !== 'loading') {
-                      <img [src]="file.thumbnail" alt="{{ file.name }}" />
-                    } @else if (file.thumbnail === 'loading') {
-                      <div class="thumbnail-loading">
-                        <span class="loading-icon">⏳</span>
-                      </div>
-                    } @else {
-                      <div class="thumbnail-placeholder">
-                        <span>📄</span>
-                      </div>
-                    }
+      <!-- Tab content with slide animation -->
+      <div class="tab-content">
+        <div class="tab-panels" [class.show-projects]="activeTab() === 'projects'">
+          <!-- Recent Tab Panel -->
+          <div class="tab-panel">
+            @if (recentFiles().length > 0) {
+              <div class="section">
+                <div class="section-header">
+                  <h2>Recent Files</h2>
+                  <div class="size-slider">
+                    <span class="slider-icon small">🔹</span>
+                    <input
+                      type="range"
+                      min="80"
+                      max="750"
+                      [value]="cardSize()"
+                      (input)="onCardSizeChange(+$any($event.target).value)"
+                    />
+                    <span class="slider-icon large">🔷</span>
                   </div>
-                  <div class="card-info">
-                    <span class="card-title" [title]="file.name">{{ file.name }}</span>
-                    <span class="card-date">{{ formatDate(file.timestamp) }}</span>
-                  </div>
-                  <button class="card-remove" (click)="removeFile($event, file)" title="Remove from recent">×</button>
                 </div>
-              }
-            </div>
-          </div>
-        } @else {
-          <div class="empty-library">
-            <div class="empty-icon">📚</div>
-            <h2>No Recent Files</h2>
-            <p>Drop a PDF here or click Open PDF to get started</p>
-          </div>
-        }
-      } @else {
-        <!-- Projects Tab -->
-        @if (projects().length > 0) {
-          <div class="section">
-            <div class="section-header">
-              <h2>
-                Saved Projects
-                @if (selectedProjects().length > 0) {
-                  <span class="selection-info">({{ selectedProjects().length }} selected)</span>
-                }
-              </h2>
-              <div class="section-actions">
-                @if (projects().length > 0) {
-                  <desktop-button
-                    variant="ghost"
-                    size="sm"
-                    (click)="toggleSelectAll()"
-                  >
-                    {{ allSelected() ? 'Deselect All' : 'Select All' }}
-                  </desktop-button>
-                }
-                <div class="size-slider">
-                  <span class="slider-icon small">🔹</span>
-                  <input
-                    type="range"
-                    min="80"
-                    max="750"
-                    [value]="cardSize()"
-                    (input)="onCardSizeChange(+$any($event.target).value)"
-                  />
-                  <span class="slider-icon large">🔷</span>
+                <div class="file-grid" [style.--card-size.px]="cardSize()">
+                  @for (file of recentFiles(); track file.path) {
+                    <div class="file-card" (click)="onFileClick(file)" [title]="file.path">
+                      <div class="card-thumbnail">
+                        @if (file.thumbnail && file.thumbnail !== 'loading') {
+                          <img [src]="file.thumbnail" alt="{{ file.name }}" />
+                        } @else if (file.thumbnail === 'loading') {
+                          <div class="thumbnail-loading">
+                            <span class="loading-icon">⏳</span>
+                          </div>
+                        } @else {
+                          <div class="thumbnail-placeholder">
+                            <span>📄</span>
+                          </div>
+                        }
+                      </div>
+                      <div class="card-info">
+                        <span class="card-title" [title]="file.name">{{ file.name }}</span>
+                        <span class="card-date">{{ formatDate(file.timestamp) }}</span>
+                      </div>
+                      <button class="card-remove" (click)="removeFile($event, file)" title="Remove from recent">×</button>
+                    </div>
+                  }
                 </div>
               </div>
-            </div>
-            <div class="file-grid" [style.--card-size.px]="cardSize()">
-              @for (project of projects(); track project.path) {
-                <div
-                  class="file-card project-card"
-                  [class.selected]="project.selected"
-                  (click)="onProjectClick($event, project)"
-                  [title]="project.path"
-                >
-                  <div class="card-checkbox" (click)="toggleProjectSelection($event, project)">
-                    @if (project.selected) {
-                      <span>✓</span>
+            } @else {
+              <div class="empty-library">
+                <div class="empty-icon">📚</div>
+                <h2>No Recent Files</h2>
+                <p>Drop a PDF here or click Open PDF to get started</p>
+              </div>
+            }
+          </div>
+
+          <!-- Projects Tab Panel -->
+          <div class="tab-panel">
+            @if (projects().length > 0) {
+              <div class="section">
+                <div class="section-header">
+                  <h2>
+                    Saved Projects
+                    @if (selectedProjects().length > 0) {
+                      <span class="selection-info">({{ selectedProjects().length }} selected)</span>
                     }
-                  </div>
-                  <div class="card-thumbnail">
-                    @if (project.thumbnail && project.thumbnail !== 'loading') {
-                      <img [src]="project.thumbnail" alt="{{ project.name }}" />
-                    } @else if (project.thumbnail === 'loading') {
-                      <div class="thumbnail-loading">
-                        <span class="loading-icon">⏳</span>
-                      </div>
-                    } @else {
-                      <div class="thumbnail-placeholder project-placeholder">
-                        <span>📁</span>
-                      </div>
+                  </h2>
+                  <div class="section-actions">
+                    @if (projects().length > 0) {
+                      <desktop-button
+                        variant="ghost"
+                        size="sm"
+                        (click)="toggleSelectAll()"
+                      >
+                        {{ allSelected() ? 'Deselect All' : 'Select All' }}
+                      </desktop-button>
                     }
-                  </div>
-                  <div class="card-info">
-                    <span class="card-title" [title]="project.name">{{ project.name }}</span>
-                    <span class="card-subtitle" [title]="project.sourceName">{{ project.sourceName }}</span>
-                    <span class="card-meta">
-                      {{ project.deletedCount }} edits · {{ formatDateString(project.modifiedAt) }}
-                    </span>
+                    <div class="size-slider">
+                      <span class="slider-icon small">🔹</span>
+                      <input
+                        type="range"
+                        min="80"
+                        max="750"
+                        [value]="cardSize()"
+                        (input)="onCardSizeChange(+$any($event.target).value)"
+                      />
+                      <span class="slider-icon large">🔷</span>
+                    </div>
                   </div>
                 </div>
-              }
-            </div>
+                <div class="file-grid" [style.--card-size.px]="cardSize()">
+                  @for (project of projects(); track project.path) {
+                    <div
+                      class="file-card project-card"
+                      [class.selected]="project.selected"
+                      (click)="onProjectClick($event, project)"
+                      [title]="project.path"
+                    >
+                      <div class="card-checkbox" (click)="toggleProjectSelection($event, project)">
+                        @if (project.selected) {
+                          <span>✓</span>
+                        }
+                      </div>
+                      <div class="card-thumbnail">
+                        @if (project.thumbnail && project.thumbnail !== 'loading') {
+                          <img [src]="project.thumbnail" alt="{{ project.name }}" />
+                        } @else if (project.thumbnail === 'loading') {
+                          <div class="thumbnail-loading">
+                            <span class="loading-icon">⏳</span>
+                          </div>
+                        } @else {
+                          <div class="thumbnail-placeholder project-placeholder">
+                            <span>📁</span>
+                          </div>
+                        }
+                      </div>
+                      <div class="card-info">
+                        <span class="card-title" [title]="project.name">{{ project.name }}</span>
+                        <span class="card-subtitle" [title]="project.sourceName">{{ project.sourceName }}</span>
+                        <span class="card-meta">
+                          {{ project.deletedCount }} edits · {{ formatDateString(project.modifiedAt) }}
+                        </span>
+                      </div>
+                    </div>
+                  }
+                </div>
+              </div>
+            } @else {
+              <div class="empty-library">
+                <div class="empty-icon">📁</div>
+                <h2>No Saved Projects</h2>
+                <p>Projects are saved automatically to ~/Documents/BookForge/</p>
+                <desktop-button variant="ghost" size="md" icon="📥" (click)="importProjects()">
+                  Import Projects
+                </desktop-button>
+              </div>
+            }
           </div>
-        } @else {
-          <div class="empty-library">
-            <div class="empty-icon">📁</div>
-            <h2>No Saved Projects</h2>
-            <p>Projects are saved automatically to ~/Documents/BookForge/</p>
-            <desktop-button variant="ghost" size="md" icon="📥" (click)="importProjects()">
-              Import Projects
-            </desktop-button>
-          </div>
-        }
-      }
+        </div>
+      </div>
 
       <!-- Drag overlay -->
       @if (isDragActive()) {
@@ -239,9 +246,11 @@ type TabType = 'recent' | 'projects';
 
     .library-container {
       position: relative;
+      display: flex;
+      flex-direction: column;
       padding: var(--ui-spacing-xl);
       width: 100%;
-      min-height: 100%;
+      height: 100%;
       box-sizing: border-box;
     }
 
@@ -266,36 +275,38 @@ type TabType = 'recent' | 'projects';
 
     .tabs {
       display: flex;
-      gap: var(--ui-spacing-xs);
-      margin-bottom: var(--ui-spacing-lg);
+      gap: 0;
+      margin-bottom: 0;
       border-bottom: 1px solid var(--border-subtle);
-      padding-bottom: var(--ui-spacing-xs);
     }
 
     .tab {
+      flex: 1;
       display: flex;
       align-items: center;
+      justify-content: center;
       gap: var(--ui-spacing-sm);
-      padding: var(--ui-spacing-sm) var(--ui-spacing-lg);
+      padding: var(--ui-spacing-md) var(--ui-spacing-lg);
       border: none;
       background: transparent;
       color: var(--text-secondary);
-      font-size: var(--ui-font-sm);
+      font-size: var(--ui-font-base);
       font-weight: $font-weight-medium;
       cursor: pointer;
-      border-radius: $radius-md $radius-md 0 0;
+      border-radius: 0;
       transition: all $duration-fast $ease-out;
       position: relative;
 
       .tab-icon {
-        font-size: var(--ui-font-base);
+        font-size: var(--ui-font-lg);
       }
 
       .tab-count {
         font-size: var(--ui-font-xs);
-        padding: 2px 6px;
+        padding: 2px 8px;
         background: var(--bg-surface);
         border-radius: $radius-full;
+        margin-left: var(--ui-spacing-xs);
       }
 
       &:hover {
@@ -313,9 +324,8 @@ type TabType = 'recent' | 'projects';
           bottom: -1px;
           left: 0;
           right: 0;
-          height: 2px;
+          height: 3px;
           background: var(--accent);
-          border-radius: 2px 2px 0 0;
         }
 
         .tab-count {
@@ -323,6 +333,30 @@ type TabType = 'recent' | 'projects';
           color: white;
         }
       }
+    }
+
+    .tab-content {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .tab-panels {
+      display: flex;
+      width: 200%;
+      transition: transform $duration-normal $ease-out;
+
+      &.show-projects {
+        transform: translateX(-50%);
+      }
+    }
+
+    .tab-panel {
+      width: 50%;
+      flex-shrink: 0;
+      padding: var(--ui-spacing-lg) 0;
+      overflow-y: auto;
+      max-height: calc(100vh - 200px);
     }
 
     .section {
@@ -695,8 +729,8 @@ export class LibraryViewComponent implements OnInit {
   private thumbnailDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   ngOnInit(): void {
+    this.loadCardSize(); // Load card size FIRST so thumbnails use correct scale
     this.loadRecentFiles();
-    this.loadCardSize();
     this.loadProjects();
   }
 
