@@ -48,3 +48,4 @@ release/*
 dist/*
 .vscode/*
 CLAUDE.md
+.editorconfig
