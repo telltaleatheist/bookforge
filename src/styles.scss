@@ -1,0 +1,139 @@
+// ============================================================================
+// CREAMSICLE DESKTOP - Global Styles
+// Cross-Platform Desktop Application Template
+// ============================================================================
+
+@use 'app/creamsicle-desktop/styles/variables' as *;
+@use 'app/creamsicle-desktop/styles/themes';
+
+// =============================================================================
+// CSS RESET
+// =============================================================================
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: $font-body;
+  font-size: $font-size-base;
+  line-height: $line-height-normal;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+// =============================================================================
+// TYPOGRAPHY DEFAULTS
+// =============================================================================
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: $font-display;
+  font-weight: $font-weight-semibold;
+  line-height: $line-height-tight;
+  color: var(--text-primary);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  transition: color $duration-fast $ease-out;
+
+  &:hover {
+    color: var(--accent-hover);
+  }
+}
+
+code, pre, kbd, samp {
+  font-family: $font-mono;
+}
+
+// =============================================================================
+// FOCUS STYLES
+// =============================================================================
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
+
+// =============================================================================
+// SELECTION
+// =============================================================================
+
+::selection {
+  background: var(--accent-muted);
+  color: var(--text-primary);
+}
+
+::-moz-selection {
+  background: var(--accent-muted);
+  color: var(--text-primary);
+}
+
+// =============================================================================
+// SCROLLBAR
+// =============================================================================
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+
+  &:hover {
+    background: var(--scrollbar-thumb-hover);
+    background-clip: padding-box;
+  }
+}
+
+// Firefox scrollbar
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+// =============================================================================
+// UTILITY CLASSES
+// =============================================================================
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

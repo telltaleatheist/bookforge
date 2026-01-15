@@ -1,0 +1,456 @@
+@use '../../styles/variables' as *;
+@use '../../styles/mixins' as *;
+
+// =============================================================================
+// CASCADE LIST - Desktop Component
+// =============================================================================
+
+:host {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.cascade-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+  background: var(--bg-content);
+  -webkit-touch-callout: none;
+}
+
+.cascade-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+
+  &.empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+cdk-virtual-scroll-viewport.cascade-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  overflow-x: hidden !important;
+
+  ::ng-deep .cdk-virtual-scroll-content-wrapper {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+  }
+}
+
+// =============================================================================
+// GROUP HEADER
+// =============================================================================
+
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: $spacing-2;
+  padding: 0 $spacing-4;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: background $duration-fast $ease-out;
+  user-select: none;
+
+  &:hover {
+    background: var(--hover-bg);
+
+    .group-label {
+      color: var(--text-primary);
+    }
+  }
+}
+
+.group-toggle {
+  @include button-reset;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: $radius-sm;
+  transition: background $duration-fast $ease-out;
+
+  &:hover {
+    background: var(--active-bg);
+  }
+}
+
+.toggle-icon {
+  font-size: 9px;
+  color: var(--text-tertiary);
+  transition: transform $duration-normal $ease-out;
+  display: inline-block;
+
+  &.expanded {
+    transform: rotate(90deg);
+  }
+}
+
+.group-label {
+  @include text-caps;
+  flex: 1;
+  color: var(--text-tertiary);
+  transition: color $duration-fast $ease-out;
+}
+
+.group-count {
+  font-family: $font-mono;
+  font-size: 11px;
+  font-weight: $font-weight-medium;
+  color: var(--text-tertiary);
+  padding: 2px 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-full;
+}
+
+// =============================================================================
+// CASCADE ITEM
+// =============================================================================
+
+.cascade-item {
+  display: flex;
+  align-items: center;
+  gap: $spacing-3;
+  padding: 0 $spacing-4;
+  background: transparent;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: all $duration-fast $ease-out;
+  position: relative;
+  user-select: none;
+
+  &:hover {
+    background: var(--hover-bg);
+
+    .item-icon {
+      transform: scale(1.05);
+      border-color: var(--border-default);
+    }
+
+    .item-metadata {
+      color: var(--text-accent);
+    }
+  }
+
+  &.selected,
+  &.highlighted {
+    background: var(--selected-bg-muted);
+
+    &::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 3px;
+      background: var(--accent);
+    }
+
+    .item-title {
+      color: var(--text-primary);
+    }
+
+    .item-icon {
+      border-color: var(--accent-muted);
+    }
+  }
+
+  &.selection-edge-top {
+    border-top-left-radius: $radius-md;
+    border-top-right-radius: $radius-md;
+  }
+
+  &.selection-edge-bottom {
+    border-bottom-left-radius: $radius-md;
+    border-bottom-right-radius: $radius-md;
+  }
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+// =============================================================================
+// STATUS INDICATOR
+// =============================================================================
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: $radius-full;
+  flex-shrink: 0;
+  transition: all $duration-fast $ease-out;
+
+  &.status-pending {
+    background: var(--text-tertiary);
+    opacity: 0.5;
+  }
+
+  &.status-active {
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent-muted);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  &.status-complete {
+    background: $success-500;
+    box-shadow: 0 0 6px rgba($success-500, 0.4);
+  }
+
+  &.status-error {
+    background: $error-500;
+    box-shadow: 0 0 6px rgba($error-500, 0.4);
+  }
+
+  &.status-default {
+    background: var(--border-default);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(0.9);
+  }
+}
+
+// =============================================================================
+// ITEM ICON
+// =============================================================================
+
+.item-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-md;
+  transition: all $duration-fast $ease-out;
+}
+
+// =============================================================================
+// ITEM CONTENT
+// =============================================================================
+
+.item-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.item-title {
+  font-family: $font-body;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  color: var(--text-primary);
+  line-height: $line-height-tight;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-subtitle {
+  font-family: $font-body;
+  font-size: $font-size-xs;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// =============================================================================
+// METADATA
+// =============================================================================
+
+.item-metadata {
+  flex-shrink: 0;
+  font-family: $font-mono;
+  font-size: $font-size-xs;
+  font-weight: $font-weight-medium;
+  color: var(--text-secondary);
+  padding: $spacing-1 $spacing-2;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-sm;
+  transition: all $duration-fast $ease-out;
+}
+
+// =============================================================================
+// PROGRESS BAR
+// =============================================================================
+
+.item-progress {
+  position: absolute;
+  bottom: 0;
+  left: $spacing-4;
+  right: $spacing-4;
+  height: 3px;
+  background: var(--bg-sunken);
+  border-radius: $radius-full;
+  overflow: hidden;
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+    border-radius: $radius-full;
+    transition: width 0.3s $ease-out;
+    position: relative;
+
+    &::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 100%;
+      background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(255, 255, 255, 0.3) 50%,
+        transparent 100%
+      );
+      animation: shimmer 1.5s linear infinite;
+    }
+
+    &.indeterminate {
+      width: 30%;
+      animation: indeterminate 1.2s ease-in-out infinite;
+    }
+  }
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+// =============================================================================
+// EMPTY STATE
+// =============================================================================
+
+.empty-state {
+  text-align: center;
+  padding: $spacing-8;
+}
+
+.empty-icon {
+  font-size: 48px;
+  margin-bottom: $spacing-4;
+  opacity: 0.3;
+}
+
+.empty-state h3 {
+  font-family: $font-display;
+  font-size: $font-size-lg;
+  font-weight: $font-weight-semibold;
+  color: var(--text-primary);
+  margin-bottom: $spacing-2;
+}
+
+.empty-state p {
+  font-size: $font-size-sm;
+  color: var(--text-tertiary);
+  margin: 0;
+}
+
+// =============================================================================
+// SELECTION RECTANGLE
+// =============================================================================
+
+.selection-rect {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: var(--accent-muted);
+  opacity: 0.3;
+  pointer-events: none;
+  z-index: 1000;
+  border-radius: $radius-sm;
+}
+
+// =============================================================================
+// TOUCH SELECTION MODE
+// =============================================================================
+
+.cascade-item.touch-selecting {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+// =============================================================================
+// RESPONSIVE
+// =============================================================================
+
+@media (max-width: 768px) {
+  .cascade-item {
+    gap: $spacing-2;
+    padding: 0 $spacing-3;
+  }
+
+  .item-icon {
+    width: 32px;
+    height: 32px;
+    font-size: 16px;
+  }
+
+  .group-header {
+    padding: 0 $spacing-3;
+  }
+}
+
+@media (max-width: 480px) {
+  .cascade-item {
+    padding: 0 $spacing-2;
+  }
+
+  .item-title {
+    font-size: 13px;
+  }
+
+  .item-subtitle {
+    font-size: 11px;
+  }
+
+  .item-metadata {
+    display: none;
+  }
+
+  .status-indicator {
+    width: 6px;
+    height: 6px;
+  }
+}

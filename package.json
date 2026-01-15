@@ -1,0 +1,84 @@
+{
+  "name": "bookforge-app",
+  "version": "0.1.0",
+  "description": "BookForge - Audiobook production pipeline",
+  "main": "dist/electron/main.js",
+  "private": true,
+  "scripts": {
+    "ng": "ng",
+    "start": "npm run electron:dev",
+    "start:web": "ng serve --port 4250",
+    "build": "ng build",
+    "build:prod": "ng build --configuration production",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "electron:dev": "npm run build:electron && concurrently \"ng serve --port 4250\" \"wait-on http://localhost:4250 && electron .\"",
+    "electron:build": "npm run build:electron && npm run build:prod && electron-builder",
+    "package:mac": "npm run electron:build -- --mac",
+    "package:win": "npm run electron:build -- --win",
+    "package:linux": "npm run electron:build -- --linux",
+    "watch": "ng build --watch --configuration development",
+    "watch:electron": "tsc -p tsconfig.electron.json --watch",
+    "test": "ng test"
+  },
+  "prettier": {
+    "printWidth": 100,
+    "singleQuote": true,
+    "overrides": [
+      {
+        "files": "*.html",
+        "options": {
+          "parser": "angular"
+        }
+      }
+    ]
+  },
+  "dependencies": {
+    "@angular/cdk": "^21.0.5",
+    "@angular/common": "^21.0.0",
+    "@angular/compiler": "^21.0.0",
+    "@angular/core": "^21.0.0",
+    "@angular/forms": "^21.0.0",
+    "@angular/platform-browser": "^21.0.0",
+    "@angular/router": "^21.0.0",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "@angular/build": "^21.0.4",
+    "@angular/cli": "^21.0.4",
+    "@angular/compiler-cli": "^21.0.0",
+    "@types/node": "^20.11.0",
+    "concurrently": "^8.2.0",
+    "electron": "^29.0.0",
+    "electron-builder": "^24.13.0",
+    "typescript": "~5.9.2",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.bookforge.app",
+    "productName": "BookForge",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "python/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "python",
+        "to": "python"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}

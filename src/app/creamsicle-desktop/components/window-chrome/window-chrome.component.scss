@@ -1,0 +1,112 @@
+@use '../../styles/variables' as *;
+@use '../../styles/mixins' as *;
+
+:host {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.window {
+  @include window-frame;
+  width: 100%;
+  height: 100%;
+
+  &.maximized,
+  &.frameless {
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
+  }
+
+  &:not(.focused) {
+    .titlebar {
+      opacity: 0.7;
+    }
+
+    .title-text {
+      color: var(--text-tertiary);
+    }
+  }
+}
+
+// =============================================================================
+// TITLE BAR
+// =============================================================================
+
+.titlebar {
+  @include titlebar;
+  position: relative;
+
+  // Draggable area for Electron
+  -webkit-app-region: drag;
+
+  // Non-draggable children
+  button, a, input, [no-drag] {
+    -webkit-app-region: no-drag;
+  }
+}
+
+.titlebar-left,
+.titlebar-right {
+  @include flex-start;
+  gap: $spacing-2;
+  min-width: 80px;
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+.titlebar-right {
+  justify-content: flex-end;
+}
+
+.title {
+  @include flex-center;
+  gap: $spacing-2;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 60%;
+}
+
+.title-icon {
+  font-size: $font-size-lg;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.title-text {
+  @include text-label;
+  @include truncate;
+  font-family: $font-display;
+  font-weight: $font-weight-semibold;
+  color: var(--text-primary);
+  max-width: 300px;
+}
+
+// =============================================================================
+// TOOLBAR
+// =============================================================================
+
+.toolbar {
+  @include toolbar;
+}
+
+// =============================================================================
+// WINDOW BODY
+// =============================================================================
+
+.window-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  background: var(--bg-content);
+}
+
+// =============================================================================
+// STATUS BAR
+// =============================================================================
+
+.statusbar {
+  @include statusbar;
+}

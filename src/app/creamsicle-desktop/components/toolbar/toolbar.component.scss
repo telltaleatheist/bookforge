@@ -1,0 +1,201 @@
+@use '../../styles/variables' as *;
+@use '../../styles/mixins' as *;
+
+// =============================================================================
+// UI SIZE VARIABLES
+// =============================================================================
+
+:host {
+  display: block;
+
+  // Default (large) sizes - this is the standard
+  --toolbar-height: 66px;
+  --toolbar-btn-height: 56px;
+  --toolbar-btn-padding: #{$spacing-5};
+  --toolbar-icon-size: 28px;
+  --toolbar-font-size: #{$font-size-xl};
+  --toolbar-divider-height: 38px;
+}
+
+// Small UI size
+:host-context([data-ui-size="small"]) {
+  --toolbar-height: 44px;
+  --toolbar-btn-height: 36px;
+  --toolbar-btn-padding: #{$spacing-3};
+  --toolbar-icon-size: 18px;
+  --toolbar-font-size: #{$font-size-base};
+  --toolbar-divider-height: 24px;
+}
+
+// Medium UI size
+:host-context([data-ui-size="medium"]) {
+  --toolbar-height: 52px;
+  --toolbar-btn-height: 44px;
+  --toolbar-btn-padding: #{$spacing-4};
+  --toolbar-icon-size: 22px;
+  --toolbar-font-size: #{$font-size-lg};
+  --toolbar-divider-height: 30px;
+}
+
+.toolbar {
+  @include toolbar;
+  height: var(--toolbar-height);
+
+  &.bordered {
+    border-bottom: 1px solid var(--border-subtle);
+  }
+}
+
+// =============================================================================
+// TOOLBAR BUTTON
+// =============================================================================
+
+.toolbar-button {
+  @include button-toolbar;
+  height: var(--toolbar-btn-height);
+  padding: 0 var(--toolbar-btn-padding);
+  font-size: var(--toolbar-font-size);
+  gap: $spacing-2;
+
+  &.icon-only {
+    width: var(--toolbar-btn-height);
+    padding: 0;
+  }
+
+  &.toggle.active {
+    background: var(--selected-bg-muted);
+    color: var(--text-accent);
+  }
+}
+
+.button-icon {
+  font-size: var(--toolbar-icon-size);
+  line-height: 1;
+}
+
+.button-label {
+  font-weight: $font-weight-medium;
+  font-size: var(--toolbar-font-size);
+}
+
+// =============================================================================
+// DROPDOWN
+// =============================================================================
+
+.toolbar-dropdown {
+  position: relative;
+
+  &.disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+}
+
+.dropdown-trigger {
+  gap: $spacing-1;
+
+  .dropdown-chevron {
+    display: flex;
+    align-items: center;
+    margin-left: $spacing-0-5;
+    opacity: 0.6;
+  }
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + $spacing-1);
+  left: 0;
+  min-width: 180px;
+  padding: $spacing-1;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: $radius-lg;
+  box-shadow: var(--shadow-lg);
+  z-index: $z-dropdown;
+  animation: slideUp $duration-fast $ease-out;
+}
+
+.dropdown-item {
+  @include button-reset;
+  @include list-row-muted;
+  width: 100%;
+  height: $row-height;
+  padding: 0 $spacing-2;
+  text-align: left;
+  font-size: $font-size-sm;
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+}
+
+.item-icon {
+  font-size: $font-size-md;
+  width: 20px;
+  text-align: center;
+  opacity: 0.75;
+}
+
+.item-label {
+  flex: 1;
+}
+
+.item-shortcut {
+  @include text-mono;
+  color: var(--text-muted);
+  font-size: $font-size-xs;
+}
+
+.dropdown-divider {
+  @include divider-horizontal;
+  margin: $spacing-1 $spacing-2;
+}
+
+// =============================================================================
+// SEARCH
+// =============================================================================
+
+.toolbar-search {
+  flex: 0 0 200px;
+  max-width: 300px;
+}
+
+.toolbar-search .search-input {
+  @include input-search;
+  width: 100%;
+  height: var(--toolbar-btn-height);
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: var(--toolbar-font-size);
+}
+
+// =============================================================================
+// DIVIDER & SPACER
+// =============================================================================
+
+.toolbar-divider {
+  @include divider-vertical;
+  height: var(--toolbar-divider-height);
+  margin: 0 $spacing-2;
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
+// =============================================================================
+// ANIMATIONS
+// =============================================================================
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

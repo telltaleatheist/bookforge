@@ -1,0 +1,187 @@
+@use '../../styles/variables' as *;
+@use '../../styles/mixins' as *;
+
+:host {
+  display: block;
+  height: 100%;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
+  position: relative;
+  overflow: hidden;
+}
+
+// =============================================================================
+// SEARCH
+// =============================================================================
+
+.sidebar-search {
+  padding: $spacing-3;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.search-input {
+  @include input-search;
+  width: 100%;
+  height: 28px;
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: $font-size-sm;
+}
+
+// =============================================================================
+// CONTENT
+// =============================================================================
+
+.sidebar-content {
+  @include scrollbar-thin;
+  flex: 1;
+  overflow-y: auto;
+  padding: $spacing-2 $spacing-2;
+}
+
+// =============================================================================
+// SECTIONS
+// =============================================================================
+
+.sidebar-section {
+  & + .sidebar-section {
+    margin-top: $spacing-3;
+  }
+}
+
+.section-header {
+  @include text-caps;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: $spacing-1-5 $spacing-2;
+  margin-bottom: $spacing-1;
+  color: var(--text-tertiary);
+  user-select: none;
+
+  &.collapsible {
+    cursor: pointer;
+    border-radius: $radius-sm;
+    transition: $transition-colors;
+
+    &:hover {
+      background: var(--hover-bg);
+      color: var(--text-secondary);
+    }
+  }
+}
+
+.section-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  transition: transform $duration-fast $ease-out;
+
+  &.collapsed {
+    transform: rotate(-90deg);
+  }
+
+  svg {
+    opacity: 0.6;
+  }
+}
+
+.section-items {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-0-5;
+}
+
+// =============================================================================
+// SIDEBAR ITEMS
+// =============================================================================
+
+.sidebar-item {
+  @include button-reset;
+  @include sidebar-item;
+  width: 100%;
+  text-align: left;
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+}
+
+.item-icon {
+  font-size: $font-size-md;
+  line-height: 1;
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.item-label {
+  @include truncate;
+  flex: 1;
+}
+
+.item-badge {
+  @include text-caption;
+  padding: 0 $spacing-1-5;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-radius: $radius-full;
+  font-size: $font-size-2xs;
+  font-weight: $font-weight-semibold;
+  min-width: 18px;
+  text-align: center;
+
+  .selected & {
+    background: rgba(255, 255, 255, 0.2);
+    color: currentColor;
+  }
+}
+
+// =============================================================================
+// FOOTER
+// =============================================================================
+
+.sidebar-footer {
+  padding: $spacing-3;
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+// =============================================================================
+// RESIZE HANDLE
+// =============================================================================
+
+.resize-handle {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: $z-raised;
+
+  &::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 2px;
+    width: 1px;
+    height: 100%;
+    background: transparent;
+    transition: background $duration-fast $ease-out;
+  }
+
+  &:hover::after {
+    background: var(--accent);
+  }
+}

@@ -1,0 +1,245 @@
+// ============================================================================
+// CREAMSICLE DESKTOP - DESIGN TOKENS
+// Cross-Platform Desktop Application Design System
+// ============================================================================
+
+// =============================================================================
+// TYPOGRAPHY - Cross-Platform Fonts
+// =============================================================================
+
+// Modern, distinctive fonts that work everywhere
+// Outfit: Geometric sans-serif for headings - distinctive and modern
+// DM Sans: Clean body font with excellent readability
+// JetBrains Mono: Premium monospace for code
+
+$font-display: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+$font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+$font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+
+// Font Sizes - Refined scale for desktop
+$font-size-2xs: 0.625rem;   // 10px - micro labels
+$font-size-xs: 0.6875rem;   // 11px - status, hints
+$font-size-sm: 0.75rem;     // 12px - compact UI
+$font-size-base: 0.8125rem; // 13px - primary body
+$font-size-md: 0.875rem;    // 14px - emphasized
+$font-size-lg: 1rem;        // 16px - section headers
+$font-size-xl: 1.25rem;     // 20px - page titles
+$font-size-2xl: 1.5rem;     // 24px - hero text
+$font-size-3xl: 2rem;       // 32px - display
+
+// Font Weights
+$font-weight-regular: 400;
+$font-weight-medium: 500;
+$font-weight-semibold: 600;
+$font-weight-bold: 700;
+$font-weight-extrabold: 800;
+
+// Line Heights
+$line-height-none: 1;
+$line-height-tight: 1.2;
+$line-height-snug: 1.35;
+$line-height-normal: 1.5;
+$line-height-relaxed: 1.65;
+
+// Letter Spacing
+$letter-spacing-tight: -0.025em;
+$letter-spacing-normal: 0;
+$letter-spacing-wide: 0.025em;
+$letter-spacing-wider: 0.05em;
+$letter-spacing-caps: 0.08em;
+
+// =============================================================================
+// COLOR PALETTE - Warm Industrial
+// =============================================================================
+
+// Primary - Creamsicle Orange (the signature accent)
+$orange-50: #fff8f5;
+$orange-100: #ffede5;
+$orange-200: #ffd4c2;
+$orange-300: #ffb08a;
+$orange-400: #ff8f5a;
+$orange-500: #ff6b35;  // Primary accent
+$orange-600: #e85527;
+$orange-700: #c4421c;
+$orange-800: #9a3517;
+$orange-900: #7a2d15;
+
+// Warm Neutrals - Cream to Charcoal (not cold grays)
+$neutral-50: #faf9f7;   // Warm white
+$neutral-100: #f5f3f0;  // Cream
+$neutral-150: #ebe8e4;  // Light sand
+$neutral-200: #e0dcd6;  // Sand
+$neutral-250: #d1ccc4;  // Warm gray
+$neutral-300: #b8b2a8;  // Stone
+$neutral-400: #928b7f;  // Taupe
+$neutral-500: #706a60;  // Warm gray-brown
+$neutral-600: #565149;  // Dark taupe
+$neutral-700: #403c36;  // Charcoal
+$neutral-800: #2a2824;  // Dark charcoal
+$neutral-850: #211f1c;  // Near black
+$neutral-900: #181715;  // Warm black
+$neutral-950: #0e0d0c;  // Deep black
+
+// Pure values
+$white: #ffffff;
+$black: #000000;
+
+// Semantic Colors - Vibrant yet refined
+$success-500: #22c55e;
+$success-600: #16a34a;
+$warning-500: #f59e0b;
+$warning-600: #d97706;
+$error-500: #ef4444;
+$error-600: #dc2626;
+$info-500: #3b82f6;
+$info-600: #2563eb;
+
+// =============================================================================
+// SPACING - Tight desktop scale
+// =============================================================================
+
+$spacing-0: 0;
+$spacing-px: 1px;
+$spacing-0-5: 2px;
+$spacing-1: 4px;
+$spacing-1-5: 6px;
+$spacing-2: 8px;
+$spacing-2-5: 10px;
+$spacing-3: 12px;
+$spacing-3-5: 14px;
+$spacing-4: 16px;
+$spacing-5: 20px;
+$spacing-6: 24px;
+$spacing-8: 32px;
+$spacing-10: 40px;
+$spacing-12: 48px;
+$spacing-16: 64px;
+
+// Component dimensions
+$titlebar-height: 36px;
+$toolbar-height: 44px;
+$status-bar-height: 24px;
+$sidebar-width: 240px;
+$sidebar-width-compact: 200px;
+$sidebar-width-wide: 280px;
+$row-height: 28px;
+$row-height-compact: 24px;
+$row-height-comfortable: 32px;
+
+// =============================================================================
+// BORDERS & RADIUS
+// =============================================================================
+
+$radius-none: 0;
+$radius-xs: 2px;
+$radius-sm: 4px;
+$radius-md: 6px;
+$radius-lg: 8px;
+$radius-xl: 12px;
+$radius-2xl: 16px;
+$radius-3xl: 24px;
+$radius-full: 9999px;
+
+// Window radius (subtle rounding for cross-platform)
+$radius-window: 8px;
+
+// Border widths
+$border-width: 1px;
+$border-width-2: 2px;
+$border-width-3: 3px;
+
+// =============================================================================
+// SHADOWS - Layered depth system
+// =============================================================================
+
+// Light theme shadows (subtle warmth)
+$shadow-xs: 0 1px 2px rgba(24, 23, 21, 0.04);
+$shadow-sm: 0 1px 3px rgba(24, 23, 21, 0.06), 0 1px 2px rgba(24, 23, 21, 0.04);
+$shadow-md: 0 4px 6px -1px rgba(24, 23, 21, 0.08), 0 2px 4px -1px rgba(24, 23, 21, 0.04);
+$shadow-lg: 0 10px 15px -3px rgba(24, 23, 21, 0.1), 0 4px 6px -2px rgba(24, 23, 21, 0.05);
+$shadow-xl: 0 20px 25px -5px rgba(24, 23, 21, 0.12), 0 10px 10px -5px rgba(24, 23, 21, 0.04);
+$shadow-2xl: 0 25px 50px -12px rgba(24, 23, 21, 0.2);
+
+// Elevated surface shadow
+$shadow-surface:
+  0 0 0 1px rgba(24, 23, 21, 0.05),
+  0 1px 3px rgba(24, 23, 21, 0.08),
+  0 4px 12px rgba(24, 23, 21, 0.06);
+
+// Window shadow
+$shadow-window:
+  0 0 0 1px rgba(24, 23, 21, 0.08),
+  0 4px 16px rgba(24, 23, 21, 0.12),
+  0 12px 40px rgba(24, 23, 21, 0.1);
+
+// Inset shadows
+$shadow-inset-sm: inset 0 1px 2px rgba(24, 23, 21, 0.06);
+$shadow-inset: inset 0 2px 4px rgba(24, 23, 21, 0.08);
+
+// Focus ring
+$shadow-focus: 0 0 0 2px rgba(255, 107, 53, 0.4);
+$shadow-focus-error: 0 0 0 2px rgba(239, 68, 68, 0.4);
+
+// Glow effects
+$glow-accent: 0 0 20px rgba(255, 107, 53, 0.3);
+$glow-subtle: 0 0 40px rgba(255, 107, 53, 0.15);
+
+// =============================================================================
+// Z-INDEX SCALE
+// =============================================================================
+
+$z-base: 0;
+$z-raised: 10;
+$z-dropdown: 100;
+$z-sticky: 200;
+$z-sidebar: 250;
+$z-overlay: 300;
+$z-modal: 400;
+$z-popover: 500;
+$z-tooltip: 600;
+$z-notification: 700;
+$z-max: 9999;
+
+// =============================================================================
+// TRANSITIONS & ANIMATION
+// =============================================================================
+
+// Durations
+$duration-instant: 50ms;
+$duration-fast: 100ms;
+$duration-normal: 150ms;
+$duration-moderate: 200ms;
+$duration-slow: 300ms;
+$duration-slower: 400ms;
+$duration-slowest: 500ms;
+
+// Easing curves
+$ease-linear: linear;
+$ease-in: cubic-bezier(0.4, 0, 1, 1);
+$ease-out: cubic-bezier(0, 0, 0.2, 1);
+$ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+$ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+$ease-smooth: cubic-bezier(0.25, 0.1, 0.25, 1);
+
+// Common transitions
+$transition-colors: color $duration-fast $ease-out, background-color $duration-fast $ease-out, border-color $duration-fast $ease-out;
+$transition-opacity: opacity $duration-normal $ease-out;
+$transition-transform: transform $duration-normal $ease-out;
+$transition-all-fast: all $duration-fast $ease-out;
+$transition-all: all $duration-normal $ease-out;
+
+// =============================================================================
+// BACKDROP EFFECTS
+// =============================================================================
+
+$blur-sm: 4px;
+$blur-md: 8px;
+$blur-lg: 12px;
+$blur-xl: 24px;
+$blur-2xl: 40px;
+
+// Frosted glass overlays
+$glass-light: rgba(255, 255, 255, 0.7);
+$glass-light-strong: rgba(255, 255, 255, 0.85);
+$glass-dark: rgba(24, 23, 21, 0.75);
+$glass-dark-strong: rgba(24, 23, 21, 0.9);

@@ -1,0 +1,408 @@
+// ============================================================================
+// CREAMSICLE DESKTOP - THEMES
+// Cross-Platform Light & Dark Themes
+// ============================================================================
+
+@use 'variables' as *;
+
+// =============================================================================
+// LIGHT THEME - Warm Cream Base
+// =============================================================================
+
+:root,
+[data-theme='light'] {
+  // -------------------------------------------------------------------------
+  // Accent Colors
+  // -------------------------------------------------------------------------
+  --accent: #{$orange-500};
+  --accent-hover: #{$orange-600};
+  --accent-active: #{$orange-700};
+  --accent-muted: #{$orange-100};
+  --accent-subtle: rgba(255, 107, 53, 0.1);
+  --accent-glow: #{$glow-subtle};
+
+  // -------------------------------------------------------------------------
+  // Background Layers
+  // -------------------------------------------------------------------------
+  --bg-base: #{$neutral-100};
+  --bg-surface: #{$white};
+  --bg-elevated: #{$white};
+  --bg-sunken: #{$neutral-150};
+  --bg-overlay: #{$glass-light-strong};
+
+  // Specific surfaces
+  --bg-sidebar: #{$neutral-100};
+  --bg-titlebar: linear-gradient(180deg, #{$neutral-50} 0%, #{$neutral-100} 100%);
+  --bg-toolbar: #{$white};
+  --bg-content: #{$white};
+  --bg-input: #{$white};
+  --bg-card: #{$white};
+
+  // -------------------------------------------------------------------------
+  // Text Colors
+  // -------------------------------------------------------------------------
+  --text-primary: #{$neutral-900};
+  --text-secondary: #{$neutral-600};
+  --text-tertiary: #{$neutral-500};
+  --text-muted: #{$neutral-400};
+  --text-disabled: #{$neutral-300};
+  --text-inverse: #{$white};
+  --text-accent: #{$orange-600};
+
+  // -------------------------------------------------------------------------
+  // Border Colors
+  // -------------------------------------------------------------------------
+  --border-default: #{$neutral-200};
+  --border-subtle: #{$neutral-150};
+  --border-strong: #{$neutral-300};
+  --border-accent: #{$orange-500};
+  --border-input: #{$neutral-250};
+
+  // -------------------------------------------------------------------------
+  // Interactive States
+  // -------------------------------------------------------------------------
+  --hover-bg: rgba(24, 23, 21, 0.04);
+  --active-bg: rgba(24, 23, 21, 0.08);
+  --pressed-bg: rgba(24, 23, 21, 0.12);
+
+  // Selection (accent-based)
+  --selected-bg: #{$orange-500};
+  --selected-text: #{$white};
+  --selected-bg-muted: #{$orange-100};
+  --selected-text-muted: #{$orange-700};
+
+  // Focus
+  --focus-ring: #{$shadow-focus};
+  --focus-ring-error: #{$shadow-focus-error};
+
+  // -------------------------------------------------------------------------
+  // Scrollbar
+  // -------------------------------------------------------------------------
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: #{$neutral-300};
+  --scrollbar-thumb-hover: #{$neutral-400};
+
+  // -------------------------------------------------------------------------
+  // Semantic Colors
+  // -------------------------------------------------------------------------
+  --success: #{$success-500};
+  --success-text: #{$success-600};
+  --success-bg: rgba(34, 197, 94, 0.1);
+
+  --warning: #{$warning-500};
+  --warning-text: #{$warning-600};
+  --warning-bg: rgba(245, 158, 11, 0.1);
+
+  --error: #{$error-500};
+  --error-text: #{$error-600};
+  --error-bg: rgba(239, 68, 68, 0.1);
+
+  --info: #{$info-500};
+  --info-text: #{$info-600};
+  --info-bg: rgba(59, 130, 246, 0.1);
+
+  // -------------------------------------------------------------------------
+  // Shadows
+  // -------------------------------------------------------------------------
+  --shadow-xs: #{$shadow-xs};
+  --shadow-sm: #{$shadow-sm};
+  --shadow-md: #{$shadow-md};
+  --shadow-lg: #{$shadow-lg};
+  --shadow-xl: #{$shadow-xl};
+  --shadow-surface: #{$shadow-surface};
+  --shadow-inset: #{$shadow-inset-sm};
+
+  // -------------------------------------------------------------------------
+  // Dividers
+  // -------------------------------------------------------------------------
+  --divider: #{$neutral-200};
+  --divider-strong: #{$neutral-300};
+}
+
+// =============================================================================
+// DARK THEME - Warm Charcoal Base
+// =============================================================================
+
+[data-theme='dark'] {
+  // -------------------------------------------------------------------------
+  // Accent Colors
+  // -------------------------------------------------------------------------
+  --accent: #{$orange-500};
+  --accent-hover: #{$orange-400};
+  --accent-active: #{$orange-300};
+  --accent-muted: rgba(255, 107, 53, 0.15);
+  --accent-subtle: rgba(255, 107, 53, 0.08);
+  --accent-glow: #{$glow-accent};
+
+  // -------------------------------------------------------------------------
+  // Background Layers
+  // -------------------------------------------------------------------------
+  --bg-base: #{$neutral-950};
+  --bg-surface: #{$neutral-900};
+  --bg-elevated: #{$neutral-850};
+  --bg-sunken: #{$neutral-950};
+  --bg-overlay: #{$glass-dark-strong};
+
+  // Specific surfaces
+  --bg-sidebar: #{$neutral-900};
+  --bg-titlebar: linear-gradient(180deg, #{$neutral-850} 0%, #{$neutral-900} 100%);
+  --bg-toolbar: #{$neutral-850};
+  --bg-content: #{$neutral-900};
+  --bg-input: #{$neutral-800};
+  --bg-card: #{$neutral-850};
+
+  // -------------------------------------------------------------------------
+  // Text Colors
+  // -------------------------------------------------------------------------
+  --text-primary: #{$neutral-50};
+  --text-secondary: #{$neutral-400};
+  --text-tertiary: #{$neutral-500};
+  --text-muted: #{$neutral-600};
+  --text-disabled: #{$neutral-700};
+  --text-inverse: #{$neutral-900};
+  --text-accent: #{$orange-400};
+
+  // -------------------------------------------------------------------------
+  // Border Colors
+  // -------------------------------------------------------------------------
+  --border-default: #{$neutral-700};
+  --border-subtle: #{$neutral-800};
+  --border-strong: #{$neutral-600};
+  --border-accent: #{$orange-500};
+  --border-input: #{$neutral-700};
+
+  // -------------------------------------------------------------------------
+  // Interactive States
+  // -------------------------------------------------------------------------
+  --hover-bg: rgba(255, 255, 255, 0.05);
+  --active-bg: rgba(255, 255, 255, 0.08);
+  --pressed-bg: rgba(255, 255, 255, 0.12);
+
+  // Selection (accent-based)
+  --selected-bg: #{$orange-500};
+  --selected-text: #{$white};
+  --selected-bg-muted: rgba(255, 107, 53, 0.2);
+  --selected-text-muted: #{$orange-400};
+
+  // Focus
+  --focus-ring: #{$shadow-focus};
+  --focus-ring-error: #{$shadow-focus-error};
+
+  // -------------------------------------------------------------------------
+  // Scrollbar
+  // -------------------------------------------------------------------------
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: #{$neutral-700};
+  --scrollbar-thumb-hover: #{$neutral-600};
+
+  // -------------------------------------------------------------------------
+  // Semantic Colors
+  // -------------------------------------------------------------------------
+  --success: #4ade80;
+  --success-text: #4ade80;
+  --success-bg: rgba(74, 222, 128, 0.12);
+
+  --warning: #fbbf24;
+  --warning-text: #fbbf24;
+  --warning-bg: rgba(251, 191, 36, 0.12);
+
+  --error: #f87171;
+  --error-text: #f87171;
+  --error-bg: rgba(248, 113, 113, 0.12);
+
+  --info: #60a5fa;
+  --info-text: #60a5fa;
+  --info-bg: rgba(96, 165, 250, 0.12);
+
+  // -------------------------------------------------------------------------
+  // Shadows (more subtle in dark mode)
+  // -------------------------------------------------------------------------
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.35), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 10px 10px -5px rgba(0, 0, 0, 0.2);
+  --shadow-surface: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+
+  // -------------------------------------------------------------------------
+  // Dividers
+  // -------------------------------------------------------------------------
+  --divider: #{$neutral-800};
+  --divider-strong: #{$neutral-700};
+}
+
+// =============================================================================
+// UI SIZE SYSTEM
+// =============================================================================
+
+// Default (large) - the standard size
+:root {
+  --ui-font-xs: 13px;
+  --ui-font-sm: 14px;
+  --ui-font-base: 16px;
+  --ui-font-lg: 18px;
+  --ui-font-xl: 20px;
+  --ui-spacing-xs: 4px;
+  --ui-spacing-sm: 8px;
+  --ui-spacing-md: 12px;
+  --ui-spacing-lg: 16px;
+  --ui-spacing-xl: 24px;
+  --ui-btn-height: 56px;
+  --ui-btn-height-sm: 44px;
+  --ui-btn-height-xs: 36px;
+  --ui-icon-size: 28px;
+  --ui-icon-size-sm: 22px;
+  --ui-thumb-width: 80px;
+  --ui-thumb-height: 100px;
+  --ui-panel-header: 56px;
+  --ui-tab-height: 44px;
+  --ui-row-height: 44px;
+}
+
+// Small UI size
+[data-ui-size="small"] {
+  --ui-font-xs: 10px;
+  --ui-font-sm: 11px;
+  --ui-font-base: 12px;
+  --ui-font-lg: 13px;
+  --ui-font-xl: 14px;
+  --ui-spacing-xs: 2px;
+  --ui-spacing-sm: 4px;
+  --ui-spacing-md: 8px;
+  --ui-spacing-lg: 12px;
+  --ui-spacing-xl: 16px;
+  --ui-btn-height: 36px;
+  --ui-btn-height-sm: 28px;
+  --ui-btn-height-xs: 24px;
+  --ui-icon-size: 18px;
+  --ui-icon-size-sm: 14px;
+  --ui-thumb-width: 50px;
+  --ui-thumb-height: 65px;
+  --ui-panel-header: 40px;
+  --ui-tab-height: 32px;
+  --ui-row-height: 32px;
+}
+
+// Medium UI size
+[data-ui-size="medium"] {
+  --ui-font-xs: 11px;
+  --ui-font-sm: 12px;
+  --ui-font-base: 14px;
+  --ui-font-lg: 15px;
+  --ui-font-xl: 16px;
+  --ui-spacing-xs: 3px;
+  --ui-spacing-sm: 6px;
+  --ui-spacing-md: 10px;
+  --ui-spacing-lg: 14px;
+  --ui-spacing-xl: 20px;
+  --ui-btn-height: 44px;
+  --ui-btn-height-sm: 36px;
+  --ui-btn-height-xs: 28px;
+  --ui-icon-size: 22px;
+  --ui-icon-size-sm: 18px;
+  --ui-thumb-width: 60px;
+  --ui-thumb-height: 80px;
+  --ui-panel-header: 48px;
+  --ui-tab-height: 36px;
+  --ui-row-height: 36px;
+}
+
+// =============================================================================
+// BASE STYLES
+// =============================================================================
+
+html {
+  font-family: $font-body;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'kern' 1, 'liga' 1;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: $font-body;
+  font-size: $font-size-base;
+  line-height: $line-height-normal;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  overflow: hidden;
+}
+
+// =============================================================================
+// TYPOGRAPHY UTILITIES
+// =============================================================================
+
+.font-display {
+  font-family: $font-display;
+}
+
+.font-body {
+  font-family: $font-body;
+}
+
+.font-mono {
+  font-family: $font-mono;
+}
+
+// =============================================================================
+// SELECTION
+// =============================================================================
+
+::selection {
+  background: var(--accent-muted);
+  color: var(--text-primary);
+}
+
+::-moz-selection {
+  background: var(--accent-muted);
+  color: var(--text-primary);
+}
+
+// =============================================================================
+// FOCUS STYLES
+// =============================================================================
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
+
+// =============================================================================
+// SCROLLBAR STYLES
+// =============================================================================
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+
+  &:hover {
+    background: var(--scrollbar-thumb-hover);
+    background-clip: padding-box;
+  }
+}
+
+// Firefox scrollbar
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
