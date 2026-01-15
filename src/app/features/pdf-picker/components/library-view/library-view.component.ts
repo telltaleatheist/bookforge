@@ -26,11 +26,15 @@ export interface ProjectFile {
     <div class="library-container"
          tabindex="0"
          [class.drag-active]="isDragActive()"
+         [class.marquee-selecting]="marqueeActive()"
          (dragenter)="onDragEnter($event)"
          (dragover)="onDragOver($event)"
          (dragleave)="onDragLeave($event)"
          (drop)="onDrop($event)"
-         (click)="onContainerClick($event)">
+         (mousedown)="onMarqueeStart($event)"
+         (mousemove)="onMarqueeMove($event)"
+         (mouseup)="onMarqueeEnd($event)"
+         (mouseleave)="onMarqueeEnd($event)">
       <div class="library-header">
         <h1>Projects</h1>
         <div class="header-actions">
@@ -108,19 +112,32 @@ export interface ProjectFile {
         }
       </div>
 
+      <!-- Marquee selection box -->
+      @if (marqueeActive()) {
+        <div
+          class="marquee-box"
+          [style.left.px]="marqueeRect().left"
+          [style.top.px]="marqueeRect().top"
+          [style.width.px]="marqueeRect().width"
+          [style.height.px]="marqueeRect().height"
+        ></div>
+      }
+
       <!-- Context menu -->
       @if (contextMenuVisible()) {
         <div
           class="context-menu"
           [style.left.px]="contextMenuX()"
           [style.top.px]="contextMenuY()"
+          (click)="$event.stopPropagation()"
+          (mousedown)="$event.stopPropagation()"
         >
-          <button class="context-menu-item" (click)="openSelectedProjects()">
+          <button class="context-menu-item" (click)="onContextMenuOpen()">
             <span class="context-icon">📂</span>
             Open
           </button>
           <div class="context-divider"></div>
-          <button class="context-menu-item danger" (click)="deleteSelectedProjects()">
+          <button class="context-menu-item danger" (click)="onContextMenuDelete()">
             <span class="context-icon">🗑️</span>
             Delete
           </button>
@@ -163,6 +180,12 @@ export interface ProjectFile {
       &:focus {
         outline: none;
       }
+    }
+
+    // Prevent text selection during marquee drag
+    .marquee-selecting {
+      user-select: none;
+      cursor: crosshair;
     }
 
     .library-header {
@@ -463,6 +486,15 @@ export interface ProjectFile {
       margin: var(--ui-spacing-xs) 0;
     }
 
+    // Marquee selection box
+    .marquee-box {
+      position: absolute;
+      background: var(--selected-bg-muted);
+      border: 2px solid var(--accent);
+      pointer-events: none;
+      z-index: 50;
+    }
+
     .drag-overlay {
       position: absolute;
       inset: 0;
@@ -541,11 +573,28 @@ export class LibraryViewComponent implements OnInit {
   readonly contextMenuX = signal(0);
   readonly contextMenuY = signal(0);
 
+  // Marquee selection state
+  readonly marqueeActive = signal(false);
+  readonly marqueeStart = signal({ x: 0, y: 0 });
+  readonly marqueeEnd = signal({ x: 0, y: 0 });
+
   // Selection tracking
   private lastSelectedIndex = -1;
 
   readonly selectedProjects = computed(() => this.projects().filter(p => p.selected));
   readonly selectedCount = computed(() => this.selectedProjects().length);
+
+  // Computed marquee rectangle (handles negative dimensions from drag direction)
+  readonly marqueeRect = computed(() => {
+    const start = this.marqueeStart();
+    const end = this.marqueeEnd();
+    return {
+      left: Math.min(start.x, end.x),
+      top: Math.min(start.y, end.y),
+      width: Math.abs(end.x - start.x),
+      height: Math.abs(end.y - start.y)
+    };
+  });
 
   private readonly SIZE_KEY = 'bookforge-card-size';
   private lastRenderedScale = 0.5;
@@ -594,21 +643,97 @@ export class LibraryViewComponent implements OnInit {
   }
 
   // Close context menu when clicking outside
-  @HostListener('document:click', ['$event'])
-  onDocumentClick(event: MouseEvent): void {
-    if (this.contextMenuVisible()) {
-      this.contextMenuVisible.set(false);
+  @HostListener('document:mousedown', ['$event'])
+  onDocumentMouseDown(event: MouseEvent): void {
+    if (!this.contextMenuVisible()) return;
+
+    // Check if click is inside context menu
+    const contextMenu = this.elementRef.nativeElement.querySelector('.context-menu');
+    if (contextMenu && contextMenu.contains(event.target as Node)) {
+      return; // Don't close if clicking inside menu
     }
+
+    this.contextMenuVisible.set(false);
   }
 
-  onContainerClick(event: MouseEvent): void {
-    // If clicking on empty space (not a card), clear selection
+  // Marquee selection handlers
+  onMarqueeStart(event: MouseEvent): void {
+    // Only start marquee on left click and on empty space
+    if (event.button !== 0) return;
+
     const target = event.target as HTMLElement;
-    if (target.classList.contains('library-content') ||
-        target.classList.contains('file-grid') ||
-        target.classList.contains('library-container')) {
+    const isEmptySpace = target.classList.contains('library-content') ||
+                         target.classList.contains('file-grid') ||
+                         target.classList.contains('library-container');
+
+    if (!isEmptySpace) return;
+
+    // Get position relative to the container
+    const container = this.elementRef.nativeElement.querySelector('.library-container');
+    const rect = container.getBoundingClientRect();
+    const x = event.clientX - rect.left + container.scrollLeft;
+    const y = event.clientY - rect.top + container.scrollTop;
+
+    this.marqueeStart.set({ x, y });
+    this.marqueeEnd.set({ x, y });
+    this.marqueeActive.set(true);
+
+    // Clear selection unless holding shift/cmd
+    if (!event.shiftKey && !event.metaKey && !event.ctrlKey) {
       this.clearSelection();
     }
+
+    event.preventDefault();
+  }
+
+  onMarqueeMove(event: MouseEvent): void {
+    if (!this.marqueeActive()) return;
+
+    const container = this.elementRef.nativeElement.querySelector('.library-container');
+    const rect = container.getBoundingClientRect();
+    const x = event.clientX - rect.left + container.scrollLeft;
+    const y = event.clientY - rect.top + container.scrollTop;
+
+    this.marqueeEnd.set({ x, y });
+
+    // Select cards that intersect with marquee
+    this.selectCardsInMarquee();
+  }
+
+  onMarqueeEnd(event: MouseEvent): void {
+    if (!this.marqueeActive()) return;
+    this.marqueeActive.set(false);
+  }
+
+  private selectCardsInMarquee(): void {
+    const marquee = this.marqueeRect();
+    const container = this.elementRef.nativeElement.querySelector('.library-container');
+    const containerRect = container.getBoundingClientRect();
+    const cards = container.querySelectorAll('.file-card');
+
+    const projectList = this.projects();
+    const newSelection = projectList.map((project, index) => {
+      const card = cards[index] as HTMLElement;
+      if (!card) return project;
+
+      const cardRect = card.getBoundingClientRect();
+      // Convert card rect to container-relative coordinates
+      const cardLeft = cardRect.left - containerRect.left + container.scrollLeft;
+      const cardTop = cardRect.top - containerRect.top + container.scrollTop;
+      const cardRight = cardLeft + cardRect.width;
+      const cardBottom = cardTop + cardRect.height;
+
+      // Check if card intersects with marquee
+      const intersects =
+        cardLeft < marquee.left + marquee.width &&
+        cardRight > marquee.left &&
+        cardTop < marquee.top + marquee.height &&
+        cardBottom > marquee.top;
+
+      return { ...project, selected: intersects };
+    });
+
+    this.projects.set(newSelection);
   }
 
   onProjectClick(event: MouseEvent, project: ProjectFile, index: number): void {
@@ -666,8 +791,18 @@ export class LibraryViewComponent implements OnInit {
     this.contextMenuVisible.set(true);
   }
 
-  openSelectedProjects(): void {
+  onContextMenuOpen(): void {
     this.contextMenuVisible.set(false);
+    // Use setTimeout to ensure menu closes before navigation
+    setTimeout(() => this.openSelectedProjects(), 0);
+  }
+
+  onContextMenuDelete(): void {
+    this.contextMenuVisible.set(false);
+    setTimeout(() => this.deleteSelectedProjects(), 0);
+  }
+
+  openSelectedProjects(): void {
     const selected = this.selectedProjects();
     if (selected.length === 0) return;
 

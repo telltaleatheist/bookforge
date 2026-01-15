@@ -255,6 +255,7 @@ interface AlertModal {
         (openFile)="showFilePicker.set(true)"
         (fileSelected)="loadPdf($event)"
         (projectSelected)="loadProjectFromPath($event)"
+        (projectsSelected)="onLibraryProjectsSelected($event)"
       />
     }
 
@@ -279,6 +280,7 @@ interface AlertModal {
           (openFile)="onLibraryOpenFile()"
           (fileSelected)="onLibraryFileSelected($event)"
           (projectSelected)="onLibraryProjectSelected($event)"
+          (projectsSelected)="onLibraryProjectsSelected($event)"
         />
       </div>
     }
@@ -1418,78 +1420,104 @@ export class PdfPickerComponent {
   });
 
   // Toolbar items (computed based on state)
-  readonly toolbarItems = computed<ToolbarItem[]>(() => [
-    {
-      id: 'library',
-      type: 'button',
-      icon: this.showLibraryView() ? '←' : '📚',
-      label: this.showLibraryView() ? 'Back' : 'Library',
-      tooltip: this.showLibraryView() ? 'Back to project' : 'Back to library (Ctrl+O)',
-      disabled: !this.pdfLoaded() && !this.showLibraryView()
-    },
-    { id: 'open', type: 'button', icon: '📂', label: 'Open File', tooltip: 'Open PDF file' },
-    {
-      id: 'export',
-      type: 'dropdown',
-      icon: '📤',
-      label: 'Export',
-      tooltip: 'Export cleaned text',
-      disabled: !this.pdfLoaded(),
-      items: [
-        { id: 'export-txt', label: 'Export as TXT' },
-        { id: 'export-epub', label: 'Export as EPUB' },
-        { id: 'export-pdf', label: 'Export as PDF (keep images)' }
-      ]
-    },
-    { id: 'divider1', type: 'divider' },
-    { id: 'undo', type: 'button', icon: '↩', tooltip: 'Undo (Ctrl+Z)', disabled: !this.canUndo() },
-    { id: 'redo', type: 'button', icon: '↪', tooltip: 'Redo (Ctrl+Shift+Z)', disabled: !this.canRedo() },
-    { id: 'divider1b', type: 'divider' },
-    {
-      id: 'find-refs',
-      type: 'button',
-      icon: '🔢',
-      label: 'Find Refs',
-      tooltip: 'Find and select footnote references in body text',
-      disabled: !this.pdfLoaded()
-    },
-    {
-      id: 'ocr',
-      type: 'button',
-      icon: '🔤',
-      label: 'OCR',
-      tooltip: 'OCR settings and text recognition',
-      disabled: !this.pdfLoaded()
-    },
-    { id: 'spacer', type: 'spacer' },
-    { id: 'divider2', type: 'divider' },
-    {
-      id: 'layout',
-      type: 'toggle',
-      icon: this.layout() === 'grid' ? '☰' : '⊞',
-      label: this.layout() === 'grid' ? 'List' : 'Grid',
-      tooltip: 'Toggle layout',
-      active: this.layout() === 'grid',
-      disabled: !this.pdfLoaded()
-    },
-    { id: 'zoom-out', type: 'button', icon: '−', tooltip: 'Zoom out', disabled: !this.pdfLoaded() },
-    { id: 'zoom-level', type: 'button', label: `${this.zoom()}%`, disabled: true },
-    { id: 'zoom-in', type: 'button', icon: '+', tooltip: 'Zoom in', disabled: !this.pdfLoaded() },
-    { id: 'zoom-reset', type: 'button', label: 'Reset', tooltip: 'Reset zoom', disabled: !this.pdfLoaded() },
-    { id: 'divider3', type: 'divider' },
-    {
-      id: 'ui-size',
-      type: 'dropdown',
-      icon: '⚙',
-      label: this.getUiSizeLabel(),
-      tooltip: 'UI Size',
-      items: [
-        { id: 'ui-small', label: 'Small' },
-        { id: 'ui-medium', label: 'Medium' },
-        { id: 'ui-large', label: 'Large' }
-      ]
+  readonly toolbarItems = computed<ToolbarItem[]>(() => {
+    const pdfIsOpen = this.pdfLoaded();
+
+    // Base items always shown
+    const baseItems: ToolbarItem[] = [
+      {
+        id: 'library',
+        type: 'button',
+        icon: this.showLibraryView() ? '←' : '📚',
+        label: this.showLibraryView() ? 'Back' : 'Library',
+        tooltip: this.showLibraryView() ? 'Back to project' : 'Back to library (Ctrl+O)',
+        disabled: !pdfIsOpen && !this.showLibraryView()
+      },
+      { id: 'open', type: 'button', icon: '📂', label: 'Open File', tooltip: 'Open PDF file' },
+    ];
+
+    // Items only shown when PDF is open
+    if (pdfIsOpen) {
+      return [
+        ...baseItems,
+        {
+          id: 'export',
+          type: 'dropdown',
+          icon: '📤',
+          label: 'Export',
+          tooltip: 'Export cleaned text',
+          items: [
+            { id: 'export-txt', label: 'Export as TXT' },
+            { id: 'export-epub', label: 'Export as EPUB' },
+            { id: 'export-pdf', label: 'Export as PDF (keep images)' }
+          ]
+        },
+        { id: 'divider1', type: 'divider' },
+        { id: 'undo', type: 'button', icon: '↩', tooltip: 'Undo (Ctrl+Z)', disabled: !this.canUndo() },
+        { id: 'redo', type: 'button', icon: '↪', tooltip: 'Redo (Ctrl+Shift+Z)', disabled: !this.canRedo() },
+        { id: 'divider1b', type: 'divider' },
+        {
+          id: 'find-refs',
+          type: 'button',
+          icon: '🔢',
+          label: 'Find Refs',
+          tooltip: 'Find and select footnote references in body text'
+        },
+        {
+          id: 'ocr',
+          type: 'button',
+          icon: '🔤',
+          label: 'OCR',
+          tooltip: 'OCR settings and text recognition'
+        },
+        { id: 'spacer', type: 'spacer' },
+        { id: 'divider2', type: 'divider' },
+        {
+          id: 'layout',
+          type: 'toggle',
+          icon: this.layout() === 'grid' ? '☰' : '⊞',
+          label: this.layout() === 'grid' ? 'List' : 'Grid',
+          tooltip: 'Toggle layout',
+          active: this.layout() === 'grid'
+        },
+        { id: 'zoom-out', type: 'button', icon: '−', tooltip: 'Zoom out' },
+        { id: 'zoom-level', type: 'button', label: `${this.zoom()}%`, disabled: true },
+        { id: 'zoom-in', type: 'button', icon: '+', tooltip: 'Zoom in' },
+        { id: 'zoom-reset', type: 'button', label: 'Reset', tooltip: 'Reset zoom' },
+        { id: 'divider3', type: 'divider' },
+        {
+          id: 'ui-size',
+          type: 'dropdown',
+          icon: '⚙',
+          label: this.getUiSizeLabel(),
+          tooltip: 'UI Size',
+          items: [
+            { id: 'ui-small', label: 'Small' },
+            { id: 'ui-medium', label: 'Medium' },
+            { id: 'ui-large', label: 'Large' }
+          ]
+        }
+      ];
     }
-  ]);
+
+    // When no PDF is open, show minimal toolbar
+    return [
+      ...baseItems,
+      { id: 'spacer', type: 'spacer' },
+      {
+        id: 'ui-size',
+        type: 'dropdown',
+        icon: '⚙',
+        label: this.getUiSizeLabel(),
+        tooltip: 'UI Size',
+        items: [
+          { id: 'ui-small', label: 'Small' },
+          { id: 'ui-medium', label: 'Medium' },
+          { id: 'ui-large', label: 'Large' }
+        ]
+      }
+    ];
+  });
 
   private getUiSizeLabel(): string {
     const size = this.themeService.uiSize();
@@ -1781,6 +1809,17 @@ export class PdfPickerComponent {
   onLibraryProjectSelected(path: string): void {
     this.showLibraryView.set(false);
     this.loadProjectFromPath(path);
+  }
+
+  async onLibraryProjectsSelected(paths: string[]): Promise<void> {
+    if (paths.length === 0) return;
+
+    this.showLibraryView.set(false);
+
+    // Open each project in a new tab
+    for (const path of paths) {
+      await this.loadProjectFromPath(path);
+    }
   }
 
   private closePdf(): void {
