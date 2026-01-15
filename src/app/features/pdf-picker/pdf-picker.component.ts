@@ -26,6 +26,7 @@ interface OpenDocument {
   totalPages: number;
   deletedBlockIds: Set<string>;
   selectedBlockIds: string[];
+  pageOrder: number[]; // Custom page order for organize mode
   pageImages: Map<number, string>;
   hasUnsavedChanges: boolean;
   projectPath: string | null;
@@ -43,6 +44,7 @@ interface BookForgeProject {
   source_path: string;
   source_name: string;
   deleted_block_ids: string[];
+  page_order?: number[]; // Custom page order for organize mode
   created_at: string;
   modified_at: string;
 }
@@ -101,38 +103,6 @@ interface AlertModal {
       (newTab)="showFilePicker.set(true)"
     />
 
-    <!-- Page Timeline (shows all pages, highlights ones with selections) -->
-    @if (pdfLoaded()) {
-      <div class="page-timeline">
-        <div class="timeline-header">
-          <span class="timeline-label">
-            {{ totalPages() }} pages
-            @if (selectedBlockIds().length > 0) {
-              · {{ selectedBlockIds().length }} selected on {{ pagesWithSelections().size }} pages
-            }
-          </span>
-        </div>
-        <div class="timeline-scroll">
-          @for (pageNum of pageNumbers(); track pageNum) {
-            <button
-              class="timeline-thumb"
-              [class.has-selection]="pagesWithSelections().has(pageNum)"
-              [title]="'Page ' + (pageNum + 1) + (pagesWithSelections().get(pageNum) ? ' (' + pagesWithSelections().get(pageNum) + ' selected)' : '')"
-              (click)="scrollToPage(pageNum)"
-            >
-              @if (getPageImageUrl(pageNum) && getPageImageUrl(pageNum) !== 'loading') {
-                <img [src]="getPageImageUrl(pageNum)" alt="Page {{ pageNum + 1 }}" />
-              }
-              <span class="thumb-label">{{ pageNum + 1 }}</span>
-              @if (pagesWithSelections().get(pageNum)) {
-                <span class="thumb-count">{{ pagesWithSelections().get(pageNum) }}</span>
-              }
-            </button>
-          }
-        </div>
-      </div>
-    }
-
     <!-- Main Layout -->
     @if (pdfLoaded()) {
       <desktop-split-pane
@@ -159,34 +129,69 @@ interface AlertModal {
             }
           </div>
 
-          <!-- Viewer -->
-          <div class="viewer-pane">
-            <app-pdf-viewer
-            [blocks]="blocks()"
-            [categories]="categories()"
-            [pageDimensions]="pageDimensions()"
-            [totalPages]="totalPages()"
-            [zoom]="zoom()"
-            [layout]="layout()"
-            [selectedBlockIds]="selectedBlockIds()"
-            [deletedBlockIds]="deletedBlockIds()"
-            [pdfLoaded]="pdfLoaded()"
-            [cropMode]="cropMode()"
-            [cropCurrentPage]="cropCurrentPage()"
-            [editorMode]="currentMode()"
-            (blockClick)="onBlockClick($event)"
-            (blockDoubleClick)="onBlockDoubleClick($event)"
-            (blockHover)="onBlockHover($event)"
-            (selectLikeThis)="selectLikeThis($event)"
-            (deleteLikeThis)="deleteLikeThis($event)"
-            (deleteBlock)="deleteBlock($event)"
-            (zoomChange)="onZoomChange($event)"
-            (selectAllOnPage)="selectAllOnPage($event)"
-            (deselectAllOnPage)="deselectAllOnPage($event)"
-            (cropComplete)="onCropComplete($event)"
-            (marqueeSelect)="onMarqueeSelect($event)"
-            [getPageImageUrl]="getPageImageUrl.bind(this)"
-          />
+          <!-- Viewer + Timeline wrapper (stacked vertically) -->
+          <div class="viewer-timeline-wrapper">
+            <!-- Viewer -->
+            <div class="viewer-pane">
+              <app-pdf-viewer
+              [blocks]="blocks()"
+              [categories]="categories()"
+              [pageDimensions]="pageDimensions()"
+              [totalPages]="totalPages()"
+              [zoom]="zoom()"
+              [layout]="layout()"
+              [selectedBlockIds]="selectedBlockIds()"
+              [deletedBlockIds]="deletedBlockIds()"
+              [pdfLoaded]="pdfLoaded()"
+              [cropMode]="cropMode()"
+              [cropCurrentPage]="cropCurrentPage()"
+              [editorMode]="currentMode()"
+              [pageOrder]="pageOrder()"
+              (blockClick)="onBlockClick($event)"
+              (blockDoubleClick)="onBlockDoubleClick($event)"
+              (blockHover)="onBlockHover($event)"
+              (selectLikeThis)="selectLikeThis($event)"
+              (deleteLikeThis)="deleteLikeThis($event)"
+              (deleteBlock)="deleteBlock($event)"
+              (zoomChange)="onZoomChange($event)"
+              (selectAllOnPage)="selectAllOnPage($event)"
+              (deselectAllOnPage)="deselectAllOnPage($event)"
+              (cropComplete)="onCropComplete($event)"
+              (marqueeSelect)="onMarqueeSelect($event)"
+              (pageReorder)="onPageReorder($event)"
+              [getPageImageUrl]="getPageImageUrl.bind(this)"
+            />
+            </div>
+
+            <!-- Page Timeline (bottom of viewer) -->
+            <div class="page-timeline">
+              <div class="timeline-header">
+                <span class="timeline-label">
+                  {{ totalPages() }} pages
+                  @if (selectedBlockIds().length > 0) {
+                    · {{ selectedBlockIds().length }} selected on {{ pagesWithSelections().size }} pages
+                  }
+                </span>
+              </div>
+              <div class="timeline-scroll">
+                @for (pageNum of pageNumbers(); track pageNum) {
+                  <button
+                    class="timeline-thumb"
+                    [class.has-selection]="pagesWithSelections().has(pageNum)"
+                    [title]="'Page ' + (pageNum + 1) + (pagesWithSelections().get(pageNum) ? ' (' + pagesWithSelections().get(pageNum) + ' selected)' : '')"
+                    (click)="scrollToPage(pageNum)"
+                  >
+                    @if (getPageImageUrl(pageNum) && getPageImageUrl(pageNum) !== 'loading') {
+                      <img [src]="getPageImageUrl(pageNum)" alt="Page {{ pageNum + 1 }}" />
+                    }
+                    <span class="thumb-label">{{ pageNum + 1 }}</span>
+                    @if (pagesWithSelections().get(pageNum)) {
+                      <span class="thumb-count">{{ pagesWithSelections().get(pageNum) }}</span>
+                    }
+                  </button>
+                }
+              </div>
+            </div>
           </div>
         </div>
 
@@ -499,7 +504,7 @@ interface AlertModal {
       display: flex;
       flex-direction: column;
       background: var(--bg-elevated);
-      border-bottom: 1px solid var(--border-subtle);
+      border-top: 1px solid var(--border-subtle);
       flex-shrink: 0;
       min-height: var(--ui-thumb-height);
       max-height: calc(var(--ui-thumb-height) + 40px);
@@ -599,6 +604,14 @@ interface AlertModal {
       height: 100%;
       min-height: 0;
       overflow: hidden;
+    }
+
+    .viewer-timeline-wrapper {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
     }
 
     .mode-bar {
@@ -1134,6 +1147,7 @@ export class PdfPickerComponent {
 
   readonly deletedBlockIds = signal<Set<string>>(new Set());
   readonly selectedBlockIds = signal<string[]>([]);
+  readonly pageOrder = signal<number[]>([]); // Custom page order for organize mode
 
   // Project state
   readonly projectPath = signal<string | null>(null);
@@ -1420,8 +1434,12 @@ export class PdfPickerComponent {
       .reduce((sum, b) => sum + b.char_count, 0);
   });
 
-  // Array of all page numbers (for timeline)
+  // Array of all page numbers (for timeline and viewer)
   readonly pageNumbers = computed(() => {
+    const order = this.pageOrder();
+    if (order && order.length > 0) {
+      return order;
+    }
     return Array.from({ length: this.totalPages() }, (_, i) => i);
   });
 
@@ -1535,19 +1553,34 @@ export class PdfPickerComponent {
 
   getPageImageUrl(pageNum: number): string {
     const cached = this.pageImages().get(pageNum);
-    if (cached) {
+    if (cached && cached !== 'loading' && cached !== 'failed') {
       return cached;
     }
-    // Return empty string if not loaded yet - will trigger load
-    this.loadPageImage(pageNum);
-    return '';
+    // Queue this page for loading
+    this.queuePageLoad(pageNum);
+    // Return 'loading' so template can show placeholder
+    return cached === 'loading' ? 'loading' : '';
   }
 
-  private async loadPageImage(pageNum: number): Promise<void> {
-    // Check if already loading or loaded
-    if (this.pageImages().has(pageNum)) return;
+  // Page loading with throttled queue
+  private pageLoadQueue: number[] = [];
+  private isProcessingQueue = false;
+  private readonly MAX_CONCURRENT_RENDERS = 2; // Max simultaneous renders
+  private activeRenders = 0;
 
-    // Mark as loading with placeholder
+  // Use lower scale for large PDFs to save memory
+  private getRenderScale(pageCount: number): number {
+    if (pageCount > 1000) return 0.5;
+    if (pageCount > 500) return 0.75;
+    return 1.0;
+  }
+
+  private async loadPageImage(pageNum: number, scale: number): Promise<void> {
+    // Check if already loaded
+    const current = this.pageImages().get(pageNum);
+    if (current && current !== 'failed' && current !== 'loading') return;
+
+    // Mark as loading
     this.pageImages.update(map => {
       const newMap = new Map(map);
       newMap.set(pageNum, 'loading');
@@ -1556,29 +1589,73 @@ export class PdfPickerComponent {
 
     try {
       const pdfPath = this.pdfPath();
-      const dataUrl = await this.pdfService.renderPage(pageNum, 2.0, pdfPath);
+      if (!pdfPath) return;
+
+      const dataUrl = await this.pdfService.renderPage(pageNum, scale, pdfPath);
       if (dataUrl) {
         this.pageImages.update(map => {
           const newMap = new Map(map);
           newMap.set(pageNum, dataUrl);
           return newMap;
         });
+      } else {
+        // Mark as failed for retry
+        this.pageImages.update(map => {
+          const newMap = new Map(map);
+          newMap.set(pageNum, 'failed');
+          return newMap;
+        });
       }
-    } catch (err) {
-      console.error(`Failed to load page ${pageNum}:`, err);
+    } catch {
+      this.pageImages.update(map => {
+        const newMap = new Map(map);
+        newMap.set(pageNum, 'failed');
+        return newMap;
+      });
+    }
+  }
+
+  private queuePageLoad(pageNum: number): void {
+    const current = this.pageImages().get(pageNum);
+    if (current && current !== 'failed') return;
+
+    if (!this.pageLoadQueue.includes(pageNum)) {
+      this.pageLoadQueue.push(pageNum);
+    }
+    this.processQueue();
+  }
+
+  private async processQueue(): Promise<void> {
+    // Process queue with concurrency limit
+    while (this.pageLoadQueue.length > 0 && this.activeRenders < this.MAX_CONCURRENT_RENDERS) {
+      const pageNum = this.pageLoadQueue.shift()!;
+      this.activeRenders++;
+
+      const scale = this.getRenderScale(this.totalPages());
+      this.loadPageImage(pageNum, scale).finally(() => {
+        this.activeRenders--;
+        // Continue processing queue
+        this.processQueue();
+      });
     }
   }
 
   private async loadAllPageImages(pageCount: number): Promise<void> {
-    // Load first few pages immediately
-    const priorities = Math.min(pageCount, 5);
-    for (let i = 0; i < priorities; i++) {
-      await this.loadPageImage(i);
+    const scale = this.getRenderScale(pageCount);
+
+    // Load first 5 pages immediately (sequentially for fast display)
+    const priorityPages = Math.min(pageCount, 5);
+    for (let i = 0; i < priorityPages; i++) {
+      await this.loadPageImage(i, scale);
     }
-    // Load remaining pages in background
-    for (let i = priorities; i < pageCount; i++) {
-      this.loadPageImage(i); // Don't await - load in parallel
+
+    // Queue all remaining pages
+    for (let i = priorityPages; i < pageCount; i++) {
+      this.pageLoadQueue.push(i);
     }
+
+    // Start processing queue with concurrency
+    this.processQueue();
   }
 
   async openPdfWithNativeDialog(): Promise<void> {
@@ -1664,6 +1741,7 @@ export class PdfPickerComponent {
         totalPages: result.page_count,
         deletedBlockIds: new Set(),
         selectedBlockIds: [],
+        pageOrder: [],
         pageImages: new Map(),
         hasUnsavedChanges: false,
         projectPath: null,
@@ -1684,6 +1762,7 @@ export class PdfPickerComponent {
       this.pdfPath.set(path);
       this.deletedBlockIds.set(new Set());
       this.selectedBlockIds.set([]);
+      this.pageOrder.set([]);
       this.pageImages.set(new Map());
       this.hasUnsavedChanges.set(false);
       this.projectPath.set(null);
@@ -1731,10 +1810,16 @@ export class PdfPickerComponent {
   }
 
   onBlockDoubleClick(event: { block: TextBlock; metaKey: boolean; ctrlKey: boolean }): void {
-    const { block } = event;
-    // Open text editor in edit mode OR select mode
+    const { block, metaKey, ctrlKey } = event;
     const mode = this.currentMode();
-    if (mode === 'edit' || mode === 'select') {
+    const additive = metaKey || ctrlKey;
+
+    if (mode === 'select') {
+      // In select mode, double-click selects all similar items
+      // With Cmd/Ctrl held, add to existing selection
+      this.selectLikeThis(block, additive);
+    } else if (mode === 'edit') {
+      // In edit mode, double-click opens text editor
       this.openTextEditor(block);
     }
     // In crop/organize modes, double-click does nothing
@@ -1810,13 +1895,22 @@ export class PdfPickerComponent {
     // Could show tooltip here
   }
 
-  selectLikeThis(block: TextBlock): void {
+  selectLikeThis(block: TextBlock, additive: boolean = false): void {
     const categoryId = block.category_id;
     const deleted = this.deletedBlockIds();
     const matching = this.blocks()
       .filter(b => b.category_id === categoryId && !deleted.has(b.id))
       .map(b => b.id);
-    this.selectedBlockIds.set(matching);
+
+    if (additive) {
+      // Add to existing selection (deduplicated)
+      const current = new Set(this.selectedBlockIds());
+      matching.forEach(id => current.add(id));
+      this.selectedBlockIds.set([...current]);
+    } else {
+      // Replace selection
+      this.selectedBlockIds.set(matching);
+    }
   }
 
   onMarqueeSelect(event: { blockIds: string[]; additive: boolean }): void {
@@ -1841,6 +1935,11 @@ export class PdfPickerComponent {
       // Replace selection
       this.selectedBlockIds.set(blockIds);
     }
+  }
+
+  onPageReorder(newOrder: number[]): void {
+    this.pageOrder.set(newOrder);
+    this.hasUnsavedChanges.set(true);
   }
 
   deleteSelectedBlocks(): void {
@@ -2400,18 +2499,14 @@ ${content}
     this.loadingText.set('Generating PDF...');
 
     try {
-      const result = await this.electronService.pythonCall('pdf_analyzer.py', 'export_pdf', [
-        this.pdfPath(),
-        deletedBlocksList
-      ]);
+      const pdfBase64 = await this.pdfService.exportCleanPdf(this.pdfPath(), deletedBlocksList);
 
-      if (!result.success || !result.data) {
-        throw new Error(result.error || 'Failed to generate PDF');
+      if (!pdfBase64) {
+        throw new Error('Failed to generate PDF');
       }
 
-      // result.data should contain base64-encoded PDF
-      const pdfData = result.data as { pdf_base64: string };
-      const binaryString = atob(pdfData.pdf_base64);
+      // pdfBase64 contains base64-encoded PDF
+      const binaryString = atob(pdfBase64);
       const bytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
@@ -2538,11 +2633,13 @@ ${content}
       await this.saveProjectToPath(projectPath);
     } else {
       // No project path yet - auto-save to ~/Documents/BookForge/
+      const order = this.pageOrder();
       const projectData: BookForgeProject = {
         version: 1,
         source_path: this.pdfPath(),
         source_name: this.pdfName(),
         deleted_block_ids: [...this.deletedBlockIds()],
+        page_order: order.length > 0 ? order : undefined,
         created_at: new Date().toISOString(),
         modified_at: new Date().toISOString()
       };
@@ -2571,11 +2668,13 @@ ${content}
   async saveProjectAs(): Promise<void> {
     if (!this.pdfLoaded()) return;
 
+    const order = this.pageOrder();
     const projectData: BookForgeProject = {
       version: 1,
       source_path: this.pdfPath(),
       source_name: this.pdfName(),
       deleted_block_ids: [...this.deletedBlockIds()],
+      page_order: order.length > 0 ? order : undefined,
       created_at: this.projectPath() ? new Date().toISOString() : new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -2596,11 +2695,13 @@ ${content}
   }
 
   private async saveProjectToPath(filePath: string): Promise<void> {
+    const order = this.pageOrder();
     const projectData: BookForgeProject = {
       version: 1,
       source_path: this.pdfPath(),
       source_name: this.pdfName(),
       deleted_block_ids: [...this.deletedBlockIds()],
+      page_order: order.length > 0 ? order : undefined,
       created_at: new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -2660,6 +2761,7 @@ ${content}
       this.pdfName.set(pdfResult.pdf_name);
       this.pdfPath.set(project.source_path);
       this.deletedBlockIds.set(new Set(project.deleted_block_ids || []));
+      this.pageOrder.set(project.page_order || []);
       this.selectedBlockIds.set([]);
       this.pageImages.set(new Map());
 
@@ -2729,6 +2831,7 @@ ${content}
       this.pdfName.set(pdfResult.pdf_name);
       this.pdfPath.set(project.source_path);
       this.deletedBlockIds.set(new Set(project.deleted_block_ids || []));
+      this.pageOrder.set(project.page_order || []);
       this.selectedBlockIds.set([]);
       this.pageImages.set(new Map());
 
@@ -3068,6 +3171,7 @@ ${content}
             totalPages: this.totalPages(),
             deletedBlockIds: this.deletedBlockIds(),
             selectedBlockIds: this.selectedBlockIds(),
+            pageOrder: this.pageOrder(),
             pageImages: this.pageImages(),
             hasUnsavedChanges: this.hasUnsavedChanges(),
             projectPath: this.projectPath(),
@@ -3093,6 +3197,7 @@ ${content}
     this.pdfPath.set(doc.path);
     this.deletedBlockIds.set(doc.deletedBlockIds);
     this.selectedBlockIds.set(doc.selectedBlockIds);
+    this.pageOrder.set(doc.pageOrder);
     this.pageImages.set(doc.pageImages);
     this.hasUnsavedChanges.set(doc.hasUnsavedChanges);
     this.projectPath.set(doc.projectPath);
@@ -3112,6 +3217,7 @@ ${content}
     this.pdfPath.set('');
     this.deletedBlockIds.set(new Set());
     this.selectedBlockIds.set([]);
+    this.pageOrder.set([]);
     this.pageImages.set(new Map());
     this.hasUnsavedChanges.set(false);
     this.projectPath.set(null);

@@ -1,10 +1,9 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { PythonBridge } from './python-bridge';
+import { pdfAnalyzer } from './pdf-analyzer';
 
 let mainWindow: BrowserWindow | null = null;
-let pythonBridge: PythonBridge;
 
 const isDev = !app.isPackaged;
 
@@ -37,26 +36,50 @@ function createWindow(): void {
 }
 
 function setupIpcHandlers(): void {
-  // Python bridge handlers
-  ipcMain.handle('python:call', async (_event, script: string, method: string, args: unknown[]) => {
-    return pythonBridge.call(script, method, args);
+  // PDF Analyzer handlers (pure TypeScript - no Python!)
+  ipcMain.handle('pdf:analyze', async (_event, pdfPath: string, maxPages?: number) => {
+    try {
+      const result = await pdfAnalyzer.analyze(pdfPath, maxPages);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
-  ipcMain.handle('python:spawn', async (_event, script: string, args: string[]) => {
-    return pythonBridge.spawn(script, args);
+  ipcMain.handle('pdf:render-page', async (_event, pageNum: number, scale: number = 2.0, pdfPath?: string) => {
+    try {
+      const image = await pdfAnalyzer.renderPage(pageNum, scale, pdfPath);
+      return { success: true, data: { image } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
-  ipcMain.handle('python:kill', async (_event, processId: string) => {
-    return pythonBridge.kill(processId);
+  ipcMain.handle('pdf:export-text', async (_event, enabledCategories: string[]) => {
+    try {
+      const result = pdfAnalyzer.exportText(enabledCategories);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
-  ipcMain.handle('python:list', async () => {
-    return pythonBridge.listProcesses();
+  ipcMain.handle('pdf:export-pdf', async (_event, pdfPath: string, deletedRegions: Array<{page: number; x: number; y: number; width: number; height: number}>) => {
+    try {
+      const pdfBase64 = await pdfAnalyzer.exportPdf(pdfPath, deletedRegions);
+      return { success: true, data: { pdf_base64: pdfBase64 } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
-  // Render a PDF page as base64 PNG
-  ipcMain.handle('python:render-page', async (_event, pageNum: number, scale: number = 2.0, pdfPath?: string) => {
-    return pythonBridge.call('pdf_analyzer.py', 'render_page', [pageNum, scale, pdfPath]);
+  ipcMain.handle('pdf:find-similar', async (_event, blockId: string) => {
+    try {
+      const result = pdfAnalyzer.findSimilar(blockId);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   // File system handlers
@@ -71,16 +94,19 @@ function setupIpcHandlers(): void {
       const fullPath = path.join(dirPath, entry.name);
       const isDir = entry.isDirectory();
 
-      if (isDir || entry.name.toLowerCase().endsWith('.pdf')) {
+      const lowerName = entry.name.toLowerCase();
+      const isDocument = lowerName.endsWith('.pdf') || lowerName.endsWith('.epub');
+      if (isDir || isDocument) {
         let size = null;
         if (!isDir) {
           const stat = await fs.stat(fullPath);
           size = stat.size;
         }
+        const fileType = isDir ? 'directory' : (lowerName.endsWith('.epub') ? 'epub' : 'pdf');
         items.push({
           name: entry.name,
           path: fullPath,
-          type: isDir ? 'directory' : 'pdf',
+          type: fileType,
           size,
         });
       }
@@ -167,7 +193,7 @@ function setupIpcHandlers(): void {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: 'Open PDF',
       filters: [
-        { name: 'PDF Files', extensions: ['pdf'] },
+        { name: 'Documents', extensions: ['pdf', 'epub'] },
         { name: 'All Files', extensions: ['*'] }
       ],
       properties: ['openFile']
@@ -232,9 +258,8 @@ function setupIpcHandlers(): void {
             modifiedAt: stat.mtime.toISOString(),
             size: stat.size
           });
-        } catch (e) {
+        } catch {
           // Skip invalid project files
-          console.warn('Skipping invalid project file:', entry.name);
         }
       }
 
@@ -386,13 +411,6 @@ function setupIpcHandlers(): void {
 }
 
 app.whenReady().then(() => {
-  // Initialize Python bridge
-  const pythonPath = isDev
-    ? path.join(__dirname, '../../python')
-    : path.join(process.resourcesPath, 'python');
-
-  pythonBridge = new PythonBridge(pythonPath);
-
   setupIpcHandlers();
   createWindow();
 
@@ -404,12 +422,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  pythonBridge.killAll();
   if (process.platform !== 'darwin') {
     app.quit();
   }
-});
-
-app.on('before-quit', () => {
-  pythonBridge.killAll();
 });

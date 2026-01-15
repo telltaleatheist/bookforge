@@ -58,13 +58,54 @@ export interface ProjectsImportResult {
   error?: string;
 }
 
+export interface PdfAnalyzeResult {
+  success: boolean;
+  data?: {
+    blocks: Array<{
+      id: string;
+      page: number;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      text: string;
+      font_size: number;
+      font_name: string;
+      char_count: number;
+      region: string;
+      category_id: string;
+      is_bold: boolean;
+      is_italic: boolean;
+      is_superscript: boolean;
+      is_image: boolean;
+      line_count: number;
+    }>;
+    categories: Record<string, {
+      id: string;
+      name: string;
+      description: string;
+      color: string;
+      block_count: number;
+      char_count: number;
+      font_size: number;
+      region: string;
+      sample_text: string;
+      enabled: boolean;
+    }>;
+    page_count: number;
+    page_dimensions: Array<{ width: number; height: number }>;
+    pdf_name: string;
+  };
+  error?: string;
+}
+
 export interface ElectronAPI {
-  python: {
-    call: (script: string, method: string, args: unknown[]) => Promise<unknown>;
-    spawn: (script: string, args: string[]) => Promise<string>;
-    kill: (processId: string) => Promise<boolean>;
-    list: () => Promise<Array<{ id: string; script: string; status: string; runtime: number }>>;
+  pdf: {
+    analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
     renderPage: (pageNum: number, scale?: number, pdfPath?: string) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
+    exportText: (enabledCategories: string[]) => Promise<{ success: boolean; data?: { text: string; char_count: number }; error?: string }>;
+    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
+    findSimilar: (blockId: string) => Promise<{ success: boolean; data?: { similar_ids: string[]; count: number }; error?: string }>;
   };
   fs: {
     browse: (dirPath: string) => Promise<{
@@ -95,17 +136,17 @@ export interface ElectronAPI {
 }
 
 const electronAPI: ElectronAPI = {
-  python: {
-    call: (script: string, method: string, args: unknown[]) =>
-      ipcRenderer.invoke('python:call', script, method, args),
-    spawn: (script: string, args: string[]) =>
-      ipcRenderer.invoke('python:spawn', script, args),
-    kill: (processId: string) =>
-      ipcRenderer.invoke('python:kill', processId),
-    list: () =>
-      ipcRenderer.invoke('python:list'),
+  pdf: {
+    analyze: (pdfPath: string, maxPages?: number) =>
+      ipcRenderer.invoke('pdf:analyze', pdfPath, maxPages),
     renderPage: (pageNum: number, scale: number = 2.0, pdfPath?: string) =>
-      ipcRenderer.invoke('python:render-page', pageNum, scale, pdfPath),
+      ipcRenderer.invoke('pdf:render-page', pageNum, scale, pdfPath),
+    exportText: (enabledCategories: string[]) =>
+      ipcRenderer.invoke('pdf:export-text', enabledCategories),
+    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>) =>
+      ipcRenderer.invoke('pdf:export-pdf', pdfPath, deletedRegions),
+    findSimilar: (blockId: string) =>
+      ipcRenderer.invoke('pdf:find-similar', blockId),
   },
   fs: {
     browse: (dirPath: string) =>

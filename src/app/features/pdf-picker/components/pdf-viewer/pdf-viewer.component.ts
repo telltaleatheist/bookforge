@@ -28,15 +28,25 @@ export interface CropRect {
         #viewport
         class="pdf-viewport"
         (wheel)="onWheel($event)"
-        (click)="closeAllMenus()"
-      >
-        <div class="pdf-container" [class.grid]="layout() === 'grid'">
-          @for (pageNum of pageNumbers(); track pageNum) {
+              >
+        <div class="pdf-container" [class.grid]="layout() === 'grid'" [class.organize-mode]="editorMode() === 'organize'">
+          @for (pageNum of pageNumbers(); track pageNum; let idx = $index) {
             <div
               class="page-wrapper"
               [attr.data-page]="pageNum"
+              [attr.data-index]="idx"
               [style.width.px]="getPageWidth(pageNum)"
+              [class.dragging]="isDraggingPage() && draggedPageIndex === idx"
+              [class.drag-over]="dragOverIndex() === idx"
+              [class.drag-over-before]="dragOverIndex() === idx && dropTargetIndex === idx"
+              [class.drag-over-after]="dragOverIndex() === idx && dropTargetIndex === idx + 1"
+              [draggable]="editorMode() === 'organize'"
               (contextmenu)="onPageContextMenu($event, pageNum)"
+              (dragstart)="onPageDragStart($event, idx, pageNum)"
+              (dragend)="onPageDragEnd($event)"
+              (dragover)="onPageDragOver($event, idx)"
+              (dragleave)="onPageDragLeave($event)"
+              (drop)="onPageDrop($event, idx)"
             >
               <div class="page-content">
                 @if (getImageUrl(pageNum) && getImageUrl(pageNum) !== 'loading') {
@@ -288,7 +298,47 @@ export interface CropRect {
       box-shadow: var(--shadow-lg);
       background: white;
       flex-shrink: 0;
-      transition: width 0.15s ease-out;
+      transition: width 0.15s ease-out, transform 0.15s ease-out, opacity 0.15s ease-out;
+    }
+
+    /* Organize mode drag/drop styles */
+    .organize-mode .page-wrapper {
+      cursor: grab;
+
+      &:active {
+        cursor: grabbing;
+      }
+    }
+
+    .page-wrapper.dragging {
+      opacity: 0.5;
+      transform: scale(0.95);
+      cursor: grabbing;
+    }
+
+    .page-wrapper.drag-over-before::before,
+    .page-wrapper.drag-over-after::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 4px;
+      background: var(--accent, #ff6b35);
+      border-radius: 2px;
+      animation: dropIndicatorPulse 0.5s ease-in-out infinite;
+    }
+
+    .page-wrapper.drag-over-before::before {
+      left: -8px;
+    }
+
+    .page-wrapper.drag-over-after::after {
+      right: -8px;
+    }
+
+    @keyframes dropIndicatorPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
     }
 
     .page-content {
@@ -404,11 +454,16 @@ export interface CropRect {
       pointer-events: all;
       cursor: pointer;
       stroke-width: 0.5;
-      transition: stroke-width $duration-fast $ease-out, filter $duration-fast $ease-out;
+      transition: stroke-width $duration-fast $ease-out, filter $duration-fast $ease-out, opacity $duration-fast $ease-out;
     }
 
     .block-overlay.edit-mode .block-rect {
       cursor: text;
+    }
+
+    .block-overlay.organize-mode .block-rect {
+      opacity: 0;
+      pointer-events: none;
     }
 
     .block-overlay .block-rect:hover {
@@ -534,7 +589,7 @@ export interface CropRect {
 export class PdfViewerComponent {
   @HostListener('document:keydown.escape')
   onEscapeKey(): void {
-    this.closeAllMenus();
+    this.closeAllContextMenus();
   }
 
   blocks = input.required<TextBlock[]>();
@@ -550,6 +605,7 @@ export class PdfViewerComponent {
   cropMode = input<boolean>(false);
   cropCurrentPage = input<number>(0);
   editorMode = input<string>('select'); // 'select' | 'edit' | 'crop' | 'organize'
+  pageOrder = input<number[]>([]); // Custom page order for organize mode
 
   blockClick = output<{ block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
   blockDoubleClick = output<{ block: TextBlock; metaKey: boolean; ctrlKey: boolean }>();
@@ -561,6 +617,13 @@ export class PdfViewerComponent {
   selectAllOnPage = output<number>();
   deselectAllOnPage = output<number>();
   cropComplete = output<CropRect>();
+  pageReorder = output<number[]>(); // Emitted when pages are reordered
+
+  // Drag state for organize mode
+  draggedPageIndex: number | null = null;
+  dropTargetIndex: number | null = null;
+  readonly isDraggingPage = signal(false);
+  readonly dragOverIndex = signal<number | null>(null);
 
   // Crop drawing state
   readonly isDrawingCrop = signal(false);
@@ -636,33 +699,47 @@ export class PdfViewerComponent {
     });
   }
 
-  private _hoveredBlock: TextBlock | null = null;
-  private _tooltipX = 0;
-  private _tooltipY = 0;
-  private tooltipTimeout: any = null;
-  private tooltipOpenedAt = 0; // Timestamp to prevent immediate close
+  // Block context menu state (signals for proper change detection)
+  readonly contextMenuBlock = signal<TextBlock | null>(null);
+  readonly contextMenuX = signal(0);
+  readonly contextMenuY = signal(0);
 
   // Page context menu state
-  private _pageMenuVisible = false;
-  private _pageMenuX = 0;
-  private _pageMenuY = 0;
-  private _pageMenuPageNum = 0;
+  readonly pageMenuVisible = signal(false);
+  readonly pageMenuX = signal(0);
+  readonly pageMenuY = signal(0);
+  readonly pageMenuPageNum = signal(0);
 
-  pageMenuVisible(): boolean { return this._pageMenuVisible; }
-  pageMenuX(): number { return this._pageMenuX; }
-  pageMenuY(): number { return this._pageMenuY; }
-  pageMenuPageNum(): number { return this._pageMenuPageNum; }
+  // Aliases for template compatibility
+  hoveredBlock(): TextBlock | null { return this.contextMenuBlock(); }
+  tooltipX(): number { return this.contextMenuX(); }
+  tooltipY(): number { return this.contextMenuY(); }
 
-  hoveredBlock(): TextBlock | null { return this._hoveredBlock; }
-  tooltipX(): number { return this._tooltipX; }
-  tooltipY(): number { return this._tooltipY; }
+  @HostListener('document:mousedown', ['$event'])
+  onDocumentClick(event: MouseEvent): void {
+    // Check if click is outside context menus
+    const target = event.target as HTMLElement;
+    if (!target.closest('.block-tooltip') && !target.closest('.page-context-menu')) {
+      this.closeAllContextMenus();
+    }
+  }
 
   pageNumbers(): number[] {
-    // In crop mode, only show the current page being cropped
-    if (this.cropMode()) {
-      return [this.cropCurrentPage()];
+    // Use custom page order if available
+    const order = this.pageOrder();
+    if (order && order.length > 0) {
+      return order;
     }
     return Array.from({ length: this.totalPages() }, (_, i) => i);
+  }
+
+  // Get the display index for a page (position in the current order)
+  getPageDisplayIndex(pageNum: number): number {
+    const order = this.pageOrder();
+    if (order && order.length > 0) {
+      return order.indexOf(pageNum);
+    }
+    return pageNum;
   }
 
   getImageUrl(pageNum: number): string {
@@ -756,12 +833,17 @@ export class PdfViewerComponent {
 
   onContextMenu(event: MouseEvent, block: TextBlock): void {
     event.preventDefault();
-    event.stopPropagation(); // Prevent page context menu from also appearing
-    this.showTooltipAt(event.clientX, event.clientY, block);
+    event.stopPropagation();
+    // Close any existing menu first
+    this.closeAllContextMenus();
+    // Open block context menu
+    this.contextMenuX.set(Math.min(event.clientX, window.innerWidth - 320));
+    this.contextMenuY.set(Math.min(event.clientY, window.innerHeight - 200));
+    this.contextMenuBlock.set(block);
+    this.blockHover.emit(block);
   }
 
   onBlockEnter(_event: MouseEvent, block: TextBlock): void {
-    // Just emit hover event - tooltip only shows on right-click
     this.blockHover.emit(block);
   }
 
@@ -769,34 +851,20 @@ export class PdfViewerComponent {
     this.blockHover.emit(null);
   }
 
+  // Keep menu open when mouse enters it
   keepTooltip(): void {
-    this.clearTooltipTimeout();
+    // No-op now - menu stays open until click outside
   }
 
+  // Called on mouseleave from menu - no longer auto-hides
   hideTooltip(): void {
-    this.scheduleHideTooltip();
+    // No-op now - menu stays open until click outside
   }
 
-  private showTooltipAt(x: number, y: number, block: TextBlock): void {
-    this._tooltipX = Math.min(x, window.innerWidth - 320);
-    this._tooltipY = Math.min(y, window.innerHeight - 200);
-    this._hoveredBlock = block;
-    this.tooltipOpenedAt = Date.now();
-    this.blockHover.emit(block);
-  }
-
-  private scheduleHideTooltip(): void {
-    this.tooltipTimeout = setTimeout(() => {
-      this._hoveredBlock = null;
-      this.blockHover.emit(null);
-    }, 200);
-  }
-
-  private clearTooltipTimeout(): void {
-    if (this.tooltipTimeout) {
-      clearTimeout(this.tooltipTimeout);
-      this.tooltipTimeout = null;
-    }
+  closeAllContextMenus(): void {
+    this.contextMenuBlock.set(null);
+    this.pageMenuVisible.set(false);
+    this.blockHover.emit(null);
   }
 
   openFilePicker(): void {
@@ -804,23 +872,26 @@ export class PdfViewerComponent {
   }
 
   onDeleteBlock(): void {
-    if (this._hoveredBlock) {
-      this.deleteBlock.emit(this._hoveredBlock.id);
-      this._hoveredBlock = null;
+    const block = this.contextMenuBlock();
+    if (block) {
+      this.deleteBlock.emit(block.id);
+      this.closeAllContextMenus();
     }
   }
 
   onSelectLikeThis(): void {
-    if (this._hoveredBlock) {
-      this.selectLikeThis.emit(this._hoveredBlock);
-      this._hoveredBlock = null;
+    const block = this.contextMenuBlock();
+    if (block) {
+      this.selectLikeThis.emit(block);
+      this.closeAllContextMenus();
     }
   }
 
   onDeleteLikeThis(): void {
-    if (this._hoveredBlock) {
-      this.deleteLikeThis.emit(this._hoveredBlock);
-      this._hoveredBlock = null;
+    const block = this.contextMenuBlock();
+    if (block) {
+      this.deleteLikeThis.emit(block);
+      this.closeAllContextMenus();
     }
   }
 
@@ -874,33 +945,110 @@ export class PdfViewerComponent {
   onPageContextMenu(event: MouseEvent, pageNum: number): void {
     event.preventDefault();
     event.stopPropagation();
-    this._pageMenuX = Math.min(event.clientX, window.innerWidth - 200);
-    this._pageMenuY = Math.min(event.clientY, window.innerHeight - 100);
-    this._pageMenuPageNum = pageNum;
-    this._pageMenuVisible = true;
+    // Close any existing menu first
+    this.closeAllContextMenus();
+    // Open page context menu
+    this.pageMenuX.set(Math.min(event.clientX, window.innerWidth - 200));
+    this.pageMenuY.set(Math.min(event.clientY, window.innerHeight - 100));
+    this.pageMenuPageNum.set(pageNum);
+    this.pageMenuVisible.set(true);
   }
 
   closePageMenu(): void {
-    this._pageMenuVisible = false;
+    this.pageMenuVisible.set(false);
   }
 
-  closeAllMenus(): void {
-    // Don't close if tooltip was just opened (prevents Mac trackpad right-click issues)
-    if (Date.now() - this.tooltipOpenedAt < 300) {
+  // Page drag/drop for organize mode
+  onPageDragStart(event: DragEvent, index: number, pageNum: number): void {
+    if (this.editorMode() !== 'organize') {
+      event.preventDefault();
       return;
     }
-    this._pageMenuVisible = false;
-    this._hoveredBlock = null;
-    this.clearTooltipTimeout();
+    this.draggedPageIndex = index;
+    this.isDraggingPage.set(true);
+
+    // Set drag data
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', String(pageNum));
+    }
+  }
+
+  onPageDragEnd(_event: DragEvent): void {
+    this.draggedPageIndex = null;
+    this.dropTargetIndex = null;
+    this.isDraggingPage.set(false);
+    this.dragOverIndex.set(null);
+  }
+
+  onPageDragOver(event: DragEvent, index: number): void {
+    if (this.editorMode() !== 'organize' || this.draggedPageIndex === null) return;
+
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+
+    this.dragOverIndex.set(index);
+
+    // Determine if dropping before or after this element
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const midpoint = rect.left + rect.width / 2;
+    if (event.clientX < midpoint) {
+      this.dropTargetIndex = index;
+    } else {
+      this.dropTargetIndex = index + 1;
+    }
+  }
+
+  onPageDragLeave(event: DragEvent): void {
+    // Only clear if leaving the container, not when entering a child
+    const relatedTarget = event.relatedTarget as HTMLElement;
+    if (!relatedTarget || !relatedTarget.closest('.page-wrapper')) {
+      this.dragOverIndex.set(null);
+    }
+  }
+
+  onPageDrop(event: DragEvent, _targetIndex: number): void {
+    event.preventDefault();
+
+    if (this.draggedPageIndex === null || this.dropTargetIndex === null) return;
+    if (this.draggedPageIndex === this.dropTargetIndex || this.draggedPageIndex === this.dropTargetIndex - 1) {
+      // No change needed
+      this.onPageDragEnd(event);
+      return;
+    }
+
+    // Get current order
+    const currentOrder = this.pageOrder().length > 0
+      ? [...this.pageOrder()]
+      : Array.from({ length: this.totalPages() }, (_, i) => i);
+
+    // Remove the dragged page
+    const [movedPage] = currentOrder.splice(this.draggedPageIndex, 1);
+
+    // Calculate new insert position (adjust if dragging forward)
+    let insertAt = this.dropTargetIndex;
+    if (this.draggedPageIndex < this.dropTargetIndex) {
+      insertAt--;
+    }
+
+    // Insert at new position
+    currentOrder.splice(insertAt, 0, movedPage);
+
+    // Emit new order
+    this.pageReorder.emit(currentOrder);
+
+    this.onPageDragEnd(event);
   }
 
   onSelectAllOnPage(): void {
-    this.selectAllOnPage.emit(this._pageMenuPageNum);
+    this.selectAllOnPage.emit(this.pageMenuPageNum());
     this.closePageMenu();
   }
 
   onDeselectAllOnPage(): void {
-    this.deselectAllOnPage.emit(this._pageMenuPageNum);
+    this.deselectAllOnPage.emit(this.pageMenuPageNum());
     this.closePageMenu();
   }
 

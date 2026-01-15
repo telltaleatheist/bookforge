@@ -6,9 +6,56 @@ interface BrowseResult {
   items: Array<{ name: string; path: string; type: string; size: number | null }>;
 }
 
-interface PythonCallResult {
+interface PdfAnalyzeResult {
   success: boolean;
-  data?: unknown;
+  data?: {
+    blocks: Array<{
+      id: string;
+      page: number;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      text: string;
+      font_size: number;
+      font_name: string;
+      char_count: number;
+      region: string;
+      category_id: string;
+      is_bold: boolean;
+      is_italic: boolean;
+      is_superscript: boolean;
+      is_image: boolean;
+      line_count: number;
+    }>;
+    categories: Record<string, {
+      id: string;
+      name: string;
+      description: string;
+      color: string;
+      block_count: number;
+      char_count: number;
+      font_size: number;
+      region: string;
+      sample_text: string;
+      enabled: boolean;
+    }>;
+    page_count: number;
+    page_dimensions: Array<{ width: number; height: number }>;
+    pdf_name: string;
+  };
+  error?: string;
+}
+
+interface PdfRenderResult {
+  success: boolean;
+  data?: { image: string };
+  error?: string;
+}
+
+interface PdfExportResult {
+  success: boolean;
+  data?: { pdf_base64: string };
   error?: string;
 }
 
@@ -104,43 +151,20 @@ export class ElectronService {
     return response.json();
   }
 
-  // Python bridge operations
-  async pythonCall(script: string, method: string, args: unknown[] = []): Promise<PythonCallResult> {
+  // PDF operations (pure TypeScript - no Python!)
+  async analyzePdf(pdfPath: string, maxPages?: number): Promise<PdfAnalyzeResult> {
     if (this.isElectron) {
-      return (window as any).electron.python.call(script, method, args);
+      return (window as any).electron.pdf.analyze(pdfPath, maxPages);
     }
 
-    // Mock for browser - would need HTTP backend
-    console.warn('Python call not available in browser mode');
+    // HTTP fallback for browser mode
+    console.warn('PDF analyze not available in browser mode');
     return { success: false, error: 'Not running in Electron' };
-  }
-
-  async pythonSpawn(script: string, args: string[] = []): Promise<string> {
-    if (this.isElectron) {
-      return (window as any).electron.python.spawn(script, args);
-    }
-
-    console.warn('Python spawn not available in browser mode');
-    return '';
-  }
-
-  async pythonKill(processId: string): Promise<boolean> {
-    if (this.isElectron) {
-      return (window as any).electron.python.kill(processId);
-    }
-    return false;
-  }
-
-  async pythonList(): Promise<Array<{ id: string; script: string; status: string; runtime: number }>> {
-    if (this.isElectron) {
-      return (window as any).electron.python.list();
-    }
-    return [];
   }
 
   async renderPage(pageNum: number, scale: number = 2.0, pdfPath?: string): Promise<string | null> {
     if (this.isElectron) {
-      const result = await (window as any).electron.python.renderPage(pageNum, scale, pdfPath);
+      const result: PdfRenderResult = await (window as any).electron.pdf.renderPage(pageNum, scale, pdfPath);
       if (result.success && result.data?.image) {
         return `data:image/png;base64,${result.data.image}`;
       }
@@ -150,6 +174,41 @@ export class ElectronService {
 
     // HTTP fallback for browser mode
     return `http://localhost:5848/api/page/${pageNum}?scale=${scale}`;
+  }
+
+  async exportPdfText(enabledCategories: string[]): Promise<{ text: string; char_count: number } | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.exportText(enabledCategories);
+      if (result.success && result.data) {
+        return result.data;
+      }
+      console.error('Failed to export text:', result.error);
+      return null;
+    }
+    return null;
+  }
+
+  async exportCleanPdf(pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>): Promise<string | null> {
+    if (this.isElectron) {
+      const result: PdfExportResult = await (window as any).electron.pdf.exportPdf(pdfPath, deletedRegions);
+      if (result.success && result.data?.pdf_base64) {
+        return result.data.pdf_base64;
+      }
+      console.error('Failed to export PDF:', result.error);
+      return null;
+    }
+    return null;
+  }
+
+  async findSimilarBlocks(blockId: string): Promise<{ similar_ids: string[]; count: number } | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.findSimilar(blockId);
+      if (result.success && result.data) {
+        return result.data;
+      }
+      return null;
+    }
+    return null;
   }
 
   // Project file operations

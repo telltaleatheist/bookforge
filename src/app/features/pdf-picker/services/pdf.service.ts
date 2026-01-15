@@ -50,8 +50,8 @@ export interface PdfAnalysisResult {
 /**
  * PdfService - Handles PDF analysis and manipulation
  *
- * In Electron mode: Calls Python scripts via IPC
- * In browser mode: Calls HTTP API (existing Flask server)
+ * Uses pure TypeScript mupdf.js - no Python required!
+ * In browser mode: Falls back to HTTP API (legacy Flask server)
  */
 @Injectable({
   providedIn: 'root',
@@ -62,8 +62,8 @@ export class PdfService {
 
   async analyzePdf(pdfPath: string, maxPages?: number): Promise<PdfAnalysisResult> {
     if (this.electron.isRunningInElectron) {
-      const result = await this.electron.pythonCall('pdf_analyzer.py', 'analyze', [pdfPath, maxPages || null]);
-      if (result.success) {
+      const result = await this.electron.analyzePdf(pdfPath, maxPages);
+      if (result.success && result.data) {
         return result.data as PdfAnalysisResult;
       }
       throw new Error(result.error || 'Failed to analyze PDF');
@@ -95,11 +95,11 @@ export class PdfService {
 
   async exportText(enabledCategoryIds: string[]): Promise<{ text: string; char_count: number }> {
     if (this.electron.isRunningInElectron) {
-      const result = await this.electron.pythonCall('pdf_analyzer.py', 'export', [enabledCategoryIds]);
-      if (result.success) {
-        return result.data as { text: string; char_count: number };
+      const result = await this.electron.exportPdfText(enabledCategoryIds);
+      if (result) {
+        return result;
       }
-      throw new Error(result.error || 'Failed to export text');
+      throw new Error('Failed to export text');
     }
 
     const response = await fetch(`${this.apiBase}/api/export`, {
@@ -118,15 +118,19 @@ export class PdfService {
 
   async findSimilar(blockId: string): Promise<string[]> {
     if (this.electron.isRunningInElectron) {
-      const result = await this.electron.pythonCall('pdf_analyzer.py', 'find_similar', [blockId]);
-      if (result.success) {
-        return (result.data as { similar_ids: string[] }).similar_ids;
+      const result = await this.electron.findSimilarBlocks(blockId);
+      if (result) {
+        return result.similar_ids;
       }
-      throw new Error(result.error || 'Failed to find similar');
+      throw new Error('Failed to find similar');
     }
 
     const response = await fetch(`${this.apiBase}/api/similar/${blockId}`);
     const data = await response.json();
     return data.similar_ids;
+  }
+
+  async exportCleanPdf(pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>): Promise<string | null> {
+    return this.electron.exportCleanPdf(pdfPath, deletedRegions);
   }
 }
