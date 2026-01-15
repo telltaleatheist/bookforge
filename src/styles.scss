@@ -86,22 +86,23 @@ code, pre, kbd, samp {
 }
 
 // =============================================================================
-// SCROLLBAR
+// SCROLLBAR (Orange themed)
 // =============================================================================
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--scrollbar-track, transparent);
+  border-radius: 7px;
 }
 
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
-  border-radius: 5px;
-  border: 2px solid transparent;
+  border-radius: 7px;
+  border: 3px solid transparent;
   background-clip: padding-box;
 
   &:hover {
@@ -112,8 +113,8 @@ code, pre, kbd, samp {
 
 // Firefox scrollbar
 * {
-  scrollbar-width: thin;
-  scrollbar-color: var(--scrollbar-thumb) transparent;
+  scrollbar-width: auto;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track, transparent);
 }
 
 // =============================================================================

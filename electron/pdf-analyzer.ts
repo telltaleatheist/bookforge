@@ -34,6 +34,8 @@ export interface TextBlock {
   is_italic: boolean;
   is_superscript: boolean;
   is_image: boolean;
+  is_footnote_marker: boolean;  // Inline footnote reference marker (¹, ², [1], etc.)
+  parent_block_id?: string;     // If this is a marker extracted from a parent block
   line_count: number;
 }
 
@@ -80,7 +82,7 @@ export interface DeletedRegion {
 const CATEGORY_TYPE_COLORS: Record<string, string> = {
   body: '#4CAF50',        // Green
   footnote: '#2196F3',    // Blue
-  footnote_ref: '#E91E63', // Pink
+  footnote_ref: '#E91E63', // Pink (superscript blocks detected by mupdf)
   heading: '#FF9800',     // Orange
   subheading: '#9C27B0',  // Purple
   title: '#F44336',       // Red
@@ -94,6 +96,14 @@ const CATEGORY_TYPE_COLORS: Record<string, string> = {
 const FALLBACK_COLORS = [
   '#E91E63', '#3F51B5', '#009688', '#8BC34A',
   '#FF5722', '#673AB7', '#00E676', '#FF4081', '#536DFE',
+];
+
+// Patterns for detecting footnote markers in text (used during export)
+// These patterns are used to strip markers from text when exporting, not for visual display
+const FOOTNOTE_MARKER_PATTERNS = [
+  /[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g,                    // Unicode superscript digits
+  /[\u00B9\u00B2\u00B3]+/g,             // ¹²³ (superscript 1, 2, 3)
+  /\[\d{1,3}\]/g,                        // [1], [2], [12] - bracketed
 ];
 
 /**
@@ -244,6 +254,7 @@ export class PDFAnalyzer {
           is_italic: false,
           is_superscript: false,
           is_image: true,
+          is_footnote_marker: false,
           line_count: 0,
         });
         continue;
@@ -352,6 +363,7 @@ export class PDFAnalyzer {
           is_italic: isItalic,
           is_superscript: isSuperscript,
           is_image: false,
+          is_footnote_marker: false,
           line_count: lineCount,
         });
       }
@@ -490,6 +502,8 @@ export class PDFAnalyzer {
    */
   private classifyBlock(block: TextBlock, bodySize: number): string {
     if (block.is_image) return 'image';
+
+    // Superscript text blocks (mupdf flag detection)
     if (block.is_superscript) return 'footnote_ref';
 
     // Very small isolated text might be footnote refs
@@ -566,6 +580,8 @@ export class PDFAnalyzer {
    */
   exportText(enabledCategories: string[]): ExportTextResult {
     const enabledSet = new Set(enabledCategories);
+
+    // Sort blocks by page, then y, then x
     const sortedBlocks = [...this.blocks].sort((a, b) => {
       if (a.page !== b.page) return a.page - b.page;
       if (a.y !== b.y) return a.y - b.y;

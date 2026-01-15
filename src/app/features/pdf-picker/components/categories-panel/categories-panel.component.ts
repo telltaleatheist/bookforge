@@ -1,4 +1,4 @@
-import { Component, input, output, computed } from '@angular/core';
+import { Component, input, output, computed, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Category, TextBlock } from '../../services/pdf.service';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
@@ -7,6 +7,7 @@ import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
   selector: 'app-categories-panel',
   standalone: true,
   imports: [CommonModule, DesktopButtonComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="panel-header">
       <h3 class="panel-title">Categories</h3>

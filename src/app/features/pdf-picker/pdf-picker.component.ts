@@ -1,7 +1,9 @@
-import { Component, inject, signal, computed, HostListener, ViewChild } from '@angular/core';
+import { Component, inject, signal, computed, HostListener, ViewChild, effect, DestroyRef, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
 import { ElectronService } from '../../core/services/electron.service';
+import { PdfEditorStateService, HistoryAction } from './services/editor-state.service';
+import { ProjectService } from './services/project.service';
 import { DesktopThemeService, UiSize } from '../../creamsicle-desktop/services/theme.service';
 import {
   SplitPaneComponent,
@@ -13,6 +15,7 @@ import { PdfViewerComponent, CropRect } from './components/pdf-viewer/pdf-viewer
 import { CategoriesPanelComponent } from './components/categories-panel/categories-panel.component';
 import { FilePickerComponent } from './components/file-picker/file-picker.component';
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
+import { SplitPanelComponent, SplitConfig } from './components/split-panel/split-panel.component';
 import { LibraryViewComponent } from './components/library-view/library-view.component';
 import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
 
@@ -34,10 +37,6 @@ interface OpenDocument {
   redoStack: HistoryAction[];
 }
 
-interface HistoryAction {
-  type: 'delete' | 'restore';
-  blockIds: string[];
-}
 
 interface BookForgeProject {
   version: number;
@@ -50,7 +49,7 @@ interface BookForgeProject {
 }
 
 // Editor modes
-type EditorMode = 'select' | 'edit' | 'crop' | 'organize';
+type EditorMode = 'select' | 'edit' | 'crop' | 'organize' | 'split';
 
 interface ModeInfo {
   id: EditorMode;
@@ -73,6 +72,7 @@ interface AlertModal {
 @Component({
   selector: 'app-pdf-picker',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
     CommonModule,
     SplitPaneComponent,
@@ -82,6 +82,7 @@ interface AlertModal {
     CategoriesPanelComponent,
     FilePickerComponent,
     CropPanelComponent,
+    SplitPanelComponent,
     LibraryViewComponent,
     TabBarComponent,
   ],
@@ -147,6 +148,10 @@ interface AlertModal {
               [cropCurrentPage]="cropCurrentPage()"
               [editorMode]="currentMode()"
               [pageOrder]="pageOrder()"
+              [splitMode]="splitMode()"
+              [splitEnabled]="splitConfig().enabled"
+              [splitPositionFn]="getSplitPositionForPage.bind(this)"
+              [skippedPages]="splitConfig().skippedPages"
               (blockClick)="onBlockClick($event)"
               (blockDoubleClick)="onBlockDoubleClick($event)"
               (blockHover)="onBlockHover($event)"
@@ -159,6 +164,8 @@ interface AlertModal {
               (cropComplete)="onCropComplete($event)"
               (marqueeSelect)="onMarqueeSelect($event)"
               (pageReorder)="onPageReorder($event)"
+              (splitPositionChange)="onSplitPositionChange($event)"
+              (splitPageToggle)="onSplitPageToggle($event)"
               [getPageImageUrl]="getPageImageUrl.bind(this)"
             />
             </div>
@@ -168,6 +175,9 @@ interface AlertModal {
               <div class="timeline-header">
                 <span class="timeline-label">
                   {{ totalPages() }} pages
+                  @if (pagesLoaded() < totalPages()) {
+                    · <span class="loading-status"><span class="mini-spinner"></span> Loading {{ pagesLoaded() }}/{{ totalPages() }}</span>
+                  }
                   @if (selectedBlockIds().length > 0) {
                     · {{ selectedBlockIds().length }} selected on {{ pagesWithSelections().size }} pages
                   }
@@ -206,6 +216,18 @@ interface AlertModal {
             (nextPage)="cropNextPage()"
             (cancel)="cancelCrop()"
             (apply)="applyCropFromPanel($event)"
+          />
+        } @else if (splitMode()) {
+          <app-split-panel
+            pane-secondary
+            [config]="splitConfig()"
+            [currentPage]="splitPreviewPage()"
+            [totalPages]="totalPages()"
+            (prevPage)="splitPrevPage()"
+            (nextPage)="splitNextPage()"
+            (cancel)="cancelSplitMode()"
+            (apply)="applySplit()"
+            (configChange)="onSplitConfigChange($event)"
           />
         } @else {
           <app-categories-panel
@@ -518,6 +540,27 @@ interface AlertModal {
     .timeline-label {
       font-size: var(--ui-font-xs);
       color: var(--text-secondary);
+    }
+
+    .loading-status {
+      color: var(--accent);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .mini-spinner {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border: 2px solid var(--border-subtle);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
 
     .timeline-scroll {
@@ -1130,34 +1173,41 @@ export class PdfPickerComponent {
   private readonly pdfService = inject(PdfService);
   private readonly electronService = inject(ElectronService);
   readonly themeService = inject(DesktopThemeService);
+  private readonly destroyRef = inject(DestroyRef);
+
+  // Injected services for state management
+  readonly editorState = inject(PdfEditorStateService);
+  readonly projectService = inject(ProjectService);
+
+  // Auto-save effect - watches for unsaved changes and triggers save
+  private readonly autoSaveEffect = effect(() => {
+    if (this.hasUnsavedChanges() && this.projectPath()) {
+      this.scheduleAutoSave();
+    }
+  });
 
   @ViewChild(PdfViewerComponent) pdfViewer!: PdfViewerComponent;
 
   // Fixed sidebar width - doesn't change with window size
   private readonly SIDEBAR_WIDTH = 320;
 
-  // State signals
-  readonly blocks = signal<TextBlock[]>([]);
-  readonly categories = signal<Record<string, Category>>({});
-  readonly pageDimensions = signal<PageDimension[]>([]);
-  readonly totalPages = signal(0);
-  readonly pdfName = signal('');
-  readonly pdfPath = signal(''); // Store the current PDF path for rendering
-  readonly pdfLoaded = signal(false);
+  // Delegate core state to editorState service (aliased for template compatibility)
+  get blocks() { return this.editorState.blocks; }
+  get categories() { return this.editorState.categories; }
+  get pageDimensions() { return this.editorState.pageDimensions; }
+  get totalPages() { return this.editorState.totalPages; }
+  get pdfName() { return this.editorState.pdfName; }
+  get pdfPath() { return this.editorState.pdfPath; }
+  get pdfLoaded() { return this.editorState.pdfLoaded; }
+  get deletedBlockIds() { return this.editorState.deletedBlockIds; }
+  get selectedBlockIds() { return this.editorState.selectedBlockIds; }
+  get pageOrder() { return this.editorState.pageOrder; }
+  get hasUnsavedChanges() { return this.editorState.hasUnsavedChanges; }
+  get canUndo() { return this.editorState.canUndo; }
+  get canRedo() { return this.editorState.canRedo; }
 
-  readonly deletedBlockIds = signal<Set<string>>(new Set());
-  readonly selectedBlockIds = signal<string[]>([]);
-  readonly pageOrder = signal<number[]>([]); // Custom page order for organize mode
-
-  // Project state
-  readonly projectPath = signal<string | null>(null);
-  readonly hasUnsavedChanges = signal(false);
-
-  // Undo/redo history
-  private undoStack: HistoryAction[] = [];
-  private redoStack: HistoryAction[] = [];
-  readonly canUndo = signal(false);
-  readonly canRedo = signal(false);
+  // Delegate project state to projectService
+  get projectPath() { return this.projectService.projectPath; }
 
   readonly zoom = signal(100);
   readonly layout = signal<'vertical' | 'grid'>('grid');
@@ -1216,18 +1266,6 @@ export class PdfPickerComponent {
       this.redo();
     }
 
-    // Ctrl/Cmd + S for save
-    if ((event.metaKey || event.ctrlKey) && event.key === 's' && !event.shiftKey) {
-      event.preventDefault();
-      this.saveProject();
-    }
-
-    // Ctrl/Cmd + Shift + S for save as
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === 's') {
-      event.preventDefault();
-      this.saveProjectAs();
-    }
-
     // Ctrl/Cmd + O for library view toggle
     if ((event.metaKey || event.ctrlKey) && event.key === 'o') {
       event.preventDefault();
@@ -1264,6 +1302,12 @@ export class PdfPickerComponent {
           if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
             event.preventDefault();
             this.setMode('organize');
+          }
+          break;
+        case 'p': // P for page split
+          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
+            event.preventDefault();
+            this.setMode('split');
           }
           break;
       }
@@ -1305,7 +1349,8 @@ export class PdfPickerComponent {
     { id: 'select', icon: '🎯', label: 'Select', tooltip: 'Select and delete blocks (S)' },
     { id: 'edit', icon: '✏️', label: 'Edit', tooltip: 'Double-click to edit text (E)' },
     { id: 'crop', icon: '✂️', label: 'Crop', tooltip: 'Draw rectangle to crop (C)' },
-    { id: 'organize', icon: '📑', label: 'Organize', tooltip: 'Reorder pages (R)' }
+    { id: 'organize', icon: '📑', label: 'Organize', tooltip: 'Reorder pages (R)' },
+    { id: 'split', icon: '📖', label: 'Split', tooltip: 'Split scanned pages (P)' }
   ];
 
   // Crop mode state (derived from currentMode)
@@ -1313,6 +1358,19 @@ export class PdfPickerComponent {
   readonly cropCurrentPage = signal(0);
   readonly currentCropRect = signal<CropRect | null>(null);
   private previousLayout: 'vertical' | 'grid' = 'grid';
+
+  // Split mode state (for scanned book pages)
+  readonly splitMode = computed(() => this.currentMode() === 'split');
+  readonly splitConfig = signal<SplitConfig>({
+    enabled: false,
+    oddPageSplit: 0.5,
+    evenPageSplit: 0.5,
+    pageOverrides: {},
+    skippedPages: new Set<number>(),
+    readingOrder: 'left-to-right'
+  });
+  readonly splitPreviewPage = signal(0);  // Page being previewed in split mode
+  readonly isDraggingSplit = signal(false);
 
   // Page image cache - maps page number to data URL
   readonly pageImages = signal<Map<number, string>>(new Map());
@@ -1342,14 +1400,6 @@ export class PdfPickerComponent {
       disabled: !this.pdfLoaded() && !this.showLibraryView()
     },
     { id: 'open', type: 'button', icon: '📂', label: 'Open File', tooltip: 'Open PDF file' },
-    {
-      id: 'save',
-      type: 'button',
-      icon: '💾',
-      label: this.hasUnsavedChanges() ? 'Save*' : 'Save',
-      tooltip: 'Save project (Ctrl+S)',
-      disabled: !this.pdfLoaded()
-    },
     {
       id: 'export',
       type: 'dropdown',
@@ -1457,6 +1507,18 @@ export class PdfPickerComponent {
     return pageCounts;
   });
 
+  // Count of pages that have finished loading (for progress indicator)
+  readonly pagesLoaded = computed(() => {
+    const images = this.pageImages();
+    let loaded = 0;
+    for (const [_, value] of images) {
+      if (value && value !== 'loading' && value !== 'failed') {
+        loaded++;
+      }
+    }
+    return loaded;
+  });
+
   onToolbarAction(item: ToolbarItem): void {
     switch (item.id) {
       case 'library':
@@ -1468,9 +1530,6 @@ export class PdfPickerComponent {
         break;
       case 'open':
         this.openPdfWithNativeDialog();
-        break;
-      case 'save':
-        this.saveProject();
         break;
       case 'export':
         this.exportText();
@@ -1689,19 +1748,10 @@ export class PdfPickerComponent {
     // Reset all state to show library view
     this.pdfLoaded.set(false);
     this.blocks.set([]);
-    this.categories.set({});
-    this.pageDimensions.set([]);
-    this.totalPages.set(0);
-    this.pdfName.set('');
-    this.pdfPath.set('');
-    this.deletedBlockIds.set(new Set());
-    this.selectedBlockIds.set([]);
+    // Reset editor state via service
+    this.editorState.reset();
     this.pageImages.set(new Map());
-    this.projectPath.set(null);
-    this.hasUnsavedChanges.set(false);
-    this.undoStack = [];
-    this.redoStack = [];
-    this.updateHistoryState();
+    this.projectService.reset();
 
     // Clear crop mode
     this.currentMode.set('select');
@@ -1753,22 +1803,17 @@ export class PdfPickerComponent {
       this.openDocuments.update(docs => [...docs, newDoc]);
       this.activeDocumentId.set(docId);
 
-      // Set current state
-      this.blocks.set(result.blocks);
-      this.categories.set(result.categories);
-      this.pageDimensions.set(result.page_dimensions);
-      this.totalPages.set(result.page_count);
-      this.pdfName.set(result.pdf_name);
-      this.pdfPath.set(path);
-      this.deletedBlockIds.set(new Set());
-      this.selectedBlockIds.set([]);
-      this.pageOrder.set([]);
+      // Set current state via service
+      this.editorState.loadDocument({
+        blocks: result.blocks,
+        categories: result.categories,
+        pageDimensions: result.page_dimensions,
+        totalPages: result.page_count,
+        pdfName: result.pdf_name,
+        pdfPath: path
+      });
       this.pageImages.set(new Map());
-      this.hasUnsavedChanges.set(false);
-      this.projectPath.set(null);
-      this.undoStack = [];
-      this.redoStack = [];
-      this.updateHistoryState();
+      this.projectService.reset();
 
       this.saveRecentFile(path, result.pdf_name);
 
@@ -1777,6 +1822,9 @@ export class PdfPickerComponent {
       await this.loadAllPageImages(result.page_count);
 
       this.pdfLoaded.set(true);
+
+      // Auto-create project file for this document
+      await this.autoCreateProject(path, result.pdf_name);
     } catch (err) {
       console.error('Failed to load PDF:', err);
       this.showAlert({
@@ -1946,120 +1994,46 @@ export class PdfPickerComponent {
     const selected = this.selectedBlockIds();
     if (selected.length === 0) return;
 
-    const deleted = new Set(this.deletedBlockIds());
+    const deleted = this.deletedBlockIds();
 
     // Check if ALL selected blocks are already deleted
     const allDeleted = selected.every(id => deleted.has(id));
 
     if (allDeleted) {
       // Restore all selected blocks (toggle off)
-      selected.forEach(id => deleted.delete(id));
-      this.deletedBlockIds.set(deleted);
-      this.pushHistory({ type: 'restore', blockIds: [...selected] });
+      this.editorState.restoreBlocks(selected);
+      this.editorState.clearSelection();
     } else {
       // Delete the non-deleted selected blocks
-      const toDelete = selected.filter(id => !deleted.has(id));
-      toDelete.forEach(id => deleted.add(id));
-      this.deletedBlockIds.set(deleted);
-      this.pushHistory({ type: 'delete', blockIds: toDelete });
+      this.editorState.deleteSelectedBlocks();
     }
-
-    // Clear selection
-    this.selectedBlockIds.set([]);
   }
 
   deleteLikeThis(block: TextBlock): void {
     const categoryId = block.category_id;
-    const currentDeleted = this.deletedBlockIds();
+    const deleted = this.deletedBlockIds();
     const toDelete = this.blocks()
-      .filter(b => b.category_id === categoryId && !currentDeleted.has(b.id))
+      .filter(b => b.category_id === categoryId && !deleted.has(b.id))
       .map(b => b.id);
 
     if (toDelete.length === 0) return;
 
-    const deleted = new Set(currentDeleted);
-    toDelete.forEach(id => deleted.add(id));
-    this.deletedBlockIds.set(deleted);
-
-    // Track in history
-    this.pushHistory({ type: 'delete', blockIds: toDelete });
-
-    this.selectedBlockIds.set([]);
+    this.editorState.deleteBlocks(toDelete);
+    this.editorState.clearSelection();
   }
 
   deleteBlock(blockId: string): void {
     if (this.deletedBlockIds().has(blockId)) return;
-
-    const deleted = new Set(this.deletedBlockIds());
-    deleted.add(blockId);
-    this.deletedBlockIds.set(deleted);
-
-    // Track in history
-    this.pushHistory({ type: 'delete', blockIds: [blockId] });
-
-    this.selectedBlockIds.update(ids => ids.filter(id => id !== blockId));
+    this.editorState.deleteBlocks([blockId]);
   }
 
-  private pushHistory(action: HistoryAction): void {
-    this.undoStack.push(action);
-    this.redoStack = []; // Clear redo stack on new action
-    this.hasUnsavedChanges.set(true); // Mark as having unsaved changes
-    this.updateHistoryState();
-  }
-
-  private updateHistoryState(): void {
-    this.canUndo.set(this.undoStack.length > 0);
-    this.canRedo.set(this.redoStack.length > 0);
-  }
-
+  // Delegate undo/redo to service
   undo(): void {
-    const action = this.undoStack.pop();
-    if (!action) return;
-
-    if (action.type === 'delete') {
-      // Restore deleted blocks
-      const deleted = new Set(this.deletedBlockIds());
-      action.blockIds.forEach(id => deleted.delete(id));
-      this.deletedBlockIds.set(deleted);
-    } else if (action.type === 'restore') {
-      // Re-delete restored blocks
-      const deleted = new Set(this.deletedBlockIds());
-      action.blockIds.forEach(id => deleted.add(id));
-      this.deletedBlockIds.set(deleted);
-    }
-
-    // Push inverse action to redo stack
-    this.redoStack.push({
-      type: action.type === 'delete' ? 'restore' : 'delete',
-      blockIds: action.blockIds
-    });
-
-    this.updateHistoryState();
+    this.editorState.undo();
   }
 
   redo(): void {
-    const action = this.redoStack.pop();
-    if (!action) return;
-
-    if (action.type === 'delete') {
-      // Delete blocks again
-      const deleted = new Set(this.deletedBlockIds());
-      action.blockIds.forEach(id => deleted.add(id));
-      this.deletedBlockIds.set(deleted);
-    } else if (action.type === 'restore') {
-      // Restore blocks again
-      const deleted = new Set(this.deletedBlockIds());
-      action.blockIds.forEach(id => deleted.delete(id));
-      this.deletedBlockIds.set(deleted);
-    }
-
-    // Push inverse action to undo stack
-    this.undoStack.push({
-      type: action.type === 'delete' ? 'restore' : 'delete',
-      blockIds: action.blockIds
-    });
-
-    this.updateHistoryState();
+    this.editorState.redo();
   }
 
   // Click on category: select ALL blocks of that category (Cmd/Ctrl+click to toggle)
@@ -2623,7 +2597,63 @@ ${content}
     }
   }
 
-  // Project save/load methods
+  // Auto-save timer
+  private autoSaveTimeout: ReturnType<typeof setTimeout> | null = null;
+  private readonly AUTO_SAVE_DELAY = 1000; // 1 second debounce
+
+  // Auto-create project when PDF is opened
+  private async autoCreateProject(pdfPath: string, pdfName: string): Promise<void> {
+    const projectName = pdfName.replace(/\.[^.]+$/, '');
+
+    // Check if project already exists for this PDF
+    const existingProjects = await this.electronService.projectsList();
+    if (existingProjects.success && existingProjects.projects) {
+      const existing = existingProjects.projects.find(
+        (p: { sourcePath?: string }) => p.sourcePath === pdfPath
+      );
+      if (existing) {
+        // Use existing project
+        this.projectPath.set(existing.path);
+        return;
+      }
+    }
+
+    // Create new project
+    const projectData: BookForgeProject = {
+      version: 1,
+      source_path: pdfPath,
+      source_name: pdfName,
+      deleted_block_ids: [],
+      created_at: new Date().toISOString(),
+      modified_at: new Date().toISOString()
+    };
+
+    const result = await this.electronService.projectsSave(projectData, projectName);
+    if (result.success && result.filePath) {
+      this.projectPath.set(result.filePath);
+    }
+  }
+
+  // Schedule auto-save (debounced)
+  private scheduleAutoSave(): void {
+    if (this.autoSaveTimeout) {
+      clearTimeout(this.autoSaveTimeout);
+    }
+
+    this.autoSaveTimeout = setTimeout(() => {
+      this.performAutoSave();
+    }, this.AUTO_SAVE_DELAY);
+  }
+
+  // Perform the actual auto-save
+  private async performAutoSave(): Promise<void> {
+    const projectPath = this.projectPath();
+    if (!projectPath || !this.pdfLoaded()) return;
+
+    await this.saveProjectToPath(projectPath, true); // silent = true
+  }
+
+  // Project save/load methods (kept for export functionality)
   async saveProject(): Promise<void> {
     if (!this.pdfLoaded()) return;
 
@@ -2650,11 +2680,6 @@ ${content}
       if (result.success && result.filePath) {
         this.projectPath.set(result.filePath);
         this.hasUnsavedChanges.set(false);
-        this.showAlert({
-          title: 'Project Saved',
-          message: 'Project saved to Documents/BookForge/' + projectName + '.bfp',
-          type: 'success'
-        });
       } else if (result.error) {
         this.showAlert({
           title: 'Save Failed',
@@ -2694,7 +2719,7 @@ ${content}
     }
   }
 
-  private async saveProjectToPath(filePath: string): Promise<void> {
+  private async saveProjectToPath(filePath: string, silent: boolean = false): Promise<void> {
     const order = this.pageOrder();
     const projectData: BookForgeProject = {
       version: 1,
@@ -2710,7 +2735,7 @@ ${content}
 
     if (result.success) {
       this.hasUnsavedChanges.set(false);
-    } else if (result.error) {
+    } else if (result.error && !silent) {
       this.showAlert({
         title: 'Save Failed',
         message: 'Failed to save project: ' + result.error,
@@ -2754,31 +2779,23 @@ ${content}
     try {
       const pdfResult = await this.pdfService.analyzePdf(project.source_path);
 
-      this.blocks.set(pdfResult.blocks);
-      this.categories.set(pdfResult.categories);
-      this.pageDimensions.set(pdfResult.page_dimensions);
-      this.totalPages.set(pdfResult.page_count);
-      this.pdfName.set(pdfResult.pdf_name);
-      this.pdfPath.set(project.source_path);
-      this.deletedBlockIds.set(new Set(project.deleted_block_ids || []));
-      this.pageOrder.set(project.page_order || []);
-      this.selectedBlockIds.set([]);
+      // Load document state via service
+      this.editorState.loadDocument({
+        blocks: pdfResult.blocks,
+        categories: pdfResult.categories,
+        pageDimensions: pdfResult.page_dimensions,
+        totalPages: pdfResult.page_count,
+        pdfName: pdfResult.pdf_name,
+        pdfPath: project.source_path,
+        deletedBlockIds: new Set(project.deleted_block_ids || []),
+        pageOrder: project.page_order || []
+      });
       this.pageImages.set(new Map());
-
-      // Set project state
-      this.projectPath.set(result.filePath || null);
-      this.hasUnsavedChanges.set(false);
-
-      // Clear undo/redo history for loaded project
-      this.undoStack = [];
-      this.redoStack = [];
-      this.updateHistoryState();
+      this.projectService.projectPath.set(result.filePath || null);
 
       // Load page images
       this.loadingText.set('Rendering pages...');
       await this.loadAllPageImages(pdfResult.page_count);
-
-      this.pdfLoaded.set(true);
     } catch (err) {
       console.error('Failed to load project source file:', err);
       this.showAlert({
@@ -2824,25 +2841,19 @@ ${content}
     try {
       const pdfResult = await this.pdfService.analyzePdf(project.source_path);
 
-      this.blocks.set(pdfResult.blocks);
-      this.categories.set(pdfResult.categories);
-      this.pageDimensions.set(pdfResult.page_dimensions);
-      this.totalPages.set(pdfResult.page_count);
-      this.pdfName.set(pdfResult.pdf_name);
-      this.pdfPath.set(project.source_path);
-      this.deletedBlockIds.set(new Set(project.deleted_block_ids || []));
-      this.pageOrder.set(project.page_order || []);
-      this.selectedBlockIds.set([]);
+      // Load document state via service
+      this.editorState.loadDocument({
+        blocks: pdfResult.blocks,
+        categories: pdfResult.categories,
+        pageDimensions: pdfResult.page_dimensions,
+        totalPages: pdfResult.page_count,
+        pdfName: pdfResult.pdf_name,
+        pdfPath: project.source_path,
+        deletedBlockIds: new Set(project.deleted_block_ids || []),
+        pageOrder: project.page_order || []
+      });
       this.pageImages.set(new Map());
-
-      // Set project state
-      this.projectPath.set(filePath);
-      this.hasUnsavedChanges.set(false);
-
-      // Clear undo/redo history for loaded project
-      this.undoStack = [];
-      this.redoStack = [];
-      this.updateHistoryState();
+      this.projectService.projectPath.set(filePath);
 
       // Load page images
       this.loadingText.set('Rendering pages...');
@@ -3037,6 +3048,12 @@ ${content}
       this.currentCropRect.set(null);
     }
 
+    // If entering split mode, auto-enable splitting
+    if (mode === 'split' && previousMode !== 'split') {
+      this.splitConfig.update(config => ({ ...config, enabled: true }));
+      this.splitPreviewPage.set(0);
+    }
+
     this.currentMode.set(mode);
   }
 
@@ -3079,6 +3096,7 @@ ${content}
   }
 
   private applyCropToPages(pageNums: number[], cropRect: CropRect): void {
+    const selectionBefore = [...this.selectedBlockIds()];
     const deleted = new Set(this.deletedBlockIds());
     const toDelete: string[] = [];
 
@@ -3109,9 +3127,92 @@ ${content}
     }
 
     if (toDelete.length > 0) {
-      this.deletedBlockIds.set(deleted);
-      this.pushHistory({ type: 'delete', blockIds: toDelete });
+      this.editorState.deleteBlocks(toDelete);
     }
+  }
+
+  // Split mode methods
+  splitPrevPage(): void {
+    const current = this.splitPreviewPage();
+    if (current > 0) {
+      this.splitPreviewPage.set(current - 1);
+      this.scrollToPage(current - 1);
+    }
+  }
+
+  splitNextPage(): void {
+    const current = this.splitPreviewPage();
+    if (current < this.totalPages() - 1) {
+      this.splitPreviewPage.set(current + 1);
+      this.scrollToPage(current + 1);
+    }
+  }
+
+  exitSplitMode(): void {
+    this.setMode('select');
+  }
+
+  // Cancel split mode - discard changes and disable split
+  cancelSplitMode(): void {
+    this.splitConfig.update(config => ({ ...config, enabled: false }));
+    this.setMode('select');
+  }
+
+  // Apply split settings and exit split mode
+  applySplit(): void {
+    // Keep split enabled, mark as changed, and exit mode
+    this.hasUnsavedChanges.set(true);
+    this.setMode('select');
+  }
+
+  onSplitConfigChange(config: SplitConfig): void {
+    this.splitConfig.set(config);
+    this.hasUnsavedChanges.set(true);
+  }
+
+  // Get split position for a specific page (considering overrides)
+  getSplitPositionForPage(pageNum: number): number {
+    const config = this.splitConfig();
+    if (!config.enabled) return 0.5;
+
+    // Check for page-specific override
+    if (pageNum in config.pageOverrides) {
+      return config.pageOverrides[pageNum];
+    }
+
+    // Use odd/even setting
+    const isOdd = (pageNum + 1) % 2 === 1;
+    return isOdd ? config.oddPageSplit : config.evenPageSplit;
+  }
+
+  // Set split position override for current page (called from pdf-viewer drag)
+  setSplitOverrideForPage(pageNum: number, position: number): void {
+    const config = this.splitConfig();
+    const newOverrides = { ...config.pageOverrides, [pageNum]: position };
+    this.splitConfig.set({ ...config, pageOverrides: newOverrides });
+    this.hasUnsavedChanges.set(true);
+  }
+
+  // Handle split position change from pdf-viewer drag
+  onSplitPositionChange(event: { pageNum: number; position: number }): void {
+    this.setSplitOverrideForPage(event.pageNum, event.position);
+  }
+
+  // Handle split page checkbox toggle
+  onSplitPageToggle(event: { pageNum: number; enabled: boolean }): void {
+    const config = this.splitConfig();
+    const newSkipped = new Set(config.skippedPages);
+
+    if (event.enabled) {
+      // Page should be split - remove from skipped
+      newSkipped.delete(event.pageNum);
+    } else {
+      // Page should NOT be split - add to skipped
+      newSkipped.add(event.pageNum);
+    }
+
+    this.splitConfig.set({ ...config, skippedPages: newSkipped });
+    this.hasUnsavedChanges.set(true);
   }
 
   // Tab management methods
@@ -3160,6 +3261,7 @@ ${content}
     const activeId = this.activeDocumentId();
     if (!activeId) return;
 
+    const history = this.editorState.getHistory();
     this.openDocuments.update(docs =>
       docs.map(doc => {
         if (doc.id === activeId) {
@@ -3175,8 +3277,8 @@ ${content}
             pageImages: this.pageImages(),
             hasUnsavedChanges: this.hasUnsavedChanges(),
             projectPath: this.projectPath(),
-            undoStack: [...this.undoStack],
-            redoStack: [...this.redoStack]
+            undoStack: history.undoStack,
+            redoStack: history.redoStack
           };
         }
         return doc;
@@ -3189,42 +3291,36 @@ ${content}
     if (!doc) return;
 
     this.activeDocumentId.set(docId);
-    this.blocks.set(doc.blocks);
-    this.categories.set(doc.categories);
-    this.pageDimensions.set(doc.pageDimensions);
-    this.totalPages.set(doc.totalPages);
-    this.pdfName.set(doc.name);
-    this.pdfPath.set(doc.path);
-    this.deletedBlockIds.set(doc.deletedBlockIds);
-    this.selectedBlockIds.set(doc.selectedBlockIds);
-    this.pageOrder.set(doc.pageOrder);
+
+    // Load document data via service
+    this.editorState.loadDocument({
+      blocks: doc.blocks,
+      categories: doc.categories,
+      pageDimensions: doc.pageDimensions,
+      totalPages: doc.totalPages,
+      pdfName: doc.name,
+      pdfPath: doc.path,
+      deletedBlockIds: doc.deletedBlockIds,
+      pageOrder: doc.pageOrder
+    });
+
+    // Restore additional state
+    this.editorState.selectedBlockIds.set(doc.selectedBlockIds);
+    this.editorState.hasUnsavedChanges.set(doc.hasUnsavedChanges);
+    this.editorState.setHistory({
+      undoStack: doc.undoStack,
+      redoStack: doc.redoStack
+    });
+
     this.pageImages.set(doc.pageImages);
-    this.hasUnsavedChanges.set(doc.hasUnsavedChanges);
-    this.projectPath.set(doc.projectPath);
-    this.undoStack = [...doc.undoStack];
-    this.redoStack = [...doc.redoStack];
-    this.updateHistoryState();
-    this.pdfLoaded.set(true);
+    this.projectService.projectPath.set(doc.projectPath);
   }
 
   private clearDocumentState(): void {
     this.activeDocumentId.set(null);
-    this.blocks.set([]);
-    this.categories.set({});
-    this.pageDimensions.set([]);
-    this.totalPages.set(0);
-    this.pdfName.set('');
-    this.pdfPath.set('');
-    this.deletedBlockIds.set(new Set());
-    this.selectedBlockIds.set([]);
-    this.pageOrder.set([]);
+    this.editorState.reset();
     this.pageImages.set(new Map());
-    this.hasUnsavedChanges.set(false);
-    this.projectPath.set(null);
-    this.undoStack = [];
-    this.redoStack = [];
-    this.updateHistoryState();
-    this.pdfLoaded.set(false);
+    this.projectService.reset();
   }
 
   private generateDocumentId(): string {

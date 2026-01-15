@@ -1,4 +1,4 @@
-import { Component, input, output, ViewChild, ElementRef, effect, signal, computed, HostListener } from '@angular/core';
+import { Component, input, output, ViewChild, ElementRef, effect, signal, computed, HostListener, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { TextBlock, Category, PageDimension } from '../../services/pdf.service';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
@@ -15,6 +15,7 @@ export interface CropRect {
   selector: 'app-pdf-viewer',
   standalone: true,
   imports: [CommonModule, DesktopButtonComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (!pdfLoaded()) {
       <div class="placeholder">
@@ -59,7 +60,7 @@ export interface CropRect {
                   />
                 } @else {
                   <div class="page-loading" [style.aspect-ratio]="getPageAspectRatio(pageNum)">
-                    <span class="loading-icon">⏳</span>
+                    <div class="spinner"></div>
                   </div>
                 }
                 <svg
@@ -167,9 +168,99 @@ export interface CropRect {
                       />
                     }
                   }
+
+                  <!-- Split line overlay -->
+                  @if (splitMode() && splitEnabled() && !isPageSkipped(pageNum)) {
+                    <!-- Left half shade -->
+                    <rect
+                      class="split-shade split-shade-left"
+                      x="0"
+                      y="0"
+                      [attr.width]="getSplitLineX(pageNum)"
+                      [attr.height]="getPageDimensions(pageNum)?.height || 0"
+                      fill="rgba(59, 130, 246, 0.08)"
+                    />
+                    <!-- Right half shade -->
+                    <rect
+                      class="split-shade split-shade-right"
+                      [attr.x]="getSplitLineX(pageNum)"
+                      y="0"
+                      [attr.width]="(getPageDimensions(pageNum)?.width || 0) - getSplitLineX(pageNum)"
+                      [attr.height]="getPageDimensions(pageNum)?.height || 0"
+                      fill="rgba(245, 158, 11, 0.08)"
+                    />
+                    <!-- Split line -->
+                    <line
+                      class="split-line"
+                      [attr.x1]="getSplitLineX(pageNum)"
+                      [attr.y1]="0"
+                      [attr.x2]="getSplitLineX(pageNum)"
+                      [attr.y2]="getPageDimensions(pageNum)?.height || 0"
+                      stroke="#ff6b35"
+                      stroke-width="3"
+                      stroke-dasharray="10,5"
+                    />
+                    <!-- Draggable handle area (invisible wide strip for easier grabbing) -->
+                    <rect
+                      class="split-handle"
+                      [attr.x]="getSplitLineX(pageNum) - 15"
+                      y="0"
+                      width="30"
+                      [attr.height]="getPageDimensions(pageNum)?.height || 0"
+                      fill="transparent"
+                      style="cursor: ew-resize"
+                      (mousedown)="onSplitDragStart($event, pageNum)"
+                    />
+                    <!-- Visual handle indicator -->
+                    <rect
+                      class="split-handle-visual"
+                      [attr.x]="getSplitLineX(pageNum) - 8"
+                      [attr.y]="((getPageDimensions(pageNum)?.height || 0) / 2) - 30"
+                      width="16"
+                      height="60"
+                      rx="4"
+                      fill="#ff6b35"
+                      style="cursor: ew-resize; pointer-events: none"
+                    />
+                    <!-- Page number labels -->
+                    <text
+                      class="split-label"
+                      [attr.x]="getSplitLineX(pageNum) / 2"
+                      [attr.y]="30"
+                      text-anchor="middle"
+                      fill="#3b82f6"
+                      font-size="14"
+                      font-weight="600"
+                    >
+                      {{ getSplitLeftPageNum(pageNum) }}
+                    </text>
+                    <text
+                      class="split-label"
+                      [attr.x]="getSplitLineX(pageNum) + ((getPageDimensions(pageNum)?.width || 0) - getSplitLineX(pageNum)) / 2"
+                      [attr.y]="30"
+                      text-anchor="middle"
+                      fill="#f59e0b"
+                      font-size="14"
+                      font-weight="600"
+                    >
+                      {{ getSplitRightPageNum(pageNum) }}
+                    </text>
+                  }
                 </svg>
               </div>
-              <div class="page-label">Page {{ pageNum + 1 }}</div>
+              <div class="page-label">
+                @if (splitMode() && splitEnabled()) {
+                  <label class="split-checkbox" (click)="$event.stopPropagation()">
+                    <input
+                      type="checkbox"
+                      [checked]="!isPageSkipped(pageNum)"
+                      (change)="togglePageSplit($event, pageNum)"
+                    />
+                    <span>Split</span>
+                  </label>
+                }
+                Page {{ pageNum + 1 }}
+              </div>
             </div>
           }
         </div>
@@ -355,22 +446,44 @@ export interface CropRect {
       justify-content: center;
     }
 
-    .loading-icon {
-      font-size: var(--ui-icon-size);
-      animation: pulse 1s ease-in-out infinite;
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid var(--border-subtle);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
     }
 
-    @keyframes pulse {
-      0%, 100% { opacity: 0.5; }
-      50% { opacity: 1; }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
 
     .page-label {
-      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--ui-spacing-md);
       padding: var(--ui-spacing-xs) 0;
       font-size: var(--ui-font-xs);
       color: var(--text-tertiary);
       background: var(--bg-elevated);
+
+      .split-checkbox {
+        display: flex;
+        align-items: center;
+        gap: var(--ui-spacing-xs);
+        cursor: pointer;
+        color: var(--accent);
+        font-weight: 500;
+
+        input[type="checkbox"] {
+          width: 14px;
+          height: 14px;
+          cursor: pointer;
+          accent-color: var(--accent);
+        }
+      }
     }
 
     .pdf-image {
@@ -448,6 +561,33 @@ export interface CropRect {
     @keyframes cropPulse {
       0%, 100% { stroke-opacity: 1; }
       50% { stroke-opacity: 0.7; }
+    }
+
+    // Split mode styles
+    .split-shade {
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+
+    .split-line {
+      pointer-events: none;
+      transition: stroke-opacity 0.2s ease;
+    }
+
+    .split-handle {
+      pointer-events: all;
+      cursor: ew-resize;
+    }
+
+    .split-handle-visual {
+      pointer-events: none;
+      filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+    }
+
+    .split-label {
+      pointer-events: none;
+      font-family: $font-body;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
     }
 
     .block-overlay .block-rect {
@@ -604,8 +744,14 @@ export class PdfViewerComponent {
   pageImageUrlFn = input.required<(pageNum: number) => string>({ alias: 'getPageImageUrl' });
   cropMode = input<boolean>(false);
   cropCurrentPage = input<number>(0);
-  editorMode = input<string>('select'); // 'select' | 'edit' | 'crop' | 'organize'
+  editorMode = input<string>('select'); // 'select' | 'edit' | 'crop' | 'organize' | 'split'
   pageOrder = input<number[]>([]); // Custom page order for organize mode
+
+  // Split mode inputs
+  splitMode = input<boolean>(false);
+  splitEnabled = input<boolean>(false);  // Whether splitting is enabled in config
+  splitPositionFn = input<((pageNum: number) => number) | null>(null);  // Function to get split position for a page
+  skippedPages = input<Set<number>>(new Set());  // Pages to NOT split
 
   blockClick = output<{ block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
   blockDoubleClick = output<{ block: TextBlock; metaKey: boolean; ctrlKey: boolean }>();
@@ -618,6 +764,8 @@ export class PdfViewerComponent {
   deselectAllOnPage = output<number>();
   cropComplete = output<CropRect>();
   pageReorder = output<number[]>(); // Emitted when pages are reordered
+  splitPositionChange = output<{ pageNum: number; position: number }>(); // Emitted when split line is dragged
+  splitPageToggle = output<{ pageNum: number; enabled: boolean }>(); // Emitted when page split checkbox toggled
 
   // Drag state for organize mode
   draggedPageIndex: number | null = null;
@@ -637,6 +785,19 @@ export class PdfViewerComponent {
 
   // Handle size (in SVG coordinates)
   private readonly HANDLE_SIZE = 12;
+
+  // Cache blocks grouped by page - computed once when blocks change
+  readonly blocksByPage = computed(() => {
+    const map = new Map<number, TextBlock[]>();
+    for (const block of this.blocks()) {
+      const page = block.page;
+      if (!map.has(page)) {
+        map.set(page, []);
+      }
+      map.get(page)!.push(block);
+    }
+    return map;
+  });
 
   // Computed handles for crop resize
   readonly cropHandles = computed(() => {
@@ -774,7 +935,7 @@ export class PdfViewerComponent {
   }
 
   getPageBlocks(pageNum: number): TextBlock[] {
-    return this.blocks().filter(b => b.page === pageNum);
+    return this.blocksByPage().get(pageNum) || [];
   }
 
   getBlockFill(block: TextBlock): string {
@@ -1366,4 +1527,114 @@ export class PdfViewerComponent {
     this.cropDragType.set(null);
     this.cropDragStart.set(null);
   }
+
+  // ===========================================================================
+  // SPLIT MODE - Page splitting for scanned book spreads
+  // ===========================================================================
+
+  // Split drag state
+  private readonly isDraggingSplit = signal(false);
+  private readonly splitDragPageNum = signal<number | null>(null);
+  private readonly splitDragStartX = signal<number | null>(null);
+
+  // Get split line X position for a page
+  getSplitLineX(pageNum: number): number {
+    const fn = this.splitPositionFn();
+    if (!fn) return 0;
+
+    const dims = this.pageDimensions()[pageNum];
+    if (!dims) return 0;
+
+    const position = fn(pageNum); // 0-1 percentage
+    return dims.width * position;
+  }
+
+  // Get page dimensions helper
+  getPageDimensions(pageNum: number): PageDimension | null {
+    return this.pageDimensions()[pageNum] || null;
+  }
+
+  // Get the left half page number after split
+  getSplitLeftPageNum(pageNum: number): string {
+    // Reading order: left-to-right means left side comes first
+    // For page 0: left = page 1, right = page 2
+    // For page 1: left = page 3, right = page 4
+    const baseNum = pageNum * 2 + 1;
+    return `P${baseNum}`;
+  }
+
+  // Get the right half page number after split
+  getSplitRightPageNum(pageNum: number): string {
+    const baseNum = pageNum * 2 + 2;
+    return `P${baseNum}`;
+  }
+
+  // Check if page is skipped (not split)
+  isPageSkipped(pageNum: number): boolean {
+    return this.skippedPages().has(pageNum);
+  }
+
+  // Toggle whether a page should be split
+  togglePageSplit(event: Event, pageNum: number): void {
+    const checked = (event.target as HTMLInputElement).checked;
+    this.splitPageToggle.emit({ pageNum, enabled: checked });
+  }
+
+  // Start dragging split line
+  onSplitDragStart(event: MouseEvent, pageNum: number): void {
+    event.preventDefault();
+    event.stopPropagation();
+
+    this.isDraggingSplit.set(true);
+    this.splitDragPageNum.set(pageNum);
+
+    const coords = this.getSvgCoordinates(event, pageNum);
+    if (coords) {
+      this.splitDragStartX.set(coords.x);
+    }
+
+    // Add document-level listeners for drag
+    document.addEventListener('mousemove', this.onSplitDragMove);
+    document.addEventListener('mouseup', this.onSplitDragEnd);
+  }
+
+  // Handle split line drag
+  private onSplitDragMove = (event: MouseEvent): void => {
+    if (!this.isDraggingSplit()) return;
+
+    const pageNum = this.splitDragPageNum();
+    if (pageNum === null) return;
+
+    const dims = this.pageDimensions()[pageNum];
+    if (!dims) return;
+
+    // Get the page wrapper element
+    const pageWrapper = document.querySelector(`[data-page="${pageNum}"]`);
+    if (!pageWrapper) return;
+
+    const svg = pageWrapper.querySelector('.block-overlay') as SVGSVGElement;
+    if (!svg) return;
+
+    // Convert mouse position to SVG coordinates
+    const pt = svg.createSVGPoint();
+    pt.x = event.clientX;
+    pt.y = event.clientY;
+    const svgP = pt.matrixTransform(svg.getScreenCTM()?.inverse());
+
+    // Calculate new position as percentage
+    const newPosition = Math.max(0.1, Math.min(0.9, svgP.x / dims.width));
+
+    // Emit the change
+    this.splitPositionChange.emit({ pageNum, position: newPosition });
+  };
+
+  // End split line drag
+  private onSplitDragEnd = (): void => {
+    this.isDraggingSplit.set(false);
+    this.splitDragPageNum.set(null);
+    this.splitDragStartX.set(null);
+
+    document.removeEventListener('mousemove', this.onSplitDragMove);
+    document.removeEventListener('mouseup', this.onSplitDragEnd);
+  };
 }

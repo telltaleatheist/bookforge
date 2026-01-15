@@ -1,4 +1,4 @@
-import { Component, output, signal, OnInit, inject } from '@angular/core';
+import { Component, output, signal, OnInit, inject, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { PdfService } from '../../services/pdf.service';
@@ -30,6 +30,7 @@ type TabType = 'recent' | 'projects';
   selector: 'app-library-view',
   standalone: true,
   imports: [CommonModule, DesktopButtonComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="library-container"
          [class.drag-active]="isDragActive()"

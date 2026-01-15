@@ -1,4 +1,4 @@
-import { Component, input, output, signal, computed } from '@angular/core';
+import { Component, input, output, signal, computed, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
@@ -15,6 +15,7 @@ export interface CropApplyOptions {
   selector: 'app-crop-panel',
   standalone: true,
   imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="panel-header">
       <h3 class="panel-title">Crop Pages</h3>

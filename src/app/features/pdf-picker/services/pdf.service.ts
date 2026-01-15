@@ -18,6 +18,8 @@ export interface TextBlock {
   is_italic?: boolean;
   is_superscript?: boolean;
   is_image?: boolean;
+  is_footnote_marker?: boolean;  // Inline footnote reference marker (¹, ², [1], etc.)
+  parent_block_id?: string;      // If this is a marker extracted from a parent block
   line_count?: number;
 }
 

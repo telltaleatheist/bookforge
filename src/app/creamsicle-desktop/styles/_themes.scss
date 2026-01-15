@@ -76,11 +76,11 @@
   --focus-ring-error: #{$shadow-focus-error};
 
   // -------------------------------------------------------------------------
-  // Scrollbar
+  // Scrollbar (orange accent)
   // -------------------------------------------------------------------------
-  --scrollbar-track: transparent;
-  --scrollbar-thumb: #{$neutral-300};
-  --scrollbar-thumb-hover: #{$neutral-400};
+  --scrollbar-track: #{$neutral-200};
+  --scrollbar-thumb: #{$orange-400};
+  --scrollbar-thumb-hover: #{$orange-500};
 
   // -------------------------------------------------------------------------
   // Semantic Colors
@@ -189,11 +189,11 @@
   --focus-ring-error: #{$shadow-focus-error};
 
   // -------------------------------------------------------------------------
-  // Scrollbar
+  // Scrollbar (orange accent)
   // -------------------------------------------------------------------------
-  --scrollbar-track: transparent;
-  --scrollbar-thumb: #{$neutral-700};
-  --scrollbar-thumb-hover: #{$neutral-600};
+  --scrollbar-track: #{$neutral-800};
+  --scrollbar-thumb: #{$orange-500};
+  --scrollbar-thumb-hover: #{$orange-400};
 
   // -------------------------------------------------------------------------
   // Semantic Colors
@@ -381,8 +381,8 @@ body {
 // =============================================================================
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
 }
 
 ::-webkit-scrollbar-track {
