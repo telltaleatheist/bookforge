@@ -1694,11 +1694,11 @@ export class PdfPickerComponent {
   private readonly MAX_CONCURRENT_RENDERS = 2; // Max simultaneous renders
   private activeRenders = 0;
 
-  // Use lower scale for large PDFs to save memory
+  // Scale for rendering - higher values = sharper but more memory
   private getRenderScale(pageCount: number): number {
-    if (pageCount > 1000) return 0.5;
-    if (pageCount > 500) return 0.75;
-    return 1.0;
+    if (pageCount > 1000) return 1.5;
+    if (pageCount > 500) return 1.75;
+    return 2.0;
   }
 
   private async loadPageImage(pageNum: number, scale: number): Promise<void> {
