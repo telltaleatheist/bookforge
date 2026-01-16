@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu, protocol } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
@@ -6,8 +6,37 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import { pdfAnalyzer } from './pdf-analyzer';
 import { getOcrService } from './ocr-service';
+import { getPluginRegistry } from './plugins/plugin-registry';
+import { loadBuiltinPlugins } from './plugins/plugin-loader';
 
 let mainWindow: BrowserWindow | null = null;
+
+// Register custom protocol for serving page images from temp files
+// This avoids file:// security restrictions
+function registerPageProtocol(): void {
+  protocol.handle('bookforge-page', async (request) => {
+    // URL format: bookforge-page:///path/to/file.png
+    // After stripping protocol, ensure path has leading /
+    let filePath = decodeURIComponent(request.url.replace('bookforge-page://', ''));
+    if (!filePath.startsWith('/')) {
+      filePath = '/' + filePath;
+    }
+
+    try {
+      // Read file directly from disk
+      const data = fsSync.readFileSync(filePath);
+      return new Response(data, {
+        headers: {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'max-age=31536000' // Cache for 1 year
+        }
+      });
+    } catch (err) {
+      console.error('Failed to load page image:', filePath, err);
+      return new Response('File not found', { status: 404 });
+    }
+  });
+}
 
 // Atomic file write - writes to temp file then renames to prevent corruption
 async function atomicWriteFile(filePath: string, content: string): Promise<void> {
@@ -78,6 +107,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('pdf:analyze', async (_event, pdfPath: string, maxPages?: number) => {
     try {
       const result = await pdfAnalyzer.analyze(pdfPath, maxPages);
+      console.log('[pdf:analyze] Returning result with', result.blocks.length, 'blocks');
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -94,6 +124,132 @@ function setupIpcHandlers(): void {
     try {
       const image = await pdfAnalyzer.renderPage(pageNum, scale, pdfPath, redactRegions);
       return { success: true, data: { image } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Render a blank white page (for removing background images)
+  ipcMain.handle('pdf:render-blank-page', async (
+    _event,
+    pageNum: number,
+    scale: number = 2.0
+  ) => {
+    try {
+      const image = await pdfAnalyzer.renderBlankPage(pageNum, scale);
+      return { success: true, data: { image } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Render all pages to temp files upfront (for fast grid display)
+  ipcMain.handle('pdf:render-all-pages', async (
+    event,
+    pdfPath: string,
+    scale: number = 2.0,
+    concurrency: number = 4
+  ) => {
+    try {
+      const paths = await pdfAnalyzer.renderAllPagesToFiles(
+        pdfPath,
+        scale,
+        concurrency,
+        (current, total) => {
+          // Send progress updates to renderer
+          event.sender.send('pdf:render-progress', { current, total });
+        }
+      );
+      return { success: true, data: { paths } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Get path for a single pre-rendered page
+  ipcMain.handle('pdf:get-rendered-page-path', async (_event, pageNum: number) => {
+    try {
+      const path = pdfAnalyzer.getRenderedPagePath(pageNum);
+      return { success: true, data: { path } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Cleanup temp files (legacy - now a no-op since cache is persistent)
+  ipcMain.handle('pdf:cleanup-temp-files', async () => {
+    try {
+      pdfAnalyzer.cleanupTempFiles();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Two-tier rendering: fast previews first, then high-res in background
+  ipcMain.handle('pdf:render-with-previews', async (
+    event,
+    pdfPath: string,
+    concurrency: number = 4
+  ) => {
+    try {
+      const result = await pdfAnalyzer.renderAllPagesWithPreviews(
+        pdfPath,
+        concurrency,
+        // Preview progress callback
+        (current, total) => {
+          event.sender.send('pdf:render-progress', { current, total, phase: 'preview' });
+        },
+        // Full render callback (per-page as they complete)
+        (pageNum, pagePath) => {
+          event.sender.send('pdf:page-upgraded', { pageNum, path: pagePath });
+        },
+        // Combined progress callback
+        (current, total, phase) => {
+          event.sender.send('pdf:render-progress', { current, total, phase });
+        }
+      );
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Clear cache for a specific file hash
+  ipcMain.handle('pdf:clear-cache', async (_event, fileHash: string) => {
+    try {
+      pdfAnalyzer.clearCache(fileHash);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Clear all cache
+  ipcMain.handle('pdf:clear-all-cache', async () => {
+    try {
+      const result = pdfAnalyzer.clearAllCache();
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Get cache size for a specific file
+  ipcMain.handle('pdf:get-cache-size', async (_event, fileHash: string) => {
+    try {
+      const size = pdfAnalyzer.getCacheSize(fileHash);
+      return { success: true, data: { size } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Get total cache size
+  ipcMain.handle('pdf:get-total-cache-size', async () => {
+    try {
+      const size = pdfAnalyzer.getTotalCacheSize();
+      return { success: true, data: { size } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -756,11 +912,78 @@ function setupIpcHandlers(): void {
     }
     return { success: true };
   });
+
+  // Plugin system handlers
+  ipcMain.handle('plugins:list', async () => {
+    try {
+      const registry = getPluginRegistry();
+      const plugins = await registry.getPlugins();
+      return { success: true, data: plugins };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('plugins:get-settings', async (_event, pluginId: string) => {
+    try {
+      const registry = getPluginRegistry();
+      const settings = registry.getSettings(pluginId);
+      return { success: true, data: settings };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('plugins:update-settings', async (_event, pluginId: string, settings: Record<string, unknown>) => {
+    try {
+      const registry = getPluginRegistry();
+      const errors = registry.updateSettings(pluginId, settings);
+      if (errors.length > 0) {
+        return { success: false, errors };
+      }
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('plugins:check-availability', async (_event, pluginId: string) => {
+    try {
+      const registry = getPluginRegistry();
+      const availability = await registry.checkAvailability(pluginId);
+      return { success: true, data: availability };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
 }
 
-app.whenReady().then(() => {
+// Register custom protocol as privileged (must be done before app ready)
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'bookforge-page',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      bypassCSP: true
+    }
+  }
+]);
+
+app.whenReady().then(async () => {
+  // Register the protocol handler
+  registerPageProtocol();
+
   setupIpcHandlers();
   createWindow();
+
+  // Initialize plugin system
+  const registry = getPluginRegistry();
+  if (mainWindow) {
+    registry.setMainWindow(mainWindow);
+  }
+  await loadBuiltinPlugins(registry);
 
   // Set up application menu with Quit shortcut (Cmd+Q / Ctrl+Q)
   const isMac = process.platform === 'darwin';
@@ -824,4 +1047,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', async () => {
+  // Dispose all plugins
+  const registry = getPluginRegistry();
+  await registry.disposeAll();
 });

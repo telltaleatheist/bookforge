@@ -22,6 +22,7 @@ import { LibraryViewComponent } from './components/library-view/library-view.com
 import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
 import { OcrSettingsModalComponent, OcrSettings, OcrPageResult } from './components/ocr-settings-modal/ocr-settings-modal.component';
 import { InlineTextEditorComponent, TextEditResult } from './components/inline-text-editor/inline-text-editor.component';
+import { SettingsModalComponent } from './components/settings-modal/settings-modal.component';
 
 interface OpenDocument {
   id: string;
@@ -140,6 +141,7 @@ interface AlertModal {
     TabBarComponent,
     OcrSettingsModalComponent,
     InlineTextEditorComponent,
+    SettingsModalComponent,
   ],
   template: `
     <!-- Toolbar -->
@@ -217,12 +219,14 @@ interface AlertModal {
               [sampleRects]="sampleRects()"
               [sampleCurrentRect]="sampleDrawingRect()"
               [regexSearchMode]="regexPanelExpanded()"
+              [removeBackgrounds]="removeBackgrounds()"
               (blockClick)="onBlockClick($event)"
               (blockDoubleClick)="onBlockDoubleClick($event)"
               (blockHover)="onBlockHover($event)"
               (selectLikeThis)="selectLikeThis($event)"
               (deleteLikeThis)="deleteLikeThis($event)"
               (deleteBlock)="deleteBlock($event)"
+              (revertBlock)="revertBlockText($event)"
               (zoomChange)="onZoomChange($event)"
               (selectAllOnPage)="selectAllOnPage($event)"
               (deselectAllOnPage)="deselectAllOnPage($event)"
@@ -363,6 +367,7 @@ interface AlertModal {
         (fileSelected)="loadPdf($event)"
         (projectSelected)="loadProjectFromPath($event)"
         (projectsSelected)="onLibraryProjectsSelected($event)"
+        (clearCache)="onClearCache($event)"
       />
     }
 
@@ -379,6 +384,14 @@ interface AlertModal {
       <div class="loading-overlay">
         <div class="loading-spinner"></div>
         <p>{{ loadingText() }}</p>
+        @if (renderProgress().total > 0) {
+          <div class="progress-container">
+            <div class="progress-bar">
+              <div class="progress-fill" [style.width.%]="renderProgressPercent()"></div>
+            </div>
+            <span class="progress-text">{{ renderProgress().current }} / {{ renderProgress().total }} pages</span>
+          </div>
+        }
       </div>
     }
 
@@ -490,6 +503,13 @@ interface AlertModal {
         [getPageImage]="getPageImageForOcr.bind(this)"
         (close)="showOcrSettings.set(false)"
         (ocrCompleted)="onOcrCompleted($event)"
+      />
+    }
+
+    <!-- Settings Modal -->
+    @if (showSettings()) {
+      <app-settings-modal
+        (close)="showSettings.set(false)"
       />
     }
 
@@ -813,6 +833,34 @@ interface AlertModal {
       border-radius: 50%;
       animation: spin 1s linear infinite;
       margin-bottom: $spacing-4;
+    }
+
+    .progress-container {
+      margin-top: $spacing-4;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: $spacing-2;
+      width: 300px;
+    }
+
+    .progress-bar {
+      width: 100%;
+      height: 8px;
+      background: var(--bg-raised);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      transition: width 0.2s ease-out;
+    }
+
+    .progress-text {
+      font-size: var(--text-sm);
+      color: var(--text-secondary);
     }
 
     @keyframes spin {
@@ -1380,6 +1428,7 @@ export class PdfPickerComponent {
   get pdfName() { return this.editorState.pdfName; }
   get pdfPath() { return this.editorState.pdfPath; }
   get libraryPath() { return this.editorState.libraryPath; }
+  get effectivePath() { return this.editorState.effectivePath; }
   get fileHash() { return this.editorState.fileHash; }
   get pdfLoaded() { return this.editorState.pdfLoaded; }
   get deletedBlockIds() { return this.editorState.deletedBlockIds; }
@@ -1423,11 +1472,46 @@ export class PdfPickerComponent {
   // Delegate project state to projectService
   get projectPath() { return this.projectService.projectPath; }
 
-  readonly zoom = signal(100);
+  readonly zoom = signal(50); // Default 50% for grid mode
   readonly layout = signal<'vertical' | 'grid'>('grid');
+  readonly removeBackgrounds = signal(false); // Remove scanned page backgrounds
   // Split size = window width minus sidebar width (keeps sidebar fixed)
   readonly splitSize = signal(Math.max(400, window.innerWidth - this.SIDEBAR_WIDTH));
   private userResizedSplit = false; // Track if user manually resized
+  private userAdjustedZoom = false; // Track if user manually zoomed
+
+  // Grid layout constants
+  private readonly GRID_THUMBNAIL_BASE_WIDTH = 200; // Base width in px at 100% zoom
+  private readonly GRID_GAP = 16; // Gap between thumbnails in px
+  private readonly GRID_PADDING = 32; // Padding around grid container
+  private readonly DEFAULT_PAGES_ACROSS = 4; // Target pages across in grid
+
+  /**
+   * Calculate optimal zoom level to fit N pages across in grid mode
+   * @param pagesAcross Number of pages to fit horizontally (default: 4)
+   * @returns Zoom percentage that fits the requested pages
+   */
+  calculateZoomForGridPages(pagesAcross: number = this.DEFAULT_PAGES_ACROSS): number {
+    const viewportWidth = this.splitSize();
+    // Account for gaps between pages and padding
+    const totalGaps = (pagesAcross - 1) * this.GRID_GAP;
+    const availableWidth = viewportWidth - this.GRID_PADDING - totalGaps;
+    const pageWidth = availableWidth / pagesAcross;
+    // Calculate zoom: pageWidth = GRID_THUMBNAIL_BASE_WIDTH * (zoom / 100)
+    const zoom = (pageWidth / this.GRID_THUMBNAIL_BASE_WIDTH) * 100;
+    // Clamp to reasonable bounds
+    return Math.max(20, Math.min(200, Math.round(zoom)));
+  }
+
+  /**
+   * Auto-zoom to fit 4 pages across when in grid mode
+   */
+  autoZoomForGrid(): void {
+    if (this.layout() === 'grid' && !this.userAdjustedZoom) {
+      const optimalZoom = this.calculateZoomForGridPages(this.DEFAULT_PAGES_ACROSS);
+      this.zoom.set(optimalZoom);
+    }
+  }
 
   // Keep sidebar fixed width on window resize (unless user manually resized)
   @HostListener('window:resize')
@@ -1435,6 +1519,8 @@ export class PdfPickerComponent {
     if (!this.userResizedSplit) {
       this.splitSize.set(Math.max(400, window.innerWidth - this.SIDEBAR_WIDTH));
     }
+    // Recalculate grid zoom on resize if user hasn't manually zoomed
+    this.autoZoomForGrid();
   }
 
   // Keyboard shortcuts
@@ -1553,8 +1639,17 @@ export class PdfPickerComponent {
   }
 
   readonly showFilePicker = signal(false);
+  readonly showSettings = signal(false);
   readonly loading = signal(false);
   readonly loadingText = signal('Loading...');
+
+  // Render progress from PageRenderService
+  readonly renderProgress = computed(() => this.pageRenderService.loadingProgress());
+  readonly renderProgressPercent = computed(() => {
+    const { current, total } = this.renderProgress();
+    if (total === 0) return 0;
+    return Math.round((current / total) * 100);
+  });
 
   // Regex category panel state (in categories sidebar)
   readonly regexPanelExpanded = signal(false);
@@ -1813,6 +1908,14 @@ export class PdfPickerComponent {
           tooltip: 'Toggle layout',
           active: this.layout() === 'grid'
         },
+        {
+          id: 'remove-backgrounds',
+          type: 'toggle',
+          icon: '🖼️',
+          label: 'No BG',
+          tooltip: 'Remove background images (show text only)',
+          active: this.removeBackgrounds()
+        },
         { id: 'zoom-out', type: 'button', icon: '−', tooltip: 'Zoom out' },
         { id: 'zoom-level', type: 'button', label: `${this.zoom()}%`, disabled: true },
         { id: 'zoom-in', type: 'button', icon: '+', tooltip: 'Zoom in' },
@@ -1829,7 +1932,8 @@ export class PdfPickerComponent {
             { id: 'ui-medium', label: 'Medium' },
             { id: 'ui-large', label: 'Large' }
           ]
-        }
+        },
+        { id: 'settings', type: 'button', icon: '⚙️', tooltip: 'Settings' }
       ];
     }
 
@@ -1848,7 +1952,8 @@ export class PdfPickerComponent {
           { id: 'ui-medium', label: 'Medium' },
           { id: 'ui-large', label: 'Large' }
         ]
-      }
+      },
+      { id: 'settings', type: 'button', icon: '⚙️', tooltip: 'Settings' }
     ];
   });
 
@@ -1949,18 +2054,38 @@ export class PdfPickerComponent {
         this.redo();
         break;
       case 'layout':
-        this.layout.update(l => l === 'vertical' ? 'grid' : 'vertical');
+        this.layout.update(l => {
+          const newLayout = l === 'vertical' ? 'grid' : 'vertical';
+          // When switching to grid, auto-zoom and reset pagination
+          if (newLayout === 'grid') {
+            this.userAdjustedZoom = false;
+            setTimeout(() => {
+              this.autoZoomForGrid();
+              this.pdfViewer?.resetGridPagination();
+            }, 0);
+          }
+          return newLayout;
+        });
+        break;
+      case 'remove-backgrounds':
+        this.toggleRemoveBackgrounds();
         break;
       case 'zoom-in':
         // 50% jumps - use scroll wheel or type for precision
+        this.userAdjustedZoom = true;
         this.zoom.update(z => Math.min(Math.round(z * 1.5), 2000));
         break;
       case 'zoom-out':
         // 50% jumps - use scroll wheel or type for precision
+        this.userAdjustedZoom = true;
         this.zoom.update(z => Math.max(Math.round(z / 1.5), 10));
         break;
       case 'zoom-reset':
+        this.userAdjustedZoom = true;
         this.zoom.set(100);
+        break;
+      case 'settings':
+        this.showSettings.set(true);
         break;
     }
   }
@@ -1989,6 +2114,43 @@ export class PdfPickerComponent {
         case 'export-pdf':
           this.exportPdf();
           break;
+      }
+    }
+  }
+
+  /**
+   * Toggle remove backgrounds mode
+   * When enabled, renders pages as white with text overlays
+   */
+  async toggleRemoveBackgrounds(): Promise<void> {
+    const newValue = !this.removeBackgrounds();
+    this.removeBackgrounds.set(newValue);
+
+    if (newValue) {
+      // Re-render all pages as blank white
+      this.loading.set(true);
+      this.loadingText.set('Removing backgrounds...');
+
+      try {
+        for (let i = 0; i < this.totalPages(); i++) {
+          await this.pageRenderService.renderBlankPage(i);
+        }
+      } finally {
+        this.loading.set(false);
+        this.loadingText.set('');
+      }
+    } else {
+      // Reload original pages
+      this.loading.set(true);
+      this.loadingText.set('Restoring original pages...');
+
+      try {
+        // Clear the render cache and reload pages
+        this.pageRenderService.clear();
+        await this.pageRenderService.loadAllPageImages(this.totalPages());
+      } finally {
+        this.loading.set(false);
+        this.loadingText.set('');
       }
     }
   }
@@ -2034,6 +2196,36 @@ export class PdfPickerComponent {
     }
   }
 
+  /**
+   * Clear rendered data (cache) for selected projects
+   * If a cleared file is currently open, it will revert to low-quality previews
+   */
+  async onClearCache(fileHashes: string[]): Promise<void> {
+    if (fileHashes.length === 0) return;
+
+    for (const hash of fileHashes) {
+      // Truncate hash to 16 chars to match cache directory naming
+      // (project stores full 64-char hash, cache uses truncated 16-char)
+      const truncatedHash = hash.substring(0, 16);
+      await this.electronService.clearCache(truncatedHash);
+    }
+
+    // If current document's cache was cleared, invalidate the render service
+    const activeDoc = this.openDocuments().find(d => d.id === this.activeDocumentId());
+    if (activeDoc && fileHashes.includes(activeDoc.fileHash)) {
+      // Clear local render state - will reload previews on next render
+      this.pageRenderService.clear();
+      // Reload pages from scratch
+      await this.pageRenderService.loadAllPageImages(this.totalPages());
+    }
+
+    this.showAlert({
+      title: 'Cache Cleared',
+      message: `Cleared rendered data for ${fileHashes.length} file${fileHashes.length > 1 ? 's' : ''}.`,
+      type: 'success'
+    });
+  }
+
   private closePdf(): void {
     // Reset all state to show library view
     this.pdfLoaded.set(false);
@@ -2049,10 +2241,12 @@ export class PdfPickerComponent {
   }
 
   async loadPdf(path: string): Promise<void> {
+    console.log('[loadPdf] Starting for path:', path);
     this.showFilePicker.set(false);
 
     // Check if this PDF is already open (by original path or library path)
     const existingDoc = this.openDocuments().find(d => d.path === path || d.libraryPath === path);
+    console.log('[loadPdf] existingDoc check:', existingDoc ? `found ${existingDoc.id}, blocks: ${existingDoc.blocks.length}` : 'not found');
     if (existingDoc) {
       // Switch to existing tab
       this.saveCurrentDocumentState();
@@ -2118,6 +2312,7 @@ export class PdfPickerComponent {
       this.activeDocumentId.set(docId);
 
       // Set current state via service
+      console.log('Loading document with blocks:', result.blocks.length, 'blocks, categories:', Object.keys(result.categories).length);
       this.editorState.loadDocument({
         blocks: result.blocks,
         categories: result.categories,
@@ -2128,17 +2323,25 @@ export class PdfPickerComponent {
         libraryPath: libraryPath,
         fileHash: fileHash
       });
+      console.log('After loadDocument, editorState.blocks:', this.editorState.blocks().length);
       this.pageRenderService.clear();
       this.projectService.reset();
 
       this.saveRecentFile(path, result.pdf_name);
 
-      // Load page images
+      // Load page images - use effectivePath() to get the actual file location
       this.loadingText.set('Rendering pages...');
-      this.pageRenderService.initialize(this.pdfPath(), result.page_count);
+      this.pageRenderService.initialize(this.effectivePath(), result.page_count);
       await this.pageRenderService.loadAllPageImages(result.page_count);
 
       this.pdfLoaded.set(true);
+
+      // Reset zoom tracking for new document and auto-zoom for grid
+      this.userAdjustedZoom = false;
+      this.autoZoomForGrid();
+
+      // Reset grid pagination for efficient initial render
+      this.pdfViewer?.resetGridPagination();
 
       // Auto-create project file for this document
       await this.autoCreateProject(path, result.pdf_name);
@@ -2280,14 +2483,26 @@ export class PdfPickerComponent {
   }
 
   /**
-   * Get all redact regions for a page (original positions of edited blocks)
+   * Get all redact regions for a page (deleted blocks and edited blocks' original positions)
    */
   private getRedactRegionsForPage(pageNum: number): Array<{ x: number; y: number; width: number; height: number }> {
     const regions: Array<{ x: number; y: number; width: number; height: number }> = [];
     const blockEdits = this.editorState.blockEdits();
+    const deletedIds = this.deletedBlockIds();
 
     for (const block of this.blocks()) {
       if (block.page !== pageNum) continue;
+
+      // Check if block is deleted - add to redact regions
+      if (deletedIds.has(block.id)) {
+        regions.push({
+          x: block.x,
+          y: block.y,
+          width: block.width,
+          height: block.height
+        });
+        continue;
+      }
 
       const edit = blockEdits.get(block.id);
       if (!edit) continue;
@@ -2454,19 +2669,46 @@ export class PdfPickerComponent {
   deleteLikeThis(block: TextBlock): void {
     const categoryId = block.category_id;
     const deleted = this.deletedBlockIds();
-    const toDelete = this.blocks()
-      .filter(b => b.category_id === categoryId && !deleted.has(b.id))
-      .map(b => b.id);
+    const blocksToDelete = this.blocks()
+      .filter(b => b.category_id === categoryId && !deleted.has(b.id));
 
-    if (toDelete.length === 0) return;
+    if (blocksToDelete.length === 0) return;
 
-    this.editorState.deleteBlocks(toDelete);
+    // Get affected pages before deletion
+    const affectedPages = new Set(blocksToDelete.map(b => b.page));
+
+    this.editorState.deleteBlocks(blocksToDelete.map(b => b.id));
     this.editorState.clearSelection();
+
+    // Re-render affected pages to remove deleted content
+    for (const pageNum of affectedPages) {
+      this.rerenderPageWithEdits(pageNum);
+    }
   }
 
   deleteBlock(blockId: string): void {
     if (this.deletedBlockIds().has(blockId)) return;
+
+    // Get the block's page before deletion
+    const block = this.editorState.getBlock(blockId);
+    const pageNum = block?.page;
+
     this.editorState.deleteBlocks([blockId]);
+
+    // Re-render the page to remove deleted content
+    if (pageNum !== undefined) {
+      this.rerenderPageWithEdits(pageNum);
+    }
+  }
+
+  revertBlockText(blockId: string): void {
+    // Clear the text correction to revert to original
+    this.editorState.clearTextCorrection(blockId);
+    // Re-render the page to show original text
+    const block = this.editorState.getBlock(blockId);
+    if (block) {
+      this.rerenderPageWithEdits(block.page);
+    }
   }
 
   // Delegate undo/redo to service
@@ -3125,9 +3367,9 @@ export class PdfPickerComponent {
       this.pageRenderService.clear();
       this.projectService.projectPath.set(result.filePath || null);
 
-      // Load page images
+      // Load page images - use effectivePath() to get the actual file location
       this.loadingText.set('Rendering pages...');
-      this.pageRenderService.initialize(this.pdfPath(), pdfResult.page_count);
+      this.pageRenderService.initialize(this.effectivePath(), pdfResult.page_count);
       await this.pageRenderService.loadAllPageImages(pdfResult.page_count);
     } catch (err) {
       console.error('Failed to load project source file:', err);
@@ -3206,7 +3448,9 @@ export class PdfPickerComponent {
     const pdfPathToLoad = libraryPath;
 
     try {
+      console.log('[loadProjectFromPath] Analyzing PDF:', pdfPathToLoad);
       const pdfResult = await this.pdfService.analyzePdf(pdfPathToLoad);
+      console.log('[loadProjectFromPath] Analysis result blocks:', pdfResult.blocks.length, 'categories:', Object.keys(pdfResult.categories).length);
 
       // Create new document for tabs
       const docId = this.generateDocumentId();
@@ -3285,9 +3529,9 @@ export class PdfPickerComponent {
       this.pageRenderService.clear();
       this.projectService.projectPath.set(actualProjectPath);
 
-      // Load page images
+      // Load page images - use effectivePath() to get the actual file location
       this.loadingText.set('Rendering pages...');
-      this.pageRenderService.initialize(this.pdfPath(), pdfResult.page_count);
+      this.pageRenderService.initialize(this.effectivePath(), pdfResult.page_count);
       await this.pageRenderService.loadAllPageImages(pdfResult.page_count);
 
       this.pdfLoaded.set(true);
@@ -4232,17 +4476,101 @@ export class PdfPickerComponent {
 
   // OCR methods
   getPageImageForOcr(pageNum: number): string | null {
-    const image = this.pageImages().get(pageNum);
+    const allImages = this.pageImages();
+    const image = allImages.get(pageNum);
+    if (!image) {
+      console.warn(`getPageImageForOcr(${pageNum}): No image found. Map size: ${allImages.size}, keys: ${Array.from(allImages.keys()).slice(0, 5).join(',')}...`);
+    }
     return image && image !== 'loading' && image !== 'failed' ? image : null;
   }
 
   onOcrCompleted(results: OcrPageResult[]): void {
     console.log('OCR completed:', results.length, 'pages processed');
-    // TODO: Could integrate OCR results into the document
-    // For now, the modal handles export/copy
+
+    // Count total text lines with bboxes
+    const totalLines = results.reduce((sum, r) => sum + (r.textLines?.length || 0), 0);
+
+    if (totalLines === 0) {
+      // No bounding box data - just show success message
+      this.showAlert({
+        title: 'OCR Complete',
+        message: `Processed ${results.length} pages. No bounding boxes available for block creation.`,
+        type: 'success'
+      });
+      return;
+    }
+
+    // Create or get OCR category
+    const OCR_CATEGORY_ID = 'ocr-text';
+    let ocrCategory = this.categories()[OCR_CATEGORY_ID];
+
+    if (!ocrCategory) {
+      ocrCategory = {
+        id: OCR_CATEGORY_ID,
+        name: 'OCR Text',
+        description: 'Text extracted via OCR',
+        color: '#9333ea',  // Purple color for OCR text
+        block_count: 0,
+        char_count: 0,
+        font_size: 0,
+        region: 'body',
+        sample_text: '',
+        enabled: true
+      };
+      this.editorState.addCategory(ocrCategory);
+    }
+
+    // Full-res images are always rendered at 2.5x scale (FULL_SCALE in pdf-analyzer.ts)
+    // OCR bbox coordinates are in image pixels, so divide by 2.5 to get PDF coordinates
+    const renderScale = 2.5;
+
+    // Convert OCR text lines to TextBlocks
+    const newBlocks: TextBlock[] = [];
+    let blockIdCounter = Date.now();
+
+    for (const result of results) {
+      if (!result.textLines || result.textLines.length === 0) {
+        console.log(`[OCR] Page ${result.page}: No textLines, text length: ${result.text?.length || 0}`);
+        continue;
+      }
+
+      console.log(`[OCR] Page ${result.page}: ${result.textLines.length} textLines`);
+
+      for (const line of result.textLines) {
+        const [x1, y1, x2, y2] = line.bbox;
+
+        // Convert from image pixels to PDF coordinates (divide by render scale)
+        const block: TextBlock = {
+          id: `ocr_${blockIdCounter++}`,
+          page: result.page,
+          x: x1 / renderScale,
+          y: y1 / renderScale,
+          width: (x2 - x1) / renderScale,
+          height: (y2 - y1) / renderScale,
+          text: line.text,
+          font_size: 12,  // Default font size
+          font_name: 'OCR',
+          char_count: line.text.length,
+          region: 'body',
+          category_id: OCR_CATEGORY_ID
+        };
+
+        newBlocks.push(block);
+      }
+    }
+
+    // Add blocks to document
+    this.editorState.addBlocks(newBlocks);
+
+    // Update category stats
+    this.editorState.updateCategoryStats();
+
+    // Update the open document's blocks
+    this.saveCurrentDocumentState();
+
     this.showAlert({
       title: 'OCR Complete',
-      message: `Processed ${results.length} pages. Use Copy/Export in the modal to save results.`,
+      message: `Added ${newBlocks.length} text blocks from ${results.length} pages.`,
       type: 'success'
     });
   }
@@ -4350,6 +4678,8 @@ export class PdfPickerComponent {
     const doc = this.openDocuments().find(d => d.id === docId);
     if (!doc) return;
 
+    console.log('[restoreDocumentState] Restoring doc:', docId, 'blocks:', doc.blocks.length, 'categories:', Object.keys(doc.categories).length);
+
     this.activeDocumentId.set(docId);
 
     // Load document data via service
@@ -4365,6 +4695,7 @@ export class PdfPickerComponent {
       deletedBlockIds: doc.deletedBlockIds,
       pageOrder: doc.pageOrder
     });
+    console.log('[restoreDocumentState] After loadDocument, editorState.blocks:', this.editorState.blocks().length);
 
     // Restore additional state
     this.editorState.selectedBlockIds.set(doc.selectedBlockIds);

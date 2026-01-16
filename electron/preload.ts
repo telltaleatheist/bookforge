@@ -109,6 +109,43 @@ export interface DeskewResult {
   confidence: number;
 }
 
+// Plugin system types
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  capabilities: string[];
+  available: boolean;
+  availabilityDetails?: {
+    available: boolean;
+    version?: string;
+    path?: string;
+    error?: string;
+    installInstructions?: string;
+  };
+  settingsSchema: Array<{
+    key: string;
+    type: 'string' | 'number' | 'boolean' | 'select' | 'path';
+    label: string;
+    description?: string;
+    default: unknown;
+    options?: { value: string; label: string }[];
+    min?: number;
+    max?: number;
+    placeholder?: string;
+  }>;
+}
+
+export interface PluginProgress {
+  pluginId: string;
+  operation: string;
+  current: number;
+  total: number;
+  message?: string;
+  percentage?: number;
+}
+
 export interface TextSpan {
   id: string;
   page: number;
@@ -174,10 +211,29 @@ export interface MatchingSpansResult {
   pattern: string;  // The pattern that was matched
 }
 
+export interface RenderProgressCallback {
+  (progress: { current: number; total: number }): void;
+}
+
+export interface RenderWithPreviewsResult {
+  previewPaths: string[];
+  fileHash: string;
+}
+
 export interface ElectronAPI {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
     renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number }>) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
+    renderBlankPage: (pageNum: number, scale?: number) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
+    renderAllPages: (pdfPath: string, scale?: number, concurrency?: number) => Promise<{ success: boolean; data?: { paths: string[] }; error?: string }>;
+    renderWithPreviews: (pdfPath: string, concurrency?: number) => Promise<{ success: boolean; data?: RenderWithPreviewsResult; error?: string }>;
+    onRenderProgress: (callback: RenderProgressCallback) => () => void;
+    onPageUpgraded: (callback: (data: { pageNum: number; path: string }) => void) => () => void;
+    cleanupTempFiles: () => Promise<{ success: boolean; error?: string }>;
+    clearCache: (fileHash: string) => Promise<{ success: boolean; error?: string }>;
+    clearAllCache: () => Promise<{ success: boolean; data?: { cleared: number; freedBytes: number }; error?: string }>;
+    getCacheSize: (fileHash: string) => Promise<{ success: boolean; data?: { size: number }; error?: string }>;
+    getTotalCacheSize: () => Promise<{ success: boolean; data?: { size: number }; error?: string }>;
     exportText: (enabledCategories: string[]) => Promise<{ success: boolean; data?: { text: string; char_count: number }; error?: string }>;
     exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
     findSimilar: (blockId: string) => Promise<{ success: boolean; data?: { similar_ids: string[]; count: number }; error?: string }>;
@@ -231,6 +287,14 @@ export interface ElectronAPI {
     hide: () => Promise<{ success: boolean }>;
     close: () => Promise<{ success: boolean }>;
   };
+  plugins: {
+    list: () => Promise<{ success: boolean; data?: PluginInfo[]; error?: string }>;
+    getSettings: (pluginId: string) => Promise<{ success: boolean; data?: Record<string, unknown>; error?: string }>;
+    updateSettings: (pluginId: string, settings: Record<string, unknown>) => Promise<{ success: boolean; errors?: string[]; error?: string }>;
+    checkAvailability: (pluginId: string) => Promise<{ success: boolean; data?: { available: boolean; version?: string; path?: string; error?: string; installInstructions?: string }; error?: string }>;
+    invoke: (pluginId: string, channel: string, ...args: unknown[]) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    onProgress: (callback: (progress: PluginProgress) => void) => () => void;
+  };
   platform: string;
 }
 
@@ -240,6 +304,40 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:analyze', pdfPath, maxPages),
     renderPage: (pageNum: number, scale: number = 2.0, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number }>) =>
       ipcRenderer.invoke('pdf:render-page', pageNum, scale, pdfPath, redactRegions),
+    renderBlankPage: (pageNum: number, scale: number = 2.0) =>
+      ipcRenderer.invoke('pdf:render-blank-page', pageNum, scale),
+    renderAllPages: (pdfPath: string, scale: number = 2.0, concurrency: number = 4) =>
+      ipcRenderer.invoke('pdf:render-all-pages', pdfPath, scale, concurrency),
+    renderWithPreviews: (pdfPath: string, concurrency: number = 4) =>
+      ipcRenderer.invoke('pdf:render-with-previews', pdfPath, concurrency),
+    onRenderProgress: (callback: RenderProgressCallback) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: { current: number; total: number; phase?: string }) => {
+        callback(progress);
+      };
+      ipcRenderer.on('pdf:render-progress', listener);
+      return () => {
+        ipcRenderer.removeListener('pdf:render-progress', listener);
+      };
+    },
+    onPageUpgraded: (callback: (data: { pageNum: number; path: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { pageNum: number; path: string }) => {
+        callback(data);
+      };
+      ipcRenderer.on('pdf:page-upgraded', listener);
+      return () => {
+        ipcRenderer.removeListener('pdf:page-upgraded', listener);
+      };
+    },
+    cleanupTempFiles: () =>
+      ipcRenderer.invoke('pdf:cleanup-temp-files'),
+    clearCache: (fileHash: string) =>
+      ipcRenderer.invoke('pdf:clear-cache', fileHash),
+    clearAllCache: () =>
+      ipcRenderer.invoke('pdf:clear-all-cache'),
+    getCacheSize: (fileHash: string) =>
+      ipcRenderer.invoke('pdf:get-cache-size', fileHash),
+    getTotalCacheSize: () =>
+      ipcRenderer.invoke('pdf:get-total-cache-size'),
     exportText: (enabledCategories: string[]) =>
       ipcRenderer.invoke('pdf:export-text', enabledCategories),
     exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>) =>
@@ -310,6 +408,28 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('window:hide'),
     close: () =>
       ipcRenderer.invoke('window:close'),
+  },
+  plugins: {
+    list: () =>
+      ipcRenderer.invoke('plugins:list'),
+    getSettings: (pluginId: string) =>
+      ipcRenderer.invoke('plugins:get-settings', pluginId),
+    updateSettings: (pluginId: string, settings: Record<string, unknown>) =>
+      ipcRenderer.invoke('plugins:update-settings', pluginId, settings),
+    checkAvailability: (pluginId: string) =>
+      ipcRenderer.invoke('plugins:check-availability', pluginId),
+    invoke: (pluginId: string, channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`plugin:${pluginId}:${channel}`, ...args),
+    onProgress: (callback: (progress: PluginProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: PluginProgress) => {
+        callback(progress);
+      };
+      ipcRenderer.on('plugin:progress', listener);
+      // Return unsubscribe function
+      return () => {
+        ipcRenderer.removeListener('plugin:progress', listener);
+      };
+    },
   },
   platform: process.platform,
 };

@@ -211,6 +211,140 @@ export class ElectronService {
     return `http://localhost:5848/api/page/${pageNum}?scale=${scale}`;
   }
 
+  /**
+   * Render a blank white page (for removing background images)
+   */
+  async renderBlankPage(pageNum: number, scale: number = 2.0): Promise<string | null> {
+    if (this.isElectron) {
+      const result: PdfRenderResult = await (window as any).electron.pdf.renderBlankPage(pageNum, scale);
+      if (result.success && result.data?.image) {
+        return `data:image/png;base64,${result.data.image}`;
+      }
+      console.error('Failed to render blank page:', result.error);
+      return null;
+    }
+    return null;
+  }
+
+  /**
+   * Render all pages to temp files upfront.
+   * Returns array of file paths indexed by page number.
+   * Use onRenderProgress to get progress updates.
+   */
+  async renderAllPages(
+    pdfPath: string,
+    scale: number = 2.0,
+    concurrency: number = 4
+  ): Promise<string[] | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.renderAllPages(pdfPath, scale, concurrency);
+      if (result.success && result.data?.paths) {
+        return result.data.paths;
+      }
+      console.error('Failed to render all pages:', result.error);
+      return null;
+    }
+    return null;
+  }
+
+  /**
+   * Subscribe to render progress updates.
+   * Returns unsubscribe function.
+   */
+  onRenderProgress(callback: (progress: { current: number; total: number; phase?: string }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.pdf.onRenderProgress(callback);
+    }
+    return () => {};
+  }
+
+  /**
+   * Subscribe to page upgrade notifications (when high-res replaces preview).
+   * Returns unsubscribe function.
+   */
+  onPageUpgraded(callback: (data: { pageNum: number; path: string }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.pdf.onPageUpgraded(callback);
+    }
+    return () => {};
+  }
+
+  /**
+   * Render with two-tier approach: fast previews first, then high-res in background.
+   * Returns preview paths immediately.
+   */
+  async renderWithPreviews(
+    pdfPath: string,
+    concurrency: number = 4
+  ): Promise<{ previewPaths: string[]; fileHash: string } | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.renderWithPreviews(pdfPath, concurrency);
+      if (result.success && result.data) {
+        return result.data;
+      }
+      console.error('Failed to render with previews:', result.error);
+      return null;
+    }
+    return null;
+  }
+
+  /**
+   * Clean up temp files from previous render session (legacy, now no-op).
+   */
+  async cleanupTempFiles(): Promise<void> {
+    if (this.isElectron) {
+      await (window as any).electron.pdf.cleanupTempFiles();
+    }
+  }
+
+  /**
+   * Clear cache for a specific file.
+   */
+  async clearCache(fileHash: string): Promise<void> {
+    if (this.isElectron) {
+      await (window as any).electron.pdf.clearCache(fileHash);
+    }
+  }
+
+  /**
+   * Clear all cached data.
+   */
+  async clearAllCache(): Promise<{ cleared: number; freedBytes: number } | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.clearAllCache();
+      if (result.success && result.data) {
+        return result.data;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Get cache size for a specific file.
+   */
+  async getCacheSize(fileHash: string): Promise<number> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.getCacheSize(fileHash);
+      if (result.success && result.data) {
+        return result.data.size;
+      }
+    }
+    return 0;
+  }
+
+  /**
+   * Get total cache size.
+   */
+  async getTotalCacheSize(): Promise<number> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.getTotalCacheSize();
+      if (result.success && result.data) {
+        return result.data.size;
+      }
+    }
+    return 0;
+  }
+
   async exportPdfText(enabledCategories: string[]): Promise<{ text: string; char_count: number } | null> {
     if (this.isElectron) {
       const result = await (window as any).electron.pdf.exportText(enabledCategories);

@@ -2,10 +2,13 @@ import { Injectable, signal, computed } from '@angular/core';
 import { TextBlock, Category, PageDimension } from './pdf.service';
 
 export interface HistoryAction {
-  type: 'delete' | 'restore';
+  type: 'delete' | 'restore' | 'textEdit';
   blockIds: string[];
   selectionBefore: string[];
   selectionAfter: string[];
+  // For textEdit actions
+  textBefore?: string | null;  // null means no correction (original text)
+  textAfter?: string | null;
 }
 
 /**
@@ -46,6 +49,13 @@ export class PdfEditorStateService {
   readonly pdfPath = signal('');       // Original path (for display)
   readonly libraryPath = signal('');   // Path in library (used for operations)
   readonly fileHash = signal('');      // SHA256 hash for deduplication
+
+  /**
+   * Get the effective path for file operations.
+   * Returns libraryPath if available, otherwise falls back to pdfPath.
+   * This is the path where the file actually exists.
+   */
+  readonly effectivePath = computed(() => this.libraryPath() || this.pdfPath());
   readonly pdfLoaded = signal(false);
 
   // Selection and deletion state
@@ -214,13 +224,28 @@ export class PdfEditorStateService {
   }
 
   // Text correction methods (for OCR fixes) - convenience wrappers
-  setTextCorrection(blockId: string, correctedText: string): void {
+  setTextCorrection(blockId: string, correctedText: string, addToHistory: boolean = true): void {
+    const previousText = this.blockEdits().get(blockId)?.text ?? null;
+
     this.updateBlockEdit(blockId, { text: correctedText });
+
+    if (addToHistory && correctedText !== previousText) {
+      this.pushHistory({
+        type: 'textEdit',
+        blockIds: [blockId],
+        selectionBefore: [...this.selectedBlockIds()],
+        selectionAfter: [...this.selectedBlockIds()],
+        textBefore: previousText,
+        textAfter: correctedText,
+      });
+    }
   }
 
-  clearTextCorrection(blockId: string): void {
+  clearTextCorrection(blockId: string, addToHistory: boolean = true): void {
     const edit = this.blockEdits().get(blockId);
-    if (edit) {
+    if (edit && edit.text !== undefined) {
+      const previousText = edit.text;
+
       // Remove just the text, keep other edits
       const { text, ...rest } = edit;
       if (Object.keys(rest).length > 0) {
@@ -233,6 +258,17 @@ export class PdfEditorStateService {
         this.clearBlockEdit(blockId);
       }
       this.markChanged();
+
+      if (addToHistory) {
+        this.pushHistory({
+          type: 'textEdit',
+          blockIds: [blockId],
+          selectionBefore: [...this.selectedBlockIds()],
+          selectionAfter: [...this.selectedBlockIds()],
+          textBefore: previousText,
+          textAfter: null,  // null means reverted to original
+        });
+      }
     }
   }
 
@@ -418,14 +454,26 @@ export class PdfEditorStateService {
     const action = this.undoStack.pop();
     if (!action) return;
 
-    // Reverse the action
-    const deleted = new Set(this.deletedBlockIds());
-    if (action.type === 'delete') {
-      action.blockIds.forEach(id => deleted.delete(id));
+    if (action.type === 'textEdit') {
+      // Reverse text edit
+      const blockId = action.blockIds[0];
+      if (action.textBefore === null || action.textBefore === undefined) {
+        // Was a new correction, clear it
+        this.clearTextCorrection(blockId, false);
+      } else {
+        // Restore previous text
+        this.setTextCorrection(blockId, action.textBefore, false);
+      }
     } else {
-      action.blockIds.forEach(id => deleted.add(id));
+      // Reverse delete/restore action
+      const deleted = new Set(this.deletedBlockIds());
+      if (action.type === 'delete') {
+        action.blockIds.forEach(id => deleted.delete(id));
+      } else {
+        action.blockIds.forEach(id => deleted.add(id));
+      }
+      this.deletedBlockIds.set(deleted);
     }
-    this.deletedBlockIds.set(deleted);
 
     // Restore selection state
     this.selectedBlockIds.set(action.selectionBefore);
@@ -440,14 +488,26 @@ export class PdfEditorStateService {
     const action = this.redoStack.pop();
     if (!action) return;
 
-    // Re-apply the action
-    const deleted = new Set(this.deletedBlockIds());
-    if (action.type === 'delete') {
-      action.blockIds.forEach(id => deleted.add(id));
+    if (action.type === 'textEdit') {
+      // Re-apply text edit
+      const blockId = action.blockIds[0];
+      if (action.textAfter === null || action.textAfter === undefined) {
+        // Was a revert, clear the correction
+        this.clearTextCorrection(blockId, false);
+      } else {
+        // Apply the correction
+        this.setTextCorrection(blockId, action.textAfter, false);
+      }
     } else {
-      action.blockIds.forEach(id => deleted.delete(id));
+      // Re-apply delete/restore action
+      const deleted = new Set(this.deletedBlockIds());
+      if (action.type === 'delete') {
+        action.blockIds.forEach(id => deleted.add(id));
+      } else {
+        action.blockIds.forEach(id => deleted.delete(id));
+      }
+      this.deletedBlockIds.set(deleted);
     }
-    this.deletedBlockIds.set(deleted);
 
     // Restore selection state
     this.selectedBlockIds.set(action.selectionAfter);
@@ -549,5 +609,51 @@ export class PdfEditorStateService {
   // Get blocks on a specific page
   getBlocksOnPage(pageNum: number): TextBlock[] {
     return this.blocks().filter(b => b.page === pageNum);
+  }
+
+  // Add new blocks to the document
+  addBlocks(newBlocks: TextBlock[]): void {
+    if (newBlocks.length === 0) return;
+    this.blocks.update(existing => [...existing, ...newBlocks]);
+    this.markChanged();
+  }
+
+  // Add or update a category
+  addCategory(category: Category): void {
+    this.categories.update(cats => ({
+      ...cats,
+      [category.id]: category
+    }));
+    this.markChanged();
+  }
+
+  // Update category stats (block_count, char_count)
+  updateCategoryStats(): void {
+    const blocks = this.blocks();
+    const deleted = this.deletedBlockIds();
+    const stats = new Map<string, { block_count: number; char_count: number }>();
+
+    for (const block of blocks) {
+      if (deleted.has(block.id)) continue;
+      const existing = stats.get(block.category_id) || { block_count: 0, char_count: 0 };
+      stats.set(block.category_id, {
+        block_count: existing.block_count + 1,
+        char_count: existing.char_count + block.char_count
+      });
+    }
+
+    this.categories.update(cats => {
+      const updated = { ...cats };
+      for (const [catId, catStats] of stats) {
+        if (updated[catId]) {
+          updated[catId] = {
+            ...updated[catId],
+            block_count: catStats.block_count,
+            char_count: catStats.char_count
+          };
+        }
+      }
+      return updated;
+    });
   }
 }

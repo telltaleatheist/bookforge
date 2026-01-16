@@ -1,8 +1,9 @@
-import { Component, input, output, signal, effect, inject, ChangeDetectionStrategy } from '@angular/core';
+import { Component, input, output, signal, effect, inject, ChangeDetectionStrategy, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { ElectronService } from '../../../../core/services/electron.service';
+import { PluginService } from '../../../../core/services/plugin.service';
 
 export type OcrEngine = 'tesseract' | 'surya';
 export type OcrScope = 'all' | 'current' | 'selected' | 'range';
@@ -20,10 +21,17 @@ export interface OcrJob {
   rangeEnd?: number;
 }
 
+export interface OcrTextLine {
+  text: string;
+  confidence: number;
+  bbox: [number, number, number, number];  // [x1, y1, x2, y2]
+}
+
 export interface OcrPageResult {
   page: number;
   text: string;
   confidence: number;
+  textLines?: OcrTextLine[];  // Text lines with bounding boxes
 }
 
 @Component({
@@ -48,8 +56,9 @@ export interface OcrPageResult {
                 <div
                   class="engine-card"
                   [class.selected]="settings().engine === engine.id"
-                  [class.unavailable]="!engine.available"
-                  (click)="engine.available && selectEngine(engine.id)"
+                  [class.unavailable]="!checkingEngines() && !engine.available"
+                  [class.checking]="checkingEngines()"
+                  (click)="!checkingEngines() && engine.available && selectEngine(engine.id)"
                 >
                   <div class="engine-header">
                     <span class="engine-icon">
@@ -59,7 +68,9 @@ export interface OcrPageResult {
                     <span class="engine-name">{{ engine.name }}</span>
                   </div>
                   <div class="engine-status">
-                    @if (engine.available) {
+                    @if (checkingEngines()) {
+                      <span class="status-checking">Checking...</span>
+                    } @else if (engine.available) {
                       <span class="status-available">✓ v{{ engine.version }}</span>
                     } @else {
                       <span class="status-unavailable">Not installed</span>
@@ -162,12 +173,19 @@ export interface OcrPageResult {
             <div class="section">
               <h3 class="section-title">Progress</h3>
               <div class="progress-container">
-                <div class="progress-bar">
+                <div class="progress-bar" [class.indeterminate]="processingPage()">
                   <div class="progress-fill" [style.width.%]="progressPercent()"></div>
                 </div>
-                <div class="progress-text">
-                  {{ progressText() }}
+                <div class="progress-status">
+                  <span class="progress-text">{{ progressText() }}</span>
+                  <span class="elapsed-time">{{ elapsedTimeText() }}</span>
                 </div>
+                @if (processingPage()) {
+                  <div class="processing-hint">
+                    <span class="spinner"></span>
+                    <span>{{ settings().engine === 'surya' ? 'Running Surya OCR (this may take a moment)...' : 'Processing with Tesseract...' }}</span>
+                  </div>
+                }
               </div>
               @if (currentPageText()) {
                 <div class="preview-box">
@@ -344,6 +362,10 @@ export interface OcrPageResult {
         opacity: 0.5;
         cursor: not-allowed;
       }
+
+      &.checking {
+        cursor: wait;
+      }
     }
 
     .engine-header {
@@ -373,6 +395,11 @@ export interface OcrPageResult {
 
     .status-unavailable {
       color: var(--text-tertiary);
+    }
+
+    .status-checking {
+      color: var(--accent);
+      font-style: italic;
     }
 
     .select-input {
@@ -483,10 +510,62 @@ export interface OcrPageResult {
       transition: width 0.3s ease-out;
     }
 
+    .progress-bar.indeterminate .progress-fill {
+      width: 30% !important;
+      animation: indeterminate 1.5s infinite ease-in-out;
+    }
+
+    @keyframes indeterminate {
+      0% {
+        transform: translateX(-100%);
+      }
+      100% {
+        transform: translateX(400%);
+      }
+    }
+
+    .progress-status {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: var(--ui-spacing-sm);
+    }
+
     .progress-text {
       font-size: var(--ui-font-sm);
       color: var(--text-secondary);
-      text-align: center;
+    }
+
+    .elapsed-time {
+      font-size: var(--ui-font-sm);
+      color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .processing-hint {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      background: var(--accent-muted);
+      border-radius: $radius-md;
+      font-size: var(--ui-font-sm);
+      color: var(--accent);
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid var(--accent);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     .preview-box {
@@ -571,7 +650,7 @@ export interface OcrPageResult {
     }
   `]
 })
-export class OcrSettingsModalComponent {
+export class OcrSettingsModalComponent implements OnDestroy {
   // Inputs
   currentSettings = input<OcrSettings>({
     engine: 'tesseract',
@@ -588,6 +667,7 @@ export class OcrSettingsModalComponent {
 
   // Services
   private readonly electronService = inject(ElectronService);
+  private readonly pluginService = inject(PluginService);
 
   // State
   readonly settings = signal<OcrSettings>({
@@ -595,6 +675,8 @@ export class OcrSettingsModalComponent {
     language: 'eng',
     tesseractPsm: 3
   });
+
+  readonly checkingEngines = signal(true);  // Loading state while checking availability
 
   readonly engines = signal<Array<{
     id: OcrEngine;
@@ -621,6 +703,10 @@ export class OcrSettingsModalComponent {
   readonly currentPageText = signal('');
   readonly results = signal<OcrPageResult[]>([]);
   readonly error = signal<string | null>(null);
+  readonly processingPage = signal(false);  // True while actively processing a page
+  private startTime: number = 0;
+  readonly elapsedSeconds = signal(0);
+  private elapsedTimer: ReturnType<typeof setInterval> | null = null;
 
   // Language names
   private readonly languageNames: Record<string, string> = {
@@ -647,18 +733,39 @@ export class OcrSettingsModalComponent {
     this.checkEngines();
   }
 
+  ngOnDestroy(): void {
+    this.stopElapsedTimer();
+  }
+
   private async checkEngines(): Promise<void> {
-    const status = await this.electronService.ocrIsAvailable();
-    const languages = await this.electronService.ocrGetLanguages();
+    this.checkingEngines.set(true);
 
-    this.engines.update(engines => engines.map(e => {
-      if (e.id === 'tesseract') {
-        return { ...e, available: status.available, version: status.version };
-      }
-      return e;
-    }));
+    try {
+      // Check Tesseract
+      const status = await this.electronService.ocrIsAvailable();
+      const languages = await this.electronService.ocrGetLanguages();
 
-    this.availableLanguages.set(languages);
+      // Check Surya via plugin service
+      const suryaAvailability = await this.pluginService.checkAvailability('surya-ocr');
+
+      this.engines.update(engines => engines.map(e => {
+        if (e.id === 'tesseract') {
+          return { ...e, available: status.available, version: status.version };
+        }
+        if (e.id === 'surya') {
+          return {
+            ...e,
+            available: suryaAvailability.available,
+            version: suryaAvailability.version || null
+          };
+        }
+        return e;
+      }));
+
+      this.availableLanguages.set(languages);
+    } finally {
+      this.checkingEngines.set(false);
+    }
   }
 
   engineAvailable(): boolean {
@@ -667,7 +774,7 @@ export class OcrSettingsModalComponent {
   }
 
   canStart(): boolean {
-    return this.engineAvailable() && !this.running() && this.totalPages() > 0;
+    return !this.checkingEngines() && this.engineAvailable() && !this.running() && this.totalPages() > 0;
   }
 
   selectEngine(engineId: OcrEngine): void {
@@ -689,7 +796,35 @@ export class OcrSettingsModalComponent {
   }
 
   progressText(): string {
-    return `Processing page ${this.processedCount() + 1} of ${this.totalToProcess()}...`;
+    if (this.processingPage()) {
+      return `Processing page ${this.currentProcessingPage() + 1} of ${this.totalToProcess()}...`;
+    }
+    return `Completed ${this.processedCount()} of ${this.totalToProcess()} pages`;
+  }
+
+  elapsedTimeText(): string {
+    const seconds = this.elapsedSeconds();
+    if (seconds < 60) {
+      return `${seconds}s`;
+    }
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}m ${secs}s`;
+  }
+
+  private startElapsedTimer(): void {
+    this.startTime = Date.now();
+    this.elapsedSeconds.set(0);
+    this.elapsedTimer = setInterval(() => {
+      this.elapsedSeconds.set(Math.floor((Date.now() - this.startTime) / 1000));
+    }, 1000);
+  }
+
+  private stopElapsedTimer(): void {
+    if (this.elapsedTimer) {
+      clearInterval(this.elapsedTimer);
+      this.elapsedTimer = null;
+    }
   }
 
   getTotalCharCount(): number {
@@ -722,33 +857,58 @@ export class OcrSettingsModalComponent {
     this.results.set([]);
     this.processedCount.set(0);
     this.totalToProcess.set(pages.length);
+    this.startElapsedTimer();
 
     const getImage = this.getPageImage();
+    const engine = this.settings().engine;
 
     for (const pageNum of pages) {
       if (this.cancelled()) break;
 
       this.currentProcessingPage.set(pageNum);
       this.currentPageText.set('');
+      this.processingPage.set(true);
 
       try {
         const imageData = getImage(pageNum);
         if (!imageData) {
           console.warn(`No image for page ${pageNum + 1}, skipping`);
           this.processedCount.update(c => c + 1);
+          this.processingPage.set(false);
           continue;
         }
 
-        const result = await this.electronService.ocrRecognize(imageData);
+        let result: { text: string; confidence: number } | null = null;
+
+        let textLines: OcrTextLine[] | undefined;
+
+        if (engine === 'surya') {
+          // Use Surya plugin
+          const suryaResult = await this.pluginService.runOcr('surya-ocr', imageData);
+          if (suryaResult.success && suryaResult.text) {
+            result = { text: suryaResult.text, confidence: suryaResult.confidence || 0.9 };
+            textLines = suryaResult.textLines;
+          } else if (suryaResult.error) {
+            throw new Error(suryaResult.error);
+          }
+        } else {
+          // Use Tesseract
+          result = await this.electronService.ocrRecognize(imageData);
+        }
+
+        this.processingPage.set(false);
+
         if (result) {
           this.currentPageText.set(result.text.substring(0, 200) + (result.text.length > 200 ? '...' : ''));
           this.results.update(r => [...r, {
             page: pageNum,
-            text: result.text,
-            confidence: result.confidence
+            text: result!.text,
+            confidence: result!.confidence,
+            textLines: textLines
           }]);
         }
       } catch (err) {
+        this.processingPage.set(false);
         console.error(`OCR failed for page ${pageNum + 1}:`, err);
         this.error.set(`Failed on page ${pageNum + 1}: ${(err as Error).message}`);
       }
@@ -756,9 +916,11 @@ export class OcrSettingsModalComponent {
       this.processedCount.update(c => c + 1);
     }
 
+    this.stopElapsedTimer();
     this.running.set(false);
     this.completed.set(true);
     this.currentPageText.set('');
+    this.processingPage.set(false);
   }
 
   cancelOcr(): void {

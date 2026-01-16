@@ -9,6 +9,7 @@ export interface ProjectFile {
   path: string;
   sourcePath: string;
   sourceName: string;
+  fileHash?: string;
   deletedCount: number;
   createdAt: string;
   modifiedAt: string;
@@ -135,6 +136,11 @@ export interface ProjectFile {
           <button class="context-menu-item" (click)="onContextMenuOpen()">
             <span class="context-icon">📂</span>
             Open
+          </button>
+          <div class="context-divider"></div>
+          <button class="context-menu-item" (click)="onContextMenuClearCache()">
+            <span class="context-icon">🧹</span>
+            Clear Rendered Data
           </button>
           <div class="context-divider"></div>
           <button class="context-menu-item danger" (click)="onContextMenuDelete()">
@@ -563,6 +569,8 @@ export class LibraryViewComponent implements OnInit {
   projectSelected = output<string>();
   // New output for opening multiple projects
   projectsSelected = output<string[]>();
+  // Output for clearing rendered cache
+  clearCache = output<string[]>(); // Array of file hashes
 
   readonly projects = signal<ProjectFile[]>([]);
   readonly isDragActive = signal(false);
@@ -800,6 +808,17 @@ export class LibraryViewComponent implements OnInit {
   onContextMenuDelete(): void {
     this.contextMenuVisible.set(false);
     setTimeout(() => this.deleteSelectedProjects(), 0);
+  }
+
+  onContextMenuClearCache(): void {
+    this.contextMenuVisible.set(false);
+    const selected = this.selectedProjects();
+    const hashes = selected
+      .map(p => p.fileHash)
+      .filter((h): h is string => !!h);
+    if (hashes.length > 0) {
+      this.clearCache.emit(hashes);
+    }
   }
 
   openSelectedProjects(): void {

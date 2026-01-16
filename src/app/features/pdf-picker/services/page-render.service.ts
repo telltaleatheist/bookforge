@@ -1,34 +1,42 @@
 import { Injectable, inject, signal } from '@angular/core';
-import { PdfService } from './pdf.service';
-
-type PageImageStatus = string; // 'loading' | 'failed' | data URL
+import { ElectronService } from '../../../core/services/electron.service';
 
 /**
- * PageRenderService - Manages page image rendering with throttled queue
+ * PageRenderService - Manages pre-rendered page images with two-tier caching
  *
- * Handles:
- * - Concurrent render limiting (prevents memory issues)
- * - Page load queue with priority
- * - Image caching
- * - Scale calculation based on document size
+ * New approach:
+ * 1. First render low-res previews quickly (0.5x scale)
+ * 2. Show previews immediately so user can start working
+ * 3. Background render high-res versions (2.5x scale)
+ * 4. Replace previews with high-res as they complete
+ * 5. All cached persistently to disk for instant reload
  */
 @Injectable({
   providedIn: 'root'
 })
 export class PageRenderService {
-  private readonly pdfService = inject(PdfService);
+  private readonly electronService = inject(ElectronService);
 
-  // Page images cache - maps page number to data URL or status
-  readonly pageImages = signal<Map<number, PageImageStatus>>(new Map());
+  // Page file paths - maps page number to file path
+  private previewPaths: string[] = [];
+  private fullPaths: string[] = [];
+  private currentFileHash: string = '';
 
-  // Queue management
-  private pageLoadQueue: number[] = [];
-  private activeRenders = 0;
-  private readonly MAX_CONCURRENT_RENDERS = 2;
+  // Loading state
+  readonly isLoading = signal(false);
+  readonly loadingProgress = signal({ current: 0, total: 0, phase: 'preview' as 'preview' | 'full' });
+  readonly isUpgradingToFull = signal(false);
+
+  // Page images signal (for compatibility with existing code)
+  readonly pageImages = signal<Map<number, string>>(new Map());
 
   // Current document context
   private currentPdfPath: string = '';
   private currentTotalPages: number = 0;
+
+  // Callbacks
+  private progressUnsubscribe: (() => void) | null = null;
+  private upgradeUnsubscribe: (() => void) | null = null;
 
   /**
    * Initialize for a new document
@@ -40,137 +48,158 @@ export class PageRenderService {
   }
 
   /**
-   * Clear all cached images and reset state
+   * Clear all cached paths and reset state
    */
   clear(): void {
+    this.previewPaths = [];
+    this.fullPaths = [];
     this.pageImages.set(new Map());
-    this.pageLoadQueue = [];
-    this.activeRenders = 0;
+    this.loadingProgress.set({ current: 0, total: 0, phase: 'preview' });
+    this.isLoading.set(false);
+    this.isUpgradingToFull.set(false);
+    this.unsubscribe();
+  }
+
+  private unsubscribe(): void {
+    if (this.progressUnsubscribe) {
+      this.progressUnsubscribe();
+      this.progressUnsubscribe = null;
+    }
+    if (this.upgradeUnsubscribe) {
+      this.upgradeUnsubscribe();
+      this.upgradeUnsubscribe = null;
+    }
   }
 
   /**
-   * Get the image URL for a page, queueing load if needed
-   * Returns: data URL, 'loading', or '' (empty for not started)
+   * Get the image URL for a page.
+   * Returns full-res if available, otherwise preview.
    */
   getPageImageUrl(pageNum: number): string {
-    const cached = this.pageImages().get(pageNum);
-    if (cached && cached !== 'loading' && cached !== 'failed') {
-      return cached;
+    // Prefer full-res if available
+    const fullPath = this.fullPaths[pageNum];
+    if (fullPath) {
+      if (fullPath.startsWith('__data__')) {
+        return fullPath.substring(8);
+      }
+      return `bookforge-page://${fullPath}`;
     }
-    // Queue this page for loading
-    this.queuePageLoad(pageNum);
-    // Return 'loading' so template can show placeholder
-    return cached === 'loading' ? 'loading' : '';
+
+    // Fall back to preview
+    const previewPath = this.previewPaths[pageNum];
+    if (previewPath) {
+      return `bookforge-page://${previewPath}`;
+    }
+
+    return '';
   }
 
   /**
-   * Check if a page image is loaded (not loading, not failed)
+   * Check if a page has full-res image
    */
-  isPageLoaded(pageNum: number): boolean {
-    const status = this.pageImages().get(pageNum);
-    return !!status && status !== 'loading' && status !== 'failed';
+  isPageFullRes(pageNum: number): boolean {
+    return !!this.fullPaths[pageNum];
   }
 
   /**
-   * Get render scale based on document size
-   * Higher values = sharper but more memory
+   * Check if all pages are loaded (at least preview)
    */
-  getRenderScale(pageCount?: number): number {
-    const count = pageCount ?? this.currentTotalPages;
-    if (count > 1000) return 2.0;
-    if (count > 500) return 2.5;
-    return 3.0; // 3x scale for crisp text
+  areAllPagesLoaded(): boolean {
+    return this.previewPaths.length === this.currentTotalPages &&
+           this.previewPaths.every(p => !!p);
   }
 
   /**
-   * Load all page images with priority loading
+   * Get the current file hash
+   */
+  getFileHash(): string {
+    return this.currentFileHash;
+  }
+
+  /**
+   * Load all pages with two-tier approach:
+   * 1. Render previews first (fast, ~0.5s for 200 pages)
+   * 2. Start background high-res rendering
+   * 3. Update UI as high-res pages complete
    */
   async loadAllPageImages(pageCount?: number): Promise<void> {
     const count = pageCount ?? this.currentTotalPages;
-    const scale = this.getRenderScale(count);
+    if (!this.currentPdfPath || count === 0) return;
 
-    // Load first 5 pages immediately (sequentially for fast display)
-    const priorityPages = Math.min(count, 5);
-    for (let i = 0; i < priorityPages; i++) {
-      await this.loadPageImage(i, scale);
-    }
+    this.isLoading.set(true);
+    this.loadingProgress.set({ current: 0, total: count, phase: 'preview' });
 
-    // Queue all remaining pages
-    for (let i = priorityPages; i < count; i++) {
-      this.pageLoadQueue.push(i);
-    }
+    // Subscribe to progress updates (only show preview phase progress)
+    this.progressUnsubscribe = this.electronService.onRenderProgress((progress) => {
+      // Only update UI for preview phase - full phase runs silently in background
+      if (progress.phase === 'preview' || !progress.phase) {
+        this.loadingProgress.set({
+          current: progress.current,
+          total: progress.total,
+          phase: 'preview'
+        });
+      }
+    });
 
-    // Start processing queue with concurrency
-    this.processQueue();
-  }
-
-  /**
-   * Queue a single page for loading
-   */
-  private queuePageLoad(pageNum: number): void {
-    const current = this.pageImages().get(pageNum);
-    if (current && current !== 'failed') return;
-
-    if (!this.pageLoadQueue.includes(pageNum)) {
-      this.pageLoadQueue.push(pageNum);
-    }
-    this.processQueue();
-  }
-
-  /**
-   * Process the render queue with concurrency limiting
-   */
-  private async processQueue(): Promise<void> {
-    while (this.pageLoadQueue.length > 0 && this.activeRenders < this.MAX_CONCURRENT_RENDERS) {
-      const pageNum = this.pageLoadQueue.shift()!;
-      this.activeRenders++;
-
-      const scale = this.getRenderScale();
-      this.loadPageImage(pageNum, scale).finally(() => {
-        this.activeRenders--;
-        this.processQueue();
-      });
-    }
-  }
-
-  /**
-   * Load a single page image
-   */
-  private async loadPageImage(pageNum: number, scale: number): Promise<void> {
-    // Check if already loaded
-    const current = this.pageImages().get(pageNum);
-    if (current && current !== 'failed' && current !== 'loading') return;
-
-    // Mark as loading
-    this.updatePageImage(pageNum, 'loading');
+    // Subscribe to page upgrade notifications
+    this.upgradeUnsubscribe = this.electronService.onPageUpgraded((data) => {
+      this.fullPaths[data.pageNum] = data.path;
+      this.updatePageImagesSignal();
+    });
 
     try {
-      if (!this.currentPdfPath) return;
+      const result = await this.electronService.renderWithPreviews(
+        this.currentPdfPath,
+        4 // concurrency
+      );
 
-      const dataUrl = await this.pdfService.renderPage(pageNum, scale, this.currentPdfPath);
-      if (dataUrl) {
-        this.updatePageImage(pageNum, dataUrl);
-      } else {
-        this.updatePageImage(pageNum, 'failed');
+      if (result) {
+        this.previewPaths = result.previewPaths;
+        this.currentFileHash = result.fileHash;
+        this.updatePageImagesSignal();
+
+        // Mark that high-res is rendering in background
+        this.isUpgradingToFull.set(true);
       }
-    } catch {
-      this.updatePageImage(pageNum, 'failed');
+    } finally {
+      this.isLoading.set(false);
+      // Don't unsubscribe upgrade listener - we want to keep receiving updates
+      if (this.progressUnsubscribe) {
+        this.progressUnsubscribe();
+        this.progressUnsubscribe = null;
+      }
     }
   }
 
   /**
-   * Update a single page's image status
+   * Update the pageImages signal from paths
    */
-  private updatePageImage(pageNum: number, status: PageImageStatus): void {
-    this.pageImages.update(map => {
-      const newMap = new Map(map);
-      newMap.set(pageNum, status);
-      return newMap;
-    });
+  private updatePageImagesSignal(): void {
+    const map = new Map<number, string>();
+    const maxLen = Math.max(this.previewPaths.length, this.fullPaths.length);
+
+    for (let i = 0; i < maxLen; i++) {
+      const url = this.getPageImageUrl(i);
+      if (url) {
+        map.set(i, url);
+      }
+    }
+
+    this.pageImages.set(map);
   }
 
   /**
-   * Get the current page images map (for saving state)
+   * Get render scale (for compatibility)
+   */
+  getRenderScale(pageCount?: number): number {
+    const count = pageCount ?? this.currentTotalPages;
+    if (count > 500) return 1.5;
+    if (count > 200) return 2.0;
+    return 2.5;
+  }
+
+  /**
+   * Get the current page images map
    */
   getPageImagesMap(): Map<number, string> {
     return new Map(this.pageImages());
@@ -180,43 +209,105 @@ export class PageRenderService {
    * Restore page images from saved state
    */
   restorePageImages(images: Map<number, string>): void {
-    this.pageImages.set(new Map(images));
+    this.previewPaths = [];
+    this.fullPaths = [];
+
+    images.forEach((url, pageNum) => {
+      if (url.startsWith('bookforge-page://')) {
+        // Assume full-res for restored images
+        this.fullPaths[pageNum] = url.substring(17);
+      } else if (url.startsWith('file://')) {
+        this.fullPaths[pageNum] = url.substring(7);
+      } else if (url.startsWith('data:')) {
+        this.fullPaths[pageNum] = `__data__${url}`;
+      }
+    });
+
+    this.updatePageImagesSignal();
   }
 
   /**
-   * Re-render a page with redactions applied
-   * Used when blocks are edited/moved to hide original text
+   * Invalidate a page's cached image
    */
-  async rerenderPageWithRedactions(
-    pageNum: number,
-    redactRegions: Array<{ x: number; y: number; width: number; height: number }>
-  ): Promise<void> {
-    if (!this.currentPdfPath) return;
-
-    // Mark as loading while re-rendering
-    this.updatePageImage(pageNum, 'loading');
-
-    try {
-      const scale = this.getRenderScale();
-      const dataUrl = await this.pdfService.renderPage(pageNum, scale, this.currentPdfPath, redactRegions);
-      if (dataUrl) {
-        this.updatePageImage(pageNum, dataUrl);
-      } else {
-        this.updatePageImage(pageNum, 'failed');
+  invalidatePage(pageNum: number): void {
+    if (pageNum >= 0) {
+      if (pageNum < this.previewPaths.length) {
+        this.previewPaths[pageNum] = '';
       }
-    } catch {
-      this.updatePageImage(pageNum, 'failed');
+      if (pageNum < this.fullPaths.length) {
+        this.fullPaths[pageNum] = '';
+      }
+      this.updatePageImagesSignal();
     }
   }
 
   /**
-   * Invalidate a page's cached image (will be reloaded on next access)
+   * Re-render a page with redactions applied.
    */
-  invalidatePage(pageNum: number): void {
-    this.pageImages.update(map => {
-      const newMap = new Map(map);
-      newMap.delete(pageNum);
-      return newMap;
-    });
+  async rerenderPageWithRedactions(
+    pageNum: number,
+    redactRegions: Array<{ x: number; y: number; width: number; height: number }>
+  ): Promise<string | null> {
+    if (!this.currentPdfPath) return null;
+
+    const scale = this.getRenderScale();
+    const dataUrl = await this.electronService.renderPage(
+      pageNum,
+      scale,
+      this.currentPdfPath,
+      redactRegions
+    );
+
+    if (dataUrl) {
+      this.fullPaths[pageNum] = `__data__${dataUrl}`;
+      this.updatePageImagesSignal();
+    }
+
+    return dataUrl;
+  }
+
+  /**
+   * Render a blank white page (for removing background images)
+   * Text will be shown via overlays
+   */
+  async renderBlankPage(pageNum: number): Promise<string | null> {
+    const scale = this.getRenderScale();
+    const dataUrl = await this.electronService.renderBlankPage(pageNum, scale);
+
+    if (dataUrl) {
+      this.fullPaths[pageNum] = `__data__${dataUrl}`;
+      this.updatePageImagesSignal();
+    }
+
+    return dataUrl;
+  }
+
+  /**
+   * Render all pages as blank white pages
+   */
+  async renderAllBlankPages(totalPages: number): Promise<void> {
+    for (let i = 0; i < totalPages; i++) {
+      await this.renderBlankPage(i);
+    }
+  }
+
+  /**
+   * Clear cache for the current file
+   */
+  async clearCurrentCache(): Promise<void> {
+    if (this.currentFileHash) {
+      await this.electronService.clearCache(this.currentFileHash);
+      this.clear();
+    }
+  }
+
+  /**
+   * Get cache size for current file
+   */
+  async getCurrentCacheSize(): Promise<number> {
+    if (this.currentFileHash) {
+      return this.electronService.getCacheSize(this.currentFileHash);
+    }
+    return 0;
   }
 }

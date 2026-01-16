@@ -1,5 +1,6 @@
-import { Component, input, output, ViewChild, ElementRef, effect, signal, computed, HostListener, ChangeDetectionStrategy } from '@angular/core';
+import { Component, input, output, ViewChild, ElementRef, effect, signal, computed, HostListener, ChangeDetectionStrategy, AfterViewInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { TextBlock, Category, PageDimension } from '../../services/pdf.service';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 
@@ -14,7 +15,7 @@ export interface CropRect {
 @Component({
   selector: 'app-pdf-viewer',
   standalone: true,
-  imports: [CommonModule, DesktopButtonComponent],
+  imports: [CommonModule, ScrollingModule, DesktopButtonComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (!pdfLoaded()) {
@@ -25,36 +26,29 @@ export interface CropRect {
         </div>
       </div>
     } @else {
-      <div
-        #viewport
-        class="pdf-viewport"
-        (wheel)="onWheel($event)"
-              >
-        <div class="pdf-container" [class.grid]="layout() === 'grid'" [class.organize-mode]="editorMode() === 'organize'">
-          @for (pageNum of pageNumbers(); track pageNum; let idx = $index) {
+      <!-- Use CDK virtual scrolling for vertical layout, regular scroll for grid/organize -->
+      @if (layout() !== 'grid' && editorMode() !== 'organize') {
+        <cdk-virtual-scroll-viewport
+          #cdkViewport
+          class="pdf-viewport"
+          [itemSize]="getAveragePageHeight()"
+          (wheel)="onWheel($event)"
+        >
+          <div class="pdf-container">
             <div
+              *cdkVirtualFor="let pageNum of pageNumbers(); trackBy: trackByPageNum"
               class="page-wrapper"
               [attr.data-page]="pageNum"
-              [attr.data-index]="idx"
               [style.width.px]="getPageWidth(pageNum)"
-              [class.dragging]="isDraggingPage() && draggedPageIndex === idx"
-              [class.drag-over]="dragOverIndex() === idx"
-              [class.drag-over-before]="dragOverIndex() === idx && dropTargetIndex === idx"
-              [class.drag-over-after]="dragOverIndex() === idx && dropTargetIndex === idx + 1"
-              [draggable]="editorMode() === 'organize'"
               (contextmenu)="onPageContextMenu($event, pageNum)"
-              (dragstart)="onPageDragStart($event, idx, pageNum)"
-              (dragend)="onPageDragEnd($event)"
-              (dragover)="onPageDragOver($event, idx)"
-              (dragleave)="onPageDragLeave($event)"
-              (drop)="onPageDrop($event, idx)"
             >
               <div class="page-content">
-                @if (getImageUrl(pageNum) && getImageUrl(pageNum) !== 'loading') {
+                @let imgUrl = getImageUrl(pageNum);
+                @if (imgUrl && imgUrl !== 'loading') {
                   <img
                     #pageImage
                     class="pdf-image"
-                    [src]="getImageUrl(pageNum)"
+                    [src]="imgUrl"
                     [attr.data-page]="pageNum"
                     (load)="onImageLoad($event, pageNum)"
                   />
@@ -356,9 +350,177 @@ export interface CropRect {
                 Page {{ pageNum + 1 }}
               </div>
             </div>
-          }
+          </div>
+        </cdk-virtual-scroll-viewport>
+      } @else {
+        <!-- Grid/Organize mode - paginated for performance -->
+        <div
+          #viewport
+          class="pdf-viewport"
+          (wheel)="onWheel($event)"
+        >
+          <div
+            class="pdf-container"
+            [class.grid]="layout() === 'grid'"
+            [class.organize-mode]="editorMode() === 'organize'"
+          >
+            @for (pageNum of pageNumbers(); track pageNum; let idx = $index) {
+              <div
+                class="page-wrapper"
+                [attr.data-page]="pageNum"
+                [attr.data-index]="idx"
+                [style.width.px]="getPageWidth(pageNum)"
+                [class.dragging]="isDraggingPage() && draggedPageIndex === idx"
+                [class.drag-over]="dragOverIndex() === idx"
+                [class.drag-over-before]="dragOverIndex() === idx && dropTargetIndex === idx"
+                [class.drag-over-after]="dragOverIndex() === idx && dropTargetIndex === idx + 1"
+                [draggable]="editorMode() === 'organize'"
+                (contextmenu)="onPageContextMenu($event, pageNum)"
+                (dragstart)="onPageDragStart($event, idx, pageNum)"
+                (dragend)="onPageDragEnd($event)"
+                (dragover)="onPageDragOver($event, idx)"
+                (dragleave)="onPageDragLeave($event)"
+                (drop)="onPageDrop($event, idx)"
+              >
+                <div class="page-content">
+                  @let imgUrl = getImageUrl(pageNum);
+                  @if (imgUrl && imgUrl !== 'loading') {
+                    <img
+                      class="pdf-image"
+                      [src]="imgUrl"
+                      [attr.data-page]="pageNum"
+                    />
+                  } @else {
+                    <div class="page-loading" [style.aspect-ratio]="getPageAspectRatio(pageNum)">
+                      <div class="spinner"></div>
+                    </div>
+                  }
+                  <svg
+                    class="block-overlay"
+                    [class.crop-mode]="cropMode()"
+                    [class.sample-mode]="sampleMode()"
+                    [class.edit-mode]="editorMode() === 'edit'"
+                    [class.organize-mode]="editorMode() === 'organize'"
+                    [attr.viewBox]="getViewBox(pageNum)"
+                    preserveAspectRatio="none"
+                    (mousedown)="onOverlayMouseDown($event, pageNum)"
+                    (mousemove)="onOverlayMouseMove($event, pageNum)"
+                    (mouseup)="onOverlayMouseUp($event, pageNum)"
+                    (mouseleave)="onOverlayMouseLeave()"
+                  >
+                    @if (!cropMode() && !sampleMode()) {
+                      @for (block of getPageBlocks(pageNum); track block.id) {
+                        <rect
+                          class="block-rect"
+                          [attr.x]="getBlockX(block)"
+                          [attr.y]="getBlockY(block)"
+                          [attr.width]="getBlockWidth(block)"
+                          [attr.height]="getBlockHeight(block)"
+                          [attr.fill]="isSelected(block.id) ? getBlockFill(block) : 'transparent'"
+                          [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))"
+                          [class.selected]="isSelected(block.id)"
+                          [class.deleted]="isDeleted(block.id)"
+                          [class.corrected]="hasCorrectedText(block.id)"
+                          [class.moved]="hasOffset(block.id)"
+                          [style.cursor]="editorMode() === 'edit' ? 'move' : 'pointer'"
+                          (mousedown)="onBlockMouseDown($event, block)"
+                          (click)="onBlockClick($event, block)"
+                          (dblclick)="onBlockDoubleClick($event, block)"
+                          (contextmenu)="onContextMenu($event, block)"
+                          (mouseenter)="onBlockEnter($event, block)"
+                          (mouseleave)="onBlockLeave()"
+                        />
+                        @if (isDeleted(block.id)) {
+                          <line
+                            [attr.x1]="getBlockX(block)"
+                            [attr.y1]="getBlockY(block)"
+                            [attr.x2]="getBlockX(block) + getBlockWidth(block)"
+                            [attr.y2]="getBlockY(block) + getBlockHeight(block)"
+                            stroke="#ff4444"
+                            stroke-width="2"
+                            class="delete-mark"
+                          />
+                          <line
+                            [attr.x1]="getBlockX(block) + getBlockWidth(block)"
+                            [attr.y1]="getBlockY(block)"
+                            [attr.x2]="getBlockX(block)"
+                            [attr.y2]="getBlockY(block) + getBlockHeight(block)"
+                            stroke="#ff4444"
+                            stroke-width="2"
+                            class="delete-mark"
+                          />
+                        }
+                      }
+                    }
+                    @if (cropMode() && currentCropRect() && currentCropRect()!.pageNum === pageNum) {
+                      <rect
+                        class="crop-rect"
+                        [attr.x]="currentCropRect()!.x"
+                        [attr.y]="currentCropRect()!.y"
+                        [attr.width]="currentCropRect()!.width"
+                        [attr.height]="currentCropRect()!.height"
+                      />
+                    }
+                    @if (sampleMode()) {
+                      @for (rect of getSampleRectsForPage(pageNum); track $index) {
+                        <rect
+                          class="sample-rect"
+                          [attr.x]="rect.x"
+                          [attr.y]="rect.y"
+                          [attr.width]="rect.width"
+                          [attr.height]="rect.height"
+                        />
+                      }
+                    }
+                    @for (highlight of getHighlightsForPage(pageNum); track highlight.catId + '-' + $index) {
+                      <rect
+                        class="highlight-rect"
+                        [class.deleted]="highlight.deleted"
+                        [attr.x]="highlight.rect.x"
+                        [attr.y]="highlight.rect.y"
+                        [attr.width]="highlight.rect.w"
+                        [attr.height]="highlight.rect.h"
+                        [attr.fill]="highlight.color + '30'"
+                        [attr.stroke]="highlight.color"
+                      />
+                      @if (highlight.deleted) {
+                        <line
+                          [attr.x1]="highlight.rect.x"
+                          [attr.y1]="highlight.rect.y"
+                          [attr.x2]="highlight.rect.x + highlight.rect.w"
+                          [attr.y2]="highlight.rect.y + highlight.rect.h"
+                          [attr.stroke]="highlight.color"
+                          stroke-width="1"
+                          class="delete-mark"
+                        />
+                        <line
+                          [attr.x1]="highlight.rect.x + highlight.rect.w"
+                          [attr.y1]="highlight.rect.y"
+                          [attr.x2]="highlight.rect.x"
+                          [attr.y2]="highlight.rect.y + highlight.rect.h"
+                          [attr.stroke]="highlight.color"
+                          stroke-width="1"
+                          class="delete-mark"
+                        />
+                      }
+                    }
+                    @if (isMarqueeSelecting() && currentMarqueeRect() && currentMarqueeRect()!.pageNum === pageNum) {
+                      <rect
+                        class="marquee-rect"
+                        [attr.x]="currentMarqueeRect()!.x"
+                        [attr.y]="currentMarqueeRect()!.y"
+                        [attr.width]="currentMarqueeRect()!.width"
+                        [attr.height]="currentMarqueeRect()!.height"
+                      />
+                    }
+                  </svg>
+                </div>
+                <div class="page-label">Page {{ pageNum + 1 }}</div>
+              </div>
+            }
+          </div>
         </div>
-      </div>
+      }
     }
 
     <!-- Tooltip -->
@@ -386,6 +548,9 @@ export interface CropRect {
           <desktop-button variant="ghost" size="xs" (click)="onDeleteBlock()">Delete</desktop-button>
           <desktop-button variant="secondary" size="xs" (click)="onSelectLikeThis()">Select like this</desktop-button>
           <desktop-button variant="danger" size="xs" (click)="onDeleteLikeThis()">Delete all like this</desktop-button>
+          @if (hasCorrectedText(hoveredBlock()!.id)) {
+            <desktop-button variant="ghost" size="xs" (click)="onRevertBlock()">Revert to original</desktop-button>
+          }
         </div>
       </div>
     }
@@ -407,6 +572,7 @@ export interface CropRect {
 
     :host {
       flex: 1;
+      min-height: 0; // Required for flex children to shrink properly
       display: flex;
       flex-direction: column;
       background: var(--bg-surface);
@@ -452,6 +618,16 @@ export interface CropRect {
       font-size: var(--ui-font-base);
     }
 
+    // CDK virtual scroll viewport - needs explicit height to function
+    cdk-virtual-scroll-viewport {
+      flex: 1;
+      height: 0; // Required for flex: 1 to work properly with CDK virtual scroll
+      min-height: 0;
+      background: var(--bg-sunken);
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
     .pdf-viewport {
       flex: 1;
       overflow: auto;
@@ -476,6 +652,13 @@ export interface CropRect {
       align-items: flex-start !important;
       align-content: flex-start !important;
       gap: var(--ui-spacing-md) !important;
+    }
+
+    // Remove old manual virtual scroll styles - now using CDK
+    .pdf-container.virtual-scroll {
+      position: relative;
+      left: 50%;
+      transform: translateX(-50%);
     }
 
     .page-wrapper {
@@ -594,6 +777,7 @@ export interface CropRect {
       height: 100%;
       pointer-events: all;
       cursor: crosshair;
+      z-index: 10;  /* Ensure SVG is above image */
 
       &.crop-mode {
         cursor: crosshair;
@@ -895,7 +1079,7 @@ export interface CropRect {
     }
   `],
 })
-export class PdfViewerComponent {
+export class PdfViewerComponent implements AfterViewInit {
   @HostListener('document:keydown.escape')
   onEscapeKey(): void {
     this.closeAllContextMenus();
@@ -930,6 +1114,9 @@ export class PdfViewerComponent {
   // Regex search mode - hides block overlays and shows only regex matches
   regexSearchMode = input<boolean>(false);
 
+  // Remove backgrounds mode - show all text as overlays on white background
+  removeBackgrounds = input<boolean>(false);
+
   // Custom category highlights - lightweight match rects grouped by category and page
   categoryHighlights = input<Map<string, Record<number, Array<{ page: number; x: number; y: number; w: number; h: number; text: string }>>>>(new Map());
 
@@ -962,6 +1149,7 @@ export class PdfViewerComponent {
   selectLikeThis = output<TextBlock>();
   deleteLikeThis = output<TextBlock>();
   deleteBlock = output<string>();
+  revertBlock = output<string>();  // Revert text correction
   zoomChange = output<'in' | 'out'>();
   selectAllOnPage = output<number>();
   deselectAllOnPage = output<number>();
@@ -978,6 +1166,133 @@ export class PdfViewerComponent {
   // Block drag output (for edit mode)
   blockMoved = output<{ blockId: string; offsetX: number; offsetY: number }>();
   blockDragEnd = output<{ blockId: string; pageNum: number }>();
+
+  // Virtual scrolling state
+  private readonly scrollTop = signal(0);
+  private readonly viewportHeight = signal(800);
+  private readonly PAGE_BUFFER = 2; // Render this many pages above/below viewport
+  private readonly PAGE_GAP = 16; // Gap between pages in pixels
+  private scrollThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastScrollTime = 0;
+
+  // Grid pagination - limit initial render for performance
+  readonly gridPageLimit = signal(24); // Show 24 pages initially (6x4 grid)
+  private readonly GRID_PAGE_INCREMENT = 24;
+
+  // Computed: pages to show in grid mode (paginated)
+  readonly visibleGridPages = computed(() => {
+    const allPages = this.pageNumbers();
+    const limit = this.gridPageLimit();
+    return allPages.slice(0, limit);
+  });
+
+  // Check if there are more pages to load in grid
+  readonly hasMoreGridPages = computed(() => {
+    return this.gridPageLimit() < this.pageNumbers().length;
+  });
+
+  // Load more pages in grid mode
+  loadMoreGridPages(): void {
+    const current = this.gridPageLimit();
+    const total = this.pageNumbers().length;
+    this.gridPageLimit.set(Math.min(current + this.GRID_PAGE_INCREMENT, total));
+  }
+
+  // Reset grid pagination (call when switching to grid mode or loading new doc)
+  resetGridPagination(): void {
+    this.gridPageLimit.set(24);
+  }
+
+  // Computed: which pages are visible based on scroll position
+  readonly visiblePageRange = computed(() => {
+    const allPages = this.pageNumbers();
+    if (allPages.length === 0) return { start: 0, end: 0, pages: [] as number[] };
+
+    // In grid mode or organize mode, show all pages (they're small)
+    if (this.layout() === 'grid' || this.editorMode() === 'organize') {
+      return { start: 0, end: allPages.length, pages: allPages };
+    }
+
+    const dims = this.pageDimensions();
+    const zoom = this.zoom() / 100;
+    const scroll = this.scrollTop();
+    const viewport = this.viewportHeight();
+
+    // Calculate cumulative heights to find visible range
+    let cumHeight = 0;
+    let startIdx = 0;
+    let endIdx = allPages.length;
+    let foundStart = false;
+
+    for (let i = 0; i < allPages.length; i++) {
+      const pageNum = allPages[i];
+      const pageDim = dims[pageNum];
+      const pageHeight = pageDim ? pageDim.height * zoom : 800 * zoom;
+      const pageTop = cumHeight;
+      const pageBottom = cumHeight + pageHeight;
+
+      // Page is visible if it overlaps with the viewport
+      // (page bottom > viewport top) AND (page top < viewport bottom)
+      const viewportTop = scroll;
+      const viewportBottom = scroll + viewport;
+
+      // If page bottom is still above the viewport, skip it
+      if (pageBottom < viewportTop && !foundStart) {
+        startIdx = i + 1;
+      } else {
+        foundStart = true;
+      }
+
+      // If page top is below the viewport, we're done
+      if (pageTop > viewportBottom) {
+        endIdx = i;
+        break;
+      }
+
+      cumHeight += pageHeight + this.PAGE_GAP;
+    }
+
+    // Apply buffer - render extra pages above and below for smooth scrolling
+    startIdx = Math.max(0, startIdx - this.PAGE_BUFFER);
+    endIdx = Math.min(allPages.length, endIdx + this.PAGE_BUFFER);
+
+    return {
+      start: startIdx,
+      end: endIdx,
+      pages: allPages.slice(startIdx, endIdx)
+    };
+  });
+
+  // Get offset for a page (for absolute positioning in virtual scroll)
+  getPageOffset(pageNum: number): number {
+    const allPages = this.pageNumbers();
+    const dims = this.pageDimensions();
+    const zoom = this.zoom() / 100;
+    let offset = 0;
+
+    for (const p of allPages) {
+      if (p === pageNum) break;
+      const pageDim = dims[p];
+      const pageHeight = pageDim ? pageDim.height * zoom : 800 * zoom;
+      offset += pageHeight + this.PAGE_GAP;
+    }
+    return offset;
+  }
+
+  // Get total scroll height for all pages
+  getTotalScrollHeight(): number {
+    const allPages = this.pageNumbers();
+    const dims = this.pageDimensions();
+    const zoom = this.zoom() / 100;
+    let total = 0;
+
+    for (const pageNum of allPages) {
+      const pageDim = dims[pageNum];
+      const pageHeight = pageDim ? pageDim.height * zoom : 800 * zoom;
+      total += pageHeight + this.PAGE_GAP;
+    }
+    return total;
+  }
 
   // Drag state for organize mode
   draggedPageIndex: number | null = null;
@@ -1079,6 +1394,7 @@ export class PdfViewerComponent {
   marqueeSelect = output<{ blockIds: string[]; additive: boolean }>();
 
   @ViewChild('viewport') viewport!: ElementRef<HTMLDivElement>;
+  @ViewChild('cdkViewport') cdkViewport!: CdkVirtualScrollViewport;
 
   // Zoom state for preserving scroll position
   private pendingZoomAdjustment: { scrollRatioX: number; scrollRatioY: number; cursorX: number; cursorY: number } | null = null;
@@ -1107,6 +1423,11 @@ export class PdfViewerComponent {
         this.pendingZoomAdjustment = null;
       }
     });
+  }
+
+  ngAfterViewInit(): void {
+    // Initialize viewport tracking after view is ready
+    setTimeout(() => this.initViewport(), 0);
   }
 
   // Block context menu state (signals for proper change detection)
@@ -1169,6 +1490,29 @@ export class PdfViewerComponent {
     }
 
     return dims.width * (this.zoom() / 100);
+  }
+
+  // Get average page height for CDK virtual scroll itemSize
+  getAveragePageHeight(): number {
+    const dims = this.pageDimensions();
+    const zoom = this.zoom() / 100;
+
+    if (dims.length === 0) return 800 * zoom;
+
+    // Calculate average height from first few pages
+    let totalHeight = 0;
+    const samplesToCheck = Math.min(dims.length, 5);
+    for (let i = 0; i < samplesToCheck; i++) {
+      totalHeight += (dims[i]?.height || 800) * zoom;
+    }
+
+    // Add gap for spacing
+    return (totalHeight / samplesToCheck) + this.PAGE_GAP;
+  }
+
+  // TrackBy function for CDK virtual scrolling
+  trackByPageNum(_index: number, pageNum: number): number {
+    return pageNum;
   }
 
   getViewBox(pageNum: number): string {
@@ -1242,7 +1586,12 @@ export class PdfViewerComponent {
   }
 
   hasTextOverlay(block: TextBlock): boolean {
-    // Show text overlay if block has correction OR has been moved/resized
+    // Show text overlay if:
+    // 1. Block has correction OR has been moved/resized
+    // 2. Remove backgrounds mode is enabled (show ALL text as overlays)
+    if (this.removeBackgrounds()) {
+      return true;
+    }
     return this.hasCorrectedText(block.id) || this.hasOffset(block.id) || this.blockSizes().has(block.id);
   }
 
@@ -1379,6 +1728,14 @@ export class PdfViewerComponent {
     const block = this.contextMenuBlock();
     if (block) {
       this.deleteLikeThis.emit(block);
+      this.closeAllContextMenus();
+    }
+  }
+
+  onRevertBlock(): void {
+    const block = this.contextMenuBlock();
+    if (block) {
+      this.revertBlock.emit(block.id);
       this.closeAllContextMenus();
     }
   }
@@ -1540,9 +1897,55 @@ export class PdfViewerComponent {
     this.closePageMenu();
   }
 
+  // Handle scroll events for virtual scrolling (throttled for performance)
+  onScroll(event: Event): void {
+    const target = event.target as HTMLElement;
+    const now = Date.now();
+
+    // Throttle scroll updates to max 60fps (16ms) to avoid excessive recalculations
+    if (now - this.lastScrollTime < 16) {
+      // Schedule an update for later if not already scheduled
+      if (!this.scrollThrottleTimer) {
+        this.scrollThrottleTimer = setTimeout(() => {
+          this.scrollThrottleTimer = null;
+          this.updateScrollState(target);
+        }, 16);
+      }
+      return;
+    }
+
+    this.lastScrollTime = now;
+    this.updateScrollState(target);
+  }
+
+  private updateScrollState(target: HTMLElement): void {
+    this.scrollTop.set(target.scrollTop);
+
+    // Also update viewport height if it changed
+    if (target.clientHeight !== this.viewportHeight()) {
+      this.viewportHeight.set(target.clientHeight);
+    }
+  }
+
+  // Initialize viewport tracking
+  initViewport(): void {
+    if (this.viewport?.nativeElement) {
+      const vp = this.viewport.nativeElement;
+      this.viewportHeight.set(vp.clientHeight);
+      this.scrollTop.set(vp.scrollTop);
+    }
+  }
+
   // Public method to scroll to a specific page
   scrollToPage(pageNum: number): void {
     if (!this.viewport?.nativeElement) return;
+
+    // For virtual scroll mode, calculate the offset and scroll there
+    if (this.layout() !== 'grid' && this.editorMode() !== 'organize') {
+      const offset = this.getPageOffset(pageNum);
+      this.viewport.nativeElement.scrollTop = offset;
+      return;
+    }
 
     const vp = this.viewport.nativeElement;
     const pageWrapper = vp.querySelector(`.page-wrapper[data-page="${pageNum}"]`);

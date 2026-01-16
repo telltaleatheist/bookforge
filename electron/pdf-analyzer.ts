@@ -4,6 +4,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 
@@ -152,10 +153,89 @@ export class PDFAnalyzer {
   private pdfPath: string | null = null;
 
   /**
+   * Get the base cache directory for BookForge
+   */
+  private getAnalysisCacheDir(): string {
+    const homeDir = os.homedir();
+    return path.join(homeDir, 'Documents', 'BookForge', 'cache');
+  }
+
+  /**
+   * Compute file hash for cache keying
+   */
+  private computeAnalysisHash(filePath: string): string {
+    const data = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
+  }
+
+  /**
+   * Get path for cached analysis data
+   */
+  private getAnalysisCachePath(fileHash: string): string {
+    const cacheDir = path.join(this.getAnalysisCacheDir(), fileHash);
+    if (!fs.existsSync(cacheDir)) {
+      fs.mkdirSync(cacheDir, { recursive: true });
+    }
+    return path.join(cacheDir, 'analysis.json');
+  }
+
+  /**
+   * Load cached analysis if available
+   */
+  private loadCachedAnalysis(fileHash: string): AnalyzeResult | null {
+    const cachePath = this.getAnalysisCachePath(fileHash);
+    if (fs.existsSync(cachePath)) {
+      try {
+        const data = fs.readFileSync(cachePath, 'utf-8');
+        console.log(`Loaded cached analysis for ${fileHash}`);
+        return JSON.parse(data);
+      } catch (err) {
+        console.error('Failed to load cached analysis:', err);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Save analysis to cache
+   */
+  private saveAnalysisToCache(fileHash: string, result: AnalyzeResult): void {
+    const cachePath = this.getAnalysisCachePath(fileHash);
+    try {
+      fs.writeFileSync(cachePath, JSON.stringify(result), 'utf-8');
+      console.log(`Saved analysis cache for ${fileHash}`);
+    } catch (err) {
+      console.error('Failed to save analysis cache:', err);
+    }
+  }
+
+  /**
    * Analyze a document (PDF, EPUB, etc.) and extract blocks with categories
+   * Uses cached analysis if available for the same file
    */
   async analyze(pdfPath: string, maxPages?: number): Promise<AnalyzeResult> {
     const mupdfLib = await getMupdf();
+    const fileHash = this.computeAnalysisHash(pdfPath);
+
+    // Check for cached analysis (only if no maxPages limit or limit matches)
+    if (!maxPages) {
+      const cached = this.loadCachedAnalysis(fileHash);
+      if (cached) {
+        // Restore internal state from cache
+        this.pdfPath = pdfPath;
+        this.blocks = cached.blocks;
+        this.spans = cached.spans || [];
+        this.categories = cached.categories;
+        this.pageDimensions = cached.page_dimensions;
+
+        // Still need to open the document for rendering
+        const data = fs.readFileSync(pdfPath);
+        const mimeType = getMimeType(pdfPath);
+        this.doc = mupdfLib.Document.openDocument(data, mimeType);
+
+        return cached;
+      }
+    }
 
     this.pdfPath = pdfPath;
     this.blocks = [];
@@ -194,7 +274,7 @@ export class PDFAnalyzer {
 
     console.log(`PDF analysis complete: ${this.blocks.length} blocks, ${this.spans.length} spans extracted`);
 
-    return {
+    const result: AnalyzeResult = {
       blocks: this.blocks,
       categories: this.categories,
       page_count: pageCount,
@@ -202,6 +282,13 @@ export class PDFAnalyzer {
       pdf_name: path.basename(pdfPath),
       spans: this.spans,
     };
+
+    // Cache the analysis (only for full document analysis)
+    if (!maxPages) {
+      this.saveAnalysisToCache(fileHash, result);
+    }
+
+    return result;
   }
 
   /**
@@ -987,6 +1074,388 @@ export class PDFAnalyzer {
     return 'body';
   }
 
+  // Persistent cache directory for rendered pages
+  private cacheDir: string | null = null;
+  private currentFileHash: string | null = null;
+  private renderedPagePaths: Map<number, string> = new Map();
+
+  // Scale constants for two-tier rendering
+  private readonly PREVIEW_SCALE = 0.5;  // Fast, low quality
+  private readonly FULL_SCALE = 2.5;     // Slower, high quality
+
+  /**
+   * Get the base cache directory for BookForge
+   */
+  private getCacheBaseDir(): string {
+    const homeDir = os.homedir();
+    return path.join(homeDir, 'Documents', 'BookForge', 'cache');
+  }
+
+  /**
+   * Get or create cache directory for a specific file (by hash)
+   */
+  private getCacheDir(fileHash: string): string {
+    const baseDir = this.getCacheBaseDir();
+    const cacheDir = path.join(baseDir, fileHash);
+    if (!fs.existsSync(cacheDir)) {
+      fs.mkdirSync(cacheDir, { recursive: true });
+    }
+    return cacheDir;
+  }
+
+  /**
+   * Get cache subdirectory for a specific quality level
+   */
+  private getQualityCacheDir(fileHash: string, quality: 'preview' | 'full'): string {
+    const cacheDir = this.getCacheDir(fileHash);
+    const qualityDir = path.join(cacheDir, quality);
+    if (!fs.existsSync(qualityDir)) {
+      fs.mkdirSync(qualityDir, { recursive: true });
+    }
+    return qualityDir;
+  }
+
+  /**
+   * Compute SHA256 hash of a file for cache keying
+   */
+  private computeFileHash(filePath: string): string {
+    const data = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
+  }
+
+  /**
+   * Check if a page is already cached
+   */
+  private isPageCached(fileHash: string, pageNum: number, quality: 'preview' | 'full'): boolean {
+    const qualityDir = this.getQualityCacheDir(fileHash, quality);
+    const filePath = path.join(qualityDir, `page-${pageNum}.png`);
+    return fs.existsSync(filePath);
+  }
+
+  /**
+   * Get cached page path if it exists
+   */
+  private getCachedPagePath(fileHash: string, pageNum: number, quality: 'preview' | 'full'): string | null {
+    const qualityDir = this.getQualityCacheDir(fileHash, quality);
+    const filePath = path.join(qualityDir, `page-${pageNum}.png`);
+    return fs.existsSync(filePath) ? filePath : null;
+  }
+
+  /**
+   * Clean up cache for a specific file hash
+   */
+  clearCache(fileHash: string): void {
+    const cacheDir = path.join(this.getCacheBaseDir(), fileHash);
+    if (fs.existsSync(cacheDir)) {
+      try {
+        fs.rmSync(cacheDir, { recursive: true, force: true });
+        console.log(`Cleared cache for ${fileHash}`);
+      } catch (err) {
+        console.error('Failed to clear cache:', err);
+      }
+    }
+    this.renderedPagePaths.clear();
+  }
+
+  /**
+   * Clean up all cache (for all files)
+   */
+  clearAllCache(): { cleared: number; freedBytes: number } {
+    const baseDir = this.getCacheBaseDir();
+    let cleared = 0;
+    let freedBytes = 0;
+
+    if (fs.existsSync(baseDir)) {
+      try {
+        const dirs = fs.readdirSync(baseDir);
+        for (const dir of dirs) {
+          const dirPath = path.join(baseDir, dir);
+          const stat = fs.statSync(dirPath);
+          if (stat.isDirectory()) {
+            freedBytes += this.getDirSize(dirPath);
+            fs.rmSync(dirPath, { recursive: true, force: true });
+            cleared++;
+          }
+        }
+      } catch (err) {
+        console.error('Failed to clear all cache:', err);
+      }
+    }
+
+    this.renderedPagePaths.clear();
+    return { cleared, freedBytes };
+  }
+
+  /**
+   * Get cache size for a specific file hash
+   */
+  getCacheSize(fileHash: string): number {
+    const cacheDir = path.join(this.getCacheBaseDir(), fileHash);
+    if (!fs.existsSync(cacheDir)) return 0;
+    return this.getDirSize(cacheDir);
+  }
+
+  /**
+   * Get total cache size
+   */
+  getTotalCacheSize(): number {
+    const baseDir = this.getCacheBaseDir();
+    if (!fs.existsSync(baseDir)) return 0;
+    return this.getDirSize(baseDir);
+  }
+
+  /**
+   * Helper to calculate directory size recursively
+   */
+  private getDirSize(dirPath: string): number {
+    let size = 0;
+    try {
+      const items = fs.readdirSync(dirPath);
+      for (const item of items) {
+        const itemPath = path.join(dirPath, item);
+        const stat = fs.statSync(itemPath);
+        if (stat.isDirectory()) {
+          size += this.getDirSize(itemPath);
+        } else {
+          size += stat.size;
+        }
+      }
+    } catch {
+      // Ignore errors
+    }
+    return size;
+  }
+
+  /**
+   * Legacy method for compatibility - clears current file cache
+   */
+  cleanupTempFiles(): void {
+    // Don't actually delete cache - it's persistent now
+    this.renderedPagePaths.clear();
+  }
+
+  /**
+   * Render a single page to cache
+   */
+  async renderPageToFile(
+    pageNum: number,
+    scale: number = 2.0,
+    pdfPath?: string
+  ): Promise<string> {
+    const mupdfLib = await getMupdf();
+    const targetPath = pdfPath || this.pdfPath;
+
+    if (!targetPath) {
+      throw new Error('No document path specified');
+    }
+
+    // Compute file hash for cache key
+    const fileHash = this.computeFileHash(targetPath);
+    const quality: 'preview' | 'full' = scale <= 1.0 ? 'preview' : 'full';
+
+    // Check if already cached
+    const cachedPath = this.getCachedPagePath(fileHash, pageNum, quality);
+    if (cachedPath) {
+      this.renderedPagePaths.set(pageNum, cachedPath);
+      return cachedPath;
+    }
+
+    // Render the page
+    let doc = this.doc;
+    if (pdfPath && pdfPath !== this.pdfPath) {
+      const data = fs.readFileSync(pdfPath);
+      const mimeType = getMimeType(pdfPath);
+      doc = mupdfLib.Document.openDocument(data, mimeType);
+    }
+
+    if (!doc) {
+      throw new Error('No document loaded');
+    }
+
+    const page = doc.loadPage(pageNum);
+    const matrix = mupdfLib.Matrix.scale(scale, scale);
+    const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+    const pngData = pixmap.asPNG();
+
+    // Write to cache
+    const qualityDir = this.getQualityCacheDir(fileHash, quality);
+    const filePath = path.join(qualityDir, `page-${pageNum}.png`);
+    fs.writeFileSync(filePath, Buffer.from(pngData));
+
+    this.renderedPagePaths.set(pageNum, filePath);
+    return filePath;
+  }
+
+  /**
+   * Render all pages with two-tier approach:
+   * 1. First render low-res previews quickly
+   * 2. Then render high-res in background
+   * Returns preview paths immediately, calls callbacks as high-res completes
+   */
+  async renderAllPagesWithPreviews(
+    pdfPath: string,
+    concurrency: number = 4,
+    previewCallback?: (current: number, total: number) => void,
+    fullCallback?: (pageNum: number, path: string) => void,
+    progressCallback?: (current: number, total: number, phase: 'preview' | 'full') => void
+  ): Promise<{ previewPaths: string[]; fileHash: string }> {
+    const mupdfLib = await getMupdf();
+    const fileHash = this.computeFileHash(pdfPath);
+    this.currentFileHash = fileHash;
+
+    // Open document
+    const data = fs.readFileSync(pdfPath);
+    const mimeType = getMimeType(pdfPath);
+    const doc = mupdfLib.Document.openDocument(data, mimeType);
+    const totalPages = doc.countPages();
+
+    const previewPaths: string[] = new Array(totalPages);
+    const previewDir = this.getQualityCacheDir(fileHash, 'preview');
+    const fullDir = this.getQualityCacheDir(fileHash, 'full');
+
+    // Phase 1: Render previews (or use cached)
+    let previewCompleted = 0;
+    const renderPreview = async (pageNum: number): Promise<void> => {
+      const filePath = path.join(previewDir, `page-${pageNum}.png`);
+
+      if (!fs.existsSync(filePath)) {
+        const page = doc.loadPage(pageNum);
+        const matrix = mupdfLib.Matrix.scale(this.PREVIEW_SCALE, this.PREVIEW_SCALE);
+        const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+        const pngData = pixmap.asPNG();
+        fs.writeFileSync(filePath, Buffer.from(pngData));
+      }
+
+      previewPaths[pageNum] = filePath;
+      previewCompleted++;
+
+      if (previewCallback) {
+        previewCallback(previewCompleted, totalPages);
+      }
+      if (progressCallback) {
+        progressCallback(previewCompleted, totalPages, 'preview');
+      }
+    };
+
+    // Render previews in batches (fast)
+    for (let i = 0; i < totalPages; i += concurrency * 2) {
+      const batch = [];
+      for (let j = i; j < Math.min(i + concurrency * 2, totalPages); j++) {
+        batch.push(renderPreview(j));
+      }
+      await Promise.all(batch);
+    }
+
+    // Phase 2: Render full quality in background (don't await)
+    let fullCompleted = 0;
+    const renderFull = async (pageNum: number): Promise<void> => {
+      const filePath = path.join(fullDir, `page-${pageNum}.png`);
+
+      if (!fs.existsSync(filePath)) {
+        const page = doc.loadPage(pageNum);
+        const matrix = mupdfLib.Matrix.scale(this.FULL_SCALE, this.FULL_SCALE);
+        const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+        const pngData = pixmap.asPNG();
+        fs.writeFileSync(filePath, Buffer.from(pngData));
+      }
+
+      this.renderedPagePaths.set(pageNum, filePath);
+      fullCompleted++;
+
+      if (fullCallback) {
+        fullCallback(pageNum, filePath);
+      }
+      if (progressCallback) {
+        progressCallback(fullCompleted, totalPages, 'full');
+      }
+    };
+
+    // Start full rendering in background (don't block)
+    (async () => {
+      for (let i = 0; i < totalPages; i += concurrency) {
+        const batch = [];
+        for (let j = i; j < Math.min(i + concurrency, totalPages); j++) {
+          batch.push(renderFull(j));
+        }
+        await Promise.all(batch);
+      }
+    })();
+
+    return { previewPaths, fileHash };
+  }
+
+  /**
+   * Original method for compatibility - renders all pages at specified scale
+   */
+  async renderAllPagesToFiles(
+    pdfPath: string,
+    scale: number = 2.0,
+    concurrency: number = 4,
+    progressCallback?: (current: number, total: number) => void
+  ): Promise<string[]> {
+    const mupdfLib = await getMupdf();
+    const fileHash = this.computeFileHash(pdfPath);
+    this.currentFileHash = fileHash;
+
+    // Open document
+    const data = fs.readFileSync(pdfPath);
+    const mimeType = getMimeType(pdfPath);
+    const doc = mupdfLib.Document.openDocument(data, mimeType);
+    const totalPages = doc.countPages();
+
+    const quality: 'preview' | 'full' = scale <= 1.0 ? 'preview' : 'full';
+    const cacheDir = this.getQualityCacheDir(fileHash, quality);
+
+    const paths: string[] = new Array(totalPages);
+    let completed = 0;
+
+    const renderPage = async (pageNum: number): Promise<void> => {
+      const filePath = path.join(cacheDir, `page-${pageNum}.png`);
+
+      // Check if already cached
+      if (!fs.existsSync(filePath)) {
+        const page = doc.loadPage(pageNum);
+        const matrix = mupdfLib.Matrix.scale(scale, scale);
+        const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+        const pngData = pixmap.asPNG();
+        fs.writeFileSync(filePath, Buffer.from(pngData));
+      }
+
+      paths[pageNum] = filePath;
+      this.renderedPagePaths.set(pageNum, filePath);
+
+      completed++;
+      if (progressCallback) {
+        progressCallback(completed, totalPages);
+      }
+    };
+
+    // Process in batches
+    for (let i = 0; i < totalPages; i += concurrency) {
+      const batch = [];
+      for (let j = i; j < Math.min(i + concurrency, totalPages); j++) {
+        batch.push(renderPage(j));
+      }
+      await Promise.all(batch);
+    }
+
+    return paths;
+  }
+
+  /**
+   * Get the file path for a rendered page (if already rendered)
+   */
+  getRenderedPagePath(pageNum: number): string | null {
+    return this.renderedPagePaths.get(pageNum) || null;
+  }
+
+  /**
+   * Get all rendered page paths
+   */
+  getAllRenderedPagePaths(): Map<number, string> {
+    return new Map(this.renderedPagePaths);
+  }
+
   /**
    * Render a page as PNG (base64)
    * @param redactRegions - Optional regions to blank out before rendering
@@ -1055,6 +1524,36 @@ export class PDFAnalyzer {
         // doc.destroy() if needed
       }
     }
+  }
+
+  /**
+   * Render a blank white page at the correct dimensions
+   * Used when "remove background images" is enabled - text will be shown via overlays
+   */
+  async renderBlankPage(pageNum: number, scale: number = 2.0): Promise<string> {
+    const dims = this.pageDimensions[pageNum];
+    if (!dims) {
+      throw new Error(`No dimensions for page ${pageNum}`);
+    }
+
+    // Use mupdf to create a blank white page
+    const mupdfLib = await getMupdf();
+
+    // Create a new blank PDF document
+    const blankDoc = new mupdfLib.PDFDocument() as any;
+    // Add a blank page with the correct dimensions (in points)
+    // MediaBox format: [x0, y0, x1, y1]
+    const mediaBox: [number, number, number, number] = [0, 0, dims.width, dims.height];
+    const pageObj = blankDoc.addPage(mediaBox, 0, null, '');
+    blankDoc.insertPage(-1, pageObj);
+
+    // Render the blank page
+    const page = blankDoc.loadPage(0);
+    const matrix = mupdfLib.Matrix.scale(scale, scale);
+    const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true); // alpha=true for white bg
+
+    const pngData = pixmap.asPNG();
+    return Buffer.from(pngData).toString('base64');
   }
 
   /**
