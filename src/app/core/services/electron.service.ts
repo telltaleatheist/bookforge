@@ -218,16 +218,17 @@ export class ElectronService {
     return null;
   }
 
-  async exportCleanPdf(pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>): Promise<string | null> {
+  async exportCleanPdf(pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>): Promise<string> {
     if (this.isElectron) {
       const result: PdfExportResult = await (window as any).electron.pdf.exportPdf(pdfPath, deletedRegions);
       if (result.success && result.data?.pdf_base64) {
         return result.data.pdf_base64;
       }
-      console.error('Failed to export PDF:', result.error);
-      return null;
+      const errorMsg = result.error || 'Unknown error';
+      console.error('Failed to export PDF:', errorMsg);
+      throw new Error(errorMsg);
     }
-    return null;
+    throw new Error('PDF export not available in browser mode');
   }
 
   async findSimilarBlocks(blockId: string): Promise<{ similar_ids: string[]; count: number } | null> {

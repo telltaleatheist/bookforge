@@ -64,6 +64,7 @@ interface BookForgeProject {
   library_path?: string;  // Path to copy in library
   file_hash?: string;     // SHA256 hash for duplicate detection
   deleted_block_ids: string[];
+  deleted_highlight_ids?: string[];  // Deleted custom category highlights
   page_order?: number[];  // Custom page order for organize mode
   custom_categories?: CustomCategoryData[];  // User-created categories with regex/sample matches
   undo_stack?: HistoryAction[];  // Persisted undo history
@@ -177,6 +178,7 @@ interface AlertModal {
               [blocks]="blocks()"
               [categories]="categoriesWithPreview()"
               [categoryHighlights]="combinedHighlights()"
+              [deletedHighlightIds]="deletedHighlightIds()"
               [pageDimensions]="pageDimensions()"
               [totalPages]="totalPages()"
               [zoom]="zoom()"
@@ -1532,6 +1534,15 @@ export class PdfPickerComponent {
   // This avoids creating heavy TextBlock objects for pattern matches
   readonly categoryHighlights = signal<CategoryHighlights>(new Map());
 
+  // Deleted highlight IDs - tracks which custom category highlights have been "deleted" (show X)
+  // ID format: "categoryId:page:x:y" for unique identification
+  readonly deletedHighlightIds = signal<Set<string>>(new Set());
+
+  // Helper to generate a unique ID for a highlight
+  private getHighlightId(categoryId: string, page: number, x: number, y: number): string {
+    return `${categoryId}:${page}:${Math.round(x)}:${Math.round(y)}`;
+  }
+
   // Combined highlights: when regex panel is open, ONLY show regex preview (hide others)
   // Also filters out highlights for disabled categories
   readonly combinedHighlights = computed<CategoryHighlights>(() => {
@@ -2815,22 +2826,50 @@ ${content}
   }
 
   async exportPdf(): Promise<void> {
-    // Export PDF via Python - removes deleted blocks' regions from pages
+    // Export PDF - removes deleted blocks and deleted custom category highlights
     const deleted = this.deletedBlockIds();
-    const deletedBlocksList = this.blocks()
-      .filter(b => deleted.has(b.id))
-      .map(b => ({
-        page: b.page,
-        x: b.x,
-        y: b.y,
-        width: b.width,
-        height: b.height
-      }));
+    const deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }> = [];
 
-    if (deletedBlocksList.length === 0) {
+    // Add deleted blocks
+    for (const block of this.blocks()) {
+      if (deleted.has(block.id)) {
+        deletedRegions.push({
+          page: block.page,
+          x: block.x,
+          y: block.y,
+          width: block.width,
+          height: block.height
+        });
+      }
+    }
+
+    // Add deleted custom category highlights
+    const deletedHighlights = this.deletedHighlightIds();
+    if (deletedHighlights.size > 0) {
+      const highlights = this.categoryHighlights();
+      for (const [categoryId, pageMap] of highlights) {
+        for (const [pageStr, rects] of Object.entries(pageMap)) {
+          const page = parseInt(pageStr);
+          for (const rect of rects) {
+            const highlightId = this.getHighlightId(categoryId, page, rect.x, rect.y);
+            if (deletedHighlights.has(highlightId)) {
+              deletedRegions.push({
+                page,
+                x: rect.x,
+                y: rect.y,
+                width: rect.w,
+                height: rect.h
+              });
+            }
+          }
+        }
+      }
+    }
+
+    if (deletedRegions.length === 0) {
       this.showAlert({
         title: 'Nothing Changed',
-        message: 'No blocks have been deleted. The exported PDF would be identical to the original.',
+        message: 'No blocks or highlights have been deleted. The exported PDF would be identical to the original.',
         type: 'info'
       });
       return;
@@ -2840,11 +2879,11 @@ ${content}
     this.loadingText.set('Generating PDF...');
 
     try {
-      const pdfBase64 = await this.pdfService.exportCleanPdf(this.libraryPath(), deletedBlocksList);
-
-      if (!pdfBase64) {
-        throw new Error('Failed to generate PDF');
+      const path = this.libraryPath();
+      if (!path) {
+        throw new Error('No PDF file loaded');
       }
+      const pdfBase64 = await this.pdfService.exportCleanPdf(path, deletedRegions);
 
       // pdfBase64 contains base64-encoded PDF
       const binaryString = atob(pdfBase64);
@@ -2867,7 +2906,7 @@ ${content}
 
       this.showAlert({
         title: 'Export Complete',
-        message: `Exported PDF with ${deletedBlocksList.length} regions removed.`,
+        message: `Exported PDF with ${deletedRegions.length} regions removed.`,
         type: 'success'
       });
     } catch (err) {
@@ -3051,6 +3090,7 @@ ${content}
         library_path: this.libraryPath(),
         file_hash: this.fileHash(),
         deleted_block_ids: [...this.deletedBlockIds()],
+        deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : undefined,
         page_order: order.length > 0 ? order : undefined,
         custom_categories: customCategories.length > 0 ? customCategories : undefined,
         undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
@@ -3090,6 +3130,7 @@ ${content}
         library_path: this.libraryPath(),
         file_hash: this.fileHash(),
         deleted_block_ids: [...this.deletedBlockIds()],
+        deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : undefined,
         page_order: order.length > 0 ? order : undefined,
         custom_categories: customCategories.length > 0 ? customCategories : undefined,
         undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
@@ -3227,6 +3268,7 @@ ${content}
       library_path: this.libraryPath(),
       file_hash: this.fileHash(),
       deleted_block_ids: [...this.deletedBlockIds()],
+      deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : undefined,
       page_order: order.length > 0 ? order : undefined,
       custom_categories: customCategories.length > 0 ? customCategories : undefined,
       undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
@@ -3328,6 +3370,11 @@ ${content}
       // Restore custom categories
       if (project.custom_categories && project.custom_categories.length > 0) {
         this.restoreCustomCategories(project.custom_categories);
+      }
+
+      // Restore deleted highlight IDs
+      if (project.deleted_highlight_ids && project.deleted_highlight_ids.length > 0) {
+        this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
       }
 
       this.pageImages.set(new Map());
@@ -3469,6 +3516,11 @@ ${content}
       // Restore custom categories
       if (project.custom_categories && project.custom_categories.length > 0) {
         this.restoreCustomCategories(project.custom_categories);
+      }
+
+      // Restore deleted highlight IDs
+      if (project.deleted_highlight_ids && project.deleted_highlight_ids.length > 0) {
+        this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
       }
 
       this.pageImages.set(new Map());
@@ -4094,39 +4146,30 @@ ${content}
     console.log(`Deleted custom category: ${categoryId}`);
   }
 
-  // Clear all highlights from a custom category (keeps category, removes matches)
+  // Mark all highlights from a custom category as deleted (shows X, keeps in list)
   clearCustomCategoryHighlights(categoryId: string): void {
     const highlights = this.categoryHighlights().get(categoryId);
     if (!highlights) return;
 
-    // Count how many highlights we're removing
-    const count = Object.values(highlights).reduce((sum, arr) => sum + arr.length, 0);
+    // Mark all highlights as deleted
+    const newDeletedIds = new Set(this.deletedHighlightIds());
+    let count = 0;
 
-    // Clear the highlights for this category
-    this.categoryHighlights.update(h => {
-      const newHighlights = new Map(h);
-      newHighlights.set(categoryId, {}); // Empty highlights, category remains
-      return newHighlights;
-    });
+    for (const [pageStr, rects] of Object.entries(highlights)) {
+      const page = parseInt(pageStr);
+      for (const rect of rects) {
+        const id = this.getHighlightId(categoryId, page, rect.x, rect.y);
+        newDeletedIds.add(id);
+        count++;
+      }
+    }
 
-    // Update the category's block count
-    this.categories.update(cats => {
-      const cat = cats[categoryId];
-      if (!cat) return cats;
-      return {
-        ...cats,
-        [categoryId]: {
-          ...cat,
-          block_count: 0,
-          char_count: 0
-        }
-      };
-    });
+    this.deletedHighlightIds.set(newDeletedIds);
 
     // Mark as having unsaved changes
     this.hasUnsavedChanges.set(true);
 
-    console.log(`Cleared ${count} highlights from custom category: ${categoryId}`);
+    console.log(`Marked ${count} highlights as deleted from custom category: ${categoryId}`);
   }
 
   editCustomCategory(categoryId: string): void {

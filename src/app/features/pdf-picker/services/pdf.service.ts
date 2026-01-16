@@ -132,7 +132,7 @@ export class PdfService {
     return data.similar_ids;
   }
 
-  async exportCleanPdf(pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>): Promise<string | null> {
+  async exportCleanPdf(pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>): Promise<string> {
     return this.electron.exportCleanPdf(pdfPath, deletedRegions);
   }
 }

@@ -1109,12 +1109,13 @@ export class PDFAnalyzer {
 
         const annot = page.createAnnotation('Redact');
         annot.setRect(rect);
-        annot.setInteriorColor([1, 1, 1]); // White fill for redacted area
-        annot.setColor([1, 1, 1]); // White border too
+        // Note: Redact annotations don't support setInteriorColor/setColor in mupdf.js
+        // The applyRedactions call will use white fill by default
       }
 
       // Apply all redactions on this page
-      page.applyRedactions(true);
+      // Pass false to remove content without leaving visible boxes
+      page.applyRedactions(false);
     }
 
     // Save to buffer

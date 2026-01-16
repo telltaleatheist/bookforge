@@ -139,16 +139,37 @@ export interface CropRect {
                     @for (highlight of getHighlightsForPage(pageNum); track $index) {
                       <rect
                         class="highlight-rect"
+                        [class.deleted]="highlight.deleted"
                         [attr.x]="highlight.rect.x"
                         [attr.y]="highlight.rect.y"
                         [attr.width]="highlight.rect.w"
                         [attr.height]="highlight.rect.h"
-                        [attr.fill]="highlight.color + '40'"
-                        [attr.stroke]="highlight.color"
+                        [attr.fill]="highlight.deleted ? 'rgba(255, 68, 68, 0.2)' : highlight.color + '40'"
+                        [attr.stroke]="highlight.deleted ? '#ff4444' : highlight.color"
                         stroke-width="1"
                       >
                         <title>{{ highlight.rect.text }}</title>
                       </rect>
+                      @if (highlight.deleted) {
+                        <line
+                          [attr.x1]="highlight.rect.x"
+                          [attr.y1]="highlight.rect.y"
+                          [attr.x2]="highlight.rect.x + highlight.rect.w"
+                          [attr.y2]="highlight.rect.y + highlight.rect.h"
+                          stroke="#ff4444"
+                          stroke-width="1"
+                          class="highlight-delete-mark"
+                        />
+                        <line
+                          [attr.x1]="highlight.rect.x + highlight.rect.w"
+                          [attr.y1]="highlight.rect.y"
+                          [attr.x2]="highlight.rect.x"
+                          [attr.y2]="highlight.rect.y + highlight.rect.h"
+                          stroke="#ff4444"
+                          stroke-width="1"
+                          class="highlight-delete-mark"
+                        />
+                      }
                     }
                   }
 
@@ -706,6 +727,16 @@ export interface CropRect {
       opacity: 0.8;
     }
 
+    .block-overlay .highlight-rect.deleted {
+      stroke-dasharray: 4, 2;
+      opacity: 0.6;
+    }
+
+    .highlight-delete-mark {
+      pointer-events: none;
+      opacity: 0.8;
+    }
+
     .delete-mark {
       pointer-events: none;
       opacity: 0.8;
@@ -837,6 +868,9 @@ export class PdfViewerComponent {
   // Custom category highlights - lightweight match rects grouped by category and page
   categoryHighlights = input<Map<string, Record<number, Array<{ page: number; x: number; y: number; w: number; h: number; text: string }>>>>(new Map());
 
+  // Deleted highlight IDs - highlights that should show X strikethrough
+  deletedHighlightIds = input<Set<string>>(new Set());
+
   blockClick = output<{ block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
   blockDoubleClick = output<{ block: TextBlock; metaKey: boolean; ctrlKey: boolean }>();
   blockHover = output<TextBlock | null>();
@@ -891,10 +925,11 @@ export class PdfViewerComponent {
   /**
    * Get all category highlights for a specific page (for lazy rendering)
    */
-  getHighlightsForPage(pageNum: number): Array<{ catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; color: string }> {
-    const result: Array<{ catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; color: string }> = [];
+  getHighlightsForPage(pageNum: number): Array<{ catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; color: string; deleted: boolean }> {
+    const result: Array<{ catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; color: string; deleted: boolean }> = [];
     const highlights = this.categoryHighlights();
     const cats = this.categories();
+    const deletedIds = this.deletedHighlightIds();
 
     for (const [catId, pageMap] of highlights) {
       const cat = cats[catId];
@@ -905,7 +940,10 @@ export class PdfViewerComponent {
       if (pageRects && pageRects.length > 0) {
         const color = cat.color || '#ff0000';
         for (const rect of pageRects) {
-          result.push({ catId, rect, color });
+          // Check if this highlight is deleted
+          const highlightId = `${catId}:${pageNum}:${Math.round(rect.x)}:${Math.round(rect.y)}`;
+          const deleted = deletedIds.has(highlightId);
+          result.push({ catId, rect, color, deleted });
         }
       }
     }
