@@ -192,9 +192,14 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async renderPage(pageNum: number, scale: number = 2.0, pdfPath?: string): Promise<string | null> {
+  async renderPage(
+    pageNum: number,
+    scale: number = 2.0,
+    pdfPath?: string,
+    redactRegions?: Array<{ x: number; y: number; width: number; height: number }>
+  ): Promise<string | null> {
     if (this.isElectron) {
-      const result: PdfRenderResult = await (window as any).electron.pdf.renderPage(pageNum, scale, pdfPath);
+      const result: PdfRenderResult = await (window as any).electron.pdf.renderPage(pageNum, scale, pdfPath, redactRegions);
       if (result.success && result.data?.image) {
         return `data:image/png;base64,${result.data.image}`;
       }

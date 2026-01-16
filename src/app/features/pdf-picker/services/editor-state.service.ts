@@ -9,6 +9,21 @@ export interface HistoryAction {
 }
 
 /**
+ * BlockEdit - Stores all edits for a single text block
+ * Used for OCR corrections, repositioning, and resizing
+ */
+export interface BlockEdit {
+  // Text correction (if different from original)
+  text?: string;
+  // Position offset from original (for drag/drop)
+  offsetX?: number;
+  offsetY?: number;
+  // Size override (for resizing)
+  width?: number;
+  height?: number;
+}
+
+/**
  * PdfEditorStateService - Manages all editor state for a PDF document
  *
  * This service holds:
@@ -37,6 +52,21 @@ export class PdfEditorStateService {
   readonly deletedBlockIds = signal<Set<string>>(new Set());
   readonly selectedBlockIds = signal<string[]>([]);
   readonly pageOrder = signal<number[]>([]);
+
+  // Block edits (text corrections, position offsets, size overrides)
+  readonly blockEdits = signal<Map<string, BlockEdit>>(new Map());
+
+  // Computed: text corrections only (for backward compatibility)
+  readonly textCorrections = computed(() => {
+    const edits = this.blockEdits();
+    const corrections = new Map<string, string>();
+    edits.forEach((edit, blockId) => {
+      if (edit.text !== undefined) {
+        corrections.set(blockId, edit.text);
+      }
+    });
+    return corrections;
+  });
 
   // Undo/redo state
   private undoStack: HistoryAction[] = [];
@@ -104,6 +134,8 @@ export class PdfEditorStateService {
     fileHash?: string;
     deletedBlockIds?: Set<string>;
     pageOrder?: number[];
+    blockEdits?: Map<string, BlockEdit>;
+    textCorrections?: Map<string, string>;  // Legacy support
   }): void {
     this.blocks.set(data.blocks);
     this.categories.set(data.categories);
@@ -115,6 +147,21 @@ export class PdfEditorStateService {
     this.fileHash.set(data.fileHash || '');
     this.deletedBlockIds.set(data.deletedBlockIds || new Set());
     this.pageOrder.set(data.pageOrder || []);
+
+    // Load block edits - prefer blockEdits, fall back to converting textCorrections
+    if (data.blockEdits) {
+      this.blockEdits.set(data.blockEdits);
+    } else if (data.textCorrections) {
+      // Convert legacy textCorrections to blockEdits
+      const edits = new Map<string, BlockEdit>();
+      data.textCorrections.forEach((text, blockId) => {
+        edits.set(blockId, { text });
+      });
+      this.blockEdits.set(edits);
+    } else {
+      this.blockEdits.set(new Map());
+    }
+
     this.selectedBlockIds.set([]);
     this.pdfLoaded.set(true);
 
@@ -137,8 +184,128 @@ export class PdfEditorStateService {
     this.deletedBlockIds.set(new Set());
     this.selectedBlockIds.set([]);
     this.pageOrder.set([]);
+    this.blockEdits.set(new Map());
     this.clearHistory();
     this.hasUnsavedChanges.set(false);
+  }
+
+  // Block edit methods
+  getBlockEdit(blockId: string): BlockEdit | undefined {
+    return this.blockEdits().get(blockId);
+  }
+
+  updateBlockEdit(blockId: string, edit: Partial<BlockEdit>): void {
+    this.blockEdits.update(map => {
+      const newMap = new Map(map);
+      const existing = newMap.get(blockId) || {};
+      newMap.set(blockId, { ...existing, ...edit });
+      return newMap;
+    });
+    this.markChanged();
+  }
+
+  clearBlockEdit(blockId: string): void {
+    this.blockEdits.update(map => {
+      const newMap = new Map(map);
+      newMap.delete(blockId);
+      return newMap;
+    });
+    this.markChanged();
+  }
+
+  // Text correction methods (for OCR fixes) - convenience wrappers
+  setTextCorrection(blockId: string, correctedText: string): void {
+    this.updateBlockEdit(blockId, { text: correctedText });
+  }
+
+  clearTextCorrection(blockId: string): void {
+    const edit = this.blockEdits().get(blockId);
+    if (edit) {
+      // Remove just the text, keep other edits
+      const { text, ...rest } = edit;
+      if (Object.keys(rest).length > 0) {
+        this.blockEdits.update(map => {
+          const newMap = new Map(map);
+          newMap.set(blockId, rest);
+          return newMap;
+        });
+      } else {
+        this.clearBlockEdit(blockId);
+      }
+      this.markChanged();
+    }
+  }
+
+  getTextForBlock(blockId: string): string {
+    const edit = this.blockEdits().get(blockId);
+    if (edit?.text !== undefined) {
+      return edit.text;
+    }
+    const block = this.blocks().find(b => b.id === blockId);
+    return block?.text || '';
+  }
+
+  // Position methods (for drag/drop)
+  setBlockPosition(blockId: string, offsetX: number, offsetY: number): void {
+    this.updateBlockEdit(blockId, { offsetX, offsetY });
+  }
+
+  clearBlockPosition(blockId: string): void {
+    const edit = this.blockEdits().get(blockId);
+    if (edit) {
+      const { offsetX, offsetY, ...rest } = edit;
+      if (Object.keys(rest).length > 0) {
+        this.blockEdits.update(map => {
+          const newMap = new Map(map);
+          newMap.set(blockId, rest);
+          return newMap;
+        });
+      } else {
+        this.clearBlockEdit(blockId);
+      }
+      this.markChanged();
+    }
+  }
+
+  // Size methods (for resizing)
+  setBlockSize(blockId: string, width: number, height: number): void {
+    this.updateBlockEdit(blockId, { width, height });
+  }
+
+  clearBlockSize(blockId: string): void {
+    const edit = this.blockEdits().get(blockId);
+    if (edit) {
+      const { width, height, ...rest } = edit;
+      if (Object.keys(rest).length > 0) {
+        this.blockEdits.update(map => {
+          const newMap = new Map(map);
+          newMap.set(blockId, rest);
+          return newMap;
+        });
+      } else {
+        this.clearBlockEdit(blockId);
+      }
+      this.markChanged();
+    }
+  }
+
+  hasCorrection(blockId: string): boolean {
+    const edit = this.blockEdits().get(blockId);
+    return edit?.text !== undefined;
+  }
+
+  hasAnyEdit(blockId: string): boolean {
+    return this.blockEdits().has(blockId);
+  }
+
+  hasPositionEdit(blockId: string): boolean {
+    const edit = this.blockEdits().get(blockId);
+    return edit?.offsetX !== undefined || edit?.offsetY !== undefined;
+  }
+
+  hasSizeEdit(blockId: string): boolean {
+    const edit = this.blockEdits().get(blockId);
+    return edit?.width !== undefined || edit?.height !== undefined;
   }
 
   // Selection methods

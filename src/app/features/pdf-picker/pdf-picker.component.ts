@@ -2,8 +2,10 @@ import { Component, inject, signal, computed, HostListener, ViewChild, effect, D
 import { CommonModule } from '@angular/common';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
 import { ElectronService } from '../../core/services/electron.service';
-import { PdfEditorStateService, HistoryAction } from './services/editor-state.service';
+import { PdfEditorStateService, HistoryAction, BlockEdit } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
+import { ExportService } from './services/export.service';
+import { PageRenderService } from './services/page-render.service';
 import { DesktopThemeService, UiSize } from '../../creamsicle-desktop/services/theme.service';
 import {
   SplitPaneComponent,
@@ -19,6 +21,7 @@ import { SplitPanelComponent, SplitConfig } from './components/split-panel/split
 import { LibraryViewComponent } from './components/library-view/library-view.component';
 import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
 import { OcrSettingsModalComponent, OcrSettings, OcrPageResult } from './components/ocr-settings-modal/ocr-settings-modal.component';
+import { InlineTextEditorComponent, TextEditResult } from './components/inline-text-editor/inline-text-editor.component';
 
 interface OpenDocument {
   id: string;
@@ -57,6 +60,15 @@ interface CustomCategoryData {
   highlights: Record<number, Array<{ page: number; x: number; y: number; w: number; h: number; text: string }>>;
 }
 
+// Serializable block edit for project persistence
+interface BlockEditData {
+  text?: string;
+  offsetX?: number;
+  offsetY?: number;
+  width?: number;
+  height?: number;
+}
+
 interface BookForgeProject {
   version: number;
   source_path: string;    // Original path
@@ -67,6 +79,8 @@ interface BookForgeProject {
   deleted_highlight_ids?: string[];  // Deleted custom category highlights
   page_order?: number[];  // Custom page order for organize mode
   custom_categories?: CustomCategoryData[];  // User-created categories with regex/sample matches
+  block_edits?: Record<string, BlockEditData>;  // All block edits: text, position, size
+  text_corrections?: Record<string, string>;  // Legacy: OCR corrections only
   undo_stack?: HistoryAction[];  // Persisted undo history
   redo_stack?: HistoryAction[];  // Persisted redo history
   created_at: string;
@@ -125,6 +139,7 @@ interface AlertModal {
     LibraryViewComponent,
     TabBarComponent,
     OcrSettingsModalComponent,
+    InlineTextEditorComponent,
   ],
   template: `
     <!-- Toolbar -->
@@ -179,6 +194,10 @@ interface AlertModal {
               [categories]="categoriesWithPreview()"
               [categoryHighlights]="combinedHighlights()"
               [deletedHighlightIds]="deletedHighlightIds()"
+              [correctedBlockIds]="correctedBlockIds()"
+              [blockOffsets]="blockOffsets()"
+              [textCorrections]="textCorrections()"
+              [blockSizes]="blockSizes()"
               [pageDimensions]="pageDimensions()"
               [totalPages]="totalPages()"
               [zoom]="zoom()"
@@ -215,6 +234,8 @@ interface AlertModal {
               (sampleMouseDown)="onSampleMouseDown($event.event, $event.page, $event.pageX, $event.pageY)"
               (sampleMouseMove)="onSampleMouseMove($event.pageX, $event.pageY)"
               (sampleMouseUp)="onSampleMouseUp()"
+              (blockMoved)="onBlockMoved($event)"
+              (blockDragEnd)="onBlockDragEnd($event)"
               [getPageImageUrl]="getPageImageUrl.bind(this)"
             />
             </div>
@@ -410,6 +431,21 @@ interface AlertModal {
           </div>
         </div>
       </div>
+    }
+
+    <!-- Inline Text Editor (for OCR corrections) -->
+    @if (showInlineEditor() && inlineEditorBlock()) {
+      <app-inline-text-editor
+        [blockId]="inlineEditorBlock()!.id"
+        [originalText]="inlineEditorBlock()!.text"
+        [correctedText]="editorState.textCorrections().get(inlineEditorBlock()!.id) ?? null"
+        [x]="inlineEditorX()"
+        [y]="inlineEditorY()"
+        [width]="inlineEditorWidth()"
+        [height]="inlineEditorHeight()"
+        [fontSize]="inlineEditorFontSize()"
+        (editComplete)="onInlineEditComplete($event)"
+      />
     }
 
     <!-- Alert Modal -->
@@ -1315,6 +1351,8 @@ interface AlertModal {
 export class PdfPickerComponent {
   private readonly pdfService = inject(PdfService);
   private readonly electronService = inject(ElectronService);
+  private readonly exportService = inject(ExportService);
+  private readonly pageRenderService = inject(PageRenderService);
   readonly themeService = inject(DesktopThemeService);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -1347,6 +1385,37 @@ export class PdfPickerComponent {
   get deletedBlockIds() { return this.editorState.deletedBlockIds; }
   get selectedBlockIds() { return this.editorState.selectedBlockIds; }
   get pageOrder() { return this.editorState.pageOrder; }
+  get textCorrections() { return this.editorState.textCorrections; }
+  // Computed: Set of block IDs that have text corrections (for visual indicator)
+  readonly correctedBlockIds = computed(() => new Set(this.textCorrections().keys()));
+  // Computed: Map of block IDs to their position offsets (for drag/drop visualization)
+  readonly blockOffsets = computed(() => {
+    const edits = this.editorState.blockEdits();
+    const offsets = new Map<string, { offsetX: number; offsetY: number }>();
+    edits.forEach((edit, blockId) => {
+      if (edit.offsetX !== undefined || edit.offsetY !== undefined) {
+        offsets.set(blockId, {
+          offsetX: edit.offsetX ?? 0,
+          offsetY: edit.offsetY ?? 0
+        });
+      }
+    });
+    return offsets;
+  });
+  // Computed: Map of block IDs to their size overrides
+  readonly blockSizes = computed(() => {
+    const edits = this.editorState.blockEdits();
+    const sizes = new Map<string, { width: number; height: number }>();
+    edits.forEach((edit, blockId) => {
+      if (edit.width !== undefined && edit.height !== undefined) {
+        sizes.set(blockId, {
+          width: edit.width,
+          height: edit.height
+        });
+      }
+    });
+    return sizes;
+  });
   get hasUnsavedChanges() { return this.editorState.hasUnsavedChanges; }
   get canUndo() { return this.editorState.canUndo; }
   get canRedo() { return this.editorState.canRedo; }
@@ -1371,6 +1440,12 @@ export class PdfPickerComponent {
   // Keyboard shortcuts
   @HostListener('window:keydown', ['$event'])
   onKeyDown(event: KeyboardEvent): void {
+    // Inline text editor is open - let it handle its own shortcuts
+    if (this.showInlineEditor()) {
+      // Don't process other shortcuts when inline editor is open
+      return;
+    }
+
     // Text editor modal shortcuts
     if (this.showTextEditor()) {
       if (event.key === 'Escape') {
@@ -1505,7 +1580,26 @@ export class PdfPickerComponent {
   readonly regexMatchCount = signal(0);
   private regexDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // Text editor modal state
+  // Inline text editor state (for OCR corrections)
+  readonly showInlineEditor = signal(false);
+  readonly inlineEditorBlock = signal<TextBlock | null>(null);
+  readonly inlineEditorX = signal(0);
+  readonly inlineEditorY = signal(0);
+  readonly inlineEditorWidth = signal(200);
+  readonly inlineEditorHeight = signal(50);
+  // Calculate font size based on screen/PDF scale ratio
+  readonly inlineEditorFontSize = computed(() => {
+    const block = this.inlineEditorBlock();
+    if (!block) return 14;
+    // Scale factor from PDF to screen coordinates
+    const screenHeight = this.inlineEditorHeight();
+    const pdfHeight = block.height;
+    if (pdfHeight <= 0) return 14;
+    const scale = screenHeight / pdfHeight;
+    return Math.max(10, Math.min(24, block.font_size * scale));
+  });
+
+  // Legacy text editor modal state (kept for compatibility, may be removed later)
   readonly showTextEditor = signal(false);
   readonly editingBlock = signal<TextBlock | null>(null);
   readonly editedText = signal('');
@@ -1646,7 +1740,8 @@ export class PdfPickerComponent {
   readonly lastDeskewAngle = signal<number | null>(null);
 
   // Page image cache - maps page number to data URL
-  readonly pageImages = signal<Map<number, string>>(new Map());
+  // Delegate to PageRenderService
+  get pageImages() { return this.pageRenderService.pageImages; }
 
   // Multi-document support
   readonly openDocuments = signal<OpenDocument[]>([]);
@@ -1907,111 +2002,13 @@ export class PdfPickerComponent {
     }
   }
 
+  // Delegate to PageRenderService
   getPageImageUrl(pageNum: number): string {
-    const cached = this.pageImages().get(pageNum);
-    if (cached && cached !== 'loading' && cached !== 'failed') {
-      return cached;
-    }
-    // Queue this page for loading
-    this.queuePageLoad(pageNum);
-    // Return 'loading' so template can show placeholder
-    return cached === 'loading' ? 'loading' : '';
+    return this.pageRenderService.getPageImageUrl(pageNum);
   }
 
-  // Page loading with throttled queue
-  private pageLoadQueue: number[] = [];
-  private isProcessingQueue = false;
-  private readonly MAX_CONCURRENT_RENDERS = 2; // Max simultaneous renders
-  private activeRenders = 0;
-
-  // Scale for rendering - higher values = sharper but more memory
   private getRenderScale(pageCount: number): number {
-    if (pageCount > 1000) return 2.0;
-    if (pageCount > 500) return 2.5;
-    return 3.0;  // 3x scale for crisp text
-  }
-
-  private async loadPageImage(pageNum: number, scale: number): Promise<void> {
-    // Check if already loaded
-    const current = this.pageImages().get(pageNum);
-    if (current && current !== 'failed' && current !== 'loading') return;
-
-    // Mark as loading
-    this.pageImages.update(map => {
-      const newMap = new Map(map);
-      newMap.set(pageNum, 'loading');
-      return newMap;
-    });
-
-    try {
-      const pdfPath = this.pdfPath();
-      if (!pdfPath) return;
-
-      const dataUrl = await this.pdfService.renderPage(pageNum, scale, pdfPath);
-      if (dataUrl) {
-        this.pageImages.update(map => {
-          const newMap = new Map(map);
-          newMap.set(pageNum, dataUrl);
-          return newMap;
-        });
-      } else {
-        // Mark as failed for retry
-        this.pageImages.update(map => {
-          const newMap = new Map(map);
-          newMap.set(pageNum, 'failed');
-          return newMap;
-        });
-      }
-    } catch {
-      this.pageImages.update(map => {
-        const newMap = new Map(map);
-        newMap.set(pageNum, 'failed');
-        return newMap;
-      });
-    }
-  }
-
-  private queuePageLoad(pageNum: number): void {
-    const current = this.pageImages().get(pageNum);
-    if (current && current !== 'failed') return;
-
-    if (!this.pageLoadQueue.includes(pageNum)) {
-      this.pageLoadQueue.push(pageNum);
-    }
-    this.processQueue();
-  }
-
-  private async processQueue(): Promise<void> {
-    // Process queue with concurrency limit
-    while (this.pageLoadQueue.length > 0 && this.activeRenders < this.MAX_CONCURRENT_RENDERS) {
-      const pageNum = this.pageLoadQueue.shift()!;
-      this.activeRenders++;
-
-      const scale = this.getRenderScale(this.totalPages());
-      this.loadPageImage(pageNum, scale).finally(() => {
-        this.activeRenders--;
-        // Continue processing queue
-        this.processQueue();
-      });
-    }
-  }
-
-  private async loadAllPageImages(pageCount: number): Promise<void> {
-    const scale = this.getRenderScale(pageCount);
-
-    // Load first 5 pages immediately (sequentially for fast display)
-    const priorityPages = Math.min(pageCount, 5);
-    for (let i = 0; i < priorityPages; i++) {
-      await this.loadPageImage(i, scale);
-    }
-
-    // Queue all remaining pages
-    for (let i = priorityPages; i < pageCount; i++) {
-      this.pageLoadQueue.push(i);
-    }
-
-    // Start processing queue with concurrency
-    this.processQueue();
+    return this.pageRenderService.getRenderScale(pageCount);
   }
 
   async openPdfWithNativeDialog(): Promise<void> {
@@ -2043,7 +2040,7 @@ export class PdfPickerComponent {
     this.blocks.set([]);
     // Reset editor state via service
     this.editorState.reset();
-    this.pageImages.set(new Map());
+    this.pageRenderService.clear();
     this.projectService.reset();
 
     // Clear crop mode
@@ -2131,14 +2128,15 @@ export class PdfPickerComponent {
         libraryPath: libraryPath,
         fileHash: fileHash
       });
-      this.pageImages.set(new Map());
+      this.pageRenderService.clear();
       this.projectService.reset();
 
       this.saveRecentFile(path, result.pdf_name);
 
       // Load page images
       this.loadingText.set('Rendering pages...');
-      await this.loadAllPageImages(result.page_count);
+      this.pageRenderService.initialize(this.pdfPath(), result.page_count);
+      await this.pageRenderService.loadAllPageImages(result.page_count);
 
       this.pdfLoaded.set(true);
 
@@ -2176,8 +2174,16 @@ export class PdfPickerComponent {
     }
   }
 
-  onBlockDoubleClick(event: { block: TextBlock; metaKey: boolean; ctrlKey: boolean }): void {
-    const { block, metaKey, ctrlKey } = event;
+  onBlockDoubleClick(event: {
+    block: TextBlock;
+    metaKey: boolean;
+    ctrlKey: boolean;
+    screenX: number;
+    screenY: number;
+    screenWidth: number;
+    screenHeight: number;
+  }): void {
+    const { block, metaKey, ctrlKey, screenX, screenY, screenWidth, screenHeight } = event;
     const mode = this.currentMode();
     const additive = metaKey || ctrlKey;
 
@@ -2186,12 +2192,138 @@ export class PdfPickerComponent {
       // With Cmd/Ctrl held, add to existing selection
       this.selectLikeThis(block, additive);
     } else if (mode === 'edit') {
-      // In edit mode, double-click opens text editor
-      this.openTextEditor(block);
+      // In edit mode, double-click opens inline text editor
+      this.openInlineEditor(block, screenX, screenY, screenWidth, screenHeight);
     }
     // In crop/organize modes, double-click does nothing
   }
 
+  openInlineEditor(block: TextBlock, x: number, y: number, width: number, height: number): void {
+    // Position the editor at the block's screen location
+    // Add some padding and minimum dimensions
+    const minWidth = 200;
+    const minHeight = 60;
+
+    this.inlineEditorBlock.set(block);
+    this.inlineEditorX.set(x);
+    this.inlineEditorY.set(y);
+    this.inlineEditorWidth.set(Math.max(width, minWidth));
+    this.inlineEditorHeight.set(Math.max(height, minHeight));
+    this.showInlineEditor.set(true);
+  }
+
+  closeInlineEditor(): void {
+    this.showInlineEditor.set(false);
+    this.inlineEditorBlock.set(null);
+  }
+
+  onInlineEditComplete(result: TextEditResult): void {
+    if (!result.cancelled) {
+      const block = this.inlineEditorBlock();
+      if (block) {
+        // Check if text was actually changed
+        const originalText = block.text;
+        const correctedText = this.editorState.textCorrections().get(block.id);
+        const previousText = correctedText ?? originalText;
+
+        let needsRerender = false;
+
+        if (result.text !== previousText) {
+          if (result.text === originalText) {
+            // Text was reverted to original - clear the correction
+            this.editorState.clearTextCorrection(block.id);
+          } else {
+            // Text was changed - save as a correction
+            this.editorState.setTextCorrection(block.id, result.text);
+            needsRerender = true;
+          }
+        }
+
+        // Handle resize if dimensions changed
+        if (result.width !== undefined && result.height !== undefined) {
+          // Convert screen dimensions back to PDF coordinates
+          const screenHeight = this.inlineEditorHeight();
+          const pdfHeight = block.height;
+          const scale = screenHeight / pdfHeight;
+
+          const newPdfWidth = result.width / scale;
+          const newPdfHeight = result.height / scale;
+
+          this.editorState.setBlockSize(block.id, newPdfWidth, newPdfHeight);
+          needsRerender = true;
+        }
+
+        // Re-render page with redactions to hide original text
+        if (needsRerender) {
+          this.rerenderPageWithEdits(block.page);
+        }
+      }
+    }
+    this.closeInlineEditor();
+  }
+
+  // Handle block position changes from drag/drop in edit mode (called during drag)
+  onBlockMoved(event: { blockId: string; offsetX: number; offsetY: number }): void {
+    const { blockId, offsetX, offsetY } = event;
+    // Update position for visual feedback during drag (no re-render yet)
+    if (Math.abs(offsetX) > 0.5 || Math.abs(offsetY) > 0.5) {
+      this.editorState.setBlockPosition(blockId, offsetX, offsetY);
+    } else {
+      this.editorState.clearBlockPosition(blockId);
+    }
+  }
+
+  // Handle block drag completion - re-render page with redactions
+  onBlockDragEnd(event: { blockId: string; pageNum: number }): void {
+    // Re-render the page with redactions now that drag is complete
+    this.rerenderPageWithEdits(event.pageNum);
+  }
+
+  /**
+   * Get all redact regions for a page (original positions of edited blocks)
+   */
+  private getRedactRegionsForPage(pageNum: number): Array<{ x: number; y: number; width: number; height: number }> {
+    const regions: Array<{ x: number; y: number; width: number; height: number }> = [];
+    const blockEdits = this.editorState.blockEdits();
+
+    for (const block of this.blocks()) {
+      if (block.page !== pageNum) continue;
+
+      const edit = blockEdits.get(block.id);
+      if (!edit) continue;
+
+      // Block has an edit - add original position as redact region
+      const hasTextEdit = edit.text !== undefined;
+      const hasPositionEdit = edit.offsetX !== undefined || edit.offsetY !== undefined;
+      const hasSizeEdit = edit.width !== undefined || edit.height !== undefined;
+
+      if (hasTextEdit || hasPositionEdit || hasSizeEdit) {
+        regions.push({
+          x: block.x,
+          y: block.y,
+          width: block.width,
+          height: block.height
+        });
+      }
+    }
+
+    return regions;
+  }
+
+  /**
+   * Re-render a page with all edited blocks' original positions redacted
+   */
+  private rerenderPageWithEdits(pageNum: number): void {
+    const regions = this.getRedactRegionsForPage(pageNum);
+    if (regions.length > 0) {
+      this.pageRenderService.rerenderPageWithRedactions(pageNum, regions);
+    } else {
+      // No more edits on this page - invalidate to reload clean version
+      this.pageRenderService.invalidatePage(pageNum);
+    }
+  }
+
+  // Legacy modal methods (kept for compatibility)
   openTextEditor(block: TextBlock): void {
     this.editingBlock.set(block);
     this.editedText.set(block.text);
@@ -2213,17 +2345,8 @@ export class PdfPickerComponent {
       return;
     }
 
-    // Update the block's text
-    this.blocks.update(blocks =>
-      blocks.map(b =>
-        b.id === block.id
-          ? { ...b, text: newText, char_count: newText.length }
-          : b
-      )
-    );
-
-    // Mark as having unsaved changes
-    this.hasUnsavedChanges.set(true);
+    // Save as text correction instead of modifying block directly
+    this.editorState.setTextCorrection(block.id, newText);
 
     // Close modal
     this.cancelTextEdit();
@@ -2478,437 +2601,63 @@ export class PdfPickerComponent {
   }
 
   async exportText(): Promise<void> {
-    const deleted = this.deletedBlockIds();
-
-    const exportBlocks = this.blocks()
-      .filter(b => !deleted.has(b.id) && !b.is_image) // Skip images too
-      .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
-
-    if (exportBlocks.length === 0) {
-      this.showAlert({
-        title: 'Nothing to Export',
-        message: 'No text to export. All blocks have been deleted.',
-        type: 'warning'
-      });
-      return;
-    }
-
-    const lines: string[] = [];
-    let currentPage = -1;
-
-    for (const block of exportBlocks) {
-      if (block.page !== currentPage) {
-        if (currentPage >= 0) lines.push('');
-        currentPage = block.page;
-      }
-      // Clean footnote references from the text
-      const cleanedText = this.stripFootnoteRefs(block.text);
-      if (cleanedText.trim()) {
-        lines.push(cleanedText);
-      }
-    }
-
-    const text = lines.join('\n');
-    const baseName = this.pdfName().replace(/\.pdf$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const timestamp = new Date().toISOString().slice(0, 10);
-    const filename = `${baseName}_cleaned_${timestamp}.txt`;
-
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    const result = await this.exportService.exportText(
+      this.blocks(),
+      this.deletedBlockIds(),
+      this.pdfName(),
+      this.textCorrections()
+    );
 
     this.showAlert({
-      title: 'Export Complete',
-      message: `Exported ${text.length.toLocaleString()} characters from ${exportBlocks.length} blocks.`,
-      type: 'success'
+      title: result.success ? 'Export Complete' : 'Nothing to Export',
+      message: result.message,
+      type: result.success ? 'success' : 'warning'
     });
   }
 
   async exportEpub(): Promise<void> {
-    const deleted = this.deletedBlockIds();
-
-    // Get non-deleted text blocks (no images for EPUB - per user request)
-    const exportBlocks = this.blocks()
-      .filter(b => !deleted.has(b.id) && !b.is_image)
-      .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
-
-    if (exportBlocks.length === 0) {
-      this.showAlert({
-        title: 'Nothing to Export',
-        message: 'No text to export. All blocks have been deleted.',
-        type: 'warning'
-      });
-      return;
-    }
-
-    // Build EPUB content
-    const bookTitle = this.pdfName().replace(/\.pdf$/i, '');
-    const chapters: string[] = [];
-    let currentChapter: string[] = [];
-    let lastPage = -1;
-
-    for (const block of exportBlocks) {
-      // Start new chapter every few pages (roughly)
-      if (block.page !== lastPage && block.page % 10 === 0 && currentChapter.length > 0) {
-        chapters.push(currentChapter.join('\n'));
-        currentChapter = [];
-      }
-      lastPage = block.page;
-
-      const cleanedText = this.stripFootnoteRefs(block.text);
-      if (cleanedText.trim()) {
-        // Wrap in paragraph tags
-        currentChapter.push(`<p>${this.escapeHtml(cleanedText)}</p>`);
-      }
-    }
-
-    // Push last chapter
-    if (currentChapter.length > 0) {
-      chapters.push(currentChapter.join('\n'));
-    }
-
-    // Generate simple EPUB structure
-    const epub = this.generateEpubBlob(bookTitle, chapters);
-
-    const baseName = bookTitle.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const timestamp = new Date().toISOString().slice(0, 10);
-    const filename = `${baseName}_${timestamp}.epub`;
-
-    const url = URL.createObjectURL(epub);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    const result = await this.exportService.exportEpub(
+      this.blocks(),
+      this.deletedBlockIds(),
+      this.pdfName(),
+      this.textCorrections()
+    );
 
     this.showAlert({
-      title: 'Export Complete',
-      message: `Exported EPUB with ${chapters.length} chapters, ${exportBlocks.length} blocks.`,
-      type: 'success'
+      title: result.success ? 'Export Complete' : 'Nothing to Export',
+      message: result.message,
+      type: result.success ? 'success' : 'warning'
     });
-  }
-
-  private escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
-
-  private generateEpubBlob(title: string, chapters: string[]): Blob {
-    // Generate a minimal valid EPUB file
-    // EPUB is a ZIP file with specific structure
-
-    const uuid = 'urn:uuid:' + this.generateUuid();
-    const date = new Date().toISOString().split('T')[0];
-
-    // Container XML
-    const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>`;
-
-    // OPF content
-    const chapterManifest = chapters.map((_, i) =>
-      `    <item id="chapter${i + 1}" href="chapter${i + 1}.xhtml" media-type="application/xhtml+xml"/>`
-    ).join('\n');
-
-    const chapterSpine = chapters.map((_, i) =>
-      `    <itemref idref="chapter${i + 1}"/>`
-    ).join('\n');
-
-    const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:identifier id="uid">${uuid}</dc:identifier>
-    <dc:title>${this.escapeHtml(title)}</dc:title>
-    <dc:language>en</dc:language>
-    <meta property="dcterms:modified">${date}T00:00:00Z</meta>
-  </metadata>
-  <manifest>
-    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-${chapterManifest}
-  </manifest>
-  <spine>
-${chapterSpine}
-  </spine>
-</package>`;
-
-    // Navigation document
-    const navItems = chapters.map((_, i) =>
-      `        <li><a href="chapter${i + 1}.xhtml">Chapter ${i + 1}</a></li>`
-    ).join('\n');
-
-    const navXhtml = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
-<head>
-  <title>Navigation</title>
-</head>
-<body>
-  <nav epub:type="toc">
-    <h1>Contents</h1>
-    <ol>
-${navItems}
-    </ol>
-  </nav>
-</body>
-</html>`;
-
-    // Chapter XHTMLs
-    const chapterXhtmls = chapters.map((content, i) => `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-  <title>Chapter ${i + 1}</title>
-  <style>
-    body { font-family: serif; line-height: 1.6; margin: 1em; }
-    p { margin: 0.5em 0; text-indent: 1em; }
-  </style>
-</head>
-<body>
-  <h1>Chapter ${i + 1}</h1>
-${content}
-</body>
-</html>`);
-
-    // Build ZIP using JSZip-like structure
-    // Since we don't have JSZip, we'll create a simple uncompressed ZIP manually
-    const files: { name: string; content: string }[] = [
-      { name: 'mimetype', content: 'application/epub+zip' },
-      { name: 'META-INF/container.xml', content: containerXml },
-      { name: 'OEBPS/content.opf', content: contentOpf },
-      { name: 'OEBPS/nav.xhtml', content: navXhtml },
-      ...chapterXhtmls.map((content, i) => ({
-        name: `OEBPS/chapter${i + 1}.xhtml`,
-        content
-      }))
-    ];
-
-    // Create ZIP blob manually
-    return this.createZipBlob(files);
-  }
-
-  private generateUuid(): string {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = Math.random() * 16 | 0;
-      const v = c === 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
-  }
-
-  private createZipBlob(files: { name: string; content: string }[]): Blob {
-    // Create a simple uncompressed ZIP file
-    const encoder = new TextEncoder();
-    const parts: Uint8Array[] = [];
-    const centralDirectory: Uint8Array[] = [];
-    let offset = 0;
-
-    for (const file of files) {
-      const fileData = encoder.encode(file.content);
-      const fileName = encoder.encode(file.name);
-
-      // Local file header
-      const localHeader = new Uint8Array(30 + fileName.length);
-      const view = new DataView(localHeader.buffer);
-
-      view.setUint32(0, 0x04034b50, true);  // Local file header signature
-      view.setUint16(4, 20, true);           // Version needed to extract
-      view.setUint16(6, 0, true);            // General purpose bit flag
-      view.setUint16(8, 0, true);            // Compression method (store)
-      view.setUint16(10, 0, true);           // File last mod time
-      view.setUint16(12, 0, true);           // File last mod date
-      view.setUint32(14, this.crc32(fileData), true); // CRC-32
-      view.setUint32(18, fileData.length, true);      // Compressed size
-      view.setUint32(22, fileData.length, true);      // Uncompressed size
-      view.setUint16(26, fileName.length, true);      // File name length
-      view.setUint16(28, 0, true);           // Extra field length
-
-      localHeader.set(fileName, 30);
-
-      // Central directory entry
-      const centralEntry = new Uint8Array(46 + fileName.length);
-      const centralView = new DataView(centralEntry.buffer);
-
-      centralView.setUint32(0, 0x02014b50, true);  // Central directory signature
-      centralView.setUint16(4, 20, true);          // Version made by
-      centralView.setUint16(6, 20, true);          // Version needed
-      centralView.setUint16(8, 0, true);           // General purpose bit flag
-      centralView.setUint16(10, 0, true);          // Compression method
-      centralView.setUint16(12, 0, true);          // File last mod time
-      centralView.setUint16(14, 0, true);          // File last mod date
-      centralView.setUint32(16, this.crc32(fileData), true); // CRC-32
-      centralView.setUint32(20, fileData.length, true);      // Compressed size
-      centralView.setUint32(24, fileData.length, true);      // Uncompressed size
-      centralView.setUint16(28, fileName.length, true);      // File name length
-      centralView.setUint16(30, 0, true);          // Extra field length
-      centralView.setUint16(32, 0, true);          // File comment length
-      centralView.setUint16(34, 0, true);          // Disk number start
-      centralView.setUint16(36, 0, true);          // Internal file attributes
-      centralView.setUint32(38, 0, true);          // External file attributes
-      centralView.setUint32(42, offset, true);     // Relative offset of local header
-
-      centralEntry.set(fileName, 46);
-
-      parts.push(localHeader);
-      parts.push(fileData);
-      centralDirectory.push(centralEntry);
-
-      offset += localHeader.length + fileData.length;
-    }
-
-    // End of central directory record
-    const centralDirOffset = offset;
-    let centralDirSize = 0;
-    for (const entry of centralDirectory) {
-      parts.push(entry);
-      centralDirSize += entry.length;
-    }
-
-    const endRecord = new Uint8Array(22);
-    const endView = new DataView(endRecord.buffer);
-
-    endView.setUint32(0, 0x06054b50, true);  // End of central dir signature
-    endView.setUint16(4, 0, true);           // Disk number
-    endView.setUint16(6, 0, true);           // Disk number with central dir
-    endView.setUint16(8, files.length, true);  // Entries on this disk
-    endView.setUint16(10, files.length, true); // Total entries
-    endView.setUint32(12, centralDirSize, true); // Size of central directory
-    endView.setUint32(16, centralDirOffset, true); // Offset of central directory
-    endView.setUint16(20, 0, true);          // ZIP file comment length
-
-    parts.push(endRecord);
-
-    // Combine all parts
-    const totalLength = parts.reduce((sum, part) => sum + part.length, 0);
-    const result = new Uint8Array(totalLength);
-    let pos = 0;
-    for (const part of parts) {
-      result.set(part, pos);
-      pos += part.length;
-    }
-
-    return new Blob([result], { type: 'application/epub+zip' });
-  }
-
-  private crc32(data: Uint8Array): number {
-    let crc = 0xFFFFFFFF;
-    const table = this.getCrc32Table();
-    for (let i = 0; i < data.length; i++) {
-      crc = (crc >>> 8) ^ table[(crc ^ data[i]) & 0xFF];
-    }
-    return (crc ^ 0xFFFFFFFF) >>> 0;
-  }
-
-  private crc32Table: number[] | null = null;
-
-  private getCrc32Table(): number[] {
-    if (this.crc32Table) return this.crc32Table;
-
-    const table: number[] = [];
-    for (let i = 0; i < 256; i++) {
-      let c = i;
-      for (let j = 0; j < 8; j++) {
-        c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-      }
-      table[i] = c >>> 0;
-    }
-    this.crc32Table = table;
-    return table;
   }
 
   async exportPdf(): Promise<void> {
-    // Export PDF - removes deleted blocks and deleted custom category highlights
-    const deleted = this.deletedBlockIds();
-    const deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }> = [];
-
-    // Add deleted blocks
-    for (const block of this.blocks()) {
-      if (deleted.has(block.id)) {
-        deletedRegions.push({
-          page: block.page,
-          x: block.x,
-          y: block.y,
-          width: block.width,
-          height: block.height
-        });
-      }
-    }
-
-    // Add deleted custom category highlights
-    const deletedHighlights = this.deletedHighlightIds();
-    if (deletedHighlights.size > 0) {
-      const highlights = this.categoryHighlights();
-      for (const [categoryId, pageMap] of highlights) {
-        for (const [pageStr, rects] of Object.entries(pageMap)) {
-          const page = parseInt(pageStr);
-          for (const rect of rects) {
-            const highlightId = this.getHighlightId(categoryId, page, rect.x, rect.y);
-            if (deletedHighlights.has(highlightId)) {
-              deletedRegions.push({
-                page,
-                x: rect.x,
-                y: rect.y,
-                width: rect.w,
-                height: rect.h
-              });
-            }
-          }
-        }
-      }
-    }
-
-    if (deletedRegions.length === 0) {
-      this.showAlert({
-        title: 'Nothing Changed',
-        message: 'No blocks or highlights have been deleted. The exported PDF would be identical to the original.',
-        type: 'info'
-      });
-      return;
-    }
-
     this.loading.set(true);
     this.loadingText.set('Generating PDF...');
 
     try {
-      const path = this.libraryPath();
-      if (!path) {
-        throw new Error('No PDF file loaded');
+      const result = await this.exportService.exportPdf(
+        this.blocks(),
+        this.deletedBlockIds(),
+        this.deletedHighlightIds(),
+        this.categoryHighlights(),
+        this.libraryPath(),
+        this.pdfName(),
+        this.getHighlightId.bind(this)
+      );
+
+      if (result.success) {
+        this.showAlert({
+          title: 'Export Complete',
+          message: result.message,
+          type: 'success'
+        });
+      } else {
+        this.showAlert({
+          title: 'Nothing Changed',
+          message: result.message,
+          type: 'info'
+        });
       }
-      const pdfBase64 = await this.pdfService.exportCleanPdf(path, deletedRegions);
-
-      // pdfBase64 contains base64-encoded PDF
-      const binaryString = atob(pdfBase64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      const blob = new Blob([bytes], { type: 'application/pdf' });
-      const baseName = this.pdfName().replace(/\.pdf$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-      const timestamp = new Date().toISOString().slice(0, 10);
-      const filename = `${baseName}_cleaned_${timestamp}.pdf`;
-
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
-
-      this.showAlert({
-        title: 'Export Complete',
-        message: `Exported PDF with ${deletedRegions.length} regions removed.`,
-        type: 'success'
-      });
     } catch (err) {
       this.showAlert({
         title: 'Export Failed',
@@ -2965,30 +2714,6 @@ ${content}
       message: `Found ${matchingBlocks.length} blocks containing footnote references.\n\nThey are now selected. Press Delete to remove them, or click elsewhere to deselect.\n\nNote: When you export, the footnote numbers within text will also be stripped automatically.`,
       type: 'success'
     });
-  }
-
-  // Strip footnote reference numbers from text
-  private stripFootnoteRefs(text: string): string {
-    // Unicode superscript numbers: ⁰¹²³⁴⁵⁶⁷⁸⁹
-    const superscriptPattern = /[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g;
-
-    // Regular numbers that look like footnote refs:
-    // - Numbers at end of words (word123 -> word)
-    // - Numbers after punctuation with no space (text.1 -> text.)
-    const inlineRefPattern = /(?<=\w)(\d{1,3})(?=[\s\.,;:!?\)]|$)/g;
-
-    // Bracketed references: [1], [12], (1), (12)
-    const bracketedPattern = /[\[\(]\d{1,3}[\]\)]/g;
-
-    let cleaned = text;
-    cleaned = cleaned.replace(superscriptPattern, '');
-    cleaned = cleaned.replace(bracketedPattern, '');
-    cleaned = cleaned.replace(inlineRefPattern, '');
-
-    // Clean up any double spaces left behind
-    cleaned = cleaned.replace(/  +/g, ' ');
-
-    return cleaned.trim();
   }
 
   private saveRecentFile(path: string, name: string): void {
@@ -3261,6 +2986,12 @@ ${content}
     const order = this.pageOrder();
     const history = this.editorState.getHistory();
     const customCategories = this.getCustomCategoriesData();
+    const blockEdits = this.editorState.blockEdits();
+
+    // Convert Map to Record for JSON serialization
+    const blockEditsRecord: Record<string, BlockEditData> | undefined =
+      blockEdits.size > 0 ? Object.fromEntries(blockEdits) : undefined;
+
     const projectData: BookForgeProject = {
       version: 1,
       source_path: this.pdfPath(),
@@ -3271,6 +3002,7 @@ ${content}
       deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : undefined,
       page_order: order.length > 0 ? order : undefined,
       custom_categories: customCategories.length > 0 ? customCategories : undefined,
+      block_edits: blockEditsRecord,
       undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
       redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
       created_at: new Date().toISOString(),
@@ -3345,6 +3077,18 @@ ${content}
     try {
       const pdfResult = await this.pdfService.analyzePdf(pdfPathToLoad);
 
+      // Convert block edits Record to Map if present, fall back to text_corrections for legacy
+      let blockEditsMap: Map<string, BlockEdit> | undefined;
+      if (project.block_edits) {
+        blockEditsMap = new Map(Object.entries(project.block_edits));
+      } else if (project.text_corrections) {
+        // Legacy: convert text_corrections to blockEdits
+        blockEditsMap = new Map();
+        Object.entries(project.text_corrections).forEach(([blockId, text]) => {
+          blockEditsMap!.set(blockId, { text });
+        });
+      }
+
       // Load document state via service
       this.editorState.loadDocument({
         blocks: pdfResult.blocks,
@@ -3356,7 +3100,8 @@ ${content}
         libraryPath: libraryPath,
         fileHash: fileHash,
         deletedBlockIds: new Set(project.deleted_block_ids || []),
-        pageOrder: project.page_order || []
+        pageOrder: project.page_order || [],
+        blockEdits: blockEditsMap
       });
 
       // Restore undo/redo history from project (loadDocument clears it)
@@ -3377,12 +3122,13 @@ ${content}
         this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
       }
 
-      this.pageImages.set(new Map());
+      this.pageRenderService.clear();
       this.projectService.projectPath.set(result.filePath || null);
 
       // Load page images
       this.loadingText.set('Rendering pages...');
-      await this.loadAllPageImages(pdfResult.page_count);
+      this.pageRenderService.initialize(this.pdfPath(), pdfResult.page_count);
+      await this.pageRenderService.loadAllPageImages(pdfResult.page_count);
     } catch (err) {
       console.error('Failed to load project source file:', err);
       this.showAlert({
@@ -3491,6 +3237,18 @@ ${content}
       this.openDocuments.update(docs => [...docs, newDoc]);
       this.activeDocumentId.set(docId);
 
+      // Convert block edits Record to Map if present, fall back to text_corrections for legacy
+      let blockEditsMap: Map<string, BlockEdit> | undefined;
+      if (project.block_edits) {
+        blockEditsMap = new Map(Object.entries(project.block_edits));
+      } else if (project.text_corrections) {
+        // Legacy: convert text_corrections to blockEdits
+        blockEditsMap = new Map();
+        Object.entries(project.text_corrections).forEach(([blockId, text]) => {
+          blockEditsMap!.set(blockId, { text });
+        });
+      }
+
       // Load document state via service
       this.editorState.loadDocument({
         blocks: pdfResult.blocks,
@@ -3502,7 +3260,8 @@ ${content}
         libraryPath: libraryPath,
         fileHash: fileHash,
         deletedBlockIds: deletedBlockIds,
-        pageOrder: pageOrder
+        pageOrder: pageOrder,
+        blockEdits: blockEditsMap
       });
 
       // Restore undo/redo history from project (loadDocument clears it)
@@ -3523,12 +3282,13 @@ ${content}
         this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
       }
 
-      this.pageImages.set(new Map());
+      this.pageRenderService.clear();
       this.projectService.projectPath.set(actualProjectPath);
 
       // Load page images
       this.loadingText.set('Rendering pages...');
-      await this.loadAllPageImages(pdfResult.page_count);
+      this.pageRenderService.initialize(this.pdfPath(), pdfResult.page_count);
+      await this.pageRenderService.loadAllPageImages(pdfResult.page_count);
 
       this.pdfLoaded.set(true);
     } catch (err) {
@@ -4574,7 +4334,7 @@ ${content}
             deletedBlockIds: this.deletedBlockIds(),
             selectedBlockIds: this.selectedBlockIds(),
             pageOrder: this.pageOrder(),
-            pageImages: this.pageImages(),
+            pageImages: this.pageRenderService.getPageImagesMap(),
             hasUnsavedChanges: this.hasUnsavedChanges(),
             projectPath: this.projectPath(),
             undoStack: history.undoStack,
@@ -4614,14 +4374,14 @@ ${content}
       redoStack: doc.redoStack
     });
 
-    this.pageImages.set(doc.pageImages);
+    this.pageRenderService.restorePageImages(doc.pageImages);
     this.projectService.projectPath.set(doc.projectPath);
   }
 
   private clearDocumentState(): void {
     this.activeDocumentId.set(null);
     this.editorState.reset();
-    this.pageImages.set(new Map());
+    this.pageRenderService.clear();
     this.projectService.reset();
   }
 

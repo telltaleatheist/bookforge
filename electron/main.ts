@@ -84,9 +84,15 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('pdf:render-page', async (_event, pageNum: number, scale: number = 2.0, pdfPath?: string) => {
+  ipcMain.handle('pdf:render-page', async (
+    _event,
+    pageNum: number,
+    scale: number = 2.0,
+    pdfPath?: string,
+    redactRegions?: Array<{ x: number; y: number; width: number; height: number }>
+  ) => {
     try {
-      const image = await pdfAnalyzer.renderPage(pageNum, scale, pdfPath);
+      const image = await pdfAnalyzer.renderPage(pageNum, scale, pdfPath, redactRegions);
       return { success: true, data: { image } };
     } catch (err) {
       return { success: false, error: (err as Error).message };

@@ -989,16 +989,31 @@ export class PDFAnalyzer {
 
   /**
    * Render a page as PNG (base64)
+   * @param redactRegions - Optional regions to blank out before rendering
    */
-  async renderPage(pageNum: number, scale: number = 2.0, pdfPath?: string): Promise<string> {
+  async renderPage(
+    pageNum: number,
+    scale: number = 2.0,
+    pdfPath?: string,
+    redactRegions?: Array<{ x: number; y: number; width: number; height: number }>
+  ): Promise<string> {
     const mupdfLib = await getMupdf();
-    let doc = this.doc;
-    let needsClose = false;
 
-    // If pdfPath provided, open it (for stateless calls)
-    if (pdfPath) {
-      const data = fs.readFileSync(pdfPath);
-      const mimeType = getMimeType(pdfPath);
+    // If we have redaction regions, always open a fresh document copy
+    // to avoid corrupting the cached document
+    const hasRedactions = redactRegions && redactRegions.length > 0;
+
+    let doc = hasRedactions ? null : this.doc;
+    let needsClose = hasRedactions;
+
+    // If pdfPath provided or we need redactions, open fresh document
+    if (pdfPath || hasRedactions) {
+      const pathToUse = pdfPath || this.pdfPath;
+      if (!pathToUse) {
+        throw new Error('No PDF path available');
+      }
+      const data = fs.readFileSync(pathToUse);
+      const mimeType = getMimeType(pathToUse);
       doc = mupdfLib.Document.openDocument(data, mimeType);
       needsClose = true;
     }
@@ -1008,6 +1023,25 @@ export class PDFAnalyzer {
     }
 
     try {
+      // Apply redactions if provided (PDF only)
+      if (hasRedactions && redactRegions) {
+        const pdfDoc = doc.asPDF();
+        if (pdfDoc) {
+          const page = pdfDoc.loadPage(pageNum);
+          for (const region of redactRegions) {
+            const rect: [number, number, number, number] = [
+              region.x,
+              region.y,
+              region.x + region.width,
+              region.y + region.height,
+            ];
+            const annot = page.createAnnotation('Redact');
+            annot.setRect(rect);
+          }
+          page.applyRedactions(false);
+        }
+      }
+
       const page = doc.loadPage(pageNum);
       const matrix = mupdfLib.Matrix.scale(scale, scale);
       const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);

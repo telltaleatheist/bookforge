@@ -177,7 +177,7 @@ export interface MatchingSpansResult {
 export interface ElectronAPI {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
-    renderPage: (pageNum: number, scale?: number, pdfPath?: string) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
+    renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number }>) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     exportText: (enabledCategories: string[]) => Promise<{ success: boolean; data?: { text: string; char_count: number }; error?: string }>;
     exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
     findSimilar: (blockId: string) => Promise<{ success: boolean; data?: { similar_ids: string[]; count: number }; error?: string }>;
@@ -238,8 +238,8 @@ const electronAPI: ElectronAPI = {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) =>
       ipcRenderer.invoke('pdf:analyze', pdfPath, maxPages),
-    renderPage: (pageNum: number, scale: number = 2.0, pdfPath?: string) =>
-      ipcRenderer.invoke('pdf:render-page', pageNum, scale, pdfPath),
+    renderPage: (pageNum: number, scale: number = 2.0, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number }>) =>
+      ipcRenderer.invoke('pdf:render-page', pageNum, scale, pdfPath, redactRegions),
     exportText: (enabledCategories: string[]) =>
       ipcRenderer.invoke('pdf:export-text', enabledCategories),
     exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>) =>

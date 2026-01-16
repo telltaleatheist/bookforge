@@ -81,14 +81,19 @@ export interface CropRect {
                     @for (block of getPageBlocks(pageNum); track block.id) {
                       <rect
                         class="block-rect"
-                        [attr.x]="block.x"
-                        [attr.y]="block.y"
-                        [attr.width]="block.width"
-                        [attr.height]="block.height"
+                        [attr.x]="getBlockX(block)"
+                        [attr.y]="getBlockY(block)"
+                        [attr.width]="getBlockWidth(block)"
+                        [attr.height]="getBlockHeight(block)"
                         [attr.fill]="isSelected(block.id) ? getBlockFill(block) : 'transparent'"
-                        [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : 'transparent'"
+                        [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))"
                         [class.selected]="isSelected(block.id)"
                         [class.deleted]="isDeleted(block.id)"
+                        [class.corrected]="hasCorrectedText(block.id)"
+                        [class.moved]="hasOffset(block.id)"
+                        [class.dragging]="isDraggingBlock() && draggingBlock?.id === block.id"
+                        [style.cursor]="editorMode() === 'edit' ? 'move' : 'pointer'"
+                        (mousedown)="onBlockMouseDown($event, block)"
                         (click)="onBlockClick($event, block)"
                         (dblclick)="onBlockDoubleClick($event, block)"
                         (contextmenu)="onContextMenu($event, block)"
@@ -97,23 +102,42 @@ export interface CropRect {
                       />
                       @if (isDeleted(block.id)) {
                         <line
-                          [attr.x1]="block.x"
-                          [attr.y1]="block.y"
-                          [attr.x2]="block.x + block.width"
-                          [attr.y2]="block.y + block.height"
+                          [attr.x1]="getBlockX(block)"
+                          [attr.y1]="getBlockY(block)"
+                          [attr.x2]="getBlockX(block) + getBlockWidth(block)"
+                          [attr.y2]="getBlockY(block) + getBlockHeight(block)"
                           stroke="#ff4444"
                           stroke-width="2"
                           class="delete-mark"
                         />
                         <line
-                          [attr.x1]="block.x + block.width"
-                          [attr.y1]="block.y"
-                          [attr.x2]="block.x"
-                          [attr.y2]="block.y + block.height"
+                          [attr.x1]="getBlockX(block) + getBlockWidth(block)"
+                          [attr.y1]="getBlockY(block)"
+                          [attr.x2]="getBlockX(block)"
+                          [attr.y2]="getBlockY(block) + getBlockHeight(block)"
                           stroke="#ff4444"
                           stroke-width="2"
                           class="delete-mark"
                         />
+                      }
+                      @if (hasTextOverlay(block) && !isDeleted(block.id)) {
+                        <!-- Text overlay at new position (original text redacted from PDF render) -->
+                        <foreignObject
+                          class="text-overlay"
+                          [attr.x]="getBlockX(block)"
+                          [attr.y]="getBlockY(block)"
+                          [attr.width]="getBlockWidth(block)"
+                          [attr.height]="getExpandedHeight(block)"
+                        >
+                          <div
+                            xmlns="http://www.w3.org/1999/xhtml"
+                            class="text-overlay-content"
+                            [style.font-size.px]="block.font_size"
+                            [style.width.px]="getBlockWidth(block)"
+                            [class.corrected]="hasCorrectedText(block.id)"
+                            [class.moved]="hasOffset(block.id)"
+                          >{{ getDisplayText(block) }}</div>
+                        </foreignObject>
                       }
                     }
 
@@ -715,6 +739,13 @@ export interface CropRect {
       opacity: 0.6;
     }
 
+    .block-overlay .block-rect.corrected {
+      stroke: #4caf50 !important;
+      stroke-width: 2;
+      stroke-dasharray: 6, 2;
+      fill: rgba(76, 175, 80, 0.1);
+    }
+
     .block-overlay .block-rect.dimmed {
       opacity: 0.08 !important;
       stroke-width: 0.25 !important;
@@ -740,6 +771,40 @@ export interface CropRect {
     .delete-mark {
       pointer-events: none;
       opacity: 0.8;
+    }
+
+    /* Text overlay for corrected/moved blocks */
+    .text-overlay {
+      pointer-events: none;
+      overflow: visible;
+    }
+
+    .text-overlay-content {
+      padding: 2px 4px;
+      font-family: Georgia, 'Times New Roman', Times, serif;
+      line-height: 1.2;
+      color: #1a1a1a;
+      background: #ffffff;
+      border: 1px solid #4caf50;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      box-sizing: border-box;
+      min-height: 100%;
+    }
+
+    .text-overlay-content.corrected {
+      background: #ffffff;
+      border-color: #4caf50;
+    }
+
+    .text-overlay-content.moved {
+      background: #f0f8ff;
+      border-color: #2196f3;
+    }
+
+    .text-overlay-content.corrected.moved {
+      background: #f0fff0;
+      border-color: #00bcd4;
     }
 
     /* Tooltip */
@@ -871,8 +936,28 @@ export class PdfViewerComponent {
   // Deleted highlight IDs - highlights that should show X strikethrough
   deletedHighlightIds = input<Set<string>>(new Set());
 
+  // Block IDs that have text corrections (for visual indicator)
+  correctedBlockIds = input<Set<string>>(new Set());
+
+  // Block position offsets (for drag/drop) - maps blockId to {offsetX, offsetY}
+  blockOffsets = input<Map<string, { offsetX: number; offsetY: number }>>(new Map());
+
+  // Text corrections - maps blockId to corrected text (for rendering overlays)
+  textCorrections = input<Map<string, string>>(new Map());
+
+  // Block size overrides - maps blockId to {width, height} (for resized blocks)
+  blockSizes = input<Map<string, { width: number; height: number }>>(new Map());
+
   blockClick = output<{ block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
-  blockDoubleClick = output<{ block: TextBlock; metaKey: boolean; ctrlKey: boolean }>();
+  blockDoubleClick = output<{
+    block: TextBlock;
+    metaKey: boolean;
+    ctrlKey: boolean;
+    screenX: number;
+    screenY: number;
+    screenWidth: number;
+    screenHeight: number;
+  }>();
   blockHover = output<TextBlock | null>();
   selectLikeThis = output<TextBlock>();
   deleteLikeThis = output<TextBlock>();
@@ -890,11 +975,23 @@ export class PdfViewerComponent {
   sampleMouseMove = output<{ pageX: number; pageY: number }>();
   sampleMouseUp = output<void>();
 
+  // Block drag output (for edit mode)
+  blockMoved = output<{ blockId: string; offsetX: number; offsetY: number }>();
+  blockDragEnd = output<{ blockId: string; pageNum: number }>();
+
   // Drag state for organize mode
   draggedPageIndex: number | null = null;
   dropTargetIndex: number | null = null;
   readonly isDraggingPage = signal(false);
   readonly dragOverIndex = signal<number | null>(null);
+
+  // Block drag state (for edit mode)
+  draggingBlock: TextBlock | null = null;  // Public for template access
+  private dragStartX: number = 0;
+  private dragStartY: number = 0;
+  private dragStartBlockX: number = 0;
+  private dragStartBlockY: number = 0;
+  readonly isDraggingBlock = signal(false);
 
   // Crop drawing state
   readonly isDrawingCrop = signal(false);
@@ -1112,6 +1209,71 @@ export class PdfViewerComponent {
     return this.deletedBlockIds().has(blockId);
   }
 
+  hasCorrectedText(blockId: string): boolean {
+    return this.correctedBlockIds().has(blockId);
+  }
+
+  hasOffset(blockId: string): boolean {
+    return this.blockOffsets().has(blockId);
+  }
+
+  getBlockX(block: TextBlock): number {
+    const offset = this.blockOffsets().get(block.id);
+    return block.x + (offset?.offsetX ?? 0);
+  }
+
+  getBlockY(block: TextBlock): number {
+    const offset = this.blockOffsets().get(block.id);
+    return block.y + (offset?.offsetY ?? 0);
+  }
+
+  getBlockWidth(block: TextBlock): number {
+    const sizeOverride = this.blockSizes().get(block.id);
+    return sizeOverride?.width ?? block.width;
+  }
+
+  getBlockHeight(block: TextBlock): number {
+    const sizeOverride = this.blockSizes().get(block.id);
+    return sizeOverride?.height ?? block.height;
+  }
+
+  getCorrectedText(blockId: string): string | null {
+    return this.textCorrections().get(blockId) ?? null;
+  }
+
+  hasTextOverlay(block: TextBlock): boolean {
+    // Show text overlay if block has correction OR has been moved/resized
+    return this.hasCorrectedText(block.id) || this.hasOffset(block.id) || this.blockSizes().has(block.id);
+  }
+
+  getDisplayText(block: TextBlock): string {
+    return this.getCorrectedText(block.id) ?? block.text;
+  }
+
+  getExpandedHeight(block: TextBlock): number {
+    const baseHeight = this.getBlockHeight(block);
+    const displayText = this.getDisplayText(block);
+    const originalText = block.text;
+
+    // Calculate approximate height needed based on text length ratio
+    const textRatio = displayText.length / Math.max(originalText.length, 1);
+
+    // Also account for newlines
+    const newlineCount = (displayText.match(/\n/g) || []).length;
+    const originalNewlines = (originalText.match(/\n/g) || []).length;
+    const extraNewlines = Math.max(0, newlineCount - originalNewlines);
+
+    // Estimate: each newline adds roughly one line height (font_size * 1.2)
+    const lineHeight = block.font_size * 1.2;
+    const extraHeight = extraNewlines * lineHeight;
+
+    // Scale height by text ratio, with extra for newlines, minimum 1.5x for safety
+    const scaledHeight = Math.max(baseHeight * textRatio, baseHeight) + extraHeight;
+
+    // Return at least 1.5x original height to allow for some expansion, max 5x
+    return Math.min(Math.max(scaledHeight, baseHeight * 1.5), baseHeight * 5);
+  }
+
   isCategoryEnabled(categoryId: string): boolean {
     return this.categories()[categoryId]?.enabled ?? true;
   }
@@ -1141,10 +1303,19 @@ export class PdfViewerComponent {
   onBlockDoubleClick(event: MouseEvent, block: TextBlock): void {
     event.preventDefault();
     event.stopPropagation();
+
+    // Get screen coordinates of the block for inline editing
+    const target = event.target as SVGRectElement;
+    const rect = target.getBoundingClientRect();
+
     this.blockDoubleClick.emit({
       block,
       metaKey: event.metaKey,
-      ctrlKey: event.ctrlKey
+      ctrlKey: event.ctrlKey,
+      screenX: rect.left,
+      screenY: rect.top,
+      screenWidth: rect.width,
+      screenHeight: rect.height
     });
   }
 
@@ -1804,5 +1975,99 @@ export class PdfViewerComponent {
 
     document.removeEventListener('mousemove', this.onSplitDragMove);
     document.removeEventListener('mouseup', this.onSplitDragEnd);
+  };
+
+  // ===========================================================================
+  // BLOCK DRAG - Drag text blocks to reposition them (edit mode)
+  // ===========================================================================
+
+  // Start dragging a block
+  onBlockMouseDown(event: MouseEvent, block: TextBlock): void {
+    // Only allow dragging in edit mode
+    if (this.editorMode() !== 'edit') return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    // Get SVG coordinates
+    const coords = this.getSvgCoordinates(event, block.page);
+    if (!coords) return;
+
+    // Get current block position (including any existing offset)
+    const currentOffset = this.blockOffsets().get(block.id);
+    const blockX = block.x + (currentOffset?.offsetX ?? 0);
+    const blockY = block.y + (currentOffset?.offsetY ?? 0);
+
+    // Store drag start state
+    this.draggingBlock = block;
+    this.dragStartX = coords.x;
+    this.dragStartY = coords.y;
+    this.dragStartBlockX = blockX;
+    this.dragStartBlockY = blockY;
+    this.isDraggingBlock.set(true);
+
+    // Add document-level listeners for drag
+    document.addEventListener('mousemove', this.onBlockDragMove);
+    document.addEventListener('mouseup', this.onBlockDragEnd);
+  }
+
+  // Handle block drag movement
+  private onBlockDragMove = (event: MouseEvent): void => {
+    if (!this.isDraggingBlock() || !this.draggingBlock) return;
+
+    const block = this.draggingBlock;
+    const dims = this.pageDimensions()[block.page];
+    if (!dims) return;
+
+    // Get the page wrapper element
+    const pageWrapper = document.querySelector(`[data-page="${block.page}"]`);
+    if (!pageWrapper) return;
+
+    const svg = pageWrapper.querySelector('.block-overlay') as SVGSVGElement;
+    if (!svg) return;
+
+    // Convert mouse position to SVG coordinates
+    const pt = svg.createSVGPoint();
+    pt.x = event.clientX;
+    pt.y = event.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+    const svgP = pt.matrixTransform(ctm.inverse());
+
+    // Calculate delta from start
+    const deltaX = svgP.x - this.dragStartX;
+    const deltaY = svgP.y - this.dragStartY;
+
+    // Calculate new position
+    let newX = this.dragStartBlockX + deltaX;
+    let newY = this.dragStartBlockY + deltaY;
+
+    // Constrain to page bounds
+    newX = Math.max(0, Math.min(newX, dims.width - block.width));
+    newY = Math.max(0, Math.min(newY, dims.height - block.height));
+
+    // Calculate offset from original position
+    const offsetX = newX - block.x;
+    const offsetY = newY - block.y;
+
+    // Emit the position change
+    this.blockMoved.emit({ blockId: block.id, offsetX, offsetY });
+  };
+
+  // End block drag
+  private onBlockDragEnd = (): void => {
+    // Emit drag end event before clearing state
+    if (this.draggingBlock) {
+      this.blockDragEnd.emit({
+        blockId: this.draggingBlock.id,
+        pageNum: this.draggingBlock.page
+      });
+    }
+
+    this.draggingBlock = null;
+    this.isDraggingBlock.set(false);
+
+    document.removeEventListener('mousemove', this.onBlockDragMove);
+    document.removeEventListener('mouseup', this.onBlockDragEnd);
   };
 }

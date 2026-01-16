@@ -91,8 +91,13 @@ export class PdfService {
     return `${this.apiBase}/api/page/${pageNum}?scale=${scale}`;
   }
 
-  async renderPage(pageNum: number, scale = 2.0, pdfPath?: string): Promise<string | null> {
-    return this.electron.renderPage(pageNum, scale, pdfPath);
+  async renderPage(
+    pageNum: number,
+    scale = 2.0,
+    pdfPath?: string,
+    redactRegions?: Array<{ x: number; y: number; width: number; height: number }>
+  ): Promise<string | null> {
+    return this.electron.renderPage(pageNum, scale, pdfPath, redactRegions);
   }
 
   async exportText(enabledCategoryIds: string[]): Promise<{ text: string; char_count: number }> {
