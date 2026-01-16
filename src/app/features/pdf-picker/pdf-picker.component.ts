@@ -1385,7 +1385,7 @@ export class PdfPickerComponent {
       return;
     }
 
-    // Delete/Backspace to delete selected blocks or focused custom category
+    // Delete/Backspace to delete selected blocks or custom category highlights
     if (event.key === 'Delete' || event.key === 'Backspace') {
       // First, try to delete selected blocks
       if (this.selectedBlockIds().length > 0) {
@@ -1393,12 +1393,11 @@ export class PdfPickerComponent {
         this.deleteSelectedBlocks();
         return;
       }
-      // If no blocks selected, try to delete focused custom category
+      // If no blocks selected, try to clear highlights from focused custom category
       const focusedCat = this.focusedCategoryId();
       if (focusedCat && focusedCat.startsWith('custom_')) {
         event.preventDefault();
-        this.deleteCustomCategory(focusedCat);
-        this.focusedCategoryId.set(null);
+        this.clearCustomCategoryHighlights(focusedCat);
         return;
       }
     }
@@ -4093,6 +4092,41 @@ ${content}
     this.hasUnsavedChanges.set(true);
 
     console.log(`Deleted custom category: ${categoryId}`);
+  }
+
+  // Clear all highlights from a custom category (keeps category, removes matches)
+  clearCustomCategoryHighlights(categoryId: string): void {
+    const highlights = this.categoryHighlights().get(categoryId);
+    if (!highlights) return;
+
+    // Count how many highlights we're removing
+    const count = Object.values(highlights).reduce((sum, arr) => sum + arr.length, 0);
+
+    // Clear the highlights for this category
+    this.categoryHighlights.update(h => {
+      const newHighlights = new Map(h);
+      newHighlights.set(categoryId, {}); // Empty highlights, category remains
+      return newHighlights;
+    });
+
+    // Update the category's block count
+    this.categories.update(cats => {
+      const cat = cats[categoryId];
+      if (!cat) return cats;
+      return {
+        ...cats,
+        [categoryId]: {
+          ...cat,
+          block_count: 0,
+          char_count: 0
+        }
+      };
+    });
+
+    // Mark as having unsaved changes
+    this.hasUnsavedChanges.set(true);
+
+    console.log(`Cleared ${count} highlights from custom category: ${categoryId}`);
   }
 
   editCustomCategory(categoryId: string): void {
