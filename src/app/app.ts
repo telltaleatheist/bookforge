@@ -22,7 +22,6 @@ import {
   template: `
     <div class="app-container" [attr.data-theme]="themeService.resolvedTheme()">
       <desktop-window
-        title="BookForge"
         [showTitlebar]="true"
         [showToolbar]="false"
         [showStatusBar]="true"

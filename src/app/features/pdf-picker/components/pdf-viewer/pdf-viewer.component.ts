@@ -66,6 +66,7 @@ export interface CropRect {
                 <svg
                   class="block-overlay"
                   [class.crop-mode]="cropMode()"
+                  [class.sample-mode]="sampleMode()"
                   [class.marquee-mode]="isMarqueeSelecting()"
                   [class.edit-mode]="editorMode() === 'edit'"
                   [class.organize-mode]="editorMode() === 'organize'"
@@ -76,7 +77,7 @@ export interface CropRect {
                   (mouseup)="onOverlayMouseUp($event, pageNum)"
                   (mouseleave)="onOverlayMouseLeave()"
                 >
-                  @if (!cropMode()) {
+                  @if (!cropMode() && !sampleMode()) {
                     @for (block of getPageBlocks(pageNum); track block.id) {
                       <rect
                         class="block-rect"
@@ -84,12 +85,10 @@ export interface CropRect {
                         [attr.y]="block.y"
                         [attr.width]="block.width"
                         [attr.height]="block.height"
-                        [attr.fill]="getBlockFill(block)"
-                        [attr.stroke]="getBlockStroke(block)"
+                        [attr.fill]="isSelected(block.id) ? getBlockFill(block) : 'transparent'"
+                        [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : 'transparent'"
                         [class.selected]="isSelected(block.id)"
                         [class.deleted]="isDeleted(block.id)"
-                        [class.disabled]="!isCategoryEnabled(block.category_id)"
-                        [class.dimmed]="isDimmed(block)"
                         (click)="onBlockClick($event, block)"
                         (dblclick)="onBlockDoubleClick($event, block)"
                         (contextmenu)="onContextMenu($event, block)"
@@ -131,6 +130,25 @@ export interface CropRect {
                         stroke-width="2"
                         stroke-dasharray="6,3"
                       />
+                    }
+                  }
+
+                  <!-- Category highlights (lightweight match rects for custom categories + regex preview) -->
+                  <!-- Shown in normal mode and regex search mode, hidden in crop/sample mode -->
+                  @if (!cropMode() && !sampleMode()) {
+                    @for (highlight of getHighlightsForPage(pageNum); track $index) {
+                      <rect
+                        class="highlight-rect"
+                        [attr.x]="highlight.rect.x"
+                        [attr.y]="highlight.rect.y"
+                        [attr.width]="highlight.rect.w"
+                        [attr.height]="highlight.rect.h"
+                        [attr.fill]="highlight.color + '40'"
+                        [attr.stroke]="highlight.color"
+                        stroke-width="1"
+                      >
+                        <title>{{ highlight.rect.text }}</title>
+                      </rect>
                     }
                   }
 
@@ -245,6 +263,37 @@ export interface CropRect {
                     >
                       {{ getSplitRightPageNum(pageNum) }}
                     </text>
+                  }
+
+                  <!-- Sample mode rectangles -->
+                  @if (sampleMode()) {
+                    <!-- Completed sample rectangles on this page -->
+                    @for (rect of getSampleRectsForPage(pageNum); track $index) {
+                      <rect
+                        class="sample-rect"
+                        [attr.x]="rect.x"
+                        [attr.y]="rect.y"
+                        [attr.width]="rect.width"
+                        [attr.height]="rect.height"
+                        fill="rgba(233, 30, 99, 0.2)"
+                        stroke="#E91E63"
+                        stroke-width="2"
+                      />
+                    }
+                    <!-- Currently drawing rectangle -->
+                    @if (sampleCurrentRect() && sampleCurrentRect()!.page === pageNum) {
+                      <rect
+                        class="sample-rect drawing"
+                        [attr.x]="sampleCurrentRect()!.x"
+                        [attr.y]="sampleCurrentRect()!.y"
+                        [attr.width]="sampleCurrentRect()!.width"
+                        [attr.height]="sampleCurrentRect()!.height"
+                        fill="rgba(233, 30, 99, 0.15)"
+                        stroke="#E91E63"
+                        stroke-width="2"
+                        stroke-dasharray="6,3"
+                      />
+                    }
                   }
                 </svg>
               </div>
@@ -516,6 +565,23 @@ export interface CropRect {
       &.organize-mode {
         cursor: grab;
       }
+
+      &.sample-mode {
+        cursor: crosshair;
+      }
+    }
+
+    .sample-rect {
+      pointer-events: none;
+
+      &.drawing {
+        animation: samplePulse 0.5s ease-in-out infinite;
+      }
+    }
+
+    @keyframes samplePulse {
+      0%, 100% { stroke-opacity: 1; }
+      50% { stroke-opacity: 0.6; }
     }
 
     .marquee-rect {
@@ -631,6 +697,13 @@ export interface CropRect {
     .block-overlay .block-rect.dimmed {
       opacity: 0.08 !important;
       stroke-width: 0.25 !important;
+    }
+
+    // Category highlight rects (lightweight pattern matches)
+    .block-overlay .highlight-rect {
+      pointer-events: none;
+      stroke-width: 1;
+      opacity: 0.8;
     }
 
     .delete-mark {
@@ -753,6 +826,17 @@ export class PdfViewerComponent {
   splitPositionFn = input<((pageNum: number) => number) | null>(null);  // Function to get split position for a page
   skippedPages = input<Set<number>>(new Set());  // Pages to NOT split
 
+  // Sample mode inputs (for custom category creation)
+  sampleMode = input<boolean>(false);
+  sampleRects = input<Array<{ page: number; x: number; y: number; width: number; height: number }>>([]);
+  sampleCurrentRect = input<{ page: number; x: number; y: number; width: number; height: number } | null>(null);
+
+  // Regex search mode - hides block overlays and shows only regex matches
+  regexSearchMode = input<boolean>(false);
+
+  // Custom category highlights - lightweight match rects grouped by category and page
+  categoryHighlights = input<Map<string, Record<number, Array<{ page: number; x: number; y: number; w: number; h: number; text: string }>>>>(new Map());
+
   blockClick = output<{ block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
   blockDoubleClick = output<{ block: TextBlock; metaKey: boolean; ctrlKey: boolean }>();
   blockHover = output<TextBlock | null>();
@@ -766,6 +850,11 @@ export class PdfViewerComponent {
   pageReorder = output<number[]>(); // Emitted when pages are reordered
   splitPositionChange = output<{ pageNum: number; position: number }>(); // Emitted when split line is dragged
   splitPageToggle = output<{ pageNum: number; enabled: boolean }>(); // Emitted when page split checkbox toggled
+
+  // Sample mode outputs
+  sampleMouseDown = output<{ event: MouseEvent; page: number; pageX: number; pageY: number }>();
+  sampleMouseMove = output<{ pageX: number; pageY: number }>();
+  sampleMouseUp = output<void>();
 
   // Drag state for organize mode
   draggedPageIndex: number | null = null;
@@ -798,6 +887,31 @@ export class PdfViewerComponent {
     }
     return map;
   });
+
+  /**
+   * Get all category highlights for a specific page (for lazy rendering)
+   */
+  getHighlightsForPage(pageNum: number): Array<{ catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; color: string }> {
+    const result: Array<{ catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; color: string }> = [];
+    const highlights = this.categoryHighlights();
+    const cats = this.categories();
+
+    for (const [catId, pageMap] of highlights) {
+      const cat = cats[catId];
+      // Only show highlights for enabled categories
+      if (!cat?.enabled) continue;
+
+      const pageRects = pageMap[pageNum];
+      if (pageRects && pageRects.length > 0) {
+        const color = cat.color || '#ff0000';
+        for (const rect of pageRects) {
+          result.push({ catId, rect, color });
+        }
+      }
+    }
+
+    return result;
+  }
 
   // Computed handles for crop resize
   readonly cropHandles = computed(() => {
@@ -936,6 +1050,10 @@ export class PdfViewerComponent {
 
   getPageBlocks(pageNum: number): TextBlock[] {
     return this.blocksByPage().get(pageNum) || [];
+  }
+
+  getSampleRectsForPage(pageNum: number): Array<{ x: number; y: number; width: number; height: number }> {
+    return this.sampleRects().filter(r => r.page === pageNum);
   }
 
   getBlockFill(block: TextBlock): string {
@@ -1225,7 +1343,7 @@ export class PdfViewerComponent {
     }
   }
 
-  // Unified overlay mouse handlers (for crop and marquee selection)
+  // Unified overlay mouse handlers (for crop, marquee selection, and sample mode)
   onOverlayMouseDown(event: MouseEvent, pageNum: number): void {
     // Check if clicking on a block (block rects have their own handlers)
     const target = event.target as Element;
@@ -1238,7 +1356,10 @@ export class PdfViewerComponent {
     const coords = this.getSvgCoordinates(event, pageNum);
     if (!coords) return;
 
-    if (this.cropMode()) {
+    if (this.sampleMode()) {
+      // Sample mode - emit event for parent to handle
+      this.sampleMouseDown.emit({ event, page: pageNum, pageX: coords.x, pageY: coords.y });
+    } else if (this.cropMode()) {
       // Crop mode
       this.isDrawingCrop.set(true);
       this.cropStartPoint.set({ x: coords.x, y: coords.y, pageNum });
@@ -1264,7 +1385,13 @@ export class PdfViewerComponent {
   }
 
   onOverlayMouseMove(event: MouseEvent, pageNum: number): void {
-    if (this.cropMode()) {
+    if (this.sampleMode()) {
+      // Sample mode - emit event for parent to handle
+      const coords = this.getSvgCoordinates(event, pageNum);
+      if (coords) {
+        this.sampleMouseMove.emit({ pageX: coords.x, pageY: coords.y });
+      }
+    } else if (this.cropMode()) {
       // Crop drag/resize takes priority
       if (this.isDraggingCrop()) {
         this.handleCropDrag(event, pageNum);
@@ -1306,7 +1433,10 @@ export class PdfViewerComponent {
   }
 
   onOverlayMouseUp(event: MouseEvent, pageNum: number): void {
-    if (this.cropMode()) {
+    if (this.sampleMode()) {
+      // Sample mode - emit event for parent to handle
+      this.sampleMouseUp.emit();
+    } else if (this.cropMode()) {
       // End crop drag/resize
       if (this.isDraggingCrop()) {
         this.endCropDrag();

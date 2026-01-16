@@ -1,5 +1,23 @@
 import { Injectable } from '@angular/core';
 
+// Lightweight match rectangle for custom category highlights
+interface MatchRect {
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;
+}
+
+// Result from findMatchingSpans
+interface MatchingSpansResult {
+  matches: MatchRect[];
+  matchesByPage: Record<number, MatchRect[]>;
+  total: number;
+  pattern: string;
+}
+
 interface BrowseResult {
   path: string;
   parent: string;
@@ -86,6 +104,8 @@ interface ProjectInfo {
   path: string;
   sourcePath: string;
   sourceName: string;
+  libraryPath?: string;
+  fileHash?: string;
   deletedCount: number;
   createdAt: string;
   modifiedAt: string;
@@ -217,6 +237,54 @@ export class ElectronService {
         return result.data;
       }
       return null;
+    }
+    return null;
+  }
+
+  // Sample mode operations for custom category creation
+  async findSpansInRect(page: number, x: number, y: number, width: number, height: number): Promise<{ data?: any[] } | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.findSpansInRect(page, x, y, width, height);
+      if (result.success) {
+        return { data: result.data };
+      }
+    }
+    return null;
+  }
+
+  async analyzeSamples(sampleSpans: any[]): Promise<{ data?: any } | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.analyzeSamples(sampleSpans);
+      if (result.success) {
+        return { data: result.data };
+      }
+    }
+    return null;
+  }
+
+  async findMatchingSpans(pattern: any): Promise<{ data?: MatchingSpansResult } | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.findMatchingSpans(pattern);
+      if (result.success) {
+        return { data: result.data };
+      }
+    }
+    return null;
+  }
+
+  async findSpansByRegex(
+    pattern: string,
+    minFontSize: number,
+    maxFontSize: number,
+    minBaseline: number | null = null,
+    maxBaseline: number | null = null,
+    caseSensitive: boolean = false
+  ): Promise<{ data?: MatchingSpansResult } | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.findSpansByRegex(pattern, minFontSize, maxFontSize, minBaseline, maxBaseline, caseSensitive);
+      if (result.success) {
+        return { data: result.data };
+      }
     }
     return null;
   }
@@ -359,6 +427,21 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  // Library operations - copy files to library folder
+  async libraryImportFile(sourcePath: string): Promise<{
+    success: boolean;
+    libraryPath?: string;
+    hash?: string;
+    alreadyExists?: boolean;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.library.importFile(sourcePath);
+    }
+    // In browser mode, just return the original path
+    return { success: true, libraryPath: sourcePath, alreadyExists: false };
+  }
+
   // OCR operations (Tesseract)
   async ocrIsAvailable(): Promise<{ available: boolean; version: string | null }> {
     if (this.isElectron) {
@@ -400,5 +483,18 @@ export class ElectronService {
       console.error('Skew detection failed:', result.error);
     }
     return null;
+  }
+
+  // Window control operations
+  async windowHide(): Promise<void> {
+    if (this.isElectron) {
+      await (window as any).electron.window.hide();
+    }
+  }
+
+  async windowClose(): Promise<void> {
+    if (this.isElectron) {
+      await (window as any).electron.window.close();
+    }
   }
 }

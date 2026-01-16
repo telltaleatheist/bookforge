@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { execSync } from 'child_process';
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -17,6 +18,23 @@ async function getMupdf() {
 }
 
 // Types
+export interface TextSpan {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  font_size: number;
+  font_name: string;
+  is_bold: boolean;
+  is_italic: boolean;
+  color?: string;
+  baseline_offset: number;  // Offset from line baseline (positive = superscript, negative = subscript)
+  block_id: string;         // Parent block ID
+}
+
 export interface TextBlock {
   id: string;
   page: number;
@@ -63,6 +81,7 @@ export interface AnalyzeResult {
   page_count: number;
   page_dimensions: PageDimension[];
   pdf_name: string;
+  spans: TextSpan[];  // All extracted spans for sample picking
 }
 
 export interface ExportTextResult {
@@ -126,6 +145,7 @@ function getMimeType(filePath: string): string {
  */
 export class PDFAnalyzer {
   private blocks: TextBlock[] = [];
+  private spans: TextSpan[] = [];
   private categories: Record<string, Category> = {};
   private pageDimensions: PageDimension[] = [];
   private doc: any = null; // mupdf.PDFDocument | mupdf.Document
@@ -139,6 +159,7 @@ export class PDFAnalyzer {
 
     this.pdfPath = pdfPath;
     this.blocks = [];
+    this.spans = [];
     this.categories = {};
     this.pageDimensions = [];
 
@@ -165,8 +186,13 @@ export class PDFAnalyzer {
       await this.extractPageBlocks(pageNum);
     }
 
+    // Extract spans using mutool for precise character-level positions
+    this.extractSpansWithMutool(pdfPath, pageCount);
+
     // Generate categories
     this.generateCategories();
+
+    console.log(`PDF analysis complete: ${this.blocks.length} blocks, ${this.spans.length} spans extracted`);
 
     return {
       blocks: this.blocks,
@@ -174,6 +200,7 @@ export class PDFAnalyzer {
       page_count: pageCount,
       page_dimensions: this.pageDimensions,
       pdf_name: path.basename(pdfPath),
+      spans: this.spans,
     };
   }
 
@@ -187,9 +214,8 @@ export class PDFAnalyzer {
     const pageDims = this.pageDimensions[pageNum];
     const pageHeight = pageDims.height;
 
-    // Get structured text with detailed info
-    // Try different extraction methods
-    const stext = page.toStructuredText('preserve-whitespace,preserve-images');
+    // Get structured text with detailed info including spans for superscript detection
+    const stext = page.toStructuredText('preserve-whitespace,preserve-images,preserve-spans');
     const jsonStr = stext.asJSON(1); // scale=1 for original coordinates
     const stextData = JSON.parse(jsonStr);
 
@@ -271,34 +297,139 @@ export class PDFAnalyzer {
         let totalChars = 0;
         const lineCount = block.lines.length;
 
+        // Pre-generate block ID for span references
+        const preBlockId = this.hashId(`${pageNum}:${blockIdx}:pre`);
+
+        // Collect potential footnote marker spans to extract separately
+        const footnoteMarkerSpans: Array<{
+          text: string;
+          bbox: number[];
+          fontSize: number;
+        }> = [];
+
+        // Track spans for this block
+        const blockSpans: Array<{
+          text: string;
+          bbox: number[];
+          fontSize: number;
+          fontName: string;
+          isBold: boolean;
+          isItalic: boolean;
+          lineY: number;
+        }> = [];
+
         for (const line of block.lines) {
-          // mupdf.js structure: line.text and line.font (not spans)
-          const text = line.text || '';
-          if (text.trim()) {
-            allText.push(text);
-            const charLen = text.length;
-            totalChars += charLen;
+          // Get line baseline Y for offset calculation
+          let lineY = y;
+          if (Array.isArray(line.bbox) && line.bbox.length >= 4) {
+            lineY = line.bbox[3]; // Bottom of line bbox as baseline reference
+          }
 
-            // Font info is on line.font object
-            const font = line.font || {};
-            const size = Math.round((font.size || 10) * 10) / 10;
-            fontSizes.set(size, (fontSizes.get(size) || 0) + charLen);
-
-            const fontName = font.name || 'unknown';
-            fontNames.set(fontName, (fontNames.get(fontName) || 0) + charLen);
-
-            // Detect bold/italic from font properties or name
-            const fontLower = fontName.toLowerCase();
-            if (font.weight === 'bold' || fontLower.includes('bold')) {
-              boldChars += charLen;
+          // Check if line has spans (from preserve-spans option)
+          // Debug: log line structure on first text block of first page
+          if (pageNum === 0 && blockIdx === 0 && block.lines.indexOf(line) === 0) {
+            console.log('First line keys:', Object.keys(line));
+            console.log('First line structure:', JSON.stringify(line, null, 2).substring(0, 500));
+          }
+          if (line.spans && Array.isArray(line.spans)) {
+            // Debug: log first span structure on first page
+            if (pageNum === 0 && block.lines.indexOf(line) === 0 && line.spans.length > 0) {
+              console.log('Sample span structure:', JSON.stringify(line.spans[0], null, 2));
             }
-            if (font.style === 'italic' || fontLower.includes('italic') || fontLower.includes('oblique')) {
-              italicChars += charLen;
-            }
+            // Process each span separately
+            for (const span of line.spans) {
+              const spanText = span.text || '';
+              if (!spanText.trim()) continue;
 
-            // Check for superscript (flags on line.bbox)
-            if (line.bbox?.flags && (line.bbox.flags & 1)) {
-              superscriptChars += charLen;
+              const charLen = spanText.length;
+              totalChars += charLen;
+              allText.push(spanText);
+
+              const font = span.font || {};
+              const size = Math.round((font.size || 10) * 10) / 10;
+              fontSizes.set(size, (fontSizes.get(size) || 0) + charLen);
+
+              const fontName = font.name || 'unknown';
+              fontNames.set(fontName, (fontNames.get(fontName) || 0) + charLen);
+
+              // Detect bold/italic
+              const fontLower = fontName.toLowerCase();
+              const spanIsBold = font.weight === 'bold' || fontLower.includes('bold');
+              const spanIsItalic = font.style === 'italic' || fontLower.includes('italic') || fontLower.includes('oblique');
+
+              if (spanIsBold) boldChars += charLen;
+              if (spanIsItalic) italicChars += charLen;
+
+              // Store span for sample picking (if it has bbox)
+              if (span.bbox && Array.isArray(span.bbox) && span.bbox.length >= 4) {
+                blockSpans.push({
+                  text: spanText,
+                  bbox: span.bbox,
+                  fontSize: size,
+                  fontName,
+                  isBold: spanIsBold,
+                  isItalic: spanIsItalic,
+                  lineY
+                });
+              }
+
+              // Check if this span looks like a footnote marker
+              const looksLikeRef = this.isFootnoteMarkerText(spanText) &&
+                                   charLen <= 4 &&
+                                   span.bbox;
+              if (looksLikeRef) {
+                let spanBbox: number[] = [];
+                if (Array.isArray(span.bbox) && span.bbox.length >= 4) {
+                  spanBbox = span.bbox;
+                }
+                if (spanBbox.length === 4) {
+                  footnoteMarkerSpans.push({
+                    text: spanText,
+                    bbox: spanBbox,
+                    fontSize: size
+                  });
+                }
+              }
+            }
+          } else {
+            // Fallback: no spans, use line-level text
+            const text = line.text || '';
+            if (text.trim()) {
+              allText.push(text);
+              const charLen = text.length;
+              totalChars += charLen;
+
+              const font = line.font || {};
+              const size = Math.round((font.size || 10) * 10) / 10;
+              fontSizes.set(size, (fontSizes.get(size) || 0) + charLen);
+
+              const fontName = font.name || 'unknown';
+              fontNames.set(fontName, (fontNames.get(fontName) || 0) + charLen);
+
+              const fontLower = fontName.toLowerCase();
+              if (font.weight === 'bold' || fontLower.includes('bold')) {
+                boldChars += charLen;
+              }
+              if (font.style === 'italic' || fontLower.includes('italic') || fontLower.includes('oblique')) {
+                italicChars += charLen;
+              }
+
+              if (line.bbox?.flags && (line.bbox.flags & 1)) {
+                superscriptChars += charLen;
+              }
+
+              // Store line as a span for sample picking (fallback)
+              if (line.bbox && Array.isArray(line.bbox) && line.bbox.length >= 4) {
+                blockSpans.push({
+                  text,
+                  bbox: line.bbox,
+                  fontSize: size,
+                  fontName,
+                  isBold: font.weight === 'bold' || fontLower.includes('bold'),
+                  isItalic: font.style === 'italic' || fontLower.includes('italic'),
+                  lineY
+                });
+              }
             }
           }
         }
@@ -329,16 +460,40 @@ export class PDFAnalyzer {
         const isItalic = totalChars > 0 && italicChars > totalChars * 0.5;
         const isSuperscript = totalChars > 0 && superscriptChars > totalChars * 0.5;
 
-        // Determine region
+        // Determine region based on position and characteristics
         const yPct = y / pageHeight;
         const textLen = combinedText.length;
         let region = 'body';
 
-        if (yPct < 0.05 && textLen < 150 && lineCount <= 3) {
+        // Running headers: text at very top of page with specific characteristics
+        // Must be careful not to catch body text that starts near the top
+        const trimmedText = combinedText.trim();
+
+        // Page number patterns: "8 Introduction", "Introduction 10", standalone "42"
+        const looksLikePageNum = textLen <= 5 && /^\d+$/.test(trimmedText);
+        const startsWithPageNum = /^\d{1,4}\s+\S/.test(trimmedText);  // "8 Introduction"
+        const endsWithPageNum = /\S\s+\d{1,4}$/.test(trimmedText);    // "Introduction 8"
+        const hasPageNumPattern = looksLikePageNum || startsWithPageNum || endsWithPageNum;
+
+        // Body text indicators: long text, ends with sentence punctuation, has multiple sentences
+        const looksLikeBodyText = textLen > 100 ||
+                                   /[.!?]["']?\s+[A-Z]/.test(trimmedText) ||  // Multiple sentences
+                                   (trimmedText.endsWith('.') && textLen > 60);  // Ends with period and substantial
+
+        // Very top (< 4%) with page number pattern or very short = definitely header
+        if (yPct < 0.04 && (hasPageNumPattern || textLen < 80) && lineCount <= 2) {
           region = 'header';
-        } else if (yPct < 0.08 && textLen < 80 && lineCount <= 2) {
+        }
+        // Top 6% with clear header signals (not body text)
+        else if (yPct < 0.06 && !looksLikeBodyText && lineCount <= 2 && textLen < 120) {
           region = 'header';
-        } else if (yPct > 0.92 || (yPct > 0.88 && textLen < 50)) {
+        }
+        // Top 8% with page number pattern = header
+        else if (yPct < 0.08 && hasPageNumPattern && !looksLikeBodyText) {
+          region = 'header';
+        }
+        // Footer detection
+        else if (yPct > 0.92 || (yPct > 0.88 && textLen < 50)) {
           region = 'footer';
         } else if (yPct > 0.70) {
           region = 'lower';
@@ -366,7 +521,244 @@ export class PDFAnalyzer {
           is_footnote_marker: false,
           line_count: lineCount,
         });
+
+        // Store all spans for sample picking
+        for (let i = 0; i < blockSpans.length; i++) {
+          const spanData = blockSpans[i];
+          const [sx0, sy0, sx1, sy1] = spanData.bbox;
+          const spanId = this.hashId(`${pageNum}:span:${sx0.toFixed(0)},${sy0.toFixed(0)}:${i}`);
+
+          // Calculate baseline offset (positive = above baseline = superscript)
+          const baselineOffset = spanData.lineY - sy1;
+
+          this.spans.push({
+            id: spanId,
+            page: pageNum,
+            x: sx0,
+            y: sy0,
+            width: sx1 - sx0,
+            height: sy1 - sy0,
+            text: spanData.text,
+            font_size: spanData.fontSize,
+            font_name: spanData.fontName,
+            is_bold: spanData.isBold,
+            is_italic: spanData.isItalic,
+            baseline_offset: baselineOffset,
+            block_id: blockId,
+          });
+        }
+
+        // Create separate blocks for footnote marker spans (if significantly smaller than body)
+        for (const marker of footnoteMarkerSpans) {
+          // Only extract if font size is notably smaller than dominant (superscript-like)
+          if (marker.fontSize < dominantSize * 0.85) {
+            const [mx0, my0, mx1, my1] = marker.bbox;
+            const markerId = this.hashId(`${pageNum}:ref:${mx0.toFixed(0)},${my0.toFixed(0)}:${marker.text}`);
+
+            this.blocks.push({
+              id: markerId,
+              page: pageNum,
+              x: mx0,
+              y: my0,
+              width: mx1 - mx0,
+              height: my1 - my0,
+              text: marker.text,
+              font_size: marker.fontSize,
+              font_name: dominantFont,
+              char_count: marker.text.length,
+              region: 'body',
+              category_id: '',
+              is_bold: false,
+              is_italic: false,
+              is_superscript: true,
+              is_image: false,
+              is_footnote_marker: true,
+              parent_block_id: blockId,
+              line_count: 1,
+            });
+          }
+        }
       }
+    }
+  }
+
+  /**
+   * Extract spans using mutool binary for precise character positions
+   */
+  private extractSpansWithMutool(pdfPath: string, pageCount: number): void {
+    try {
+      // Check if mutool is available
+      const mutoolPath = this.findMutool();
+      if (!mutoolPath) {
+        console.log('mutool not found, skipping span extraction');
+        return;
+      }
+
+      console.log(`Extracting spans with mutool from ${pageCount} pages...`);
+
+      // Use a temp file to avoid shell buffer limits on large PDFs
+      const tmpFile = path.join(require('os').tmpdir(), `bookforge-stext-${Date.now()}.xml`);
+
+      try {
+        // Run mutool to write structured text XML to temp file
+        execSync(`"${mutoolPath}" draw -F stext -o "${tmpFile}" "${pdfPath}" 2>/dev/null`, {
+          maxBuffer: 10 * 1024 * 1024,
+          encoding: 'utf-8'
+        });
+
+        // Read the temp file
+        const result = fs.readFileSync(tmpFile, 'utf-8');
+        console.log(`  Got ${result.length} bytes of XML output`);
+
+        // Parse the XML output
+        this.parseSpansFromXml(result);
+
+        console.log(`  Extracted ${this.spans.length} spans with mutool`);
+        if (this.spans.length > 0) {
+          // Log first few spans for debugging
+          console.log(`  Sample spans:`);
+          for (let i = 0; i < Math.min(3, this.spans.length); i++) {
+            const s = this.spans[i];
+            console.log(`    Page ${s.page}: "${s.text.substring(0, 30)}" at (${s.x.toFixed(1)}, ${s.y.toFixed(1)})`);
+          }
+        }
+      } finally {
+        // Clean up temp file
+        try {
+          fs.unlinkSync(tmpFile);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+    } catch (err) {
+      console.log('mutool span extraction failed:', (err as Error).message);
+    }
+  }
+
+  private findMutool(): string | null {
+    // Check common locations
+    const paths = [
+      '/opt/homebrew/bin/mutool',
+      '/usr/local/bin/mutool',
+      '/usr/bin/mutool',
+      'mutool' // Try PATH
+    ];
+
+    for (const p of paths) {
+      try {
+        execSync(`"${p}" -v`, { stdio: 'ignore' });
+        return p;
+      } catch {
+        // Not found at this path
+      }
+    }
+    return null;
+  }
+
+  private parseSpansFromXml(xml: string): void {
+    // Parse mutool stext XML output to extract spans
+    // Format: <page><block><line><font><char>...</font></line></block></page>
+
+    let currentPage = -1;
+    let currentFontName = '';
+    let currentFontSize = 0;
+    let spanChars: Array<{ char: string; x: number; y: number; x2: number; y2: number }> = [];
+    let pageCount = 0;
+    let fontCount = 0;
+    let charCount = 0;
+
+    const lines = xml.split('\n');
+    console.log(`  Parsing ${lines.length} lines of XML...`);
+
+    for (const line of lines) {
+      // Track page
+      const pageMatch = line.match(/<page id="page(\d+)"/);
+      if (pageMatch) {
+        // Flush previous span
+        this.flushSpan(currentPage, currentFontName, currentFontSize, spanChars);
+        spanChars = [];
+        currentPage = parseInt(pageMatch[1]) - 1; // Convert to 0-indexed
+        pageCount++;
+        continue;
+      }
+
+      // Track font changes
+      const fontMatch = line.match(/<font name="([^"]*)" size="([^"]*)"/);
+      if (fontMatch) {
+        // Flush previous span on font change
+        this.flushSpan(currentPage, currentFontName, currentFontSize, spanChars);
+        spanChars = [];
+        currentFontName = fontMatch[1];
+        currentFontSize = parseFloat(fontMatch[2]);
+        fontCount++;
+        continue;
+      }
+
+      // End of font section
+      if (line.includes('</font>')) {
+        this.flushSpan(currentPage, currentFontName, currentFontSize, spanChars);
+        spanChars = [];
+        continue;
+      }
+
+      // Parse character with quad coordinates
+      const charMatch = line.match(/<char quad="([^"]*)"[^>]*c="([^"]*)"/);
+      if (charMatch) {
+        const quad = charMatch[1].split(' ').map(parseFloat);
+        const char = charMatch[2];
+        // quad format: x0 y0 x1 y0 x0 y1 x1 y1 (top-left, top-right, bottom-left, bottom-right)
+        if (quad.length >= 8) {
+          spanChars.push({
+            char: char === '&amp;' ? '&' : char === '&lt;' ? '<' : char === '&gt;' ? '>' : char === '&quot;' ? '"' : char,
+            x: quad[0],
+            y: quad[1],
+            x2: quad[2],
+            y2: quad[5]
+          });
+          charCount++;
+        }
+      }
+    }
+
+    // Flush final span
+    this.flushSpan(currentPage, currentFontName, currentFontSize, spanChars);
+    console.log(`  XML parsing complete: ${pageCount} pages, ${fontCount} fonts, ${charCount} chars`);
+  }
+
+  private flushSpan(
+    page: number,
+    fontName: string,
+    fontSize: number,
+    chars: Array<{ char: string; x: number; y: number; x2: number; y2: number }>
+  ): void {
+    if (page < 0 || chars.length === 0) return;
+
+    const fontLower = fontName.toLowerCase();
+    const isBold = fontLower.includes('bold');
+    const isItalic = fontLower.includes('italic') || fontLower.includes('oblique');
+
+    // Create character-level spans for precise selection (e.g., footnote numbers)
+    for (const char of chars) {
+      // Skip whitespace
+      if (char.char === ' ' || char.char === '\t' || char.char === '\n') continue;
+
+      const spanId = this.hashId(`${page}:char:${char.x.toFixed(0)},${char.y.toFixed(0)}:${char.char}`);
+
+      this.spans.push({
+        id: spanId,
+        page,
+        x: char.x,
+        y: char.y,
+        width: char.x2 - char.x,
+        height: char.y2 - char.y,
+        text: char.char,
+        font_size: fontSize,
+        font_name: fontName,
+        is_bold: isBold,
+        is_italic: isItalic,
+        baseline_offset: 0,
+        block_id: '',
+      });
     }
   }
 
@@ -498,21 +890,77 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Check if text is primarily a footnote reference marker
+   */
+  private isFootnoteMarkerText(text: string): boolean {
+    const trimmed = text.trim();
+    if (trimmed.length === 0 || trimmed.length > 6) return false;
+
+    // Unicode superscript numbers
+    if (/^[⁰¹²³⁴⁵⁶⁷⁸⁹\u00B9\u00B2\u00B3]+$/.test(trimmed)) return true;
+
+    // Plain numbers (1-999)
+    if (/^\d{1,3}$/.test(trimmed)) return true;
+
+    // Bracketed numbers [1], (1), etc.
+    if (/^[\[\(]\d{1,3}[\]\)]$/.test(trimmed)) return true;
+
+    // Asterisk or dagger markers
+    if (/^[\*†‡§¶]+$/.test(trimmed)) return true;
+
+    return false;
+  }
+
+  /**
    * Classify a block into a semantic category
    */
   private classifyBlock(block: TextBlock, bodySize: number): string {
     if (block.is_image) return 'image';
 
-    // Superscript text blocks (mupdf flag detection)
-    if (block.is_superscript) return 'footnote_ref';
-
-    // Very small isolated text might be footnote refs
-    if (block.font_size < bodySize * 0.7 && block.char_count < 5) {
+    // Check if the block text is PRIMARILY a footnote marker
+    // This catches small isolated reference numbers
+    if (this.isFootnoteMarkerText(block.text)) {
       return 'footnote_ref';
     }
 
+    // Superscript text blocks (mupdf flag detection)
+    if (block.is_superscript) return 'footnote_ref';
+
+    // Very small isolated text with small font might be footnote refs
+    if (block.font_size < bodySize * 0.75 && block.char_count <= 4 && block.line_count === 1) {
+      return 'footnote_ref';
+    }
+
+    // Header region blocks are headers
     if (block.region === 'header') return 'header';
     if (block.region === 'footer') return 'footer';
+
+    // Additional header detection for blocks that slipped through region detection
+    // Be conservative - body text near top of page should NOT be caught
+    const pageHeight = this.pageDimensions[block.page]?.height || 800;
+    const yPct = block.y / pageHeight;
+    const text = block.text.trim();
+
+    // Body text indicators - skip these
+    const looksLikeBodyText = block.char_count > 100 ||
+                              /[.!?]["']?\s+[A-Z]/.test(text) ||  // Multiple sentences
+                              (text.endsWith('.') && block.char_count > 60);
+
+    if (!looksLikeBodyText && yPct < 0.08 && block.line_count <= 2) {
+      // Page number patterns like "8 Introduction"
+      const hasPageNumPattern = /^\d{1,4}\s+\S/.test(text) || /\S\s+\d{1,4}$/.test(text);
+      if (hasPageNumPattern) {
+        return 'header';
+      }
+      // Very short text at very top
+      if (yPct < 0.05 && block.char_count < 80) {
+        return 'header';
+      }
+      // Italic + short + top = running header
+      if (block.is_italic && block.char_count < 80) {
+        return 'header';
+      }
+    }
 
     // Footnotes: lower region with smaller font
     if (block.region === 'lower' && block.font_size < bodySize * 0.95) {
@@ -682,8 +1130,582 @@ export class PDFAnalyzer {
   close(): void {
     this.doc = null;
     this.blocks = [];
+    this.spans = [];
     this.categories = {};
     this.pageDimensions = [];
+  }
+
+  /**
+   * Find blocks within or near a given rectangle on a page
+   * Falls back to spans if available, otherwise uses blocks
+   */
+  findSpansInRect(page: number, x: number, y: number, width: number, height: number): TextSpan[] {
+    console.log(`findSpansInRect: page=${page}, rect=(${x.toFixed(1)}, ${y.toFixed(1)}, ${width.toFixed(1)}x${height.toFixed(1)})`);
+    console.log(`  Total spans in document: ${this.spans.length}`);
+
+    // First try spans if we have them
+    const pageSpans = this.spans.filter(s => s.page === page);
+    console.log(`  Spans on page ${page}: ${pageSpans.length}`);
+
+    if (pageSpans.length > 0) {
+      const result = this.findSpansInRectFromSpans(page, x, y, width, height, pageSpans);
+      console.log(`  Found ${result.length} matching spans`);
+      if (result.length > 0) {
+        console.log(`  First match: "${result[0].text}" at (${result[0].x.toFixed(1)}, ${result[0].y.toFixed(1)})`);
+      }
+      return result;
+    }
+
+    // Fall back to blocks - convert matching blocks to "pseudo-spans"
+    console.log(`findSpansInRect: Using blocks (no spans available)`);
+    const pageBlocks = this.blocks.filter(b => b.page === page);
+
+    const centerX = x + width / 2;
+    const centerY = y + height / 2;
+
+    // Helper to check overlap with margin
+    const findOverlapping = (margin: number) => {
+      const rectLeft = x - margin;
+      const rectTop = y - margin;
+      const rectRight = x + width + margin;
+      const rectBottom = y + height + margin;
+
+      return pageBlocks.filter(block => {
+        const blockRight = block.x + block.width;
+        const blockBottom = block.y + block.height;
+        return !(block.x > rectRight || blockRight < rectLeft || block.y > rectBottom || blockBottom < rectTop);
+      });
+    };
+
+    // Try exact match, then with margins
+    let matchingBlocks = findOverlapping(0);
+    if (matchingBlocks.length === 0) {
+      for (const margin of [10, 20, 40]) {
+        matchingBlocks = findOverlapping(margin);
+        if (matchingBlocks.length > 0) break;
+      }
+    }
+
+    // If still nothing, find nearest block
+    if (matchingBlocks.length === 0) {
+      const nearest = pageBlocks
+        .map(block => {
+          const bx = block.x + block.width / 2;
+          const by = block.y + block.height / 2;
+          const dist = Math.sqrt(Math.pow(centerX - bx, 2) + Math.pow(centerY - by, 2));
+          return { block, dist };
+        })
+        .sort((a, b) => a.dist - b.dist)[0];
+
+      if (nearest && nearest.dist < 100) {
+        matchingBlocks = [nearest.block];
+      }
+    }
+
+    console.log(`  Found ${matchingBlocks.length} blocks at (${x.toFixed(0)}, ${y.toFixed(0)})`);
+
+    // Convert blocks to TextSpan format for compatibility
+    return matchingBlocks.map(block => ({
+      id: block.id,
+      page: block.page,
+      x: block.x,
+      y: block.y,
+      width: block.width,
+      height: block.height,
+      text: block.text,
+      font_size: block.font_size,
+      font_name: block.font_name,
+      is_bold: block.is_bold,
+      is_italic: block.is_italic,
+      baseline_offset: 0,
+      block_id: block.id,
+    }));
+  }
+
+  private findSpansInRectFromSpans(page: number, x: number, y: number, width: number, height: number, pageSpans: TextSpan[]): TextSpan[] {
+    const centerX = x + width / 2;
+    const centerY = y + height / 2;
+
+    const findOverlapping = (margin: number): TextSpan[] => {
+      const rectLeft = x - margin;
+      const rectTop = y - margin;
+      const rectRight = x + width + margin;
+      const rectBottom = y + height + margin;
+
+      return pageSpans.filter(span => {
+        const spanRight = span.x + span.width;
+        const spanBottom = span.y + span.height;
+        return !(span.x > rectRight || spanRight < rectLeft || span.y > rectBottom || spanBottom < rectTop);
+      });
+    };
+
+    let result = findOverlapping(0);
+    if (result.length === 0) {
+      for (const margin of [5, 10, 20, 30]) {
+        result = findOverlapping(margin);
+        if (result.length > 0) break;
+      }
+    }
+
+    if (result.length === 0) {
+      const closest = pageSpans
+        .map(span => ({
+          span,
+          dist: Math.sqrt(Math.pow(centerX - (span.x + span.width/2), 2) + Math.pow(centerY - (span.y + span.height/2), 2))
+        }))
+        .sort((a, b) => a.dist - b.dist)[0];
+
+      if (closest && closest.dist < 50) {
+        result = [closest.span];
+      }
+    }
+
+    // Group adjacent character spans into tokens (e.g., "1","3" -> "13")
+    return this.groupAdjacentSpans(result);
+  }
+
+  /**
+   * Group adjacent character spans into token spans.
+   * This merges chars like "1", "3" into "13" when they're horizontally adjacent.
+   */
+  private groupAdjacentSpans(spans: TextSpan[]): TextSpan[] {
+    if (spans.length <= 1) return spans;
+
+    // Sort by page, then Y (line), then X (position in line)
+    const sorted = [...spans].sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      // Group by approximate Y (within 5px = same line)
+      const yDiff = Math.abs(a.y - b.y);
+      if (yDiff > 5) return a.y - b.y;
+      return a.x - b.x;
+    });
+
+    const grouped: TextSpan[] = [];
+    let current: TextSpan | null = null;
+
+    for (const span of sorted) {
+      if (!current) {
+        // Start new group
+        current = { ...span };
+        continue;
+      }
+
+      // Check if this span is adjacent to current (same line, close horizontally)
+      const sameLine = Math.abs(span.y - current.y) < 5;
+      const sameFont = span.font_name === current.font_name &&
+                       Math.abs(span.font_size - current.font_size) < 0.5;
+      const adjacent = span.x <= current.x + current.width + 3; // 3px gap tolerance
+
+      if (sameLine && sameFont && adjacent) {
+        // Merge into current
+        current.text += span.text;
+        current.width = (span.x + span.width) - current.x;
+        current.height = Math.max(current.height, span.height);
+      } else {
+        // Finish current group, start new one
+        grouped.push(current);
+        current = { ...span };
+      }
+    }
+
+    if (current) {
+      grouped.push(current);
+    }
+
+    console.log(`  Grouped ${spans.length} char spans into ${grouped.length} token spans`);
+    if (grouped.length > 0) {
+      console.log(`  Sample tokens: ${grouped.slice(0, 5).map(s => `"${s.text}"`).join(', ')}`);
+    }
+
+    return grouped;
+  }
+
+  /**
+   * Analyze sample spans and learn a fingerprint from their properties.
+   * Instead of hardcoding patterns, we detect what makes these samples unique.
+   */
+  analyzesamples(sampleSpans: TextSpan[]): SpanFingerprint | null {
+    if (sampleSpans.length === 0) return null;
+
+    console.log(`analyzeSamples: ${sampleSpans.length} sample spans`);
+    console.log(`  Raw sample texts: ${sampleSpans.map(s => `"${s.text}" (size=${s.font_size.toFixed(1)}, baseline=${s.baseline_offset.toFixed(1)})`).join(', ')}`);
+
+    // Filter samples to only include spans with similar properties.
+    // When user draws boxes, they might accidentally catch body text too.
+    // Use the most common font size to filter out accidentally-selected body text.
+    const filteredSpans = this.filterSimilarSpans(sampleSpans);
+    console.log(`  After filtering: ${filteredSpans.length} similar spans`);
+    console.log(`  Filtered texts: ${filteredSpans.map(s => `"${s.text}"`).join(', ')}`);
+
+    if (filteredSpans.length === 0) {
+      console.log('  ERROR: No similar spans after filtering');
+      return null;
+    }
+
+    const texts = filteredSpans.map(s => s.text.trim()).filter(t => t.length > 0);
+    if (texts.length === 0) {
+      console.log('  ERROR: No non-empty text in samples');
+      return null;
+    }
+
+    const bodyFontSize = this.getBodyFontSize();
+    const descriptions: string[] = [];
+
+    // Analyze font sizes (using filtered spans)
+    const fontSizes = filteredSpans.map(s => s.font_size);
+    const minFontSize = Math.min(...fontSizes);
+    const maxFontSize = Math.max(...fontSizes);
+    const avgFontSize = fontSizes.reduce((a, b) => a + b, 0) / fontSizes.length;
+    const fontSizeRange = maxFontSize - minFontSize;
+
+    // Only filter by font size if samples are consistent (small range)
+    const useFontSize = fontSizeRange < 2;
+    const fontSizeRatioToBody = avgFontSize / bodyFontSize;
+
+    if (useFontSize && fontSizeRatioToBody < 0.85) {
+      descriptions.push(`smaller than body text (${(fontSizeRatioToBody * 100).toFixed(0)}%)`);
+    } else if (useFontSize && fontSizeRatioToBody > 1.15) {
+      descriptions.push(`larger than body text (${(fontSizeRatioToBody * 100).toFixed(0)}%)`);
+    }
+
+    // Analyze font names
+    const fontNames = [...new Set(filteredSpans.map(s => s.font_name))];
+    const useFontName = fontNames.length === 1;  // Only filter if all same font
+    if (useFontName) {
+      descriptions.push(`font: ${fontNames[0]}`);
+    }
+
+    // Analyze bold/italic
+    const boldCount = filteredSpans.filter(s => s.is_bold).length;
+    const italicCount = filteredSpans.filter(s => s.is_italic).length;
+    const isBold = boldCount === filteredSpans.length ? true : boldCount === 0 ? false : null;
+    const isItalic = italicCount === filteredSpans.length ? true : italicCount === 0 ? false : null;
+    if (isBold === true) descriptions.push('bold');
+    if (isItalic === true) descriptions.push('italic');
+
+    // Analyze character class
+    const charClass = this.detectCharClass(texts);
+    if (charClass) {
+      descriptions.push(`char class: ${charClass}`);
+    }
+
+    // Analyze text length
+    const lengths = texts.map(t => t.length);
+    const minLength = Math.min(...lengths);
+    const maxLength = Math.max(...lengths);
+    const lengthRange = maxLength - minLength;
+    const useLength = lengthRange <= 2;  // Only filter if consistent length
+    if (useLength) {
+      descriptions.push(`length: ${minLength}-${maxLength}`);
+    }
+
+    // Analyze baseline offset (superscript/subscript detection)
+    const baselineOffsets = filteredSpans.map(s => s.baseline_offset);
+    const minBaseline = Math.min(...baselineOffsets);
+    const maxBaseline = Math.max(...baselineOffsets);
+    const baselineRange = maxBaseline - minBaseline;
+    const useBaseline = baselineRange < 3;
+
+    // Build the fingerprint
+    const fingerprint: SpanFingerprint = {
+      font_size_min: useFontSize ? minFontSize * 0.9 : null,
+      font_size_max: useFontSize ? maxFontSize * 1.1 : null,
+      font_size_ratio_to_body: useFontSize && fontSizeRatioToBody < 0.9
+        ? [fontSizeRatioToBody * 0.9, fontSizeRatioToBody * 1.1]
+        : null,
+      font_names: useFontName ? fontNames : null,
+      is_bold: isBold,
+      is_italic: isItalic,
+      char_class: charClass,
+      length_min: useLength ? minLength : null,
+      length_max: useLength ? maxLength : null,
+      baseline_offset_min: useBaseline ? minBaseline - 1 : null,
+      baseline_offset_max: useBaseline ? maxBaseline + 1 : null,
+      preceded_by: null,  // TODO: context analysis
+      followed_by: null,  // TODO: context analysis
+      sample_count: filteredSpans.length,
+      body_font_size: bodyFontSize,
+      description: descriptions.length > 0 ? descriptions.join(', ') : 'matches sample properties'
+    };
+
+    console.log(`  Fingerprint: ${fingerprint.description}`);
+    console.log(`  Filters: fontSize=${useFontSize}, fontName=${useFontName}, charClass=${charClass}, length=${useLength}`);
+
+    return fingerprint;
+  }
+
+  /**
+   * Detect the character class of sample texts
+   */
+  private detectCharClass(texts: string[]): CharClass | null {
+    const allDigits = texts.every(t => /^\d+$/.test(t));
+    const allUppercase = texts.every(t => /^[A-Z]+$/.test(t));
+    const allLowercase = texts.every(t => /^[a-z]+$/.test(t));
+    const allAlpha = texts.every(t => /^[A-Za-z]+$/.test(t));
+    const allAlphanum = texts.every(t => /^[A-Za-z0-9]+$/.test(t));
+    const allSymbols = texts.every(t => /^[^\w\s]+$/.test(t));
+
+    if (allDigits) return 'digits';
+    if (allUppercase) return 'uppercase';
+    if (allLowercase) return 'lowercase';
+    if (allAlpha) return 'mixed_alpha';
+    if (allAlphanum) return 'mixed_alphanum';
+    if (allSymbols) return 'symbols';
+
+    // If no consistent class, don't filter by it
+    return null;
+  }
+
+  /**
+   * Filter sample spans to only include similar ones.
+   * When user draws boxes, they might accidentally catch body text.
+   * This finds the most common font size and filters to only those spans.
+   */
+  private filterSimilarSpans(spans: TextSpan[]): TextSpan[] {
+    if (spans.length <= 1) return spans;
+
+    // Group by rounded font size to find the most common size
+    const sizeGroups = new Map<number, TextSpan[]>();
+    for (const span of spans) {
+      const roundedSize = Math.round(span.font_size * 2) / 2; // Round to 0.5
+      if (!sizeGroups.has(roundedSize)) {
+        sizeGroups.set(roundedSize, []);
+      }
+      sizeGroups.get(roundedSize)!.push(span);
+    }
+
+    // If all spans have similar size (within 1pt), keep them all
+    const sizes = [...sizeGroups.keys()].sort((a, b) => a - b);
+    if (sizes.length > 0 && sizes[sizes.length - 1] - sizes[0] <= 1) {
+      return spans;
+    }
+
+    // Find the most common font size (by count of spans)
+    let mostCommonSize = sizes[0];
+    let maxCount = 0;
+    for (const [size, group] of sizeGroups) {
+      if (group.length > maxCount) {
+        maxCount = group.length;
+        mostCommonSize = size;
+      }
+    }
+
+    // Filter to only spans within 1pt of the most common size
+    const filtered = spans.filter(s => Math.abs(s.font_size - mostCommonSize) <= 1);
+
+    console.log(`  filterSimilarSpans: ${spans.length} spans -> ${filtered.length} (size=${mostCommonSize})`);
+    console.log(`    Size groups: ${[...sizeGroups.entries()].map(([s, g]) => `${s}pt: ${g.length}`).join(', ')}`);
+
+    return filtered.length > 0 ? filtered : spans;
+  }
+
+  /**
+   * Get the most common body text font size
+   */
+  private getBodyFontSize(): number {
+    const sizeChars = new Map<number, number>();
+    for (const block of this.blocks) {
+      if (block.region === 'body' && !block.is_bold && !block.is_image) {
+        const roundedSize = Math.round(block.font_size);
+        sizeChars.set(roundedSize, (sizeChars.get(roundedSize) || 0) + block.char_count);
+      }
+    }
+
+    let bodySize = 10;
+    let maxChars = 0;
+    for (const [size, chars] of sizeChars) {
+      if (chars > maxChars) {
+        maxChars = chars;
+        bodySize = size;
+      }
+    }
+    return bodySize;
+  }
+
+  /**
+   * Find all spans matching a learned fingerprint.
+   * Uses property-based matching instead of regex patterns.
+   */
+  findMatchingSpans(fingerprint: SpanFingerprint): MatchingSpansResult {
+    const matches: MatchRect[] = [];
+    const matchesByPage: Record<number, MatchRect[]> = {};
+
+    // Group character spans into tokens for matching
+    const groupedSpans = this.groupAdjacentSpans(this.spans);
+    console.log(`findMatchingSpans: Searching ${groupedSpans.length} grouped spans`);
+    console.log(`  Fingerprint: ${fingerprint.description}`);
+
+    for (const span of groupedSpans) {
+      if (this.matchesFingerprint(span, fingerprint)) {
+        const match: MatchRect = {
+          page: span.page,
+          x: span.x,
+          y: span.y,
+          w: span.width,
+          h: span.height,
+          text: span.text.trim()
+        };
+
+        matches.push(match);
+
+        // Group by page for O(1) lookup during render
+        if (!matchesByPage[span.page]) {
+          matchesByPage[span.page] = [];
+        }
+        matchesByPage[span.page].push(match);
+      }
+    }
+
+    console.log(`  Found ${matches.length} matches across ${Object.keys(matchesByPage).length} pages`);
+
+    return {
+      matches,
+      matchesByPage,
+      total: matches.length,
+      pattern: fingerprint.description
+    };
+  }
+
+  /**
+   * Find spans matching a regex pattern.
+   * Returns lightweight MatchRect objects for just the matching text portions.
+   */
+  findSpansByRegex(
+    pattern: string,
+    minFontSize: number = 0,
+    maxFontSize: number = 999,
+    minBaseline: number | null = null,
+    maxBaseline: number | null = null,
+    caseSensitive: boolean = false
+  ): MatchingSpansResult {
+    const matches: MatchRect[] = [];
+    const matchesByPage: Record<number, MatchRect[]> = {};
+
+    // Build regex flags: 'g' for global, 'i' for case-insensitive (if not caseSensitive)
+    const flags = caseSensitive ? 'g' : 'gi';
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern, flags);
+    } catch {
+      console.log(`findSpansByRegex: Invalid regex pattern: ${pattern}`);
+      return { matches: [], matchesByPage: {}, total: 0, pattern };
+    }
+
+    // Group character spans into tokens for matching
+    const groupedSpans = this.groupAdjacentSpans(this.spans);
+    console.log(`findSpansByRegex: Searching ${groupedSpans.length} grouped spans with pattern: ${pattern}`);
+    console.log(`  Case sensitive: ${caseSensitive}`);
+    console.log(`  Font size filter: ${minFontSize} - ${maxFontSize}`);
+    console.log(`  Baseline filter: ${minBaseline ?? 'any'} - ${maxBaseline ?? 'any'}`);
+
+    for (const span of groupedSpans) {
+      const text = span.text.trim();
+      if (text.length === 0) continue;
+
+      // Font size filter
+      if (span.font_size < minFontSize || span.font_size > maxFontSize) continue;
+
+      // Baseline offset filter (for superscript/subscript detection)
+      if (minBaseline !== null && span.baseline_offset < minBaseline) continue;
+      if (maxBaseline !== null && span.baseline_offset > maxBaseline) continue;
+
+      // Check if this span's text matches the pattern
+      regex.lastIndex = 0;
+      if (regex.test(text)) {
+        const match: MatchRect = {
+          page: span.page,
+          x: span.x,
+          y: span.y,
+          w: span.width,
+          h: span.height,
+          text: text
+        };
+
+        matches.push(match);
+
+        // Group by page for O(1) lookup during render
+        if (!matchesByPage[span.page]) {
+          matchesByPage[span.page] = [];
+        }
+        matchesByPage[span.page].push(match);
+      }
+    }
+
+    console.log(`  Found ${matches.length} span matches across ${Object.keys(matchesByPage).length} pages`);
+
+    return {
+      matches,
+      matchesByPage,
+      total: matches.length,
+      pattern
+    };
+  }
+
+  /**
+   * Check if a span matches the learned fingerprint
+   */
+  private matchesFingerprint(span: TextSpan, fp: SpanFingerprint): boolean {
+    const text = span.text.trim();
+    if (text.length === 0) return false;
+
+    // Check font size (absolute)
+    if (fp.font_size_min !== null && span.font_size < fp.font_size_min) return false;
+    if (fp.font_size_max !== null && span.font_size > fp.font_size_max) return false;
+
+    // Check font size ratio to body text
+    if (fp.font_size_ratio_to_body !== null && fp.body_font_size > 0) {
+      const ratio = span.font_size / fp.body_font_size;
+      if (ratio < fp.font_size_ratio_to_body[0] || ratio > fp.font_size_ratio_to_body[1]) {
+        return false;
+      }
+    }
+
+    // Check font name
+    if (fp.font_names !== null && !fp.font_names.includes(span.font_name)) {
+      return false;
+    }
+
+    // Check bold/italic
+    if (fp.is_bold !== null && span.is_bold !== fp.is_bold) return false;
+    if (fp.is_italic !== null && span.is_italic !== fp.is_italic) return false;
+
+    // Check character class
+    if (fp.char_class !== null && !this.matchesCharClass(text, fp.char_class)) {
+      return false;
+    }
+
+    // Check text length
+    if (fp.length_min !== null && text.length < fp.length_min) return false;
+    if (fp.length_max !== null && text.length > fp.length_max) return false;
+
+    // Check baseline offset
+    if (fp.baseline_offset_min !== null && span.baseline_offset < fp.baseline_offset_min) return false;
+    if (fp.baseline_offset_max !== null && span.baseline_offset > fp.baseline_offset_max) return false;
+
+    return true;
+  }
+
+  /**
+   * Check if text matches a character class
+   */
+  private matchesCharClass(text: string, charClass: CharClass): boolean {
+    switch (charClass) {
+      case 'digits': return /^\d+$/.test(text);
+      case 'uppercase': return /^[A-Z]+$/.test(text);
+      case 'lowercase': return /^[a-z]+$/.test(text);
+      case 'mixed_alpha': return /^[A-Za-z]+$/.test(text);
+      case 'mixed_alphanum': return /^[A-Za-z0-9]+$/.test(text);
+      case 'symbols': return /^[^\w\s]+$/.test(text);
+      case 'mixed': return true;  // Match anything
+      default: return true;
+    }
+  }
+
+  /**
+   * Get all spans (for UI)
+   */
+  getSpans(): TextSpan[] {
+    return this.spans;
   }
 
   /**
@@ -693,6 +1715,59 @@ export class PDFAnalyzer {
     return crypto.createHash('md5').update(input).digest('hex').substring(0, 12);
   }
 }
+
+// Lightweight match representation for memory efficiency (~40 bytes vs 200+ for TextBlock)
+export interface MatchRect {
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;
+}
+
+// Result from findMatchingSpans
+export interface MatchingSpansResult {
+  matches: MatchRect[];
+  matchesByPage: Record<number, MatchRect[]>;  // O(1) lookup by page for lazy rendering
+  total: number;
+  pattern: string;
+}
+
+// Character class detection
+type CharClass = 'digits' | 'uppercase' | 'lowercase' | 'mixed_alpha' | 'mixed_alphanum' | 'symbols' | 'mixed';
+
+// Learned fingerprint from sample analysis - captures ALL discriminating properties
+export interface SpanFingerprint {
+  // Font properties (null = don't filter on this)
+  font_size_min: number | null;
+  font_size_max: number | null;
+  font_size_ratio_to_body: [number, number] | null;  // [min, max] ratio relative to body text
+  font_names: string[] | null;  // null = any font, array = must match one
+  is_bold: boolean | null;
+  is_italic: boolean | null;
+
+  // Text properties
+  char_class: CharClass | null;  // Detected character class
+  length_min: number | null;
+  length_max: number | null;
+
+  // Position properties
+  baseline_offset_min: number | null;
+  baseline_offset_max: number | null;
+
+  // Context properties (what surrounds the text)
+  preceded_by: ('space' | 'punctuation' | 'letter' | 'digit' | 'line_start')[] | null;
+  followed_by: ('space' | 'punctuation' | 'letter' | 'digit' | 'line_end')[] | null;
+
+  // Metadata
+  sample_count: number;
+  body_font_size: number;
+  description: string;  // Human-readable description of what was detected
+}
+
+// Legacy alias for compatibility
+export type SamplePattern = SpanFingerprint;
 
 // Singleton instance
 export const pdfAnalyzer = new PDFAnalyzer();

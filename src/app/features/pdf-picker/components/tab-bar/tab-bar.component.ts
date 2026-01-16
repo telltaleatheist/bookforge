@@ -6,6 +6,8 @@ export interface DocumentTab {
   name: string;
   path: string;
   hasUnsavedChanges: boolean;
+  icon?: string;
+  closable?: boolean; // defaults to true
 }
 
 @Component({
@@ -13,29 +15,32 @@ export interface DocumentTab {
   standalone: true,
   imports: [CommonModule],
   template: `
-    <div class="tab-bar" [class.visible]="tabs().length > 0">
+    <div class="tab-bar">
       <div class="tabs-scroll">
         @for (tab of tabs(); track tab.id) {
           <div
             class="tab"
             [class.active]="tab.id === activeTabId()"
+            [class.permanent]="tab.closable === false"
             (click)="onTabClick(tab)"
-            [title]="tab.path"
+            [title]="tab.path || tab.name"
           >
-            <span class="tab-icon">📄</span>
+            <span class="tab-icon">{{ tab.icon || '📄' }}</span>
             <span class="tab-name">
               {{ tab.name }}
               @if (tab.hasUnsavedChanges) {
                 <span class="unsaved-indicator">•</span>
               }
             </span>
-            <button
-              class="tab-close"
-              (click)="onCloseTab($event, tab)"
-              title="Close"
-            >
-              ×
-            </button>
+            @if (tab.closable !== false) {
+              <button
+                class="tab-close"
+                (click)="onCloseTab($event, tab)"
+                title="Close (⌘W)"
+              >
+                ×
+              </button>
+            }
           </div>
         }
       </div>
@@ -48,16 +53,12 @@ export interface DocumentTab {
     @use '../../../../creamsicle-desktop/styles/variables' as *;
 
     .tab-bar {
-      display: none;
+      display: flex;
+      align-items: stretch;
       height: var(--ui-tab-height);
       background: var(--bg-elevated);
       border-bottom: 1px solid var(--border-subtle);
       flex-shrink: 0;
-
-      &.visible {
-        display: flex;
-        align-items: stretch;
-      }
     }
 
     .tabs-scroll {

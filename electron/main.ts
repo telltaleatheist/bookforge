@@ -1,10 +1,20 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
+import * as crypto from 'crypto';
+import * as os from 'os';
 import { pdfAnalyzer } from './pdf-analyzer';
 import { getOcrService } from './ocr-service';
 
 let mainWindow: BrowserWindow | null = null;
+
+// Atomic file write - writes to temp file then renames to prevent corruption
+async function atomicWriteFile(filePath: string, content: string): Promise<void> {
+  const tempPath = path.join(os.tmpdir(), `bookforge-${Date.now()}-${Math.random().toString(36).substr(2)}.tmp`);
+  await fs.writeFile(tempPath, content, 'utf-8');
+  await fs.rename(tempPath, filePath);
+}
 
 const isDev = !app.isPackaged;
 
@@ -33,6 +43,9 @@ function createWindow(): void {
   if (process.platform === 'darwin' && app.dock) {
     app.dock.setIcon(iconPath);
   }
+
+  // Clear window title to prevent tooltip on macOS drag region
+  mainWindow.setTitle(' ');
 
   // Load Angular app
   if (isDev) {
@@ -107,6 +120,52 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Sample picker handlers for custom category creation
+  ipcMain.handle('pdf:find-spans-in-rect', async (_event, page: number, x: number, y: number, width: number, height: number) => {
+    try {
+      const spans = pdfAnalyzer.findSpansInRect(page, x, y, width, height);
+      return { success: true, data: spans };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:analyze-samples', async (_event, sampleSpans: any[]) => {
+    try {
+      const pattern = pdfAnalyzer.analyzesamples(sampleSpans);
+      return { success: true, data: pattern };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:find-matching-spans', async (_event, pattern: any) => {
+    try {
+      const matches = pdfAnalyzer.findMatchingSpans(pattern);
+      return { success: true, data: matches };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:find-spans-by-regex', async (_event, pattern: string, minFontSize: number, maxFontSize: number, minBaseline?: number | null, maxBaseline?: number | null, caseSensitive?: boolean) => {
+    try {
+      const matches = pdfAnalyzer.findSpansByRegex(pattern, minFontSize, maxFontSize, minBaseline ?? null, maxBaseline ?? null, caseSensitive ?? false);
+      return { success: true, data: matches };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:get-spans', async () => {
+    try {
+      const spans = pdfAnalyzer.getSpans();
+      return { success: true, data: spans };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // File system handlers
   ipcMain.handle('fs:browse', async (_event, dirPath: string) => {
     const fs = await import('fs/promises');
@@ -169,7 +228,7 @@ function setupIpcHandlers(): void {
     }
 
     try {
-      await fs.writeFile(result.filePath, JSON.stringify(projectData, null, 2), 'utf-8');
+      await atomicWriteFile(result.filePath, JSON.stringify(projectData, null, 2));
       return { success: true, filePath: result.filePath };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -204,7 +263,7 @@ function setupIpcHandlers(): void {
   // Save to specific path (for "Save" vs "Save As")
   ipcMain.handle('project:save-to-path', async (_event, filePath: string, projectData: unknown) => {
     try {
-      await fs.writeFile(filePath, JSON.stringify(projectData, null, 2), 'utf-8');
+      await atomicWriteFile(filePath, JSON.stringify(projectData, null, 2));
       return { success: true, filePath };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -232,17 +291,57 @@ function setupIpcHandlers(): void {
   });
 
   // Projects folder management
-  const getProjectsFolder = () => {
+  // Library folder structure
+  const getLibraryRoot = () => {
     const documentsPath = app.getPath('documents');
     return path.join(documentsPath, 'BookForge');
   };
 
-  // Ensure projects folder exists
+  const getProjectsFolder = () => path.join(getLibraryRoot(), 'projects');
+  const getFilesFolder = () => path.join(getLibraryRoot(), 'files');
+
+  // Compute file hash for duplicate detection
+  const computeFileHash = async (filePath: string): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const hash = crypto.createHash('sha256');
+      const stream = fsSync.createReadStream(filePath);
+      stream.on('data', data => hash.update(data));
+      stream.on('end', () => resolve(hash.digest('hex')));
+      stream.on('error', reject);
+    });
+  };
+
+  // Find existing file in library by hash
+  const findFileByHash = async (targetHash: string): Promise<string | null> => {
+    const filesFolder = getFilesFolder();
+    try {
+      const entries = await fs.readdir(filesFolder, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const filePath = path.join(filesFolder, entry.name);
+        try {
+          const hash = await computeFileHash(filePath);
+          if (hash === targetHash) {
+            return filePath;
+          }
+        } catch {
+          // Skip files we can't read
+        }
+      }
+    } catch {
+      // Folder doesn't exist yet
+    }
+    return null;
+  };
+
+  // Ensure library folders exist
   ipcMain.handle('projects:ensure-folder', async () => {
     try {
-      const folder = getProjectsFolder();
-      await fs.mkdir(folder, { recursive: true });
-      return { success: true, path: folder };
+      const projectsFolder = getProjectsFolder();
+      const filesFolder = getFilesFolder();
+      await fs.mkdir(projectsFolder, { recursive: true });
+      await fs.mkdir(filesFolder, { recursive: true });
+      return { success: true, path: getLibraryRoot() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -253,40 +352,118 @@ function setupIpcHandlers(): void {
     return { path: getProjectsFolder() };
   });
 
-  // List all projects in the folder
+  // Import file to library - copies file and returns library path
+  ipcMain.handle('library:import-file', async (_event, sourcePath: string) => {
+    console.log('[library:import-file] Starting import for:', sourcePath);
+    try {
+      const filesFolder = getFilesFolder();
+      console.log('[library:import-file] Files folder:', filesFolder);
+      await fs.mkdir(filesFolder, { recursive: true });
+
+      // Compute hash of source file
+      console.log('[library:import-file] Computing hash...');
+      const sourceHash = await computeFileHash(sourcePath);
+      console.log('[library:import-file] Hash:', sourceHash);
+
+      // Check if file with same hash already exists
+      const existingPath = await findFileByHash(sourceHash);
+      if (existingPath) {
+        console.log('[library:import-file] File already in library:', existingPath);
+        const result = { success: true, libraryPath: existingPath, hash: sourceHash, alreadyExists: true };
+        console.log('[library:import-file] Returning:', JSON.stringify(result));
+        return result;
+      }
+
+      // File doesn't exist, copy it
+      const baseName = path.basename(sourcePath);
+      let destPath = path.join(filesFolder, baseName);
+
+      // If same name exists but different content, add hash suffix
+      try {
+        await fs.access(destPath);
+        // File with same name exists but different hash - add short hash to name
+        const ext = path.extname(baseName);
+        const nameWithoutExt = path.basename(baseName, ext);
+        const shortHash = sourceHash.substring(0, 8);
+        destPath = path.join(filesFolder, `${nameWithoutExt}_${shortHash}${ext}`);
+      } catch {
+        // File doesn't exist, use original name
+      }
+
+      await fs.copyFile(sourcePath, destPath);
+      console.log('[library:import-file] Copied file to library:', destPath);
+
+      const result = { success: true, libraryPath: destPath, hash: sourceHash, alreadyExists: false };
+      console.log('[library:import-file] Returning:', JSON.stringify(result));
+      return result;
+    } catch (err) {
+      console.error('[library:import-file] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // List all projects in the folder (checks both root and projects/ for backward compat)
   ipcMain.handle('projects:list', async () => {
     try {
-      const folder = getProjectsFolder();
+      const projectsFolder = getProjectsFolder();
+      const rootFolder = getLibraryRoot();
 
-      // Ensure folder exists
-      await fs.mkdir(folder, { recursive: true });
+      // Ensure folders exist
+      await fs.mkdir(projectsFolder, { recursive: true });
 
-      const entries = await fs.readdir(folder, { withFileTypes: true });
-      const projects = [];
+      const projects: Array<{
+        name: string;
+        path: string;
+        sourcePath: string;
+        sourceName: string;
+        libraryPath?: string;
+        fileHash?: string;
+        deletedCount: number;
+        createdAt: string;
+        modifiedAt: string;
+        size: number;
+      }> = [];
 
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith('.bfp')) continue;
-
-        const filePath = path.join(folder, entry.name);
+      // Helper to scan a folder for .bfp files
+      const scanFolder = async (folder: string) => {
         try {
-          const content = await fs.readFile(filePath, 'utf-8');
-          const data = JSON.parse(content);
-          const stat = await fs.stat(filePath);
+          const entries = await fs.readdir(folder, { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry.isFile() || !entry.name.endsWith('.bfp')) continue;
 
-          projects.push({
-            name: entry.name.replace('.bfp', ''),
-            path: filePath,
-            sourcePath: data.source_path,
-            sourceName: data.source_name,
-            deletedCount: data.deleted_block_ids?.length || 0,
-            createdAt: data.created_at,
-            modifiedAt: stat.mtime.toISOString(),
-            size: stat.size
-          });
+            const filePath = path.join(folder, entry.name);
+            try {
+              const content = await fs.readFile(filePath, 'utf-8');
+              const data = JSON.parse(content);
+              const stat = await fs.stat(filePath);
+
+              // Determine the actual file path - prefer library_path, fall back to source_path
+              const actualSourcePath = data.library_path || data.source_path;
+
+              projects.push({
+                name: entry.name.replace('.bfp', ''),
+                path: filePath,
+                sourcePath: actualSourcePath,
+                sourceName: data.source_name,
+                libraryPath: data.library_path,
+                fileHash: data.file_hash,
+                deletedCount: data.deleted_block_ids?.length || 0,
+                createdAt: data.created_at,
+                modifiedAt: stat.mtime.toISOString(),
+                size: stat.size
+              });
+            } catch {
+              // Skip invalid project files
+            }
+          }
         } catch {
-          // Skip invalid project files
+          // Folder doesn't exist or can't be read
         }
-      }
+      };
+
+      // Scan both locations
+      await scanFolder(projectsFolder);
+      await scanFolder(rootFolder);
 
       // Sort by modification date, newest first
       projects.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
@@ -298,16 +475,64 @@ function setupIpcHandlers(): void {
   });
 
   // Save project to default folder
+  // This will check for existing projects and update them instead of creating duplicates
   ipcMain.handle('projects:save', async (_event, projectData: unknown, name: string) => {
     try {
       const folder = getProjectsFolder();
       await fs.mkdir(folder, { recursive: true });
 
-      // Sanitize name
-      const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const filePath = path.join(folder, `${safeName}.bfp`);
+      const data = projectData as {
+        source_path?: string;
+        library_path?: string;
+        file_hash?: string;
+      };
 
-      await fs.writeFile(filePath, JSON.stringify(projectData, null, 2), 'utf-8');
+      // Check for existing project with same source
+      const entries = await fs.readdir(folder, { withFileTypes: true });
+      let existingPath: string | null = null;
+
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.bfp')) continue;
+
+        const filePath = path.join(folder, entry.name);
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+          const existing = JSON.parse(content);
+
+          // Match by hash (most reliable)
+          if (data.file_hash && existing.file_hash && data.file_hash === existing.file_hash) {
+            existingPath = filePath;
+            break;
+          }
+
+          // Match by library path
+          if (data.library_path && existing.library_path && data.library_path === existing.library_path) {
+            existingPath = filePath;
+            break;
+          }
+
+          // Match by source path
+          if (data.source_path && existing.source_path && data.source_path === existing.source_path) {
+            existingPath = filePath;
+            break;
+          }
+        } catch {
+          // Skip invalid files
+        }
+      }
+
+      // Use existing path or create new one
+      let filePath: string;
+      if (existingPath) {
+        filePath = existingPath;
+        console.log(`Updating existing project: ${filePath}`);
+      } else {
+        const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+        filePath = path.join(folder, `${safeName}.bfp`);
+        console.log(`Creating new project: ${filePath}`);
+      }
+
+      await atomicWriteFile(filePath, JSON.stringify(projectData, null, 2));
       return { success: true, filePath };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -397,11 +622,44 @@ function setupIpcHandlers(): void {
     return { success: true, imported, failed };
   });
 
-  // Load project from specific path
+  // Load project from specific path - auto-imports to library if external
   ipcMain.handle('projects:load-from-path', async (_event, filePath: string) => {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       const data = JSON.parse(content);
+
+      // Check if this project is outside the library folder
+      const projectsFolder = getProjectsFolder();
+      const isInLibrary = filePath.startsWith(projectsFolder);
+
+      if (!isInLibrary) {
+        // Copy to library folder
+        await fs.mkdir(projectsFolder, { recursive: true });
+
+        // Generate unique name based on source file name
+        const baseName = path.basename(filePath, '.bfp');
+        let destPath = path.join(projectsFolder, `${baseName}.bfp`);
+
+        // If file exists, add a number suffix
+        let counter = 1;
+        while (true) {
+          try {
+            await fs.access(destPath);
+            destPath = path.join(projectsFolder, `${baseName}_${counter}.bfp`);
+            counter++;
+          } catch {
+            // File doesn't exist, use this path
+            break;
+          }
+        }
+
+        // Copy the file
+        await fs.copyFile(filePath, destPath);
+        console.log(`Imported project from ${filePath} to ${destPath}`);
+
+        return { success: true, data, filePath: destPath };
+      }
+
       return { success: true, data, filePath };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -477,11 +735,77 @@ function setupIpcHandlers(): void {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  // Window control handlers
+  ipcMain.handle('window:hide', () => {
+    if (mainWindow) {
+      mainWindow.hide();
+    }
+    return { success: true };
+  });
+
+  ipcMain.handle('window:close', () => {
+    if (mainWindow) {
+      mainWindow.close();
+    }
+    return { success: true };
+  });
 }
 
 app.whenReady().then(() => {
   setupIpcHandlers();
   createWindow();
+
+  // Set up application menu with Quit shortcut (Cmd+Q / Ctrl+Q)
+  const isMac = process.platform === 'darwin';
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...(isMac ? [{
+      label: app.name,
+      submenu: [
+        { role: 'about' as const },
+        { type: 'separator' as const },
+        { role: 'hide' as const },
+        { role: 'hideOthers' as const },
+        { role: 'unhide' as const },
+        { type: 'separator' as const },
+        { role: 'quit' as const }
+      ]
+    }] : []),
+    {
+      label: 'File',
+      submenu: [
+        isMac ? { role: 'close' as const } : { role: 'quit' as const }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' as const },
+        { role: 'redo' as const },
+        { type: 'separator' as const },
+        { role: 'cut' as const },
+        { role: 'copy' as const },
+        { role: 'paste' as const },
+        { role: 'selectAll' as const }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' as const },
+        { role: 'forceReload' as const },
+        { role: 'toggleDevTools' as const },
+        { type: 'separator' as const },
+        { role: 'resetZoom' as const },
+        { role: 'zoomIn' as const },
+        { role: 'zoomOut' as const },
+        { type: 'separator' as const },
+        { role: 'togglefullscreen' as const }
+      ]
+    }
+  ];
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

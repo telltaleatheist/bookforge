@@ -22,7 +22,9 @@ import { OcrSettingsModalComponent, OcrSettings, OcrPageResult } from './compone
 
 interface OpenDocument {
   id: string;
-  path: string;
+  path: string;           // Original path (for display)
+  libraryPath: string;    // Path to file in library (used for actual operations)
+  fileHash: string;       // SHA256 hash of the file
   name: string;
   blocks: TextBlock[];
   categories: Record<string, Category>;
@@ -39,18 +41,53 @@ interface OpenDocument {
 }
 
 
+// Serializable custom category for project persistence
+interface CustomCategoryData {
+  category: {
+    id: string;
+    name: string;
+    description: string;
+    color: string;
+    block_count: number;
+    char_count: number;
+    font_size: number;
+    region: string;
+    sample_text: string;
+  };
+  highlights: Record<number, Array<{ page: number; x: number; y: number; w: number; h: number; text: string }>>;
+}
+
 interface BookForgeProject {
   version: number;
-  source_path: string;
+  source_path: string;    // Original path
   source_name: string;
+  library_path?: string;  // Path to copy in library
+  file_hash?: string;     // SHA256 hash for duplicate detection
   deleted_block_ids: string[];
-  page_order?: number[]; // Custom page order for organize mode
+  page_order?: number[];  // Custom page order for organize mode
+  custom_categories?: CustomCategoryData[];  // User-created categories with regex/sample matches
+  undo_stack?: HistoryAction[];  // Persisted undo history
+  redo_stack?: HistoryAction[];  // Persisted redo history
   created_at: string;
   modified_at: string;
 }
 
+// Lightweight match rectangle for custom category highlights
+// (~40 bytes vs ~200 for full TextBlock)
+interface MatchRect {
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;
+}
+
+// Custom category highlights stored by category ID, then by page for O(1) lookup
+type CategoryHighlights = Map<string, Record<number, MatchRect[]>>;
+
 // Editor modes
-type EditorMode = 'select' | 'edit' | 'crop' | 'organize' | 'split';
+type EditorMode = 'select' | 'edit' | 'crop' | 'organize' | 'split' | 'ocr';
 
 interface ModeInfo {
   id: EditorMode;
@@ -100,7 +137,7 @@ interface AlertModal {
     <!-- Tab Bar for open documents -->
     <app-tab-bar
       [tabs]="documentTabs()"
-      [activeTabId]="activeDocumentId()"
+      [activeTabId]="activeTabId()"
       (tabSelected)="onTabSelected($event)"
       (tabClosed)="onTabClosed($event)"
       (newTab)="showFilePicker.set(true)"
@@ -138,7 +175,8 @@ interface AlertModal {
             <div class="viewer-pane">
               <app-pdf-viewer
               [blocks]="blocks()"
-              [categories]="categories()"
+              [categories]="categoriesWithPreview()"
+              [categoryHighlights]="combinedHighlights()"
               [pageDimensions]="pageDimensions()"
               [totalPages]="totalPages()"
               [zoom]="zoom()"
@@ -154,6 +192,10 @@ interface AlertModal {
               [splitEnabled]="splitConfig().enabled"
               [splitPositionFn]="getSplitPositionForPage.bind(this)"
               [skippedPages]="splitConfig().skippedPages"
+              [sampleMode]="sampleMode()"
+              [sampleRects]="sampleRects()"
+              [sampleCurrentRect]="sampleDrawingRect()"
+              [regexSearchMode]="regexPanelExpanded()"
               (blockClick)="onBlockClick($event)"
               (blockDoubleClick)="onBlockDoubleClick($event)"
               (blockHover)="onBlockHover($event)"
@@ -168,6 +210,9 @@ interface AlertModal {
               (pageReorder)="onPageReorder($event)"
               (splitPositionChange)="onSplitPositionChange($event)"
               (splitPageToggle)="onSplitPageToggle($event)"
+              (sampleMouseDown)="onSampleMouseDown($event.event, $event.page, $event.pageX, $event.pageY)"
+              (sampleMouseMove)="onSampleMouseMove($event.pageX, $event.pageY)"
+              (sampleMouseUp)="onSampleMouseUp()"
               [getPageImageUrl]="getPageImageUrl.bind(this)"
             />
             </div>
@@ -189,16 +234,17 @@ interface AlertModal {
                 @for (pageNum of pageNumbers(); track pageNum) {
                   <button
                     class="timeline-thumb"
-                    [class.has-selection]="pagesWithSelections().has(pageNum)"
-                    [title]="'Page ' + (pageNum + 1) + (pagesWithSelections().get(pageNum) ? ' (' + pagesWithSelections().get(pageNum) + ' selected)' : '')"
+                    [class.has-selection]="timelineHighlights().has(pageNum)"
+                    [class.regex-match]="regexPanelExpanded() && timelineHighlights().has(pageNum)"
+                    [title]="'Page ' + (pageNum + 1) + (timelineHighlights().get(pageNum) ? ' (' + timelineHighlights().get(pageNum) + (regexPanelExpanded() ? ' matches' : ' selected') + ')' : '')"
                     (click)="scrollToPage(pageNum)"
                   >
                     @if (getPageImageUrl(pageNum) && getPageImageUrl(pageNum) !== 'loading') {
                       <img [src]="getPageImageUrl(pageNum)" alt="Page {{ pageNum + 1 }}" />
                     }
                     <span class="thumb-label">{{ pageNum + 1 }}</span>
-                    @if (pagesWithSelections().get(pageNum)) {
-                      <span class="thumb-count">{{ pagesWithSelections().get(pageNum) }}</span>
+                    @if (timelineHighlights().get(pageNum)) {
+                      <span class="thumb-count">{{ timelineHighlights().get(pageNum) }}</span>
                     }
                   </button>
                 }
@@ -243,9 +289,47 @@ interface AlertModal {
             [selectedBlockIds]="selectedBlockIds()"
             [includedChars]="includedChars()"
             [excludedChars]="excludedChars()"
+            [regexName]="regexCategoryName()"
+            [regexPattern]="regexPattern()"
+            [regexColor]="regexCategoryColor()"
+            [regexMinFontSize]="regexMinFontSize()"
+            [regexMaxFontSize]="regexMaxFontSize()"
+            [regexMinBaseline]="regexMinBaseline()"
+            [regexMaxBaseline]="regexMaxBaseline()"
+            [regexCaseSensitive]="regexCaseSensitive()"
+            [regexLiteralMode]="regexLiteralMode()"
+            [regexCategoryFilter]="regexCategoryFilter()"
+            [regexPageFilterType]="regexPageFilterType()"
+            [regexPageRangeStart]="regexPageRangeStart()"
+            [regexPageRangeEnd]="regexPageRangeEnd()"
+            [regexSpecificPages]="regexSpecificPages()"
+            [regexMatches]="regexMatches()"
+            [regexMatchCount]="regexMatchCount()"
+            [isEditing]="!!editingCategoryId()"
             (selectCategory)="selectAllOfCategory($event)"
-            (clearSelection)="clearSelection()"
-            (openCustomCategory)="openRegexModal()"
+            (selectInverse)="selectInverseOfCategory($event)"
+            (selectAll)="selectAllBlocks()"
+            (deselectAll)="clearSelection()"
+            (enterSampleMode)="enterSampleMode()"
+            (deleteCategory)="deleteCustomCategory($event)"
+            (editCategory)="editCustomCategory($event)"
+            (toggleCategory)="toggleCategoryEnabled($event)"
+            (regexNameChange)="regexCategoryName.set($event)"
+            (regexPatternChange)="onRegexPatternChange($event)"
+            (regexColorChange)="regexCategoryColor.set($event)"
+            (regexMinFontSizeChange)="onMinFontSizeChange($event)"
+            (regexMaxFontSizeChange)="onMaxFontSizeChange($event)"
+            (regexMinBaselineChange)="onMinBaselineChange($event?.toString() ?? '')"
+            (regexMaxBaselineChange)="onMaxBaselineChange($event?.toString() ?? '')"
+            (regexCaseSensitiveChange)="onCaseSensitiveChange($event)"
+            (regexLiteralModeChange)="onLiteralModeChange($event)"
+            (regexCategoryFilterChange)="onCategoryFilterChange($event)"
+            (regexPageFilterTypeChange)="onPageFilterTypeChange($event)"
+            (regexPageRangeStartChange)="onPageRangeStartChange($event)"
+            (regexPageRangeEndChange)="onPageRangeEndChange($event)"
+            (regexSpecificPagesChange)="onSpecificPagesChange($event)"
+            (createRegexCategory)="createRegexCategory()"
+            (regexExpandedChange)="onRegexExpandedChange($event)"
           />
         }
       </desktop-split-pane>
@@ -267,152 +351,11 @@ interface AlertModal {
       />
     }
 
-    <!-- Library Overlay (when viewing library with PDF still open) -->
-    @if (showLibraryView()) {
-      <div class="library-overlay">
-        <div class="library-overlay-header">
-          <h2>Library</h2>
-          <desktop-button variant="ghost" size="sm" (click)="showLibraryView.set(false)">
-            ← Back to {{ pdfName() || 'Project' }}
-          </desktop-button>
-        </div>
-        <app-library-view
-          (openFile)="onLibraryOpenFile()"
-          (fileSelected)="onLibraryFileSelected($event)"
-          (projectSelected)="onLibraryProjectSelected($event)"
-          (projectsSelected)="onLibraryProjectsSelected($event)"
-        />
-      </div>
-    }
-
     <!-- Loading Overlay -->
     @if (loading()) {
       <div class="loading-overlay">
         <div class="loading-spinner"></div>
         <p>{{ loadingText() }}</p>
-      </div>
-    }
-
-    <!-- Regex Category Creator Modal -->
-    @if (showRegexModal()) {
-      <div class="modal-overlay" (click)="showRegexModal.set(false)">
-        <div class="regex-modal" (click)="$event.stopPropagation()">
-          <div class="modal-header">
-            <h3>Create Custom Category</h3>
-            <button class="close-btn" (click)="showRegexModal.set(false)">×</button>
-          </div>
-
-          <div class="modal-body">
-            <div class="form-group">
-              <label>Category Name</label>
-              <input
-                type="text"
-                [value]="regexCategoryName()"
-                (input)="regexCategoryName.set($any($event.target).value)"
-                placeholder="e.g., Inline Citations"
-              />
-            </div>
-
-            <div class="form-group">
-              <label>Regex Pattern</label>
-              <input
-                type="text"
-                [value]="regexPattern()"
-                (input)="onRegexPatternChange($any($event.target).value)"
-                placeholder="e.g., \\[\\d+\\] or \\d{1,3}(?=\\s)"
-              />
-              <span class="hint">JavaScript regex syntax. Matches within block text.</span>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group half">
-                <label>Min Font Size</label>
-                <input
-                  type="number"
-                  [value]="regexMinFontSize()"
-                  (input)="onMinFontSizeChange(+$any($event.target).value)"
-                  placeholder="0"
-                />
-              </div>
-              <div class="form-group half">
-                <label>Max Font Size</label>
-                <input
-                  type="number"
-                  [value]="regexMaxFontSize()"
-                  (input)="onMaxFontSizeChange(+$any($event.target).value)"
-                  placeholder="999"
-                />
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label>Color</label>
-              <input
-                type="color"
-                [value]="regexCategoryColor()"
-                (input)="regexCategoryColor.set($any($event.target).value)"
-              />
-            </div>
-
-            <div class="form-group">
-              <label class="checkbox-label">
-                <input
-                  type="checkbox"
-                  [checked]="regexNearLineEnd()"
-                  (change)="onNearLineEndChange($any($event.target).checked)"
-                />
-                Match only near end of line
-              </label>
-              @if (regexNearLineEnd()) {
-                <div class="sub-option">
-                  <label>Within last</label>
-                  <input
-                    type="number"
-                    [value]="regexLineEndChars()"
-                    (input)="onLineEndCharsChange(+$any($event.target).value)"
-                    style="width: 60px"
-                  />
-                  <span>characters</span>
-                </div>
-              }
-              <span class="hint">Useful for finding hyphenated words split across lines</span>
-            </div>
-
-            <div class="preview-section">
-              <div class="preview-header">
-                <span>Preview: {{ regexMatches().length }} blocks match</span>
-                @if (regexMatches().length > 0) {
-                  <button class="preview-select" (click)="selectRegexMatches()">Select All</button>
-                }
-              </div>
-              <div class="preview-list">
-                @for (match of regexMatches().slice(0, 10); track match.id) {
-                  <div class="preview-item">
-                    <span class="preview-page">p.{{ match.page + 1 }}</span>
-                    <span class="preview-text">{{ match.text.substring(0, 80) }}...</span>
-                  </div>
-                }
-                @if (regexMatches().length > 10) {
-                  <div class="preview-more">...and {{ regexMatches().length - 10 }} more</div>
-                }
-                @if (regexMatches().length === 0 && regexPattern()) {
-                  <div class="preview-empty">No blocks match this pattern</div>
-                }
-              </div>
-            </div>
-          </div>
-
-          <div class="modal-footer">
-            <desktop-button variant="ghost" (click)="showRegexModal.set(false)">Cancel</desktop-button>
-            <desktop-button
-              variant="primary"
-              [disabled]="!regexCategoryName() || regexMatches().length === 0"
-              (click)="createRegexCategory()"
-            >
-              Create Category ({{ regexMatches().length }} blocks)
-            </desktop-button>
-          </div>
-        </div>
       </div>
     }
 
@@ -510,6 +453,67 @@ interface AlertModal {
         (close)="showOcrSettings.set(false)"
         (ocrCompleted)="onOcrCompleted($event)"
       />
+    }
+
+    <!-- Sample Mode Floating Toolbar -->
+    @if (sampleMode()) {
+      <div class="sample-mode-toolbar">
+        <div class="sample-toolbar-content">
+          <div class="sample-toolbar-header">
+            <span class="sample-icon">🎯</span>
+            <span class="sample-title">Create Custom Category</span>
+          </div>
+          <p class="sample-instructions">
+            Draw boxes around examples of text you want to find. The more samples you provide, the better the detection.
+          </p>
+          <div class="sample-form">
+            <div class="form-group">
+              <label>Category Name</label>
+              <input
+                type="text"
+                [value]="sampleCategoryName()"
+                (input)="sampleCategoryName.set($any($event.target).value)"
+                placeholder="e.g., Footnotes, Citations"
+              />
+            </div>
+            <div class="form-group">
+              <label>Color</label>
+              <input
+                type="color"
+                [value]="sampleCategoryColor()"
+                (input)="sampleCategoryColor.set($any($event.target).value)"
+              />
+            </div>
+          </div>
+          <div class="sample-rects-list">
+            <div class="rects-header">
+              <span>Samples: {{ sampleRects().length }}</span>
+            </div>
+            @if (sampleRects().length > 0) {
+              <div class="rects-items">
+                @for (rect of sampleRects(); track $index; let i = $index) {
+                  <div class="rect-item">
+                    <span>Page {{ rect.page + 1 }} ({{ rect.width | number:'1.0-0' }}×{{ rect.height | number:'1.0-0' }})</span>
+                    <button class="remove-rect-btn" (click)="removeSampleRect(i)" title="Remove">×</button>
+                  </div>
+                }
+              </div>
+            } @else {
+              <p class="no-samples-hint">No samples yet. Draw boxes on the PDF.</p>
+            }
+          </div>
+          <div class="sample-toolbar-actions">
+            <desktop-button variant="ghost" (click)="exitSampleMode()">Cancel</desktop-button>
+            <desktop-button
+              variant="primary"
+              [disabled]="sampleRects().length === 0"
+              (click)="analyzeSamplesAndCreateCategory()"
+            >
+              Create Category
+            </desktop-button>
+          </div>
+        </div>
+      </div>
     }
 
   `,
@@ -660,6 +664,15 @@ interface AlertModal {
         border-color: var(--accent);
         box-shadow: 0 0 0 2px var(--accent);
       }
+
+      &.regex-match {
+        border-color: #E91E63;
+        box-shadow: 0 0 0 2px #E91E63;
+
+        .thumb-count {
+          background: #E91E63;
+        }
+      }
     }
 
     .viewer-pane-container {
@@ -754,48 +767,6 @@ interface AlertModal {
       animation: overlayFadeIn $duration-fast $ease-out forwards;
     }
 
-    .library-overlay {
-      position: absolute;
-      inset: 0;
-      background: var(--bg-sunken);
-      z-index: 50;
-      display: flex;
-      flex-direction: column;
-      animation: slideInFromBottom $duration-normal $ease-out forwards;
-    }
-
-    .library-overlay-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: var(--ui-spacing-md) var(--ui-spacing-xl);
-      background: var(--bg-surface);
-      border-bottom: 1px solid var(--border-subtle);
-
-      h2 {
-        margin: 0;
-        font-size: var(--ui-font-lg);
-        font-weight: $font-weight-semibold;
-        color: var(--text-primary);
-      }
-    }
-
-    .library-overlay app-library-view {
-      flex: 1;
-      min-height: 0;
-    }
-
-    @keyframes slideInFromBottom {
-      from {
-        opacity: 0;
-        transform: translateY(20px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-
     .loading-spinner {
       width: 48px;
       height: 48px;
@@ -825,18 +796,6 @@ interface AlertModal {
       justify-content: center;
       z-index: 200;
       animation: overlayFadeIn $duration-fast $ease-out forwards;
-    }
-
-    .regex-modal {
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      border-radius: $radius-lg;
-      width: 500px;
-      max-height: 80vh;
-      display: flex;
-      flex-direction: column;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
-      animation: modalSlideIn $duration-normal $ease-out forwards;
     }
 
     @keyframes modalSlideIn {
@@ -1005,9 +964,10 @@ interface AlertModal {
       &:last-child { border-bottom: none; }
 
       .preview-page {
-        color: var(--text-tertiary);
+        color: #ff7b54;
+        font-weight: 600;
         flex-shrink: 0;
-        width: 35px;
+        width: 40px;
       }
 
       .preview-text {
@@ -1187,6 +1147,167 @@ interface AlertModal {
       }
     }
 
+    // Sample Mode Floating Toolbar
+    .sample-mode-toolbar {
+      position: fixed;
+      top: calc(var(--ui-toolbar) + var(--ui-panel-header) + 20px);
+      right: 20px;
+      z-index: 1000;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: $radius-lg;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      width: 320px;
+      animation: slideInFromRight $duration-normal $ease-out;
+
+      @keyframes slideInFromRight {
+        from {
+          opacity: 0;
+          transform: translateX(20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(0);
+        }
+      }
+    }
+
+    .sample-toolbar-content {
+      padding: var(--ui-spacing-lg);
+    }
+
+    .sample-toolbar-header {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      margin-bottom: var(--ui-spacing-sm);
+
+      .sample-icon {
+        font-size: 20px;
+      }
+
+      .sample-title {
+        font-size: var(--ui-font-lg);
+        font-weight: $font-weight-semibold;
+        color: var(--text-primary);
+      }
+    }
+
+    .sample-instructions {
+      font-size: var(--ui-font-sm);
+      color: var(--text-secondary);
+      margin: 0 0 var(--ui-spacing-md);
+      line-height: 1.4;
+    }
+
+    .sample-form {
+      display: flex;
+      flex-direction: column;
+      gap: var(--ui-spacing-md);
+      margin-bottom: var(--ui-spacing-md);
+      padding-bottom: var(--ui-spacing-md);
+      border-bottom: 1px solid var(--border-subtle);
+
+      .form-group {
+        display: flex;
+        flex-direction: column;
+        gap: var(--ui-spacing-xs);
+
+        label {
+          font-size: var(--ui-font-sm);
+          color: var(--text-secondary);
+        }
+
+        input[type="text"] {
+          padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+          background: var(--bg-surface);
+          border: 1px solid var(--border-subtle);
+          border-radius: $radius-md;
+          color: var(--text-primary);
+          font-size: var(--ui-font-base);
+
+          &:focus {
+            outline: none;
+            border-color: var(--accent);
+          }
+        }
+
+        input[type="color"] {
+          width: 100%;
+          height: 32px;
+          border: 1px solid var(--border-subtle);
+          border-radius: $radius-md;
+          cursor: pointer;
+        }
+      }
+    }
+
+    .sample-rects-list {
+      margin-bottom: var(--ui-spacing-md);
+
+      .rects-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--ui-spacing-sm);
+
+        span {
+          font-size: var(--ui-font-sm);
+          font-weight: $font-weight-medium;
+          color: var(--text-primary);
+        }
+      }
+
+      .rects-items {
+        display: flex;
+        flex-direction: column;
+        gap: var(--ui-spacing-xs);
+        max-height: 150px;
+        overflow-y: auto;
+      }
+
+      .rect-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: var(--ui-spacing-xs) var(--ui-spacing-sm);
+        background: var(--bg-surface);
+        border-radius: $radius-sm;
+        font-size: var(--ui-font-sm);
+        color: var(--text-secondary);
+
+        .remove-rect-btn {
+          background: none;
+          border: none;
+          color: var(--text-tertiary);
+          cursor: pointer;
+          font-size: 16px;
+          line-height: 1;
+          padding: 2px 6px;
+          border-radius: $radius-sm;
+
+          &:hover {
+            background: var(--hover-bg);
+            color: var(--text-primary);
+          }
+        }
+      }
+
+      .no-samples-hint {
+        font-size: var(--ui-font-sm);
+        color: var(--text-tertiary);
+        text-align: center;
+        padding: var(--ui-spacing-md);
+        margin: 0;
+      }
+    }
+
+    .sample-toolbar-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: var(--ui-spacing-sm);
+    }
+
   `],
 })
 export class PdfPickerComponent {
@@ -1199,9 +1320,9 @@ export class PdfPickerComponent {
   readonly editorState = inject(PdfEditorStateService);
   readonly projectService = inject(ProjectService);
 
-  // Auto-save effect - watches for unsaved changes and triggers save
+  // Auto-save effect - watches for unsaved changes and triggers save (auto-creates project if needed)
   private readonly autoSaveEffect = effect(() => {
-    if (this.hasUnsavedChanges() && this.projectPath()) {
+    if (this.hasUnsavedChanges() && this.pdfLoaded()) {
       this.scheduleAutoSave();
     }
   });
@@ -1218,6 +1339,8 @@ export class PdfPickerComponent {
   get totalPages() { return this.editorState.totalPages; }
   get pdfName() { return this.editorState.pdfName; }
   get pdfPath() { return this.editorState.pdfPath; }
+  get libraryPath() { return this.editorState.libraryPath; }
+  get fileHash() { return this.editorState.fileHash; }
   get pdfLoaded() { return this.editorState.pdfLoaded; }
   get deletedBlockIds() { return this.editorState.deletedBlockIds; }
   get selectedBlockIds() { return this.editorState.selectedBlockIds; }
@@ -1262,10 +1385,22 @@ export class PdfPickerComponent {
       return;
     }
 
-    // Delete/Backspace to delete selected blocks
-    if ((event.key === 'Delete' || event.key === 'Backspace') && this.selectedBlockIds().length > 0) {
-      event.preventDefault();
-      this.deleteSelectedBlocks();
+    // Delete/Backspace to delete selected blocks or focused custom category
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      // First, try to delete selected blocks
+      if (this.selectedBlockIds().length > 0) {
+        event.preventDefault();
+        this.deleteSelectedBlocks();
+        return;
+      }
+      // If no blocks selected, try to delete focused custom category
+      const focusedCat = this.focusedCategoryId();
+      if (focusedCat && focusedCat.startsWith('custom_')) {
+        event.preventDefault();
+        this.deleteCustomCategory(focusedCat);
+        this.focusedCategoryId.set(null);
+        return;
+      }
     }
 
     // Ctrl/Cmd + Z for undo
@@ -1286,14 +1421,16 @@ export class PdfPickerComponent {
       this.redo();
     }
 
-    // Ctrl/Cmd + O for library view toggle
+    // Ctrl/Cmd + O to switch to library tab
     if ((event.metaKey || event.ctrlKey) && event.key === 'o') {
       event.preventDefault();
-      if (this.showLibraryView()) {
-        this.showLibraryView.set(false);
-      } else {
-        this.goToLibrary();
-      }
+      this.switchToLibraryTab();
+    }
+
+    // Ctrl/Cmd + W to close current tab or hide window
+    if ((event.metaKey || event.ctrlKey) && event.key === 'w') {
+      event.preventDefault();
+      this.closeCurrentTabOrHideWindow();
     }
 
     // Mode shortcuts (single keys, no modifiers)
@@ -1340,20 +1477,32 @@ export class PdfPickerComponent {
   }
 
   readonly showFilePicker = signal(false);
-  readonly showLibraryView = signal(false); // Show library overlay without closing PDF
   readonly loading = signal(false);
   readonly loadingText = signal('Loading...');
 
-  // Regex category modal state
-  readonly showRegexModal = signal(false);
+  // Regex category panel state (in categories sidebar)
+  readonly regexPanelExpanded = signal(false);
   readonly regexPattern = signal('');
   readonly regexCategoryName = signal('');
   readonly regexCategoryColor = signal('#FF5722');
+  readonly editingCategoryId = signal<string | null>(null);  // ID of category being edited, null = creating new
+  readonly focusedCategoryId = signal<string | null>(null);  // Last clicked custom category (for keyboard delete)
   readonly regexMinFontSize = signal(0);
-  readonly regexMaxFontSize = signal(999);
+  readonly regexMaxFontSize = signal(0);  // 0 means "no max filter"
   readonly regexNearLineEnd = signal(false);
   readonly regexLineEndChars = signal(3);
-  readonly regexMatches = signal<TextBlock[]>([]);
+  readonly regexMinBaseline = signal<number | null>(null);
+  readonly regexMaxBaseline = signal<number | null>(null);
+  readonly regexCaseSensitive = signal(false);  // Default: case-insensitive
+  readonly regexLiteralMode = signal(false);    // Default: regex mode (no escaping)
+  readonly regexCategoryFilter = signal<string[]>([]);  // Empty = all categories
+  readonly regexPageFilterType = signal<'all' | 'range' | 'even' | 'odd' | 'specific'>('all');
+  readonly regexPageRangeStart = signal(1);
+  readonly regexPageRangeEnd = signal(1);
+  readonly regexSpecificPages = signal('');
+  readonly regexMatches = signal<MatchRect[]>([]);
+  readonly regexMatchCount = signal(0);
+  private regexDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Text editor modal state
   readonly showTextEditor = signal(false);
@@ -1371,6 +1520,89 @@ export class PdfPickerComponent {
     tesseractPsm: 3
   });
 
+  // Sample mode state (for creating custom categories by drawing boxes)
+  readonly sampleMode = signal(false);
+  readonly sampleRects = signal<Array<{ page: number; x: number; y: number; width: number; height: number }>>([]);
+  readonly sampleCategoryName = signal('');
+  readonly sampleCategoryColor = signal('#E91E63');
+  private sampleCurrentRect: { page: number; startX: number; startY: number; currentX: number; currentY: number } | null = null;
+  // Signal to pass to pdf-viewer for drawing rect visualization
+  readonly sampleDrawingRect = signal<{ page: number; x: number; y: number; width: number; height: number } | null>(null);
+
+  // Custom category highlights - stored by category ID, then by page for O(1) lookup
+  // This avoids creating heavy TextBlock objects for pattern matches
+  readonly categoryHighlights = signal<CategoryHighlights>(new Map());
+
+  // Combined highlights: when regex panel is open, ONLY show regex preview (hide others)
+  // Also filters out highlights for disabled categories
+  readonly combinedHighlights = computed<CategoryHighlights>(() => {
+    const base = this.categoryHighlights();
+    const categories = this.categories();
+
+    // If regex panel is open, show ONLY regex preview matches
+    if (this.regexPanelExpanded()) {
+      const matches = this.regexMatches();
+      if (matches.length === 0) {
+        // Panel is open but no matches - return empty (hide all highlights)
+        return new Map();
+      }
+
+      // Group matches by page
+      const previewByPage: Record<number, MatchRect[]> = {};
+      for (const match of matches) {
+        if (!previewByPage[match.page]) {
+          previewByPage[match.page] = [];
+        }
+        previewByPage[match.page].push(match);
+      }
+
+      // Return ONLY the preview highlights (not merged with base)
+      const previewOnly = new Map<string, Record<number, MatchRect[]>>();
+      previewOnly.set('__regex_preview__', previewByPage);
+
+      return previewOnly;
+    }
+
+    // Filter out highlights for disabled categories
+    const filtered = new Map<string, Record<number, MatchRect[]>>();
+    for (const [categoryId, pageHighlights] of base) {
+      const cat = categories[categoryId];
+      // Only include if category exists and is enabled
+      if (cat && cat.enabled !== false) {
+        filtered.set(categoryId, pageHighlights);
+      }
+    }
+
+    return filtered;
+  });
+
+  // Categories extended with preview category (for pdf-viewer when regex modal is open)
+  readonly categoriesWithPreview = computed<Record<string, Category>>(() => {
+    const base = this.categories();
+
+    // If regex modal isn't open, just return base categories
+    if (!this.regexPanelExpanded() || this.regexMatches().length === 0) {
+      return base;
+    }
+
+    // Add the preview category
+    return {
+      ...base,
+      '__regex_preview__': {
+        id: '__regex_preview__',
+        name: 'Regex Preview',
+        description: 'Live preview of regex matches',
+        color: this.regexCategoryColor(),
+        block_count: this.regexMatchCount(),
+        char_count: 0,
+        font_size: 0,
+        region: '',
+        sample_text: '',
+        enabled: true
+      }
+    };
+  });
+
   // Editor mode state
   readonly currentMode = signal<EditorMode>('select');
   readonly modes: ModeInfo[] = [
@@ -1378,7 +1610,8 @@ export class PdfPickerComponent {
     { id: 'edit', icon: '✏️', label: 'Edit', tooltip: 'Double-click to edit text (E)' },
     { id: 'crop', icon: '✂️', label: 'Crop', tooltip: 'Draw rectangle to crop (C)' },
     { id: 'organize', icon: '📑', label: 'Organize', tooltip: 'Reorder pages (R)' },
-    { id: 'split', icon: '📖', label: 'Split', tooltip: 'Split scanned pages (P)' }
+    { id: 'split', icon: '📖', label: 'Split', tooltip: 'Split scanned pages (P)' },
+    { id: 'ocr', icon: '👁️', label: 'OCR', tooltip: 'OCR scanned pages (O)' }
   ];
 
   // Crop mode state (derived from currentMode)
@@ -1409,14 +1642,32 @@ export class PdfPickerComponent {
   readonly openDocuments = signal<OpenDocument[]>([]);
   readonly activeDocumentId = signal<string | null>(null);
 
-  // Computed: tabs for tab bar
+  // Special library tab ID
+  private readonly LIBRARY_TAB_ID = '__library__';
+
+  // Computed: active tab ID for tab bar (returns LIBRARY_TAB_ID when no document active)
+  readonly activeTabId = computed(() => this.activeDocumentId() || this.LIBRARY_TAB_ID);
+
+  // Computed: tabs for tab bar (Library tab + open documents)
   readonly documentTabs = computed<DocumentTab[]>(() => {
-    return this.openDocuments().map(doc => ({
+    const libraryTab: DocumentTab = {
+      id: this.LIBRARY_TAB_ID,
+      name: 'Library',
+      path: '',
+      hasUnsavedChanges: false,
+      icon: '📚',
+      closable: false
+    };
+
+    const docTabs = this.openDocuments().map(doc => ({
       id: doc.id,
       name: doc.name,
       path: doc.path,
-      hasUnsavedChanges: doc.hasUnsavedChanges
+      hasUnsavedChanges: doc.hasUnsavedChanges,
+      closable: true
     }));
+
+    return [libraryTab, ...docTabs];
   });
 
   // Toolbar items (computed based on state)
@@ -1425,14 +1676,6 @@ export class PdfPickerComponent {
 
     // Base items always shown
     const baseItems: ToolbarItem[] = [
-      {
-        id: 'library',
-        type: 'button',
-        icon: this.showLibraryView() ? '←' : '📚',
-        label: this.showLibraryView() ? 'Back' : 'Library',
-        tooltip: this.showLibraryView() ? 'Back to project' : 'Back to library (Ctrl+O)',
-        disabled: !pdfIsOpen && !this.showLibraryView()
-      },
       { id: 'open', type: 'button', icon: '📂', label: 'Open File', tooltip: 'Open PDF file' },
     ];
 
@@ -1455,21 +1698,6 @@ export class PdfPickerComponent {
         { id: 'divider1', type: 'divider' },
         { id: 'undo', type: 'button', icon: '↩', tooltip: 'Undo (Ctrl+Z)', disabled: !this.canUndo() },
         { id: 'redo', type: 'button', icon: '↪', tooltip: 'Redo (Ctrl+Shift+Z)', disabled: !this.canRedo() },
-        { id: 'divider1b', type: 'divider' },
-        {
-          id: 'find-refs',
-          type: 'button',
-          icon: '🔢',
-          label: 'Find Refs',
-          tooltip: 'Find and select footnote references in body text'
-        },
-        {
-          id: 'ocr',
-          type: 'button',
-          icon: '🔤',
-          label: 'OCR',
-          tooltip: 'OCR settings and text recognition'
-        },
         { id: 'spacer', type: 'spacer' },
         { id: 'divider2', type: 'divider' },
         {
@@ -1571,6 +1799,24 @@ export class PdfPickerComponent {
     return pageCounts;
   });
 
+  // Timeline highlights - shows selections normally, regex matches when searching
+  readonly timelineHighlights = computed(() => {
+    // When regex panel is expanded, show pages with regex matches instead of selections
+    if (this.regexPanelExpanded()) {
+      const matches = this.regexMatches();
+      const pageCounts = new Map<number, number>();
+
+      for (const match of matches) {
+        pageCounts.set(match.page, (pageCounts.get(match.page) || 0) + 1);
+      }
+
+      return pageCounts;
+    }
+
+    // Otherwise show normal selections
+    return this.pagesWithSelections();
+  });
+
   // Count of pages that have finished loading (for progress indicator)
   readonly pagesLoaded = computed(() => {
     const images = this.pageImages();
@@ -1585,13 +1831,6 @@ export class PdfPickerComponent {
 
   onToolbarAction(item: ToolbarItem): void {
     switch (item.id) {
-      case 'library':
-        if (this.showLibraryView()) {
-          this.showLibraryView.set(false);
-        } else {
-          this.goToLibrary();
-        }
-        break;
       case 'open':
         this.openPdfWithNativeDialog();
         break;
@@ -1604,35 +1843,16 @@ export class PdfPickerComponent {
       case 'redo':
         this.redo();
         break;
-      case 'find-refs':
-        this.findFootnoteRefs();
-        break;
-      case 'ocr':
-        this.showOcrSettings.set(true);
-        break;
       case 'layout':
         this.layout.update(l => l === 'vertical' ? 'grid' : 'vertical');
         break;
       case 'zoom-in':
-        this.zoom.update(z => {
-          // Adaptive zoom increments - smaller steps for smoother zoom
-          if (z < 50) return Math.min(z + 2, 2000);
-          if (z < 100) return Math.min(z + 5, 2000);
-          if (z < 200) return Math.min(z + 10, 2000);
-          if (z < 500) return Math.min(z + 20, 2000);
-          return Math.min(z + 50, 2000);
-        });
+        // 50% jumps - use scroll wheel or type for precision
+        this.zoom.update(z => Math.min(Math.round(z * 1.5), 2000));
         break;
       case 'zoom-out':
-        this.zoom.update(z => {
-          // Adaptive zoom decrements - smaller steps for smoother zoom
-          if (z <= 25) return Math.max(z - 2, 5);
-          if (z <= 50) return Math.max(z - 2, 5);
-          if (z <= 100) return Math.max(z - 5, 5);
-          if (z <= 200) return Math.max(z - 10, 5);
-          if (z <= 500) return Math.max(z - 20, 5);
-          return Math.max(z - 50, 5);
-        });
+        // 50% jumps - use scroll wheel or type for precision
+        this.zoom.update(z => Math.max(Math.round(z / 1.5), 10));
         break;
       case 'zoom-reset':
         this.zoom.set(100);
@@ -1696,9 +1916,9 @@ export class PdfPickerComponent {
 
   // Scale for rendering - higher values = sharper but more memory
   private getRenderScale(pageCount: number): number {
-    if (pageCount > 1000) return 1.5;
-    if (pageCount > 500) return 1.75;
-    return 2.0;
+    if (pageCount > 1000) return 2.0;
+    if (pageCount > 500) return 2.5;
+    return 3.0;  // 3x scale for crisp text
   }
 
   private async loadPageImage(pageNum: number, scale: number): Promise<void> {
@@ -1791,30 +2011,15 @@ export class PdfPickerComponent {
     }
   }
 
-  goToLibrary(): void {
-    // Toggle library view - keeps current PDF open in background
-    this.showLibraryView.set(true);
-  }
-
-  onLibraryOpenFile(): void {
-    this.showLibraryView.set(false);
-    this.showFilePicker.set(true);
-  }
-
-  onLibraryFileSelected(path: string): void {
-    this.showLibraryView.set(false);
-    this.loadPdf(path);
-  }
-
-  onLibraryProjectSelected(path: string): void {
-    this.showLibraryView.set(false);
-    this.loadProjectFromPath(path);
+  switchToLibraryTab(): void {
+    // Save current document state and switch to library tab
+    this.saveCurrentDocumentState();
+    this.activeDocumentId.set(null);
+    this.pdfLoaded.set(false);
   }
 
   async onLibraryProjectsSelected(paths: string[]): Promise<void> {
     if (paths.length === 0) return;
-
-    this.showLibraryView.set(false);
 
     // Open each project in a new tab
     for (const path of paths) {
@@ -1839,8 +2044,8 @@ export class PdfPickerComponent {
   async loadPdf(path: string): Promise<void> {
     this.showFilePicker.set(false);
 
-    // Check if this PDF is already open
-    const existingDoc = this.openDocuments().find(d => d.path === path);
+    // Check if this PDF is already open (by original path or library path)
+    const existingDoc = this.openDocuments().find(d => d.path === path || d.libraryPath === path);
     if (existingDoc) {
       // Switch to existing tab
       this.saveCurrentDocumentState();
@@ -1852,16 +2057,40 @@ export class PdfPickerComponent {
     this.saveCurrentDocumentState();
 
     this.loading.set(true);
-    this.loadingText.set('Analyzing PDF...');
+    this.loadingText.set('Importing to library...');
 
     try {
-      const result = await this.pdfService.analyzePdf(path);
+      // Import file to library (copies file and deduplicates by hash)
+      console.log('[loadPdf] Importing file to library:', path);
+      const importResult = await this.electronService.libraryImportFile(path);
+      console.log('[loadPdf] Import result:', importResult);
+      if (!importResult.success || !importResult.libraryPath) {
+        throw new Error(importResult.error || 'Failed to import file to library');
+      }
+
+      const libraryPath = importResult.libraryPath;
+      const fileHash = importResult.hash || '';
+      console.log('[loadPdf] libraryPath:', libraryPath, 'fileHash:', fileHash);
+
+      // Check if already open by hash (same file, different path)
+      const existingByHash = this.openDocuments().find(d => d.fileHash === fileHash && fileHash);
+      if (existingByHash) {
+        this.saveCurrentDocumentState();
+        this.restoreDocumentState(existingByHash.id);
+        this.loading.set(false);
+        return;
+      }
+
+      this.loadingText.set('Analyzing PDF...');
+      const result = await this.pdfService.analyzePdf(libraryPath);
 
       // Create new document
       const docId = this.generateDocumentId();
       const newDoc: OpenDocument = {
         id: docId,
-        path: path,
+        path: path,           // Original path for display
+        libraryPath: libraryPath,  // Library path for operations
+        fileHash: fileHash,
         name: result.pdf_name,
         blocks: result.blocks,
         categories: result.categories,
@@ -1888,7 +2117,9 @@ export class PdfPickerComponent {
         pageDimensions: result.page_dimensions,
         totalPages: result.page_count,
         pdfName: result.pdf_name,
-        pdfPath: path
+        pdfPath: path,
+        libraryPath: libraryPath,
+        fileHash: fileHash
       });
       this.pageImages.set(new Map());
       this.projectService.reset();
@@ -2114,36 +2345,95 @@ export class PdfPickerComponent {
     this.editorState.redo();
   }
 
-  // Click on category: select ALL blocks of that category (Cmd/Ctrl+click to toggle)
+  // Click on category: add/enable. Cmd/Ctrl+click: remove/disable
   selectAllOfCategory(event: { categoryId: string; additive: boolean }): void {
     const { categoryId, additive } = event;
+
+    // Custom categories: enable/disable visibility and track as focused
+    if (categoryId.startsWith('custom_')) {
+      // Track this as the focused custom category (for keyboard delete)
+      this.focusedCategoryId.set(categoryId);
+
+      this.categories.update(cats => {
+        const cat = cats[categoryId];
+        if (!cat) return cats;
+        // Toggle: if enabled, disable; if disabled, enable
+        // Cmd+click always disables
+        const newEnabled = additive ? false : !cat.enabled;
+        return {
+          ...cats,
+          [categoryId]: {
+            ...cat,
+            enabled: newEnabled
+          }
+        };
+      });
+      return;
+    }
+
+    // Clear focused custom category when clicking a regular category
+    this.focusedCategoryId.set(null);
+
+    // Regular categories: add/remove blocks from selection
     const deleted = this.deletedBlockIds();
     const blockIds = this.blocks()
       .filter(b => b.category_id === categoryId && !deleted.has(b.id))
       .map(b => b.id);
 
-    if (additive) {
-      // Toggle: if all are selected, deselect them; otherwise add them
-      const existing = new Set(this.selectedBlockIds());
-      const allSelected = blockIds.every(id => existing.has(id));
+    const existing = new Set(this.selectedBlockIds());
+    const allSelected = blockIds.length > 0 && blockIds.every(id => existing.has(id));
 
-      if (allSelected) {
-        // Deselect all blocks of this category
-        blockIds.forEach(id => existing.delete(id));
-      } else {
-        // Add all blocks of this category
-        blockIds.forEach(id => existing.add(id));
-      }
+    if (additive) {
+      // Cmd/Ctrl+click: remove this category's blocks from selection
+      blockIds.forEach(id => existing.delete(id));
+      this.selectedBlockIds.set([...existing]);
+    } else if (allSelected) {
+      // Regular click on already-selected category: deselect all of this category
+      blockIds.forEach(id => existing.delete(id));
       this.selectedBlockIds.set([...existing]);
     } else {
-      // Replace selection
-      this.selectedBlockIds.set(blockIds);
+      // Regular click: add this category's blocks to selection
+      blockIds.forEach(id => existing.add(id));
+      this.selectedBlockIds.set([...existing]);
     }
+  }
+
+  // Select inverse: toggle selection of all blocks in a category
+  // Selected blocks become unselected, unselected blocks become selected
+  selectInverseOfCategory(categoryId: string): void {
+    const deleted = this.deletedBlockIds();
+    const blockIds = this.blocks()
+      .filter(b => b.category_id === categoryId && !deleted.has(b.id))
+      .map(b => b.id);
+
+    const currentSelection = new Set(this.selectedBlockIds());
+    const newSelection = new Set(this.selectedBlockIds());
+
+    for (const blockId of blockIds) {
+      if (currentSelection.has(blockId)) {
+        // Was selected -> unselect
+        newSelection.delete(blockId);
+      } else {
+        // Was unselected -> select
+        newSelection.add(blockId);
+      }
+    }
+
+    this.selectedBlockIds.set([...newSelection]);
   }
 
   // Clear all selections
   clearSelection(): void {
     this.selectedBlockIds.set([]);
+  }
+
+  // Select all blocks (non-deleted)
+  selectAllBlocks(): void {
+    const deleted = this.deletedBlockIds();
+    const allBlockIds = this.blocks()
+      .filter(b => !deleted.has(b.id))
+      .map(b => b.id);
+    this.selectedBlockIds.set(allBlockIds);
   }
 
   // Select all blocks on a specific page
@@ -2551,7 +2841,7 @@ ${content}
     this.loadingText.set('Generating PDF...');
 
     try {
-      const pdfBase64 = await this.pdfService.exportCleanPdf(this.pdfPath(), deletedBlocksList);
+      const pdfBase64 = await this.pdfService.exportCleanPdf(this.libraryPath(), deletedBlocksList);
 
       if (!pdfBase64) {
         throw new Error('Failed to generate PDF');
@@ -2682,15 +2972,32 @@ ${content}
   // Auto-create project when PDF is opened
   private async autoCreateProject(pdfPath: string, pdfName: string): Promise<void> {
     const projectName = pdfName.replace(/\.[^.]+$/, '');
+    const currentFileHash = this.fileHash();
+    const currentLibraryPath = this.libraryPath();
 
-    // Check if project already exists for this PDF
+    // Check if project already exists for this PDF (match by hash, then by path)
     const existingProjects = await this.electronService.projectsList();
     if (existingProjects.success && existingProjects.projects) {
-      const existing = existingProjects.projects.find(
-        (p: { sourcePath?: string }) => p.sourcePath === pdfPath
-      );
+      // First try to match by file hash (most reliable)
+      let existing = currentFileHash
+        ? existingProjects.projects.find(
+            (p) => p.fileHash && p.fileHash === currentFileHash
+          )
+        : null;
+
+      // Fall back to matching by library path or source path
+      if (!existing) {
+        existing = existingProjects.projects.find(
+          (p) =>
+            (p.libraryPath && p.libraryPath === currentLibraryPath) ||
+            p.sourcePath === pdfPath ||
+            p.sourcePath === currentLibraryPath
+        );
+      }
+
       if (existing) {
         // Use existing project
+        console.log(`Found existing project: ${existing.path}`);
         this.projectPath.set(existing.path);
         return;
       }
@@ -2701,6 +3008,8 @@ ${content}
       version: 1,
       source_path: pdfPath,
       source_name: pdfName,
+      library_path: this.libraryPath(),
+      file_hash: this.fileHash(),
       deleted_block_ids: [],
       created_at: new Date().toISOString(),
       modified_at: new Date().toISOString()
@@ -2725,10 +3034,41 @@ ${content}
 
   // Perform the actual auto-save
   private async performAutoSave(): Promise<void> {
-    const projectPath = this.projectPath();
-    if (!projectPath || !this.pdfLoaded()) return;
+    if (!this.pdfLoaded()) return;
 
-    await this.saveProjectToPath(projectPath, true); // silent = true
+    const projectPath = this.projectPath();
+    if (projectPath) {
+      // Save to existing project
+      await this.saveProjectToPath(projectPath, true); // silent = true
+    } else {
+      // Auto-create new project on first change
+      const order = this.pageOrder();
+      const history = this.editorState.getHistory();
+      const customCategories = this.getCustomCategoriesData();
+      const projectData: BookForgeProject = {
+        version: 1,
+        source_path: this.pdfPath(),
+        source_name: this.pdfName(),
+        library_path: this.libraryPath(),
+        file_hash: this.fileHash(),
+        deleted_block_ids: [...this.deletedBlockIds()],
+        page_order: order.length > 0 ? order : undefined,
+        custom_categories: customCategories.length > 0 ? customCategories : undefined,
+        undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
+        redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
+        created_at: new Date().toISOString(),
+        modified_at: new Date().toISOString()
+      };
+
+      const projectName = this.pdfName().replace(/\.[^.]+$/, '');
+      const result = await this.electronService.projectsSave(projectData, projectName);
+
+      if (result.success && result.filePath) {
+        this.projectPath.set(result.filePath);
+        this.hasUnsavedChanges.set(false);
+        console.log('Auto-created project:', result.filePath);
+      }
+    }
   }
 
   // Project save/load methods (kept for export functionality)
@@ -2742,12 +3082,19 @@ ${content}
     } else {
       // No project path yet - auto-save to ~/Documents/BookForge/
       const order = this.pageOrder();
+      const history = this.editorState.getHistory();
+      const customCategories = this.getCustomCategoriesData();
       const projectData: BookForgeProject = {
         version: 1,
         source_path: this.pdfPath(),
         source_name: this.pdfName(),
+        library_path: this.libraryPath(),
+        file_hash: this.fileHash(),
         deleted_block_ids: [...this.deletedBlockIds()],
         page_order: order.length > 0 ? order : undefined,
+        custom_categories: customCategories.length > 0 ? customCategories : undefined,
+        undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
+        redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
         created_at: new Date().toISOString(),
         modified_at: new Date().toISOString()
       };
@@ -2772,12 +3119,19 @@ ${content}
     if (!this.pdfLoaded()) return;
 
     const order = this.pageOrder();
+    const history = this.editorState.getHistory();
+    const customCategories = this.getCustomCategoriesData();
     const projectData: BookForgeProject = {
       version: 1,
       source_path: this.pdfPath(),
       source_name: this.pdfName(),
+      library_path: this.libraryPath(),
+      file_hash: this.fileHash(),
       deleted_block_ids: [...this.deletedBlockIds()],
       page_order: order.length > 0 ? order : undefined,
+      custom_categories: customCategories.length > 0 ? customCategories : undefined,
+      undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
+      redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
       created_at: this.projectPath() ? new Date().toISOString() : new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -2797,14 +3151,87 @@ ${content}
     }
   }
 
+  // Serialize custom categories for project save
+  private getCustomCategoriesData(): CustomCategoryData[] {
+    const categories = this.categories();
+    const highlights = this.categoryHighlights();
+    const customCategories: CustomCategoryData[] = [];
+
+    // Find categories that are custom (start with 'custom_')
+    for (const [catId, cat] of Object.entries(categories)) {
+      if (catId.startsWith('custom_')) {
+        const catHighlights = highlights.get(catId);
+        if (catHighlights) {
+          customCategories.push({
+            category: {
+              id: cat.id,
+              name: cat.name,
+              description: cat.description,
+              color: cat.color,
+              block_count: cat.block_count,
+              char_count: cat.char_count,
+              font_size: cat.font_size,
+              region: cat.region,
+              sample_text: cat.sample_text
+            },
+            highlights: catHighlights
+          });
+        }
+      }
+    }
+
+    return customCategories;
+  }
+
+  private restoreCustomCategories(customCategories: CustomCategoryData[]): void {
+    console.log(`Restoring ${customCategories.length} custom categories from project`);
+
+    for (const data of customCategories) {
+      // Restore the category to editorState.categories
+      const category: Category = {
+        id: data.category.id,
+        name: data.category.name,
+        description: data.category.description,
+        color: data.category.color,
+        block_count: data.category.block_count,
+        char_count: data.category.char_count,
+        font_size: data.category.font_size,
+        region: data.category.region,
+        sample_text: data.category.sample_text,
+        enabled: true  // Custom categories restored as enabled
+      };
+
+      this.categories.update(cats => ({
+        ...cats,
+        [category.id]: category
+      }));
+
+      // Restore the highlights
+      this.categoryHighlights.update(highlights => {
+        const updated = new Map(highlights);
+        updated.set(category.id, data.highlights);
+        return updated;
+      });
+
+      console.log(`  Restored category "${category.name}" with highlights on ${Object.keys(data.highlights).length} pages`);
+    }
+  }
+
   private async saveProjectToPath(filePath: string, silent: boolean = false): Promise<void> {
     const order = this.pageOrder();
+    const history = this.editorState.getHistory();
+    const customCategories = this.getCustomCategoriesData();
     const projectData: BookForgeProject = {
       version: 1,
       source_path: this.pdfPath(),
       source_name: this.pdfName(),
+      library_path: this.libraryPath(),
+      file_hash: this.fileHash(),
       deleted_block_ids: [...this.deletedBlockIds()],
       page_order: order.length > 0 ? order : undefined,
+      custom_categories: customCategories.length > 0 ? customCategories : undefined,
+      undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
+      redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
       created_at: new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -2850,12 +3277,32 @@ ${content}
       return;
     }
 
-    // Load the source PDF
+    // Load the source PDF - prefer library_path, fall back to source_path
     this.loading.set(true);
     this.loadingText.set('Loading project...');
 
+    // If project is missing library_path or file_hash, import the source file to library
+    let libraryPath = project.library_path;
+    let fileHash = project.file_hash || '';
+
+    if (!libraryPath || !fileHash) {
+      this.loadingText.set('Importing to library...');
+      const importResult = await this.electronService.libraryImportFile(project.source_path);
+      if (importResult.success && importResult.libraryPath) {
+        libraryPath = importResult.libraryPath;
+        fileHash = importResult.hash || '';
+        console.log('[loadProject] Imported old project to library:', libraryPath, 'hash:', fileHash);
+      } else {
+        // Fall back to source path if import fails
+        libraryPath = project.source_path;
+        console.warn('[loadProject] Library import failed, using source path:', project.source_path);
+      }
+    }
+
+    const pdfPathToLoad = libraryPath;
+
     try {
-      const pdfResult = await this.pdfService.analyzePdf(project.source_path);
+      const pdfResult = await this.pdfService.analyzePdf(pdfPathToLoad);
 
       // Load document state via service
       this.editorState.loadDocument({
@@ -2865,9 +3312,25 @@ ${content}
         totalPages: pdfResult.page_count,
         pdfName: pdfResult.pdf_name,
         pdfPath: project.source_path,
+        libraryPath: libraryPath,
+        fileHash: fileHash,
         deletedBlockIds: new Set(project.deleted_block_ids || []),
         pageOrder: project.page_order || []
       });
+
+      // Restore undo/redo history from project (loadDocument clears it)
+      if (project.undo_stack || project.redo_stack) {
+        this.editorState.setHistory({
+          undoStack: project.undo_stack || [],
+          redoStack: project.redo_stack || []
+        });
+      }
+
+      // Restore custom categories
+      if (project.custom_categories && project.custom_categories.length > 0) {
+        this.restoreCustomCategories(project.custom_categories);
+      }
+
       this.pageImages.set(new Map());
       this.projectService.projectPath.set(result.filePath || null);
 
@@ -2878,7 +3341,7 @@ ${content}
       console.error('Failed to load project source file:', err);
       this.showAlert({
         title: 'Source File Not Found',
-        message: 'Could not find the source PDF file at:\n\n' + project.source_path + '\n\nThe file may have been moved or deleted.',
+        message: 'Could not find the source PDF file at:\n\n' + pdfPathToLoad + '\n\nThe file may have been moved or deleted.',
         type: 'error'
       });
     } finally {
@@ -2887,6 +3350,15 @@ ${content}
   }
 
   async loadProjectFromPath(filePath: string): Promise<void> {
+    // Check if this project is already open
+    const existingDoc = this.openDocuments().find(d => d.projectPath === filePath);
+    if (existingDoc) {
+      // Switch to existing tab
+      this.saveCurrentDocumentState();
+      this.restoreDocumentState(existingDoc.id);
+      return;
+    }
+
     const result = await this.electronService.projectsLoadFromPath(filePath);
 
     if (!result.success || !result.data) {
@@ -2901,6 +3373,8 @@ ${content}
     }
 
     const project = result.data as BookForgeProject;
+    // Use the returned filePath - may be different if project was imported to library
+    const actualProjectPath = result.filePath || filePath;
 
     // Validate project data
     if (!project.version || !project.source_path) {
@@ -2912,12 +3386,64 @@ ${content}
       return;
     }
 
-    // Load the source PDF
+    // Save current document state before loading new one
+    this.saveCurrentDocumentState();
+
+    // Load the source PDF - prefer library_path, fall back to source_path
     this.loading.set(true);
     this.loadingText.set('Loading project...');
 
+    // If project is missing library_path or file_hash, import the source file to library
+    let libraryPath = project.library_path;
+    let fileHash = project.file_hash || '';
+
+    if (!libraryPath || !fileHash) {
+      this.loadingText.set('Importing to library...');
+      const importResult = await this.electronService.libraryImportFile(project.source_path);
+      if (importResult.success && importResult.libraryPath) {
+        libraryPath = importResult.libraryPath;
+        fileHash = importResult.hash || '';
+        console.log('[loadProjectFromPath] Imported old project to library:', libraryPath, 'hash:', fileHash);
+      } else {
+        // Fall back to source path if import fails
+        libraryPath = project.source_path;
+        console.warn('[loadProjectFromPath] Library import failed, using source path:', project.source_path);
+      }
+    }
+
+    const pdfPathToLoad = libraryPath;
+
     try {
-      const pdfResult = await this.pdfService.analyzePdf(project.source_path);
+      const pdfResult = await this.pdfService.analyzePdf(pdfPathToLoad);
+
+      // Create new document for tabs
+      const docId = this.generateDocumentId();
+      const deletedBlockIds = new Set<string>(project.deleted_block_ids || []);
+      const pageOrder = project.page_order || [];
+
+      const newDoc: OpenDocument = {
+        id: docId,
+        path: project.source_path,
+        libraryPath: libraryPath,
+        fileHash: fileHash,
+        name: project.source_name || pdfResult.pdf_name,
+        blocks: pdfResult.blocks,
+        categories: pdfResult.categories,
+        pageDimensions: pdfResult.page_dimensions,
+        totalPages: pdfResult.page_count,
+        deletedBlockIds: deletedBlockIds,
+        selectedBlockIds: [],
+        pageOrder: pageOrder,
+        pageImages: new Map(),
+        hasUnsavedChanges: false,
+        projectPath: actualProjectPath,
+        undoStack: project.undo_stack || [],
+        redoStack: project.redo_stack || []
+      };
+
+      // Add to open documents
+      this.openDocuments.update(docs => [...docs, newDoc]);
+      this.activeDocumentId.set(docId);
 
       // Load document state via service
       this.editorState.loadDocument({
@@ -2925,13 +3451,29 @@ ${content}
         categories: pdfResult.categories,
         pageDimensions: pdfResult.page_dimensions,
         totalPages: pdfResult.page_count,
-        pdfName: pdfResult.pdf_name,
+        pdfName: project.source_name || pdfResult.pdf_name,
         pdfPath: project.source_path,
-        deletedBlockIds: new Set(project.deleted_block_ids || []),
-        pageOrder: project.page_order || []
+        libraryPath: libraryPath,
+        fileHash: fileHash,
+        deletedBlockIds: deletedBlockIds,
+        pageOrder: pageOrder
       });
+
+      // Restore undo/redo history from project (loadDocument clears it)
+      if (project.undo_stack || project.redo_stack) {
+        this.editorState.setHistory({
+          undoStack: project.undo_stack || [],
+          redoStack: project.redo_stack || []
+        });
+      }
+
+      // Restore custom categories
+      if (project.custom_categories && project.custom_categories.length > 0) {
+        this.restoreCustomCategories(project.custom_categories);
+      }
+
       this.pageImages.set(new Map());
-      this.projectService.projectPath.set(filePath);
+      this.projectService.projectPath.set(actualProjectPath);
 
       // Load page images
       this.loadingText.set('Rendering pages...');
@@ -2942,7 +3484,7 @@ ${content}
       console.error('Failed to load project source file:', err);
       this.showAlert({
         title: 'Source File Not Found',
-        message: 'Could not find the source PDF file at:\n\n' + project.source_path + '\n\nThe file may have been moved or deleted.',
+        message: 'Could not find the source PDF file at:\n\n' + pdfPathToLoad + '\n\nThe file may have been moved or deleted.',
         type: 'error'
       });
     } finally {
@@ -2950,17 +3492,251 @@ ${content}
     }
   }
 
-  // Regex category modal methods
+  // Sample mode methods (for creating custom categories by drawing boxes)
+  enterSampleMode(): void {
+    this.sampleMode.set(true);
+    this.sampleRects.set([]);
+    this.sampleCategoryName.set('');
+    this.sampleCategoryColor.set('#E91E63');
+    this.sampleCurrentRect = null;
+  }
+
+  exitSampleMode(): void {
+    this.sampleMode.set(false);
+    this.sampleRects.set([]);
+    this.sampleCurrentRect = null;
+    this.sampleDrawingRect.set(null);
+  }
+
+  onSampleMouseDown(event: MouseEvent, page: number, pageX: number, pageY: number): void {
+    if (!this.sampleMode()) return;
+
+    this.sampleCurrentRect = {
+      page,
+      startX: pageX,
+      startY: pageY,
+      currentX: pageX,
+      currentY: pageY
+    };
+    // Initialize the drawing rect signal
+    this.sampleDrawingRect.set({
+      page,
+      x: pageX,
+      y: pageY,
+      width: 0,
+      height: 0
+    });
+  }
+
+  onSampleMouseMove(pageX: number, pageY: number): void {
+    if (!this.sampleCurrentRect) return;
+
+    this.sampleCurrentRect.currentX = pageX;
+    this.sampleCurrentRect.currentY = pageY;
+
+    // Update the drawing rect signal for visualization
+    const rect = this.sampleCurrentRect;
+    const x = Math.min(rect.startX, rect.currentX);
+    const y = Math.min(rect.startY, rect.currentY);
+    const width = Math.abs(rect.currentX - rect.startX);
+    const height = Math.abs(rect.currentY - rect.startY);
+    this.sampleDrawingRect.set({ page: rect.page, x, y, width, height });
+  }
+
+  onSampleMouseUp(): void {
+    if (!this.sampleCurrentRect) return;
+
+    const rect = this.sampleCurrentRect;
+    const x = Math.min(rect.startX, rect.currentX);
+    const y = Math.min(rect.startY, rect.currentY);
+    const width = Math.abs(rect.currentX - rect.startX);
+    const height = Math.abs(rect.currentY - rect.startY);
+
+    // Only add if rectangle has meaningful size
+    if (width > 5 && height > 5) {
+      this.sampleRects.update(rects => [...rects, {
+        page: rect.page,
+        x,
+        y,
+        width,
+        height
+      }]);
+    }
+
+    this.sampleCurrentRect = null;
+    this.sampleDrawingRect.set(null);
+  }
+
+  removeSampleRect(index: number): void {
+    this.sampleRects.update(rects => rects.filter((_, i) => i !== index));
+  }
+
+  async analyzeSamplesAndCreateCategory(): Promise<void> {
+    const rects = this.sampleRects();
+    if (rects.length === 0) {
+      this.showAlert({
+        title: 'No Samples',
+        message: 'Draw boxes around at least one example to create a category.',
+        type: 'warning'
+      });
+      return;
+    }
+
+    // Find spans within each rectangle
+    const allSpans: any[] = [];
+    for (const rect of rects) {
+      const result = await this.electronService.findSpansInRect(rect.page, rect.x, rect.y, rect.width, rect.height);
+      if (result?.data) {
+        allSpans.push(...result.data);
+      }
+    }
+
+    if (allSpans.length === 0) {
+      this.showAlert({
+        title: 'No Text Found',
+        message: 'No text was found within the selected areas. Try drawing larger boxes around the text.',
+        type: 'warning'
+      });
+      return;
+    }
+
+    // Analyze samples to find pattern
+    const patternResult = await this.electronService.analyzeSamples(allSpans);
+    if (!patternResult?.data) {
+      this.showAlert({
+        title: 'Analysis Failed',
+        message: 'Could not analyze the selected samples.',
+        type: 'error'
+      });
+      return;
+    }
+
+    // Find all matching spans - returns lightweight MatchRect objects grouped by page
+    const matchesResult = await this.electronService.findMatchingSpans(patternResult.data);
+    if (!matchesResult?.data) {
+      this.showAlert({
+        title: 'Match Failed',
+        message: 'Could not find matching patterns.',
+        type: 'error'
+      });
+      return;
+    }
+
+    const { matches, matchesByPage, total, pattern } = matchesResult.data;
+
+    if (total === 0) {
+      this.showAlert({
+        title: 'No Matches',
+        message: 'No additional matches found for the selected pattern.',
+        type: 'info'
+      });
+      return;
+    }
+
+    // Generate category ID and name
+    const categoryName = this.sampleCategoryName() || `Custom (${total} matches)`;
+    const categoryColor = this.sampleCategoryColor();
+    const categoryId = this.generateCategoryId(categoryName);
+
+    // Calculate total characters from matches
+    const totalChars = matches.reduce((sum: number, m: MatchRect) => sum + m.text.length, 0);
+
+    // Create the category
+    const newCategory: Category = {
+      id: categoryId,
+      name: categoryName,
+      description: `Pattern: ${pattern} (${total} matches)`,
+      color: categoryColor,
+      block_count: total,
+      char_count: totalChars,
+      font_size: patternResult.data.font_size_avg,
+      region: 'body',
+      sample_text: matches[0]?.text || '',
+      enabled: true
+    };
+
+    // Update categories
+    this.categories.update(cats => ({
+      ...cats,
+      [categoryId]: newCategory
+    }));
+
+    // Store lightweight highlights by page for efficient rendering
+    // This avoids creating heavy TextBlock objects (saves ~160 bytes per match)
+    this.categoryHighlights.update(highlights => {
+      const updated = new Map(highlights);
+      updated.set(categoryId, matchesByPage);
+      return updated;
+    });
+
+    // Log stats for debugging
+    const pageCount = Object.keys(matchesByPage).length;
+    console.log(`Created category "${categoryName}" with ${total} matches across ${pageCount} pages`);
+    console.log(`  Memory saved: ~${(total * 160 / 1024).toFixed(0)}KB by using lightweight storage`);
+
+    this.hasUnsavedChanges.set(true);
+    this.exitSampleMode();
+
+    this.showAlert({
+      title: 'Category Created',
+      message: `Created "${categoryName}" with ${total} matched items across ${pageCount} pages.`,
+      type: 'success'
+    });
+  }
+
+  private generateCategoryId(name: string): string {
+    return 'custom_' + name.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 20) + '_' + Date.now().toString(36);
+  }
+
+  // Regex category panel methods
+  onRegexExpandedChange(expanded: boolean): void {
+    this.regexPanelExpanded.set(expanded);
+    if (expanded && !this.editingCategoryId()) {
+      // Reset form when opening (but not if editing existing category)
+      this.regexPattern.set('');
+      this.regexCategoryName.set('');
+      this.regexCategoryColor.set('#FF5722');
+      this.regexMinFontSize.set(0);
+      this.regexMaxFontSize.set(0);
+      this.regexMinBaseline.set(null);
+      this.regexMaxBaseline.set(null);
+      this.regexCaseSensitive.set(false);
+      this.regexLiteralMode.set(false);
+      // Initialize with all categories selected
+      this.regexCategoryFilter.set(Object.keys(this.categories()));
+      this.regexPageFilterType.set('all');
+      this.regexPageRangeStart.set(1);
+      this.regexPageRangeEnd.set(1);
+      this.regexSpecificPages.set('');
+      this.regexMatches.set([]);
+      this.regexMatchCount.set(0);
+    } else if (!expanded) {
+      // Clear editing state when closing
+      this.editingCategoryId.set(null);
+    }
+  }
+
   openRegexModal(): void {
+    this.editingCategoryId.set(null);  // Clear editing state
     this.regexPattern.set('');
     this.regexCategoryName.set('');
     this.regexCategoryColor.set('#FF5722');
     this.regexMinFontSize.set(0);
-    this.regexMaxFontSize.set(999);
+    this.regexMaxFontSize.set(0);  // 0 means "no max filter" (empty field)
+    this.regexMinBaseline.set(null);
+    this.regexMaxBaseline.set(null);
+    this.regexCaseSensitive.set(false);
+    this.regexLiteralMode.set(false);
+    // Initialize with all categories selected
+    this.regexCategoryFilter.set(Object.keys(this.categories()));
+    this.regexPageFilterType.set('all');
+    this.regexPageRangeStart.set(1);
+    this.regexPageRangeEnd.set(1);
+    this.regexSpecificPages.set('');
     this.regexNearLineEnd.set(false);
     this.regexLineEndChars.set(3);
     this.regexMatches.set([]);
-    this.showRegexModal.set(true);
+    this.regexPanelExpanded.set(true);
   }
 
   onRegexPatternChange(pattern: string): void {
@@ -2969,12 +3745,29 @@ ${content}
   }
 
   onMinFontSizeChange(size: number): void {
-    this.regexMinFontSize.set(size || 0);
+    // Allow empty/0 - don't auto-reset
+    this.regexMinFontSize.set(isNaN(size) ? 0 : size);
     this.updateRegexMatches();
   }
 
   onMaxFontSizeChange(size: number): void {
-    this.regexMaxFontSize.set(size || 999);
+    // Store the actual value - don't auto-reset to 999
+    // Empty input gives 0, which we'll treat as "no max filter" in the search
+    this.regexMaxFontSize.set(isNaN(size) ? 0 : size);
+    this.updateRegexMatches();
+  }
+
+  onMinBaselineChange(value: string): void {
+    // Empty string means no filter (null)
+    const num = parseFloat(value);
+    this.regexMinBaseline.set(isNaN(num) ? null : num);
+    this.updateRegexMatches();
+  }
+
+  onMaxBaselineChange(value: string): void {
+    // Empty string means no filter (null)
+    const num = parseFloat(value);
+    this.regexMaxBaseline.set(isNaN(num) ? null : num);
     this.updateRegexMatches();
   }
 
@@ -2988,123 +3781,359 @@ ${content}
     this.updateRegexMatches();
   }
 
+  onCaseSensitiveChange(caseSensitive: boolean): void {
+    this.regexCaseSensitive.set(caseSensitive);
+    this.updateRegexMatches();
+  }
+
+  onLiteralModeChange(literalMode: boolean): void {
+    this.regexLiteralMode.set(literalMode);
+    this.updateRegexMatches();
+  }
+
+  onCategoryFilterChange(categoryIds: string[]): void {
+    this.regexCategoryFilter.set(categoryIds);
+    this.updateRegexMatches();
+  }
+
+  onPageFilterTypeChange(filterType: 'all' | 'range' | 'even' | 'odd' | 'specific'): void {
+    this.regexPageFilterType.set(filterType);
+    this.updateRegexMatches();
+  }
+
+  onPageRangeStartChange(page: number): void {
+    this.regexPageRangeStart.set(page || 1);
+    this.updateRegexMatches();
+  }
+
+  onPageRangeEndChange(page: number): void {
+    this.regexPageRangeEnd.set(page || 1);
+    this.updateRegexMatches();
+  }
+
+  onSpecificPagesChange(pages: string): void {
+    this.regexSpecificPages.set(pages);
+    this.updateRegexMatches();
+  }
+
   private updateRegexMatches(): void {
-    const pattern = this.regexPattern();
+    // Debounce to avoid too many backend calls while typing
+    if (this.regexDebounceTimer) {
+      clearTimeout(this.regexDebounceTimer);
+    }
+
+    this.regexDebounceTimer = setTimeout(() => {
+      this.doUpdateRegexMatches();
+    }, 300);
+  }
+
+  private async doUpdateRegexMatches(): Promise<void> {
+    let pattern = this.regexPattern();
     const minSize = this.regexMinFontSize();
-    const maxSize = this.regexMaxFontSize();
-    const nearLineEnd = this.regexNearLineEnd();
-    const lineEndChars = this.regexLineEndChars();
-    const deleted = this.deletedBlockIds();
+    // Treat 0 as "no max filter" (use 999)
+    const maxSize = this.regexMaxFontSize() || 999;
+    const minBaseline = this.regexMinBaseline();
+    const maxBaseline = this.regexMaxBaseline();
+    const caseSensitive = this.regexCaseSensitive();
+    const literalMode = this.regexLiteralMode();
+
+    // Filter settings
+    const categoryFilter = this.regexCategoryFilter();
+    const pageFilterType = this.regexPageFilterType();
+    const pageRangeStart = this.regexPageRangeStart();
+    const pageRangeEnd = this.regexPageRangeEnd();
+    const specificPages = this.regexSpecificPages();
 
     if (!pattern) {
       this.regexMatches.set([]);
+      this.regexMatchCount.set(0);
       return;
     }
 
-    try {
-      const regex = new RegExp(pattern, 'gi');
-      const matches = this.blocks().filter(block => {
-        // Skip deleted blocks
-        if (deleted.has(block.id)) return false;
+    // In literal mode, escape special regex characters so users can search for anything
+    if (literalMode) {
+      pattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    } else {
+      // Validate regex only in regex mode
+      try {
+        new RegExp(pattern);
+      } catch {
+        this.regexMatches.set([]);
+        this.regexMatchCount.set(0);
+        return;
+      }
+    }
 
-        // Font size filter
-        if (block.font_size < minSize || block.font_size > maxSize) return false;
+    // Use span-based matching from backend
+    const result = await this.electronService.findSpansByRegex(pattern, minSize, maxSize, minBaseline, maxBaseline, caseSensitive);
 
-        // Check for pattern match
-        if (!regex.test(block.text)) return false;
-        regex.lastIndex = 0; // Reset for next test
+    if (result?.data) {
+      let matches = result.data.matches;
 
-        // If near-line-end filter is enabled, check position
-        if (nearLineEnd) {
-          // Split text into lines and check if pattern appears near end of any line
-          const lines = block.text.split(/[\n\r]/);
-          let foundNearEnd = false;
+      // Apply page filter (client-side)
+      matches = this.applyPageFilter(matches, pageFilterType, pageRangeStart, pageRangeEnd, specificPages);
 
-          for (const line of lines) {
-            if (line.length === 0) continue;
+      // Apply category filter (client-side) - need to look up block categories
+      // Empty filter = no categories selected = filter out everything
+      matches = this.applyCategoryFilter(matches, categoryFilter);
 
-            // Find all matches in this line
-            let match;
-            regex.lastIndex = 0;
-            while ((match = regex.exec(line)) !== null) {
-              const matchEnd = match.index + match[0].length;
-              const distanceFromEnd = line.length - matchEnd;
-
-              if (distanceFromEnd <= lineEndChars) {
-                foundNearEnd = true;
-                break;
-              }
-            }
-
-            if (foundNearEnd) break;
-          }
-
-          if (!foundNearEnd) return false;
-        }
-
-        return true;
-      });
-
-      this.regexMatches.set(matches);
-    } catch {
-      // Invalid regex - show no matches
+      // Store first 5000 matches for preview (performance limit)
+      this.regexMatches.set(matches.slice(0, 5000));
+      this.regexMatchCount.set(matches.length);
+    } else {
       this.regexMatches.set([]);
+      this.regexMatchCount.set(0);
     }
   }
 
-  selectRegexMatches(): void {
-    const matchIds = this.regexMatches().map(b => b.id);
-    this.selectedBlockIds.set(matchIds);
+  // Apply page filter to matches
+  private applyPageFilter(
+    matches: MatchRect[],
+    filterType: 'all' | 'range' | 'even' | 'odd' | 'specific',
+    rangeStart: number,
+    rangeEnd: number,
+    specificPagesStr: string
+  ): MatchRect[] {
+    if (filterType === 'all') {
+      return matches;
+    }
+
+    if (filterType === 'even') {
+      // Even pages (0-indexed, so page 0 = page 1 = odd, page 1 = page 2 = even)
+      return matches.filter(m => (m.page + 1) % 2 === 0);
+    }
+
+    if (filterType === 'odd') {
+      return matches.filter(m => (m.page + 1) % 2 === 1);
+    }
+
+    if (filterType === 'range') {
+      // Convert to 0-indexed
+      const start = Math.max(0, rangeStart - 1);
+      const end = Math.max(start, rangeEnd - 1);
+      return matches.filter(m => m.page >= start && m.page <= end);
+    }
+
+    if (filterType === 'specific') {
+      // Parse specific pages string like "1, 3, 10-15, 42"
+      const allowedPages = this.parseSpecificPages(specificPagesStr);
+      return matches.filter(m => allowedPages.has(m.page));
+    }
+
+    return matches;
   }
 
-  createRegexCategory(): void {
-    const matches = this.regexMatches();
-    if (matches.length === 0) return;
+  // Parse "1, 3, 10-15, 42" into a Set of 0-indexed page numbers
+  private parseSpecificPages(pagesStr: string): Set<number> {
+    const pages = new Set<number>();
+    if (!pagesStr.trim()) return pages;
 
+    const parts = pagesStr.split(',').map(s => s.trim()).filter(s => s);
+    for (const part of parts) {
+      if (part.includes('-')) {
+        // Range like "10-15"
+        const [startStr, endStr] = part.split('-').map(s => s.trim());
+        const start = parseInt(startStr, 10);
+        const end = parseInt(endStr, 10);
+        if (!isNaN(start) && !isNaN(end)) {
+          for (let i = Math.min(start, end); i <= Math.max(start, end); i++) {
+            pages.add(i - 1); // Convert to 0-indexed
+          }
+        }
+      } else {
+        // Single page
+        const page = parseInt(part, 10);
+        if (!isNaN(page)) {
+          pages.add(page - 1); // Convert to 0-indexed
+        }
+      }
+    }
+    return pages;
+  }
+
+  // Apply category filter - need to look up which category each match's block belongs to
+  private applyCategoryFilter(matches: MatchRect[], allowedCategories: string[]): MatchRect[] {
+    // Build a map of block positions to category IDs
+    // Since matches don't have block_id, we need to match by position
+    // This is a simplification - we check if the match overlaps with any block of allowed categories
+
+    const allowedSet = new Set(allowedCategories);
+    const blocks = this.blocks();
+
+    return matches.filter(match => {
+      // Find any block on this page that contains this match
+      for (const block of blocks) {
+        if (block.page !== match.page) continue;
+
+        // Check if match is within this block's bounds (with some tolerance)
+        const inBlock = match.x >= block.x - 2 &&
+                       match.y >= block.y - 2 &&
+                       match.x + match.w <= block.x + block.width + 2 &&
+                       match.y + match.h <= block.y + block.height + 2;
+
+        if (inBlock && allowedSet.has(block.category_id)) {
+          return true;
+        }
+      }
+      return false;
+    });
+  }
+
+  async createRegexCategory(): Promise<void> {
+    const pattern = this.regexPattern();
     const name = this.regexCategoryName();
     const color = this.regexCategoryColor();
+    const minSize = this.regexMinFontSize();
+    // Treat 0 as "no max filter" (use 999)
+    const maxSize = this.regexMaxFontSize() || 999;
+    const minBaseline = this.regexMinBaseline();
+    const maxBaseline = this.regexMaxBaseline();
+    const editingId = this.editingCategoryId();
 
-    // Generate a unique category ID
-    const catId = 'custom_' + Date.now().toString(36);
+    // If editing and no new pattern, just update name/color
+    if (editingId && !pattern) {
+      if (!name) return;
 
-    // Create the new category
+      this.categories.update(cats => {
+        const existingCat = cats[editingId];
+        if (!existingCat) return cats;
+        return {
+          ...cats,
+          [editingId]: {
+            ...existingCat,
+            name: name,
+            color: color
+          }
+        };
+      });
+
+      this.hasUnsavedChanges.set(true);
+      this.regexPanelExpanded.set(false);
+      this.editingCategoryId.set(null);
+      console.log(`Updated category "${name}" (name/color only)`);
+      return;
+    }
+
+    if (!pattern || !name) return;
+
+    // Find spans matching the regex pattern (span-level, not block-level)
+    const matchesResult = await this.electronService.findSpansByRegex(pattern, minSize, maxSize, minBaseline, maxBaseline);
+    if (!matchesResult?.data || matchesResult.data.total === 0) {
+      this.showAlert({
+        title: 'No Matches',
+        message: 'No spans match the regex pattern with the specified font size filters.',
+        type: 'info'
+      });
+      return;
+    }
+
+    const { matches, matchesByPage, total } = matchesResult.data;
+
+    // Use existing ID if editing, otherwise generate new
+    const catId = editingId || ('custom_regex_' + Date.now().toString(36));
+
+    // Create/update the category
     const newCategory: Category = {
       id: catId,
       name: name,
-      description: `Custom category (${matches.length} blocks)`,
+      description: `Regex: ${pattern} (${total} matches)`,
       color: color,
-      block_count: matches.length,
-      char_count: matches.reduce((sum, b) => sum + b.char_count, 0),
-      font_size: matches.length > 0 ? matches[0].font_size : 10,
+      block_count: total,
+      char_count: matches.reduce((sum, m) => sum + m.text.length, 0),
+      font_size: minSize || 10,
       region: 'body',
-      sample_text: matches[0]?.text.substring(0, 100) || '',
+      sample_text: matches[0]?.text || '',
       enabled: true
     };
 
-    // Add category to state
+    // Add/update category in state
     this.categories.update(cats => ({
       ...cats,
       [catId]: newCategory
     }));
 
-    // Update blocks to belong to this category
-    const matchIds = new Set(matches.map(b => b.id));
-    this.blocks.update(blocks =>
-      blocks.map(block =>
-        matchIds.has(block.id)
-          ? { ...block, category_id: catId }
-          : block
-      )
-    );
-
-    // Select the new category's blocks
-    this.selectedBlockIds.set(matches.map(b => b.id));
+    // Store lightweight highlights by page (same as sample mode)
+    this.categoryHighlights.update(highlights => {
+      const newHighlights = new Map(highlights);
+      newHighlights.set(catId, matchesByPage);
+      return newHighlights;
+    });
 
     // Mark as having unsaved changes
     this.hasUnsavedChanges.set(true);
 
-    // Close modal
-    this.showRegexModal.set(false);
+    // Close modal and clear editing state
+    this.regexPanelExpanded.set(false);
+    this.editingCategoryId.set(null);
+
+    console.log(`${editingId ? 'Updated' : 'Created'} regex category "${name}" with ${total} span matches`);
+  }
+
+  deleteCustomCategory(categoryId: string): void {
+    // Remove from categories
+    this.categories.update(cats => {
+      const newCats = { ...cats };
+      delete newCats[categoryId];
+      return newCats;
+    });
+
+    // Remove from highlights
+    this.categoryHighlights.update(highlights => {
+      const newHighlights = new Map(highlights);
+      newHighlights.delete(categoryId);
+      return newHighlights;
+    });
+
+    // Clear focused state if this was the focused category
+    if (this.focusedCategoryId() === categoryId) {
+      this.focusedCategoryId.set(null);
+    }
+
+    // Mark as having unsaved changes
+    this.hasUnsavedChanges.set(true);
+
+    console.log(`Deleted custom category: ${categoryId}`);
+  }
+
+  editCustomCategory(categoryId: string): void {
+    const cat = this.categories()[categoryId];
+    if (!cat) return;
+
+    // Load category data into the form
+    this.editingCategoryId.set(categoryId);
+    this.regexCategoryName.set(cat.name);
+    this.regexCategoryColor.set(cat.color);
+
+    // We don't store the original pattern, so leave it empty
+    // The user can enter a new pattern to update matches, or just rename/recolor
+    this.regexPattern.set('');
+    this.regexMinFontSize.set(0);
+    this.regexMaxFontSize.set(0);
+    this.regexMinBaseline.set(null);
+    this.regexMaxBaseline.set(null);
+    this.regexCaseSensitive.set(false);
+    this.regexLiteralMode.set(false);
+    this.regexMatches.set([]);
+    this.regexMatchCount.set(0);
+
+    // Expand the panel
+    this.regexPanelExpanded.set(true);
+
+    console.log(`Editing custom category: ${categoryId} (${cat.name})`);
+  }
+
+  toggleCategoryEnabled(categoryId: string): void {
+    this.categories.update(cats => {
+      const cat = cats[categoryId];
+      if (!cat) return cats;
+      return {
+        ...cats,
+        [categoryId]: {
+          ...cat,
+          enabled: !cat.enabled
+        }
+      };
+    });
   }
 
   // Mode methods
@@ -3130,6 +4159,13 @@ ${content}
     if (mode === 'split' && previousMode !== 'split') {
       this.splitConfig.update(config => ({ ...config, enabled: true }));
       this.splitPreviewPage.set(0);
+    }
+
+    // If entering OCR mode, open OCR settings
+    if (mode === 'ocr') {
+      this.showOcrSettings.set(true);
+      // Don't change currentMode - OCR is a modal, not a persistent mode
+      return;
     }
 
     this.currentMode.set(mode);
@@ -3376,6 +4412,14 @@ ${content}
 
   // Tab management methods
   onTabSelected(tab: DocumentTab): void {
+    // Handle library tab
+    if (tab.id === this.LIBRARY_TAB_ID) {
+      this.saveCurrentDocumentState();
+      this.activeDocumentId.set(null);
+      this.pdfLoaded.set(false);
+      return;
+    }
+
     if (tab.id === this.activeDocumentId()) return;
 
     // Save current document state
@@ -3386,6 +4430,9 @@ ${content}
   }
 
   onTabClosed(tab: DocumentTab): void {
+    // Library tab cannot be closed
+    if (tab.id === this.LIBRARY_TAB_ID) return;
+
     const docs = this.openDocuments();
     const docIndex = docs.findIndex(d => d.id === tab.id);
     if (docIndex === -1) return;
@@ -3403,16 +4450,33 @@ ${content}
     const newDocs = docs.filter(d => d.id !== tab.id);
     this.openDocuments.set(newDocs);
 
-    // If closing active tab, switch to another
+    // If closing active tab, switch to another or library
     if (tab.id === this.activeDocumentId()) {
       if (newDocs.length > 0) {
         // Switch to previous tab or first available
         const newIndex = Math.max(0, docIndex - 1);
         this.restoreDocumentState(newDocs[newIndex].id);
       } else {
-        // No more documents - show library view
-        this.clearDocumentState();
+        // No more documents - switch to library tab
+        this.activeDocumentId.set(null);
+        this.pdfLoaded.set(false);
       }
+    }
+  }
+
+  closeCurrentTabOrHideWindow(): void {
+    const activeId = this.activeDocumentId();
+
+    // If on library tab (no active document), hide the window
+    if (!activeId) {
+      this.electronService.windowHide();
+      return;
+    }
+
+    // Otherwise close the current document tab
+    const currentTab = this.documentTabs().find(t => t.id === activeId);
+    if (currentTab) {
+      this.onTabClosed(currentTab);
     }
   }
 
@@ -3459,6 +4523,8 @@ ${content}
       totalPages: doc.totalPages,
       pdfName: doc.name,
       pdfPath: doc.path,
+      libraryPath: doc.libraryPath,
+      fileHash: doc.fileHash,
       deletedBlockIds: doc.deletedBlockIds,
       pageOrder: doc.pageOrder
     });

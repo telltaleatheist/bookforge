@@ -109,6 +109,71 @@ export interface DeskewResult {
   confidence: number;
 }
 
+export interface TextSpan {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  font_size: number;
+  font_name: string;
+  is_bold: boolean;
+  is_italic: boolean;
+  baseline_offset: number;
+  block_id: string;
+}
+
+// Character class for text matching
+type CharClass = 'digits' | 'uppercase' | 'lowercase' | 'mixed_alpha' | 'mixed_alphanum' | 'symbols' | 'mixed';
+
+// Learned fingerprint from sample analysis - captures all discriminating properties
+export interface SamplePattern {
+  // Font properties (null = don't filter)
+  font_size_min: number | null;
+  font_size_max: number | null;
+  font_size_ratio_to_body: [number, number] | null;
+  font_names: string[] | null;
+  is_bold: boolean | null;
+  is_italic: boolean | null;
+
+  // Text properties
+  char_class: CharClass | null;
+  length_min: number | null;
+  length_max: number | null;
+
+  // Position properties
+  baseline_offset_min: number | null;
+  baseline_offset_max: number | null;
+
+  // Context properties
+  preceded_by: ('space' | 'punctuation' | 'letter' | 'digit' | 'line_start')[] | null;
+  followed_by: ('space' | 'punctuation' | 'letter' | 'digit' | 'line_end')[] | null;
+
+  // Metadata
+  sample_count: number;
+  body_font_size: number;
+  description: string;
+}
+
+// Lightweight match representation (40 bytes vs 200+ for full TextBlock)
+export interface MatchRect {
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;  // Keep text for display/tooltip
+}
+
+export interface MatchingSpansResult {
+  matches: MatchRect[];  // Lightweight match rects
+  matchesByPage: Record<number, MatchRect[]>;  // Grouped by page for O(1) lookup
+  total: number;
+  pattern: string;  // The pattern that was matched
+}
+
 export interface ElectronAPI {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
@@ -116,6 +181,11 @@ export interface ElectronAPI {
     exportText: (enabledCategories: string[]) => Promise<{ success: boolean; data?: { text: string; char_count: number }; error?: string }>;
     exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
     findSimilar: (blockId: string) => Promise<{ success: boolean; data?: { similar_ids: string[]; count: number }; error?: string }>;
+    findSpansInRect: (page: number, x: number, y: number, width: number, height: number) => Promise<{ success: boolean; data?: TextSpan[]; error?: string }>;
+    analyzeSamples: (sampleSpans: TextSpan[]) => Promise<{ success: boolean; data?: SamplePattern; error?: string }>;
+    findMatchingSpans: (pattern: SamplePattern) => Promise<{ success: boolean; data?: MatchingSpansResult; error?: string }>;
+    findSpansByRegex: (pattern: string, minFontSize: number, maxFontSize: number, minBaseline?: number | null, maxBaseline?: number | null, caseSensitive?: boolean) => Promise<{ success: boolean; data?: MatchingSpansResult; error?: string }>;
+    getSpans: () => Promise<{ success: boolean; data?: TextSpan[]; error?: string }>;
   };
   fs: {
     browse: (dirPath: string) => Promise<{
@@ -142,11 +212,24 @@ export interface ElectronAPI {
     export: (projectPath: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     loadFromPath: (filePath: string) => Promise<ProjectLoadResult>;
   };
+  library: {
+    importFile: (sourcePath: string) => Promise<{
+      success: boolean;
+      libraryPath?: string;
+      hash?: string;
+      alreadyExists?: boolean;
+      error?: string;
+    }>;
+  };
   ocr: {
     isAvailable: () => Promise<{ success: boolean; available?: boolean; version?: string | null; error?: string }>;
     getLanguages: () => Promise<{ success: boolean; languages?: string[]; error?: string }>;
     recognize: (imageData: string) => Promise<{ success: boolean; data?: OcrResult; error?: string }>;
     detectSkew: (imageData: string) => Promise<{ success: boolean; data?: DeskewResult; error?: string }>;
+  };
+  window: {
+    hide: () => Promise<{ success: boolean }>;
+    close: () => Promise<{ success: boolean }>;
   };
   platform: string;
 }
@@ -163,6 +246,16 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:export-pdf', pdfPath, deletedRegions),
     findSimilar: (blockId: string) =>
       ipcRenderer.invoke('pdf:find-similar', blockId),
+    findSpansInRect: (page: number, x: number, y: number, width: number, height: number) =>
+      ipcRenderer.invoke('pdf:find-spans-in-rect', page, x, y, width, height),
+    analyzeSamples: (sampleSpans: TextSpan[]) =>
+      ipcRenderer.invoke('pdf:analyze-samples', sampleSpans),
+    findMatchingSpans: (pattern: SamplePattern) =>
+      ipcRenderer.invoke('pdf:find-matching-spans', pattern),
+    findSpansByRegex: (pattern: string, minFontSize: number, maxFontSize: number, minBaseline?: number | null, maxBaseline?: number | null, caseSensitive?: boolean) =>
+      ipcRenderer.invoke('pdf:find-spans-by-regex', pattern, minFontSize, maxFontSize, minBaseline, maxBaseline, caseSensitive),
+    getSpans: () =>
+      ipcRenderer.invoke('pdf:get-spans'),
   },
   fs: {
     browse: (dirPath: string) =>
@@ -198,6 +291,10 @@ const electronAPI: ElectronAPI = {
     loadFromPath: (filePath: string) =>
       ipcRenderer.invoke('projects:load-from-path', filePath),
   },
+  library: {
+    importFile: (sourcePath: string) =>
+      ipcRenderer.invoke('library:import-file', sourcePath),
+  },
   ocr: {
     isAvailable: () =>
       ipcRenderer.invoke('ocr:is-available'),
@@ -207,6 +304,12 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('ocr:recognize', imageData),
     detectSkew: (imageData: string) =>
       ipcRenderer.invoke('ocr:detect-skew', imageData),
+  },
+  window: {
+    hide: () =>
+      ipcRenderer.invoke('window:hide'),
+    close: () =>
+      ipcRenderer.invoke('window:close'),
   },
   platform: process.platform,
 };

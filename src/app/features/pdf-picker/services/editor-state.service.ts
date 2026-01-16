@@ -28,7 +28,9 @@ export class PdfEditorStateService {
   readonly pageDimensions = signal<PageDimension[]>([]);
   readonly totalPages = signal(0);
   readonly pdfName = signal('');
-  readonly pdfPath = signal('');
+  readonly pdfPath = signal('');       // Original path (for display)
+  readonly libraryPath = signal('');   // Path in library (used for operations)
+  readonly fileHash = signal('');      // SHA256 hash for deduplication
   readonly pdfLoaded = signal(false);
 
   // Selection and deletion state
@@ -98,6 +100,8 @@ export class PdfEditorStateService {
     totalPages: number;
     pdfName: string;
     pdfPath: string;
+    libraryPath?: string;
+    fileHash?: string;
     deletedBlockIds?: Set<string>;
     pageOrder?: number[];
   }): void {
@@ -107,6 +111,8 @@ export class PdfEditorStateService {
     this.totalPages.set(data.totalPages);
     this.pdfName.set(data.pdfName);
     this.pdfPath.set(data.pdfPath);
+    this.libraryPath.set(data.libraryPath || data.pdfPath);  // Fall back to pdfPath for legacy
+    this.fileHash.set(data.fileHash || '');
     this.deletedBlockIds.set(data.deletedBlockIds || new Set());
     this.pageOrder.set(data.pageOrder || []);
     this.selectedBlockIds.set([]);
@@ -125,6 +131,8 @@ export class PdfEditorStateService {
     this.totalPages.set(0);
     this.pdfName.set('');
     this.pdfPath.set('');
+    this.libraryPath.set('');
+    this.fileHash.set('');
     this.pdfLoaded.set(false);
     this.deletedBlockIds.set(new Set());
     this.selectedBlockIds.set([]);
