@@ -5186,7 +5186,36 @@ export class PdfPickerComponent {
     // Only replace blocks on pages that have OCR results
     // Pages with no OCR results keep their existing blocks
     if (pagesWithOcrResults.length > 0) {
+      // Capture original text block positions BEFORE replacing (for background fill)
+      const originalTextBlocksByPage = new Map<number, Array<{ x: number; y: number; width: number; height: number }>>();
+      const pagesSet = new Set(pagesWithOcrResults);
+
+      for (const block of this.blocks()) {
+        // Only capture non-image, non-OCR blocks on pages that will get OCR results
+        if (pagesSet.has(block.page) && !block.is_image && !block.is_ocr) {
+          if (!originalTextBlocksByPage.has(block.page)) {
+            originalTextBlocksByPage.set(block.page, []);
+          }
+          originalTextBlocksByPage.get(block.page)!.push({
+            x: block.x,
+            y: block.y,
+            width: block.width,
+            height: block.height
+          });
+        }
+      }
+
+      // Replace blocks with OCR blocks
       this.editorState.replaceTextBlocksOnPages(pagesWithOcrResults, newBlocks);
+
+      // Re-render each page with original text positions filled with background color
+      for (const pageNum of pagesWithOcrResults) {
+        const fillRegions = originalTextBlocksByPage.get(pageNum);
+        if (fillRegions && fillRegions.length > 0) {
+          console.log(`[OCR] Re-rendering page ${pageNum} with ${fillRegions.length} fill regions`);
+          this.pageRenderService.rerenderPageWithRedactions(pageNum, undefined, fillRegions);
+        }
+      }
     }
 
     // Update category stats
