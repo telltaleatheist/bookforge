@@ -1,7 +1,7 @@
 import { Component, inject, signal, computed, HostListener, ViewChild, effect, DestroyRef, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
-import { ElectronService } from '../../core/services/electron.service';
+import { ElectronService, Chapter } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService } from './services/export.service';
@@ -19,9 +19,10 @@ import { CategoriesPanelComponent } from './components/categories-panel/categori
 import { FilePickerComponent } from './components/file-picker/file-picker.component';
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
 import { SplitPanelComponent, SplitConfig } from './components/split-panel/split-panel.component';
+import { ChaptersPanelComponent } from './components/chapters-panel/chapters-panel.component';
 import { LibraryViewComponent } from './components/library-view/library-view.component';
 import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
-import { OcrSettingsModalComponent, OcrSettings, OcrPageResult } from './components/ocr-settings-modal/ocr-settings-modal.component';
+import { OcrSettingsModalComponent, OcrSettings, OcrPageResult, OcrCompletionEvent } from './components/ocr-settings-modal/ocr-settings-modal.component';
 import { InlineTextEditorComponent, TextEditResult } from './components/inline-text-editor/inline-text-editor.component';
 import { SettingsModalComponent } from './components/settings-modal/settings-modal.component';
 import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportFormat } from './components/export-settings-modal/export-settings-modal.component';
@@ -90,6 +91,10 @@ interface BookForgeProject {
   redo_stack?: HistoryAction[];  // Persisted redo history
   remove_backgrounds?: boolean;  // Background removal state
   ocr_blocks?: TextBlock[];  // OCR-generated blocks (independent from PDF analysis)
+  ocr_categories?: Record<string, Category>;  // Categories matching OCR block categorization
+  chapters?: Chapter[];  // Chapter markers for export
+  chapters_source?: 'toc' | 'heuristic' | 'manual' | 'mixed';  // How chapters were determined
+  deleted_pages?: number[];  // Pages to exclude from export (0-indexed)
   created_at: string;
   modified_at: string;
 }
@@ -109,7 +114,7 @@ interface MatchRect {
 type CategoryHighlights = Map<string, Record<number, MatchRect[]>>;
 
 // Editor modes
-type EditorMode = 'select' | 'edit' | 'crop' | 'organize' | 'split' | 'ocr';
+type EditorMode = 'select' | 'edit' | 'crop' | 'organize' | 'split' | 'ocr' | 'chapters';
 
 interface ModeInfo {
   id: EditorMode;
@@ -143,6 +148,7 @@ interface AlertModal {
     FilePickerComponent,
     CropPanelComponent,
     SplitPanelComponent,
+    ChaptersPanelComponent,
     LibraryViewComponent,
     TabBarComponent,
     OcrSettingsModalComponent,
@@ -265,7 +271,16 @@ interface AlertModal {
               [removeBackgrounds]="removeBackgrounds()"
               [blankedPages]="blankedPages()"
               [pageImages]="pageImages()"
+              [chapters]="chapters()"
+              [chaptersMode]="chaptersMode()"
+              [deletedPages]="deletedPages()"
+              [selectedPages]="selectedPageNumbers()"
+              [organizeMode]="organizeMode()"
               (blockClick)="onBlockClick($event)"
+              (chapterClick)="onChapterClick($event)"
+              (pageDeleteToggle)="togglePageDeleted($event)"
+              (pageSelect)="onPageSelect($event)"
+              (deleteSelectedPages)="onDeleteSelectedPages($event)"
               (blockDoubleClick)="onBlockDoubleClick($event)"
               (blockHover)="onBlockHover($event)"
               (selectLikeThis)="selectLikeThis($event)"
@@ -353,6 +368,22 @@ interface AlertModal {
             (configChange)="onSplitConfigChange($event)"
             (deskewCurrentPage)="deskewCurrentPage()"
             (deskewAllPages)="deskewAllPages()"
+          />
+        } @else if (chaptersMode()) {
+          <app-chapters-panel
+            pane-secondary
+            [chapters]="chapters()"
+            [chaptersSource]="chaptersSource()"
+            [detecting]="detectingChapters()"
+            [finalizing]="finalizingChapters()"
+            [selectedChapterId]="selectedChapterId()"
+            (cancel)="exitChaptersMode()"
+            (autoDetect)="autoDetectChapters()"
+            (clearChapters)="clearAllChapters()"
+            (selectChapter)="selectChapter($event)"
+            (removeChapter)="removeChapter($event)"
+            (renameChapter)="renameChapter($event)"
+            (finalizeChapters)="finalizeChapters()"
           />
         } @else {
           <app-categories-panel
@@ -1794,6 +1825,12 @@ export class PdfPickerComponent {
             this.setMode('split');
           }
           break;
+        case 'h': // H for chapters/headings
+          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
+            event.preventDefault();
+            this.setMode('chapters');
+          }
+          break;
       }
     }
   }
@@ -2038,7 +2075,8 @@ export class PdfPickerComponent {
     { id: 'crop', icon: '✂️', label: 'Crop', tooltip: 'Draw rectangle to crop (C)' },
     { id: 'organize', icon: '📑', label: 'Organize', tooltip: 'Reorder pages (R)' },
     { id: 'split', icon: '📖', label: 'Split', tooltip: 'Split scanned pages (P)' },
-    { id: 'ocr', icon: '👁️', label: 'OCR', tooltip: 'OCR scanned pages (O)' }
+    { id: 'ocr', icon: '👁️', label: 'OCR', tooltip: 'OCR scanned pages (O)' },
+    { id: 'chapters', icon: '📚', label: 'Chapters', tooltip: 'Mark chapter starts (H)' }
   ];
 
   // Crop mode state (derived from currentMode)
@@ -2061,6 +2099,20 @@ export class PdfPickerComponent {
   readonly isDraggingSplit = signal(false);
   readonly deskewing = signal(false);
   readonly lastDeskewAngle = signal<number | null>(null);
+
+  // Chapters mode state
+  readonly chaptersMode = computed(() => this.currentMode() === 'chapters');
+  readonly chapters = signal<Chapter[]>([]);
+  readonly chaptersSource = signal<'toc' | 'heuristic' | 'manual' | 'mixed'>('manual');
+  readonly detectingChapters = signal(false);
+  readonly finalizingChapters = signal(false);
+  readonly selectedChapterId = signal<string | null>(null);
+  readonly deletedPages = signal<Set<number>>(new Set());  // Pages excluded from export
+
+  // Organize mode state
+  readonly organizeMode = computed(() => this.currentMode() === 'organize');
+  readonly selectedPageNumbers = signal<Set<number>>(new Set());  // Selected pages for bulk operations
+  private lastSelectedPage: number | null = null;  // For shift-click range selection
 
   // Page image cache - maps page number to data URL
   // Delegate to PageRenderService
@@ -3467,35 +3519,82 @@ export class PdfPickerComponent {
 
     console.log(`[selectCategory] categoryId: ${categoryId}`);
     console.log(`[selectCategory] total: ${allBlocks.length}, inCategory: ${categoryBlocks.length}, notDeleted: ${nonDeletedBlocks.length}, isOCR: ${ocrBlocks.length}`);
-    if (ocrBlocks.length > 0) {
-      console.log(`[selectCategory] First OCR block:`, ocrBlocks[0]);
+
+    // Log details of blocks in this category to debug miscategorization
+    if (nonDeletedBlocks.length > 0 && nonDeletedBlocks.length <= 20) {
+      console.log(`[selectCategory] Blocks in category '${categoryId}':`);
+      for (const block of nonDeletedBlocks) {
+        const textPreview = block.text.substring(0, 80).replace(/\n/g, ' ');
+        console.log(`  - page ${block.page}, y=${block.y.toFixed(0)}, lines=${block.line_count}, len=${block.text.length}: "${textPreview}..."`);
+      }
+    } else if (nonDeletedBlocks.length > 20) {
+      console.log(`[selectCategory] Too many blocks (${nonDeletedBlocks.length}) to log individually`);
     }
 
     const blockIds = nonDeletedBlocks.map(b => b.id);
-    console.log(`[selectCategory] Selecting ${blockIds.length} block IDs`);
+    // Check for duplicate IDs
+    const uniqueIds = new Set(blockIds);
+    if (uniqueIds.size !== blockIds.length) {
+      console.error(`[selectCategory] DUPLICATE IDs DETECTED! ${blockIds.length} total, ${uniqueIds.size} unique`);
+      // Find the duplicates
+      const seen = new Set<string>();
+      const duplicates: string[] = [];
+      for (const id of blockIds) {
+        if (seen.has(id)) {
+          duplicates.push(id);
+        }
+        seen.add(id);
+      }
+      console.error(`[selectCategory] Duplicate IDs:`, duplicates);
+    }
+    console.log(`[selectCategory] Selecting ${blockIds.length} block IDs for category: ${categoryId}`);
 
-    const existing = new Set(this.selectedBlockIds());
-    const allSelected = blockIds.length > 0 && blockIds.every(id => existing.has(id));
-
-    if (additive) {
-      // Cmd/Ctrl+click: remove this category's blocks from selection
-      blockIds.forEach(id => existing.delete(id));
-      this.selectedBlockIds.set([...existing]);
-    } else if (allSelected) {
-      // Regular click on already-selected category: deselect all of this category
-      blockIds.forEach(id => existing.delete(id));
-      this.selectedBlockIds.set([...existing]);
-    } else {
-      // Regular click: add this category's blocks to selection
-      blockIds.forEach(id => existing.add(id));
-      this.selectedBlockIds.set([...existing]);
-      console.log(`[selectCategory] After set, selectedBlockIds count: ${this.selectedBlockIds().length}`);
-      // Check if first OCR block is in selection
-      if (ocrBlocks.length > 0) {
-        const firstOcrId = ocrBlocks[0].id;
-        console.log(`[selectCategory] First OCR id: ${firstOcrId}, in selection: ${this.selectedBlockIds().includes(firstOcrId)}`);
+    // Debug: verify all blockIds are from the correct category
+    const categoryCheck = new Map<string, number>();
+    for (const id of blockIds) {
+      const block = allBlocks.find(b => b.id === id);
+      if (block) {
+        const cat = block.category_id;
+        categoryCheck.set(cat, (categoryCheck.get(cat) || 0) + 1);
       }
     }
+    console.log(`[selectCategory] Category breakdown of selected blocks:`, Object.fromEntries(categoryCheck));
+
+    const existing = new Set(this.selectedBlockIds());
+    console.log(`[selectCategory] existing selection before: ${existing.size} IDs`);
+    const allSelected = blockIds.length > 0 && blockIds.every(id => existing.has(id));
+
+    // Toggle behavior: if all blocks from this category are selected, remove them
+    // Otherwise, add them (keeps other categories selected)
+    if (allSelected) {
+      // All blocks from this category are selected - remove them
+      blockIds.forEach(id => existing.delete(id));
+      console.log(`[selectCategory] After delete, existing size: ${existing.size}`);
+      const newSelection = [...existing];
+      console.log(`[selectCategory] Setting selection to ${newSelection.length} IDs`);
+      this.selectedBlockIds.set(newSelection);
+      console.log(`[selectCategory] After set, signal has: ${this.selectedBlockIds().length} IDs`);
+    } else {
+      // Add this category's blocks to selection (additive)
+      blockIds.forEach(id => existing.add(id));
+      console.log(`[selectCategory] After add, existing size: ${existing.size}`);
+      const newSelection = [...existing];
+      console.log(`[selectCategory] Setting selection to ${newSelection.length} IDs`);
+      this.selectedBlockIds.set(newSelection);
+      console.log(`[selectCategory] After set, signal has: ${this.selectedBlockIds().length} IDs`);
+    }
+
+    // Debug: verify final selection
+    const finalSelection = this.selectedBlockIds();
+    const finalCategoryCheck = new Map<string, number>();
+    for (const id of finalSelection) {
+      const block = allBlocks.find(b => b.id === id);
+      if (block) {
+        const cat = block.category_id;
+        finalCategoryCheck.set(cat, (finalCategoryCheck.get(cat) || 0) + 1);
+      }
+    }
+    console.log(`[selectCategory] FINAL selection category breakdown:`, Object.fromEntries(finalCategoryCheck));
   }
 
   // Select inverse: toggle selection of all blocks in a category
@@ -3572,7 +3671,8 @@ export class PdfPickerComponent {
       this.blocks(),
       this.deletedBlockIds(),
       this.pdfName(),
-      this.textCorrections()
+      this.textCorrections(),
+      this.deletedPages()
     );
 
     this.showAlert({
@@ -3583,12 +3683,24 @@ export class PdfPickerComponent {
   }
 
   async exportEpub(): Promise<void> {
-    const result = await this.exportService.exportEpub(
-      this.blocks(),
-      this.deletedBlockIds(),
-      this.pdfName(),
-      this.textCorrections()
-    );
+    // Use chapter-aware export if chapters are defined
+    const chapters = this.chapters();
+    const result = chapters.length > 0
+      ? await this.exportService.exportEpubWithChapters(
+          this.blocks(),
+          this.deletedBlockIds(),
+          chapters,
+          this.pdfName(),
+          this.textCorrections(),
+          this.deletedPages()
+        )
+      : await this.exportService.exportEpub(
+          this.blocks(),
+          this.deletedBlockIds(),
+          this.pdfName(),
+          this.textCorrections(),
+          this.deletedPages()
+        );
 
     this.showAlert({
       title: result.success ? 'Export Complete' : 'Nothing to Export',
@@ -3654,7 +3766,8 @@ export class PdfPickerComponent {
       this.blocks(),
       this.deletedBlockIds(),
       this.pdfName(),
-      this.editorState.textCorrections()
+      this.editorState.textCorrections(),
+      this.deletedPages()
     );
 
     if (result.success) {
@@ -3678,12 +3791,24 @@ export class PdfPickerComponent {
   private async exportAsEpub(): Promise<void> {
     this.loadingText.set('Generating EPUB...');
 
-    const result = await this.exportService.exportEpub(
-      this.blocks(),
-      this.deletedBlockIds(),
-      this.pdfName(),
-      this.editorState.textCorrections()
-    );
+    // Use chapter-aware export if chapters are defined
+    const chapters = this.chapters();
+    const result = chapters.length > 0
+      ? await this.exportService.exportEpubWithChapters(
+          this.blocks(),
+          this.deletedBlockIds(),
+          chapters,
+          this.pdfName(),
+          this.editorState.textCorrections(),
+          this.deletedPages()
+        )
+      : await this.exportService.exportEpub(
+          this.blocks(),
+          this.deletedBlockIds(),
+          this.pdfName(),
+          this.editorState.textCorrections(),
+          this.deletedPages()
+        );
 
     if (result.success) {
       this.showAlert({
@@ -3828,7 +3953,8 @@ export class PdfPickerComponent {
         this.libraryPath(),
         this.pdfName(),
         this.getHighlightId.bind(this),
-        this.textCorrections()
+        this.textCorrections(),
+        this.deletedPages()
       );
 
       if (result.success) {
@@ -4190,6 +4316,13 @@ export class PdfPickerComponent {
     // Get OCR blocks to persist (these are generated by OCR and independent from PDF analysis)
     const ocrBlocks = this.blocks().filter(b => b.is_ocr);
 
+    // If we have OCR blocks, also save the current categories (they match OCR categorization)
+    const categoriesToSave = ocrBlocks.length > 0 ? this.categories() : undefined;
+
+    // Get chapters to persist
+    const chapters = this.chapters();
+    const chaptersSource = this.chaptersSource();
+
     const projectData: BookForgeProject = {
       version: 1,
       source_path: this.pdfPath(),
@@ -4205,6 +4338,10 @@ export class PdfPickerComponent {
       redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
       remove_backgrounds: this.removeBackgrounds() || undefined,
       ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
+      ocr_categories: categoriesToSave,
+      chapters: chapters.length > 0 ? chapters : undefined,
+      chapters_source: chapters.length > 0 ? chaptersSource : undefined,
+      deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
       created_at: new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -4320,6 +4457,19 @@ export class PdfPickerComponent {
       // Restore deleted highlight IDs
       if (project.deleted_highlight_ids && project.deleted_highlight_ids.length > 0) {
         this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
+      }
+
+      // Restore chapters
+      if (project.chapters && project.chapters.length > 0) {
+        this.chapters.set(project.chapters);
+        this.chaptersSource.set(project.chapters_source || 'manual');
+        console.log(`  Restored ${project.chapters.length} chapters`);
+      }
+
+      // Restore deleted pages
+      if (project.deleted_pages && project.deleted_pages.length > 0) {
+        this.deletedPages.set(new Set(project.deleted_pages));
+        console.log(`  Restored ${project.deleted_pages.length} deleted pages`);
       }
 
       this.pageRenderService.clear();
@@ -4484,13 +4634,32 @@ export class PdfPickerComponent {
         this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
       }
 
-      // Restore OCR blocks - these replace PDF-analyzed blocks on their pages
+      // Restore chapters
+      if (project.chapters && project.chapters.length > 0) {
+        this.chapters.set(project.chapters);
+        this.chaptersSource.set(project.chapters_source || 'manual');
+        console.log(`[loadProject] Restored ${project.chapters.length} chapters`);
+      }
+
+      // Restore deleted pages
+      if (project.deleted_pages && project.deleted_pages.length > 0) {
+        this.deletedPages.set(new Set(project.deleted_pages));
+        console.log(`[loadProject] Restored ${project.deleted_pages.length} deleted pages`);
+      }
+
+      // Restore OCR blocks and categories - these replace PDF-analyzed blocks on their pages
       if (project.ocr_blocks && project.ocr_blocks.length > 0) {
         // Get the pages that have OCR blocks
         const ocrPages = [...new Set(project.ocr_blocks.map(b => b.page))];
         // Replace PDF blocks with OCR blocks on those pages
         this.editorState.replaceTextBlocksOnPages(ocrPages, project.ocr_blocks);
         console.log(`[loadProject] Restored ${project.ocr_blocks.length} OCR blocks on ${ocrPages.length} page(s)`);
+
+        // Restore OCR categories if saved (these match the OCR block categorization)
+        if (project.ocr_categories) {
+          this.editorState.categories.set(project.ocr_categories);
+          console.log(`[loadProject] Restored OCR categories:`, Object.keys(project.ocr_categories));
+        }
       }
 
       // Restore remove backgrounds state
@@ -5226,6 +5395,13 @@ export class PdfPickerComponent {
       return;
     }
 
+    // If entering chapters mode, try to auto-load outline on first entry
+    if (mode === 'chapters' && previousMode !== 'chapters') {
+      if (this.chapters().length === 0) {
+        this.tryLoadOutline();
+      }
+    }
+
     this.currentMode.set(mode);
   }
 
@@ -5451,6 +5627,305 @@ export class PdfPickerComponent {
     this.deskewing.set(false);
   }
 
+  // Chapter methods
+  async tryLoadOutline(): Promise<void> {
+    try {
+      const outline = await this.electronService.extractOutline();
+      if (outline && outline.length > 0) {
+        const chapters = await this.electronService.outlineToChapters(outline);
+        if (chapters.length > 0) {
+          this.chapters.set(chapters);
+          this.chaptersSource.set('toc');
+          console.log(`Loaded ${chapters.length} chapters from document outline`);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to extract outline:', err);
+    }
+  }
+
+  async autoDetectChapters(): Promise<void> {
+    this.detectingChapters.set(true);
+    try {
+      const chapters = await this.electronService.detectChapters();
+      if (chapters.length > 0) {
+        // Merge with existing chapters, preferring TOC entries
+        const existing = this.chapters();
+        const existingPages = new Set(existing.map(c => c.page));
+        const newChapters = chapters.filter(c => !existingPages.has(c.page));
+
+        if (newChapters.length > 0) {
+          this.chapters.set([...existing, ...newChapters].sort((a, b) => {
+            if (a.page !== b.page) return a.page - b.page;
+            return (a.y || 0) - (b.y || 0);
+          }));
+          this.chaptersSource.set(existing.length > 0 ? 'mixed' : 'heuristic');
+        }
+
+        console.log(`Detected ${newChapters.length} additional chapters`);
+      } else {
+        this.showAlert({
+          title: 'No Chapters Found',
+          message: 'Could not automatically detect chapter headings. Try marking chapters manually by clicking on text blocks.',
+          type: 'info'
+        });
+      }
+    } catch (err) {
+      console.error('Failed to detect chapters:', err);
+      this.showAlert({
+        title: 'Detection Failed',
+        message: 'Could not detect chapters: ' + (err as Error).message,
+        type: 'error'
+      });
+    } finally {
+      this.detectingChapters.set(false);
+    }
+  }
+
+  addChapterFromBlock(block: TextBlock, level: number = 1): void {
+    const chapterId = `manual-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const newChapter: Chapter = {
+      id: chapterId,
+      title: block.text.length > 80 ? block.text.substring(0, 77) + '...' : block.text,
+      page: block.page,
+      blockId: block.id,
+      y: block.y,
+      level,
+      source: 'manual',
+    };
+
+    // Insert in sorted order
+    const chapters = [...this.chapters(), newChapter].sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return (a.y || 0) - (b.y || 0);
+    });
+
+    this.chapters.set(chapters);
+    this.selectedChapterId.set(chapterId);
+    this.chaptersSource.set(this.chapters().some(c => c.source !== 'manual') ? 'mixed' : 'manual');
+    this.hasUnsavedChanges.set(true);
+  }
+
+  removeChapter(chapterId: string): void {
+    this.chapters.update(chapters => chapters.filter(c => c.id !== chapterId));
+    if (this.selectedChapterId() === chapterId) {
+      this.selectedChapterId.set(null);
+    }
+    this.hasUnsavedChanges.set(true);
+  }
+
+  renameChapter(event: { chapterId: string; newTitle: string }): void {
+    this.chapters.update(chapters =>
+      chapters.map(c =>
+        c.id === event.chapterId
+          ? { ...c, title: event.newTitle }
+          : c
+      )
+    );
+    this.hasUnsavedChanges.set(true);
+  }
+
+  selectChapter(chapterId: string): void {
+    this.selectedChapterId.set(chapterId);
+    const chapter = this.chapters().find(c => c.id === chapterId);
+    if (chapter) {
+      this.scrollToPage(chapter.page);
+    }
+  }
+
+  clearAllChapters(): void {
+    this.chapters.set([]);
+    this.chaptersSource.set('manual');
+    this.selectedChapterId.set(null);
+    this.hasUnsavedChanges.set(true);
+  }
+
+  /**
+   * Finalize chapters for export - validates and prepares chapter metadata
+   * This recalculates page numbers accounting for deleted pages and shows a summary
+   */
+  async finalizeChapters(): Promise<void> {
+    const chapters = this.chapters();
+    const deletedPages = this.deletedPages();
+
+    if (chapters.length === 0) {
+      this.showAlert({
+        title: 'No Chapters',
+        message: 'Please define at least one chapter before finalizing.',
+        type: 'warning'
+      });
+      return;
+    }
+
+    this.finalizingChapters.set(true);
+
+    try {
+      // Filter out chapters on deleted pages
+      const activeChapters = chapters.filter(c => !deletedPages.has(c.page));
+
+      if (activeChapters.length === 0) {
+        this.showAlert({
+          title: 'No Valid Chapters',
+          message: 'All chapters are on deleted pages. Please add chapters on active pages.',
+          type: 'warning'
+        });
+        return;
+      }
+
+      // Calculate effective page numbers (accounting for deleted pages before each chapter)
+      const chapterSummary = activeChapters.map(chapter => {
+        const deletedBefore = Array.from(deletedPages).filter(p => p < chapter.page).length;
+        const effectivePage = chapter.page - deletedBefore;
+        return {
+          title: chapter.title,
+          originalPage: chapter.page + 1,  // 1-indexed for display
+          effectivePage: effectivePage + 1,  // 1-indexed for display
+          level: chapter.level
+        };
+      });
+
+      // Update chapters with effective page numbers for export
+      // (stored separately so original page numbers are preserved)
+      const removedCount = chapters.length - activeChapters.length;
+      const deletedPagesCount = deletedPages.size;
+
+      let message = `${activeChapters.length} chapter${activeChapters.length !== 1 ? 's' : ''} ready for export.`;
+      if (removedCount > 0) {
+        message += ` (${removedCount} chapter${removedCount !== 1 ? 's' : ''} on deleted pages excluded)`;
+      }
+      if (deletedPagesCount > 0) {
+        message += `\n${deletedPagesCount} page${deletedPagesCount !== 1 ? 's' : ''} will be skipped during export.`;
+      }
+
+      // Save the project to persist chapters
+      await this.saveProject();
+
+      this.showAlert({
+        title: 'Chapters Finalized',
+        message,
+        type: 'success'
+      });
+
+      // Exit chapters mode after finalizing
+      this.exitChaptersMode();
+
+    } catch (err) {
+      console.error('Failed to finalize chapters:', err);
+      this.showAlert({
+        title: 'Finalization Failed',
+        message: 'Could not finalize chapters: ' + (err as Error).message,
+        type: 'error'
+      });
+    } finally {
+      this.finalizingChapters.set(false);
+    }
+  }
+
+  // Page deletion methods (for chapters/export mode)
+  togglePageDeleted(pageNum: number): void {
+    this.deletedPages.update(pages => {
+      const newPages = new Set(pages);
+      if (newPages.has(pageNum)) {
+        newPages.delete(pageNum);
+      } else {
+        newPages.add(pageNum);
+      }
+      return newPages;
+    });
+    this.hasUnsavedChanges.set(true);
+  }
+
+  isPageDeleted(pageNum: number): boolean {
+    return this.deletedPages().has(pageNum);
+  }
+
+  getDeletedPageCount(): number {
+    return this.deletedPages().size;
+  }
+
+  clearDeletedPages(): void {
+    this.deletedPages.set(new Set());
+    this.hasUnsavedChanges.set(true);
+  }
+
+  // Page selection methods (for organize/chapters mode)
+  onPageSelect(event: { pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }): void {
+    const { pageNum, shiftKey, metaKey, ctrlKey } = event;
+
+    this.selectedPageNumbers.update(selected => {
+      const newSelected = new Set(selected);
+
+      if (shiftKey && this.lastSelectedPage !== null) {
+        // Range selection: select all pages between last selected and current
+        const start = Math.min(this.lastSelectedPage, pageNum);
+        const end = Math.max(this.lastSelectedPage, pageNum);
+        for (let i = start; i <= end; i++) {
+          newSelected.add(i);
+        }
+      } else if (metaKey || ctrlKey) {
+        // Toggle selection
+        if (newSelected.has(pageNum)) {
+          newSelected.delete(pageNum);
+        } else {
+          newSelected.add(pageNum);
+        }
+      } else {
+        // Single selection: clear others and select this one
+        newSelected.clear();
+        newSelected.add(pageNum);
+      }
+
+      return newSelected;
+    });
+
+    // Update last selected page (unless shift-clicking)
+    if (!shiftKey) {
+      this.lastSelectedPage = pageNum;
+    }
+  }
+
+  onDeleteSelectedPages(pages: Set<number>): void {
+    if (pages.size === 0) {
+      // Clear selection
+      this.selectedPageNumbers.set(new Set());
+      return;
+    }
+
+    // Delete all selected pages
+    this.deletedPages.update(deleted => {
+      const newDeleted = new Set(deleted);
+      for (const page of pages) {
+        newDeleted.add(page);
+      }
+      return newDeleted;
+    });
+
+    // Clear selection after delete
+    this.selectedPageNumbers.set(new Set());
+    this.hasUnsavedChanges.set(true);
+  }
+
+  clearPageSelection(): void {
+    this.selectedPageNumbers.set(new Set());
+    this.lastSelectedPage = null;
+  }
+
+  exitChaptersMode(): void {
+    this.setMode('select');
+  }
+
+  onChapterClick(event: { block: TextBlock; level: number }): void {
+    // Check if this block is already marked as a chapter
+    const existingChapter = this.chapters().find(c => c.blockId === event.block.id);
+    if (existingChapter) {
+      // If it's already a chapter, remove it
+      this.removeChapter(existingChapter.id);
+    } else {
+      // Add new chapter
+      this.addChapterFromBlock(event.block, event.level);
+    }
+  }
+
   // OCR methods
   getPageImageForOcr(pageNum: number): string | null {
     const allImages = this.pageImages();
@@ -5461,8 +5936,12 @@ export class PdfPickerComponent {
     return image && image !== 'loading' && image !== 'failed' ? image : null;
   }
 
-  onOcrCompleted(results: OcrPageResult[]): void {
-    console.log('OCR completed:', results.length, 'pages processed');
+  onOcrCompleted(event: OcrCompletionEvent | OcrPageResult[]): void {
+    // Handle both old format (array) and new format (event object)
+    const results = Array.isArray(event) ? event : event.results;
+    const useSuryaCategories = Array.isArray(event) ? false : event.useSuryaCategories;
+
+    console.log('OCR completed:', results.length, 'pages processed, useSuryaCategories:', useSuryaCategories);
 
     // Count total text lines with bboxes
     const totalLines = results.reduce((sum, r) => sum + (r.textLines?.length || 0), 0);
@@ -5558,18 +6037,35 @@ export class PdfPickerComponent {
           categoryId = defaultCategoryId;
         }
 
-        // Estimate font size from line height (rough approximation)
-        const estimatedFontSize = Math.round(pdfHeight * 0.8);
+        // Estimate font size from line height with sanity checks
+        // OCR bounding boxes often include whitespace, so use a conservative multiplier
+        const pdfWidth = (x2 - x1) / renderScale;
+        let estimatedFontSize = Math.round(pdfHeight * 0.7);  // More conservative multiplier
+
+        // For very short text (1-3 chars), the bounding box is often much taller than needed
+        // Use character width as a better estimate
+        const textLen = line.text.trim().length;
+        if (textLen > 0 && textLen <= 3) {
+          // For short text, estimate from width instead (assuming roughly square characters)
+          const widthBasedSize = Math.round(pdfWidth / textLen * 0.9);
+          estimatedFontSize = Math.min(estimatedFontSize, widthBasedSize);
+        }
+
+        // Cap font size to sensible document ranges
+        // Most books: body 10-14pt, headings 14-24pt, titles up to 48pt
+        const maxFontSize = 48;
+        const minFontSize = 8;
+        estimatedFontSize = Math.max(minFontSize, Math.min(maxFontSize, estimatedFontSize));
 
         const block: TextBlock = {
           id: `ocr_${blockIdCounter++}`,
           page: result.page,
           x: x1 / renderScale,
           y: pdfY,
-          width: (x2 - x1) / renderScale,
+          width: pdfWidth,
           height: pdfHeight,
           text: line.text,
-          font_size: estimatedFontSize > 0 ? estimatedFontSize : 12,
+          font_size: estimatedFontSize,
           font_name: 'OCR',
           char_count: line.text.length,
           region,
@@ -5610,13 +6106,14 @@ export class PdfPickerComponent {
     }
 
     // Post-process OCR blocks: merge lines into paragraphs and apply smart categorization
-    // If we have layout blocks from Surya, use them for categorization instead of heuristics
-    const processedResult = this.ocrPostProcessor.processOcrBlocks(newBlocks, pageDims, layoutBlocksByPage);
+    // Only use Surya layout blocks for categorization if the user opted in
+    const layoutDataForCategorization = useSuryaCategories ? layoutBlocksByPage : undefined;
+    const processedResult = this.ocrPostProcessor.processOcrBlocks(newBlocks, pageDims, layoutDataForCategorization);
     const processedBlocks = processedResult.blocks;
     const newCategories = processedResult.categories;
 
-    const hasLayoutData = layoutBlocksByPage.size > 0;
-    console.log(`[OCR] Post-processing: ${newBlocks.length} lines → ${processedBlocks.length} blocks (layout detection: ${hasLayoutData ? 'enabled' : 'disabled'})`);
+    const hasLayoutData = useSuryaCategories && layoutBlocksByPage.size > 0;
+    console.log(`[OCR] Post-processing: ${newBlocks.length} lines → ${processedBlocks.length} blocks (Surya categories: ${hasLayoutData ? 'enabled' : 'disabled'})`);
 
     // Merge new OCR categories with existing categories
     const existingCategories = this.categories();
@@ -5649,6 +6146,9 @@ export class PdfPickerComponent {
 
       // Replace blocks with processed OCR blocks
       this.editorState.replaceTextBlocksOnPages(pagesWithOcrResults, processedBlocks);
+
+      // Clear selection since old block IDs no longer exist
+      this.selectedBlockIds.set([]);
 
       // Re-render each page with OCR text areas filled with background color
       // This integrates the fills into the background image
@@ -5728,11 +6228,10 @@ export class PdfPickerComponent {
 
     const doc = docs[docIndex];
 
-    // Warn about unsaved changes
-    if (doc.hasUnsavedChanges) {
-      if (!confirm(`"${doc.name}" has unsaved changes. Close anyway?`)) {
-        return;
-      }
+    // Auto-save if there are unsaved changes
+    if (doc.hasUnsavedChanges && this.projectService.projectPath()) {
+      // Save in background before closing
+      this.saveProject().catch(err => console.error('Auto-save on close failed:', err));
     }
 
     // Remove from list

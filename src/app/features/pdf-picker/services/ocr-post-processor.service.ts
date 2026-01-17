@@ -21,22 +21,22 @@ export interface ProcessedOcrResult {
 
 // Map Surya layout labels to our category system (using actual Surya output format)
 const SURYA_LABEL_TO_CATEGORY: Record<LayoutLabel, string> = {
-  'Title': 'ocr_title',
-  'SectionHeader': 'ocr_heading',
-  'Text': 'ocr_body',
-  'Handwriting': 'ocr_body',
-  'TextInlineMath': 'ocr_body',
-  'ListItem': 'ocr_body',
-  'Form': 'ocr_body',
-  'Caption': 'ocr_caption',
-  'Footnote': 'ocr_footer',  // Footnotes go to footer category
-  'PageFooter': 'ocr_footer',
-  'PageHeader': 'ocr_header',
-  'Formula': 'ocr_epigraph',  // Math formulas as epigraph (indented/special)
-  'Table': 'ocr_body',  // Tables as body text
-  'Figure': 'ocr_body',  // Figure placeholders
-  'Picture': 'ocr_body',  // Picture placeholders
-  'TableOfContents': 'ocr_body',  // TOC as body text
+  'Title': 'title',
+  'SectionHeader': 'heading',
+  'Text': 'body',
+  'Handwriting': 'body',
+  'TextInlineMath': 'body',
+  'ListItem': 'body',
+  'Form': 'body',
+  'Caption': 'caption',
+  'Footnote': 'footnote',
+  'PageFooter': 'footer',
+  'PageHeader': 'header',
+  'Formula': 'quote',  // Math formulas as quote (indented/special)
+  'Table': 'body',  // Tables as body text
+  'Figure': 'body',  // Figure placeholders
+  'Picture': 'body',  // Picture placeholders
+  'TableOfContents': 'body',  // TOC as body text
 };
 
 interface LineBlock {
@@ -56,11 +56,11 @@ interface LineBlock {
 })
 export class OcrPostProcessorService {
 
-  // Category definitions
+  // Category definitions - IDs match native PDF analyzer for consistency
   private readonly CATEGORIES: Record<string, Omit<Category, 'block_count' | 'char_count'>> = {
-    'ocr_title': {
-      id: 'ocr_title',
-      name: 'Title',
+    'title': {
+      id: 'title',
+      name: 'Titles',
       description: 'Chapter titles and main headings',
       color: '#e91e63',  // Pink
       font_size: 24,
@@ -68,9 +68,9 @@ export class OcrPostProcessorService {
       sample_text: '',
       enabled: true
     },
-    'ocr_heading': {
-      id: 'ocr_heading',
-      name: 'Heading',
+    'heading': {
+      id: 'heading',
+      name: 'Section Headings',
       description: 'Section headings and subheadings',
       color: '#9c27b0',  // Purple
       font_size: 18,
@@ -78,9 +78,9 @@ export class OcrPostProcessorService {
       sample_text: '',
       enabled: true
     },
-    'ocr_epigraph': {
-      id: 'ocr_epigraph',
-      name: 'Epigraph',
+    'quote': {
+      id: 'quote',
+      name: 'Block Quotes',
       description: 'Quotations and epigraphs',
       color: '#00bcd4',  // Cyan
       font_size: 14,
@@ -88,18 +88,18 @@ export class OcrPostProcessorService {
       sample_text: '',
       enabled: true
     },
-    'ocr_attribution': {
-      id: 'ocr_attribution',
-      name: 'Attribution',
-      description: 'Quote attributions and citations',
+    'footnote': {
+      id: 'footnote',
+      name: 'Footnotes',
+      description: 'Footnotes and citations',
       color: '#607d8b',  // Blue grey
       font_size: 12,
       region: 'body',
       sample_text: '',
       enabled: true
     },
-    'ocr_body': {
-      id: 'ocr_body',
+    'body': {
+      id: 'body',
       name: 'Body Text',
       description: 'Main body text content',
       color: '#8bc34a',  // Light green
@@ -108,9 +108,9 @@ export class OcrPostProcessorService {
       sample_text: '',
       enabled: true
     },
-    'ocr_caption': {
-      id: 'ocr_caption',
-      name: 'Caption',
+    'caption': {
+      id: 'caption',
+      name: 'Captions',
       description: 'Image captions and figure descriptions',
       color: '#ff9800',  // Orange
       font_size: 10,
@@ -118,9 +118,9 @@ export class OcrPostProcessorService {
       sample_text: '',
       enabled: true
     },
-    'ocr_header': {
-      id: 'ocr_header',
-      name: 'Header',
+    'header': {
+      id: 'header',
+      name: 'Page Headers',
       description: 'Page headers and running heads',
       color: '#795548',  // Brown
       font_size: 10,
@@ -128,9 +128,9 @@ export class OcrPostProcessorService {
       sample_text: '',
       enabled: false  // Disabled by default
     },
-    'ocr_footer': {
-      id: 'ocr_footer',
-      name: 'Footer',
+    'footer': {
+      id: 'footer',
+      name: 'Page Footers',
       description: 'Page footers and page numbers',
       color: '#9e9e9e',  // Grey
       font_size: 10,
@@ -311,72 +311,136 @@ export class OcrPostProcessorService {
     const text = block.text.trim();
     const yPercent = block.y / dims.height;
     const blockCenterX = block.x + block.width / 2;
+    const widthPercent = block.width / dims.width;
 
-    // Calculate centering
+    // Calculate centering - block center is within 15% of page center
     const isCentered = Math.abs(blockCenterX - pageCenterX) < dims.width * 0.15;
 
     // Check for ALL CAPS
     const letters = text.replace(/[^a-zA-Z]/g, '');
     const isAllCaps = letters.length > 3 && letters === letters.toUpperCase();
 
+    // Check for Title Case (most words start with capital)
+    const words = text.split(/\s+/).filter(w => w.length > 0);
+    const capitalizedWords = words.filter(w => /^[A-Z]/.test(w)).length;
+    const isTitleCase = words.length > 0 && words.length <= 10 && capitalizedWords / words.length >= 0.6;
+
     // Check font size relative to average
-    const isLargeFontSize = block.fontSize > avgFontSize * 1.15;
-    const isSmallFontSize = block.fontSize < avgFontSize * 0.8;
+    const isLargeFontSize = block.fontSize > avgFontSize * 1.1;  // Lowered from 1.15
+    const isSmallFontSize = block.fontSize < avgFontSize * 0.85;
 
     // Check if it starts with an attribution marker
     const startsWithEmDash = /^[\u2014\u2013\u2012-]/.test(text);
 
     // Line/character counts
-    const isShort = text.length < 80;
-    const isVeryShort = text.length < 30;
+    const isShort = text.length < 100;  // Increased from 80
+    const isMedium = text.length < 150;
+    const isVeryShort = text.length < 40;  // Increased from 30
     const isSingleLine = block.lineCount === 1;
+    const isFewLines = block.lineCount <= 3;
 
-    // Header: top 6% of page, single very short line (like page numbers or running headers)
-    // Must be very short to avoid catching real content
-    if (yPercent < 0.06 && isSingleLine && isVeryShort) {
-      return 'ocr_header';
+    // Check if block spans less than full page width (often titles/headings)
+    const isNarrow = widthPercent < 0.7;
+
+    // Common title/heading patterns
+    const looksLikeChapterTitle = /^(chapter|part|book|section|introduction|preface|foreword|epilogue|prologue|acknowledgments?|afterword|appendix)\s*([\dIVXLCDM]+)?\.?:?\s*/i.test(text);
+    const looksLikeAuthorName = /^(by\s+)?[A-Z][a-z]+(\s+[A-Z]\.?\s*)?[A-Z][a-z]+$/i.test(text) && text.length < 50;
+    const isSubtitle = /^[A-Z].*[A-Za-z]$/.test(text) && !text.includes('.') && isSingleLine && text.length < 80;
+
+    // Header: top 8% of page, single short line (like page numbers or running headers)
+    if (yPercent < 0.08 && isSingleLine && isVeryShort) {
+      return 'header';
     }
 
-    // Footer: bottom 6% of page, single very short line (like page numbers)
-    // Must look like a page number or very short footer text
-    // Be very strict - only match things like "42" or "Page 42" or "— 42 —"
+    // Footer: bottom 8% of page, single short line (like page numbers)
     const looksLikePageNumber = /^[\d\u2014\u2013\-\s—]+$/.test(text) ||
                                 /^page\s*\d+$/i.test(text) ||
-                                text.length < 15;
-    if (yPercent > 0.94 && isSingleLine && looksLikePageNumber) {
-      return 'ocr_footer';
+                                /^\d{1,4}$/.test(text) ||
+                                text.length < 20;
+    if (yPercent > 0.92 && isSingleLine && looksLikePageNumber) {
+      return 'footer';
     }
 
     // Pure attribution line: starts with em-dash (like "— Author Name")
     if (startsWithEmDash && isShort && isSingleLine) {
-      return 'ocr_attribution';
+      return 'footnote';
     }
 
     // Chapter number: very short, near top, just a number or Roman numeral
-    if (isVeryShort && yPercent < 0.2 && /^[\dIVXLCDM]+\.?$/.test(text) && isSingleLine) {
-      return 'ocr_title';
+    if (isVeryShort && yPercent < 0.25 && /^[\dIVXLCDM]+\.?$/.test(text) && isSingleLine) {
+      return 'title';
+    }
+
+    // Title: explicit chapter/section markers
+    if (looksLikeChapterTitle && isShort) {
+      return 'title';
     }
 
     // Title: ALL CAPS, upper portion of page, relatively short
-    if (isAllCaps && yPercent < 0.35 && isShort) {
-      return 'ocr_title';
+    if (isAllCaps && yPercent < 0.4 && isShort) {
+      return 'title';
     }
 
-    // Title: Large font, short text, near top
-    if (isLargeFontSize && isShort && yPercent < 0.4 && isSingleLine) {
-      return 'ocr_title';
+    // Title: Title Case, centered, upper portion, short, few lines
+    if (isTitleCase && isCentered && yPercent < 0.35 && isShort && isFewLines && isNarrow) {
+      return 'title';
     }
 
-    // Heading: ALL CAPS, not at top of page, short, single line
-    if (isAllCaps && isShort && yPercent >= 0.35 && isSingleLine) {
-      return 'ocr_heading';
+    // Title: Large font, short text, near top (more lenient position)
+    if (isLargeFontSize && isShort && yPercent < 0.5 && isFewLines) {
+      return 'title';
     }
 
-    // NOTE: Caption detection removed - it was too aggressive and miscategorizing body text.
-    // Captions (text under images) would need image detection to work properly.
+    // Author name on title page
+    if (looksLikeAuthorName && yPercent < 0.6 && isCentered) {
+      return 'title';
+    }
+
+    // Heading: ALL CAPS, short, single line (anywhere on page)
+    if (isAllCaps && isVeryShort && isSingleLine) {
+      return 'heading';
+    }
+
+    // Heading: Title Case, short, single line, not full width, not at very bottom
+    if (isTitleCase && isVeryShort && isSingleLine && isNarrow && yPercent < 0.85) {
+      return 'heading';
+    }
+
+    // Heading: Large font, short, single line (anywhere on page)
+    if (isLargeFontSize && isVeryShort && isSingleLine) {
+      return 'heading';
+    }
+
+    // Subtitle-like text (single line, no period, in upper half)
+    if (isSubtitle && isCentered && yPercent < 0.5) {
+      return 'heading';
+    }
+
+    // Epigraph: indented text (not starting at left margin), shorter than body
+    // Often appears at chapter starts, usually in italics (but OCR can't detect that)
+    const isIndented = block.x > dims.width * 0.15;
+    const looksLikeQuote = text.startsWith('"') || text.startsWith('"') || text.startsWith("'") || text.startsWith("'");
+    if (isIndented && isMedium && yPercent < 0.4 && (isSingleLine || isFewLines)) {
+      return 'quote';
+    }
+    if (looksLikeQuote && isMedium && isFewLines && isNarrow) {
+      return 'quote';
+    }
+
+    // Caption: small font, short text (figure/table captions)
+    // Usually appears below images or at bottom of page region
+    if (isSmallFontSize && isShort && isFewLines) {
+      return 'caption';
+    }
+
+    // Caption: Text that looks like a figure/table reference
+    const looksLikeCaption = /^(fig(ure)?|table|plate|chart|diagram|illustration|photo|image)\s*[\d.:]/i.test(text);
+    if (looksLikeCaption && isShort) {
+      return 'caption';
+    }
 
     // Default: body text (this is the safest category)
-    return 'ocr_body';
+    return 'body';
   }
 
   /**
@@ -388,7 +452,7 @@ export class OcrPostProcessorService {
     layoutBlocks: LayoutBlock[]
   ): string {
     if (layoutBlocks.length === 0) {
-      return 'ocr_body';
+      return 'body';
     }
 
     // Find the layout block with the best overlap
@@ -423,7 +487,7 @@ export class OcrPostProcessorService {
     }
 
     // No good match found - default to body
-    return 'ocr_body';
+    return 'body';
   }
 
   /**

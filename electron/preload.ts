@@ -256,6 +256,25 @@ export interface MatchingSpansResult {
   pattern: string;  // The pattern that was matched
 }
 
+// Chapter structure for TOC extraction and chapter marking
+export interface Chapter {
+  id: string;
+  title: string;
+  page: number;              // 0-indexed
+  blockId?: string;          // Linked text block
+  y?: number;                // Y position for ordering within page
+  level: number;             // 1=chapter, 2=section, 3+=subsection
+  source: 'toc' | 'heuristic' | 'manual';
+  confidence?: number;       // 0-1 for heuristic detection
+}
+
+// Outline item from PDF TOC
+export interface OutlineItem {
+  title: string;
+  page: number;              // 0-indexed
+  down?: OutlineItem[];      // Nested children
+}
+
 export interface RenderProgressCallback {
   (progress: { current: number; total: number }): void;
 }
@@ -289,6 +308,11 @@ export interface ElectronAPI {
     findMatchingSpans: (pattern: SamplePattern) => Promise<{ success: boolean; data?: MatchingSpansResult; error?: string }>;
     findSpansByRegex: (pattern: string, minFontSize: number, maxFontSize: number, minBaseline?: number | null, maxBaseline?: number | null, caseSensitive?: boolean) => Promise<{ success: boolean; data?: MatchingSpansResult; error?: string }>;
     getSpans: () => Promise<{ success: boolean; data?: TextSpan[]; error?: string }>;
+    // Chapter detection
+    extractOutline: () => Promise<{ success: boolean; data?: OutlineItem[]; error?: string }>;
+    outlineToChapters: (outline: OutlineItem[]) => Promise<{ success: boolean; data?: Chapter[]; error?: string }>;
+    detectChapters: () => Promise<{ success: boolean; data?: Chapter[]; error?: string }>;
+    addBookmarks: (pdfBase64: string, chapters: Chapter[]) => Promise<{ success: boolean; data?: string; error?: string }>;
   };
   fs: {
     browse: (dirPath: string) => Promise<{
@@ -412,6 +436,15 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:find-spans-by-regex', pattern, minFontSize, maxFontSize, minBaseline, maxBaseline, caseSensitive),
     getSpans: () =>
       ipcRenderer.invoke('pdf:get-spans'),
+    // Chapter detection
+    extractOutline: () =>
+      ipcRenderer.invoke('pdf:extract-outline'),
+    outlineToChapters: (outline: OutlineItem[]) =>
+      ipcRenderer.invoke('pdf:outline-to-chapters', outline),
+    detectChapters: () =>
+      ipcRenderer.invoke('pdf:detect-chapters'),
+    addBookmarks: (pdfBase64: string, chapters: Chapter[]) =>
+      ipcRenderer.invoke('pdf:add-bookmarks', pdfBase64, chapters),
   },
   fs: {
     browse: (dirPath: string) =>

@@ -64,6 +64,11 @@ export interface OcrPageResult {
   layoutBlocks?: LayoutBlock[];  // Semantic layout regions (Surya only)
 }
 
+export interface OcrCompletionEvent {
+  results: OcrPageResult[];
+  useSuryaCategories: boolean;  // Whether to use Surya layout detection for categorization
+}
+
 @Component({
   selector: 'app-ocr-settings-modal',
   standalone: true,
@@ -195,6 +200,23 @@ export interface OcrPageResult {
               }
             </div>
           </div>
+
+          <!-- Surya Category Detection Option -->
+          @if (settings().engine === 'surya' && suryaLayoutAvailable()) {
+            <div class="section">
+              <label class="checkbox-option">
+                <input
+                  type="checkbox"
+                  [checked]="useSuryaCategories()"
+                  (change)="useSuryaCategories.set($any($event.target).checked)"
+                />
+                <span class="checkbox-label">
+                  <strong>Use Surya for category detection</strong>
+                  <span class="checkbox-hint">Uses Surya's layout detection instead of heuristics. May be less accurate for some documents.</span>
+                </span>
+              </label>
+            </div>
+          }
 
           <!-- Progress -->
           @if (running()) {
@@ -756,7 +778,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
   // Outputs
   close = output<void>();
-  ocrCompleted = output<OcrPageResult[]>();
+  ocrCompleted = output<OcrCompletionEvent>();
   backgroundJobStarted = output<string>();  // Emits job ID when starting background job
 
   // Services
@@ -785,6 +807,9 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
   // Surya layout detection availability (separate from OCR)
   readonly suryaLayoutAvailable = signal(false);
+
+  // Whether to use Surya's layout detection for categorization (default: false, use heuristics)
+  readonly useSuryaCategories = signal(false);
 
   readonly availableLanguages = signal<string[]>(['eng']);
   readonly scope = signal<OcrScope>('all');
@@ -1096,7 +1121,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
     // Auto-apply results to document
     if (this.results().length > 0) {
-      this.ocrCompleted.emit(this.results());
+      this.ocrCompleted.emit({ results: this.results(), useSuryaCategories: this.useSuryaCategories() });
     }
   }
 
@@ -1113,6 +1138,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
     const getImage = this.getPageImage();
     const engine = this.settings().engine;
+    const useSuryaCategories = this.useSuryaCategories();  // Capture at job start
 
     // Start background job
     const jobId = await this.ocrJobService.startJob(
@@ -1131,7 +1157,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
           textLines: r.textLines
         }));
         if (results.length > 0) {
-          this.ocrCompleted.emit(results);
+          this.ocrCompleted.emit({ results, useSuryaCategories });
         }
       }
     );
@@ -1156,7 +1182,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
     // Emit already processed results immediately (before modal closes)
     const alreadyProcessedResults = this.results();
     if (alreadyProcessedResults.length > 0) {
-      this.ocrCompleted.emit(alreadyProcessedResults);
+      this.ocrCompleted.emit({ results: alreadyProcessedResults, useSuryaCategories: this.useSuryaCategories() });
     }
 
     if (remainingPages.length === 0) {
@@ -1207,7 +1233,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
   }
 
   applyResults(): void {
-    this.ocrCompleted.emit(this.results());
+    this.ocrCompleted.emit({ results: this.results(), useSuryaCategories: this.useSuryaCategories() });
     this.close.emit();
   }
 }

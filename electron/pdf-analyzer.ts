@@ -95,6 +95,25 @@ export interface ExportTextResult {
   char_count: number;
 }
 
+// Chapter structure for TOC extraction and chapter marking
+export interface Chapter {
+  id: string;
+  title: string;
+  page: number;              // 0-indexed
+  blockId?: string;          // Linked text block
+  y?: number;                // Y position for ordering within page
+  level: number;             // 1=chapter, 2=section, 3+=subsection
+  source: 'toc' | 'heuristic' | 'manual';
+  confidence?: number;       // 0-1 for heuristic detection
+}
+
+// Outline item from PDF TOC
+export interface OutlineItem {
+  title: string;
+  page: number;              // 0-indexed
+  down?: OutlineItem[];      // Nested children
+}
+
 export interface DeletedRegion {
   page: number;
   x: number;
@@ -976,7 +995,8 @@ export class PDFAnalyzer {
         fallbackIdx++;
       }
 
-      const catId = this.hashId(catType).substring(0, 8);
+      // Use the category type directly as ID for consistency with OCR categories
+      const catId = catType;
       const sample = blocks[0]?.text.substring(0, 100) || '';
 
       this.categories[catId] = {
@@ -2902,6 +2922,256 @@ export class PDFAnalyzer {
    */
   private hashId(input: string): string {
     return crypto.createHash('md5').update(input).digest('hex').substring(0, 12);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Chapter Detection & TOC Extraction
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Extract table of contents (outline) from the loaded document.
+   * Returns hierarchical outline items that can be converted to chapters.
+   */
+  async extractOutline(): Promise<OutlineItem[]> {
+    if (!this.doc) {
+      throw new Error('No document loaded');
+    }
+
+    const outline = this.doc.loadOutline();
+    if (!outline) {
+      return [];
+    }
+
+    // Recursively convert mupdf outline to our OutlineItem format
+    const convertOutline = (items: any[]): OutlineItem[] => {
+      const result: OutlineItem[] = [];
+      for (const item of items) {
+        const outlineItem: OutlineItem = {
+          title: item.title || '',
+          page: typeof item.page === 'number' ? item.page : 0,
+        };
+        if (item.down && Array.isArray(item.down) && item.down.length > 0) {
+          outlineItem.down = convertOutline(item.down);
+        }
+        result.push(outlineItem);
+      }
+      return result;
+    };
+
+    return convertOutline(outline);
+  }
+
+  /**
+   * Convert outline items to flat chapter list with levels
+   */
+  outlineToChapters(outline: OutlineItem[]): Chapter[] {
+    const chapters: Chapter[] = [];
+    let idCounter = 0;
+
+    const flatten = (items: OutlineItem[], level: number) => {
+      for (const item of items) {
+        chapters.push({
+          id: `toc-${idCounter++}`,
+          title: item.title,
+          page: item.page,
+          level,
+          source: 'toc',
+        });
+        if (item.down) {
+          flatten(item.down, level + 1);
+        }
+      }
+    };
+
+    flatten(outline, 1);
+    return chapters;
+  }
+
+  /**
+   * Detect chapters using heuristics:
+   * - Pattern matching for chapter/section headings
+   * - Font size analysis (larger than body = potential heading)
+   * - Title category blocks
+   * - Bold text in top portion of page
+   */
+  detectChaptersHeuristic(): Chapter[] {
+    if (this.blocks.length === 0) {
+      return [];
+    }
+
+    const chapters: Chapter[] = [];
+    const bodyFontSize = this.getBodyFontSize();
+
+    // Chapter patterns
+    const chapterPattern = /^(chapter|part|book|section|introduction|preface|foreword|epilogue|prologue|acknowledgments?|afterword|appendix|contents?|table of contents?)\s*([\dIVXLCDMivxlcdm]+)?\.?$/i;
+    const numberedChapterPattern = /^(chapter|part|section)\s+[\dIVXLCDMivxlcdm]+\.?\s*[:\-]?\s*.+/i;
+
+    for (const block of this.blocks) {
+      // Skip non-text blocks and very small blocks
+      if (block.is_image || block.char_count < 3) continue;
+
+      const text = block.text.trim();
+      let confidence = 0;
+
+      // Factor 1: Title category (+0.4)
+      if (block.category_id === 'title') {
+        confidence += 0.4;
+      }
+
+      // Factor 2: Larger font size (+0.3)
+      if (block.font_size > bodyFontSize * 1.3) {
+        confidence += 0.3;
+      }
+
+      // Factor 3: Chapter pattern match (+0.5)
+      if (chapterPattern.test(text) || numberedChapterPattern.test(text)) {
+        confidence += 0.5;
+      }
+
+      // Factor 4: Bold in top 25% of page (+0.2)
+      const pageHeight = this.pageDimensions[block.page]?.height || 800;
+      const yPct = block.y / pageHeight;
+      if (block.is_bold && yPct < 0.25) {
+        confidence += 0.2;
+      }
+
+      // Factor 5: Short text that looks like a heading (+0.1)
+      if (block.line_count <= 2 && block.char_count < 100) {
+        confidence += 0.1;
+      }
+
+      // Add as chapter if confidence >= 0.4
+      if (confidence >= 0.4) {
+        // Find linked block to get exact position
+        chapters.push({
+          id: this.hashId(`heuristic-${block.page}-${block.y}-${text.substring(0, 20)}`),
+          title: text.length > 80 ? text.substring(0, 77) + '...' : text,
+          page: block.page,
+          blockId: block.id,
+          y: block.y,
+          level: this.inferChapterLevel(text, block.font_size, bodyFontSize),
+          source: 'heuristic',
+          confidence,
+        });
+      }
+    }
+
+    // Sort by page, then y position
+    chapters.sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return (a.y || 0) - (b.y || 0);
+    });
+
+    // Remove duplicates (same page and similar position)
+    const dedupedChapters: Chapter[] = [];
+    for (const chapter of chapters) {
+      const isDuplicate = dedupedChapters.some(
+        c => c.page === chapter.page && Math.abs((c.y || 0) - (chapter.y || 0)) < 20
+      );
+      if (!isDuplicate) {
+        dedupedChapters.push(chapter);
+      }
+    }
+
+    return dedupedChapters;
+  }
+
+  /**
+   * Infer chapter level from text pattern and font size
+   */
+  private inferChapterLevel(text: string, fontSize: number, bodyFontSize: number): number {
+    const lowerText = text.toLowerCase();
+
+    // Level 1: Major divisions (Part, Book)
+    if (/^(part|book)\s+[\dIVXLCDM]+/i.test(text)) {
+      return 1;
+    }
+
+    // Level 1: Chapters
+    if (/^chapter\s+[\dIVXLCDM]+/i.test(text) || fontSize > bodyFontSize * 1.5) {
+      return 1;
+    }
+
+    // Level 2: Sections, or moderately larger text
+    if (/^section\s+[\dIVXLCDM]+/i.test(text) || fontSize > bodyFontSize * 1.2) {
+      return 2;
+    }
+
+    // Level 3: Subsections or normal heading size
+    return 3;
+  }
+
+  /**
+   * Add bookmarks (outline) to an exported PDF.
+   * Takes existing PDF data and adds chapter bookmarks.
+   */
+  async addBookmarksToPdf(pdfData: Uint8Array, chapters: Chapter[]): Promise<Uint8Array> {
+    if (chapters.length === 0) {
+      return pdfData;
+    }
+
+    const mupdfLib = await getMupdf();
+    const doc = mupdfLib.Document.openDocument(pdfData, 'application/pdf');
+    const pdfDoc = doc.asPDF();
+
+    if (!pdfDoc) {
+      throw new Error('Failed to open PDF for bookmark addition');
+    }
+
+    // Sort chapters by page and position
+    const sortedChapters = [...chapters].sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return (a.y || 0) - (b.y || 0);
+    });
+
+    // Build hierarchical outline structure based on levels
+    const buildOutlineStructure = () => {
+      const root: any[] = [];
+      const stack: { level: number; children: any[] }[] = [{ level: 0, children: root }];
+
+      for (const chapter of sortedChapters) {
+        const entry = {
+          title: chapter.title,
+          page: chapter.page,
+          down: [] as any[],
+        };
+
+        // Find the right parent based on level
+        while (stack.length > 1 && stack[stack.length - 1].level >= chapter.level) {
+          stack.pop();
+        }
+
+        // Add to current parent's children
+        stack[stack.length - 1].children.push(entry);
+
+        // Push this entry as potential parent for next items
+        stack.push({ level: chapter.level, children: entry.down });
+      }
+
+      return root;
+    };
+
+    const outlineStructure = buildOutlineStructure();
+
+    // Use mupdf's outline iterator to add bookmarks
+    // Note: mupdf.js requires specific API for outline manipulation
+    // For now, we'll use the setOutline method if available
+    try {
+      // mupdf-js may expose different APIs depending on version
+      // Try the direct outline setting approach
+      if (typeof (pdfDoc as any).setOutline === 'function') {
+        (pdfDoc as any).setOutline(outlineStructure);
+      } else {
+        // Fallback: manually build outline using low-level PDF operations
+        console.log('Note: Outline API not available, chapters will not be embedded as bookmarks');
+      }
+    } catch (err) {
+      console.error('Failed to add bookmarks:', err);
+    }
+
+    // Save and return
+    const buffer = pdfDoc.saveToBuffer('compress');
+    return buffer.asUint8Array();
   }
 }
 

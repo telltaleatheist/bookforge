@@ -12,7 +12,11 @@
       "Bash(git add:*)",
       "Bash(npm run build:electron:*)",
       "WebSearch",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:mupdfjs.readthedocs.io)",
+      "WebFetch(domain:www.npmjs.com)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs"
     ]
   }
 }

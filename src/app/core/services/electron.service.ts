@@ -18,6 +18,25 @@ interface MatchingSpansResult {
   pattern: string;
 }
 
+// Chapter structure for TOC extraction and chapter marking
+export interface Chapter {
+  id: string;
+  title: string;
+  page: number;              // 0-indexed
+  blockId?: string;          // Linked text block
+  y?: number;                // Y position for ordering within page
+  level: number;             // 1=chapter, 2=section, 3+=subsection
+  source: 'toc' | 'heuristic' | 'manual';
+  confidence?: number;       // 0-1 for heuristic detection
+}
+
+// Outline item from PDF TOC
+export interface OutlineItem {
+  title: string;
+  page: number;              // 0-indexed
+  down?: OutlineItem[];      // Nested children
+}
+
 interface BrowseResult {
   path: string;
   parent: string;
@@ -508,6 +527,47 @@ export class ElectronService {
       const result = await (window as any).electron.pdf.findSpansByRegex(pattern, minFontSize, maxFontSize, minBaseline, maxBaseline, caseSensitive);
       if (result.success) {
         return { data: result.data };
+      }
+    }
+    return null;
+  }
+
+  // Chapter detection operations
+  async extractOutline(): Promise<OutlineItem[]> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.extractOutline();
+      if (result.success && result.data) {
+        return result.data;
+      }
+    }
+    return [];
+  }
+
+  async outlineToChapters(outline: OutlineItem[]): Promise<Chapter[]> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.outlineToChapters(outline);
+      if (result.success && result.data) {
+        return result.data;
+      }
+    }
+    return [];
+  }
+
+  async detectChapters(): Promise<Chapter[]> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.detectChapters();
+      if (result.success && result.data) {
+        return result.data;
+      }
+    }
+    return [];
+  }
+
+  async addBookmarksToPdf(pdfBase64: string, chapters: Chapter[]): Promise<string | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.addBookmarks(pdfBase64, chapters);
+      if (result.success && result.data) {
+        return result.data;
       }
     }
     return null;

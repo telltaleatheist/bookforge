@@ -1,5 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { PdfService, TextBlock } from './pdf.service';
+import { Chapter } from '../../../core/services/electron.service';
 
 export interface ExportableBlock {
   id: string;
@@ -69,10 +70,11 @@ export class ExportService {
     blocks: ExportableBlock[],
     deletedIds: Set<string>,
     pdfName: string,
-    textCorrections?: Map<string, string>
+    textCorrections?: Map<string, string>,
+    deletedPages?: Set<number>
   ): Promise<ExportResult> {
     const exportBlocks = blocks
-      .filter(b => !deletedIds.has(b.id) && !b.is_image)
+      .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
       .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
 
     if (exportBlocks.length === 0) {
@@ -123,10 +125,11 @@ export class ExportService {
     blocks: ExportableBlock[],
     deletedIds: Set<string>,
     pdfName: string,
-    textCorrections?: Map<string, string>
+    textCorrections?: Map<string, string>,
+    deletedPages?: Set<number>
   ): Promise<ExportResult> {
     const exportBlocks = blocks
-      .filter(b => !deletedIds.has(b.id) && !b.is_image)
+      .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
       .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
 
     if (exportBlocks.length === 0) {
@@ -180,6 +183,106 @@ export class ExportService {
   }
 
   /**
+   * Export content to an EPUB file with chapter structure
+   * Groups blocks by chapters instead of pages for better ebook compatibility
+   */
+  async exportEpubWithChapters(
+    blocks: ExportableBlock[],
+    deletedIds: Set<string>,
+    chapters: Chapter[],
+    pdfName: string,
+    textCorrections?: Map<string, string>,
+    deletedPages?: Set<number>
+  ): Promise<ExportResult> {
+    const exportBlocks = blocks
+      .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
+      .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
+
+    // Filter out chapters on deleted pages
+    const exportChapters = chapters.filter(c => !deletedPages?.has(c.page));
+
+    if (exportBlocks.length === 0) {
+      return {
+        success: false,
+        message: 'No text to export. All blocks have been deleted.'
+      };
+    }
+
+    const bookTitle = pdfName.replace(/\.pdf$/i, '');
+
+    // Sort chapters by page and position (using filtered chapters)
+    const sortedChapters = [...exportChapters].sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return (a.y || 0) - (b.y || 0);
+    });
+
+    // Group blocks by chapter
+    const chapterSections: { title: string; level: number; content: string[] }[] = [];
+    let currentChapterIndex = 0;
+    let currentContent: string[] = [];
+    let currentTitle = 'Introduction'; // Default for content before first chapter
+
+    for (const block of exportBlocks) {
+      // Check if we've reached a new chapter
+      while (
+        currentChapterIndex < sortedChapters.length &&
+        (block.page > sortedChapters[currentChapterIndex].page ||
+         (block.page === sortedChapters[currentChapterIndex].page &&
+          block.y >= (sortedChapters[currentChapterIndex].y || 0)))
+      ) {
+        // Save previous chapter content
+        if (currentContent.length > 0) {
+          chapterSections.push({
+            title: currentTitle,
+            level: currentChapterIndex === 0 ? 1 : (sortedChapters[currentChapterIndex - 1]?.level || 1),
+            content: currentContent
+          });
+        }
+        // Start new chapter
+        currentTitle = sortedChapters[currentChapterIndex].title;
+        currentContent = [];
+        currentChapterIndex++;
+      }
+
+      // Add block to current chapter
+      const blockText = textCorrections?.get(block.id) ?? block.text;
+      const cleanedText = this.stripFootnoteRefs(blockText);
+      if (cleanedText.trim()) {
+        currentContent.push(`<p>${this.escapeHtml(cleanedText)}</p>`);
+      }
+    }
+
+    // Don't forget the last chapter
+    if (currentContent.length > 0) {
+      chapterSections.push({
+        title: currentTitle,
+        level: sortedChapters.length > 0 ? (sortedChapters[sortedChapters.length - 1]?.level || 1) : 1,
+        content: currentContent
+      });
+    }
+
+    if (chapterSections.length === 0) {
+      return {
+        success: false,
+        message: 'No content to export after organizing by chapters.'
+      };
+    }
+
+    const epub = this.generateEpubBlobWithChapters(bookTitle, chapterSections);
+    const filename = this.generateFilename(pdfName, 'epub');
+
+    this.downloadBlob(epub, filename);
+
+    return {
+      success: true,
+      message: `Exported EPUB with ${chapterSections.length} chapters, ${exportBlocks.length} blocks.`,
+      filename,
+      chapterCount: chapterSections.length,
+      blockCount: exportBlocks.length
+    };
+  }
+
+  /**
    * Export PDF with deleted regions removed
    * When image blocks are deleted, OCR text blocks are embedded to replace the removed images
    */
@@ -191,14 +294,16 @@ export class ExportService {
     libraryPath: string,
     pdfName: string,
     getHighlightId: (categoryId: string, page: number, x: number, y: number) => string,
-    textCorrections?: Map<string, string>
+    textCorrections?: Map<string, string>,
+    deletedPages?: Set<number>
   ): Promise<ExportResult> {
     const deletedRegions: DeletedRegion[] = [];
     const ocrBlocks: OcrTextBlock[] = [];
     let hasDeletedImages = false;
 
-    // Add deleted blocks and check for deleted images
+    // Add deleted blocks and check for deleted images (skip blocks on deleted pages)
     for (const block of blocks) {
+      if (deletedPages?.has(block.page)) continue; // Skip blocks on deleted pages
       if (deletedBlockIds.has(block.id)) {
         deletedRegions.push({
           page: block.page,
@@ -219,6 +324,7 @@ export class ExportService {
     // Handles both: OCR blocks created by BookForge AND pre-existing text layers
     if (hasDeletedImages) {
       for (const block of blocks) {
+        if (deletedPages?.has(block.page)) continue; // Skip blocks on deleted pages
         if (!block.is_image && !deletedBlockIds.has(block.id)) {
           // Use corrected text if available
           const text = textCorrections?.get(block.id) ?? block.text;
@@ -235,11 +341,12 @@ export class ExportService {
       }
     }
 
-    // Add deleted custom category highlights
+    // Add deleted custom category highlights (skip deleted pages)
     if (deletedHighlightIds.size > 0) {
       for (const [categoryId, pageMap] of categoryHighlights) {
         for (const [pageStr, rects] of Object.entries(pageMap)) {
           const page = parseInt(pageStr);
+          if (deletedPages?.has(page)) continue; // Skip highlights on deleted pages
           for (const rect of rects) {
             const highlightId = getHighlightId(categoryId, page, rect.x, rect.y);
             if (deletedHighlightIds.has(highlightId)) {
@@ -538,6 +645,113 @@ ${s.content}
     ];
 
     return this.createZipBlob(files);
+  }
+
+  /**
+   * Generate EPUB with chapter structure (for better ebook reader compatibility)
+   */
+  private generateEpubBlobWithChapters(title: string, chapters: { title: string; level: number; content: string[] }[]): Blob {
+    const uuid = 'urn:uuid:' + this.generateUuid();
+    const date = new Date().toISOString().split('T')[0];
+
+    const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`;
+
+    const chapterManifest = chapters.map((_, i) =>
+      `    <item id="chapter${i + 1}" href="chapter${i + 1}.xhtml" media-type="application/xhtml+xml"/>`
+    ).join('\n');
+
+    const chapterSpine = chapters.map((_, i) =>
+      `    <itemref idref="chapter${i + 1}"/>`
+    ).join('\n');
+
+    const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">${uuid}</dc:identifier>
+    <dc:title>${this.escapeHtml(title)}</dc:title>
+    <dc:language>en</dc:language>
+    <meta property="dcterms:modified">${date}T00:00:00Z</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+${chapterManifest}
+  </manifest>
+  <spine>
+${chapterSpine}
+  </spine>
+</package>`;
+
+    // Build hierarchical navigation
+    const navItems = this.buildNavItems(chapters);
+
+    const navXhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+  <title>Table of Contents</title>
+</head>
+<body>
+  <nav epub:type="toc">
+    <h1>Table of Contents</h1>
+    <ol>
+${navItems}
+    </ol>
+  </nav>
+</body>
+</html>`;
+
+    const chapterXhtmls = chapters.map((chapter, i) => ({
+      index: i + 1,
+      xhtml: `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>${this.escapeHtml(chapter.title)}</title>
+  <style>
+    body { font-family: serif; line-height: 1.6; margin: 1em; }
+    h1 { font-size: 1.5em; margin-bottom: 1em; }
+    h2 { font-size: 1.3em; margin-bottom: 0.8em; }
+    h3 { font-size: 1.1em; margin-bottom: 0.6em; }
+    p { margin: 0.5em 0; text-indent: 1em; }
+  </style>
+</head>
+<body>
+  <h${Math.min(chapter.level, 3)}>${this.escapeHtml(chapter.title)}</h${Math.min(chapter.level, 3)}>
+${chapter.content.join('\n')}
+</body>
+</html>`
+    }));
+
+    const files: { name: string; content: string }[] = [
+      { name: 'mimetype', content: 'application/epub+zip' },
+      { name: 'META-INF/container.xml', content: containerXml },
+      { name: 'OEBPS/content.opf', content: contentOpf },
+      { name: 'OEBPS/nav.xhtml', content: navXhtml },
+      ...chapterXhtmls.map((c) => ({
+        name: `OEBPS/chapter${c.index}.xhtml`,
+        content: c.xhtml
+      }))
+    ];
+
+    return this.createZipBlob(files);
+  }
+
+  /**
+   * Build hierarchical navigation items for EPUB TOC
+   */
+  private buildNavItems(chapters: { title: string; level: number; content: string[] }[]): string {
+    const items: string[] = [];
+    for (let i = 0; i < chapters.length; i++) {
+      const chapter = chapters[i];
+      const indent = '      '.repeat(Math.max(1, chapter.level));
+      items.push(`${indent}<li><a href="chapter${i + 1}.xhtml">${this.escapeHtml(chapter.title)}</a></li>`);
+    }
+    return items.join('\n');
   }
 
   private createZipBlob(files: { name: string; content: string }[]): Blob {

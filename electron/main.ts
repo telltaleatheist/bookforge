@@ -382,6 +382,47 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Chapter detection handlers
+  ipcMain.handle('pdf:extract-outline', async () => {
+    try {
+      const outline = await pdfAnalyzer.extractOutline();
+      return { success: true, data: outline };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:outline-to-chapters', async (_event, outline: any[]) => {
+    try {
+      const chapters = pdfAnalyzer.outlineToChapters(outline);
+      return { success: true, data: chapters };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:detect-chapters', async () => {
+    try {
+      const chapters = pdfAnalyzer.detectChaptersHeuristic();
+      return { success: true, data: chapters };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:add-bookmarks', async (_event, pdfBase64: string, chapters: any[]) => {
+    try {
+      // Convert base64 to Uint8Array
+      const pdfData = Buffer.from(pdfBase64, 'base64');
+      const result = await pdfAnalyzer.addBookmarksToPdf(pdfData, chapters);
+      // Convert back to base64
+      const base64Result = Buffer.from(result).toString('base64');
+      return { success: true, data: base64Result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // File system handlers
   ipcMain.handle('fs:browse', async (_event, dirPath: string) => {
     const fs = await import('fs/promises');

@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { TextBlock, Category, PageDimension } from '../../services/pdf.service';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { Chapter } from '../../../../core/services/electron.service';
 
 export interface CropRect {
   x: number;
@@ -38,8 +39,11 @@ export interface CropRect {
             <div
               *cdkVirtualFor="let pageNum of pageNumbers(); trackBy: trackByPageNum"
               class="page-wrapper"
+              [class.page-deleted]="isPageMarkedDeleted(pageNum)"
+              [class.page-selected]="isPageSelected(pageNum)"
               [attr.data-page]="pageNum"
               [style.width.px]="getPageWidth(pageNum)"
+              (click)="onPageClick($event, pageNum)"
               (contextmenu)="onPageContextMenu($event, pageNum)"
             >
               <div class="page-content">
@@ -191,6 +195,46 @@ export interface CropRect {
                           class="highlight-delete-mark"
                         />
                       }
+                    }
+                  }
+
+                  <!-- Chapter markers -->
+                  @if (chapters().length > 0 || chaptersMode()) {
+                    @for (chapter of getChaptersForPage(pageNum); track chapter.id) {
+                      <g class="chapter-marker">
+                        <!-- Chapter line -->
+                        <line
+                          class="chapter-line"
+                          x1="0"
+                          [attr.y1]="chapter.y || 20"
+                          [attr.x2]="getPageDimensions(pageNum)?.width || 600"
+                          [attr.y2]="chapter.y || 20"
+                          stroke="#4caf50"
+                          stroke-width="2"
+                          stroke-dasharray="8,4"
+                        />
+                        <!-- Chapter label background -->
+                        <rect
+                          class="chapter-label-bg"
+                          x="4"
+                          [attr.y]="(chapter.y || 20) - 14"
+                          [attr.width]="getChapterLabelWidth(chapter.title)"
+                          height="16"
+                          rx="3"
+                          fill="#4caf50"
+                        />
+                        <!-- Chapter label text -->
+                        <text
+                          class="chapter-label-text"
+                          x="8"
+                          [attr.y]="(chapter.y || 20) - 2"
+                          fill="white"
+                          font-size="10"
+                          font-weight="500"
+                        >
+                          {{ chapter.level > 1 ? '  ' : '' }}{{ chapter.title.length > 30 ? chapter.title.substring(0, 27) + '...' : chapter.title }}
+                        </text>
+                      </g>
                     }
                   }
 
@@ -350,7 +394,24 @@ export interface CropRect {
                     <span>Split</span>
                   </label>
                 }
+                @if (chaptersMode()) {
+                  <button
+                    class="page-delete-btn"
+                    [class.deleted]="isPageMarkedDeleted(pageNum)"
+                    (click)="onPageDeleteClick($event, pageNum)"
+                    [title]="isPageMarkedDeleted(pageNum) ? 'Restore page' : 'Delete page from export'"
+                  >
+                    @if (isPageMarkedDeleted(pageNum)) {
+                      ↩
+                    } @else {
+                      🗑
+                    }
+                  </button>
+                }
                 Page {{ pageNum + 1 }}
+                @if (isPageMarkedDeleted(pageNum)) {
+                  <span class="deleted-badge">excluded</span>
+                }
               </div>
             </div>
           </div>
@@ -370,6 +431,8 @@ export interface CropRect {
             @for (pageNum of pageNumbers(); track pageNum; let idx = $index) {
               <div
                 class="page-wrapper"
+                [class.page-deleted]="isPageMarkedDeleted(pageNum)"
+                [class.page-selected]="isPageSelected(pageNum)"
                 [attr.data-page]="pageNum"
                 [attr.data-index]="idx"
                 [style.width.px]="getPageWidth(pageNum)"
@@ -378,6 +441,7 @@ export interface CropRect {
                 [class.drag-over-before]="dragOverIndex() === idx && dropTargetIndex === idx"
                 [class.drag-over-after]="dragOverIndex() === idx && dropTargetIndex === idx + 1"
                 [draggable]="editorMode() === 'organize'"
+                (click)="onPageClick($event, pageNum)"
                 (contextmenu)="onPageContextMenu($event, pageNum)"
                 (dragstart)="onPageDragStart($event, idx, pageNum)"
                 (dragend)="onPageDragEnd($event)"
@@ -528,6 +592,42 @@ export interface CropRect {
                         />
                       }
                     }
+                    <!-- Chapter markers (grid mode) -->
+                    @if (chapters().length > 0 || chaptersMode()) {
+                      @for (chapter of getChaptersForPage(pageNum); track chapter.id) {
+                        <g class="chapter-marker">
+                          <line
+                            class="chapter-line"
+                            x1="0"
+                            [attr.y1]="chapter.y || 20"
+                            [attr.x2]="getPageDimensions(pageNum)?.width || 600"
+                            [attr.y2]="chapter.y || 20"
+                            stroke="#4caf50"
+                            stroke-width="2"
+                            stroke-dasharray="8,4"
+                          />
+                          <rect
+                            class="chapter-label-bg"
+                            x="4"
+                            [attr.y]="(chapter.y || 20) - 14"
+                            [attr.width]="getChapterLabelWidth(chapter.title)"
+                            height="16"
+                            rx="3"
+                            fill="#4caf50"
+                          />
+                          <text
+                            class="chapter-label-text"
+                            x="8"
+                            [attr.y]="(chapter.y || 20) - 2"
+                            fill="white"
+                            font-size="10"
+                            font-weight="500"
+                          >
+                            {{ chapter.level > 1 ? '  ' : '' }}{{ chapter.title.length > 30 ? chapter.title.substring(0, 27) + '...' : chapter.title }}
+                          </text>
+                        </g>
+                      }
+                    }
                     @if (isMarqueeSelecting() && currentMarqueeRect() && currentMarqueeRect()!.pageNum === pageNum) {
                       <rect
                         class="marquee-rect"
@@ -543,7 +643,26 @@ export interface CropRect {
                     }
                   </svg>
                 </div>
-                <div class="page-label">Page {{ pageNum + 1 }}</div>
+                <div class="page-label">
+                  @if (chaptersMode()) {
+                    <button
+                      class="page-delete-btn"
+                      [class.deleted]="isPageMarkedDeleted(pageNum)"
+                      (click)="onPageDeleteClick($event, pageNum)"
+                      [title]="isPageMarkedDeleted(pageNum) ? 'Restore page' : 'Delete page from export'"
+                    >
+                      @if (isPageMarkedDeleted(pageNum)) {
+                        ↩
+                      } @else {
+                        🗑
+                      }
+                    </button>
+                  }
+                  Page {{ pageNum + 1 }}
+                  @if (isPageMarkedDeleted(pageNum)) {
+                    <span class="deleted-badge">excluded</span>
+                  }
+                </div>
               </div>
             }
           </div>
@@ -590,8 +709,28 @@ export interface CropRect {
         [style.left.px]="pageMenuX()"
         [style.top.px]="pageMenuY()"
       >
-        <div class="menu-item" (click)="onSelectAllOnPage()">Select all on page {{ pageMenuPageNum() + 1 }}</div>
-        <div class="menu-item" (click)="onDeselectAllOnPage()">Deselect all on page {{ pageMenuPageNum() + 1 }}</div>
+        @if (organizeMode() || chaptersMode()) {
+          @if (selectedPages().size > 0) {
+            <div class="menu-item danger" (click)="onDeleteSelectedPages()">
+              Delete {{ selectedPages().size }} selected page{{ selectedPages().size !== 1 ? 's' : '' }}
+            </div>
+            <div class="menu-item" (click)="onClearPageSelection()">Clear selection</div>
+            <div class="menu-divider"></div>
+          }
+          @if (!isPageSelected(pageMenuPageNum())) {
+            <div class="menu-item" (click)="onSelectPage(pageMenuPageNum())">Select page {{ pageMenuPageNum() + 1 }}</div>
+          } @else {
+            <div class="menu-item" (click)="onDeselectPage(pageMenuPageNum())">Deselect page {{ pageMenuPageNum() + 1 }}</div>
+          }
+          @if (!isPageMarkedDeleted(pageMenuPageNum())) {
+            <div class="menu-item danger" (click)="onDeleteSinglePage(pageMenuPageNum())">Delete page {{ pageMenuPageNum() + 1 }}</div>
+          } @else {
+            <div class="menu-item" (click)="onRestoreSinglePage(pageMenuPageNum())">Restore page {{ pageMenuPageNum() + 1 }}</div>
+          }
+        } @else {
+          <div class="menu-item" (click)="onSelectAllOnPage()">Select all on page {{ pageMenuPageNum() + 1 }}</div>
+          <div class="menu-item" (click)="onDeselectAllOnPage()">Deselect all on page {{ pageMenuPageNum() + 1 }}</div>
+        }
       </div>
     }
   `,
@@ -801,6 +940,81 @@ export interface CropRect {
           accent-color: var(--accent);
         }
       }
+
+      .page-delete-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        border: none;
+        border-radius: 4px;
+        background: transparent;
+        cursor: pointer;
+        font-size: 14px;
+        transition: background-color 0.15s ease, transform 0.1s ease;
+
+        &:hover {
+          background: rgba(255, 68, 68, 0.1);
+          transform: scale(1.1);
+        }
+
+        &.deleted {
+          color: #4caf50;
+
+          &:hover {
+            background: rgba(76, 175, 80, 0.1);
+          }
+        }
+      }
+
+      .deleted-badge {
+        font-size: 9px;
+        font-weight: 600;
+        text-transform: uppercase;
+        color: #ff4444;
+        background: rgba(255, 68, 68, 0.1);
+        padding: 2px 6px;
+        border-radius: 3px;
+        letter-spacing: 0.5px;
+      }
+    }
+
+    /* Page marked as deleted */
+    .page-wrapper.page-deleted {
+      .page-content {
+        opacity: 0.4;
+        filter: grayscale(0.5);
+      }
+
+      .page-label {
+        background: rgba(255, 68, 68, 0.1);
+        color: #ff4444;
+      }
+    }
+
+    /* Page selected (for organize/chapters mode) */
+    .page-wrapper.page-selected {
+      .page-content {
+        outline: 3px solid var(--accent, #ff6b35);
+        outline-offset: -3px;
+      }
+
+      .page-label {
+        background: var(--accent, #ff6b35);
+        color: white;
+      }
+    }
+
+    /* Selected + deleted combo */
+    .page-wrapper.page-selected.page-deleted {
+      .page-content {
+        outline-color: #ff4444;
+      }
+
+      .page-label {
+        background: #ff4444;
+      }
     }
 
     .pdf-image {
@@ -1006,10 +1220,11 @@ export interface CropRect {
     }
 
     .text-overlay-content {
-      padding: 2px 4px;
-      font-family: Georgia, 'Times New Roman', Times, serif;
-      line-height: 1.2;
-      color: #1a1a1a;
+      padding: 0;
+      /* Use a neutral serif font stack typical of books */
+      font-family: 'Times New Roman', Times, 'Noto Serif', Georgia, serif;
+      line-height: 1.15;
+      color: #000000;
       background-color: transparent;
       border: none;
       white-space: pre-wrap;
@@ -1018,6 +1233,8 @@ export interface CropRect {
       width: 100%;
       height: 100%;
       margin: 0;
+      /* Slightly tighten letter spacing to match typical book typography */
+      letter-spacing: -0.01em;
     }
 
     /* Only show background for corrected/moved blocks where we need to cover original text */
@@ -1110,6 +1327,20 @@ export interface CropRect {
         background: var(--hover-bg);
         transform: translateX(2px);
       }
+
+      &.danger {
+        color: #ff4444;
+
+        &:hover {
+          background: rgba(255, 68, 68, 0.1);
+        }
+      }
+    }
+
+    .menu-divider {
+      height: 1px;
+      background: var(--border-subtle);
+      margin: var(--ui-spacing-xs) 0;
     }
 
     @keyframes menuPopIn {
@@ -1185,6 +1416,15 @@ export class PdfViewerComponent implements AfterViewInit {
   // Block size overrides - maps blockId to {width, height} (for resized blocks)
   blockSizes = input<Map<string, { width: number; height: number }>>(new Map());
 
+  // Chapters mode inputs
+  chapters = input<Chapter[]>([]);
+  chaptersMode = input<boolean>(false);
+  deletedPages = input<Set<number>>(new Set());  // Pages marked for exclusion from export
+
+  // Page selection (for organize/chapters mode)
+  selectedPages = input<Set<number>>(new Set());
+  organizeMode = input<boolean>(false);
+
   blockClick = output<{ block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
   blockDoubleClick = output<{
     block: TextBlock;
@@ -1216,6 +1456,16 @@ export class PdfViewerComponent implements AfterViewInit {
   // Block drag output (for edit mode)
   blockMoved = output<{ blockId: string; offsetX: number; offsetY: number }>();
   blockDragEnd = output<{ blockId: string; pageNum: number }>();
+
+  // Chapter click output (for chapters mode)
+  chapterClick = output<{ block: TextBlock; level: number }>();
+
+  // Page delete output (for chapters mode)
+  pageDeleteToggle = output<number>();
+
+  // Page selection outputs (for organize/chapters mode)
+  pageSelect = output<{ pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
+  deleteSelectedPages = output<Set<number>>();
 
   // Virtual scrolling state
   private readonly scrollTop = signal(0);
@@ -1553,6 +1803,9 @@ export class PdfViewerComponent implements AfterViewInit {
   readonly pageMenuY = signal(0);
   readonly pageMenuPageNum = signal(0);
 
+  // Page selection state (for range selection with shift-click)
+  private lastSelectedPage: number | null = null;
+
   // Aliases for template compatibility
   hoveredBlock(): TextBlock | null { return this.contextMenuBlock(); }
   tooltipX(): number { return this.contextMenuX(); }
@@ -1705,6 +1958,36 @@ export class PdfViewerComponent implements AfterViewInit {
     return this.sampleRects().filter(r => r.page === pageNum);
   }
 
+  /**
+   * Get chapters that start on a specific page
+   */
+  getChaptersForPage(pageNum: number): Chapter[] {
+    return this.chapters().filter(c => c.page === pageNum);
+  }
+
+  /**
+   * Get chapter label width (max 200px)
+   */
+  getChapterLabelWidth(title: string): number {
+    return Math.min(200, title.length * 6 + 20);
+  }
+
+  /**
+   * Check if a page is marked as deleted
+   */
+  isPageMarkedDeleted(pageNum: number): boolean {
+    return this.deletedPages().has(pageNum);
+  }
+
+  /**
+   * Toggle page deletion and emit event
+   */
+  onPageDeleteClick(event: MouseEvent, pageNum: number): void {
+    event.stopPropagation();
+    event.preventDefault();
+    this.pageDeleteToggle.emit(pageNum);
+  }
+
   getBlockFill(block: TextBlock): string {
     const cat = this.categories()[block.category_id];
     return (cat?.color || '#ff6b35') + '40';
@@ -1749,28 +2032,33 @@ export class PdfViewerComponent implements AfterViewInit {
   getBlockY(block: TextBlock): number {
     const offset = this.blockOffsets().get(block.id);
     const baseY = block.y + (offset?.offsetY ?? 0);
-
-    // Shift box up slightly to better center it over the text
-    // OCR bounding boxes tend to be positioned slightly too low
-    return baseY - 1;
+    // No adjustment - use exact position from text extraction/OCR
+    return baseY;
   }
 
   getBlockWidth(block: TextBlock): number {
     const sizeOverride = this.blockSizes().get(block.id);
     const baseWidth = sizeOverride?.width ?? block.width;
 
-    // Add a small buffer (3% + 4px) to compensate for text extraction inaccuracies
-    // This ensures highlight boxes fully cover the text width
-    return baseWidth * 1.03 + 4;
+    // For OCR blocks, use exact width - OCR bounding boxes are usually accurate
+    // For native PDF text, add minimal buffer to cover text extraction inaccuracies
+    if (block.is_ocr) {
+      return baseWidth;
+    }
+    // Reduced buffer (1% + 2px) for native PDF text
+    return baseWidth * 1.01 + 2;
   }
 
   getBlockHeight(block: TextBlock): number {
     const sizeOverride = this.blockSizes().get(block.id);
     const baseHeight = sizeOverride?.height ?? block.height;
 
-    // Add a small vertical buffer to ensure text is fully covered
-    // This compensates for OCR bounding box inaccuracies
-    return baseHeight + 2;
+    // For OCR blocks, use exact height
+    if (block.is_ocr) {
+      return baseHeight;
+    }
+    // Minimal buffer for native PDF text
+    return baseHeight + 1;
   }
 
   getCorrectedText(blockId: string): string | null {
@@ -1853,39 +2141,55 @@ export class PdfViewerComponent implements AfterViewInit {
   /**
    * Get the font size for a text overlay.
    *
-   * For multi-line text blocks (body text), we keep the original font size
-   * and let the text wrap naturally.
+   * For OCR blocks, calculate font size to fit the bounding box height,
+   * since OCR font size estimation is often inaccurate.
    *
-   * For single-line OCR blocks, we may shrink the font to fit if needed.
+   * For native PDF text with corrections/overlays, we may need to adjust to fit.
    */
   getOverlayFontSize(block: TextBlock): number {
     const baseFontSize = block.font_size || 12;
+
+    // For OCR blocks, calculate font size from block height to ensure text fits
+    // The block height represents the visual space the text should occupy
+    if (block.is_ocr) {
+      const blockHeight = this.getBlockHeight(block);
+      const lineCount = block.line_count || 1;
+
+      // Calculate font size so text fills the height
+      // For line-height 1.15, font_size = height / (lineCount * 1.15)
+      // Add small buffer to prevent overflow
+      const lineHeightRatio = 1.2;  // Slightly more than CSS line-height for safety
+      const calculatedSize = blockHeight / (lineCount * lineHeightRatio);
+
+      // Clamp to sensible range
+      const fontSize = Math.max(8, Math.min(48, calculatedSize));
+      return Math.round(fontSize);
+    }
+
+    // For non-OCR blocks with text corrections, we may need to fit text in the box
     const blockHeight = this.getBlockHeight(block);
 
-    // Check if this is a single-line block (height is close to one line of text)
-    // Single-line blocks have height roughly equal to font_size * 1.5 or less
+    // Check if this is a single-line block
     const isSingleLine = blockHeight < baseFontSize * 2;
 
     // For multi-line blocks, just use the original font size
-    // Let the text wrap naturally within the block width
     if (!isSingleLine) {
       return baseFontSize;
     }
 
-    // For single-line blocks (like OCR-detected lines), shrink to fit if needed
+    // For single-line blocks, check if text fits
     const text = this.getDisplayText(block);
     const width = this.getBlockWidth(block);
 
-    // Account for padding
-    const padding = 8;
-    const availableWidth = width - padding;
+    // No padding in CSS, so use full width
+    const availableWidth = width;
 
     if (availableWidth <= 0 || !text) {
       return baseFontSize;
     }
 
-    // For Georgia/serif fonts, average character width is roughly 0.55x font size
-    const avgCharWidthRatio = 0.55;
+    // Estimate text width using a conservative character width ratio
+    const avgCharWidthRatio = 0.5;
     const estimatedTextWidth = text.length * baseFontSize * avgCharWidthRatio;
 
     if (estimatedTextWidth <= availableWidth) {
@@ -1895,8 +2199,8 @@ export class PdfViewerComponent implements AfterViewInit {
     // Calculate font size that would fit the text on one line
     const fittingFontSize = availableWidth / (text.length * avgCharWidthRatio);
 
-    // Don't shrink below 8px or more than 50% of original
-    const minFontSize = Math.max(8, baseFontSize * 0.5);
+    // Don't shrink below 8px or more than 30% of original
+    const minFontSize = Math.max(8, baseFontSize * 0.7);
 
     return Math.max(minFontSize, fittingFontSize);
   }
@@ -1911,16 +2215,20 @@ export class PdfViewerComponent implements AfterViewInit {
     const width = this.getBlockWidth(block);
     const fontSize = this.getOverlayFontSize(block);
 
-    // Account for padding
-    const padding = 8;
-    const availableWidth = width - padding;
+    // For OCR blocks, just use the base height - the bounding box is calibrated
+    if (block.is_ocr) {
+      return baseHeight;
+    }
+
+    // No padding in CSS, use full width
+    const availableWidth = width;
 
     if (availableWidth <= 0 || !displayText) {
       return baseHeight;
     }
 
     // Calculate how many characters fit per line
-    const avgCharWidthRatio = 0.55;
+    const avgCharWidthRatio = 0.5;
     const charWidth = fontSize * avgCharWidthRatio;
     const charsPerLine = Math.max(1, Math.floor(availableWidth / charWidth));
 
@@ -1933,9 +2241,9 @@ export class PdfViewerComponent implements AfterViewInit {
       totalLines += wrappedLines;
     }
 
-    // Calculate height: lines * lineHeight
-    const lineHeight = fontSize * 1.35; // line-height: 1.35 from CSS
-    const neededHeight = totalLines * lineHeight + 4; // 4px for padding top/bottom
+    // Calculate height: lines * lineHeight (1.15 from CSS)
+    const lineHeight = fontSize * 1.15;
+    const neededHeight = totalLines * lineHeight;
 
     // Return the larger of base height or needed height
     return Math.max(baseHeight, neededHeight);
@@ -1959,6 +2267,14 @@ export class PdfViewerComponent implements AfterViewInit {
   onBlockClick(event: MouseEvent, block: TextBlock): void {
     event.preventDefault();
     event.stopPropagation();
+
+    // In chapters mode, emit chapter click instead
+    if (this.chaptersMode()) {
+      const level = event.shiftKey ? 2 : 1; // Shift+click for section (level 2)
+      this.chapterClick.emit({ block, level });
+      return;
+    }
+
     this.blockClick.emit({
       block,
       shiftKey: event.shiftKey,
@@ -2215,6 +2531,73 @@ export class PdfViewerComponent implements AfterViewInit {
     this.closePageMenu();
   }
 
+  // Page selection helpers
+  isPageSelected(pageNum: number): boolean {
+    return this.selectedPages().has(pageNum);
+  }
+
+  onPageClick(event: MouseEvent, pageNum: number): void {
+    // Only handle page selection in organize or chapters mode
+    if (!this.organizeMode() && !this.chaptersMode()) {
+      return;
+    }
+
+    // Don't handle if clicking on buttons or other interactive elements
+    const target = event.target as HTMLElement;
+    if (target.closest('button') || target.closest('input') || target.closest('.block-rect')) {
+      return;
+    }
+
+    // Emit page selection event with modifier keys
+    this.pageSelect.emit({
+      pageNum,
+      shiftKey: event.shiftKey,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey
+    });
+
+    // Track last selected page for shift-click range selection
+    if (!event.shiftKey) {
+      this.lastSelectedPage = pageNum;
+    }
+  }
+
+  onSelectPage(pageNum: number): void {
+    this.pageSelect.emit({ pageNum, shiftKey: false, metaKey: false, ctrlKey: false });
+    this.lastSelectedPage = pageNum;
+    this.closePageMenu();
+  }
+
+  onDeselectPage(pageNum: number): void {
+    // Emit with ctrl/meta to toggle off
+    this.pageSelect.emit({ pageNum, shiftKey: false, metaKey: true, ctrlKey: false });
+    this.closePageMenu();
+  }
+
+  onDeleteSelectedPages(): void {
+    const selected = this.selectedPages();
+    if (selected.size > 0) {
+      this.deleteSelectedPages.emit(new Set(selected));
+    }
+    this.closePageMenu();
+  }
+
+  onClearPageSelection(): void {
+    // Emit empty set to clear selection
+    this.deleteSelectedPages.emit(new Set()); // Parent will interpret empty set as clear
+    this.closePageMenu();
+  }
+
+  onDeleteSinglePage(pageNum: number): void {
+    this.pageDeleteToggle.emit(pageNum);
+    this.closePageMenu();
+  }
+
+  onRestoreSinglePage(pageNum: number): void {
+    this.pageDeleteToggle.emit(pageNum);
+    this.closePageMenu();
+  }
+
   // Handle scroll events for virtual scrolling (throttled for performance)
   onScroll(event: Event): void {
     const target = event.target as HTMLElement;
@@ -2362,7 +2745,7 @@ export class PdfViewerComponent implements AfterViewInit {
     }
   }
 
-  onOverlayMouseUp(event: MouseEvent, pageNum: number): void {
+  onOverlayMouseUp(event: MouseEvent, _pageNum: number): void {
     if (this.sampleMode()) {
       // Sample mode - emit event for parent to handle
       this.sampleMouseUp.emit();
