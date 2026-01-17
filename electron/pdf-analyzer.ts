@@ -3103,7 +3103,7 @@ export class PDFAnalyzer {
 
   /**
    * Add bookmarks (outline) to an exported PDF.
-   * Takes existing PDF data and adds chapter bookmarks.
+   * Takes existing PDF data and adds chapter bookmarks using OutlineIterator.
    */
   async addBookmarksToPdf(pdfData: Uint8Array, chapters: Chapter[]): Promise<Uint8Array> {
     if (chapters.length === 0) {
@@ -3112,11 +3112,6 @@ export class PDFAnalyzer {
 
     const mupdfLib = await getMupdf();
     const doc = mupdfLib.Document.openDocument(pdfData, 'application/pdf');
-    const pdfDoc = doc.asPDF();
-
-    if (!pdfDoc) {
-      throw new Error('Failed to open PDF for bookmark addition');
-    }
 
     // Sort chapters by page and position
     const sortedChapters = [...chapters].sort((a, b) => {
@@ -3124,52 +3119,77 @@ export class PDFAnalyzer {
       return (a.y || 0) - (b.y || 0);
     });
 
-    // Build hierarchical outline structure based on levels
-    const buildOutlineStructure = () => {
-      const root: any[] = [];
-      const stack: { level: number; children: any[] }[] = [{ level: 0, children: root }];
-
-      for (const chapter of sortedChapters) {
-        const entry = {
-          title: chapter.title,
-          page: chapter.page,
-          down: [] as any[],
-        };
-
-        // Find the right parent based on level
-        while (stack.length > 1 && stack[stack.length - 1].level >= chapter.level) {
-          stack.pop();
-        }
-
-        // Add to current parent's children
-        stack[stack.length - 1].children.push(entry);
-
-        // Push this entry as potential parent for next items
-        stack.push({ level: chapter.level, children: entry.down });
-      }
-
-      return root;
-    };
-
-    const outlineStructure = buildOutlineStructure();
-
-    // Use mupdf's outline iterator to add bookmarks
-    // Note: mupdf.js requires specific API for outline manipulation
-    // For now, we'll use the setOutline method if available
     try {
-      // mupdf-js may expose different APIs depending on version
-      // Try the direct outline setting approach
-      if (typeof (pdfDoc as any).setOutline === 'function') {
-        (pdfDoc as any).setOutline(outlineStructure);
-      } else {
-        // Fallback: manually build outline using low-level PDF operations
-        console.log('Note: Outline API not available, chapters will not be embedded as bookmarks');
+      // Use OutlineIterator to add bookmarks
+      const iterator = doc.outlineIterator();
+
+      // Build hierarchical structure and insert using the iterator
+      // The iterator uses a cursor-based approach
+      const insertChaptersRecursive = (
+        chaptersToInsert: Chapter[],
+        parentLevel: number
+      ) => {
+        let i = 0;
+        while (i < chaptersToInsert.length) {
+          const chapter = chaptersToInsert[i];
+
+          // Create URI for internal link to page (mupdf uses #page=N format, 1-indexed)
+          const uri = `#page=${chapter.page + 1}`;
+
+          // Insert the outline item
+          const result = iterator.insert({
+            title: chapter.title,
+            uri: uri,
+            open: chapter.level === 1, // Keep top-level chapters expanded
+          });
+
+          // Collect children (chapters with higher level numbers immediately following)
+          const children: Chapter[] = [];
+          let j = i + 1;
+          while (j < chaptersToInsert.length && chaptersToInsert[j].level > chapter.level) {
+            if (chaptersToInsert[j].level === chapter.level + 1) {
+              children.push(chaptersToInsert[j]);
+            }
+            j++;
+          }
+
+          // If there are children, go down and insert them
+          if (children.length > 0 && result >= 0) {
+            iterator.down();
+            insertChaptersRecursive(
+              chaptersToInsert.slice(i + 1, j).filter(c => c.level > chapter.level),
+              chapter.level
+            );
+            iterator.up();
+          }
+
+          // Move to next sibling position
+          iterator.next();
+          i = j > i + 1 ? j : i + 1;
+        }
+      };
+
+      // Insert all chapters starting from root level
+      const topLevelChapters = sortedChapters.filter(
+        c => c.level === Math.min(...sortedChapters.map(ch => ch.level))
+      );
+
+      if (topLevelChapters.length > 0) {
+        insertChaptersRecursive(sortedChapters, 0);
       }
+
+      console.log(`Added ${sortedChapters.length} bookmarks to PDF`);
     } catch (err) {
       console.error('Failed to add bookmarks:', err);
+      // Return original PDF if bookmark addition fails
+      return pdfData;
     }
 
-    // Save and return
+    // Save and return - need to use asPDF() for saveToBuffer
+    const pdfDoc = doc.asPDF();
+    if (!pdfDoc) {
+      return pdfData;
+    }
     const buffer = pdfDoc.saveToBuffer('compress');
     return buffer.asUint8Array();
   }

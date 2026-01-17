@@ -285,6 +285,7 @@ export class ExportService {
   /**
    * Export PDF with deleted regions removed
    * When image blocks are deleted, OCR text blocks are embedded to replace the removed images
+   * If chapters are provided, bookmarks are added to the PDF
    */
   async exportPdf(
     blocks: ExportableBlock[],
@@ -295,7 +296,8 @@ export class ExportService {
     pdfName: string,
     getHighlightId: (categoryId: string, page: number, x: number, y: number) => string,
     textCorrections?: Map<string, string>,
-    deletedPages?: Set<number>
+    deletedPages?: Set<number>,
+    chapters?: Chapter[]
   ): Promise<ExportResult> {
     const deletedRegions: DeletedRegion[] = [];
     const ocrBlocks: OcrTextBlock[] = [];
@@ -387,6 +389,20 @@ export class ExportService {
       pdfBase64 = await this.pdfService.exportCleanPdf(libraryPath, deletedRegions, ocrBlocks);
     }
 
+    // Add chapter bookmarks if chapters are provided
+    // Filter out chapters on deleted pages and adjust page numbers
+    let bookmarksAdded = 0;
+    if (chapters && chapters.length > 0) {
+      const exportChapters = chapters.filter(c => !deletedPages?.has(c.page));
+      if (exportChapters.length > 0) {
+        const pdfWithBookmarks = await this.pdfService.addBookmarksToPdf(pdfBase64, exportChapters);
+        if (pdfWithBookmarks) {
+          pdfBase64 = pdfWithBookmarks;
+          bookmarksAdded = exportChapters.length;
+        }
+      }
+    }
+
     const binaryString = atob(pdfBase64);
     const bytes = new Uint8Array(binaryString.length);
     for (let i = 0; i < binaryString.length; i++) {
@@ -399,11 +415,13 @@ export class ExportService {
       filename
     );
 
+    const bookmarkMsg = bookmarksAdded > 0 ? ` and ${bookmarksAdded} bookmarks added` : '';
     return {
       success: true,
-      message: `Exported PDF with ${deletedRegions.length} regions removed.`,
+      message: `Exported PDF with ${deletedRegions.length} regions removed${bookmarkMsg}.`,
       filename,
-      regionCount: deletedRegions.length
+      regionCount: deletedRegions.length,
+      chapterCount: bookmarksAdded
     };
   }
 

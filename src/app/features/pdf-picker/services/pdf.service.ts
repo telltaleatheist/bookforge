@@ -1,5 +1,5 @@
 import { Injectable, inject } from '@angular/core';
-import { ElectronService } from '../../../core/services/electron.service';
+import { ElectronService, Chapter } from '../../../core/services/electron.service';
 
 export interface TextBlock {
   id: string;
@@ -157,5 +157,12 @@ export class PdfService {
     // Use the backgrounds-removed export with scale 2.0 (same as standard export quality)
     // This creates a new PDF from rendered pages + embedded OCR text
     return this.electron.exportPdfNoBackgrounds(2.0, deletedRegions, ocrBlocks);
+  }
+
+  /**
+   * Add chapter bookmarks (outline) to an exported PDF
+   */
+  async addBookmarksToPdf(pdfBase64: string, chapters: Chapter[]): Promise<string | null> {
+    return this.electron.addBookmarksToPdf(pdfBase64, chapters);
   }
 }

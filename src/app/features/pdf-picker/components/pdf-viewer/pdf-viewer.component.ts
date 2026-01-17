@@ -104,12 +104,14 @@ export interface CropRect {
                           [attr.y]="getBlockY(block)"
                           [attr.width]="getBlockWidth(block)"
                           [attr.height]="getBlockHeight(block)"
-                          [attr.fill]="isSelected(block.id) ? getBlockFill(block) : 'transparent'"
-                          [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))"
+                          [attr.fill]="isSelected(block.id) ? getBlockFill(block) : (isCurrentSearchResult(block.id) ? 'rgba(255, 193, 7, 0.4)' : (isSearchHighlighted(block.id) ? 'rgba(255, 193, 7, 0.2)' : 'transparent'))"
+                          [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (isCurrentSearchResult(block.id) ? '#ffc107' : (isSearchHighlighted(block.id) ? '#ffc107' : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))))"
                           [class.selected]="isSelected(block.id)"
                           [class.deleted]="isDeleted(block.id)"
                           [class.corrected]="hasCorrectedText(block.id)"
                           [class.moved]="hasOffset(block.id)"
+                          [class.search-highlight]="isSearchHighlighted(block.id)"
+                          [class.search-current]="isCurrentSearchResult(block.id)"
                           [class.dragging]="isDraggingBlock() && draggingBlock?.id === block.id"
                           [style.cursor]="editorMode() === 'edit' ? 'move' : 'pointer'"
                           (mousedown)="onBlockMouseDown($event, block)"
@@ -421,7 +423,12 @@ export interface CropRect {
         <div
           #viewport
           class="pdf-viewport"
+          [class.marquee-selecting]="pageMarqueeActive()"
           (wheel)="onWheel($event)"
+          (mousedown)="onPageMarqueeStart($event)"
+          (mousemove)="onPageMarqueeMove($event)"
+          (mouseup)="onPageMarqueeEnd()"
+          (mouseleave)="onPageMarqueeEnd()"
         >
           <div
             class="pdf-container"
@@ -503,12 +510,14 @@ export interface CropRect {
                             [attr.y]="getBlockY(block)"
                             [attr.width]="getBlockWidth(block)"
                             [attr.height]="getBlockHeight(block)"
-                            [attr.fill]="isSelected(block.id) ? getBlockFill(block) : 'transparent'"
-                            [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))"
+                            [attr.fill]="isSelected(block.id) ? getBlockFill(block) : (isCurrentSearchResult(block.id) ? 'rgba(255, 193, 7, 0.4)' : (isSearchHighlighted(block.id) ? 'rgba(255, 193, 7, 0.2)' : 'transparent'))"
+                            [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (isCurrentSearchResult(block.id) ? '#ffc107' : (isSearchHighlighted(block.id) ? '#ffc107' : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))))"
                             [class.selected]="isSelected(block.id)"
                             [class.deleted]="isDeleted(block.id)"
                             [class.corrected]="hasCorrectedText(block.id)"
                             [class.moved]="hasOffset(block.id)"
+                            [class.search-highlight]="isSearchHighlighted(block.id)"
+                            [class.search-current]="isCurrentSearchResult(block.id)"
                             [style.cursor]="editorMode() === 'edit' ? 'move' : 'pointer'"
                             (mousedown)="onBlockMouseDown($event, block)"
                             (click)="onBlockClick($event, block)"
@@ -666,6 +675,17 @@ export interface CropRect {
               </div>
             }
           </div>
+
+          <!-- Page marquee selection box -->
+          @if (pageMarqueeActive()) {
+            <div
+              class="page-marquee-box"
+              [style.left.px]="pageMarqueeRect().left"
+              [style.top.px]="pageMarqueeRect().top"
+              [style.width.px]="pageMarqueeRect().width"
+              [style.height.px]="pageMarqueeRect().height"
+            ></div>
+          }
         </div>
       }
     }
@@ -818,7 +838,9 @@ export interface CropRect {
       justify-content: flex-start !important;
       align-items: flex-start !important;
       align-content: flex-start !important;
-      gap: var(--ui-spacing-md) !important;
+      gap: var(--ui-spacing-lg) !important;
+      padding: var(--ui-spacing-xl) !important;
+      min-height: calc(100% + var(--ui-spacing-xl)); // Ensure space below pages
     }
 
     // Remove old manual virtual scroll styles - now using CDK
@@ -1017,6 +1039,20 @@ export interface CropRect {
       }
     }
 
+    /* Page marquee selection */
+    .pdf-viewport.marquee-selecting {
+      user-select: none;
+      cursor: crosshair;
+    }
+
+    .page-marquee-box {
+      position: absolute;
+      background: var(--selected-bg-muted, rgba(255, 107, 53, 0.15));
+      border: 2px solid var(--accent, #ff6b35);
+      pointer-events: none;
+      z-index: 50;
+    }
+
     .pdf-image {
       display: block;
       width: 100%;
@@ -1177,6 +1213,20 @@ export interface CropRect {
       stroke: #ff4444 !important;
       stroke-dasharray: 4, 2;
       opacity: 0.6;
+    }
+
+    .block-overlay .block-rect.search-highlight {
+      stroke-width: 2 !important;
+    }
+
+    .block-overlay .block-rect.search-current {
+      stroke-width: 3 !important;
+      animation: search-pulse 1s ease-in-out infinite;
+    }
+
+    @keyframes search-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
     }
 
     .block-overlay .block-rect.corrected {
@@ -1467,6 +1517,10 @@ export class PdfViewerComponent implements AfterViewInit {
   pageSelect = output<{ pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
   deleteSelectedPages = output<Set<number>>();
 
+  // Search highlight state
+  readonly searchHighlightIds = signal<Set<string>>(new Set());
+  readonly currentSearchResultId = signal<string | null>(null);
+
   // Virtual scrolling state
   private readonly scrollTop = signal(0);
   private readonly viewportHeight = signal(800);
@@ -1746,6 +1800,7 @@ export class PdfViewerComponent implements AfterViewInit {
   private pendingZoomAdjustment: { scrollRatioX: number; scrollRatioY: number; cursorX: number; cursorY: number } | null = null;
   private previousZoom = 100;
   private readonly cdr = inject(ChangeDetectorRef);
+  private readonly elementRef = inject(ElementRef);
 
   constructor() {
     // Effect to adjust scroll position after zoom changes
@@ -1805,6 +1860,23 @@ export class PdfViewerComponent implements AfterViewInit {
 
   // Page selection state (for range selection with shift-click)
   private lastSelectedPage: number | null = null;
+
+  // Page marquee selection state (for organize/chapters mode)
+  readonly pageMarqueeActive = signal(false);
+  readonly pageMarqueeStart = signal({ x: 0, y: 0 });
+  readonly pageMarqueeEnd = signal({ x: 0, y: 0 });
+
+  // Computed marquee rectangle (handles negative dimensions from drag direction)
+  readonly pageMarqueeRect = computed(() => {
+    const start = this.pageMarqueeStart();
+    const end = this.pageMarqueeEnd();
+    return {
+      left: Math.min(start.x, end.x),
+      top: Math.min(start.y, end.y),
+      width: Math.abs(end.x - start.x),
+      height: Math.abs(end.y - start.y)
+    };
+  });
 
   // Aliases for template compatibility
   hoveredBlock(): TextBlock | null { return this.contextMenuBlock(); }
@@ -2598,6 +2670,109 @@ export class PdfViewerComponent implements AfterViewInit {
     this.closePageMenu();
   }
 
+  // Page marquee selection handlers (for organize/chapters mode)
+  onPageMarqueeStart(event: MouseEvent): void {
+    // Only in organize or chapters mode
+    if (!this.organizeMode() && !this.chaptersMode()) return;
+
+    // Only start marquee on left click
+    if (event.button !== 0) return;
+
+    // Only start on empty space (pdf-container, not on page-wrapper or its children)
+    const target = event.target as HTMLElement;
+    const isOnPage = target.closest('.page-wrapper');
+    if (isOnPage) return;
+
+    // Get position relative to the container
+    const container = target.closest('.pdf-container') || target;
+    const rect = container.getBoundingClientRect();
+    const scrollContainer = container.closest('.pdf-viewport') as HTMLElement;
+    const scrollLeft = scrollContainer?.scrollLeft || 0;
+    const scrollTop = scrollContainer?.scrollTop || 0;
+    const x = event.clientX - rect.left + scrollLeft;
+    const y = event.clientY - rect.top + scrollTop;
+
+    this.pageMarqueeStart.set({ x, y });
+    this.pageMarqueeEnd.set({ x, y });
+    this.pageMarqueeActive.set(true);
+
+    // Clear selection unless holding shift/cmd/ctrl
+    if (!event.shiftKey && !event.metaKey && !event.ctrlKey) {
+      this.deleteSelectedPages.emit(new Set()); // Empty set = clear selection
+    }
+
+    event.preventDefault();
+  }
+
+  onPageMarqueeMove(event: MouseEvent): void {
+    if (!this.pageMarqueeActive()) return;
+
+    const container = this.elementRef.nativeElement.querySelector('.pdf-container');
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const scrollContainer = container.closest('.pdf-viewport') as HTMLElement;
+    const scrollLeft = scrollContainer?.scrollLeft || 0;
+    const scrollTop = scrollContainer?.scrollTop || 0;
+    const x = event.clientX - rect.left + scrollLeft;
+    const y = event.clientY - rect.top + scrollTop;
+
+    this.pageMarqueeEnd.set({ x, y });
+
+    // Select pages that intersect with marquee
+    this.selectPagesInMarquee();
+  }
+
+  onPageMarqueeEnd(): void {
+    if (!this.pageMarqueeActive()) return;
+    this.pageMarqueeActive.set(false);
+  }
+
+  private selectPagesInMarquee(): void {
+    const marquee = this.pageMarqueeRect();
+    const container = this.elementRef.nativeElement.querySelector('.pdf-container');
+    if (!container) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const scrollContainer = container.closest('.pdf-viewport') as HTMLElement;
+    const scrollLeft = scrollContainer?.scrollLeft || 0;
+    const scrollTop = scrollContainer?.scrollTop || 0;
+
+    const pageWrappers = container.querySelectorAll('.page-wrapper');
+    const selectedPageNums = new Set<number>();
+
+    pageWrappers.forEach((wrapper: Element) => {
+      const pageNum = parseInt(wrapper.getAttribute('data-page') || '-1', 10);
+      if (pageNum < 0) return;
+
+      const wrapperRect = wrapper.getBoundingClientRect();
+      // Convert wrapper rect to container-relative coordinates (accounting for scroll)
+      const wrapperLeft = wrapperRect.left - containerRect.left + scrollLeft;
+      const wrapperTop = wrapperRect.top - containerRect.top + scrollTop;
+      const wrapperRight = wrapperLeft + wrapperRect.width;
+      const wrapperBottom = wrapperTop + wrapperRect.height;
+
+      // Check if wrapper intersects with marquee
+      const intersects =
+        wrapperLeft < marquee.left + marquee.width &&
+        wrapperRight > marquee.left &&
+        wrapperTop < marquee.top + marquee.height &&
+        wrapperBottom > marquee.top;
+
+      if (intersects) {
+        selectedPageNums.add(pageNum);
+      }
+    });
+
+    // Emit selection - parent will update selectedPages
+    // We emit each page as a "meta" click to add to selection
+    for (const pageNum of selectedPageNums) {
+      if (!this.selectedPages().has(pageNum)) {
+        this.pageSelect.emit({ pageNum, shiftKey: false, metaKey: true, ctrlKey: false });
+      }
+    }
+  }
+
   // Handle scroll events for virtual scrolling (throttled for performance)
   onScroll(event: Event): void {
     const target = event.target as HTMLElement;
@@ -2654,6 +2829,31 @@ export class PdfViewerComponent implements AfterViewInit {
     if (pageWrapper) {
       pageWrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+  }
+
+  // Search highlight methods
+  clearSearchHighlights(): void {
+    this.searchHighlightIds.set(new Set());
+    this.currentSearchResultId.set(null);
+  }
+
+  highlightSearchResults(blockIds: string[], currentBlockId?: string): void {
+    this.searchHighlightIds.set(new Set(blockIds));
+    if (currentBlockId) {
+      this.currentSearchResultId.set(currentBlockId);
+    }
+  }
+
+  highlightCurrentSearchResult(blockId: string): void {
+    this.currentSearchResultId.set(blockId);
+  }
+
+  isSearchHighlighted(blockId: string): boolean {
+    return this.searchHighlightIds().has(blockId);
+  }
+
+  isCurrentSearchResult(blockId: string): boolean {
+    return this.currentSearchResultId() === blockId;
   }
 
   // Unified overlay mouse handlers (for crop, marquee selection, and sample mode)

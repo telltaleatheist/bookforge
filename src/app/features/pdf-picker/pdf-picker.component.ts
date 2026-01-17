@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, HostListener, ViewChild, effect, DestroyRef, ChangeDetectionStrategy } from '@angular/core';
+import { Component, inject, signal, computed, HostListener, ViewChild, ElementRef, effect, DestroyRef, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
 import { ElectronService, Chapter } from '../../core/services/electron.service';
@@ -165,6 +165,50 @@ interface AlertModal {
       (dropdownItemClicked)="onDropdownItemClicked($event)"
     >
     </desktop-toolbar>
+
+    <!-- Search Bar -->
+    @if (showSearch()) {
+      <div class="search-bar">
+        <div class="search-input-container">
+          <span class="search-icon">🔍</span>
+          <input
+            #searchInput
+            type="text"
+            class="search-input"
+            placeholder="Search text..."
+            [value]="searchQuery()"
+            (input)="onSearchInput($event)"
+            (keydown.enter)="goToNextResult()"
+            (keydown.shift.enter)="goToPrevResult()"
+          />
+          @if (searchQuery()) {
+            <button class="search-clear" (click)="clearSearch()" title="Clear">×</button>
+          }
+        </div>
+        <div class="search-controls">
+          <button
+            class="search-nav-btn"
+            [disabled]="searchResults().length === 0"
+            (click)="goToPrevResult()"
+            title="Previous (Shift+Enter)"
+          >▲</button>
+          <button
+            class="search-nav-btn"
+            [disabled]="searchResults().length === 0"
+            (click)="goToNextResult()"
+            title="Next (Enter)"
+          >▼</button>
+          <span class="search-count">
+            @if (searchResults().length > 0) {
+              {{ currentSearchIndex() + 1 }} / {{ searchResults().length }}
+            } @else if (searchQuery()) {
+              No results
+            }
+          </span>
+        </div>
+        <button class="search-close" (click)="closeSearch()" title="Close (Esc)">×</button>
+      </div>
+    }
 
     <!-- Tab Bar for open documents -->
     <app-tab-bar
@@ -692,6 +736,116 @@ interface AlertModal {
     /* Toolbar should not shrink */
     desktop-toolbar {
       flex-shrink: 0;
+    }
+
+    /* Search bar */
+    .search-bar {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-md);
+      padding: var(--ui-spacing-sm) var(--ui-spacing-lg);
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+
+    .search-input-container {
+      display: flex;
+      align-items: center;
+      flex: 1;
+      max-width: 400px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: $radius-md;
+      padding: 0 var(--ui-spacing-sm);
+
+      &:focus-within {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.2);
+      }
+    }
+
+    .search-icon {
+      font-size: var(--ui-font-sm);
+      opacity: 0.6;
+      margin-right: var(--ui-spacing-xs);
+    }
+
+    .search-input {
+      flex: 1;
+      border: none;
+      background: transparent;
+      padding: var(--ui-spacing-sm) 0;
+      font-size: var(--ui-font-sm);
+      color: var(--text-primary);
+      outline: none;
+
+      &::placeholder {
+        color: var(--text-tertiary);
+      }
+    }
+
+    .search-clear {
+      border: none;
+      background: transparent;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      padding: 2px 4px;
+
+      &:hover {
+        color: var(--text-primary);
+      }
+    }
+
+    .search-controls {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-xs);
+    }
+
+    .search-nav-btn {
+      border: 1px solid var(--border-default);
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: $radius-sm;
+      font-size: 10px;
+      line-height: 1;
+
+      &:hover:not(:disabled) {
+        background: var(--bg-hover);
+      }
+
+      &:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+    }
+
+    .search-count {
+      font-size: var(--ui-font-xs);
+      color: var(--text-secondary);
+      min-width: 80px;
+      text-align: center;
+    }
+
+    .search-close {
+      border: none;
+      background: transparent;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      font-size: 20px;
+      line-height: 1;
+      padding: 4px 8px;
+      border-radius: $radius-sm;
+
+      &:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
     }
 
     /* Ensure split-pane takes remaining space and doesn't overflow */
@@ -1595,6 +1749,7 @@ export class PdfPickerComponent {
   })();
 
   @ViewChild(PdfViewerComponent) pdfViewer!: PdfViewerComponent;
+  @ViewChild('searchInput') searchInputRef?: ElementRef<HTMLInputElement>;
 
   // Fixed sidebar width - doesn't change with window size
   private readonly SIDEBAR_WIDTH = 320;
@@ -1791,6 +1946,21 @@ export class PdfPickerComponent {
       }
     }
 
+    // Ctrl/Cmd + F for search
+    if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
+      event.preventDefault();
+      if (this.pdfLoaded()) {
+        this.toggleSearch();
+      }
+    }
+
+    // Escape to close search
+    if (event.key === 'Escape' && this.showSearch()) {
+      event.preventDefault();
+      this.closeSearch();
+      return;
+    }
+
     // Mode shortcuts (single keys, no modifiers)
     if (!event.metaKey && !event.ctrlKey && !event.altKey) {
       switch (event.key.toLowerCase()) {
@@ -1875,6 +2045,14 @@ export class PdfPickerComponent {
   readonly showExportSettings = signal(false);
   readonly loading = signal(false);
   readonly loadingText = signal('Loading...');
+
+  // Search state
+  readonly showSearch = signal(false);
+  readonly searchQuery = signal('');
+  readonly searchResults = signal<{ blockId: string; page: number; text: string; matchStart: number; matchEnd: number }[]>([]);
+  readonly currentSearchIndex = signal(-1);
+  readonly searchCaseSensitive = signal(false);
+  private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Render progress from PageRenderService
   readonly renderProgress = computed(() => this.pageRenderService.loadingProgress());
@@ -2165,15 +2343,17 @@ export class PdfPickerComponent {
         ...baseItems,
         {
           id: 'export',
-          type: 'dropdown',
+          type: 'button',
           icon: '📤',
           label: 'Export',
-          tooltip: 'Export cleaned text',
-          items: [
-            { id: 'export-txt', label: 'Export as TXT' },
-            { id: 'export-epub', label: 'Export as EPUB' },
-            { id: 'export-pdf', label: 'Export as PDF (keep images)' }
-          ]
+          tooltip: 'Export document (Ctrl+E)'
+        },
+        {
+          id: 'search',
+          type: 'button',
+          icon: '🔍',
+          label: 'Search',
+          tooltip: 'Search text (Ctrl+F)'
         },
         { id: 'divider1', type: 'divider' },
         { id: 'undo', type: 'button', icon: '↩', tooltip: 'Undo (Ctrl+Z)', disabled: !this.canUndo() },
@@ -2317,7 +2497,10 @@ export class PdfPickerComponent {
         this.openPdfWithNativeDialog();
         break;
       case 'export':
-        this.exportText();
+        this.showExportSettings.set(true);
+        break;
+      case 'search':
+        this.toggleSearch();
         break;
       case 'undo':
         this.undo();
@@ -2373,18 +2556,6 @@ export class PdfPickerComponent {
           break;
         case 'ui-large':
           this.themeService.setUiSize('large');
-          break;
-      }
-    } else if (event.parent.id === 'export') {
-      switch (event.item.id) {
-        case 'export-txt':
-          this.exportText();
-          break;
-        case 'export-epub':
-          this.exportEpub();
-          break;
-        case 'export-pdf':
-          this.exportPdf();
           break;
       }
     }
@@ -3716,6 +3887,132 @@ export class PdfPickerComponent {
     this.showExportSettings.set(true);
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Search functionality
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  toggleSearch(): void {
+    if (this.showSearch()) {
+      this.closeSearch();
+    } else {
+      this.showSearch.set(true);
+      // Focus the input after it renders
+      setTimeout(() => {
+        this.searchInputRef?.nativeElement.focus();
+        this.searchInputRef?.nativeElement.select();
+      }, 0);
+    }
+  }
+
+  closeSearch(): void {
+    this.showSearch.set(false);
+    this.clearSearch();
+  }
+
+  clearSearch(): void {
+    this.searchQuery.set('');
+    this.searchResults.set([]);
+    this.currentSearchIndex.set(-1);
+    // Clear highlights in viewer
+    this.pdfViewer?.clearSearchHighlights();
+  }
+
+  onSearchInput(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    this.searchQuery.set(input.value);
+
+    // Debounce search
+    if (this.searchDebounceTimer) {
+      clearTimeout(this.searchDebounceTimer);
+    }
+
+    this.searchDebounceTimer = setTimeout(() => {
+      this.performSearch();
+    }, 200);
+  }
+
+  private performSearch(): void {
+    const query = this.searchQuery().trim();
+    if (!query) {
+      this.searchResults.set([]);
+      this.currentSearchIndex.set(-1);
+      this.pdfViewer?.clearSearchHighlights();
+      return;
+    }
+
+    const blocks = this.blocks();
+    const deletedIds = this.deletedBlockIds();
+    const results: { blockId: string; page: number; text: string; matchStart: number; matchEnd: number }[] = [];
+
+    // Search through non-deleted text blocks
+    const searchLower = query.toLowerCase();
+    for (const block of blocks) {
+      if (deletedIds.has(block.id) || block.is_image) continue;
+
+      const textLower = block.text.toLowerCase();
+      let pos = 0;
+      while ((pos = textLower.indexOf(searchLower, pos)) !== -1) {
+        results.push({
+          blockId: block.id,
+          page: block.page,
+          text: block.text,
+          matchStart: pos,
+          matchEnd: pos + query.length
+        });
+        pos += 1; // Find overlapping matches
+      }
+    }
+
+    // Sort by page, then by position within the block
+    results.sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return a.matchStart - b.matchStart;
+    });
+
+    this.searchResults.set(results);
+    this.currentSearchIndex.set(results.length > 0 ? 0 : -1);
+
+    // Highlight results in viewer and navigate to first
+    if (results.length > 0) {
+      const matchingBlockIds = [...new Set(results.map(r => r.blockId))];
+      this.pdfViewer?.highlightSearchResults(matchingBlockIds, results[0].blockId);
+      this.navigateToSearchResult(0);
+    } else {
+      this.pdfViewer?.clearSearchHighlights();
+    }
+  }
+
+  goToNextResult(): void {
+    const results = this.searchResults();
+    if (results.length === 0) return;
+
+    const currentIndex = this.currentSearchIndex();
+    const nextIndex = (currentIndex + 1) % results.length;
+    this.currentSearchIndex.set(nextIndex);
+    this.navigateToSearchResult(nextIndex);
+  }
+
+  goToPrevResult(): void {
+    const results = this.searchResults();
+    if (results.length === 0) return;
+
+    const currentIndex = this.currentSearchIndex();
+    const prevIndex = currentIndex <= 0 ? results.length - 1 : currentIndex - 1;
+    this.currentSearchIndex.set(prevIndex);
+    this.navigateToSearchResult(prevIndex);
+  }
+
+  private navigateToSearchResult(index: number): void {
+    const results = this.searchResults();
+    if (index < 0 || index >= results.length) return;
+
+    const result = results[index];
+    // Navigate to the page containing this result
+    this.pdfViewer?.scrollToPage(result.page);
+    // Highlight the current result block
+    this.pdfViewer?.highlightCurrentSearchResult(result.blockId);
+  }
+
   /**
    * Handle export settings modal result
    */
@@ -3954,7 +4251,8 @@ export class PdfPickerComponent {
         this.pdfName(),
         this.getHighlightId.bind(this),
         this.textCorrections(),
-        this.deletedPages()
+        this.deletedPages(),
+        this.chapters()
       );
 
       if (result.success) {
