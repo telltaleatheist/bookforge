@@ -81,21 +81,19 @@ export interface OcrPageResult {
             </div>
           </div>
 
-          <!-- Language (Tesseract) -->
-          @if (settings().engine === 'tesseract' && engineAvailable()) {
-            <div class="section">
-              <h3 class="section-title">Language</h3>
-              <select
-                class="select-input"
-                [ngModel]="settings().language"
-                (ngModelChange)="updateSetting('language', $event)"
-              >
-                @for (lang of availableLanguages(); track lang) {
-                  <option [value]="lang">{{ getLanguageName(lang) }}</option>
-                }
-              </select>
-            </div>
-          }
+          <!-- Language (Tesseract) - always reserve space to prevent layout shift -->
+          <div class="section language-section" [class.hidden]="settings().engine !== 'tesseract' || !engineAvailable()">
+            <h3 class="section-title">Language</h3>
+            <select
+              class="select-input"
+              [ngModel]="settings().language"
+              (ngModelChange)="updateSetting('language', $event)"
+            >
+              @for (lang of availableLanguages(); track lang) {
+                <option [value]="lang">{{ getLanguageName(lang) }}</option>
+              }
+            </select>
+          </div>
 
           <!-- Scope Selection -->
           <div class="section">
@@ -277,6 +275,7 @@ export interface OcrPageResult {
       box-shadow: $shadow-xl;
       width: 90%;
       max-width: 500px;
+      min-height: 480px; /* Fixed minimum height to prevent layout shift */
       max-height: 85vh;
       display: flex;
       flex-direction: column;
@@ -323,6 +322,15 @@ export interface OcrPageResult {
 
       &:last-child {
         margin-bottom: 0;
+      }
+
+      &.language-section.hidden {
+        opacity: 0;
+        pointer-events: none;
+        margin-bottom: 0;
+        height: 0;
+        min-height: 0;
+        overflow: hidden;
       }
     }
 
@@ -387,6 +395,7 @@ export interface OcrPageResult {
 
     .engine-status {
       font-size: var(--ui-font-xs);
+      min-height: 18px; /* Reserve space to prevent layout shift */
     }
 
     .status-available {
@@ -400,6 +409,11 @@ export interface OcrPageResult {
     .status-checking {
       color: var(--accent);
       font-style: italic;
+    }
+
+    /* Reserve consistent space for engine cards */
+    .engine-card {
+      min-height: 70px;
     }
 
     .select-input {

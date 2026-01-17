@@ -1827,17 +1827,10 @@ export class PdfPickerComponent {
   readonly inlineEditorY = signal(0);
   readonly inlineEditorWidth = signal(200);
   readonly inlineEditorHeight = signal(50);
-  // Calculate font size based on screen/PDF scale ratio
-  readonly inlineEditorFontSize = computed(() => {
-    const block = this.inlineEditorBlock();
-    if (!block) return 14;
-    // Scale factor from PDF to screen coordinates
-    const screenHeight = this.inlineEditorHeight();
-    const pdfHeight = block.height;
-    if (pdfHeight <= 0) return 14;
-    const scale = screenHeight / pdfHeight;
-    return Math.max(10, Math.min(24, block.font_size * scale));
-  });
+  // Pre-calculated font size set when opening the editor (matches visible text exactly)
+  readonly inlineEditorCalculatedFontSize = signal(14);
+  // Use the pre-calculated font size
+  readonly inlineEditorFontSize = computed(() => this.inlineEditorCalculatedFontSize());
 
   // Legacy text editor modal state (kept for compatibility, may be removed later)
   readonly showTextEditor = signal(false);
@@ -2580,15 +2573,52 @@ export class PdfPickerComponent {
 
   openInlineEditor(block: TextBlock, x: number, y: number, width: number, height: number): void {
     // Position the editor at the block's screen location
-    // Add some padding and minimum dimensions
-    const minWidth = 200;
-    const minHeight = 60;
+    // Calculate scale from screen rect to PDF coordinates
+    const scale = block.height > 0 ? height / block.height : 1;
 
+    // Calculate the actual overlay dimensions (matching pdf-viewer's calculations)
+    const text = this.editorState.textCorrections().get(block.id) ?? block.text;
+    const pdfWidth = block.width;
+    const baseFontSize = block.font_size || 12;
+
+    // Calculate fitted font size (same logic as getOverlayFontSize in pdf-viewer)
+    const padding = 8;
+    const availableWidth = pdfWidth - padding;
+    let fittedFontSize = baseFontSize;
+
+    if (availableWidth > 0 && text) {
+      const avgCharWidthRatio = 0.55;
+      const estimatedTextWidth = text.length * baseFontSize * avgCharWidthRatio;
+      if (estimatedTextWidth > availableWidth) {
+        const singleLineFontSize = availableWidth / (text.length * avgCharWidthRatio);
+        const minFontSize = Math.max(6, baseFontSize * 0.4);
+        fittedFontSize = Math.max(minFontSize, singleLineFontSize);
+      }
+    }
+
+    // Calculate expanded height (same logic as getExpandedHeight in pdf-viewer)
+    const charWidth = fittedFontSize * 0.55;
+    const charsPerLine = Math.max(1, Math.floor(availableWidth / charWidth));
+    const lines = text.split('\n');
+    let totalLines = 0;
+    for (const line of lines) {
+      totalLines += Math.max(1, Math.ceil(line.length / charsPerLine));
+    }
+    const lineHeight = fittedFontSize * 1.35;
+    const pdfExpandedHeight = Math.max(block.height, totalLines * lineHeight + 4);
+
+    // Convert to screen coordinates
+    const screenWidth = width;  // Width stays the same (block width = overlay width)
+    const screenHeight = pdfExpandedHeight * scale;
+    const screenFontSize = fittedFontSize * scale;
+
+    // Store the calculated values
     this.inlineEditorBlock.set(block);
     this.inlineEditorX.set(x);
     this.inlineEditorY.set(y);
-    this.inlineEditorWidth.set(Math.max(width, minWidth));
-    this.inlineEditorHeight.set(Math.max(height, minHeight));
+    this.inlineEditorWidth.set(Math.max(screenWidth, 150));
+    this.inlineEditorHeight.set(Math.max(screenHeight, 40));
+    this.inlineEditorCalculatedFontSize.set(Math.max(10, Math.min(48, screenFontSize)));
     this.showInlineEditor.set(true);
   }
 

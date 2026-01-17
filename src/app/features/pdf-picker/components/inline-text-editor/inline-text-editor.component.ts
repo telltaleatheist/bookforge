@@ -32,10 +32,19 @@ type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | null;
         #textArea
         class="inline-editor-textarea"
         [(ngModel)]="editedText"
+        (ngModelChange)="onTextChange()"
         (keydown)="onKeyDown($event)"
         (blur)="onBlur()"
         [style.font-size.px]="fontSize"
       ></textarea>
+
+      <!-- Hidden measurement div for calculating text height -->
+      <div
+        #measureDiv
+        class="measure-div"
+        [style.width.px]="currentWidth - 12"
+        [style.font-size.px]="fontSize"
+      >{{ editedText }}</div>
 
       <!-- Resize handles -->
       <div class="resize-handle resize-n" (mousedown)="startResize($event, 'n')"></div>
@@ -111,6 +120,18 @@ type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | null;
 
     .inline-editor-textarea::selection {
       background: rgba(0, 122, 204, 0.3);
+    }
+
+    /* Hidden div for measuring text height */
+    .measure-div {
+      position: absolute;
+      visibility: hidden;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      font-family: Georgia, 'Times New Roman', Times, serif;
+      line-height: 1.35;
+      padding: 4px 6px;
+      pointer-events: none;
     }
 
     /* Resize handles */
@@ -227,8 +248,10 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
   @Output() editComplete = new EventEmitter<TextEditResult>();
 
   @ViewChild('textArea') textArea!: ElementRef<HTMLTextAreaElement>;
+  @ViewChild('measureDiv') measureDiv!: ElementRef<HTMLDivElement>;
 
   editedText: string = '';
+  private initialHeight: number = 50; // Store initial height for comparison
   private isClosing = false;
 
   // Current dimensions (may differ from input if resized)
@@ -272,6 +295,7 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
     this.currentY = this.y;
     this.currentWidth = this.width;
     this.currentHeight = this.height;
+    this.initialHeight = this.height;
 
     // Use corrected text if available, otherwise original
     this.editedText = this.correctedText ?? this.originalText;
@@ -284,7 +308,36 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
         const len = this.textArea.nativeElement.value.length;
         this.textArea.nativeElement.setSelectionRange(len, len);
       }
+      // Do initial height measurement
+      this.adjustHeightToFitContent();
     }, 0);
+  }
+
+  /**
+   * Called when text content changes - auto-expand height to fit
+   */
+  onTextChange(): void {
+    // Use requestAnimationFrame to ensure the measureDiv has updated
+    requestAnimationFrame(() => {
+      this.adjustHeightToFitContent();
+    });
+  }
+
+  /**
+   * Adjust the editor height to fit the text content
+   */
+  private adjustHeightToFitContent(): void {
+    if (!this.measureDiv) return;
+
+    const measureEl = this.measureDiv.nativeElement;
+    const measuredHeight = measureEl.scrollHeight + 8; // Add padding
+
+    // Only expand, don't shrink below initial height
+    const newHeight = Math.max(this.initialHeight, measuredHeight, this.MIN_HEIGHT);
+
+    if (newHeight !== this.currentHeight) {
+      this.currentHeight = newHeight;
+    }
   }
 
   ngOnDestroy(): void {

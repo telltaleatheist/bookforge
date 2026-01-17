@@ -87,9 +87,9 @@ export interface CropRect {
                           <div
                             xmlns="http://www.w3.org/1999/xhtml"
                             class="text-overlay-content"
-                            [style.font-size.px]="block.font_size || 12"
+                            [style.font-size.px]="getOverlayFontSize(block)"
                             [style.width.px]="getBlockWidth(block)"
-                          >{{ block.text }}</div>
+                          >{{ getDisplayText(block) }}</div>
                         </foreignObject>
                       }
                       <!-- Selection/interaction rect - rendered AFTER text overlay so it appears on top -->
@@ -426,9 +426,9 @@ export interface CropRect {
                             <div
                               xmlns="http://www.w3.org/1999/xhtml"
                               class="text-overlay-content"
-                              [style.font-size.px]="block.font_size || 12"
+                              [style.font-size.px]="getOverlayFontSize(block)"
                               [style.width.px]="getBlockWidth(block)"
-                            >{{ block.text }}</div>
+                            >{{ getDisplayText(block) }}</div>
                           </foreignObject>
                         }
                         <!-- Selection/interaction rect - rendered AFTER text overlay so it appears on top -->
@@ -1820,28 +1820,83 @@ export class PdfViewerComponent implements AfterViewInit {
     return this.getCorrectedText(block.id) ?? block.text;
   }
 
+  /**
+   * Calculate the font size that will fit the text within the block width.
+   * For OCR blocks especially, the estimated font size may cause overflow.
+   * This method shrinks the font if needed to prevent text wrapping beyond the box.
+   */
+  getOverlayFontSize(block: TextBlock): number {
+    const text = this.getDisplayText(block);
+    const width = this.getBlockWidth(block);
+    const baseFontSize = block.font_size || 12;
+
+    // Account for padding in the text-overlay-content (4px left + 4px right from padding: 2px 4px)
+    const padding = 8;
+    const availableWidth = width - padding;
+
+    if (availableWidth <= 0 || !text) {
+      return baseFontSize;
+    }
+
+    // For Georgia/serif fonts, average character width is roughly 0.55x font size
+    // This is an approximation - actual width varies by character
+    const avgCharWidthRatio = 0.55;
+
+    // Calculate estimated text width at base font size
+    const estimatedTextWidth = text.length * baseFontSize * avgCharWidthRatio;
+
+    if (estimatedTextWidth <= availableWidth) {
+      // Text fits at base font size
+      return baseFontSize;
+    }
+
+    // Calculate font size that would fit the text on one line
+    const fittingFontSize = availableWidth / (text.length * avgCharWidthRatio);
+
+    // Don't shrink below 6px or more than 60% of original
+    const minFontSize = Math.max(6, baseFontSize * 0.4);
+
+    return Math.max(minFontSize, fittingFontSize);
+  }
+
+  /**
+   * Calculate the height needed for the text overlay.
+   * This accounts for text wrapping based on the calculated font size.
+   */
   getExpandedHeight(block: TextBlock): number {
     const baseHeight = this.getBlockHeight(block);
     const displayText = this.getDisplayText(block);
-    const originalText = block.text;
+    const width = this.getBlockWidth(block);
+    const fontSize = this.getOverlayFontSize(block);
 
-    // Calculate approximate height needed based on text length ratio
-    const textRatio = displayText.length / Math.max(originalText.length, 1);
+    // Account for padding
+    const padding = 8;
+    const availableWidth = width - padding;
 
-    // Also account for newlines
-    const newlineCount = (displayText.match(/\n/g) || []).length;
-    const originalNewlines = (originalText.match(/\n/g) || []).length;
-    const extraNewlines = Math.max(0, newlineCount - originalNewlines);
+    if (availableWidth <= 0 || !displayText) {
+      return baseHeight;
+    }
 
-    // Estimate: each newline adds roughly one line height (font_size * 1.2)
-    const lineHeight = block.font_size * 1.2;
-    const extraHeight = extraNewlines * lineHeight;
+    // Calculate how many characters fit per line
+    const avgCharWidthRatio = 0.55;
+    const charWidth = fontSize * avgCharWidthRatio;
+    const charsPerLine = Math.max(1, Math.floor(availableWidth / charWidth));
 
-    // Scale height by text ratio, with extra for newlines, minimum 1.5x for safety
-    const scaledHeight = Math.max(baseHeight * textRatio, baseHeight) + extraHeight;
+    // Count explicit newlines and calculate wrapped lines
+    const lines = displayText.split('\n');
+    let totalLines = 0;
+    for (const line of lines) {
+      // Each line wraps based on character count
+      const wrappedLines = Math.max(1, Math.ceil(line.length / charsPerLine));
+      totalLines += wrappedLines;
+    }
 
-    // Return at least 1.5x original height to allow for some expansion, max 5x
-    return Math.min(Math.max(scaledHeight, baseHeight * 1.5), baseHeight * 5);
+    // Calculate height: lines * lineHeight
+    const lineHeight = fontSize * 1.35; // line-height: 1.35 from CSS
+    const neededHeight = totalLines * lineHeight + 4; // 4px for padding top/bottom
+
+    // Return the larger of base height or needed height
+    return Math.max(baseHeight, neededHeight);
   }
 
   isCategoryEnabled(categoryId: string): boolean {
