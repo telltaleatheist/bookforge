@@ -2685,12 +2685,44 @@ export class PdfPickerComponent {
       const edit = blockEdits.get(block.id);
       if (!edit) continue;
 
-      // Block has an edit - add original position as redact region
+      // Block has an edit - only redact for text/size changes, NOT position changes
+      // Position changes just move the overlay without affecting the background
       const hasTextEdit = edit.text !== undefined;
-      const hasPositionEdit = edit.offsetX !== undefined || edit.offsetY !== undefined;
       const hasSizeEdit = edit.width !== undefined || edit.height !== undefined;
 
-      if (hasTextEdit || hasPositionEdit || hasSizeEdit) {
+      if (hasTextEdit || hasSizeEdit) {
+        regions.push({
+          x: block.x,
+          y: block.y,
+          width: block.width,
+          height: block.height
+        });
+      }
+    }
+
+    return regions;
+  }
+
+  /**
+   * Get fill regions for a page (blocks with position edits - fill with background color)
+   */
+  private getFillRegionsForPage(pageNum: number): Array<{ x: number; y: number; width: number; height: number }> {
+    const regions: Array<{ x: number; y: number; width: number; height: number }> = [];
+    const blockEdits = this.editorState.blockEdits();
+
+    for (const block of this.blocks()) {
+      if (block.page !== pageNum) continue;
+
+      const edit = blockEdits.get(block.id);
+      if (!edit) continue;
+
+      // Only include position-only edits (no text or size changes)
+      const hasTextEdit = edit.text !== undefined;
+      const hasSizeEdit = edit.width !== undefined || edit.height !== undefined;
+      const hasPositionEdit = edit.offsetX !== undefined || edit.offsetY !== undefined;
+
+      // Position-only moves get background fill (not redaction)
+      if (hasPositionEdit && !hasTextEdit && !hasSizeEdit) {
         regions.push({
           x: block.x,
           y: block.y,
@@ -2744,9 +2776,16 @@ export class PdfPickerComponent {
       return pages;
     });
 
-    const regions = this.getRedactRegionsForPage(pageNum);
-    if (regions.length > 0) {
-      this.pageRenderService.rerenderPageWithRedactions(pageNum, regions);
+    const redactRegions = this.getRedactRegionsForPage(pageNum);
+    const fillRegions = this.getFillRegionsForPage(pageNum);
+
+    if (redactRegions.length > 0 || fillRegions.length > 0) {
+      // Pass both redact regions (for deleted/edited) and fill regions (for moved)
+      this.pageRenderService.rerenderPageWithRedactions(
+        pageNum,
+        redactRegions.length > 0 ? redactRegions : undefined,
+        fillRegions.length > 0 ? fillRegions : undefined
+      );
     } else {
       // No more edits on this page - re-render from original PDF
       this.pageRenderService.rerenderPageFromOriginal(pageNum);

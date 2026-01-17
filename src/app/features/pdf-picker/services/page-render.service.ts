@@ -265,11 +265,14 @@ export class PageRenderService {
   }
 
   /**
-   * Re-render a page with redactions applied.
+   * Re-render a page with redactions and/or background fills applied.
+   * @param redactRegions - Regions to redact (remove content completely)
+   * @param fillRegions - Regions to fill with background color (for moved blocks)
    */
   async rerenderPageWithRedactions(
     pageNum: number,
-    redactRegions: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>
+    redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>,
+    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>
   ): Promise<string | null> {
     if (!this.currentPdfPath) return null;
 
@@ -278,7 +281,8 @@ export class PageRenderService {
       pageNum,
       scale,
       this.currentPdfPath,
-      redactRegions
+      redactRegions,
+      fillRegions
     );
 
     if (dataUrl) {

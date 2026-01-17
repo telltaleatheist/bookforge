@@ -223,7 +223,7 @@ export interface RenderWithPreviewsResult {
 export interface ElectronAPI {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
-    renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
+    renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderBlankPage: (pageNum: number, scale?: number) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderAllPages: (pdfPath: string, scale?: number, concurrency?: number) => Promise<{ success: boolean; data?: { paths: string[] }; error?: string }>;
     renderWithPreviews: (pdfPath: string, concurrency?: number) => Promise<{ success: boolean; data?: RenderWithPreviewsResult; error?: string }>;
@@ -304,8 +304,8 @@ const electronAPI: ElectronAPI = {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) =>
       ipcRenderer.invoke('pdf:analyze', pdfPath, maxPages),
-    renderPage: (pageNum: number, scale: number = 2.0, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>) =>
-      ipcRenderer.invoke('pdf:render-page', pageNum, scale, pdfPath, redactRegions),
+    renderPage: (pageNum: number, scale: number = 2.0, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>) =>
+      ipcRenderer.invoke('pdf:render-page', pageNum, scale, pdfPath, redactRegions, fillRegions),
     renderBlankPage: (pageNum: number, scale: number = 2.0) =>
       ipcRenderer.invoke('pdf:render-blank-page', pageNum, scale),
     renderAllPages: (pdfPath: string, scale: number = 2.0, concurrency: number = 4) =>

@@ -203,10 +203,11 @@ export class ElectronService {
     pageNum: number,
     scale: number = 2.0,
     pdfPath?: string,
-    redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>
+    redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>,
+    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>
   ): Promise<string | null> {
     if (this.isElectron) {
-      const result: PdfRenderResult = await (window as any).electron.pdf.renderPage(pageNum, scale, pdfPath, redactRegions);
+      const result: PdfRenderResult = await (window as any).electron.pdf.renderPage(pageNum, scale, pdfPath, redactRegions, fillRegions);
       if (result.success && result.data?.image) {
         return `data:image/png;base64,${result.data.image}`;
       }

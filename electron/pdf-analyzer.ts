@@ -1470,15 +1470,83 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Sample background color from page margins
+   * Returns [r, g, b] values (0-255)
+   */
+  private sampleBackgroundColor(
+    samples: Uint8ClampedArray | Uint8Array,
+    width: number,
+    height: number,
+    components: number
+  ): [number, number, number] {
+    // Sample from corners and edges to get background color
+    const samplePoints = [
+      [10, 10],                    // Top-left
+      [width - 10, 10],            // Top-right
+      [10, height - 10],           // Bottom-left
+      [width - 10, height - 10],   // Bottom-right
+      [Math.floor(width / 2), 10], // Top center
+      [Math.floor(width / 2), height - 10], // Bottom center
+      [10, Math.floor(height / 2)], // Left center
+      [width - 10, Math.floor(height / 2)], // Right center
+    ];
+
+    let r = 0, g = 0, b = 0;
+    let count = 0;
+
+    for (const [x, y] of samplePoints) {
+      if (x >= 0 && x < width && y >= 0 && y < height) {
+        const idx = (Math.floor(y) * width + Math.floor(x)) * components;
+        r += samples[idx];
+        g += samples[idx + 1];
+        b += samples[idx + 2];
+        count++;
+      }
+    }
+
+    if (count === 0) return [255, 255, 255]; // Fallback to white
+    return [Math.round(r / count), Math.round(g / count), Math.round(b / count)];
+  }
+
+  /**
+   * Fill a rectangle in pixel data with a solid color
+   */
+  private fillRectInPixels(
+    samples: Uint8ClampedArray | Uint8Array,
+    width: number,
+    height: number,
+    components: number,
+    rect: { x: number; y: number; w: number; h: number },
+    color: [number, number, number]
+  ): void {
+    const x1 = Math.max(0, Math.floor(rect.x));
+    const y1 = Math.max(0, Math.floor(rect.y));
+    const x2 = Math.min(width, Math.floor(rect.x + rect.w));
+    const y2 = Math.min(height, Math.floor(rect.y + rect.h));
+
+    for (let y = y1; y < y2; y++) {
+      for (let x = x1; x < x2; x++) {
+        const idx = (y * width + x) * components;
+        samples[idx] = color[0];
+        samples[idx + 1] = color[1];
+        samples[idx + 2] = color[2];
+        // Keep alpha if present (components === 4)
+      }
+    }
+  }
+
+  /**
    * Render a page as PNG (base64)
-   * @param redactRegions - Optional regions to blank out before rendering
+   * @param redactRegions - Optional regions to blank out before rendering (for deleted/edited blocks)
+   * @param fillRegions - Optional regions to fill with background color (for moved blocks)
    * Uses the same redaction approach as exportPdfWithBackgroundsRemoved for consistency
    */
   async renderPage(
     pageNum: number,
     scale: number = 2.0,
     pdfPath?: string,
-    redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>
+    redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>,
+    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>
   ): Promise<string> {
     const mupdfLib = await getMupdf();
 
@@ -1546,12 +1614,72 @@ export class PDFAnalyzer {
       const renderPage = tempDoc.loadPage(pageNum);
       const matrix = mupdfLib.Matrix.scale(scale, scale);
       const pixmap = renderPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
-      const pngData = pixmap.asPNG();
 
+      // Apply background-color fill for moved blocks
+      if (fillRegions && fillRegions.length > 0) {
+        const width = pixmap.getWidth();
+        const height = pixmap.getHeight();
+        const n = pixmap.getNumberOfComponents();
+        const samples = pixmap.getPixels();
+
+        // Sample background color from page margins
+        const bgColor = this.sampleBackgroundColor(samples, width, height, n);
+
+        // Fill each region with background color (scaled to render coordinates)
+        for (const region of fillRegions) {
+          this.fillRectInPixels(samples, width, height, n, {
+            x: region.x * scale,
+            y: region.y * scale,
+            w: region.width * scale,
+            h: region.height * scale
+          }, bgColor);
+        }
+      }
+
+      const pngData = pixmap.asPNG();
       return Buffer.from(pngData).toString('base64');
     }
 
-    // No redactions - render from cached document
+    // No redactions - check if we have fill regions
+    const hasFillRegions = fillRegions && fillRegions.length > 0;
+
+    if (hasFillRegions) {
+      // Need to load document for fill operations
+      const pathToUse = pdfPath || this.pdfPath;
+      if (!pathToUse) {
+        throw new Error('No PDF path available');
+      }
+
+      const data = fs.readFileSync(pathToUse);
+      const mimeType = getMimeType(pathToUse);
+      const tempDoc = mupdfLib.Document.openDocument(data, mimeType);
+      const renderPage = tempDoc.loadPage(pageNum);
+      const matrix = mupdfLib.Matrix.scale(scale, scale);
+      const pixmap = renderPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+
+      const width = pixmap.getWidth();
+      const height = pixmap.getHeight();
+      const n = pixmap.getNumberOfComponents();
+      const samples = pixmap.getPixels();
+
+      // Sample background color from page margins
+      const bgColor = this.sampleBackgroundColor(samples, width, height, n);
+
+      // Fill each region with background color (scaled to render coordinates)
+      for (const region of fillRegions) {
+        this.fillRectInPixels(samples, width, height, n, {
+          x: region.x * scale,
+          y: region.y * scale,
+          w: region.width * scale,
+          h: region.height * scale
+        }, bgColor);
+      }
+
+      const pngData = pixmap.asPNG();
+      return Buffer.from(pngData).toString('base64');
+    }
+
+    // No redactions or fills - render from cached document
     if (!this.doc) {
       throw new Error('No document loaded');
     }

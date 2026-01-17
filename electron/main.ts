@@ -119,10 +119,11 @@ function setupIpcHandlers(): void {
     pageNum: number,
     scale: number = 2.0,
     pdfPath?: string,
-    redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>
+    redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>,
+    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>
   ) => {
     try {
-      const image = await pdfAnalyzer.renderPage(pageNum, scale, pdfPath, redactRegions);
+      const image = await pdfAnalyzer.renderPage(pageNum, scale, pdfPath, redactRegions, fillRegions);
       return { success: true, data: { image } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
