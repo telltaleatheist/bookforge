@@ -82,13 +82,15 @@ export class PageRenderService {
       if (fullPath.startsWith('__data__')) {
         return fullPath.substring(8);
       }
-      return `bookforge-page://${fullPath}`;
+      // Normalize path separators to forward slashes for URL
+      return `bookforge-page://${fullPath.replace(/\\/g, '/')}`;
     }
 
     // Fall back to preview
     const previewPath = this.previewPaths[pageNum];
     if (previewPath) {
-      return `bookforge-page://${previewPath}`;
+      // Normalize path separators to forward slashes for URL
+      return `bookforge-page://${previewPath.replace(/\\/g, '/')}`;
     }
 
     return '';

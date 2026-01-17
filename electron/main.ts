@@ -16,9 +16,22 @@ let mainWindow: BrowserWindow | null = null;
 function registerPageProtocol(): void {
   protocol.handle('bookforge-page', async (request) => {
     // URL format: bookforge-page:///path/to/file.png
-    // After stripping protocol, ensure path has leading /
+    // Handle cross-platform path differences
     let filePath = decodeURIComponent(request.url.replace('bookforge-page://', ''));
-    if (!filePath.startsWith('/')) {
+
+    // On Windows, paths come in as C:/Users/... or C:\Users\...
+    // On Mac/Linux, paths come in as /Users/...
+    // Normalize to platform-specific separators
+    filePath = filePath.replace(/\//g, path.sep).replace(/\\/g, path.sep);
+
+    // Handle leading slash: Mac needs it, Windows doesn't (has drive letter)
+    const isWindowsPath = /^[A-Za-z]:/.test(filePath) || /^[A-Za-z]:/.test(filePath.substring(1));
+    if (isWindowsPath) {
+      // Remove leading separator if present before drive letter
+      if (filePath.startsWith(path.sep)) {
+        filePath = filePath.substring(1);
+      }
+    } else if (!filePath.startsWith('/')) {
       filePath = '/' + filePath;
     }
 

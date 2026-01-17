@@ -3,10 +3,14 @@
  * Replaces the Python pdf_analyzer.py
  */
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -176,18 +180,20 @@ export class PDFAnalyzer {
   /**
    * Compute file hash for cache keying
    */
-  private computeAnalysisHash(filePath: string): string {
-    const data = fs.readFileSync(filePath);
+  private async computeAnalysisHash(filePath: string): Promise<string> {
+    const data = await fsPromises.readFile(filePath);
     return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
   }
 
   /**
    * Get path for cached analysis data
    */
-  private getAnalysisCachePath(fileHash: string): string {
+  private async getAnalysisCachePath(fileHash: string): Promise<string> {
     const cacheDir = path.join(this.getAnalysisCacheDir(), fileHash);
-    if (!fs.existsSync(cacheDir)) {
-      fs.mkdirSync(cacheDir, { recursive: true });
+    try {
+      await fsPromises.access(cacheDir);
+    } catch {
+      await fsPromises.mkdir(cacheDir, { recursive: true });
     }
     return path.join(cacheDir, 'analysis.json');
   }
@@ -195,27 +201,25 @@ export class PDFAnalyzer {
   /**
    * Load cached analysis if available
    */
-  private loadCachedAnalysis(fileHash: string): AnalyzeResult | null {
-    const cachePath = this.getAnalysisCachePath(fileHash);
-    if (fs.existsSync(cachePath)) {
-      try {
-        const data = fs.readFileSync(cachePath, 'utf-8');
-        console.log(`Loaded cached analysis for ${fileHash}`);
-        return JSON.parse(data);
-      } catch (err) {
-        console.error('Failed to load cached analysis:', err);
-      }
+  private async loadCachedAnalysis(fileHash: string): Promise<AnalyzeResult | null> {
+    const cachePath = await this.getAnalysisCachePath(fileHash);
+    try {
+      const data = await fsPromises.readFile(cachePath, 'utf-8');
+      console.log(`Loaded cached analysis for ${fileHash}`);
+      return JSON.parse(data);
+    } catch (err) {
+      // File doesn't exist or read failed
+      return null;
     }
-    return null;
   }
 
   /**
    * Save analysis to cache
    */
-  private saveAnalysisToCache(fileHash: string, result: AnalyzeResult): void {
-    const cachePath = this.getAnalysisCachePath(fileHash);
+  private async saveAnalysisToCache(fileHash: string, result: AnalyzeResult): Promise<void> {
+    const cachePath = await this.getAnalysisCachePath(fileHash);
     try {
-      fs.writeFileSync(cachePath, JSON.stringify(result), 'utf-8');
+      await fsPromises.writeFile(cachePath, JSON.stringify(result), 'utf-8');
       console.log(`Saved analysis cache for ${fileHash}`);
     } catch (err) {
       console.error('Failed to save analysis cache:', err);
@@ -228,11 +232,11 @@ export class PDFAnalyzer {
    */
   async analyze(pdfPath: string, maxPages?: number): Promise<AnalyzeResult> {
     const mupdfLib = await getMupdf();
-    const fileHash = this.computeAnalysisHash(pdfPath);
+    const fileHash = await this.computeAnalysisHash(pdfPath);
 
     // Check for cached analysis (only if no maxPages limit or limit matches)
     if (!maxPages) {
-      const cached = this.loadCachedAnalysis(fileHash);
+      const cached = await this.loadCachedAnalysis(fileHash);
       if (cached) {
         // Restore internal state from cache
         this.pdfPath = pdfPath;
@@ -242,7 +246,7 @@ export class PDFAnalyzer {
         this.pageDimensions = cached.page_dimensions;
 
         // Still need to open the document for rendering
-        const data = fs.readFileSync(pdfPath);
+        const data = await fsPromises.readFile(pdfPath);
         const mimeType = getMimeType(pdfPath);
         this.doc = mupdfLib.Document.openDocument(data, mimeType);
 
@@ -256,8 +260,8 @@ export class PDFAnalyzer {
     this.categories = {};
     this.pageDimensions = [];
 
-    // Read document file
-    const data = fs.readFileSync(pdfPath);
+    // Read document file asynchronously to avoid blocking the main thread
+    const data = await fsPromises.readFile(pdfPath);
     const mimeType = getMimeType(pdfPath);
     this.doc = mupdfLib.Document.openDocument(data, mimeType);
 
@@ -280,7 +284,7 @@ export class PDFAnalyzer {
     }
 
     // Extract spans using mutool for precise character-level positions
-    this.extractSpansWithMutool(pdfPath, pageCount);
+    await this.extractSpansWithMutool(pdfPath, pageCount);
 
     // Generate categories
     this.generateCategories();
@@ -298,7 +302,7 @@ export class PDFAnalyzer {
 
     // Cache the analysis (only for full document analysis)
     if (!maxPages) {
-      this.saveAnalysisToCache(fileHash, result);
+      await this.saveAnalysisToCache(fileHash, result);
     }
 
     return result;
@@ -685,10 +689,10 @@ export class PDFAnalyzer {
   /**
    * Extract spans using mutool binary for precise character positions
    */
-  private extractSpansWithMutool(pdfPath: string, pageCount: number): void {
+  private async extractSpansWithMutool(pdfPath: string, pageCount: number): Promise<void> {
     try {
       // Check if mutool is available
-      const mutoolPath = this.findMutool();
+      const mutoolPath = await this.findMutool();
       if (!mutoolPath) {
         console.log('mutool not found, skipping span extraction');
         return;
@@ -697,17 +701,18 @@ export class PDFAnalyzer {
       console.log(`Extracting spans with mutool from ${pageCount} pages...`);
 
       // Use a temp file to avoid shell buffer limits on large PDFs
-      const tmpFile = path.join(require('os').tmpdir(), `bookforge-stext-${Date.now()}.xml`);
+      const tmpFile = path.join(os.tmpdir(), `bookforge-stext-${Date.now()}.xml`);
 
       try {
-        // Run mutool to write structured text XML to temp file
-        execSync(`"${mutoolPath}" draw -F stext -o "${tmpFile}" "${pdfPath}" 2>/dev/null`, {
-          maxBuffer: 10 * 1024 * 1024,
-          encoding: 'utf-8'
+        // Run mutool asynchronously to avoid blocking the main thread
+        // Use platform-appropriate stderr redirection
+        const stderrRedirect = process.platform === 'win32' ? '2>NUL' : '2>/dev/null';
+        await execAsync(`"${mutoolPath}" draw -F stext -o "${tmpFile}" "${pdfPath}" ${stderrRedirect}`, {
+          maxBuffer: 10 * 1024 * 1024
         });
 
-        // Read the temp file
-        const result = fs.readFileSync(tmpFile, 'utf-8');
+        // Read the temp file asynchronously
+        const result = await fsPromises.readFile(tmpFile, 'utf-8');
         console.log(`  Got ${result.length} bytes of XML output`);
 
         // Parse the XML output
@@ -725,7 +730,7 @@ export class PDFAnalyzer {
       } finally {
         // Clean up temp file
         try {
-          fs.unlinkSync(tmpFile);
+          await fsPromises.unlink(tmpFile);
         } catch {
           // Ignore cleanup errors
         }
@@ -735,18 +740,24 @@ export class PDFAnalyzer {
     }
   }
 
-  private findMutool(): string | null {
-    // Check common locations
-    const paths = [
-      '/opt/homebrew/bin/mutool',
-      '/usr/local/bin/mutool',
-      '/usr/bin/mutool',
-      'mutool' // Try PATH
-    ];
+  private async findMutool(): Promise<string | null> {
+    // Check common locations - include Windows paths
+    const paths = process.platform === 'win32'
+      ? [
+          'mutool', // Try PATH first on Windows
+          'C:\\Program Files\\MuPDF\\mutool.exe',
+          'C:\\Program Files (x86)\\MuPDF\\mutool.exe'
+        ]
+      : [
+          '/opt/homebrew/bin/mutool',
+          '/usr/local/bin/mutool',
+          '/usr/bin/mutool',
+          'mutool' // Try PATH
+        ];
 
     for (const p of paths) {
       try {
-        execSync(`"${p}" -v`, { stdio: 'ignore' });
+        await execAsync(`"${p}" -v`);
         return p;
       } catch {
         // Not found at this path
