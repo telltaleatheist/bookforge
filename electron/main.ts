@@ -15,25 +15,32 @@ let mainWindow: BrowserWindow | null = null;
 // This avoids file:// security restrictions
 function registerPageProtocol(): void {
   protocol.handle('bookforge-page', async (request) => {
-    // URL format: bookforge-page:///path/to/file.png
-    // Handle cross-platform path differences
-    let filePath = decodeURIComponent(request.url.replace('bookforge-page://', ''));
+    // URL format: bookforge-page://C:/Users/... (Windows) or bookforge-page:///Users/... (Mac)
+    // The URL class will parse C: as hostname on Windows paths, so we handle this specially
+    console.log('[Protocol] Request URL:', request.url);
 
-    // On Windows, paths come in as C:/Users/... or C:\Users\...
-    // On Mac/Linux, paths come in as /Users/...
-    // Normalize to platform-specific separators
-    filePath = filePath.replace(/\//g, path.sep).replace(/\\/g, path.sep);
-
-    // Handle leading slash: Mac needs it, Windows doesn't (has drive letter)
-    const isWindowsPath = /^[A-Za-z]:/.test(filePath) || /^[A-Za-z]:/.test(filePath.substring(1));
-    if (isWindowsPath) {
-      // Remove leading separator if present before drive letter
-      if (filePath.startsWith(path.sep)) {
-        filePath = filePath.substring(1);
+    let filePath: string;
+    try {
+      const url = new URL(request.url);
+      // On Windows, the drive letter (C:) becomes the hostname
+      // pathname will be /Users/... and hostname will be C or c
+      if (url.hostname && /^[A-Za-z]$/.test(url.hostname)) {
+        // Windows path: reconstruct as C:/path
+        filePath = `${url.hostname.toUpperCase()}:${url.pathname}`;
+      } else {
+        // Unix path: just use pathname (includes leading /)
+        filePath = url.pathname;
       }
-    } else if (!filePath.startsWith('/')) {
-      filePath = '/' + filePath;
+      filePath = decodeURIComponent(filePath);
+    } catch {
+      // Fallback to simple string parsing if URL parsing fails
+      filePath = decodeURIComponent(request.url.replace('bookforge-page://', ''));
     }
+    console.log('[Protocol] Parsed path:', filePath);
+
+    // Normalize to platform-specific separators
+    filePath = filePath.split('/').join(path.sep);
+    console.log('[Protocol] Final path:', filePath);
 
     try {
       // Read file directly from disk
@@ -45,7 +52,7 @@ function registerPageProtocol(): void {
         }
       });
     } catch (err) {
-      console.error('Failed to load page image:', filePath, err);
+      console.error('[Protocol] Failed to load page image:', filePath, err);
       return new Response('File not found', { status: 404 });
     }
   });

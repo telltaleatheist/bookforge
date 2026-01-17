@@ -705,9 +705,8 @@ export class PDFAnalyzer {
 
       try {
         // Run mutool asynchronously to avoid blocking the main thread
-        // Use platform-appropriate stderr redirection
-        const stderrRedirect = process.platform === 'win32' ? '2>NUL' : '2>/dev/null';
-        await execAsync(`"${mutoolPath}" draw -F stext -o "${tmpFile}" "${pdfPath}" ${stderrRedirect}`, {
+        // Note: Don't use stderr redirection - 2>NUL creates a file named NUL in Git Bash on Windows
+        await execAsync(`"${mutoolPath}" draw -F stext -o "${tmpFile}" "${pdfPath}"`, {
           maxBuffer: 10 * 1024 * 1024
         });
 

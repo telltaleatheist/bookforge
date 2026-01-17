@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(dir \"C:\\\\Users\\\\tellt\\\\Documents\\\\BookForge\\\\cache\")",
+      "Bash(dir:*)",
+      "Bash(powershell:*)"
     ]
   }
 }
