@@ -1821,16 +1821,32 @@ export class PdfViewerComponent implements AfterViewInit {
   }
 
   /**
-   * Calculate the font size that will fit the text within the block width.
-   * For OCR blocks especially, the estimated font size may cause overflow.
-   * This method shrinks the font if needed to prevent text wrapping beyond the box.
+   * Get the font size for a text overlay.
+   *
+   * For multi-line text blocks (body text), we keep the original font size
+   * and let the text wrap naturally.
+   *
+   * For single-line OCR blocks, we may shrink the font to fit if needed.
    */
   getOverlayFontSize(block: TextBlock): number {
+    const baseFontSize = block.font_size || 12;
+    const blockHeight = this.getBlockHeight(block);
+
+    // Check if this is a single-line block (height is close to one line of text)
+    // Single-line blocks have height roughly equal to font_size * 1.5 or less
+    const isSingleLine = blockHeight < baseFontSize * 2;
+
+    // For multi-line blocks, just use the original font size
+    // Let the text wrap naturally within the block width
+    if (!isSingleLine) {
+      return baseFontSize;
+    }
+
+    // For single-line blocks (like OCR-detected lines), shrink to fit if needed
     const text = this.getDisplayText(block);
     const width = this.getBlockWidth(block);
-    const baseFontSize = block.font_size || 12;
 
-    // Account for padding in the text-overlay-content (4px left + 4px right from padding: 2px 4px)
+    // Account for padding
     const padding = 8;
     const availableWidth = width - padding;
 
@@ -1839,22 +1855,18 @@ export class PdfViewerComponent implements AfterViewInit {
     }
 
     // For Georgia/serif fonts, average character width is roughly 0.55x font size
-    // This is an approximation - actual width varies by character
     const avgCharWidthRatio = 0.55;
-
-    // Calculate estimated text width at base font size
     const estimatedTextWidth = text.length * baseFontSize * avgCharWidthRatio;
 
     if (estimatedTextWidth <= availableWidth) {
-      // Text fits at base font size
       return baseFontSize;
     }
 
     // Calculate font size that would fit the text on one line
     const fittingFontSize = availableWidth / (text.length * avgCharWidthRatio);
 
-    // Don't shrink below 6px or more than 60% of original
-    const minFontSize = Math.max(6, baseFontSize * 0.4);
+    // Don't shrink below 8px or more than 50% of original
+    const minFontSize = Math.max(8, baseFontSize * 0.5);
 
     return Math.max(minFontSize, fittingFontSize);
   }

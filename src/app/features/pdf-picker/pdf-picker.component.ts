@@ -2576,48 +2576,44 @@ export class PdfPickerComponent {
     // Calculate scale from screen rect to PDF coordinates
     const scale = block.height > 0 ? height / block.height : 1;
 
-    // Calculate the actual overlay dimensions (matching pdf-viewer's calculations)
+    // Get the text and base font size
     const text = this.editorState.textCorrections().get(block.id) ?? block.text;
-    const pdfWidth = block.width;
     const baseFontSize = block.font_size || 12;
 
-    // Calculate fitted font size (same logic as getOverlayFontSize in pdf-viewer)
-    const padding = 8;
-    const availableWidth = pdfWidth - padding;
+    // Check if this is a single-line block (height close to one line of text)
+    const isSingleLine = block.height < baseFontSize * 2;
+
+    // For multi-line blocks, use the original font size
+    // For single-line blocks, shrink to fit if needed
     let fittedFontSize = baseFontSize;
 
-    if (availableWidth > 0 && text) {
-      const avgCharWidthRatio = 0.55;
-      const estimatedTextWidth = text.length * baseFontSize * avgCharWidthRatio;
-      if (estimatedTextWidth > availableWidth) {
-        const singleLineFontSize = availableWidth / (text.length * avgCharWidthRatio);
-        const minFontSize = Math.max(6, baseFontSize * 0.4);
-        fittedFontSize = Math.max(minFontSize, singleLineFontSize);
+    if (isSingleLine) {
+      const padding = 8;
+      const availableWidth = block.width - padding;
+
+      if (availableWidth > 0 && text) {
+        const avgCharWidthRatio = 0.55;
+        const estimatedTextWidth = text.length * baseFontSize * avgCharWidthRatio;
+        if (estimatedTextWidth > availableWidth) {
+          const singleLineFontSize = availableWidth / (text.length * avgCharWidthRatio);
+          const minFontSize = Math.max(8, baseFontSize * 0.5);
+          fittedFontSize = Math.max(minFontSize, singleLineFontSize);
+        }
       }
     }
 
-    // Calculate expanded height (same logic as getExpandedHeight in pdf-viewer)
-    const charWidth = fittedFontSize * 0.55;
-    const charsPerLine = Math.max(1, Math.floor(availableWidth / charWidth));
-    const lines = text.split('\n');
-    let totalLines = 0;
-    for (const line of lines) {
-      totalLines += Math.max(1, Math.ceil(line.length / charsPerLine));
-    }
-    const lineHeight = fittedFontSize * 1.35;
-    const pdfExpandedHeight = Math.max(block.height, totalLines * lineHeight + 4);
-
     // Convert to screen coordinates
-    const screenWidth = width;  // Width stays the same (block width = overlay width)
-    const screenHeight = pdfExpandedHeight * scale;
-    const screenFontSize = fittedFontSize * scale;
+    // Apply a small adjustment factor (0.92) to match SVG text rendering more closely
+    // SVG foreignObject text and CSS textarea text render at slightly different effective sizes
+    const screenFontSize = fittedFontSize * scale * 0.92;
 
     // Store the calculated values
     this.inlineEditorBlock.set(block);
     this.inlineEditorX.set(x);
     this.inlineEditorY.set(y);
-    this.inlineEditorWidth.set(Math.max(screenWidth, 150));
-    this.inlineEditorHeight.set(Math.max(screenHeight, 40));
+    // Slightly reduce dimensions to match the text area more closely
+    this.inlineEditorWidth.set(Math.max(width * 0.98, 150));
+    this.inlineEditorHeight.set(Math.max(height * 0.98, 40));
     this.inlineEditorCalculatedFontSize.set(Math.max(10, Math.min(48, screenFontSize)));
     this.showInlineEditor.set(true);
   }
@@ -2643,7 +2639,7 @@ export class PdfPickerComponent {
             // Text was reverted to original - clear the correction
             this.editorState.clearTextCorrection(block.id);
           } else {
-            // Text was changed - save as a correction
+            // Text was changed - save as a correction (automatically adds to history)
             this.editorState.setTextCorrection(block.id, result.text);
             needsRerender = true;
           }
@@ -2659,7 +2655,17 @@ export class PdfPickerComponent {
           const newPdfWidth = result.width / scale;
           const newPdfHeight = result.height / scale;
 
-          this.editorState.setBlockSize(block.id, newPdfWidth, newPdfHeight);
+          // Get previous size for history
+          const edit = this.editorState.blockEdits().get(block.id);
+          const prevWidth = edit?.width ?? block.width;
+          const prevHeight = edit?.height ?? block.height;
+
+          // Update size
+          this.editorState.setBlockSize(block.id, newPdfWidth, newPdfHeight, false);
+
+          // Record resize in history
+          this.editorState.recordResize(block.id, prevWidth, prevHeight, newPdfWidth, newPdfHeight);
+
           needsRerender = true;
         }
 
@@ -2672,21 +2678,55 @@ export class PdfPickerComponent {
     this.closeInlineEditor();
   }
 
+  // Track initial position before drag for undo support
+  private dragStartPosition: { blockId: string; offsetX: number; offsetY: number } | null = null;
+
   // Handle block position changes from drag/drop in edit mode (called during drag)
   onBlockMoved(event: { blockId: string; offsetX: number; offsetY: number }): void {
     const { blockId, offsetX, offsetY } = event;
+
+    // Capture initial position when drag starts
+    if (!this.dragStartPosition || this.dragStartPosition.blockId !== blockId) {
+      const edit = this.editorState.blockEdits().get(blockId);
+      this.dragStartPosition = {
+        blockId,
+        offsetX: edit?.offsetX ?? 0,
+        offsetY: edit?.offsetY ?? 0
+      };
+    }
+
     // Update position for visual feedback during drag (no re-render yet)
     if (Math.abs(offsetX) > 0.5 || Math.abs(offsetY) > 0.5) {
-      this.editorState.setBlockPosition(blockId, offsetX, offsetY);
+      this.editorState.setBlockPosition(blockId, offsetX, offsetY, false);
     } else {
-      this.editorState.clearBlockPosition(blockId);
+      this.editorState.clearBlockPosition(blockId, false);
     }
   }
 
   // Handle block drag completion - re-render page with redactions
   onBlockDragEnd(event: { blockId: string; pageNum: number }): void {
+    const { blockId, pageNum } = event;
+
+    // Add to undo history if position changed
+    if (this.dragStartPosition && this.dragStartPosition.blockId === blockId) {
+      const edit = this.editorState.blockEdits().get(blockId);
+      const finalOffsetX = edit?.offsetX ?? 0;
+      const finalOffsetY = edit?.offsetY ?? 0;
+
+      // Record the move in history with before/after positions
+      this.editorState.recordMove(
+        blockId,
+        this.dragStartPosition.offsetX,
+        this.dragStartPosition.offsetY,
+        finalOffsetX,
+        finalOffsetY
+      );
+
+      this.dragStartPosition = null;
+    }
+
     // Re-render the page with redactions now that drag is complete
-    this.rerenderPageWithEdits(event.pageNum);
+    this.rerenderPageWithEdits(pageNum);
   }
 
   /**

@@ -2,7 +2,7 @@ import { Injectable, signal, computed } from '@angular/core';
 import { TextBlock, Category, PageDimension } from './pdf.service';
 
 export interface HistoryAction {
-  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds';
+  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize';
   blockIds: string[];
   selectionBefore: string[];
   selectionAfter: string[];
@@ -12,6 +12,16 @@ export interface HistoryAction {
   // For toggleBackgrounds actions
   backgroundsBefore?: boolean;
   backgroundsAfter?: boolean;
+  // For move actions
+  offsetXBefore?: number;
+  offsetYBefore?: number;
+  offsetXAfter?: number;
+  offsetYAfter?: number;
+  // For resize actions
+  widthBefore?: number;
+  heightBefore?: number;
+  widthAfter?: number;
+  heightAfter?: number;
 }
 
 /**
@@ -289,13 +299,45 @@ export class PdfEditorStateService {
   }
 
   // Position methods (for drag/drop)
-  setBlockPosition(blockId: string, offsetX: number, offsetY: number): void {
+  setBlockPosition(blockId: string, offsetX: number, offsetY: number, addToHistory: boolean = false): void {
+    if (addToHistory) {
+      const edit = this.blockEdits().get(blockId);
+      const prevOffsetX = edit?.offsetX ?? 0;
+      const prevOffsetY = edit?.offsetY ?? 0;
+
+      // Only add to history if position actually changed
+      if (offsetX !== prevOffsetX || offsetY !== prevOffsetY) {
+        this.pushHistory({
+          type: 'move',
+          blockIds: [blockId],
+          selectionBefore: [...this.selectedBlockIds()],
+          selectionAfter: [...this.selectedBlockIds()],
+          offsetXBefore: prevOffsetX,
+          offsetYBefore: prevOffsetY,
+          offsetXAfter: offsetX,
+          offsetYAfter: offsetY,
+        });
+      }
+    }
     this.updateBlockEdit(blockId, { offsetX, offsetY });
   }
 
-  clearBlockPosition(blockId: string): void {
+  clearBlockPosition(blockId: string, addToHistory: boolean = false): void {
     const edit = this.blockEdits().get(blockId);
-    if (edit) {
+    if (edit && (edit.offsetX !== undefined || edit.offsetY !== undefined)) {
+      if (addToHistory) {
+        this.pushHistory({
+          type: 'move',
+          blockIds: [blockId],
+          selectionBefore: [...this.selectedBlockIds()],
+          selectionAfter: [...this.selectedBlockIds()],
+          offsetXBefore: edit.offsetX ?? 0,
+          offsetYBefore: edit.offsetY ?? 0,
+          offsetXAfter: 0,
+          offsetYAfter: 0,
+        });
+      }
+
       const { offsetX, offsetY, ...rest } = edit;
       if (Object.keys(rest).length > 0) {
         this.blockEdits.update(map => {
@@ -311,13 +353,47 @@ export class PdfEditorStateService {
   }
 
   // Size methods (for resizing)
-  setBlockSize(blockId: string, width: number, height: number): void {
+  setBlockSize(blockId: string, width: number, height: number, addToHistory: boolean = false): void {
+    if (addToHistory) {
+      const edit = this.blockEdits().get(blockId);
+      const block = this.blocks().find(b => b.id === blockId);
+      const prevWidth = edit?.width ?? block?.width ?? 0;
+      const prevHeight = edit?.height ?? block?.height ?? 0;
+
+      // Only add to history if size actually changed
+      if (width !== prevWidth || height !== prevHeight) {
+        this.pushHistory({
+          type: 'resize',
+          blockIds: [blockId],
+          selectionBefore: [...this.selectedBlockIds()],
+          selectionAfter: [...this.selectedBlockIds()],
+          widthBefore: prevWidth,
+          heightBefore: prevHeight,
+          widthAfter: width,
+          heightAfter: height,
+        });
+      }
+    }
     this.updateBlockEdit(blockId, { width, height });
   }
 
-  clearBlockSize(blockId: string): void {
+  clearBlockSize(blockId: string, addToHistory: boolean = false): void {
     const edit = this.blockEdits().get(blockId);
-    if (edit) {
+    if (edit && (edit.width !== undefined || edit.height !== undefined)) {
+      if (addToHistory) {
+        const block = this.blocks().find(b => b.id === blockId);
+        this.pushHistory({
+          type: 'resize',
+          blockIds: [blockId],
+          selectionBefore: [...this.selectedBlockIds()],
+          selectionAfter: [...this.selectedBlockIds()],
+          widthBefore: edit.width ?? block?.width ?? 0,
+          heightBefore: edit.height ?? block?.height ?? 0,
+          widthAfter: block?.width ?? 0,
+          heightAfter: block?.height ?? 0,
+        });
+      }
+
       const { width, height, ...rest } = edit;
       if (Object.keys(rest).length > 0) {
         this.blockEdits.update(map => {
@@ -335,6 +411,48 @@ export class PdfEditorStateService {
   hasCorrection(blockId: string): boolean {
     const edit = this.blockEdits().get(blockId);
     return edit?.text !== undefined;
+  }
+
+  /**
+   * Record a move action in history with explicit before/after values.
+   * Used when drag completes to record the full move.
+   */
+  recordMove(blockId: string, offsetXBefore: number, offsetYBefore: number, offsetXAfter: number, offsetYAfter: number): void {
+    // Only record if there was an actual change
+    if (offsetXBefore === offsetXAfter && offsetYBefore === offsetYAfter) {
+      return;
+    }
+
+    this.pushHistory({
+      type: 'move',
+      blockIds: [blockId],
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      offsetXBefore,
+      offsetYBefore,
+      offsetXAfter,
+      offsetYAfter,
+    });
+  }
+
+  /**
+   * Record a resize action in history with explicit before/after values.
+   */
+  recordResize(blockId: string, widthBefore: number, heightBefore: number, widthAfter: number, heightAfter: number): void {
+    if (widthBefore === widthAfter && heightBefore === heightAfter) {
+      return;
+    }
+
+    this.pushHistory({
+      type: 'resize',
+      blockIds: [blockId],
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      widthBefore,
+      heightBefore,
+      widthAfter,
+      heightAfter,
+    });
   }
 
   hasAnyEdit(blockId: string): boolean {
@@ -484,6 +602,23 @@ export class PdfEditorStateService {
     } else if (action.type === 'toggleBackgrounds') {
       // Reverse background toggle
       this.removeBackgrounds.set(action.backgroundsBefore ?? false);
+    } else if (action.type === 'move') {
+      // Reverse move
+      const blockId = action.blockIds[0];
+      if (action.offsetXBefore === 0 && action.offsetYBefore === 0) {
+        this.clearBlockPosition(blockId, false);
+      } else {
+        this.setBlockPosition(blockId, action.offsetXBefore ?? 0, action.offsetYBefore ?? 0, false);
+      }
+    } else if (action.type === 'resize') {
+      // Reverse resize
+      const blockId = action.blockIds[0];
+      const block = this.blocks().find(b => b.id === blockId);
+      if (action.widthBefore === block?.width && action.heightBefore === block?.height) {
+        this.clearBlockSize(blockId, false);
+      } else {
+        this.setBlockSize(blockId, action.widthBefore ?? 0, action.heightBefore ?? 0, false);
+      }
     } else {
       // Reverse delete/restore action
       const deleted = new Set(this.deletedBlockIds());
@@ -523,6 +658,18 @@ export class PdfEditorStateService {
     } else if (action.type === 'toggleBackgrounds') {
       // Re-apply background toggle
       this.removeBackgrounds.set(action.backgroundsAfter ?? false);
+    } else if (action.type === 'move') {
+      // Re-apply move
+      const blockId = action.blockIds[0];
+      if (action.offsetXAfter === 0 && action.offsetYAfter === 0) {
+        this.clearBlockPosition(blockId, false);
+      } else {
+        this.setBlockPosition(blockId, action.offsetXAfter ?? 0, action.offsetYAfter ?? 0, false);
+      }
+    } else if (action.type === 'resize') {
+      // Re-apply resize
+      const blockId = action.blockIds[0];
+      this.setBlockSize(blockId, action.widthAfter ?? 0, action.heightAfter ?? 0, false);
     } else {
       // Re-apply delete/restore action
       const deleted = new Set(this.deletedBlockIds());
