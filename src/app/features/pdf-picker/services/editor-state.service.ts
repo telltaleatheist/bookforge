@@ -2,13 +2,16 @@ import { Injectable, signal, computed } from '@angular/core';
 import { TextBlock, Category, PageDimension } from './pdf.service';
 
 export interface HistoryAction {
-  type: 'delete' | 'restore' | 'textEdit';
+  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds';
   blockIds: string[];
   selectionBefore: string[];
   selectionAfter: string[];
   // For textEdit actions
   textBefore?: string | null;  // null means no correction (original text)
   textAfter?: string | null;
+  // For toggleBackgrounds actions
+  backgroundsBefore?: boolean;
+  backgroundsAfter?: boolean;
 }
 
 /**
@@ -62,6 +65,9 @@ export class PdfEditorStateService {
   readonly deletedBlockIds = signal<Set<string>>(new Set());
   readonly selectedBlockIds = signal<string[]>([]);
   readonly pageOrder = signal<number[]>([]);
+
+  // Background removal state
+  readonly removeBackgrounds = signal(false);
 
   // Block edits (text corrections, position offsets, size overrides)
   readonly blockEdits = signal<Map<string, BlockEdit>>(new Map());
@@ -194,6 +200,7 @@ export class PdfEditorStateService {
     this.deletedBlockIds.set(new Set());
     this.selectedBlockIds.set([]);
     this.pageOrder.set([]);
+    this.removeBackgrounds.set(false);
     this.blockEdits.set(new Map());
     this.clearHistory();
     this.hasUnsavedChanges.set(false);
@@ -405,20 +412,30 @@ export class PdfEditorStateService {
   deleteBlocks(blockIds: string[]): void {
     if (blockIds.length === 0) return;
 
+    // Filter out OCR blocks - they are authoritative text and should never be deleted
+    // (deleting images should not delete the OCR text that was extracted from them)
+    const blocksById = new Map(this.blocks().map(b => [b.id, b]));
+    const deletableIds = blockIds.filter(id => {
+      const block = blocksById.get(id);
+      return block && !block.is_ocr;
+    });
+
+    if (deletableIds.length === 0) return;
+
     const selectionBefore = [...this.selectedBlockIds()];
     const deleted = new Set(this.deletedBlockIds());
-    blockIds.forEach(id => deleted.add(id));
+    deletableIds.forEach(id => deleted.add(id));
     this.deletedBlockIds.set(deleted);
 
     // Clear selection of deleted blocks
     this.selectedBlockIds.set(
-      this.selectedBlockIds().filter(id => !blockIds.includes(id))
+      this.selectedBlockIds().filter(id => !deletableIds.includes(id))
     );
 
     // Push to undo stack
     this.pushHistory({
       type: 'delete',
-      blockIds: [...blockIds],
+      blockIds: [...deletableIds],
       selectionBefore,
       selectionAfter: [...this.selectedBlockIds()]
     });
@@ -450,9 +467,9 @@ export class PdfEditorStateService {
   }
 
   // Undo/Redo
-  undo(): void {
+  undo(): HistoryAction | undefined {
     const action = this.undoStack.pop();
-    if (!action) return;
+    if (!action) return undefined;
 
     if (action.type === 'textEdit') {
       // Reverse text edit
@@ -464,6 +481,9 @@ export class PdfEditorStateService {
         // Restore previous text
         this.setTextCorrection(blockId, action.textBefore, false);
       }
+    } else if (action.type === 'toggleBackgrounds') {
+      // Reverse background toggle
+      this.removeBackgrounds.set(action.backgroundsBefore ?? false);
     } else {
       // Reverse delete/restore action
       const deleted = new Set(this.deletedBlockIds());
@@ -482,11 +502,13 @@ export class PdfEditorStateService {
     this.redoStack.push(action);
     this.updateHistorySignals();
     this.markChanged();
+
+    return action;
   }
 
-  redo(): void {
+  redo(): HistoryAction | undefined {
     const action = this.redoStack.pop();
-    if (!action) return;
+    if (!action) return undefined;
 
     if (action.type === 'textEdit') {
       // Re-apply text edit
@@ -498,6 +520,9 @@ export class PdfEditorStateService {
         // Apply the correction
         this.setTextCorrection(blockId, action.textAfter, false);
       }
+    } else if (action.type === 'toggleBackgrounds') {
+      // Re-apply background toggle
+      this.removeBackgrounds.set(action.backgroundsAfter ?? false);
     } else {
       // Re-apply delete/restore action
       const deleted = new Set(this.deletedBlockIds());
@@ -516,6 +541,32 @@ export class PdfEditorStateService {
     this.undoStack.push(action);
     this.updateHistorySignals();
     this.markChanged();
+
+    return action;
+  }
+
+  /**
+   * Toggle remove backgrounds state with history tracking
+   * Returns the new value so caller can trigger re-render
+   */
+  toggleRemoveBackgrounds(): boolean {
+    const before = this.removeBackgrounds();
+    const after = !before;
+
+    this.removeBackgrounds.set(after);
+
+    this.pushHistory({
+      type: 'toggleBackgrounds',
+      blockIds: [],
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      backgroundsBefore: before,
+      backgroundsAfter: after
+    });
+
+    this.markChanged();
+
+    return after;
   }
 
   private pushHistory(action: HistoryAction): void {
@@ -618,6 +669,20 @@ export class PdfEditorStateService {
     this.markChanged();
   }
 
+  // Replace text blocks on specific pages with new OCR blocks
+  // Keeps image blocks, replaces all text blocks on the specified pages
+  replaceTextBlocksOnPages(pages: number[], newBlocks: TextBlock[]): void {
+    const pageSet = new Set(pages);
+    this.blocks.update(existing => {
+      // Keep blocks that are:
+      // 1. Not on the specified pages, OR
+      // 2. Image blocks (we want to keep images, just replace text)
+      const kept = existing.filter(b => !pageSet.has(b.page) || b.is_image);
+      return [...kept, ...newBlocks];
+    });
+    this.markChanged();
+  }
+
   // Add or update a category
   addCategory(category: Category): void {
     this.categories.update(cats => ({
@@ -627,7 +692,7 @@ export class PdfEditorStateService {
     this.markChanged();
   }
 
-  // Update category stats (block_count, char_count)
+  // Update category stats (block_count, char_count) and remove empty categories
   updateCategoryStats(): void {
     const blocks = this.blocks();
     const deleted = this.deletedBlockIds();
@@ -643,16 +708,21 @@ export class PdfEditorStateService {
     }
 
     this.categories.update(cats => {
-      const updated = { ...cats };
-      for (const [catId, catStats] of stats) {
-        if (updated[catId]) {
+      const updated: Record<string, Category> = {};
+
+      // Only keep categories that have blocks
+      for (const [catId, cat] of Object.entries(cats)) {
+        const catStats = stats.get(catId);
+        if (catStats && catStats.block_count > 0) {
           updated[catId] = {
-            ...updated[catId],
+            ...cat,
             block_count: catStats.block_count,
             char_count: catStats.char_count
           };
         }
+        // Categories with 0 blocks are removed
       }
+
       return updated;
     });
   }

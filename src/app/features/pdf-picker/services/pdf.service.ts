@@ -21,6 +21,7 @@ export interface TextBlock {
   is_footnote_marker?: boolean;  // Inline footnote reference marker (¹, ², [1], etc.)
   parent_block_id?: string;      // If this is a marker extracted from a parent block
   line_count?: number;
+  is_ocr?: boolean;              // True if this block was generated via OCR (independent from images)
 }
 
 export interface Category {
@@ -137,7 +138,24 @@ export class PdfService {
     return data.similar_ids;
   }
 
-  async exportCleanPdf(pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>): Promise<string> {
-    return this.electron.exportCleanPdf(pdfPath, deletedRegions);
+  async exportCleanPdf(
+    pdfPath: string,
+    deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
+    ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>
+  ): Promise<string> {
+    return this.electron.exportCleanPdf(pdfPath, deletedRegions, ocrBlocks);
+  }
+
+  /**
+   * Export PDF by re-rendering pages (like Remove Backgrounds but without background removal)
+   * Used when we need to reliably embed OCR text after deleting scanned images
+   */
+  async exportPdfRerendered(
+    deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
+    ocrBlocks: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>
+  ): Promise<string> {
+    // Use the backgrounds-removed export with scale 2.0 (same as standard export quality)
+    // This creates a new PDF from rendered pages + embedded OCR text
+    return this.electron.exportPdfNoBackgrounds(2.0, deletedRegions, ocrBlocks);
   }
 }

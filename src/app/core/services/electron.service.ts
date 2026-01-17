@@ -133,9 +133,16 @@ interface ProjectsImportResult {
   error?: string;
 }
 
+interface OcrTextLine {
+  text: string;
+  confidence: number;
+  bbox: [number, number, number, number];  // [x1, y1, x2, y2]
+}
+
 interface OcrResult {
   text: string;
   confidence: number;
+  textLines?: OcrTextLine[];  // Text lines with bounding boxes
 }
 
 interface DeskewResult {
@@ -196,7 +203,7 @@ export class ElectronService {
     pageNum: number,
     scale: number = 2.0,
     pdfPath?: string,
-    redactRegions?: Array<{ x: number; y: number; width: number; height: number }>
+    redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>
   ): Promise<string | null> {
     if (this.isElectron) {
       const result: PdfRenderResult = await (window as any).electron.pdf.renderPage(pageNum, scale, pdfPath, redactRegions);
@@ -265,6 +272,17 @@ export class ElectronService {
   onPageUpgraded(callback: (data: { pageNum: number; path: string }) => void): () => void {
     if (this.isElectron) {
       return (window as any).electron.pdf.onPageUpgraded(callback);
+    }
+    return () => {};
+  }
+
+  /**
+   * Subscribe to export progress notifications.
+   * Returns unsubscribe function.
+   */
+  onExportProgress(callback: (progress: { current: number; total: number }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.pdf.onExportProgress(callback);
     }
     return () => {};
   }
@@ -357,14 +375,41 @@ export class ElectronService {
     return null;
   }
 
-  async exportCleanPdf(pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>): Promise<string> {
+  async exportCleanPdf(
+    pdfPath: string,
+    deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
+    ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>
+  ): Promise<string> {
     if (this.isElectron) {
-      const result: PdfExportResult = await (window as any).electron.pdf.exportPdf(pdfPath, deletedRegions);
+      const result: PdfExportResult = await (window as any).electron.pdf.exportPdf(pdfPath, deletedRegions, ocrBlocks);
       if (result.success && result.data?.pdf_base64) {
         return result.data.pdf_base64;
       }
       const errorMsg = result.error || 'Unknown error';
       console.error('Failed to export PDF:', errorMsg);
+      throw new Error(errorMsg);
+    }
+    throw new Error('PDF export not available in browser mode');
+  }
+
+  /**
+   * Export PDF with backgrounds removed (yellowed paper -> white)
+   * Creates a new PDF from processed page images
+   * Optionally accepts deleted regions to apply as redactions before rendering
+   * Optionally accepts OCR blocks to embed as real text (survives image deletion)
+   */
+  async exportPdfNoBackgrounds(
+    scale: number = 2.0,
+    deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
+    ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>
+  ): Promise<string> {
+    if (this.isElectron) {
+      const result: PdfExportResult = await (window as any).electron.pdf.exportPdfNoBackgrounds(scale, deletedRegions, ocrBlocks);
+      if (result.success && result.data?.pdf_base64) {
+        return result.data.pdf_base64;
+      }
+      const errorMsg = result.error || 'Unknown error';
+      console.error('Failed to export PDF with backgrounds removed:', errorMsg);
       throw new Error(errorMsg);
     }
     throw new Error('PDF export not available in browser mode');

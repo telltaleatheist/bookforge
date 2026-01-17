@@ -3,9 +3,16 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { app } from 'electron';
 
+export interface OcrTextLine {
+  text: string;
+  confidence: number;
+  bbox: [number, number, number, number];  // [x1, y1, x2, y2]
+}
+
 export interface OcrResult {
   text: string;
   confidence: number;
+  textLines?: OcrTextLine[];  // Optional text lines with bounding boxes
 }
 
 export interface DeskewResult {
@@ -53,7 +60,7 @@ export class OcrService {
   }
 
   /**
-   * Perform OCR on an image file
+   * Perform OCR on an image file (plain text only)
    */
   async recognizeFile(imagePath: string): Promise<OcrResult> {
     try {
@@ -69,11 +76,153 @@ export class OcrService {
   }
 
   /**
-   * Perform OCR on a base64 encoded image
+   * Perform OCR on an image file with bounding boxes
+   * Uses Tesseract's TSV output format to get line-level positions
    */
-  async recognizeBase64(base64Data: string): Promise<OcrResult> {
-    // Remove data URL prefix if present
-    const base64Clean = base64Data.replace(/^data:image\/\w+;base64,/, '');
+  async recognizeFileWithBounds(imagePath: string): Promise<OcrResult> {
+    const { execSync } = require('child_process');
+    const binary = this.config.binary || 'tesseract';
+    const lang = this.config.lang || 'eng';
+
+    try {
+      // Run tesseract with TSV output to get bounding boxes
+      // TSV columns: level, page_num, block_num, par_num, line_num, word_num, left, top, width, height, conf, text
+      const cmd = `"${binary}" "${imagePath}" stdout -l ${lang} --oem 1 --psm 3 tsv`;
+      console.log('[OCR] Running:', cmd);
+
+      const output = execSync(cmd, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
+
+      console.log('[OCR] TSV output lines:', output.split('\n').length);
+      console.log('[OCR] First 500 chars:', output.substring(0, 500));
+
+      const result = this.parseTsvOutput(output);
+      console.log('[OCR] Parsed result - textLines:', result.textLines?.length, 'text length:', result.text.length);
+
+      return result;
+    } catch (err) {
+      console.error('OCR with bounds failed:', err);
+      throw new Error(`OCR failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Parse Tesseract TSV output into text lines with bounding boxes
+   */
+  private parseTsvOutput(tsvOutput: string): OcrResult {
+    const lines = tsvOutput.split('\n');
+    if (lines.length < 2) {
+      return { text: '', confidence: 0, textLines: [] };
+    }
+
+    // Skip header line
+    const dataLines = lines.slice(1).filter(line => line.trim());
+
+    // Group words by line (level 4 = line, level 5 = word)
+    const lineMap = new Map<string, { words: Array<{ text: string; conf: number; left: number; top: number; width: number; height: number }> }>();
+
+    for (const line of dataLines) {
+      const cols = line.split('\t');
+      if (cols.length < 12) continue;
+
+      const level = parseInt(cols[0], 10);
+      const pageNum = cols[1];
+      const blockNum = cols[2];
+      const parNum = cols[3];
+      const lineNum = cols[4];
+      const left = parseInt(cols[6], 10);
+      const top = parseInt(cols[7], 10);
+      const width = parseInt(cols[8], 10);
+      const height = parseInt(cols[9], 10);
+      const conf = parseInt(cols[10], 10);
+      const text = cols[11] || '';
+
+      // Only process word-level entries (level 5) with actual text
+      if (level !== 5 || !text.trim()) continue;
+
+      const lineKey = `${pageNum}_${blockNum}_${parNum}_${lineNum}`;
+
+      if (!lineMap.has(lineKey)) {
+        lineMap.set(lineKey, { words: [] });
+      }
+
+      lineMap.get(lineKey)!.words.push({ text, conf, left, top, width, height });
+    }
+
+    // Build text lines from grouped words
+    const textLines: OcrTextLine[] = [];
+    let fullText = '';
+    let totalConf = 0;
+    let confCount = 0;
+
+    for (const [, lineData] of lineMap) {
+      if (lineData.words.length === 0) continue;
+
+      // Calculate bounding box for the entire line
+      let minLeft = Infinity;
+      let minTop = Infinity;
+      let maxRight = 0;
+      let maxBottom = 0;
+      let lineText = '';
+      let lineConfSum = 0;
+
+      for (const word of lineData.words) {
+        minLeft = Math.min(minLeft, word.left);
+        minTop = Math.min(minTop, word.top);
+        maxRight = Math.max(maxRight, word.left + word.width);
+        maxBottom = Math.max(maxBottom, word.top + word.height);
+        lineText += (lineText ? ' ' : '') + word.text;
+        if (word.conf >= 0) {
+          lineConfSum += word.conf;
+          confCount++;
+        }
+      }
+
+      const avgLineConf = lineData.words.length > 0 ? lineConfSum / lineData.words.length : 0;
+      totalConf += avgLineConf;
+
+      textLines.push({
+        text: lineText,
+        confidence: avgLineConf / 100, // Normalize to 0-1
+        bbox: [minLeft, minTop, maxRight, maxBottom]
+      });
+
+      fullText += (fullText ? '\n' : '') + lineText;
+    }
+
+    const avgConfidence = textLines.length > 0 ? totalConf / textLines.length / 100 : 0;
+
+    return {
+      text: fullText,
+      confidence: avgConfidence,
+      textLines
+    };
+  }
+
+  /**
+   * Perform OCR on an image (supports data URLs, base64, or bookforge-page:// file paths)
+   * Returns text lines with bounding boxes
+   */
+  async recognizeBase64(imageData: string): Promise<OcrResult> {
+    // Handle bookforge-page:// URLs - these are direct file paths
+    if (imageData.startsWith('bookforge-page://')) {
+      const filePath = imageData.substring(17); // Remove 'bookforge-page://' prefix
+      if (fs.existsSync(filePath)) {
+        return this.recognizeFileWithBounds(filePath);
+      }
+      throw new Error(`Image file not found: ${filePath}`);
+    }
+
+    // Handle file:// URLs
+    if (imageData.startsWith('file://')) {
+      const filePath = imageData.substring(7);
+      if (fs.existsSync(filePath)) {
+        return this.recognizeFileWithBounds(filePath);
+      }
+      throw new Error(`Image file not found: ${filePath}`);
+    }
+
+    // Handle data URLs and raw base64
+    const base64Clean = imageData.replace(/^data:image\/\w+;base64,/, '');
 
     // Write to temp file
     const tempDir = app.getPath('temp');
@@ -81,7 +230,7 @@ export class OcrService {
 
     try {
       fs.writeFileSync(tempFile, Buffer.from(base64Clean, 'base64'));
-      const result = await this.recognizeFile(tempFile);
+      const result = await this.recognizeFileWithBounds(tempFile);
       return result;
     } finally {
       // Clean up temp file
@@ -123,10 +272,29 @@ export class OcrService {
   }
 
   /**
-   * Detect skew angle from base64 image
+   * Detect skew angle from image (supports data URLs, base64, or bookforge-page:// file paths)
    */
-  async detectSkewBase64(base64Data: string): Promise<DeskewResult> {
-    const base64Clean = base64Data.replace(/^data:image\/\w+;base64,/, '');
+  async detectSkewBase64(imageData: string): Promise<DeskewResult> {
+    // Handle bookforge-page:// URLs - these are direct file paths
+    if (imageData.startsWith('bookforge-page://')) {
+      const filePath = imageData.substring(17);
+      if (fs.existsSync(filePath)) {
+        return this.detectSkew(filePath);
+      }
+      throw new Error(`Image file not found: ${filePath}`);
+    }
+
+    // Handle file:// URLs
+    if (imageData.startsWith('file://')) {
+      const filePath = imageData.substring(7);
+      if (fs.existsSync(filePath)) {
+        return this.detectSkew(filePath);
+      }
+      throw new Error(`Image file not found: ${filePath}`);
+    }
+
+    // Handle data URLs and raw base64
+    const base64Clean = imageData.replace(/^data:image\/\w+;base64,/, '');
 
     const tempDir = app.getPath('temp');
     const tempFile = path.join(tempDir, `skew_${Date.now()}.png`);

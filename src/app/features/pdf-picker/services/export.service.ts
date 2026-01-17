@@ -9,7 +9,19 @@ export interface ExportableBlock {
   width: number;
   height: number;
   text: string;
+  font_size?: number;
   is_image?: boolean;
+  is_ocr?: boolean;
+}
+
+export interface OcrTextBlock {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  font_size: number;
 }
 
 export interface DeletedRegion {
@@ -18,6 +30,7 @@ export interface DeletedRegion {
   y: number;
   width: number;
   height: number;
+  isImage?: boolean;
 }
 
 export interface HighlightRect {
@@ -104,6 +117,7 @@ export class ExportService {
 
   /**
    * Export content to an EPUB file
+   * Creates one section per PDF page to preserve page structure
    */
   async exportEpub(
     blocks: ExportableBlock[],
@@ -123,45 +137,51 @@ export class ExportService {
     }
 
     const bookTitle = pdfName.replace(/\.pdf$/i, '');
-    const chapters: string[] = [];
-    let currentChapter: string[] = [];
-    let lastPage = -1;
 
+    // Group blocks by page to preserve page structure
+    const pageMap = new Map<number, string[]>();
     for (const block of exportBlocks) {
-      if (block.page !== lastPage && block.page % 10 === 0 && currentChapter.length > 0) {
-        chapters.push(currentChapter.join('\n'));
-        currentChapter = [];
+      if (!pageMap.has(block.page)) {
+        pageMap.set(block.page, []);
       }
-      lastPage = block.page;
 
       // Use corrected text if available, otherwise original
       const blockText = textCorrections?.get(block.id) ?? block.text;
       const cleanedText = this.stripFootnoteRefs(blockText);
       if (cleanedText.trim()) {
-        currentChapter.push(`<p>${this.escapeHtml(cleanedText)}</p>`);
+        pageMap.get(block.page)!.push(`<p>${this.escapeHtml(cleanedText)}</p>`);
       }
     }
 
-    if (currentChapter.length > 0) {
-      chapters.push(currentChapter.join('\n'));
-    }
+    // Convert to array of page contents, sorted by page number
+    const sortedPages = Array.from(pageMap.entries())
+      .sort((a, b) => a[0] - b[0]);
 
-    const epub = this.generateEpubBlob(bookTitle, chapters);
+    // Create sections - one per page
+    const sections = sortedPages
+      .filter(([_, content]) => content.length > 0)
+      .map(([pageNum, content]) => ({
+        pageNum: pageNum + 1, // 1-based for display
+        content: content.join('\n')
+      }));
+
+    const epub = this.generateEpubBlobWithPages(bookTitle, sections);
     const filename = this.generateFilename(pdfName, 'epub');
 
     this.downloadBlob(epub, filename);
 
     return {
       success: true,
-      message: `Exported EPUB with ${chapters.length} chapters, ${exportBlocks.length} blocks.`,
+      message: `Exported EPUB with ${sections.length} pages, ${exportBlocks.length} blocks.`,
       filename,
-      chapterCount: chapters.length,
+      chapterCount: sections.length,
       blockCount: exportBlocks.length
     };
   }
 
   /**
    * Export PDF with deleted regions removed
+   * When image blocks are deleted, OCR text blocks are embedded to replace the removed images
    */
   async exportPdf(
     blocks: ExportableBlock[],
@@ -170,11 +190,14 @@ export class ExportService {
     categoryHighlights: Map<string, Record<number, HighlightRect[]>>,
     libraryPath: string,
     pdfName: string,
-    getHighlightId: (categoryId: string, page: number, x: number, y: number) => string
+    getHighlightId: (categoryId: string, page: number, x: number, y: number) => string,
+    textCorrections?: Map<string, string>
   ): Promise<ExportResult> {
     const deletedRegions: DeletedRegion[] = [];
+    const ocrBlocks: OcrTextBlock[] = [];
+    let hasDeletedImages = false;
 
-    // Add deleted blocks
+    // Add deleted blocks and check for deleted images
     for (const block of blocks) {
       if (deletedBlockIds.has(block.id)) {
         deletedRegions.push({
@@ -182,8 +205,33 @@ export class ExportService {
           x: block.x,
           y: block.y,
           width: block.width,
-          height: block.height
+          height: block.height,
+          isImage: block.is_image
         });
+        if (block.is_image) {
+          hasDeletedImages = true;
+        }
+      }
+    }
+
+    // If images were deleted, collect ALL non-deleted text blocks to embed
+    // This ensures text survives when scanned page images are removed.
+    // Handles both: OCR blocks created by BookForge AND pre-existing text layers
+    if (hasDeletedImages) {
+      for (const block of blocks) {
+        if (!block.is_image && !deletedBlockIds.has(block.id)) {
+          // Use corrected text if available
+          const text = textCorrections?.get(block.id) ?? block.text;
+          ocrBlocks.push({
+            page: block.page,
+            x: block.x,
+            y: block.y,
+            width: block.width,
+            height: block.height,
+            text: text,
+            font_size: block.font_size || 12
+          });
+        }
       }
     }
 
@@ -222,7 +270,15 @@ export class ExportService {
       };
     }
 
-    const pdfBase64 = await this.pdfService.exportCleanPdf(libraryPath, deletedRegions);
+    // When we have deleted images AND OCR text, use re-rendering approach
+    // This reliably embeds OCR text by creating a new PDF from rendered pages
+    // (the standard redaction approach has issues with mupdf content streams)
+    let pdfBase64: string;
+    if (hasDeletedImages && ocrBlocks.length > 0) {
+      pdfBase64 = await this.pdfService.exportPdfRerendered(deletedRegions, ocrBlocks);
+    } else {
+      pdfBase64 = await this.pdfService.exportCleanPdf(libraryPath, deletedRegions, ocrBlocks);
+    }
 
     const binaryString = atob(pdfBase64);
     const bytes = new Uint8Array(binaryString.length);
@@ -385,6 +441,99 @@ ${content}
       ...chapterXhtmls.map((content, i) => ({
         name: `OEBPS/chapter${i + 1}.xhtml`,
         content
+      }))
+    ];
+
+    return this.createZipBlob(files);
+  }
+
+  /**
+   * Generate EPUB with page structure preserved (one section per PDF page)
+   */
+  private generateEpubBlobWithPages(title: string, sections: { pageNum: number; content: string }[]): Blob {
+    const uuid = 'urn:uuid:' + this.generateUuid();
+    const date = new Date().toISOString().split('T')[0];
+
+    const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`;
+
+    const pageManifest = sections.map((s) =>
+      `    <item id="page${s.pageNum}" href="page${s.pageNum}.xhtml" media-type="application/xhtml+xml"/>`
+    ).join('\n');
+
+    const pageSpine = sections.map((s) =>
+      `    <itemref idref="page${s.pageNum}"/>`
+    ).join('\n');
+
+    const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">${uuid}</dc:identifier>
+    <dc:title>${this.escapeHtml(title)}</dc:title>
+    <dc:language>en</dc:language>
+    <meta property="dcterms:modified">${date}T00:00:00Z</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+${pageManifest}
+  </manifest>
+  <spine>
+${pageSpine}
+  </spine>
+</package>`;
+
+    const navItems = sections.map((s) =>
+      `        <li><a href="page${s.pageNum}.xhtml">Page ${s.pageNum}</a></li>`
+    ).join('\n');
+
+    const navXhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+  <title>Navigation</title>
+</head>
+<body>
+  <nav epub:type="toc">
+    <h1>Contents</h1>
+    <ol>
+${navItems}
+    </ol>
+  </nav>
+</body>
+</html>`;
+
+    const pageXhtmls = sections.map((s) => ({
+      pageNum: s.pageNum,
+      xhtml: `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>Page ${s.pageNum}</title>
+  <style>
+    body { font-family: serif; line-height: 1.6; margin: 1em; }
+    p { margin: 0.5em 0; text-indent: 1em; }
+    .page-number { text-align: center; color: #666; font-size: 0.9em; margin-bottom: 1em; }
+  </style>
+</head>
+<body>
+  <div class="page-number">— ${s.pageNum} —</div>
+${s.content}
+</body>
+</html>`
+    }));
+
+    const files: { name: string; content: string }[] = [
+      { name: 'mimetype', content: 'application/epub+zip' },
+      { name: 'META-INF/container.xml', content: containerXml },
+      { name: 'OEBPS/content.opf', content: contentOpf },
+      { name: 'OEBPS/nav.xhtml', content: navXhtml },
+      ...pageXhtmls.map((p) => ({
+        name: `OEBPS/page${p.pageNum}.xhtml`,
+        content: p.xhtml
       }))
     ];
 

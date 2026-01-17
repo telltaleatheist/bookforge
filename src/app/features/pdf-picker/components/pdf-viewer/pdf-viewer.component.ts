@@ -1,4 +1,4 @@
-import { Component, input, output, ViewChild, ElementRef, effect, signal, computed, HostListener, ChangeDetectionStrategy, AfterViewInit } from '@angular/core';
+import { Component, input, output, ViewChild, ElementRef, effect, signal, computed, HostListener, ChangeDetectionStrategy, AfterViewInit, ChangeDetectorRef, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { TextBlock, Category, PageDimension } from '../../services/pdf.service';
@@ -45,9 +45,11 @@ export interface CropRect {
               <div class="page-content">
                 @let imgUrl = getImageUrl(pageNum);
                 @if (imgUrl && imgUrl !== 'loading') {
+                  <!-- Always render image for proper sizing, use CSS filter to white-out when images deleted -->
                   <img
                     #pageImage
                     class="pdf-image"
+                    [class.hidden-for-export]="shouldHidePageImage(pageNum)"
                     [src]="imgUrl"
                     [attr.data-page]="pageNum"
                     (load)="onImageLoad($event, pageNum)"
@@ -72,50 +74,9 @@ export interface CropRect {
                   (mouseleave)="onOverlayMouseLeave()"
                 >
                   @if (!cropMode() && !sampleMode()) {
-                    @for (block of getPageBlocks(pageNum); track block.id) {
-                      <rect
-                        class="block-rect"
-                        [attr.x]="getBlockX(block)"
-                        [attr.y]="getBlockY(block)"
-                        [attr.width]="getBlockWidth(block)"
-                        [attr.height]="getBlockHeight(block)"
-                        [attr.fill]="isSelected(block.id) ? getBlockFill(block) : 'transparent'"
-                        [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))"
-                        [class.selected]="isSelected(block.id)"
-                        [class.deleted]="isDeleted(block.id)"
-                        [class.corrected]="hasCorrectedText(block.id)"
-                        [class.moved]="hasOffset(block.id)"
-                        [class.dragging]="isDraggingBlock() && draggingBlock?.id === block.id"
-                        [style.cursor]="editorMode() === 'edit' ? 'move' : 'pointer'"
-                        (mousedown)="onBlockMouseDown($event, block)"
-                        (click)="onBlockClick($event, block)"
-                        (dblclick)="onBlockDoubleClick($event, block)"
-                        (contextmenu)="onContextMenu($event, block)"
-                        (mouseenter)="onBlockEnter($event, block)"
-                        (mouseleave)="onBlockLeave()"
-                      />
-                      @if (isDeleted(block.id)) {
-                        <line
-                          [attr.x1]="getBlockX(block)"
-                          [attr.y1]="getBlockY(block)"
-                          [attr.x2]="getBlockX(block) + getBlockWidth(block)"
-                          [attr.y2]="getBlockY(block) + getBlockHeight(block)"
-                          stroke="#ff4444"
-                          stroke-width="2"
-                          class="delete-mark"
-                        />
-                        <line
-                          [attr.x1]="getBlockX(block) + getBlockWidth(block)"
-                          [attr.y1]="getBlockY(block)"
-                          [attr.x2]="getBlockX(block)"
-                          [attr.y2]="getBlockY(block) + getBlockHeight(block)"
-                          stroke="#ff4444"
-                          stroke-width="2"
-                          class="delete-mark"
-                        />
-                      }
-                      @if (hasTextOverlay(block) && !isDeleted(block.id)) {
-                        <!-- Text overlay at new position (original text redacted from PDF render) -->
+                    @for (block of getPageBlocks(pageNum); track trackBlock(block)) {
+                      <!-- Text overlay for blanked pages and corrected blocks - rendered FIRST so selection rect appears on top -->
+                      @if (shouldShowTextOverlay(block)) {
                         <foreignObject
                           class="text-overlay"
                           [attr.x]="getBlockX(block)"
@@ -126,12 +87,54 @@ export interface CropRect {
                           <div
                             xmlns="http://www.w3.org/1999/xhtml"
                             class="text-overlay-content"
-                            [style.font-size.px]="block.font_size"
+                            [style.font-size.px]="block.font_size || 12"
                             [style.width.px]="getBlockWidth(block)"
-                            [class.corrected]="hasCorrectedText(block.id)"
-                            [class.moved]="hasOffset(block.id)"
-                          >{{ getDisplayText(block) }}</div>
+                          >{{ block.text }}</div>
                         </foreignObject>
+                      }
+                      <!-- Selection/interaction rect - rendered AFTER text overlay so it appears on top -->
+                      @if (!shouldHideDeletedBlock(block)) {
+                        <rect
+                          class="block-rect"
+                          [attr.x]="getBlockX(block)"
+                          [attr.y]="getBlockY(block)"
+                          [attr.width]="getBlockWidth(block)"
+                          [attr.height]="getBlockHeight(block)"
+                          [attr.fill]="isSelected(block.id) ? getBlockFill(block) : 'transparent'"
+                          [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))"
+                          [class.selected]="isSelected(block.id)"
+                          [class.deleted]="isDeleted(block.id)"
+                          [class.corrected]="hasCorrectedText(block.id)"
+                          [class.moved]="hasOffset(block.id)"
+                          [class.dragging]="isDraggingBlock() && draggingBlock?.id === block.id"
+                          [style.cursor]="editorMode() === 'edit' ? 'move' : 'pointer'"
+                          (mousedown)="onBlockMouseDown($event, block)"
+                          (click)="onBlockClick($event, block)"
+                          (dblclick)="onBlockDoubleClick($event, block)"
+                          (contextmenu)="onContextMenu($event, block)"
+                          (mouseenter)="onBlockEnter($event, block)"
+                          (mouseleave)="onBlockLeave()"
+                        />
+                        @if (isDeleted(block.id)) {
+                          <line
+                            [attr.x1]="getBlockX(block)"
+                            [attr.y1]="getBlockY(block)"
+                            [attr.x2]="getBlockX(block) + getBlockWidth(block)"
+                            [attr.y2]="getBlockY(block) + getBlockHeight(block)"
+                            stroke="#ff4444"
+                            stroke-width="2"
+                            class="delete-mark"
+                          />
+                          <line
+                            [attr.x1]="getBlockX(block) + getBlockWidth(block)"
+                            [attr.y1]="getBlockY(block)"
+                            [attr.x2]="getBlockX(block)"
+                            [attr.y2]="getBlockY(block) + getBlockHeight(block)"
+                            stroke="#ff4444"
+                            stroke-width="2"
+                            class="delete-mark"
+                          />
+                        }
                       }
                     }
 
@@ -387,6 +390,7 @@ export interface CropRect {
                   @if (imgUrl && imgUrl !== 'loading') {
                     <img
                       class="pdf-image"
+                      [class.hidden-for-export]="shouldHidePageImage(pageNum)"
                       [src]="imgUrl"
                       [attr.data-page]="pageNum"
                     />
@@ -409,46 +413,66 @@ export interface CropRect {
                     (mouseleave)="onOverlayMouseLeave()"
                   >
                     @if (!cropMode() && !sampleMode()) {
-                      @for (block of getPageBlocks(pageNum); track block.id) {
-                        <rect
-                          class="block-rect"
-                          [attr.x]="getBlockX(block)"
-                          [attr.y]="getBlockY(block)"
-                          [attr.width]="getBlockWidth(block)"
-                          [attr.height]="getBlockHeight(block)"
-                          [attr.fill]="isSelected(block.id) ? getBlockFill(block) : 'transparent'"
-                          [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))"
-                          [class.selected]="isSelected(block.id)"
-                          [class.deleted]="isDeleted(block.id)"
-                          [class.corrected]="hasCorrectedText(block.id)"
-                          [class.moved]="hasOffset(block.id)"
-                          [style.cursor]="editorMode() === 'edit' ? 'move' : 'pointer'"
-                          (mousedown)="onBlockMouseDown($event, block)"
-                          (click)="onBlockClick($event, block)"
-                          (dblclick)="onBlockDoubleClick($event, block)"
-                          (contextmenu)="onContextMenu($event, block)"
-                          (mouseenter)="onBlockEnter($event, block)"
-                          (mouseleave)="onBlockLeave()"
-                        />
-                        @if (isDeleted(block.id)) {
-                          <line
-                            [attr.x1]="getBlockX(block)"
-                            [attr.y1]="getBlockY(block)"
-                            [attr.x2]="getBlockX(block) + getBlockWidth(block)"
-                            [attr.y2]="getBlockY(block) + getBlockHeight(block)"
-                            stroke="#ff4444"
-                            stroke-width="2"
-                            class="delete-mark"
+                      @for (block of getPageBlocks(pageNum); track trackBlock(block)) {
+                        <!-- Text overlay for blanked pages and corrected blocks - rendered FIRST so selection rect appears on top -->
+                        @if (shouldShowTextOverlay(block)) {
+                          <foreignObject
+                            class="text-overlay"
+                            [attr.x]="getBlockX(block)"
+                            [attr.y]="getBlockY(block)"
+                            [attr.width]="getBlockWidth(block)"
+                            [attr.height]="getExpandedHeight(block)"
+                          >
+                            <div
+                              xmlns="http://www.w3.org/1999/xhtml"
+                              class="text-overlay-content"
+                              [style.font-size.px]="block.font_size || 12"
+                              [style.width.px]="getBlockWidth(block)"
+                            >{{ block.text }}</div>
+                          </foreignObject>
+                        }
+                        <!-- Selection/interaction rect - rendered AFTER text overlay so it appears on top -->
+                        @if (!shouldHideDeletedBlock(block)) {
+                          <rect
+                            class="block-rect"
+                            [attr.x]="getBlockX(block)"
+                            [attr.y]="getBlockY(block)"
+                            [attr.width]="getBlockWidth(block)"
+                            [attr.height]="getBlockHeight(block)"
+                            [attr.fill]="isSelected(block.id) ? getBlockFill(block) : 'transparent'"
+                            [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))"
+                            [class.selected]="isSelected(block.id)"
+                            [class.deleted]="isDeleted(block.id)"
+                            [class.corrected]="hasCorrectedText(block.id)"
+                            [class.moved]="hasOffset(block.id)"
+                            [style.cursor]="editorMode() === 'edit' ? 'move' : 'pointer'"
+                            (mousedown)="onBlockMouseDown($event, block)"
+                            (click)="onBlockClick($event, block)"
+                            (dblclick)="onBlockDoubleClick($event, block)"
+                            (contextmenu)="onContextMenu($event, block)"
+                            (mouseenter)="onBlockEnter($event, block)"
+                            (mouseleave)="onBlockLeave()"
                           />
-                          <line
-                            [attr.x1]="getBlockX(block) + getBlockWidth(block)"
-                            [attr.y1]="getBlockY(block)"
-                            [attr.x2]="getBlockX(block)"
-                            [attr.y2]="getBlockY(block) + getBlockHeight(block)"
-                            stroke="#ff4444"
-                            stroke-width="2"
-                            class="delete-mark"
-                          />
+                          @if (isDeleted(block.id)) {
+                            <line
+                              [attr.x1]="getBlockX(block)"
+                              [attr.y1]="getBlockY(block)"
+                              [attr.x2]="getBlockX(block) + getBlockWidth(block)"
+                              [attr.y2]="getBlockY(block) + getBlockHeight(block)"
+                              stroke="#ff4444"
+                              stroke-width="2"
+                              class="delete-mark"
+                            />
+                            <line
+                              [attr.x1]="getBlockX(block) + getBlockWidth(block)"
+                              [attr.y1]="getBlockY(block)"
+                              [attr.x2]="getBlockX(block)"
+                              [attr.y2]="getBlockY(block) + getBlockHeight(block)"
+                              stroke="#ff4444"
+                              stroke-width="2"
+                              class="delete-mark"
+                            />
+                          }
                         }
                       }
                     }
@@ -511,6 +535,10 @@ export interface CropRect {
                         [attr.y]="currentMarqueeRect()!.y"
                         [attr.width]="currentMarqueeRect()!.width"
                         [attr.height]="currentMarqueeRect()!.height"
+                        fill="rgba(255, 107, 53, 0.15)"
+                        stroke="var(--accent, #ff6b35)"
+                        stroke-width="2"
+                        stroke-dasharray="6,3"
                       />
                     }
                   </svg>
@@ -721,6 +749,18 @@ export interface CropRect {
       display: flex;
       align-items: center;
       justify-content: center;
+    }
+
+    .page-blank {
+      width: 100%;
+      background: white;
+      position: relative;
+      z-index: 0;  /* Ensure it stays behind .block-overlay (z-index: 10) */
+    }
+
+    /* Make image appear white when images are deleted - keeps dimensions for SVG sizing */
+    .pdf-image.hidden-for-export {
+      filter: brightness(0) invert(1);  /* Makes any image appear white */
     }
 
     .spinner {
@@ -968,27 +1008,30 @@ export interface CropRect {
       font-family: Georgia, 'Times New Roman', Times, serif;
       line-height: 1.2;
       color: #1a1a1a;
-      background: #ffffff;
-      border: 1px solid #4caf50;
+      background-color: transparent;
+      border: none;
       white-space: pre-wrap;
       word-wrap: break-word;
       box-sizing: border-box;
-      min-height: 100%;
+      width: 100%;
+      height: 100%;
+      margin: 0;
     }
 
+    /* Only show background for corrected/moved blocks where we need to cover original text */
     .text-overlay-content.corrected {
       background: #ffffff;
-      border-color: #4caf50;
+      border: 1px dashed #4caf50;
     }
 
     .text-overlay-content.moved {
-      background: #f0f8ff;
-      border-color: #2196f3;
+      background: #ffffff;
+      border: 1px dashed #2196f3;
     }
 
     .text-overlay-content.corrected.moved {
-      background: #f0fff0;
-      border-color: #00bcd4;
+      background: #ffffff;
+      border: 1px dashed #00bcd4;
     }
 
     /* Tooltip */
@@ -1095,6 +1138,7 @@ export class PdfViewerComponent implements AfterViewInit {
   deletedBlockIds = input.required<Set<string>>();
   pdfLoaded = input.required<boolean>();
   pageImageUrlFn = input.required<(pageNum: number) => string>({ alias: 'getPageImageUrl' });
+  pageImages = input<Map<number, string>>(new Map()); // Signal-tracked page images for reactivity
   cropMode = input<boolean>(false);
   cropCurrentPage = input<number>(0);
   editorMode = input<string>('select'); // 'select' | 'edit' | 'crop' | 'organize' | 'split'
@@ -1116,6 +1160,10 @@ export class PdfViewerComponent implements AfterViewInit {
 
   // Remove backgrounds mode - show all text as overlays on white background
   removeBackgrounds = input<boolean>(false);
+
+  // Explicitly blanked pages - pages that have been rendered as blank (due to image deletion)
+  // This is controlled by the parent and used to show text overlays
+  blankedPages = input<Set<number>>(new Set());
 
   // Custom category highlights - lightweight match rects grouped by category and page
   categoryHighlights = input<Map<string, Record<number, Array<{ page: number; x: number; y: number; w: number; h: number; text: string }>>>>(new Map());
@@ -1334,6 +1382,52 @@ export class PdfViewerComponent implements AfterViewInit {
     return map;
   });
 
+  // Computed signal: pages where all image blocks are deleted (show white background)
+  readonly pagesWithAllImagesDeleted = computed(() => {
+    const result = new Set<number>();
+    const deleted = this.deletedBlockIds();
+    const blocksByPage = this.blocksByPage();
+
+    for (const [pageNum, pageBlocks] of blocksByPage) {
+      const imageBlocks = pageBlocks.filter(b => b.is_image);
+      if (imageBlocks.length > 0 && imageBlocks.every(b => deleted.has(b.id))) {
+        result.add(pageNum);
+      }
+    }
+    return result;
+  });
+
+  // Computed signal: block IDs that should show text overlays
+  // This is used directly in the template for proper reactivity
+  readonly blocksWithTextOverlay = computed(() => {
+    const result = new Set<string>();
+    const deleted = this.deletedBlockIds();
+    const blankedPages = this.pagesWithAllImagesDeleted();
+    const removeBackgrounds = this.removeBackgrounds();
+    const corrections = this.textCorrections();
+    const offsets = this.blockOffsets();
+    const sizes = this.blockSizes();
+
+    for (const block of this.blocks()) {
+      const isDeleted = deleted.has(block.id);
+      const pageIsBlanked = blankedPages.has(block.page);
+
+      if (!isDeleted) {
+        // Normal case: show overlay based on various conditions
+        if (removeBackgrounds || block.is_ocr || pageIsBlanked ||
+            corrections.has(block.id) || offsets.has(block.id) || sizes.has(block.id)) {
+          result.add(block.id);
+        }
+      } else {
+        // Block is deleted - show text for deleted image blocks on blanked pages
+        if (block.is_image && block.text && pageIsBlanked) {
+          result.add(block.id);
+        }
+      }
+    }
+    return result;
+  });
+
   /**
    * Get all category highlights for a specific page (for lazy rendering)
    */
@@ -1399,6 +1493,7 @@ export class PdfViewerComponent implements AfterViewInit {
   // Zoom state for preserving scroll position
   private pendingZoomAdjustment: { scrollRatioX: number; scrollRatioY: number; cursorX: number; cursorY: number } | null = null;
   private previousZoom = 100;
+  private readonly cdr = inject(ChangeDetectorRef);
 
   constructor() {
     // Effect to adjust scroll position after zoom changes
@@ -1422,6 +1517,21 @@ export class PdfViewerComponent implements AfterViewInit {
         this.previousZoom = currentZoom;
         this.pendingZoomAdjustment = null;
       }
+    });
+
+    // Effect to force change detection when text overlay state changes
+    // This is needed because cdkVirtualFor doesn't re-render when internal signals change
+    effect(() => {
+      // Read these signals to track changes
+      this.pagesWithAllImagesDeleted();
+      this.blocksWithTextOverlay();
+      this.blankedPages();
+      this.pageImages();
+
+      // Force Angular to re-render the component
+      setTimeout(() => {
+        this.cdr.detectChanges();
+      }, 0);
     });
   }
 
@@ -1474,8 +1584,36 @@ export class PdfViewerComponent implements AfterViewInit {
   }
 
   getImageUrl(pageNum: number): string {
+    // For blanked pages, always use the function to get the latest rendered image
+    // This ensures we get the blank page image after renderBlankPage is called
+    if (this.blankedPages().has(pageNum)) {
+      const fn = this.pageImageUrlFn();
+      return fn(pageNum);
+    }
+
+    // Read from pageImages signal for reactivity (triggers re-render on update)
+    const images = this.pageImages();
+    const fromSignal = images.get(pageNum);
+    if (fromSignal) {
+      return fromSignal;
+    }
+    // Fallback to function call
     const fn = this.pageImageUrlFn();
     return fn(pageNum);
+  }
+
+  /**
+   * Check if page image should be hidden and replaced with white background.
+   * This happens when all image blocks on the page are deleted OR the page
+   * has been explicitly blanked (via blankedPages input from parent).
+   */
+  shouldHidePageImage(pageNum: number): boolean {
+    // Check explicit blankedPages input first (set by parent when rendering blank)
+    if (this.blankedPages().has(pageNum)) {
+      return true;
+    }
+    // Fall back to computed check
+    return this.pagesWithAllImagesDeleted().has(pageNum);
   }
 
   getPageWidth(pageNum: number): number {
@@ -1528,7 +1666,29 @@ export class PdfViewerComponent implements AfterViewInit {
   }
 
   getPageBlocks(pageNum: number): TextBlock[] {
-    return this.blocksByPage().get(pageNum) || [];
+    const blocks = this.blocksByPage().get(pageNum) || [];
+    return blocks;
+  }
+
+  /**
+   * Track function for @for loop that includes blanked state.
+   * This ensures Angular re-renders blocks when their page becomes blanked.
+   */
+  trackBlock(block: TextBlock): string {
+    const isBlanked = this.blankedPages().has(block.page) ||
+                      this.pagesWithAllImagesDeleted().has(block.page) ||
+                      this.removeBackgrounds();
+    return `${block.id}_${isBlanked}`;
+  }
+
+  /**
+   * Get blocks that should show text overlays for a specific page.
+   * This method reads blocksWithTextOverlay() to ensure reactivity when deletions change.
+   */
+  getBlocksWithOverlayForPage(pageNum: number): TextBlock[] {
+    const overlayIds = this.blocksWithTextOverlay();
+    const pageBlocks = this.getPageBlocks(pageNum);
+    return pageBlocks.filter(block => overlayIds.has(block.id));
   }
 
   getSampleRectsForPage(pageNum: number): Array<{ x: number; y: number; width: number; height: number }> {
@@ -1551,6 +1711,16 @@ export class PdfViewerComponent implements AfterViewInit {
 
   isDeleted(blockId: string): boolean {
     return this.deletedBlockIds().has(blockId);
+  }
+
+  /**
+   * Check if a deleted block should be hidden from rendering.
+   * Deleted image blocks are always hidden since the page re-render handles
+   * removing them visually (no need for X marks over the whole page).
+   */
+  shouldHideDeletedBlock(block: TextBlock): boolean {
+    // Always hide deleted image blocks - the page is re-rendered without them
+    return !!block.is_image && this.isDeleted(block.id);
   }
 
   hasCorrectedText(blockId: string): boolean {
@@ -1589,10 +1759,61 @@ export class PdfViewerComponent implements AfterViewInit {
     // Show text overlay if:
     // 1. Block has correction OR has been moved/resized
     // 2. Remove backgrounds mode is enabled (show ALL text as overlays)
+    // 3. Block is OCR-generated (text is independent from page image)
+    // 4. Page image is hidden (all images deleted) - must show text as overlays
     if (this.removeBackgrounds()) {
       return true;
     }
+    if (block.is_ocr) {
+      return true;  // OCR blocks always show text overlay
+    }
+    if (this.shouldHidePageImage(block.page)) {
+      return true;  // All images deleted - show text as overlay on white background
+    }
     return this.hasCorrectedText(block.id) || this.hasOffset(block.id) || this.blockSizes().has(block.id);
+  }
+
+  /**
+   * Determine if text overlay should be shown for a block.
+   * This is the main check used in the template.
+   */
+  shouldShowTextOverlay(block: TextBlock): boolean {
+    // Don't show overlay for image blocks without meaningful text
+    // Image blocks may have placeholder text like "[Image 525x854]" which we should ignore
+    if (block.is_image) {
+      const hasOnlyPlaceholder = !block.text || block.text.startsWith('[Image ');
+      if (hasOnlyPlaceholder) {
+        return false;
+      }
+    }
+
+    const deleted = this.isDeleted(block.id);
+
+    // Page is blanked if: explicitly in blankedPages input OR all images deleted
+    const inBlankedPages = this.blankedPages().has(block.page);
+    const inPagesWithAllImagesDeleted = this.pagesWithAllImagesDeleted().has(block.page);
+    const pageIsBlanked = inBlankedPages || inPagesWithAllImagesDeleted;
+
+    // When removeBackgrounds is on OR page is blanked, show overlays for ALL blocks with text
+    // This treats blankedPages exactly like removeBackgrounds for those specific pages
+    if (this.removeBackgrounds() || pageIsBlanked) {
+      // For non-deleted blocks: always show text
+      if (!deleted) {
+        return true;
+      }
+      // For deleted image blocks with text (OCR extracted): show the text since image is gone
+      if (block.is_image && block.text) {
+        return true;
+      }
+    }
+
+    // Normal mode (no background removal, page not blanked)
+    // Only show text overlay for blocks with corrections/offsets/resizes
+    if (!deleted) {
+      if (this.hasCorrectedText(block.id) || this.hasOffset(block.id) || this.blockSizes().has(block.id)) return true;
+    }
+
+    return false;
   }
 
   getDisplayText(block: TextBlock): string {

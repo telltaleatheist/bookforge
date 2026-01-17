@@ -576,13 +576,10 @@ export class SuryaOcrPlugin extends BasePlugin {
       }
     }
 
-    if (allTextLines.length === 0) {
-      throw new Error('Unexpected Surya output format');
-    }
-
+    // Empty result is valid - page may have no text
     return {
       text: allTextLines.map(l => l.text).join('\n'),
-      confidence: 0.9,
+      confidence: allTextLines.length > 0 ? 0.9 : 1.0,
       textLines: allTextLines,
     };
   }

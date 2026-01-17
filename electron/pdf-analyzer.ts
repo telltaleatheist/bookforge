@@ -56,6 +56,7 @@ export interface TextBlock {
   is_footnote_marker: boolean;  // Inline footnote reference marker (¹, ², [1], etc.)
   parent_block_id?: string;     // If this is a marker extracted from a parent block
   line_count: number;
+  is_ocr?: boolean;             // True if this block was generated via OCR (independent from images)
 }
 
 export interface Category {
@@ -96,6 +97,18 @@ export interface DeletedRegion {
   y: number;
   width: number;
   height: number;
+  isImage?: boolean;
+}
+
+// OCR text block for embedding in exported PDF
+export interface OcrTextBlock {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  font_size: number;
 }
 
 // Semantic colors for category types
@@ -1459,12 +1472,13 @@ export class PDFAnalyzer {
   /**
    * Render a page as PNG (base64)
    * @param redactRegions - Optional regions to blank out before rendering
+   * Uses the same redaction approach as exportPdfWithBackgroundsRemoved for consistency
    */
   async renderPage(
     pageNum: number,
     scale: number = 2.0,
     pdfPath?: string,
-    redactRegions?: Array<{ x: number; y: number; width: number; height: number }>
+    redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>
   ): Promise<string> {
     const mupdfLib = await getMupdf();
 
@@ -1472,58 +1486,82 @@ export class PDFAnalyzer {
     // to avoid corrupting the cached document
     const hasRedactions = redactRegions && redactRegions.length > 0;
 
-    let doc = hasRedactions ? null : this.doc;
-    let needsClose = hasRedactions;
+    const pathToUse = pdfPath || this.pdfPath;
 
-    // If pdfPath provided or we need redactions, open fresh document
-    if (pdfPath || hasRedactions) {
-      const pathToUse = pdfPath || this.pdfPath;
+    // For redactions or custom path, load fresh document
+    if (hasRedactions || pdfPath) {
       if (!pathToUse) {
         throw new Error('No PDF path available');
       }
+
       const data = fs.readFileSync(pathToUse);
       const mimeType = getMimeType(pathToUse);
-      doc = mupdfLib.Document.openDocument(data, mimeType);
-      needsClose = true;
-    }
+      const tempDoc = mupdfLib.Document.openDocument(data, mimeType);
 
-    if (!doc) {
-      throw new Error('No document loaded');
-    }
-
-    try {
-      // Apply redactions if provided (PDF only)
+      // Apply redactions using the same approach as export (which works)
       if (hasRedactions && redactRegions) {
-        const pdfDoc = doc.asPDF();
+        const pdfDoc = tempDoc.asPDF();
         if (pdfDoc) {
-          const page = pdfDoc.loadPage(pageNum);
-          for (const region of redactRegions) {
-            const rect: [number, number, number, number] = [
-              region.x,
-              region.y,
-              region.x + region.width,
-              region.y + region.height,
-            ];
-            const annot = page.createAnnotation('Redact');
-            annot.setRect(rect);
+          const pdfPage = pdfDoc.loadPage(pageNum) as any;
+
+          // Separate image and text regions
+          const imageRegions = redactRegions.filter(r => r.isImage);
+          const textRegions = redactRegions.filter(r => !r.isImage);
+
+          // First pass: Apply image-only redactions (preserve text/line art)
+          if (imageRegions.length > 0) {
+            for (const region of imageRegions) {
+              const rect: [number, number, number, number] = [
+                region.x,
+                region.y,
+                region.x + region.width,
+                region.y + region.height,
+              ];
+              const annot = pdfPage.createAnnotation('Redact');
+              annot.setRect(rect);
+            }
+            // Apply with: no black boxes, redact images, no line art, NO text
+            pdfPage.applyRedactions(false, 2, 0, 0);
           }
-          page.applyRedactions(false);
+
+          // Second pass: Apply text redactions
+          if (textRegions.length > 0) {
+            for (const region of textRegions) {
+              const rect: [number, number, number, number] = [
+                region.x,
+                region.y,
+                region.x + region.width,
+                region.y + region.height,
+              ];
+              const annot = pdfPage.createAnnotation('Redact');
+              annot.setRect(rect);
+            }
+            // Apply with: no black boxes, redact images, line art, AND text
+            pdfPage.applyRedactions(false, 2, 2, 2);
+          }
         }
       }
 
-      const page = doc.loadPage(pageNum);
+      // Render the page with redactions applied
+      const renderPage = tempDoc.loadPage(pageNum);
       const matrix = mupdfLib.Matrix.scale(scale, scale);
-      const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+      const pixmap = renderPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
       const pngData = pixmap.asPNG();
 
-      // Convert Uint8Array to base64
-      const base64 = Buffer.from(pngData).toString('base64');
-      return base64;
-    } finally {
-      if (needsClose && doc) {
-        // doc.destroy() if needed
-      }
+      return Buffer.from(pngData).toString('base64');
     }
+
+    // No redactions - render from cached document
+    if (!this.doc) {
+      throw new Error('No document loaded');
+    }
+
+    const page = this.doc.loadPage(pageNum);
+    const matrix = mupdfLib.Matrix.scale(scale, scale);
+    const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+    const pngData = pixmap.asPNG();
+
+    return Buffer.from(pngData).toString('base64');
   }
 
   /**
@@ -1531,27 +1569,108 @@ export class PDFAnalyzer {
    * Used when "remove background images" is enabled - text will be shown via overlays
    */
   async renderBlankPage(pageNum: number, scale: number = 2.0): Promise<string> {
-    const dims = this.pageDimensions[pageNum];
-    if (!dims) {
-      throw new Error(`No dimensions for page ${pageNum}`);
-    }
+    // Now delegates to renderPageWithoutBackground for actual background removal
+    return this.renderPageWithoutBackground(pageNum, scale);
+  }
 
-    // Use mupdf to create a blank white page
+  /**
+   * Render a page with background removed (yellowed paper becomes white)
+   * Keeps dark content (text, images) while removing light background colors
+   */
+  async renderPageWithoutBackground(pageNum: number, scale: number = 2.0): Promise<string> {
     const mupdfLib = await getMupdf();
 
-    // Create a new blank PDF document
-    const blankDoc = new mupdfLib.PDFDocument() as any;
-    // Add a blank page with the correct dimensions (in points)
-    // MediaBox format: [x0, y0, x1, y1]
-    const mediaBox: [number, number, number, number] = [0, 0, dims.width, dims.height];
-    const pageObj = blankDoc.addPage(mediaBox, 0, null, '');
-    blankDoc.insertPage(-1, pageObj);
+    if (!this.doc) {
+      throw new Error('No document loaded');
+    }
 
-    // Render the blank page
-    const page = blankDoc.loadPage(0);
+    // Render the page normally first
+    const page = this.doc.loadPage(pageNum);
     const matrix = mupdfLib.Matrix.scale(scale, scale);
-    const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true); // alpha=true for white bg
+    const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
 
+    // Get pixel data
+    const width = pixmap.getWidth();
+    const height = pixmap.getHeight();
+    const n = pixmap.getNumberOfComponents(); // Should be 3 for RGB or 4 for RGBA
+    const samples = pixmap.getPixels();
+
+    // First pass: analyze image to find background color
+    // Sample pixels from corners and edges (likely to be background)
+    const bgSamples: { r: number; g: number; b: number }[] = [];
+    const samplePositions = [
+      // Corners
+      { x: 10, y: 10 },
+      { x: width - 10, y: 10 },
+      { x: 10, y: height - 10 },
+      { x: width - 10, y: height - 10 },
+      // Edge midpoints
+      { x: width / 2, y: 10 },
+      { x: width / 2, y: height - 10 },
+      { x: 10, y: height / 2 },
+      { x: width - 10, y: height / 2 },
+    ];
+
+    for (const pos of samplePositions) {
+      const x = Math.floor(pos.x);
+      const y = Math.floor(pos.y);
+      if (x >= 0 && x < width && y >= 0 && y < height) {
+        const idx = (y * width + x) * n;
+        const r = samples[idx];
+        const g = samples[idx + 1];
+        const b = samples[idx + 2];
+        // Only consider light pixels as potential background
+        if (r > 180 && g > 180 && b > 150) {
+          bgSamples.push({ r, g, b });
+        }
+      }
+    }
+
+    // Calculate average background color (or default to light gray if no samples)
+    let bgR = 245, bgG = 240, bgB = 220; // Default yellowish paper
+    if (bgSamples.length > 0) {
+      bgR = Math.round(bgSamples.reduce((s, p) => s + p.r, 0) / bgSamples.length);
+      bgG = Math.round(bgSamples.reduce((s, p) => s + p.g, 0) / bgSamples.length);
+      bgB = Math.round(bgSamples.reduce((s, p) => s + p.b, 0) / bgSamples.length);
+    }
+
+    // Second pass: replace background-like pixels with white
+    // A pixel is considered "background" if it's close to the detected background color
+    // and has high luminance (is light colored)
+    const tolerance = 60; // Color distance tolerance
+    const luminanceThreshold = 180; // Minimum luminance to be considered background
+
+    for (let i = 0; i < samples.length; i += n) {
+      const r = samples[i];
+      const g = samples[i + 1];
+      const b = samples[i + 2];
+
+      // Calculate luminance (perceived brightness)
+      const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+
+      // Calculate color distance from detected background
+      const dr = r - bgR;
+      const dg = g - bgG;
+      const db = b - bgB;
+      const colorDist = Math.sqrt(dr * dr + dg * dg + db * db);
+
+      // If pixel is light AND close to background color, make it white
+      if (luminance > luminanceThreshold && colorDist < tolerance) {
+        samples[i] = 255;     // R
+        samples[i + 1] = 255; // G
+        samples[i + 2] = 255; // B
+        // Keep alpha if present (samples[i + 3])
+      }
+      // Also make very light pixels white (near-white areas)
+      else if (r > 240 && g > 235 && b > 220) {
+        samples[i] = 255;
+        samples[i + 1] = 255;
+        samples[i + 2] = 255;
+      }
+    }
+
+    // The samples array is a view into the pixmap's data, so changes are reflected
+    // Now convert to PNG
     const pngData = pixmap.asPNG();
     return Buffer.from(pngData).toString('base64');
   }
@@ -1604,8 +1723,18 @@ export class PDFAnalyzer {
   /**
    * Export a cleaned PDF with deleted regions removed
    * Note: Only works with PDF files (redaction is PDF-specific)
+   *
+   * Image regions are redacted separately with text_method=0 to preserve
+   * any text that might overlap the image area.
+   *
+   * When ocrBlocks are provided and images are deleted, the OCR text is embedded
+   * into the PDF to replace the deleted image content.
    */
-  async exportPdf(pdfPath: string, deletedRegions: DeletedRegion[]): Promise<string> {
+  async exportPdf(
+    pdfPath: string,
+    deletedRegions: DeletedRegion[],
+    ocrBlocks?: OcrTextBlock[]
+  ): Promise<string> {
     const mupdfLib = await getMupdf();
     const data = fs.readFileSync(pdfPath);
     const mimeType = getMimeType(pdfPath);
@@ -1616,43 +1745,431 @@ export class PDFAnalyzer {
       throw new Error('Source must be a PDF file for PDF export with redactions');
     }
 
-    // Group regions by page
-    const regionsByPage = new Map<number, DeletedRegion[]>();
+    // Separate image and text regions, grouped by page
+    const imageRegionsByPage = new Map<number, DeletedRegion[]>();
+    const textRegionsByPage = new Map<number, DeletedRegion[]>();
+
     for (const region of deletedRegions) {
-      if (!regionsByPage.has(region.page)) {
-        regionsByPage.set(region.page, []);
+      const targetMap = region.isImage ? imageRegionsByPage : textRegionsByPage;
+      if (!targetMap.has(region.page)) {
+        targetMap.set(region.page, []);
       }
-      regionsByPage.get(region.page)!.push(region);
+      targetMap.get(region.page)!.push(region);
     }
 
-    // Process each page with deleted regions
-    for (const [pageNum, regions] of regionsByPage) {
+    // Group OCR blocks by page
+    const ocrByPage = new Map<number, OcrTextBlock[]>();
+    if (ocrBlocks && ocrBlocks.length > 0) {
+      for (const block of ocrBlocks) {
+        if (!ocrByPage.has(block.page)) {
+          ocrByPage.set(block.page, []);
+        }
+        ocrByPage.get(block.page)!.push(block);
+      }
+    }
+
+    // Get all unique page numbers
+    const allPages = new Set([...imageRegionsByPage.keys(), ...textRegionsByPage.keys()]);
+
+    // Track pages that need OCR text added
+    const pagesNeedingOcrText: number[] = [];
+
+    // Process each page
+    for (const pageNum of allPages) {
       if (pageNum >= pdfDoc.countPages()) continue;
 
       const page = pdfDoc.loadPage(pageNum) as any; // PDFPage type
 
-      for (const region of regions) {
-        // Create redaction annotation
-        const rect: [number, number, number, number] = [
-          region.x,
-          region.y,
-          region.x + region.width,
-          region.y + region.height,
-        ];
+      // First pass: Apply image-only redactions (preserve text)
+      const imageRegions = imageRegionsByPage.get(pageNum) || [];
+      if (imageRegions.length > 0) {
+        for (const region of imageRegions) {
+          const rect: [number, number, number, number] = [
+            region.x,
+            region.y,
+            region.x + region.width,
+            region.y + region.height,
+          ];
+          const annot = page.createAnnotation('Redact');
+          annot.setRect(rect);
+        }
+        // Apply with: no black boxes, redact images, no line art, NO text
+        // This preserves any text that overlaps the image
+        page.applyRedactions(false, 2, 0, 0);
 
-        const annot = page.createAnnotation('Redact');
-        annot.setRect(rect);
-        // Note: Redact annotations don't support setInteriorColor/setColor in mupdf.js
-        // The applyRedactions call will use white fill by default
+        // Mark this page as needing OCR text if OCR blocks exist for it
+        if (ocrByPage.has(pageNum)) {
+          pagesNeedingOcrText.push(pageNum);
+        }
       }
 
-      // Apply all redactions on this page
-      // Pass false to remove content without leaving visible boxes
-      page.applyRedactions(false);
+      // Second pass: Apply text redactions (normal behavior)
+      const textRegions = textRegionsByPage.get(pageNum) || [];
+      if (textRegions.length > 0) {
+        for (const region of textRegions) {
+          const rect: [number, number, number, number] = [
+            region.x,
+            region.y,
+            region.x + region.width,
+            region.y + region.height,
+          ];
+          const annot = page.createAnnotation('Redact');
+          annot.setRect(rect);
+        }
+        // Apply with: no black boxes, redact images, line art, AND text
+        page.applyRedactions(false, 2, 2, 2);
+      }
+    }
+
+    // Add OCR text to pages where images were deleted
+    // We need to add a Helvetica font to the document first
+    if (pagesNeedingOcrText.length > 0) {
+      // Create font dictionary for Helvetica
+      const fontDict = pdfDoc.addObject({
+        Type: 'Font',
+        Subtype: 'Type1',
+        BaseFont: 'Helvetica',
+        Encoding: 'WinAnsiEncoding'
+      });
+
+      for (const pageNum of pagesNeedingOcrText) {
+        const pageOcrBlocks = ocrByPage.get(pageNum) || [];
+        if (pageOcrBlocks.length === 0) continue;
+
+        const page = pdfDoc.loadPage(pageNum) as any;
+        const bounds = page.getBounds();
+        const pageHeight = bounds[3] - bounds[1];
+
+        // Build text content stream
+        let textContent = 'BT\n';  // Begin text
+
+        for (const block of pageOcrBlocks) {
+          // Escape special characters in PDF string
+          const escapedText = block.text
+            .replace(/\\/g, '\\\\')
+            .replace(/\(/g, '\\(')
+            .replace(/\)/g, '\\)');
+
+          // Calculate position (PDF coordinates: origin at bottom-left, y increases upward)
+          // OCR coordinates: origin at top-left, y increases downward
+          const fontSize = Math.max(8, Math.min(block.font_size || 12, 24));
+          const x = block.x;
+          const y = pageHeight - block.y - block.height;  // Flip y-axis
+
+          // Add text positioning and drawing
+          textContent += `/F1 ${fontSize} Tf\n`;
+          textContent += `1 0 0 1 ${x.toFixed(2)} ${y.toFixed(2)} Tm\n`;
+          textContent += `(${escapedText}) Tj\n`;
+        }
+
+        textContent += 'ET\n';  // End text
+
+        // Add the text content as a new content stream
+        // First, add font to page resources
+        const pageObj = pdfDoc.findPage(pageNum);
+        const resources = pageObj.get('Resources');
+
+        // Get or create Font dictionary in resources
+        let fonts = resources.get('Font');
+        if (!fonts || fonts.isNull()) {
+          fonts = pdfDoc.addObject({});
+          resources.put('Font', fonts);
+        }
+
+        // Add our font as F1
+        fonts.put('F1', fontDict);
+
+        // Create new content stream with OCR text
+        const textStream = pdfDoc.addStream(textContent, {});
+
+        // Append to existing page contents
+        const existingContents = pageObj.get('Contents');
+        if (existingContents && !existingContents.isNull()) {
+          if (existingContents.isArray()) {
+            // Contents is already an array, append to it
+            existingContents.push(textStream);
+          } else {
+            // Contents is a single stream, convert to array
+            const newContents = pdfDoc.addObject([existingContents, textStream]);
+            pageObj.put('Contents', newContents);
+          }
+        } else {
+          // No existing contents, set our stream
+          pageObj.put('Contents', textStream);
+        }
+      }
     }
 
     // Save to buffer
     const buffer = pdfDoc.saveToBuffer('compress');
+    const base64 = Buffer.from(buffer.asUint8Array()).toString('base64');
+
+    return base64;
+  }
+
+  /**
+   * Export a PDF with backgrounds removed (yellowed paper -> white)
+   * Creates a new PDF from processed page images
+   * Optionally applies redactions for deleted content before rendering
+   * Optionally embeds OCR text blocks as real PDF text (survives image deletion)
+   */
+  async exportPdfWithBackgroundsRemoved(
+    scale: number = 2.0,
+    progressCallback?: (current: number, total: number) => void,
+    deletedRegions?: DeletedRegion[],
+    ocrBlocks?: OcrTextBlock[]
+  ): Promise<string> {
+    const mupdfLib = await getMupdf();
+
+    if (!this.doc) {
+      throw new Error('No document loaded');
+    }
+
+    const totalPages = this.doc.countPages();
+
+    // Group deleted regions by page for efficient lookup
+    const regionsByPage = new Map<number, DeletedRegion[]>();
+    if (deletedRegions && deletedRegions.length > 0) {
+      for (const region of deletedRegions) {
+        if (!regionsByPage.has(region.page)) {
+          regionsByPage.set(region.page, []);
+        }
+        regionsByPage.get(region.page)!.push(region);
+      }
+    }
+
+    // Group OCR blocks by page
+    const ocrByPage = new Map<number, OcrTextBlock[]>();
+    if (ocrBlocks && ocrBlocks.length > 0) {
+      for (const block of ocrBlocks) {
+        if (!ocrByPage.has(block.page)) {
+          ocrByPage.set(block.page, []);
+        }
+        ocrByPage.get(block.page)!.push(block);
+      }
+    }
+
+    // Create a new PDF document
+    const outputDoc = new mupdfLib.PDFDocument() as any;
+
+    // Process each page
+    for (let pageNum = 0; pageNum < totalPages; pageNum++) {
+      // Report progress
+      if (progressCallback) {
+        progressCallback(pageNum, totalPages);
+      }
+
+      // Check if this page has deleted regions
+      const pageRegions = regionsByPage.get(pageNum) || [];
+      let pixmap;
+
+      if (pageRegions.length > 0 && this.pdfPath) {
+        // Separate image and text regions
+        const imageRegions = pageRegions.filter(r => r.isImage);
+        const textRegions = pageRegions.filter(r => !r.isImage);
+
+        // Load a fresh copy of the PDF and apply redactions before rendering
+        const data = fs.readFileSync(this.pdfPath);
+        const mimeType = getMimeType(this.pdfPath);
+        const tempDoc = mupdfLib.Document.openDocument(data, mimeType);
+        const pdfDoc = tempDoc.asPDF();
+
+        if (pdfDoc) {
+          const pdfPage = pdfDoc.loadPage(pageNum) as any; // PDFPage type
+
+          // First pass: Apply image-only redactions (preserve text)
+          if (imageRegions.length > 0) {
+            for (const region of imageRegions) {
+              const rect: [number, number, number, number] = [
+                region.x,
+                region.y,
+                region.x + region.width,
+                region.y + region.height,
+              ];
+              const annot = pdfPage.createAnnotation('Redact');
+              annot.setRect(rect);
+            }
+            // Apply with: no black boxes, redact images, no line art, NO text
+            // This preserves any text that overlaps the image
+            pdfPage.applyRedactions(false, 2, 0, 0);
+          }
+
+          // Second pass: Apply text redactions (normal behavior)
+          if (textRegions.length > 0) {
+            for (const region of textRegions) {
+              const rect: [number, number, number, number] = [
+                region.x,
+                region.y,
+                region.x + region.width,
+                region.y + region.height,
+              ];
+              const annot = pdfPage.createAnnotation('Redact');
+              annot.setRect(rect);
+            }
+            // Apply with: no black boxes, redact images, line art, AND text
+            pdfPage.applyRedactions(false, 2, 2, 2);
+          }
+        }
+
+        // Render the page with redactions applied
+        const renderPage = tempDoc.loadPage(pageNum);
+        const matrix = mupdfLib.Matrix.scale(scale, scale);
+        pixmap = renderPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+      } else {
+        // Render page normally (no redactions needed)
+        const page = this.doc.loadPage(pageNum);
+        const matrix = mupdfLib.Matrix.scale(scale, scale);
+        pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+      }
+
+      // Get pixel data and process to remove background
+      const width = pixmap.getWidth();
+      const height = pixmap.getHeight();
+      const n = pixmap.getNumberOfComponents();
+      const samples = pixmap.getPixels();
+
+      // Sample corners/edges to detect background color
+      const bgSamples: { r: number; g: number; b: number }[] = [];
+      const samplePositions = [
+        { x: 10, y: 10 },
+        { x: width - 10, y: 10 },
+        { x: 10, y: height - 10 },
+        { x: width - 10, y: height - 10 },
+        { x: width / 2, y: 10 },
+        { x: width / 2, y: height - 10 },
+        { x: 10, y: height / 2 },
+        { x: width - 10, y: height / 2 },
+      ];
+
+      for (const pos of samplePositions) {
+        const x = Math.floor(pos.x);
+        const y = Math.floor(pos.y);
+        if (x >= 0 && x < width && y >= 0 && y < height) {
+          const idx = (y * width + x) * n;
+          const r = samples[idx];
+          const g = samples[idx + 1];
+          const b = samples[idx + 2];
+          if (r > 180 && g > 180 && b > 150) {
+            bgSamples.push({ r, g, b });
+          }
+        }
+      }
+
+      let bgR = 245, bgG = 240, bgB = 220;
+      if (bgSamples.length > 0) {
+        bgR = Math.round(bgSamples.reduce((s, p) => s + p.r, 0) / bgSamples.length);
+        bgG = Math.round(bgSamples.reduce((s, p) => s + p.g, 0) / bgSamples.length);
+        bgB = Math.round(bgSamples.reduce((s, p) => s + p.b, 0) / bgSamples.length);
+      }
+
+      const tolerance = 60;
+      const luminanceThreshold = 180;
+
+      for (let i = 0; i < samples.length; i += n) {
+        const r = samples[i];
+        const g = samples[i + 1];
+        const b = samples[i + 2];
+
+        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+        const dr = r - bgR;
+        const dg = g - bgG;
+        const db = b - bgB;
+        const colorDist = Math.sqrt(dr * dr + dg * dg + db * db);
+
+        if (luminance > luminanceThreshold && colorDist < tolerance) {
+          samples[i] = 255;
+          samples[i + 1] = 255;
+          samples[i + 2] = 255;
+        } else if (r > 240 && g > 235 && b > 220) {
+          samples[i] = 255;
+          samples[i + 1] = 255;
+          samples[i + 2] = 255;
+        }
+      }
+
+      // Create image directly from the processed pixmap
+      const image = new mupdfLib.Image(pixmap, undefined);
+
+      // Get original page dimensions (in points)
+      const dims = this.pageDimensions[pageNum];
+      const pageWidth = dims?.width || 612;
+      const pageHeight = dims?.height || 792;
+
+      // Create page with mediabox
+      const mediaBox: [number, number, number, number] = [0, 0, pageWidth, pageHeight];
+
+      // Start with image content
+      let content = `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Img Do Q`;
+
+      // Check if page has deleted images and OCR text to overlay
+      // Note: pageRegions already declared above in this loop iteration
+      const hasDeletedImages = pageRegions.some(r => r.isImage);
+      const pageOcrBlocks = ocrByPage.get(pageNum) || [];
+
+      // Add OCR text overlay if we have OCR blocks on pages where images were deleted
+      // This ensures OCR'd text survives image deletion
+      let needsFont = false;
+      if (pageOcrBlocks.length > 0 && hasDeletedImages) {
+        needsFont = true;
+        let textContent = '\nBT\n';  // Begin text
+
+        for (const block of pageOcrBlocks) {
+          // Escape special characters in PDF string
+          const escapedText = block.text
+            .replace(/\\/g, '\\\\')
+            .replace(/\(/g, '\\(')
+            .replace(/\)/g, '\\)');
+
+          // Calculate position (PDF coordinates: origin at bottom-left, y increases upward)
+          // OCR coordinates: origin at top-left, y increases downward
+          const fontSize = Math.max(8, Math.min(block.font_size || 12, 24));
+          const x = block.x;
+          const y = pageHeight - block.y - block.height;  // Flip y-axis
+
+          // Add text positioning and drawing
+          textContent += `/F1 ${fontSize} Tf\n`;
+          textContent += `1 0 0 1 ${x.toFixed(2)} ${y.toFixed(2)} Tm\n`;
+          textContent += `(${escapedText}) Tj\n`;
+        }
+
+        textContent += 'ET\n';  // End text
+        content += textContent;
+      }
+
+      // Add image reference and resources
+      const imgRef = outputDoc.addImage(image);
+
+      // Build resources object
+      const resourcesObj: Record<string, unknown> = {
+        XObject: { Img: imgRef }
+      };
+
+      // Add font if needed for OCR text
+      if (needsFont) {
+        // Create a standard Helvetica font reference
+        const fontDict = outputDoc.addObject({
+          Type: 'Font',
+          Subtype: 'Type1',
+          BaseFont: 'Helvetica',
+          Encoding: 'WinAnsiEncoding'
+        });
+        resourcesObj.Font = { F1: fontDict };
+      }
+
+      const resources = outputDoc.addObject(resourcesObj);
+
+      // Create and insert page (addPage expects raw content buffer, not stream object)
+      const pageObj = outputDoc.addPage(mediaBox, 0, resources, content);
+      outputDoc.insertPage(-1, pageObj);
+    }
+
+    // Final progress update
+    if (progressCallback) {
+      progressCallback(totalPages, totalPages);
+    }
+
+    // Save to buffer
+    const buffer = outputDoc.saveToBuffer('compress');
     const base64 = Buffer.from(buffer.asUint8Array()).toString('base64');
 
     return base64;

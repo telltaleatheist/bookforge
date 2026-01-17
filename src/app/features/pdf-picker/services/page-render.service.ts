@@ -242,11 +242,34 @@ export class PageRenderService {
   }
 
   /**
+   * Re-render a page from the original PDF (no redactions)
+   * Used when undoing deletions to restore the original image
+   */
+  async rerenderPageFromOriginal(pageNum: number): Promise<string | null> {
+    if (!this.currentPdfPath) return null;
+
+    const scale = this.getRenderScale();
+    const dataUrl = await this.electronService.renderPage(
+      pageNum,
+      scale,
+      this.currentPdfPath
+      // No redactRegions - render original
+    );
+
+    if (dataUrl) {
+      this.fullPaths[pageNum] = `__data__${dataUrl}`;
+      this.updatePageImagesSignal();
+    }
+
+    return dataUrl;
+  }
+
+  /**
    * Re-render a page with redactions applied.
    */
   async rerenderPageWithRedactions(
     pageNum: number,
-    redactRegions: Array<{ x: number; y: number; width: number; height: number }>
+    redactRegions: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>
   ): Promise<string | null> {
     if (!this.currentPdfPath) return null;
 

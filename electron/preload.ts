@@ -223,19 +223,21 @@ export interface RenderWithPreviewsResult {
 export interface ElectronAPI {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
-    renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number }>) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
+    renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderBlankPage: (pageNum: number, scale?: number) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderAllPages: (pdfPath: string, scale?: number, concurrency?: number) => Promise<{ success: boolean; data?: { paths: string[] }; error?: string }>;
     renderWithPreviews: (pdfPath: string, concurrency?: number) => Promise<{ success: boolean; data?: RenderWithPreviewsResult; error?: string }>;
     onRenderProgress: (callback: RenderProgressCallback) => () => void;
     onPageUpgraded: (callback: (data: { pageNum: number; path: string }) => void) => () => void;
+    onExportProgress: (callback: (progress: { current: number; total: number }) => void) => () => void;
     cleanupTempFiles: () => Promise<{ success: boolean; error?: string }>;
     clearCache: (fileHash: string) => Promise<{ success: boolean; error?: string }>;
     clearAllCache: () => Promise<{ success: boolean; data?: { cleared: number; freedBytes: number }; error?: string }>;
     getCacheSize: (fileHash: string) => Promise<{ success: boolean; data?: { size: number }; error?: string }>;
     getTotalCacheSize: () => Promise<{ success: boolean; data?: { size: number }; error?: string }>;
     exportText: (enabledCategories: string[]) => Promise<{ success: boolean; data?: { text: string; char_count: number }; error?: string }>;
-    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
+    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
+    exportPdfNoBackgrounds: (scale?: number, deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
     findSimilar: (blockId: string) => Promise<{ success: boolean; data?: { similar_ids: string[]; count: number }; error?: string }>;
     findSpansInRect: (page: number, x: number, y: number, width: number, height: number) => Promise<{ success: boolean; data?: TextSpan[]; error?: string }>;
     analyzeSamples: (sampleSpans: TextSpan[]) => Promise<{ success: boolean; data?: SamplePattern; error?: string }>;
@@ -302,7 +304,7 @@ const electronAPI: ElectronAPI = {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) =>
       ipcRenderer.invoke('pdf:analyze', pdfPath, maxPages),
-    renderPage: (pageNum: number, scale: number = 2.0, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number }>) =>
+    renderPage: (pageNum: number, scale: number = 2.0, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>) =>
       ipcRenderer.invoke('pdf:render-page', pageNum, scale, pdfPath, redactRegions),
     renderBlankPage: (pageNum: number, scale: number = 2.0) =>
       ipcRenderer.invoke('pdf:render-blank-page', pageNum, scale),
@@ -328,6 +330,15 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('pdf:page-upgraded', listener);
       };
     },
+    onExportProgress: (callback: (progress: { current: number; total: number }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: { current: number; total: number }) => {
+        callback(progress);
+      };
+      ipcRenderer.on('pdf:export-progress', listener);
+      return () => {
+        ipcRenderer.removeListener('pdf:export-progress', listener);
+      };
+    },
     cleanupTempFiles: () =>
       ipcRenderer.invoke('pdf:cleanup-temp-files'),
     clearCache: (fileHash: string) =>
@@ -340,8 +351,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:get-total-cache-size'),
     exportText: (enabledCategories: string[]) =>
       ipcRenderer.invoke('pdf:export-text', enabledCategories),
-    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number }>) =>
-      ipcRenderer.invoke('pdf:export-pdf', pdfPath, deletedRegions),
+    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>) =>
+      ipcRenderer.invoke('pdf:export-pdf', pdfPath, deletedRegions, ocrBlocks),
+    exportPdfNoBackgrounds: (scale: number = 2.0, deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>) =>
+      ipcRenderer.invoke('pdf:export-pdf-no-backgrounds', scale, deletedRegions, ocrBlocks),
     findSimilar: (blockId: string) =>
       ipcRenderer.invoke('pdf:find-similar', blockId),
     findSpansInRect: (page: number, x: number, y: number, width: number, height: number) =>

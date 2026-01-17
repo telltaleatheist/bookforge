@@ -119,7 +119,7 @@ function setupIpcHandlers(): void {
     pageNum: number,
     scale: number = 2.0,
     pdfPath?: string,
-    redactRegions?: Array<{ x: number; y: number; width: number; height: number }>
+    redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>
   ) => {
     try {
       const image = await pdfAnalyzer.renderPage(pageNum, scale, pdfPath, redactRegions);
@@ -264,9 +264,35 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('pdf:export-pdf', async (_event, pdfPath: string, deletedRegions: Array<{page: number; x: number; y: number; width: number; height: number}>) => {
+  ipcMain.handle('pdf:export-pdf', async (
+    _event,
+    pdfPath: string,
+    deletedRegions: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>,
+    ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>
+  ) => {
     try {
-      const pdfBase64 = await pdfAnalyzer.exportPdf(pdfPath, deletedRegions);
+      const pdfBase64 = await pdfAnalyzer.exportPdf(pdfPath, deletedRegions, ocrBlocks);
+      return { success: true, data: { pdf_base64: pdfBase64 } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:export-pdf-no-backgrounds', async (
+    event,
+    scale: number = 2.0,
+    deletedRegions?: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>,
+    ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>
+  ) => {
+    try {
+      const pdfBase64 = await pdfAnalyzer.exportPdfWithBackgroundsRemoved(
+        scale,
+        (current, total) => {
+          event.sender.send('pdf:export-progress', { current, total });
+        },
+        deletedRegions,
+        ocrBlocks
+      );
       return { success: true, data: { pdf_base64: pdfBase64 } };
     } catch (err) {
       return { success: false, error: (err as Error).message };

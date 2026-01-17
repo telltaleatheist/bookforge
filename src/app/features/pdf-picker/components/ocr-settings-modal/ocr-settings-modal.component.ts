@@ -173,7 +173,7 @@ export interface OcrPageResult {
             <div class="section">
               <h3 class="section-title">Progress</h3>
               <div class="progress-container">
-                <div class="progress-bar" [class.indeterminate]="processingPage()">
+                <div class="progress-bar">
                   <div class="progress-fill" [style.width.%]="progressPercent()"></div>
                 </div>
                 <div class="progress-status">
@@ -232,10 +232,10 @@ export interface OcrPageResult {
 
         <div class="modal-footer">
           @if (!running()) {
-            <desktop-button variant="ghost" (click)="close.emit()">
-              {{ completed() ? 'Done' : 'Cancel' }}
-            </desktop-button>
             @if (!completed()) {
+              <desktop-button variant="ghost" (click)="close.emit()">
+                Cancel
+              </desktop-button>
               <desktop-button
                 variant="primary"
                 [disabled]="!canStart()"
@@ -244,8 +244,8 @@ export interface OcrPageResult {
                 Start OCR
               </desktop-button>
             } @else {
-              <desktop-button variant="primary" (click)="applyResults()">
-                Apply to Document
+              <desktop-button variant="primary" (click)="close.emit()">
+                Done
               </desktop-button>
             }
           } @else {
@@ -707,6 +707,8 @@ export class OcrSettingsModalComponent implements OnDestroy {
   private startTime: number = 0;
   readonly elapsedSeconds = signal(0);
   private elapsedTimer: ReturnType<typeof setInterval> | null = null;
+  private pageCompletionTimes: number[] = [];  // Track time taken for each page
+  private lastPageStartTime: number = 0;
 
   // Language names
   private readonly languageNames: Record<string, string> = {
@@ -796,10 +798,43 @@ export class OcrSettingsModalComponent implements OnDestroy {
   }
 
   progressText(): string {
+    const processed = this.processedCount();
+    const total = this.totalToProcess();
+    const remaining = total - processed;
+
     if (this.processingPage()) {
-      return `Processing page ${this.currentProcessingPage() + 1} of ${this.totalToProcess()}...`;
+      const estimate = this.getTimeEstimate();
+      if (estimate && processed > 0) {
+        return `Processing page ${this.currentProcessingPage() + 1} of ${total} • ~${estimate} remaining`;
+      }
+      return `Processing page ${this.currentProcessingPage() + 1} of ${total}...`;
     }
-    return `Completed ${this.processedCount()} of ${this.totalToProcess()} pages`;
+
+    return `Completed ${processed} of ${total} pages`;
+  }
+
+  private getTimeEstimate(): string | null {
+    if (this.pageCompletionTimes.length === 0) return null;
+
+    // Calculate average time per page
+    const avgTime = this.pageCompletionTimes.reduce((a, b) => a + b, 0) / this.pageCompletionTimes.length;
+    const remaining = this.totalToProcess() - this.processedCount();
+    const estimatedMs = avgTime * remaining;
+
+    if (estimatedMs < 1000) return null;
+
+    const seconds = Math.round(estimatedMs / 1000);
+    if (seconds < 60) {
+      return `${seconds}s`;
+    }
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    if (mins < 60) {
+      return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+    }
+    const hours = Math.floor(mins / 60);
+    const remainingMins = mins % 60;
+    return `${hours}h ${remainingMins}m`;
   }
 
   elapsedTimeText(): string {
@@ -857,6 +892,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
     this.results.set([]);
     this.processedCount.set(0);
     this.totalToProcess.set(pages.length);
+    this.pageCompletionTimes = [];  // Reset timing data
     this.startElapsedTimer();
 
     const getImage = this.getPageImage();
@@ -868,6 +904,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
       this.currentProcessingPage.set(pageNum);
       this.currentPageText.set('');
       this.processingPage.set(true);
+      this.lastPageStartTime = Date.now();  // Track page start time
 
       try {
         const imageData = getImage(pageNum);
@@ -878,7 +915,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
           continue;
         }
 
-        let result: { text: string; confidence: number } | null = null;
+        let result: { text: string; confidence: number; textLines?: OcrTextLine[] } | null = null;
 
         let textLines: OcrTextLine[] | undefined;
 
@@ -892,8 +929,12 @@ export class OcrSettingsModalComponent implements OnDestroy {
             throw new Error(suryaResult.error);
           }
         } else {
-          // Use Tesseract
-          result = await this.electronService.ocrRecognize(imageData);
+          // Use Tesseract - now returns textLines with bounding boxes
+          const tesseractResult = await this.electronService.ocrRecognize(imageData);
+          if (tesseractResult) {
+            result = tesseractResult;
+            textLines = tesseractResult.textLines;
+          }
         }
 
         this.processingPage.set(false);
@@ -913,6 +954,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
         this.error.set(`Failed on page ${pageNum + 1}: ${(err as Error).message}`);
       }
 
+      // Track page completion time for estimate
+      const pageTime = Date.now() - this.lastPageStartTime;
+      this.pageCompletionTimes.push(pageTime);
+
       this.processedCount.update(c => c + 1);
     }
 
@@ -921,6 +966,11 @@ export class OcrSettingsModalComponent implements OnDestroy {
     this.completed.set(true);
     this.currentPageText.set('');
     this.processingPage.set(false);
+
+    // Auto-apply results to document
+    if (this.results().length > 0) {
+      this.ocrCompleted.emit(this.results());
+    }
   }
 
   cancelOcr(): void {

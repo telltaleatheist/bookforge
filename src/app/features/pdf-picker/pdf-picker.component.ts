@@ -23,6 +23,7 @@ import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.compo
 import { OcrSettingsModalComponent, OcrSettings, OcrPageResult } from './components/ocr-settings-modal/ocr-settings-modal.component';
 import { InlineTextEditorComponent, TextEditResult } from './components/inline-text-editor/inline-text-editor.component';
 import { SettingsModalComponent } from './components/settings-modal/settings-modal.component';
+import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportFormat } from './components/export-settings-modal/export-settings-modal.component';
 
 interface OpenDocument {
   id: string;
@@ -84,6 +85,8 @@ interface BookForgeProject {
   text_corrections?: Record<string, string>;  // Legacy: OCR corrections only
   undo_stack?: HistoryAction[];  // Persisted undo history
   redo_stack?: HistoryAction[];  // Persisted redo history
+  remove_backgrounds?: boolean;  // Background removal state
+  ocr_blocks?: TextBlock[];  // OCR-generated blocks (independent from PDF analysis)
   created_at: string;
   modified_at: string;
 }
@@ -142,6 +145,7 @@ interface AlertModal {
     OcrSettingsModalComponent,
     InlineTextEditorComponent,
     SettingsModalComponent,
+    ExportSettingsModalComponent,
   ],
   template: `
     <!-- Toolbar -->
@@ -170,21 +174,56 @@ interface AlertModal {
         [maxSize]="3000"
         (sizeChanged)="onSplitSizeChanged($event)"
       >
-        <!-- PDF Viewer (Primary) with Mode Bar -->
+        <!-- PDF Viewer (Primary) with Left Tools Sidebar -->
         <div pane-primary class="viewer-pane-container">
-          <!-- Mode Bar -->
-          <div class="mode-bar">
-            @for (mode of modes; track mode.id) {
+          <!-- Left Tools Sidebar -->
+          <div
+            class="tools-sidebar"
+            [style.width.px]="toolsSidebarWidth()"
+          >
+            <div class="tools-section">
+              <div class="tools-label">Tools</div>
+              @for (mode of modes; track mode.id) {
+                <button
+                  class="menu-item"
+                  [class.active]="currentMode() === mode.id"
+                  [title]="mode.tooltip"
+                  (click)="setMode(mode.id)"
+                >
+                  <span class="menu-icon">{{ mode.icon }}</span>
+                  <span class="menu-text">{{ mode.label }}</span>
+                </button>
+              }
+            </div>
+
+            <div class="tools-divider"></div>
+
+            <div class="tools-section">
+              <div class="tools-label">Rendering</div>
               <button
-                class="mode-btn"
-                [class.active]="currentMode() === mode.id"
-                [title]="mode.tooltip"
-                (click)="setMode(mode.id)"
+                class="menu-item"
+                [class.active]="removeBackgrounds()"
+                title="Remove background images (yellowed paper)"
+                (click)="toggleRemoveBackgrounds()"
               >
-                <span class="mode-icon">{{ mode.icon }}</span>
-                <span class="mode-label">{{ mode.label }}</span>
+                <span class="menu-icon">🖼️</span>
+                <span class="menu-text">Remove Backgrounds</span>
               </button>
-            }
+              <button
+                class="menu-item"
+                title="Re-render all pages"
+                (click)="reRenderPages()"
+              >
+                <span class="menu-icon">🔄</span>
+                <span class="menu-text">Re-render Pages</span>
+              </button>
+            </div>
+
+            <!-- Resize Handle -->
+            <div
+              class="sidebar-resize-handle"
+              (mousedown)="onSidebarResizeStart($event)"
+            ></div>
           </div>
 
           <!-- Viewer + Timeline wrapper (stacked vertically) -->
@@ -220,6 +259,8 @@ interface AlertModal {
               [sampleCurrentRect]="sampleDrawingRect()"
               [regexSearchMode]="regexPanelExpanded()"
               [removeBackgrounds]="removeBackgrounds()"
+              [blankedPages]="blankedPages()"
+              [pageImages]="pageImages()"
               (blockClick)="onBlockClick($event)"
               (blockDoubleClick)="onBlockDoubleClick($event)"
               (blockHover)="onBlockHover($event)"
@@ -513,6 +554,16 @@ interface AlertModal {
       />
     }
 
+    <!-- Export Settings Modal -->
+    @if (showExportSettings()) {
+      <app-export-settings-modal
+        [pdfName]="pdfName()"
+        [totalPages]="totalPages()"
+        [removeBackgrounds]="removeBackgrounds()"
+        (result)="onExportSettingsResult($event)"
+      />
+    }
+
     <!-- Sample Mode Floating Toolbar -->
     @if (sampleMode()) {
       <div class="sample-mode-toolbar">
@@ -748,49 +799,95 @@ interface AlertModal {
       min-height: 0;
     }
 
-    .mode-bar {
+    .tools-sidebar {
       display: flex;
       flex-direction: column;
       background: var(--bg-elevated);
       border-right: 1px solid var(--border-subtle);
-      padding: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-md);
       gap: var(--ui-spacing-xs);
       flex-shrink: 0;
+      min-width: 150px;
+      max-width: 400px;
+      overflow-y: auto;
+      position: relative;
     }
 
-    .mode-btn {
+    .sidebar-resize-handle {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 4px;
+      height: 100%;
+      cursor: ew-resize;
+      background: transparent;
+      transition: background $duration-fast $ease-out;
+
+      &:hover {
+        background: var(--accent);
+      }
+    }
+
+    .tools-section {
       display: flex;
       flex-direction: column;
+      gap: 2px;
+    }
+
+    .tools-label {
+      font-size: 11px;
+      font-weight: $font-weight-semibold;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: var(--ui-spacing-xs) var(--ui-spacing-sm);
+      margin-bottom: 4px;
+    }
+
+    .tools-divider {
+      height: 1px;
+      background: var(--border-subtle);
+      margin: var(--ui-spacing-md) 0;
+    }
+
+    .menu-item {
+      display: flex;
+      flex-direction: row;
       align-items: center;
-      justify-content: center;
-      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-sm) var(--ui-spacing-sm);
       border: 1px solid transparent;
       border-radius: $radius-md;
       background: transparent;
       cursor: pointer;
       transition: all $duration-fast $ease-out;
-      min-width: 56px;
+      width: 100%;
+      text-align: left;
 
-      .mode-icon {
-        font-size: var(--ui-icon-size);
-        margin-bottom: 2px;
+      .menu-icon {
+        font-size: 16px;
+        width: 24px;
+        text-align: center;
+        flex-shrink: 0;
       }
 
-      .mode-label {
-        font-size: var(--ui-font-xs);
-        color: var(--text-secondary);
+      .menu-text {
+        font-size: var(--ui-font-sm);
+        color: var(--text-primary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       &:hover {
         background: var(--hover-bg);
-        border-color: var(--border-default);
       }
 
       &.active {
         background: var(--accent-subtle);
         border-color: var(--accent);
 
-        .mode-label {
+        .menu-text {
           color: var(--accent);
           font-weight: $font-weight-medium;
         }
@@ -1474,11 +1571,20 @@ export class PdfPickerComponent {
 
   readonly zoom = signal(50); // Default 50% for grid mode
   readonly layout = signal<'vertical' | 'grid'>('grid');
-  readonly removeBackgrounds = signal(false); // Remove scanned page backgrounds
+  // Remove backgrounds state is managed by editor state service for undo/redo
+  readonly removeBackgrounds = computed(() => this.editorState.removeBackgrounds());
+  // Pages that have been explicitly rendered as blank (due to image deletion)
+  readonly blankedPages = signal<Set<number>>(new Set());
   // Split size = window width minus sidebar width (keeps sidebar fixed)
   readonly splitSize = signal(Math.max(400, window.innerWidth - this.SIDEBAR_WIDTH));
   private userResizedSplit = false; // Track if user manually resized
   private userAdjustedZoom = false; // Track if user manually zoomed
+
+  // Tools sidebar resizing
+  readonly toolsSidebarWidth = signal(220); // Default width in px
+  private isResizingSidebar = false;
+  private sidebarResizeStartX = 0;
+  private sidebarResizeStartWidth = 0;
 
   // Grid layout constants
   private readonly GRID_THUMBNAIL_BASE_WIDTH = 200; // Base width in px at 100% zoom
@@ -1595,6 +1701,14 @@ export class PdfPickerComponent {
       this.closeCurrentTabOrHideWindow();
     }
 
+    // Ctrl/Cmd + E for export
+    if ((event.metaKey || event.ctrlKey) && event.key === 'e') {
+      event.preventDefault();
+      if (this.pdfLoaded()) {
+        this.showExportSettings.set(true);
+      }
+    }
+
     // Mode shortcuts (single keys, no modifiers)
     if (!event.metaKey && !event.ctrlKey && !event.altKey) {
       switch (event.key.toLowerCase()) {
@@ -1638,8 +1752,39 @@ export class PdfPickerComponent {
     this.userResizedSplit = true; // User manually adjusted, stop auto-resizing
   }
 
+  // Tools sidebar resize handlers
+  onSidebarResizeStart(event: MouseEvent): void {
+    event.preventDefault();
+    this.isResizingSidebar = true;
+    this.sidebarResizeStartX = event.clientX;
+    this.sidebarResizeStartWidth = this.toolsSidebarWidth();
+
+    // Add document-level listeners for smooth dragging
+    document.addEventListener('mousemove', this.onSidebarResizeMove);
+    document.addEventListener('mouseup', this.onSidebarResizeEnd);
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+  }
+
+  private onSidebarResizeMove = (event: MouseEvent): void => {
+    if (!this.isResizingSidebar) return;
+
+    const delta = event.clientX - this.sidebarResizeStartX;
+    const newWidth = Math.max(150, Math.min(400, this.sidebarResizeStartWidth + delta));
+    this.toolsSidebarWidth.set(newWidth);
+  };
+
+  private onSidebarResizeEnd = (): void => {
+    this.isResizingSidebar = false;
+    document.removeEventListener('mousemove', this.onSidebarResizeMove);
+    document.removeEventListener('mouseup', this.onSidebarResizeEnd);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  };
+
   readonly showFilePicker = signal(false);
   readonly showSettings = signal(false);
+  readonly showExportSettings = signal(false);
   readonly loading = signal(false);
   readonly loadingText = signal('Loading...');
 
@@ -1908,14 +2053,6 @@ export class PdfPickerComponent {
           tooltip: 'Toggle layout',
           active: this.layout() === 'grid'
         },
-        {
-          id: 'remove-backgrounds',
-          type: 'toggle',
-          icon: '🖼️',
-          label: 'No BG',
-          tooltip: 'Remove background images (show text only)',
-          active: this.removeBackgrounds()
-        },
         { id: 'zoom-out', type: 'button', icon: '−', tooltip: 'Zoom out' },
         { id: 'zoom-level', type: 'button', label: `${this.zoom()}%`, disabled: true },
         { id: 'zoom-in', type: 'button', icon: '+', tooltip: 'Zoom in' },
@@ -2123,16 +2260,24 @@ export class PdfPickerComponent {
    * When enabled, renders pages as white with text overlays
    */
   async toggleRemoveBackgrounds(): Promise<void> {
-    const newValue = !this.removeBackgrounds();
-    this.removeBackgrounds.set(newValue);
+    // Toggle via editor state service (adds to undo/redo history)
+    const newValue = this.editorState.toggleRemoveBackgrounds();
 
-    if (newValue) {
-      // Re-render all pages as blank white
+    await this.applyRemoveBackgrounds(newValue);
+  }
+
+  /**
+   * Apply the remove backgrounds state (render or restore pages)
+   */
+  private async applyRemoveBackgrounds(enabled: boolean): Promise<void> {
+    if (enabled) {
+      // Re-render all pages with background removal
       this.loading.set(true);
-      this.loadingText.set('Removing backgrounds...');
+      const total = this.totalPages();
 
       try {
-        for (let i = 0; i < this.totalPages(); i++) {
+        for (let i = 0; i < total; i++) {
+          this.loadingText.set(`Removing backgrounds... (${i + 1}/${total})`);
           await this.pageRenderService.renderBlankPage(i);
         }
       } finally {
@@ -2152,6 +2297,34 @@ export class PdfPickerComponent {
         this.loading.set(false);
         this.loadingText.set('');
       }
+    }
+  }
+
+  /**
+   * Re-render all pages (clears cache and re-renders fresh)
+   */
+  async reRenderPages(): Promise<void> {
+    this.loading.set(true);
+    this.loadingText.set('Re-rendering pages...');
+
+    try {
+      // Clear the current file's cache
+      const fileHash = this.fileHash();
+      if (fileHash) {
+        // Truncate hash to 16 chars to match cache directory naming
+        const truncatedHash = fileHash.substring(0, 16);
+        await this.electronService.clearCache(truncatedHash);
+      }
+
+      // Clear blankedPages state (fresh render = no blanked pages)
+      this.blankedPages.set(new Set());
+
+      // Clear local state and reload
+      this.pageRenderService.clear();
+      await this.pageRenderService.loadAllPageImages(this.totalPages());
+    } finally {
+      this.loading.set(false);
+      this.loadingText.set('');
     }
   }
 
@@ -2234,6 +2407,9 @@ export class PdfPickerComponent {
     this.editorState.reset();
     this.pageRenderService.clear();
     this.projectService.reset();
+
+    // Clear blanked pages tracking
+    this.blankedPages.set(new Set());
 
     // Clear crop mode
     this.currentMode.set('select');
@@ -2326,6 +2502,7 @@ export class PdfPickerComponent {
       console.log('After loadDocument, editorState.blocks:', this.editorState.blocks().length);
       this.pageRenderService.clear();
       this.projectService.reset();
+      this.blankedPages.set(new Set());  // Clear blanked pages for new document
 
       this.saveRecentFile(path, result.pdf_name);
 
@@ -2485,8 +2662,8 @@ export class PdfPickerComponent {
   /**
    * Get all redact regions for a page (deleted blocks and edited blocks' original positions)
    */
-  private getRedactRegionsForPage(pageNum: number): Array<{ x: number; y: number; width: number; height: number }> {
-    const regions: Array<{ x: number; y: number; width: number; height: number }> = [];
+  private getRedactRegionsForPage(pageNum: number): Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }> {
+    const regions: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }> = [];
     const blockEdits = this.editorState.blockEdits();
     const deletedIds = this.deletedBlockIds();
 
@@ -2499,7 +2676,8 @@ export class PdfPickerComponent {
           x: block.x,
           y: block.y,
           width: block.width,
-          height: block.height
+          height: block.height,
+          isImage: block.is_image
         });
         continue;
       }
@@ -2526,15 +2704,52 @@ export class PdfPickerComponent {
   }
 
   /**
+   * Check if all image blocks on a page are deleted
+   */
+  private areAllImagesDeletedOnPage(pageNum: number): boolean {
+    const deletedIds = this.deletedBlockIds();
+    const pageBlocks = this.blocks().filter(b => b.page === pageNum);
+    const imageBlocks = pageBlocks.filter(b => b.is_image);
+
+    // Return true if there are image blocks and ALL are deleted
+    return imageBlocks.length > 0 && imageBlocks.every(b => deletedIds.has(b.id));
+  }
+
+  /**
    * Re-render a page with all edited blocks' original positions redacted
    */
   private rerenderPageWithEdits(pageNum: number): void {
+    // If all images on this page are deleted, render a blank page
+    // This matches the "Remove Backgrounds" behavior
+    const allImagesDeleted = this.areAllImagesDeletedOnPage(pageNum);
+
+    if (allImagesDeleted) {
+      this.pageRenderService.renderBlankPage(pageNum);
+      // Add to blankedPages so pdf-viewer shows text overlays
+      this.blankedPages.update(pages => {
+        const newPages = new Set(pages);
+        newPages.add(pageNum);
+        return newPages;
+      });
+      return;
+    }
+
+    // Page is not fully blanked - remove from blankedPages if it was there
+    this.blankedPages.update(pages => {
+      if (pages.has(pageNum)) {
+        const newPages = new Set(pages);
+        newPages.delete(pageNum);
+        return newPages;
+      }
+      return pages;
+    });
+
     const regions = this.getRedactRegionsForPage(pageNum);
     if (regions.length > 0) {
       this.pageRenderService.rerenderPageWithRedactions(pageNum, regions);
     } else {
-      // No more edits on this page - invalidate to reload clean version
-      this.pageRenderService.invalidatePage(pageNum);
+      // No more edits on this page - re-render from original PDF
+      this.pageRenderService.rerenderPageFromOriginal(pageNum);
     }
   }
 
@@ -2658,11 +2873,36 @@ export class PdfPickerComponent {
 
     if (allDeleted) {
       // Restore all selected blocks (toggle off)
+      // Get affected pages before restoration
+      const affectedPages = new Set<number>();
+      for (const blockId of selected) {
+        const block = this.editorState.getBlock(blockId);
+        if (block) affectedPages.add(block.page);
+      }
+
       this.editorState.restoreBlocks(selected);
       this.editorState.clearSelection();
+
+      // Re-render affected pages to restore original content
+      for (const pageNum of affectedPages) {
+        this.rerenderPageWithEdits(pageNum);
+      }
     } else {
+      // Get blocks being deleted and their pages
+      const blocksToDelete = selected.filter(id => !deleted.has(id));
+      const affectedPages = new Set<number>();
+      for (const blockId of blocksToDelete) {
+        const block = this.editorState.getBlock(blockId);
+        if (block) affectedPages.add(block.page);
+      }
+
       // Delete the non-deleted selected blocks
       this.editorState.deleteSelectedBlocks();
+
+      // Re-render affected pages to remove deleted content
+      for (const pageNum of affectedPages) {
+        this.rerenderPageWithEdits(pageNum);
+      }
     }
   }
 
@@ -2712,12 +2952,44 @@ export class PdfPickerComponent {
   }
 
   // Delegate undo/redo to service
-  undo(): void {
-    this.editorState.undo();
+  async undo(): Promise<void> {
+    const action = this.editorState.undo();
+    if (!action) return;
+
+    // Handle visual changes based on action type
+    if (action.type === 'toggleBackgrounds') {
+      await this.applyRemoveBackgrounds(action.backgroundsBefore ?? false);
+    } else if (action.type === 'delete' || action.type === 'restore') {
+      // Re-render affected pages when deletion state changes
+      const affectedPages = new Set<number>();
+      for (const blockId of action.blockIds) {
+        const block = this.editorState.getBlock(blockId);
+        if (block) affectedPages.add(block.page);
+      }
+      for (const pageNum of affectedPages) {
+        this.rerenderPageWithEdits(pageNum);
+      }
+    }
   }
 
-  redo(): void {
-    this.editorState.redo();
+  async redo(): Promise<void> {
+    const action = this.editorState.redo();
+    if (!action) return;
+
+    // Handle visual changes based on action type
+    if (action.type === 'toggleBackgrounds') {
+      await this.applyRemoveBackgrounds(action.backgroundsAfter ?? false);
+    } else if (action.type === 'delete' || action.type === 'restore') {
+      // Re-render affected pages when deletion state changes
+      const affectedPages = new Set<number>();
+      for (const blockId of action.blockIds) {
+        const block = this.editorState.getBlock(blockId);
+        if (block) affectedPages.add(block.page);
+      }
+      for (const pageNum of affectedPages) {
+        this.rerenderPageWithEdits(pageNum);
+      }
+    }
   }
 
   // Click on category: add/enable. Cmd/Ctrl+click: remove/disable
@@ -2751,9 +3023,19 @@ export class PdfPickerComponent {
 
     // Regular categories: add/remove blocks from selection
     const deleted = this.deletedBlockIds();
-    const blockIds = this.blocks()
-      .filter(b => b.category_id === categoryId && !deleted.has(b.id))
-      .map(b => b.id);
+    const allBlocks = this.blocks();
+    const categoryBlocks = allBlocks.filter(b => b.category_id === categoryId);
+    const nonDeletedBlocks = categoryBlocks.filter(b => !deleted.has(b.id));
+    const ocrBlocks = nonDeletedBlocks.filter(b => b.is_ocr);
+
+    console.log(`[selectCategory] categoryId: ${categoryId}`);
+    console.log(`[selectCategory] total: ${allBlocks.length}, inCategory: ${categoryBlocks.length}, notDeleted: ${nonDeletedBlocks.length}, isOCR: ${ocrBlocks.length}`);
+    if (ocrBlocks.length > 0) {
+      console.log(`[selectCategory] First OCR block:`, ocrBlocks[0]);
+    }
+
+    const blockIds = nonDeletedBlocks.map(b => b.id);
+    console.log(`[selectCategory] Selecting ${blockIds.length} block IDs`);
 
     const existing = new Set(this.selectedBlockIds());
     const allSelected = blockIds.length > 0 && blockIds.every(id => existing.has(id));
@@ -2770,6 +3052,12 @@ export class PdfPickerComponent {
       // Regular click: add this category's blocks to selection
       blockIds.forEach(id => existing.add(id));
       this.selectedBlockIds.set([...existing]);
+      console.log(`[selectCategory] After set, selectedBlockIds count: ${this.selectedBlockIds().length}`);
+      // Check if first OCR block is in selection
+      if (ocrBlocks.length > 0) {
+        const firstOcrId = ocrBlocks[0].id;
+        console.log(`[selectCategory] First OCR id: ${firstOcrId}, in selection: ${this.selectedBlockIds().includes(firstOcrId)}`);
+      }
     }
   }
 
@@ -2872,11 +3160,229 @@ export class PdfPickerComponent {
     });
   }
 
-  async exportPdf(): Promise<void> {
+  /**
+   * Show export settings modal
+   */
+  exportPdf(): void {
+    this.showExportSettings.set(true);
+  }
+
+  /**
+   * Handle export settings modal result
+   */
+  async onExportSettingsResult(result: ExportResult): Promise<void> {
+    this.showExportSettings.set(false);
+
+    if (!result.confirmed || !result.settings) {
+      return;
+    }
+
+    const settings = result.settings;
     this.loading.set(true);
-    this.loadingText.set('Generating PDF...');
+    // Reset page render progress to hide the secondary progress bar during export
+    this.pageRenderService.loadingProgress.set({ current: 0, total: 0, phase: 'preview' });
 
     try {
+      // Handle different export formats
+      switch (settings.format) {
+        case 'txt':
+          await this.exportAsTxt();
+          break;
+        case 'epub':
+          await this.exportAsEpub();
+          break;
+        case 'pdf':
+        default:
+          await this.exportAsPdf(settings);
+          break;
+      }
+    } catch (err) {
+      this.showAlert({
+        title: 'Export Failed',
+        message: (err as Error).message,
+        type: 'error'
+      });
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  /**
+   * Export as TXT format
+   */
+  private async exportAsTxt(): Promise<void> {
+    this.loadingText.set('Exporting text...');
+
+    const result = await this.exportService.exportText(
+      this.blocks(),
+      this.deletedBlockIds(),
+      this.pdfName(),
+      this.editorState.textCorrections()
+    );
+
+    if (result.success) {
+      this.showAlert({
+        title: 'Export Complete',
+        message: result.message,
+        type: 'success'
+      });
+    } else {
+      this.showAlert({
+        title: 'Export Failed',
+        message: result.message,
+        type: 'error'
+      });
+    }
+  }
+
+  /**
+   * Export as EPUB format
+   */
+  private async exportAsEpub(): Promise<void> {
+    this.loadingText.set('Generating EPUB...');
+
+    const result = await this.exportService.exportEpub(
+      this.blocks(),
+      this.deletedBlockIds(),
+      this.pdfName(),
+      this.editorState.textCorrections()
+    );
+
+    if (result.success) {
+      this.showAlert({
+        title: 'Export Complete',
+        message: result.message,
+        type: 'success'
+      });
+    } else {
+      this.showAlert({
+        title: 'Export Failed',
+        message: result.message,
+        type: 'error'
+      });
+    }
+  }
+
+  /**
+   * Export as PDF format (with optional background removal)
+   */
+  private async exportAsPdf(settings: ExportSettings): Promise<void> {
+    if (settings.removeBackgrounds) {
+      // Export with background removal
+      this.loadingText.set('Preparing export...');
+
+      // Collect deleted regions to apply as redactions before rendering
+      const deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }> = [];
+
+      // Add deleted blocks
+      const deletedBlockIds = this.deletedBlockIds();
+      for (const block of this.blocks()) {
+        if (deletedBlockIds.has(block.id)) {
+          deletedRegions.push({
+            page: block.page,
+            x: block.x,
+            y: block.y,
+            width: block.width,
+            height: block.height,
+            isImage: block.is_image
+          });
+        }
+      }
+
+      // Add deleted custom category highlights
+      const deletedHighlightIds = this.deletedHighlightIds();
+      if (deletedHighlightIds.size > 0) {
+        for (const [categoryId, pageMap] of this.categoryHighlights()) {
+          for (const [pageStr, rects] of Object.entries(pageMap)) {
+            const page = parseInt(pageStr);
+            for (const rect of rects) {
+              const highlightId = this.getHighlightId(categoryId, page, rect.x, rect.y);
+              if (deletedHighlightIds.has(highlightId)) {
+                deletedRegions.push({
+                  page,
+                  x: rect.x,
+                  y: rect.y,
+                  width: rect.w,
+                  height: rect.h
+                });
+              }
+            }
+          }
+        }
+      }
+
+      // Collect OCR blocks to embed as real text (survives image deletion)
+      // Only include OCR blocks on pages where images were deleted
+      const pagesWithDeletedImages = new Set<number>();
+      for (const region of deletedRegions) {
+        if (region.isImage) {
+          pagesWithDeletedImages.add(region.page);
+        }
+      }
+
+      const ocrBlocks: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }> = [];
+      if (pagesWithDeletedImages.size > 0) {
+        for (const block of this.blocks()) {
+          // Include OCR blocks that are not deleted and on pages with deleted images
+          if (block.is_ocr && !deletedBlockIds.has(block.id) && pagesWithDeletedImages.has(block.page)) {
+            ocrBlocks.push({
+              page: block.page,
+              x: block.x,
+              y: block.y,
+              width: block.width,
+              height: block.height,
+              text: block.text,
+              font_size: block.font_size
+            });
+          }
+        }
+      }
+
+      // Subscribe to export progress
+      const unsubscribe = this.electronService.onExportProgress((progress) => {
+        this.loadingText.set(`Processing page ${progress.current + 1} of ${progress.total}...`);
+      });
+
+      let pdfBase64: string;
+      try {
+        // Convert quality setting to scale factor
+        const scale = this.getScaleFromQuality(settings.quality);
+        // Pass deleted regions and OCR blocks to be embedded in the PDF
+        pdfBase64 = await this.electronService.exportPdfNoBackgrounds(
+          scale,
+          deletedRegions.length > 0 ? deletedRegions : undefined,
+          ocrBlocks.length > 0 ? ocrBlocks : undefined
+        );
+      } finally {
+        unsubscribe();
+      }
+
+      // Trigger download
+      const byteCharacters = atob(pdfBase64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'application/pdf' });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const baseName = this.pdfName().replace(/\.[^.]+$/, '');
+      a.download = `${baseName}_clean.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      this.showAlert({
+        title: 'Export Complete',
+        message: `PDF exported: ${a.download}`,
+        type: 'success'
+      });
+    } else {
+      // Standard export with redactions
+      this.loadingText.set('Generating PDF...');
+
       const result = await this.exportService.exportPdf(
         this.blocks(),
         this.deletedBlockIds(),
@@ -2884,7 +3390,8 @@ export class PdfPickerComponent {
         this.categoryHighlights(),
         this.libraryPath(),
         this.pdfName(),
-        this.getHighlightId.bind(this)
+        this.getHighlightId.bind(this),
+        this.textCorrections()
       );
 
       if (result.success) {
@@ -2900,14 +3407,19 @@ export class PdfPickerComponent {
           type: 'info'
         });
       }
-    } catch (err) {
-      this.showAlert({
-        title: 'Export Failed',
-        message: (err as Error).message,
-        type: 'error'
-      });
-    } finally {
-      this.loading.set(false);
+    }
+  }
+
+  /**
+   * Convert quality setting to scale factor
+   */
+  private getScaleFromQuality(quality: 'low' | 'medium' | 'high' | 'maximum'): number {
+    switch (quality) {
+      case 'low': return 1.0;
+      case 'medium': return 1.5;
+      case 'high': return 2.0;
+      case 'maximum': return 3.0;
+      default: return 2.0;
     }
   }
 
@@ -3050,6 +3562,7 @@ export class PdfPickerComponent {
       const order = this.pageOrder();
       const history = this.editorState.getHistory();
       const customCategories = this.getCustomCategoriesData();
+      const ocrBlocks = this.blocks().filter(b => b.is_ocr);
       const projectData: BookForgeProject = {
         version: 1,
         source_path: this.pdfPath(),
@@ -3062,6 +3575,7 @@ export class PdfPickerComponent {
         custom_categories: customCategories.length > 0 ? customCategories : undefined,
         undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
         redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
+        ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
         created_at: new Date().toISOString(),
         modified_at: new Date().toISOString()
       };
@@ -3090,6 +3604,7 @@ export class PdfPickerComponent {
       const order = this.pageOrder();
       const history = this.editorState.getHistory();
       const customCategories = this.getCustomCategoriesData();
+      const ocrBlocks = this.blocks().filter(b => b.is_ocr);
       const projectData: BookForgeProject = {
         version: 1,
         source_path: this.pdfPath(),
@@ -3102,6 +3617,7 @@ export class PdfPickerComponent {
         custom_categories: customCategories.length > 0 ? customCategories : undefined,
         undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
         redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
+        ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
         created_at: new Date().toISOString(),
         modified_at: new Date().toISOString()
       };
@@ -3234,6 +3750,9 @@ export class PdfPickerComponent {
     const blockEditsRecord: Record<string, BlockEditData> | undefined =
       blockEdits.size > 0 ? Object.fromEntries(blockEdits) : undefined;
 
+    // Get OCR blocks to persist (these are generated by OCR and independent from PDF analysis)
+    const ocrBlocks = this.blocks().filter(b => b.is_ocr);
+
     const projectData: BookForgeProject = {
       version: 1,
       source_path: this.pdfPath(),
@@ -3247,6 +3766,8 @@ export class PdfPickerComponent {
       block_edits: blockEditsRecord,
       undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
       redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
+      remove_backgrounds: this.removeBackgrounds() || undefined,
+      ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
       created_at: new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -3526,6 +4047,20 @@ export class PdfPickerComponent {
         this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
       }
 
+      // Restore OCR blocks - these replace PDF-analyzed blocks on their pages
+      if (project.ocr_blocks && project.ocr_blocks.length > 0) {
+        // Get the pages that have OCR blocks
+        const ocrPages = [...new Set(project.ocr_blocks.map(b => b.page))];
+        // Replace PDF blocks with OCR blocks on those pages
+        this.editorState.replaceTextBlocksOnPages(ocrPages, project.ocr_blocks);
+        console.log(`[loadProject] Restored ${project.ocr_blocks.length} OCR blocks on ${ocrPages.length} page(s)`);
+      }
+
+      // Restore remove backgrounds state
+      if (project.remove_backgrounds) {
+        this.editorState.removeBackgrounds.set(true);
+      }
+
       this.pageRenderService.clear();
       this.projectService.projectPath.set(actualProjectPath);
 
@@ -3533,6 +4068,11 @@ export class PdfPickerComponent {
       this.loadingText.set('Rendering pages...');
       this.pageRenderService.initialize(this.effectivePath(), pdfResult.page_count);
       await this.pageRenderService.loadAllPageImages(pdfResult.page_count);
+
+      // Apply background removal if it was enabled in the project
+      if (project.remove_backgrounds) {
+        await this.applyRemoveBackgrounds(true);
+      }
 
       this.pdfLoaded.set(true);
     } catch (err) {
@@ -4500,25 +5040,30 @@ export class PdfPickerComponent {
       return;
     }
 
-    // Create or get OCR category
-    const OCR_CATEGORY_ID = 'ocr-text';
-    let ocrCategory = this.categories()[OCR_CATEGORY_ID];
+    // Find existing categories by region type to assign OCR blocks appropriately
+    const categories = this.categories();
+    const pageDims = this.pageDimensions();
 
-    if (!ocrCategory) {
-      ocrCategory = {
-        id: OCR_CATEGORY_ID,
-        name: 'OCR Text',
-        description: 'Text extracted via OCR',
-        color: '#9333ea',  // Purple color for OCR text
-        block_count: 0,
-        char_count: 0,
-        font_size: 0,
-        region: 'body',
-        sample_text: '',
-        enabled: true
-      };
-      this.editorState.addCategory(ocrCategory);
-    }
+    // Find the best category for each region type (body, header, footer)
+    // Prefer existing categories with the most content
+    const findCategoryByRegion = (region: string): string | null => {
+      let bestCat: string | null = null;
+      let bestChars = 0;
+      for (const [id, cat] of Object.entries(categories)) {
+        if (cat.region === region && cat.char_count > bestChars) {
+          bestChars = cat.char_count;
+          bestCat = id;
+        }
+      }
+      return bestCat;
+    };
+
+    const bodyCategoryId = findCategoryByRegion('body');
+    const headerCategoryId = findCategoryByRegion('header');
+    const footerCategoryId = findCategoryByRegion('footer');
+
+    // Default to body category or first available category
+    const defaultCategoryId = bodyCategoryId || Object.keys(categories)[0] || 'body';
 
     // Full-res images are always rendered at 2.5x scale (FULL_SCALE in pdf-analyzer.ts)
     // OCR bbox coordinates are in image pixels, so divide by 2.5 to get PDF coordinates
@@ -4527,40 +5072,83 @@ export class PdfPickerComponent {
     // Convert OCR text lines to TextBlocks
     const newBlocks: TextBlock[] = [];
     let blockIdCounter = Date.now();
+    const pagesWithOcrResults: number[] = [];  // Only pages that actually have OCR results
 
     for (const result of results) {
       if (!result.textLines || result.textLines.length === 0) {
         console.log(`[OCR] Page ${result.page}: No textLines, text length: ${result.text?.length || 0}`);
-        continue;
+        continue;  // Skip pages with no OCR results - don't remove their existing blocks
       }
 
+      // Only track pages that actually have OCR results
+      pagesWithOcrResults.push(result.page);
       console.log(`[OCR] Page ${result.page}: ${result.textLines.length} textLines`);
+
+      const pageWidth = pageDims[result.page]?.width || 600;
+      const pageHeight = pageDims[result.page]?.height || 800;
+
+      // Log first line of first page for debugging
+      if (result.textLines.length > 0 && result.page === pagesWithOcrResults[0]) {
+        const firstLine = result.textLines[0];
+        console.log(`[OCR DEBUG] Page ${result.page} dimensions: ${pageWidth} x ${pageHeight}`);
+        console.log(`[OCR DEBUG] First line raw bbox: [${firstLine.bbox.join(', ')}]`);
+        console.log(`[OCR DEBUG] First line scaled (÷${renderScale}): [${(firstLine.bbox[0]/renderScale).toFixed(1)}, ${(firstLine.bbox[1]/renderScale).toFixed(1)}, ${(firstLine.bbox[2]/renderScale).toFixed(1)}, ${(firstLine.bbox[3]/renderScale).toFixed(1)}]`);
+      }
 
       for (const line of result.textLines) {
         const [x1, y1, x2, y2] = line.bbox;
 
         // Convert from image pixels to PDF coordinates (divide by render scale)
+        const pdfY = y1 / renderScale;
+        const pdfHeight = (y2 - y1) / renderScale;
+
+        // Classify by position on page
+        const yPercent = pdfY / pageHeight;
+        let region: string;
+        let categoryId: string;
+
+        if (yPercent < 0.08) {
+          // Top 8% of page = header
+          region = 'header';
+          categoryId = headerCategoryId || defaultCategoryId;
+        } else if (yPercent > 0.92) {
+          // Bottom 8% of page = footer
+          region = 'footer';
+          categoryId = footerCategoryId || defaultCategoryId;
+        } else {
+          // Everything else = body
+          region = 'body';
+          categoryId = defaultCategoryId;
+        }
+
+        // Estimate font size from line height (rough approximation)
+        const estimatedFontSize = Math.round(pdfHeight * 0.8);
+
         const block: TextBlock = {
           id: `ocr_${blockIdCounter++}`,
           page: result.page,
           x: x1 / renderScale,
-          y: y1 / renderScale,
+          y: pdfY,
           width: (x2 - x1) / renderScale,
-          height: (y2 - y1) / renderScale,
+          height: pdfHeight,
           text: line.text,
-          font_size: 12,  // Default font size
+          font_size: estimatedFontSize > 0 ? estimatedFontSize : 12,
           font_name: 'OCR',
           char_count: line.text.length,
-          region: 'body',
-          category_id: OCR_CATEGORY_ID
+          region,
+          category_id: categoryId,
+          is_ocr: true  // Mark as OCR-generated (independent from images)
         };
 
         newBlocks.push(block);
       }
     }
 
-    // Add blocks to document
-    this.editorState.addBlocks(newBlocks);
+    // Only replace blocks on pages that have OCR results
+    // Pages with no OCR results keep their existing blocks
+    if (pagesWithOcrResults.length > 0) {
+      this.editorState.replaceTextBlocksOnPages(pagesWithOcrResults, newBlocks);
+    }
 
     // Update category stats
     this.editorState.updateCategoryStats();
@@ -4568,11 +5156,12 @@ export class PdfPickerComponent {
     // Update the open document's blocks
     this.saveCurrentDocumentState();
 
-    this.showAlert({
-      title: 'OCR Complete',
-      message: `Added ${newBlocks.length} text blocks from ${results.length} pages.`,
-      type: 'success'
-    });
+    // Log results for debugging
+    if (newBlocks.length > 0) {
+      console.log(`[OCR] Created ${newBlocks.length} text blocks on ${pagesWithOcrResults.length} page(s)`);
+    } else {
+      console.log(`[OCR] Processed ${results.length} page(s) but no text was detected`);
+    }
   }
 
   // Tab management methods
