@@ -139,15 +139,53 @@ interface OcrTextLine {
   bbox: [number, number, number, number];  // [x1, y1, x2, y2]
 }
 
+interface OcrParagraph {
+  text: string;
+  confidence: number;
+  bbox: [number, number, number, number];
+  lineCount: number;
+  blockNum: number;
+  parNum: number;
+}
+
 interface OcrResult {
   text: string;
   confidence: number;
-  textLines?: OcrTextLine[];  // Text lines with bounding boxes
+  textLines?: OcrTextLine[];
+  paragraphs?: OcrParagraph[];  // Tesseract's native paragraph grouping
 }
 
 interface DeskewResult {
   angle: number;
   confidence: number;
+}
+
+// Layout detection categories from Surya
+export type LayoutLabel =
+  | 'Caption'
+  | 'Footnote'
+  | 'Formula'
+  | 'List-item'
+  | 'Page-footer'
+  | 'Page-header'
+  | 'Picture'
+  | 'Figure'
+  | 'Section-header'
+  | 'Table'
+  | 'Form'
+  | 'Table-of-contents'
+  | 'Handwriting'
+  | 'Text'
+  | 'Text-inline-math'
+  | 'Title';
+
+export interface LayoutBlock {
+  bbox: [number, number, number, number];
+  polygon: number[][];
+  label: LayoutLabel;
+  confidence: number;
+  position: number;
+  text?: string;
 }
 
 /**

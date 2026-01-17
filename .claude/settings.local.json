@@ -4,7 +4,15 @@
       "Bash(npx tsc:*)",
       "Bash(dir \"C:\\\\Users\\\\tellt\\\\Documents\\\\BookForge\\\\cache\")",
       "Bash(dir:*)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(npm run build:*)",
+      "Bash(git stash:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash pop:*)",
+      "Bash(git add:*)",
+      "Bash(npm run build:electron:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

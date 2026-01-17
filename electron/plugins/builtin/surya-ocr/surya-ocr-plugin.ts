@@ -22,10 +22,45 @@ import {
 } from '../../plugin-types';
 import { getPluginRegistry } from '../../plugin-registry';
 
+interface SuryaTextLine {
+  text: string;
+  confidence: number;
+  bbox: [number, number, number, number]; // [x1, y1, x2, y2]
+}
+
+// Layout detection categories from surya_layout (actual output format)
+export type SuryaLayoutLabel =
+  | 'Caption'
+  | 'Footnote'
+  | 'Formula'
+  | 'ListItem'
+  | 'PageFooter'
+  | 'PageHeader'
+  | 'Picture'
+  | 'Figure'
+  | 'SectionHeader'
+  | 'Table'
+  | 'Form'
+  | 'TableOfContents'
+  | 'Handwriting'
+  | 'Text'
+  | 'TextInlineMath'
+  | 'Title';
+
+interface SuryaLayoutBlock {
+  bbox: [number, number, number, number]; // [x1, y1, x2, y2]
+  polygon: number[][]; // Rotated coordinates
+  label: SuryaLayoutLabel;
+  confidence: number;
+  position: number; // Reading order
+  text?: string; // Text content (filled in after OCR)
+}
+
 interface SuryaOcrResult {
   text: string;
   confidence: number;
   textLines?: SuryaTextLine[];  // Text lines with bounding boxes
+  layoutBlocks?: SuryaLayoutBlock[]; // Semantic layout regions
   pages?: SuryaPageResult[];
 }
 
@@ -33,12 +68,7 @@ interface SuryaPageResult {
   page: number;
   text: string;
   textLines: SuryaTextLine[];
-}
-
-interface SuryaTextLine {
-  text: string;
-  confidence: number;
-  bbox: [number, number, number, number]; // [x1, y1, x2, y2]
+  layoutBlocks?: SuryaLayoutBlock[];
 }
 
 export class SuryaOcrPlugin extends BasePlugin {
@@ -116,8 +146,16 @@ export class SuryaOcrPlugin extends BasePlugin {
         handler: async (event, ...args) => this.handleRecognize(event, args[0] as string),
       },
       {
+        channel: 'recognize-with-layout',
+        handler: async (event, ...args) => this.handleRecognizeWithLayout(event, args[0] as string),
+      },
+      {
         channel: 'recognize-batch',
         handler: async (event, ...args) => this.handleRecognizeBatch(event, args[0] as string[], args[1] as number[]),
+      },
+      {
+        channel: 'detect-layout',
+        handler: async (event, ...args) => this.handleDetectLayout(event, args[0] as string),
       },
     ];
   }
@@ -148,6 +186,36 @@ export class SuryaOcrPlugin extends BasePlugin {
     try {
       const results = await this.recognizeBatch(images, pageNumbers);
       return { success: true, data: results };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  }
+
+  /**
+   * OCR with layout detection - runs both surya_layout and surya_ocr
+   */
+  private async handleRecognizeWithLayout(
+    _event: IpcMainInvokeEvent,
+    imageData: string
+  ): Promise<{ success: boolean; data?: SuryaOcrResult; error?: string }> {
+    try {
+      const result = await this.recognizeWithLayout(imageData);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  }
+
+  /**
+   * Layout detection only - returns semantic regions without OCR
+   */
+  private async handleDetectLayout(
+    _event: IpcMainInvokeEvent,
+    imageData: string
+  ): Promise<{ success: boolean; data?: SuryaLayoutBlock[]; error?: string }> {
+    try {
+      const result = await this.detectLayout(imageData);
+      return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -287,6 +355,327 @@ export class SuryaOcrPlugin extends BasePlugin {
     } finally {
       this.cleanupTempDir(tempDir);
     }
+  }
+
+  /**
+   * OCR with layout detection - runs both surya_layout and surya_ocr
+   */
+  private async recognizeWithLayout(imageData: string): Promise<SuryaOcrResult> {
+    const availability = await this.checkAvailability();
+    if (!availability.available) {
+      throw new Error(availability.error || 'Surya OCR not available');
+    }
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'surya-layout-'));
+    const ocrOutputDir = path.join(tempDir, 'ocr_output');
+    const layoutOutputDir = path.join(tempDir, 'layout_output');
+    let inputPath: string;
+    let needsCleanupInput = false;
+
+    try {
+      fs.mkdirSync(ocrOutputDir, { recursive: true });
+      fs.mkdirSync(layoutOutputDir, { recursive: true });
+
+      // Resolve input path (same logic as recognizeImage)
+      inputPath = this.resolveInputPath(imageData, tempDir);
+      needsCleanupInput = inputPath.startsWith(tempDir);
+
+      if (!fs.existsSync(inputPath)) {
+        throw new Error(`Input image file not found: ${inputPath}`);
+      }
+
+      // Run both layout detection and OCR in parallel
+      const [layoutBlocks, ocrResult] = await Promise.all([
+        this.runSuryaLayout(inputPath, layoutOutputDir),
+        this.runSuryaOcr(inputPath, ocrOutputDir),
+      ]);
+
+      // Assign OCR text to layout blocks based on overlap
+      const enrichedBlocks = this.assignTextToLayoutBlocks(layoutBlocks, ocrResult.textLines || []);
+
+      return {
+        ...ocrResult,
+        layoutBlocks: enrichedBlocks,
+      };
+    } finally {
+      if (needsCleanupInput) {
+        this.cleanupTempDir(tempDir);
+      } else {
+        this.cleanupTempDir(ocrOutputDir);
+        this.cleanupTempDir(layoutOutputDir);
+        try { fs.rmdirSync(tempDir); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  /**
+   * Layout detection only - returns semantic regions
+   */
+  private async detectLayout(imageData: string): Promise<SuryaLayoutBlock[]> {
+    const availability = await this.checkAvailability();
+    if (!availability.available) {
+      throw new Error(availability.error || 'Surya OCR not available');
+    }
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'surya-layout-'));
+    const outputDir = path.join(tempDir, 'output');
+    let inputPath: string;
+    let needsCleanupInput = false;
+
+    try {
+      fs.mkdirSync(outputDir, { recursive: true });
+
+      inputPath = this.resolveInputPath(imageData, tempDir);
+      needsCleanupInput = inputPath.startsWith(tempDir);
+
+      if (!fs.existsSync(inputPath)) {
+        throw new Error(`Input image file not found: ${inputPath}`);
+      }
+
+      return await this.runSuryaLayout(inputPath, outputDir);
+    } finally {
+      if (needsCleanupInput) {
+        this.cleanupTempDir(tempDir);
+      } else {
+        this.cleanupTempDir(outputDir);
+        try { fs.rmdirSync(tempDir); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  /**
+   * Resolve input path from various formats (base64, file://, bookforge-page://, etc.)
+   */
+  private resolveInputPath(imageData: string, tempDir: string): string {
+    if (imageData.startsWith('bookforge-page://')) {
+      let filePath = imageData.replace('bookforge-page://', '');
+      if (!filePath.startsWith('/')) {
+        filePath = '/' + filePath;
+      }
+      return filePath;
+    } else if (imageData.startsWith('file://')) {
+      return imageData.replace('file://', '');
+    } else if (imageData.startsWith('/') || imageData.match(/^[A-Za-z]:\\/)) {
+      return imageData;
+    } else if (imageData.startsWith('data:')) {
+      const inputPath = path.join(tempDir, 'input.png');
+      const imageBuffer = Buffer.from(imageData.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+      fs.writeFileSync(inputPath, imageBuffer);
+      return inputPath;
+    } else {
+      // Assume raw base64
+      const inputPath = path.join(tempDir, 'input.png');
+      const imageBuffer = Buffer.from(imageData, 'base64');
+      fs.writeFileSync(inputPath, imageBuffer);
+      return inputPath;
+    }
+  }
+
+  /**
+   * Run surya_layout to detect semantic regions
+   */
+  private async runSuryaLayout(inputPath: string, outputDir: string): Promise<SuryaLayoutBlock[]> {
+    const layoutPath = this.findSuryaLayoutCli();
+    if (!layoutPath) {
+      console.warn('[Surya] surya_layout CLI not found, skipping layout detection');
+      return [];
+    }
+
+    return new Promise((resolve, reject) => {
+      const args = [inputPath, '--output_dir', outputDir];
+
+      const proc = spawn(layoutPath, args, {
+        env: { ...process.env },
+      });
+
+      let stderr = '';
+
+      proc.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        if (code !== 0) {
+          console.warn(`[Surya] Layout detection failed: ${stderr}`);
+          resolve([]); // Don't fail the whole operation
+          return;
+        }
+
+        try {
+          const blocks = this.parseLayoutOutput(outputDir);
+          resolve(blocks);
+        } catch (err) {
+          console.warn('[Surya] Failed to parse layout output:', err);
+          resolve([]);
+        }
+      });
+
+      proc.on('error', (err) => {
+        console.warn(`[Surya] Failed to start surya_layout: ${err.message}`);
+        resolve([]);
+      });
+    });
+  }
+
+  /**
+   * Parse surya_layout output JSON
+   */
+  private parseLayoutOutput(outputDir: string): SuryaLayoutBlock[] {
+    // Find results.json (may be in subdirectory)
+    let resultsPath = path.join(outputDir, 'results.json');
+
+    if (!fs.existsSync(resultsPath)) {
+      const items = fs.readdirSync(outputDir);
+      for (const item of items) {
+        const itemPath = path.join(outputDir, item);
+        const stat = fs.statSync(itemPath);
+        if (stat.isDirectory()) {
+          const subResultsPath = path.join(itemPath, 'results.json');
+          if (fs.existsSync(subResultsPath)) {
+            resultsPath = subResultsPath;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!fs.existsSync(resultsPath)) {
+      return [];
+    }
+
+    const content = fs.readFileSync(resultsPath, 'utf-8');
+    const data = JSON.parse(content);
+    const blocks: SuryaLayoutBlock[] = [];
+
+    // Handle different output formats
+    const processPageData = (pageData: any) => {
+      if (!pageData?.bboxes) return;
+
+      for (const box of pageData.bboxes) {
+        blocks.push({
+          bbox: box.bbox as [number, number, number, number],
+          polygon: box.polygon || [],
+          label: box.label as SuryaLayoutLabel,
+          confidence: box.confidence || 0.9,
+          position: box.position || blocks.length,
+        });
+      }
+    };
+
+    if (Array.isArray(data)) {
+      // Array of pages
+      for (const page of data) {
+        processPageData(page);
+      }
+    } else if (typeof data === 'object') {
+      // Keyed by filename
+      for (const [, pageDataRaw] of Object.entries(data)) {
+        const pageArray = Array.isArray(pageDataRaw) ? pageDataRaw : [pageDataRaw];
+        for (const page of pageArray) {
+          processPageData(page);
+        }
+      }
+    }
+
+    // Sort by reading order
+    blocks.sort((a, b) => a.position - b.position);
+
+    return blocks;
+  }
+
+  /**
+   * Assign OCR text to layout blocks based on bounding box overlap
+   */
+  private assignTextToLayoutBlocks(
+    layoutBlocks: SuryaLayoutBlock[],
+    textLines: SuryaTextLine[]
+  ): SuryaLayoutBlock[] {
+    if (layoutBlocks.length === 0 || textLines.length === 0) {
+      return layoutBlocks;
+    }
+
+    return layoutBlocks.map(block => {
+      // Find text lines that overlap with this layout block
+      const overlappingLines = textLines.filter(line => {
+        return this.boxesOverlap(block.bbox, line.bbox);
+      });
+
+      // Sort by vertical position then horizontal
+      overlappingLines.sort((a, b) => {
+        const yDiff = a.bbox[1] - b.bbox[1];
+        if (Math.abs(yDiff) > 5) return yDiff;
+        return a.bbox[0] - b.bbox[0];
+      });
+
+      const text = overlappingLines.map(l => l.text).join('\n');
+
+      return {
+        ...block,
+        text: text || undefined,
+      };
+    });
+  }
+
+  /**
+   * Check if two bounding boxes overlap
+   */
+  private boxesOverlap(
+    a: [number, number, number, number],
+    b: [number, number, number, number]
+  ): boolean {
+    // Check if boxes overlap (with some tolerance)
+    const tolerance = 5;
+    return !(
+      a[2] < b[0] - tolerance ||  // a is left of b
+      a[0] > b[2] + tolerance ||  // a is right of b
+      a[3] < b[1] - tolerance ||  // a is above b
+      a[1] > b[3] + tolerance     // a is below b
+    );
+  }
+
+  /**
+   * Find surya_layout CLI executable
+   */
+  private findSuryaLayoutCli(): string | null {
+    const candidates =
+      process.platform === 'win32'
+        ? [
+            'surya_layout',
+            'surya_layout.exe',
+            `${process.env.LOCALAPPDATA}\\Programs\\Python\\Python311\\Scripts\\surya_layout.exe`,
+            `${process.env.LOCALAPPDATA}\\Programs\\Python\\Python312\\Scripts\\surya_layout.exe`,
+          ]
+        : [
+            'surya_layout',
+            '/opt/homebrew/bin/surya_layout',
+            '/usr/local/bin/surya_layout',
+            '/usr/bin/surya_layout',
+            `${process.env.HOME}/.local/bin/surya_layout`,
+            `${process.env.HOME}/Library/Python/3.11/bin/surya_layout`,
+            `${process.env.HOME}/Library/Python/3.12/bin/surya_layout`,
+          ];
+
+    for (const candidate of candidates) {
+      try {
+        execSync(`"${candidate}" --help`, { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
+        return candidate;
+      } catch {
+        continue;
+      }
+    }
+
+    // Try using 'which' or 'where'
+    try {
+      const whichCmd = process.platform === 'win32' ? 'where surya_layout' : 'which surya_layout';
+      const result = execSync(whichCmd, { encoding: 'utf-8', timeout: 5000 }).trim();
+      if (result) {
+        return result.split('\n')[0];
+      }
+    } catch {
+      // Not found
+    }
+
+    return null;
   }
 
   /**

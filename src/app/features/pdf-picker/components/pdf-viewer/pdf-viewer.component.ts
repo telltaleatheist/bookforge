@@ -807,6 +807,8 @@ export interface CropRect {
       display: block;
       width: 100%;
       height: auto;
+      position: relative;
+      z-index: 0;  /* Ensure image stays behind .block-overlay (z-index: 10) */
     }
 
     .block-overlay {
@@ -1667,6 +1669,14 @@ export class PdfViewerComponent implements AfterViewInit {
 
   getPageBlocks(pageNum: number): TextBlock[] {
     const blocks = this.blocksByPage().get(pageNum) || [];
+    // Debug: log OCR blocks
+    const ocrBlocks = blocks.filter(b => b.is_ocr);
+    if (ocrBlocks.length > 0 && pageNum < 3) {
+      console.log(`[PDFViewer] Page ${pageNum}: ${blocks.length} blocks (${ocrBlocks.length} OCR)`);
+      ocrBlocks.forEach(b => {
+        console.log(`  OCR block ${b.id}: (${b.x.toFixed(1)}, ${b.y.toFixed(1)}) ${b.width.toFixed(1)}x${b.height.toFixed(1)}, text: "${b.text.substring(0, 50)}..."`);
+      });
+    }
     return blocks;
   }
 
@@ -1738,17 +1748,29 @@ export class PdfViewerComponent implements AfterViewInit {
 
   getBlockY(block: TextBlock): number {
     const offset = this.blockOffsets().get(block.id);
-    return block.y + (offset?.offsetY ?? 0);
+    const baseY = block.y + (offset?.offsetY ?? 0);
+
+    // Shift box up slightly to better center it over the text
+    // OCR bounding boxes tend to be positioned slightly too low
+    return baseY - 1;
   }
 
   getBlockWidth(block: TextBlock): number {
     const sizeOverride = this.blockSizes().get(block.id);
-    return sizeOverride?.width ?? block.width;
+    const baseWidth = sizeOverride?.width ?? block.width;
+
+    // Add a small buffer (3% + 4px) to compensate for text extraction inaccuracies
+    // This ensures highlight boxes fully cover the text width
+    return baseWidth * 1.03 + 4;
   }
 
   getBlockHeight(block: TextBlock): number {
     const sizeOverride = this.blockSizes().get(block.id);
-    return sizeOverride?.height ?? block.height;
+    const baseHeight = sizeOverride?.height ?? block.height;
+
+    // Add a small vertical buffer to ensure text is fully covered
+    // This compensates for OCR bounding box inaccuracies
+    return baseHeight + 2;
   }
 
   getCorrectedText(blockId: string): string | null {
@@ -1765,6 +1787,10 @@ export class PdfViewerComponent implements AfterViewInit {
       return true;
     }
     if (block.is_ocr) {
+      // Debug: log OCR overlay decision
+      if (block.page < 3) {
+        console.log(`[PDFViewer] OCR block ${block.id} on page ${block.page} - showing text overlay`);
+      }
       return true;  // OCR blocks always show text overlay
     }
     if (this.shouldHidePageImage(block.page)) {
@@ -1808,8 +1834,12 @@ export class PdfViewerComponent implements AfterViewInit {
     }
 
     // Normal mode (no background removal, page not blanked)
-    // Only show text overlay for blocks with corrections/offsets/resizes
     if (!deleted) {
+      // OCR blocks always show text overlay (they have no visual in the PDF)
+      if (block.is_ocr) {
+        return true;
+      }
+      // Show overlay for blocks with corrections/offsets/resizes
       if (this.hasCorrectedText(block.id) || this.hasOffset(block.id) || this.blockSizes().has(block.id)) return true;
     }
 

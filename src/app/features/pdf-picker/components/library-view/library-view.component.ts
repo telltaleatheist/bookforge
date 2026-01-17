@@ -571,6 +571,10 @@ export class LibraryViewComponent implements OnInit {
   projectsSelected = output<string[]>();
   // Output for clearing rendered cache
   clearCache = output<string[]>(); // Array of file hashes
+  // Output for when projects are deleted (so main component can clear state)
+  projectsDeleted = output<string[]>(); // Array of deleted project paths
+  // Output for error messages
+  error = output<string>();
 
   readonly projects = signal<ProjectFile[]>([]);
   readonly isDragActive = signal(false);
@@ -882,6 +886,19 @@ export class LibraryViewComponent implements OnInit {
     if (result.success) {
       const deletedSet = new Set(result.deleted);
       this.projects.update(all => all.filter(p => !deletedSet.has(p.path)));
+      // Notify parent component so it can close any open tabs and clear state
+      if (result.deleted.length > 0) {
+        this.projectsDeleted.emit(result.deleted);
+      }
+      // Report any failures
+      if (result.failed && result.failed.length > 0) {
+        const failedNames = result.failed.map((f: { path: string; error: string }) =>
+          f.path.split('/').pop() || f.path
+        );
+        this.error.emit(`Failed to delete: ${failedNames.join(', ')}`);
+      }
+    } else {
+      this.error.emit(result.error || 'Failed to delete projects');
     }
   }
 

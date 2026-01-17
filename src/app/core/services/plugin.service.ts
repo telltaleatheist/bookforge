@@ -325,4 +325,76 @@ export class PluginService implements OnDestroy {
 
     return { success: false, error: result.error };
   }
+
+  /**
+   * Run OCR with layout detection (Surya only)
+   * Returns both text lines and semantic layout blocks
+   */
+  async runOcrWithLayout(pluginId: string, imageData: string): Promise<{
+    success: boolean;
+    text?: string;
+    confidence?: number;
+    textLines?: Array<{ text: string; confidence: number; bbox: [number, number, number, number] }>;
+    layoutBlocks?: PluginLayoutBlock[];
+    error?: string;
+  }> {
+    const result = await this.invoke<{
+      text: string;
+      confidence: number;
+      textLines?: Array<{ text: string; confidence: number; bbox: [number, number, number, number] }>;
+      layoutBlocks?: PluginLayoutBlock[];
+    }>(
+      pluginId,
+      'recognize-with-layout',
+      imageData
+    );
+
+    if (result.success && result.data) {
+      return {
+        success: true,
+        text: result.data.text,
+        confidence: result.data.confidence,
+        textLines: result.data.textLines,
+        layoutBlocks: result.data.layoutBlocks,
+      };
+    }
+
+    return { success: false, error: result.error };
+  }
+
+  /**
+   * Detect layout only (no OCR) - returns semantic regions
+   */
+  async detectLayout(pluginId: string, imageData: string): Promise<{
+    success: boolean;
+    layoutBlocks?: PluginLayoutBlock[];
+    error?: string;
+  }> {
+    const result = await this.invoke<PluginLayoutBlock[]>(
+      pluginId,
+      'detect-layout',
+      imageData
+    );
+
+    if (result.success && result.data) {
+      return {
+        success: true,
+        layoutBlocks: result.data,
+      };
+    }
+
+    return { success: false, error: result.error };
+  }
+}
+
+/**
+ * Layout block from Surya layout detection
+ */
+export interface PluginLayoutBlock {
+  bbox: [number, number, number, number];
+  polygon: number[][];
+  label: string;
+  confidence: number;
+  position: number;
+  text?: string;
 }

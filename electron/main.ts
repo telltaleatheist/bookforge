@@ -16,7 +16,9 @@ let mainWindow: BrowserWindow | null = null;
 function registerPageProtocol(): void {
   protocol.handle('bookforge-page', async (request) => {
     // URL format: bookforge-page://C:/Users/... (Windows) or bookforge-page:///Users/... (Mac)
-    // The URL class will parse C: as hostname on Windows paths, so we handle this specially
+    // The URL class parses these differently:
+    // - Windows: hostname="C", pathname="/Users/..."
+    // - Mac: hostname="Users", pathname="/telltale/..." (first path component becomes host!)
     console.log('[Protocol] Request URL:', request.url);
 
     let filePath: string;
@@ -27,8 +29,13 @@ function registerPageProtocol(): void {
       if (url.hostname && /^[A-Za-z]$/.test(url.hostname)) {
         // Windows path: reconstruct as C:/path
         filePath = `${url.hostname.toUpperCase()}:${url.pathname}`;
+      } else if (url.hostname) {
+        // Unix path where first component was parsed as hostname
+        // e.g., bookforge-page:///Users/foo -> hostname="Users", pathname="/foo"
+        // Reconstruct as /hostname/pathname
+        filePath = `/${url.hostname}${url.pathname}`;
       } else {
-        // Unix path: just use pathname (includes leading /)
+        // Unix path with empty hostname (shouldn't normally happen but handle it)
         filePath = url.pathname;
       }
       filePath = decodeURIComponent(filePath);
@@ -748,25 +755,88 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Delete project(s)
+  // Delete project(s) and their associated library files
   ipcMain.handle('projects:delete', async (_event, filePaths: string[]) => {
     try {
-      const folder = getProjectsFolder();
-      const deleted = [];
-      const failed = [];
+      const libraryRoot = getLibraryRoot();
+      const projectsFolder = getProjectsFolder();
+      const filesFolder = getFilesFolder();
+      const deleted: string[] = [];
+      const failed: Array<{ path: string; error: string }> = [];
+
+      // Collect all library file hashes that might need deletion
+      const libraryFilesToDelete: Array<{ hash: string; libraryPath: string }> = [];
 
       for (const filePath of filePaths) {
-        // Security: only allow deleting files from the projects folder
-        if (!filePath.startsWith(folder)) {
-          failed.push({ path: filePath, error: 'Invalid path' });
+        // Security: only allow deleting files from within the BookForge library root
+        // This covers both ~/Documents/BookForge/ and ~/Documents/BookForge/projects/
+        if (!filePath.startsWith(libraryRoot)) {
+          failed.push({ path: filePath, error: 'Invalid path - outside library folder' });
           continue;
         }
 
         try {
+          // Read the project file to get library_path and file_hash before deleting
+          const content = await fs.readFile(filePath, 'utf-8');
+          const projectData = JSON.parse(content);
+
+          // Track library file for potential deletion
+          if (projectData.library_path && projectData.file_hash) {
+            libraryFilesToDelete.push({
+              hash: projectData.file_hash,
+              libraryPath: projectData.library_path
+            });
+          }
+
+          // Delete the .bfp project file
           await fs.unlink(filePath);
           deleted.push(filePath);
         } catch (e) {
           failed.push({ path: filePath, error: (e as Error).message });
+        }
+      }
+
+      // Now check which library files can be safely deleted
+      // (i.e., no other projects reference them)
+      if (libraryFilesToDelete.length > 0) {
+        // Get all remaining projects to check for references
+        const remainingHashes = new Set<string>();
+
+        const scanForHashes = async (folder: string) => {
+          try {
+            const entries = await fs.readdir(folder, { withFileTypes: true });
+            for (const entry of entries) {
+              if (!entry.isFile() || !entry.name.endsWith('.bfp')) continue;
+              const entryPath = path.join(folder, entry.name);
+              // Skip if this file was just deleted
+              if (deleted.includes(entryPath)) continue;
+              try {
+                const content = await fs.readFile(entryPath, 'utf-8');
+                const data = JSON.parse(content);
+                if (data.file_hash) {
+                  remainingHashes.add(data.file_hash);
+                }
+              } catch {
+                // Skip unreadable files
+              }
+            }
+          } catch {
+            // Folder doesn't exist
+          }
+        };
+
+        await scanForHashes(projectsFolder);
+        await scanForHashes(libraryRoot);
+
+        // Delete library files that are no longer referenced
+        for (const { hash, libraryPath } of libraryFilesToDelete) {
+          if (!remainingHashes.has(hash) && libraryPath.startsWith(filesFolder)) {
+            try {
+              await fs.unlink(libraryPath);
+            } catch {
+              // Library file may not exist or be locked - not critical
+            }
+          }
         }
       }
 

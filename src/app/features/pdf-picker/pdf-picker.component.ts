@@ -6,6 +6,7 @@ import { PdfEditorStateService, HistoryAction, BlockEdit } from './services/edit
 import { ProjectService } from './services/project.service';
 import { ExportService } from './services/export.service';
 import { PageRenderService } from './services/page-render.service';
+import { OcrPostProcessorService } from './services/ocr-post-processor.service';
 import { DesktopThemeService, UiSize } from '../../creamsicle-desktop/services/theme.service';
 import {
   SplitPaneComponent,
@@ -24,6 +25,8 @@ import { OcrSettingsModalComponent, OcrSettings, OcrPageResult } from './compone
 import { InlineTextEditorComponent, TextEditResult } from './components/inline-text-editor/inline-text-editor.component';
 import { SettingsModalComponent } from './components/settings-modal/settings-modal.component';
 import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportFormat } from './components/export-settings-modal/export-settings-modal.component';
+import { BackgroundProgressComponent, BackgroundJob } from './components/background-progress/background-progress.component';
+import { OcrJobService, OcrJob } from './services/ocr-job.service';
 
 interface OpenDocument {
   id: string;
@@ -146,6 +149,7 @@ interface AlertModal {
     InlineTextEditorComponent,
     SettingsModalComponent,
     ExportSettingsModalComponent,
+    BackgroundProgressComponent,
   ],
   template: `
     <!-- Toolbar -->
@@ -318,6 +322,7 @@ interface AlertModal {
                 }
               </div>
             </div>
+
           </div>
         </div>
 
@@ -403,14 +408,26 @@ interface AlertModal {
       </desktop-split-pane>
     } @else {
       <!-- Library View when no PDF loaded -->
-      <app-library-view
-        (openFile)="showFilePicker.set(true)"
-        (fileSelected)="loadPdf($event)"
-        (projectSelected)="loadProjectFromPath($event)"
-        (projectsSelected)="onLibraryProjectsSelected($event)"
-        (clearCache)="onClearCache($event)"
-      />
+      <div class="library-container">
+        <app-library-view
+          (openFile)="showFilePicker.set(true)"
+          (fileSelected)="loadPdf($event)"
+          (projectSelected)="loadProjectFromPath($event)"
+          (projectsSelected)="onLibraryProjectsSelected($event)"
+          (clearCache)="onClearCache($event)"
+          (projectsDeleted)="onProjectsDeleted($event)"
+          (error)="onLibraryError($event)"
+        />
+
+      </div>
     }
+
+    <!-- Background Progress Indicator (fixed position, always visible) -->
+    <app-background-progress
+      [jobs]="backgroundJobs()"
+      (dismiss)="onDismissBackgroundJob($event)"
+      (cancel)="onCancelBackgroundJob($event)"
+    />
 
     <!-- File Picker Modal -->
     @if (showFilePicker()) {
@@ -542,10 +559,14 @@ interface AlertModal {
         [totalPages]="totalPages()"
         [currentPage]="splitPreviewPage()"
         [getPageImage]="getPageImageForOcr.bind(this)"
+        [documentId]="activeDocumentId() || 'unknown'"
+        [documentName]="pdfName()"
         (close)="showOcrSettings.set(false)"
         (ocrCompleted)="onOcrCompleted($event)"
+        (backgroundJobStarted)="onBackgroundOcrStarted($event)"
       />
     }
+
 
     <!-- Settings Modal -->
     @if (showSettings()) {
@@ -789,6 +810,15 @@ interface AlertModal {
       height: 100%;
       min-height: 0;
       overflow: hidden;
+      position: relative;  /* For absolute positioning of progress indicator */
+    }
+
+    .library-container {
+      flex: 1;
+      min-height: 0;
+      position: relative;  /* For absolute positioning of progress indicator */
+      display: flex;
+      flex-direction: column;
     }
 
     .viewer-timeline-wrapper {
@@ -1498,6 +1528,8 @@ export class PdfPickerComponent {
   private readonly electronService = inject(ElectronService);
   private readonly exportService = inject(ExportService);
   private readonly pageRenderService = inject(PageRenderService);
+  private readonly ocrPostProcessor = inject(OcrPostProcessorService);
+  private readonly ocrJobService = inject(OcrJobService);
   readonly themeService = inject(DesktopThemeService);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -1511,6 +1543,25 @@ export class PdfPickerComponent {
       this.scheduleAutoSave();
     }
   });
+
+  // Register global OCR job completion handler
+  private readonly ocrJobCompletionHandler = (() => {
+    this.ocrJobService.onJobComplete((job) => {
+      console.log(`[OCR] Global completion handler: job ${job.id} completed with ${job.results.length} results`);
+      // Convert OcrJobResult to OcrPageResult and process (including layoutBlocks)
+      // Cast layoutBlocks to LayoutBlock[] since PluginLayoutBlock.label is string but LayoutBlock.label is a union type
+      const results: OcrPageResult[] = job.results.map(r => ({
+        page: r.page,
+        text: r.text,
+        confidence: r.confidence,
+        textLines: r.textLines,
+        layoutBlocks: r.layoutBlocks as OcrPageResult['layoutBlocks']
+      }));
+      if (results.length > 0) {
+        this.onOcrCompleted(results);
+      }
+    });
+  })();
 
   @ViewChild(PdfViewerComponent) pdfViewer!: PdfViewerComponent;
 
@@ -1846,6 +1897,45 @@ export class PdfPickerComponent {
     engine: 'tesseract',
     language: 'eng',
     tesseractPsm: 3
+  });
+
+  // Background OCR jobs - convert OcrJob[] to BackgroundJob[] for the progress component
+  readonly backgroundJobs = computed<BackgroundJob[]>(() => {
+    return this.ocrJobService.jobs().map(job => {
+      // Map OcrJob status to BackgroundJob status
+      let status: BackgroundJob['status'];
+      switch (job.status) {
+        case 'queued':
+        case 'pending':
+          status = 'queued';
+          break;
+        case 'running':
+          status = 'running';
+          break;
+        case 'completed':
+          status = 'completed';
+          break;
+        case 'cancelled':
+          status = 'cancelled';
+          break;
+        case 'error':
+        default:
+          status = 'error';
+          break;
+      }
+
+      return {
+        id: job.id,
+        type: 'ocr' as const,
+        title: `OCR: ${job.documentName}`,
+        progress: job.progress,
+        current: job.processedCount,
+        total: job.totalPages,
+        status,
+        error: job.error,
+        queuePosition: job.queuePosition
+      };
+    });
   });
 
   // Sample mode state (for creating custom categories by drawing boxes)
@@ -2250,28 +2340,213 @@ export class PdfPickerComponent {
 
   /**
    * Toggle remove backgrounds mode
-   * When enabled, renders pages as white with text overlays
+   * Intelligently detects and removes background images (yellowed paper, etc.)
+   * - Identifies backgrounds: images that fill >85% of page AND page has text
+   * - Also removes matching full-page images on blank pages (same background)
+   * - Excludes first and last pages (covers)
+   * - Keeps actual photos/illustrations (different from background pattern)
    */
   async toggleRemoveBackgrounds(): Promise<void> {
-    // Toggle via editor state service (adds to undo/redo history)
-    const newValue = this.editorState.toggleRemoveBackgrounds();
+    const isCurrentlyEnabled = this.editorState.removeBackgrounds();
 
-    await this.applyRemoveBackgrounds(newValue);
+    if (!isCurrentlyEnabled) {
+      // Enable: Find and delete background images
+      const backgroundImageIds = this.detectBackgroundImages();
+
+      if (backgroundImageIds.length > 0) {
+        // Get affected pages before deleting
+        const affectedPages = new Set(
+          this.blocks()
+            .filter(b => backgroundImageIds.includes(b.id))
+            .map(b => b.page)
+        );
+
+        // Delete background images (this adds to undo stack)
+        this.editorState.deleteBlocks(backgroundImageIds);
+
+        // Re-render affected pages with fill regions
+        this.loading.set(true);
+        try {
+          let count = 0;
+          for (const pageNum of affectedPages) {
+            count++;
+            this.loadingText.set(`Removing backgrounds... (${count}/${affectedPages.size})`);
+            await this.rerenderPageWithEdits(pageNum);
+          }
+        } finally {
+          this.loading.set(false);
+          this.loadingText.set('');
+        }
+      }
+
+      // Set the flag (for UI indicator)
+      this.editorState.removeBackgrounds.set(true);
+    } else {
+      // Disable: Restore background images that were deleted by this feature
+      // We restore all image blocks that are currently deleted
+      const deletedIds = this.deletedBlockIds();
+      const imageBlockIds = this.blocks()
+        .filter(b => b.is_image && deletedIds.has(b.id))
+        .map(b => b.id);
+
+      if (imageBlockIds.length > 0) {
+        // Restore images (this adds to undo stack)
+        this.editorState.restoreBlocks(imageBlockIds);
+
+        // Reload original pages
+        this.loading.set(true);
+        this.loadingText.set('Restoring original pages...');
+
+        try {
+          this.pageRenderService.clear();
+          await this.pageRenderService.loadAllPageImages(this.totalPages());
+        } finally {
+          this.loading.set(false);
+          this.loadingText.set('');
+        }
+      }
+
+      // Clear the flag
+      this.editorState.removeBackgrounds.set(false);
+    }
   }
 
   /**
-   * Apply the remove backgrounds state (render or restore pages)
+   * Detect background images based on smart heuristics:
+   * 1. Find "confirmed backgrounds": images filling >85% of page that also have text
+   * 2. Find "matching backgrounds": full-page images on text-less pages that match
+   *    the position/size of confirmed backgrounds (blank yellowed pages)
+   * 3. Exclude cover pages (first and last)
+   */
+  private detectBackgroundImages(): string[] {
+    const blocks = this.blocks();
+    const pageDims = this.pageDimensions();
+    const totalPages = this.totalPages();
+    const backgroundIds: string[] = [];
+
+    // Skip if we don't have page dimensions
+    if (pageDims.length === 0) return [];
+
+    // Group blocks by page
+    const blocksByPage = new Map<number, typeof blocks>();
+    for (const block of blocks) {
+      if (!blocksByPage.has(block.page)) {
+        blocksByPage.set(block.page, []);
+      }
+      blocksByPage.get(block.page)!.push(block);
+    }
+
+    // Track confirmed background image characteristics for matching
+    const confirmedBackgroundPatterns: Array<{
+      relativeX: number;      // x / pageWidth
+      relativeY: number;      // y / pageHeight
+      relativeCoverage: number; // (w*h) / (pageW*pageH)
+    }> = [];
+
+    // First pass: Find confirmed backgrounds (large image + text on same page)
+    for (let pageNum = 0; pageNum < totalPages; pageNum++) {
+      // Skip cover pages (first and last)
+      if (pageNum === 0 || pageNum === totalPages - 1) continue;
+
+      const pageBlocks = blocksByPage.get(pageNum) || [];
+      const dims = pageDims[pageNum];
+      if (!dims) continue;
+
+      const pageArea = dims.width * dims.height;
+      const imageBlocks = pageBlocks.filter(b => b.is_image);
+      const textBlocks = pageBlocks.filter(b => !b.is_image);
+
+      for (const img of imageBlocks) {
+        const imgArea = img.width * img.height;
+        const coverage = imgArea / pageArea;
+
+        // Check if image fills most of the page (>85%)
+        if (coverage > 0.85) {
+          // If page also has text, this is definitely a background image
+          if (textBlocks.length > 0) {
+            backgroundIds.push(img.id);
+
+            // Record the pattern for matching blank pages
+            confirmedBackgroundPatterns.push({
+              relativeX: img.x / dims.width,
+              relativeY: img.y / dims.height,
+              relativeCoverage: coverage
+            });
+          }
+        }
+      }
+    }
+
+    // Second pass: Find full-page images on blank pages that match confirmed backgrounds
+    if (confirmedBackgroundPatterns.length > 0) {
+      for (let pageNum = 0; pageNum < totalPages; pageNum++) {
+        // Skip cover pages
+        if (pageNum === 0 || pageNum === totalPages - 1) continue;
+
+        const pageBlocks = blocksByPage.get(pageNum) || [];
+        const dims = pageDims[pageNum];
+        if (!dims) continue;
+
+        const pageArea = dims.width * dims.height;
+        const imageBlocks = pageBlocks.filter(b => b.is_image);
+        const textBlocks = pageBlocks.filter(b => !b.is_image);
+
+        // Only check pages with no text (potential blank background pages)
+        if (textBlocks.length > 0) continue;
+
+        for (const img of imageBlocks) {
+          // Skip if already identified
+          if (backgroundIds.includes(img.id)) continue;
+
+          const imgArea = img.width * img.height;
+          const coverage = imgArea / pageArea;
+
+          // Check if it's a full-page image
+          if (coverage > 0.85) {
+            const relX = img.x / dims.width;
+            const relY = img.y / dims.height;
+
+            // Check if it matches any confirmed background pattern
+            const matchesBackground = confirmedBackgroundPatterns.some(pattern => {
+              const xDiff = Math.abs(relX - pattern.relativeX);
+              const yDiff = Math.abs(relY - pattern.relativeY);
+              const coverageDiff = Math.abs(coverage - pattern.relativeCoverage);
+
+              // Consider it a match if position and size are very similar
+              return xDiff < 0.05 && yDiff < 0.05 && coverageDiff < 0.1;
+            });
+
+            if (matchesBackground) {
+              backgroundIds.push(img.id);
+            }
+          }
+        }
+      }
+    }
+
+    return backgroundIds;
+  }
+
+  /**
+   * Apply the remove backgrounds state (for restoring from saved projects)
    */
   private async applyRemoveBackgrounds(enabled: boolean): Promise<void> {
     if (enabled) {
-      // Re-render all pages with background removal
+      // Re-render all pages that have deleted images
       this.loading.set(true);
-      const total = this.totalPages();
+      const deletedIds = this.deletedBlockIds();
+      const affectedPages = new Set(
+        this.blocks()
+          .filter(b => b.is_image && deletedIds.has(b.id))
+          .map(b => b.page)
+      );
 
       try {
-        for (let i = 0; i < total; i++) {
-          this.loadingText.set(`Removing backgrounds... (${i + 1}/${total})`);
-          await this.pageRenderService.renderBlankPage(i);
+        let count = 0;
+        for (const pageNum of affectedPages) {
+          count++;
+          this.loadingText.set(`Removing backgrounds... (${count}/${affectedPages.size})`);
+          await this.rerenderPageWithEdits(pageNum);
         }
       } finally {
         this.loading.set(false);
@@ -2389,6 +2664,59 @@ export class PdfPickerComponent {
       title: 'Cache Cleared',
       message: `Cleared rendered data for ${fileHashes.length} file${fileHashes.length > 1 ? 's' : ''}.`,
       type: 'success'
+    });
+  }
+
+  /**
+   * Handle projects being deleted from the library.
+   * Close any open tabs for deleted projects and clear state completely.
+   */
+  onProjectsDeleted(deletedPaths: string[]): void {
+    if (deletedPaths.length === 0) return;
+
+    const deletedSet = new Set(deletedPaths);
+
+    // Find any open documents that match deleted projects
+    const docs = this.openDocuments();
+    const docsToClose = docs.filter(d => d.projectPath && deletedSet.has(d.projectPath));
+
+    if (docsToClose.length === 0) return;
+
+    // Check if the active document is being deleted
+    const activeDoc = docs.find(d => d.id === this.activeDocumentId());
+    const activeIsDeleted = activeDoc && docsToClose.some(d => d.id === activeDoc.id);
+
+    // Close the deleted tabs
+    for (const doc of docsToClose) {
+      this.openDocuments.update(all => all.filter(d => d.id !== doc.id));
+    }
+
+    // If the active document was deleted, clear the editor state completely
+    if (activeIsDeleted) {
+      this.editorState.reset();
+      this.projectService.reset();
+      this.pageRenderService.clear();
+      this.blankedPages.set(new Set());
+
+      // Switch to another tab if available, or back to library
+      const remainingDocs = this.openDocuments();
+      if (remainingDocs.length > 0) {
+        this.restoreDocumentState(remainingDocs[0].id);
+      } else {
+        this.activeDocumentId.set(null);
+        this.pdfLoaded.set(false);
+      }
+    }
+  }
+
+  /**
+   * Handle errors from the library view.
+   */
+  onLibraryError(message: string): void {
+    this.alertModal.set({
+      title: 'Error',
+      message,
+      type: 'error'
     });
   }
 
@@ -5253,36 +5581,81 @@ export class PdfPickerComponent {
       }
     }
 
+    // Collect layout blocks from Surya (if available) for smart categorization
+    const layoutBlocksByPage = new Map<number, any[]>();
+    // Debug: check what layout data is coming in
+    const pagesWithLayout = results.filter(r => r.layoutBlocks && r.layoutBlocks.length > 0);
+    console.log(`[OCR] Layout blocks received: ${pagesWithLayout.length}/${results.length} pages have layout data`);
+    if (pagesWithLayout.length === 0 && results.length > 0) {
+      console.log(`[OCR] First result layoutBlocks:`, results[0].layoutBlocks);
+    }
+    for (const result of results) {
+      if (result.layoutBlocks && result.layoutBlocks.length > 0) {
+        // Scale layout blocks from image pixels to PDF coordinates
+        const scaledBlocks = result.layoutBlocks.map(lb => ({
+          ...lb,
+          bbox: [
+            lb.bbox[0] / renderScale,
+            lb.bbox[1] / renderScale,
+            lb.bbox[2] / renderScale,
+            lb.bbox[3] / renderScale
+          ] as [number, number, number, number]
+        }));
+        layoutBlocksByPage.set(result.page, scaledBlocks);
+        console.log(`[OCR Layout] Page ${result.page}: ${scaledBlocks.length} layout blocks (scale: ${renderScale})`);
+        scaledBlocks.forEach((b, i) => {
+          console.log(`  [${i}] ${b.label}: (${b.bbox[0].toFixed(1)}, ${b.bbox[1].toFixed(1)}) to (${b.bbox[2].toFixed(1)}, ${b.bbox[3].toFixed(1)})`);
+        });
+      }
+    }
+
+    // Post-process OCR blocks: merge lines into paragraphs and apply smart categorization
+    // If we have layout blocks from Surya, use them for categorization instead of heuristics
+    const processedResult = this.ocrPostProcessor.processOcrBlocks(newBlocks, pageDims, layoutBlocksByPage);
+    const processedBlocks = processedResult.blocks;
+    const newCategories = processedResult.categories;
+
+    const hasLayoutData = layoutBlocksByPage.size > 0;
+    console.log(`[OCR] Post-processing: ${newBlocks.length} lines → ${processedBlocks.length} blocks (layout detection: ${hasLayoutData ? 'enabled' : 'disabled'})`);
+
+    // Merge new OCR categories with existing categories
+    const existingCategories = this.categories();
+    const mergedCategories = { ...existingCategories, ...newCategories };
+    this.editorState.categories.set(mergedCategories);
+
     // Only replace blocks on pages that have OCR results
     // Pages with no OCR results keep their existing blocks
     if (pagesWithOcrResults.length > 0) {
-      // Capture original text block positions BEFORE replacing (for background fill)
-      const originalTextBlocksByPage = new Map<number, Array<{ x: number; y: number; width: number; height: number }>>();
-      const pagesSet = new Set(pagesWithOcrResults);
+      // Collect fill regions from OCR text lines (where text was actually detected)
+      // These will fill the text areas with background color, becoming part of the background
+      const ocrFillRegionsByPage = new Map<number, Array<{ x: number; y: number; width: number; height: number }>>();
 
-      for (const block of this.blocks()) {
-        // Only capture non-image, non-OCR blocks on pages that will get OCR results
-        if (pagesSet.has(block.page) && !block.is_image && !block.is_ocr) {
-          if (!originalTextBlocksByPage.has(block.page)) {
-            originalTextBlocksByPage.set(block.page, []);
-          }
-          originalTextBlocksByPage.get(block.page)!.push({
-            x: block.x,
-            y: block.y,
-            width: block.width,
-            height: block.height
+      for (const result of results) {
+        if (!result.textLines || result.textLines.length === 0) continue;
+
+        const regions: Array<{ x: number; y: number; width: number; height: number }> = [];
+        for (const line of result.textLines) {
+          const [x1, y1, x2, y2] = line.bbox;
+          // Convert from image pixels to PDF coordinates
+          regions.push({
+            x: x1 / renderScale,
+            y: y1 / renderScale,
+            width: (x2 - x1) / renderScale,
+            height: (y2 - y1) / renderScale
           });
         }
+        ocrFillRegionsByPage.set(result.page, regions);
       }
 
-      // Replace blocks with OCR blocks
-      this.editorState.replaceTextBlocksOnPages(pagesWithOcrResults, newBlocks);
+      // Replace blocks with processed OCR blocks
+      this.editorState.replaceTextBlocksOnPages(pagesWithOcrResults, processedBlocks);
 
-      // Re-render each page with original text positions filled with background color
+      // Re-render each page with OCR text areas filled with background color
+      // This integrates the fills into the background image
       for (const pageNum of pagesWithOcrResults) {
-        const fillRegions = originalTextBlocksByPage.get(pageNum);
+        const fillRegions = ocrFillRegionsByPage.get(pageNum);
         if (fillRegions && fillRegions.length > 0) {
-          console.log(`[OCR] Re-rendering page ${pageNum} with ${fillRegions.length} fill regions`);
+          console.log(`[OCR] Re-rendering page ${pageNum} with ${fillRegions.length} OCR fill regions`);
           this.pageRenderService.rerenderPageWithRedactions(pageNum, undefined, fillRegions);
         }
       }
@@ -5295,11 +5668,35 @@ export class PdfPickerComponent {
     this.saveCurrentDocumentState();
 
     // Log results for debugging
-    if (newBlocks.length > 0) {
-      console.log(`[OCR] Created ${newBlocks.length} text blocks on ${pagesWithOcrResults.length} page(s)`);
+    if (processedBlocks.length > 0) {
+      console.log(`[OCR] Created ${processedBlocks.length} text blocks (from ${newBlocks.length} lines) on ${pagesWithOcrResults.length} page(s)`);
+      console.log(`[OCR] Categories created:`, Object.keys(newCategories).join(', '));
     } else {
       console.log(`[OCR] Processed ${results.length} page(s) but no text was detected`);
     }
+  }
+
+  /**
+   * Called when an OCR job starts in the background
+   */
+  onBackgroundOcrStarted(jobId: string): void {
+    console.log(`[OCR] Background job started: ${jobId}`);
+    // The job will continue running and call onOcrCompleted when done
+    // via the completion callback registered in the OcrJobService
+  }
+
+  /**
+   * Dismiss a completed/errored background job
+   */
+  onDismissBackgroundJob(jobId: string): void {
+    this.ocrJobService.dismissJob(jobId);
+  }
+
+  /**
+   * Cancel a running or queued background job
+   */
+  onCancelBackgroundJob(jobId: string): void {
+    this.ocrJobService.cancelJob(jobId);
   }
 
   // Tab management methods

@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { PluginService } from '../../../../core/services/plugin.service';
+import { OcrJobService } from '../../services/ocr-job.service';
 
 export type OcrEngine = 'tesseract' | 'surya';
 export type OcrScope = 'all' | 'current' | 'selected' | 'range';
@@ -27,11 +28,40 @@ export interface OcrTextLine {
   bbox: [number, number, number, number];  // [x1, y1, x2, y2]
 }
 
+// Layout detection categories from Surya (actual output format)
+export type LayoutLabel =
+  | 'Caption'
+  | 'Footnote'
+  | 'Formula'
+  | 'ListItem'
+  | 'PageFooter'
+  | 'PageHeader'
+  | 'Picture'
+  | 'Figure'
+  | 'SectionHeader'
+  | 'Table'
+  | 'Form'
+  | 'TableOfContents'
+  | 'Handwriting'
+  | 'Text'
+  | 'TextInlineMath'
+  | 'Title';
+
+export interface LayoutBlock {
+  bbox: [number, number, number, number];
+  polygon: number[][];
+  label: LayoutLabel;
+  confidence: number;
+  position: number;
+  text?: string;
+}
+
 export interface OcrPageResult {
   page: number;
   text: string;
   confidence: number;
   textLines?: OcrTextLine[];  // Text lines with bounding boxes
+  layoutBlocks?: LayoutBlock[];  // Semantic layout regions (Surya only)
 }
 
 @Component({
@@ -235,6 +265,14 @@ export interface OcrPageResult {
                 Cancel
               </desktop-button>
               <desktop-button
+                variant="secondary"
+                [disabled]="!canStart()"
+                (click)="startBackgroundOcr()"
+                title="Start OCR and close this dialog - progress will be shown in the corner"
+              >
+                Run in Background
+              </desktop-button>
+              <desktop-button
                 variant="primary"
                 [disabled]="!canStart()"
                 (click)="startOcr()"
@@ -247,6 +285,9 @@ export interface OcrPageResult {
               </desktop-button>
             }
           } @else {
+            <desktop-button variant="ghost" (click)="continueInBackground()">
+              Continue in Background
+            </desktop-button>
             <desktop-button variant="danger" (click)="cancelOcr()">
               Cancel
             </desktop-button>
@@ -477,6 +518,42 @@ export interface OcrPageResult {
       }
     }
 
+    .checkbox-option {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      background: var(--bg-elevated);
+      border-radius: $radius-md;
+      cursor: pointer;
+      transition: background $duration-fast $ease-out;
+
+      &:hover {
+        background: var(--bg-hover);
+      }
+
+      input[type="checkbox"] {
+        margin-top: 3px;
+        accent-color: var(--accent);
+      }
+    }
+
+    .checkbox-label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+
+      strong {
+        color: var(--text-primary);
+        font-size: var(--ui-font-base);
+      }
+
+      .checkbox-hint {
+        color: var(--text-tertiary);
+        font-size: var(--ui-font-sm);
+      }
+    }
+
     .range-inputs {
       display: flex;
       align-items: center;
@@ -674,14 +751,18 @@ export class OcrSettingsModalComponent implements OnDestroy {
   totalPages = input<number>(0);
   currentPage = input<number>(0);
   getPageImage = input.required<(page: number) => string | null>();
+  documentId = input<string>('');
+  documentName = input<string>('Document');
 
   // Outputs
   close = output<void>();
   ocrCompleted = output<OcrPageResult[]>();
+  backgroundJobStarted = output<string>();  // Emits job ID when starting background job
 
   // Services
   private readonly electronService = inject(ElectronService);
   private readonly pluginService = inject(PluginService);
+  private readonly ocrJobService = inject(OcrJobService);
 
   // State
   readonly settings = signal<OcrSettings>({
@@ -701,6 +782,9 @@ export class OcrSettingsModalComponent implements OnDestroy {
     { id: 'tesseract', name: 'Tesseract', available: false, version: null },
     { id: 'surya', name: 'Surya', available: false, version: null }
   ]);
+
+  // Surya layout detection availability (separate from OCR)
+  readonly suryaLayoutAvailable = signal(false);
 
   readonly availableLanguages = signal<string[]>(['eng']);
   readonly scope = signal<OcrScope>('all');
@@ -777,6 +861,9 @@ export class OcrSettingsModalComponent implements OnDestroy {
         }
         return e;
       }));
+
+      // Surya layout detection is available if Surya is installed
+      this.suryaLayoutAvailable.set(suryaAvailability.available);
 
       this.availableLanguages.set(languages);
     } finally {
@@ -929,12 +1016,14 @@ export class OcrSettingsModalComponent implements OnDestroy {
           continue;
         }
 
-        let result: { text: string; confidence: number; textLines?: OcrTextLine[] } | null = null;
+        let result: { text: string; confidence: number; textLines?: OcrTextLine[]; layoutBlocks?: LayoutBlock[] } | null = null;
 
         let textLines: OcrTextLine[] | undefined;
+        let layoutBlocks: LayoutBlock[] | undefined;
 
+        // Step 1: Run OCR with selected engine
         if (engine === 'surya') {
-          // Use Surya plugin
+          // Use Surya OCR
           const suryaResult = await this.pluginService.runOcr('surya-ocr', imageData);
           if (suryaResult.success && suryaResult.text) {
             result = { text: suryaResult.text, confidence: suryaResult.confidence || 0.9 };
@@ -943,12 +1032,35 @@ export class OcrSettingsModalComponent implements OnDestroy {
             throw new Error(suryaResult.error);
           }
         } else {
-          // Use Tesseract - now returns textLines with bounding boxes
+          // Use Tesseract
           const tesseractResult = await this.electronService.ocrRecognize(imageData);
           if (tesseractResult) {
             result = tesseractResult;
             textLines = tesseractResult.textLines;
           }
+        }
+
+        // Step 2: Automatically run Surya layout detection if available (regardless of OCR engine)
+        console.log(`[OCR] Layout detection check: suryaLayoutAvailable=${this.suryaLayoutAvailable()}, hasResult=${!!result}`);
+        if (result && this.suryaLayoutAvailable()) {
+          try {
+            console.log(`[OCR] Running Surya layout detection for page ${pageNum}`);
+            const layoutResult = await this.pluginService.detectLayout('surya-ocr', imageData);
+            if (layoutResult.success && layoutResult.layoutBlocks) {
+              layoutBlocks = layoutResult.layoutBlocks as LayoutBlock[] | undefined;
+              console.log(`[OCR] Layout detection returned ${layoutBlocks?.length || 0} blocks for page ${pageNum}`);
+              if (layoutBlocks && layoutBlocks.length > 0) {
+                console.log(`[OCR] Layout labels:`, layoutBlocks.map(b => b.label).join(', '));
+              }
+            } else {
+              console.log(`[OCR] Layout detection returned no blocks for page ${pageNum}`, layoutResult.error);
+            }
+          } catch (layoutErr) {
+            console.warn('Layout detection failed:', layoutErr);
+            // Continue without layout - not a fatal error
+          }
+        } else if (result) {
+          console.log(`[OCR] Surya layout not available, skipping layout detection`);
         }
 
         this.processingPage.set(false);
@@ -959,7 +1071,8 @@ export class OcrSettingsModalComponent implements OnDestroy {
             page: pageNum,
             text: result!.text,
             confidence: result!.confidence,
-            textLines: textLines
+            textLines: textLines,
+            layoutBlocks: layoutBlocks
           }]);
         }
       } catch (err) {
@@ -989,6 +1102,84 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
   cancelOcr(): void {
     this.cancelled.set(true);
+  }
+
+  /**
+   * Start OCR as a background job and close the modal immediately
+   */
+  async startBackgroundOcr(): Promise<void> {
+    const pages = this.getPageList();
+    if (pages.length === 0) return;
+
+    const getImage = this.getPageImage();
+    const engine = this.settings().engine;
+
+    // Start background job
+    const jobId = await this.ocrJobService.startJob(
+      this.documentId(),
+      this.documentName(),
+      engine,
+      this.settings().language,
+      pages,
+      getImage,
+      (job) => {
+        // Job completed - convert results to OcrPageResult format
+        const results: OcrPageResult[] = job.results.map(r => ({
+          page: r.page,
+          text: r.text,
+          confidence: r.confidence,
+          textLines: r.textLines
+        }));
+        if (results.length > 0) {
+          this.ocrCompleted.emit(results);
+        }
+      }
+    );
+
+    this.backgroundJobStarted.emit(jobId);
+    this.close.emit();
+  }
+
+  /**
+   * Continue current OCR in background and close the modal
+   * Transfers the remaining pages to OcrJobService
+   */
+  async continueInBackground(): Promise<void> {
+    // Get the pages that haven't been processed yet
+    const allPages = this.getPageList();
+    const processedCount = this.processedCount();
+    const remainingPages = allPages.slice(processedCount);
+
+    // Cancel the current foreground OCR
+    this.cancelled.set(true);
+
+    // Emit already processed results immediately (before modal closes)
+    const alreadyProcessedResults = this.results();
+    if (alreadyProcessedResults.length > 0) {
+      this.ocrCompleted.emit(alreadyProcessedResults);
+    }
+
+    if (remainingPages.length === 0) {
+      // All pages already processed, just close
+      this.close.emit();
+      return;
+    }
+
+    const getImage = this.getPageImage();
+    const engine = this.settings().engine;
+
+    // Start a background job for the remaining pages (no callback - global handler will process)
+    await this.ocrJobService.startJob(
+      this.documentId(),
+      this.documentName(),
+      engine,
+      this.settings().language,
+      remainingPages,
+      getImage
+    );
+
+    this.backgroundJobStarted.emit('transferred');
+    this.close.emit();
   }
 
   copyAllText(): void {
