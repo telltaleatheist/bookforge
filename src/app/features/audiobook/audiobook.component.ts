@@ -41,7 +41,7 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
     </desktop-toolbar>
 
     <div class="audiobook-container">
-      <desktop-split-pane [initialLeftWidth]="280" [minLeftWidth]="200" [minRightWidth]="400">
+      <desktop-split-pane [primarySize]="280" [minSize]="200" [maxSize]="600">
         <!-- Left Panel: Queue -->
         <div left-pane class="queue-panel">
           <div class="panel-header">
@@ -269,8 +269,8 @@ export class AudiobookComponent implements OnInit, OnDestroy {
   });
 
   // Check if we're running in Electron
-  private get electron(): typeof window.electron | null {
-    return typeof window !== 'undefined' && window.electron ? window.electron : null;
+  private get electron(): any {
+    return typeof window !== 'undefined' && (window as any).electron ? (window as any).electron : null;
   }
 
   // Computed
@@ -296,7 +296,7 @@ export class AudiobookComponent implements OnInit, OnDestroy {
         label: 'Add EPUB',
         tooltip: 'Add EPUB to queue'
       },
-      { type: 'separator' },
+      { id: 'sep1', type: 'divider' },
       {
         id: 'refresh',
         type: 'button',
@@ -328,7 +328,7 @@ export class AudiobookComponent implements OnInit, OnDestroy {
   private setupProgressListener(): void {
     if (!this.electron) return;
 
-    this.unsubscribeProgress = this.electron.tts.onProgress((progress) => {
+    this.unsubscribeProgress = this.electron.tts.onProgress((progress: TTSProgress) => {
       this.conversionProgress.set(progress);
 
       // Update converting state based on phase
@@ -342,8 +342,8 @@ export class AudiobookComponent implements OnInit, OnDestroy {
     });
   }
 
-  onToolbarAction(itemId: string): void {
-    switch (itemId) {
+  onToolbarAction(item: ToolbarItem): void {
+    switch (item.id) {
       case 'add':
         this.addToQueue();
         break;
@@ -375,7 +375,7 @@ export class AudiobookComponent implements OnInit, OnDestroy {
             coverPath: structure.metadata.coverPath
           },
           status: 'pending',
-          addedAt: file.addedAt
+          addedAt: new Date(file.addedAt)
         });
         await this.epubService.close();
       }

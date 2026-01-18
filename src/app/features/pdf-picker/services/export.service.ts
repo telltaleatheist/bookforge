@@ -75,8 +75,8 @@ export class ExportService {
   private crc32Table: number[] | null = null;
 
   // Check if we're running in Electron
-  private get electron(): typeof window.electron | null {
-    return typeof window !== 'undefined' && window.electron ? window.electron : null;
+  private get electron(): any {
+    return typeof window !== 'undefined' && (window as any).electron ? (window as any).electron : null;
   }
 
   /**

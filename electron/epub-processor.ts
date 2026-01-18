@@ -42,7 +42,7 @@ export interface EpubStructure {
   metadata: EpubMetadata;
   chapters: EpubChapter[];
   spine: string[];
-  manifest: Map<string, ManifestItem>;
+  manifest: Record<string, ManifestItem>;
   opfPath: string;
   rootPath: string;
 }
@@ -377,13 +377,13 @@ class EpubProcessor {
     }
 
     // Parse manifest
-    const manifest = new Map<string, ManifestItem>();
+    const manifest: Record<string, ManifestItem> = {};
     for (const item of getAllTags(xml, 'item')) {
-      manifest.set(item.attributes.id, {
+      manifest[item.attributes.id] = {
         id: item.attributes.id,
         href: item.attributes.href,
         mediaType: item.attributes['media-type']
-      });
+      };
     }
 
     // Parse spine
@@ -396,7 +396,7 @@ class EpubProcessor {
     const chapters: EpubChapter[] = [];
     for (let i = 0; i < spine.length; i++) {
       const id = spine[i];
-      const item = manifest.get(id);
+      const item = manifest[id];
       if (item && item.mediaType === 'application/xhtml+xml') {
         chapters.push({
           id,

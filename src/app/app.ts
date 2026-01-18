@@ -42,13 +42,6 @@ import { LibraryService } from './core/services/library.service';
           <div class="titlebar-spacer"></div>
         </ng-container>
 
-        <!-- Titlebar Right -->
-        <ng-container titlebar-right>
-          <desktop-button variant="ghost" size="xs" [iconOnly]="true" (click)="toggleTheme()">
-            {{ themeService.resolvedTheme() === 'dark' ? '&#9728;' : '&#9790;' }}
-          </desktop-button>
-        </ng-container>
-
         <!-- Main content area with nav rail -->
         <div class="app-layout">
           <!-- Navigation Rail -->

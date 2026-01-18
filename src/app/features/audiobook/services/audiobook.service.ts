@@ -96,8 +96,8 @@ export class AudiobookService {
   }
 
   // Check if we're running in Electron
-  private get electron(): typeof window.electron | null {
-    return typeof window !== 'undefined' && window.electron ? window.electron : null;
+  private get electron(): any {
+    return typeof window !== 'undefined' && (window as any).electron ? (window as any).electron : null;
   }
 
   /**
@@ -106,7 +106,7 @@ export class AudiobookService {
   private setupProgressListener(): void {
     if (!this.electron) return;
 
-    this.unsubscribeProgress = this.electron.tts.onProgress((progress) => {
+    this.unsubscribeProgress = this.electron.tts.onProgress((progress: TTSProgress) => {
       this._progress.set(progress);
 
       // Update converting state based on phase

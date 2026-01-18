@@ -22,7 +22,7 @@ export interface OcrJob {
   rangeEnd?: number;
 }
 
-export { OcrTextLine };
+export type { OcrTextLine };
 
 // Layout detection categories from Surya (actual output format)
 export type LayoutLabel =
