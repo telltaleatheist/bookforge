@@ -140,7 +140,7 @@ export interface ProjectFile {
           <div class="context-divider"></div>
           <button class="context-menu-item" (click)="onContextMenuTransferToAudiobook()">
             <span class="context-icon">🎧</span>
-            Transfer to Audiobook
+            Transfer to Audiobook Producer
           </button>
           <div class="context-divider"></div>
           <button class="context-menu-item" (click)="onContextMenuClearCache()">

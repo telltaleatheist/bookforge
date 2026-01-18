@@ -580,7 +580,7 @@ export class ExportService {
       if (!copyResult.success) {
         return {
           success: false,
-          message: copyResult.error || 'Failed to copy EPUB to audiobook queue'
+          message: copyResult.error || 'Failed to copy EPUB to Audiobook Producer queue'
         };
       }
 
@@ -600,7 +600,7 @@ export class ExportService {
       const message = err instanceof Error ? err.message : 'Unknown error';
       return {
         success: false,
-        message: `Failed to export to audiobook: ${message}`
+        message: `Failed to export to Audiobook Producer: ${message}`
       };
     }
   }

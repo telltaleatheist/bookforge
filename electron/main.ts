@@ -1577,16 +1577,43 @@ function setupIpcHandlers(): void {
 
   // Legacy compatibility handlers (can be removed later)
   ipcMain.handle('library:copy-to-queue', async (_event, sourcePath: string, filename: string) => {
-    // Redirect to create-project
-    const result = await (ipcMain as any)._events['audiobook:create-project'][0](
-      { sender: mainWindow?.webContents },
-      sourcePath,
-      filename
-    );
-    if (result.success) {
-      return { success: true, destinationPath: result.originalPath };
+    // Create a project folder for this EPUB
+    try {
+      const basePath = getAudiobooksBasePath();
+      await fs.mkdir(basePath, { recursive: true });
+
+      const projectId = generateProjectId(filename);
+      const folderPath = path.join(basePath, projectId);
+      await fs.mkdir(folderPath, { recursive: true });
+
+      const originalPath = path.join(folderPath, 'original.epub');
+
+      if (sourcePath.startsWith('data:')) {
+        const matches = sourcePath.match(/^data:[^;]+;base64,(.+)$/);
+        if (!matches || !matches[1]) {
+          return { success: false, error: 'Invalid data URL format' };
+        }
+        const buffer = Buffer.from(matches[1], 'base64');
+        await fs.writeFile(originalPath, buffer);
+      } else {
+        await fs.copyFile(sourcePath, originalPath);
+      }
+
+      const now = new Date().toISOString();
+      const projectData = {
+        version: 1,
+        originalFilename: filename,
+        metadata: { title: '', author: '', language: 'en' },
+        state: { cleanupStatus: 'none', ttsStatus: 'none' },
+        createdAt: now,
+        modifiedAt: now
+      };
+      await saveProjectFile(folderPath, projectData);
+
+      return { success: true, destinationPath: originalPath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
     }
-    return result;
   });
 
   ipcMain.handle('library:list-queue', async () => {
