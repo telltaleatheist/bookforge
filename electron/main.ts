@@ -292,14 +292,20 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Simplified chapter type for export (only fields needed for bookmarks)
+  type ExportChapter = {title: string; page: number; level: number};
+
   ipcMain.handle('pdf:export-pdf', async (
     _event,
     pdfPath: string,
     deletedRegions: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>,
-    ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>
+    ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>,
+    deletedPages?: number[],
+    chapters?: ExportChapter[]
   ) => {
     try {
-      const pdfBase64 = await pdfAnalyzer.exportPdf(pdfPath, deletedRegions, ocrBlocks);
+      const deletedPagesSet = deletedPages ? new Set(deletedPages) : undefined;
+      const pdfBase64 = await pdfAnalyzer.exportPdf(pdfPath, deletedRegions, ocrBlocks, deletedPagesSet, chapters);
       return { success: true, data: { pdf_base64: pdfBase64 } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -310,16 +316,19 @@ function setupIpcHandlers(): void {
     event,
     scale: number = 2.0,
     deletedRegions?: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>,
-    ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>
+    ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>,
+    deletedPages?: number[]
   ) => {
     try {
+      const deletedPagesSet = deletedPages ? new Set(deletedPages) : undefined;
       const pdfBase64 = await pdfAnalyzer.exportPdfWithBackgroundsRemoved(
         scale,
         (current, total) => {
           event.sender.send('pdf:export-progress', { current, total });
         },
         deletedRegions,
-        ocrBlocks
+        ocrBlocks,
+        deletedPagesSet
       );
       return { success: true, data: { pdf_base64: pdfBase64 } };
     } catch (err) {
@@ -1113,6 +1122,251 @@ function setupIpcHandlers(): void {
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // EPUB Processing handlers (for Audiobook Producer)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('epub:parse', async (_event, epubPath: string) => {
+    try {
+      const { parseEpub } = await import('./epub-processor.js');
+      const structure = await parseEpub(epubPath);
+      return { success: true, data: structure };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('epub:get-cover', async (_event, epubPath?: string) => {
+    try {
+      const { getCover } = await import('./epub-processor.js');
+      const coverData = await getCover(epubPath);
+      return { success: true, data: coverData };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('epub:get-chapter-text', async (_event, chapterId: string) => {
+    try {
+      const { getChapterText } = await import('./epub-processor.js');
+      const text = await getChapterText(chapterId);
+      return { success: true, data: text };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('epub:get-metadata', async () => {
+    try {
+      const { getMetadata } = await import('./epub-processor.js');
+      const metadata = getMetadata();
+      return { success: true, data: metadata };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('epub:get-chapters', async () => {
+    try {
+      const { getChapters } = await import('./epub-processor.js');
+      const chapters = getChapters();
+      return { success: true, data: chapters };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('epub:close', async () => {
+    try {
+      const { closeEpub } = await import('./epub-processor.js');
+      closeEpub();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // AI Bridge handlers (Ollama integration)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('ai:check-connection', async () => {
+    try {
+      const { aiBridge } = await import('./ai-bridge.js');
+      const result = await aiBridge.checkConnection();
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ai:get-models', async () => {
+    try {
+      const { aiBridge } = await import('./ai-bridge.js');
+      const models = await aiBridge.getModels();
+      return { success: true, data: models };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ai:cleanup-chapter', async (
+    _event,
+    text: string,
+    options: { fixHyphenation: boolean; fixOcrArtifacts: boolean; expandAbbreviations: boolean },
+    chapterId: string,
+    chapterTitle: string,
+    model?: string
+  ) => {
+    try {
+      const { aiBridge } = await import('./ai-bridge.js');
+      const result = await aiBridge.cleanupText(text, options, chapterId, chapterTitle, model, mainWindow);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // TTS Bridge handlers (ebook2audiobook)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('tts:check-available', async () => {
+    try {
+      const { ttsBridge } = await import('./tts-bridge.js');
+      const result = await ttsBridge.checkAvailable();
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('tts:get-voices', async () => {
+    try {
+      const { ttsBridge } = await import('./tts-bridge.js');
+      const voices = await ttsBridge.getVoices();
+      return { success: true, data: voices };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('tts:start-conversion', async (
+    _event,
+    epubPath: string,
+    outputDir: string,
+    settings: { device: 'gpu' | 'mps' | 'cpu'; language: string; voice: string; temperature: number; speed: number }
+  ) => {
+    try {
+      const { ttsBridge } = await import('./tts-bridge.js');
+      ttsBridge.setMainWindow(mainWindow);
+      const result = await ttsBridge.startConversion(epubPath, outputDir, settings);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('tts:stop-conversion', async () => {
+    try {
+      const { ttsBridge } = await import('./tts-bridge.js');
+      const stopped = ttsBridge.stopConversion();
+      return { success: true, data: { stopped } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('tts:generate-filename', async (
+    _event,
+    title: string,
+    subtitle?: string,
+    author?: string,
+    authorFileAs?: string,
+    year?: string
+  ) => {
+    try {
+      const { ttsBridge } = await import('./tts-bridge.js');
+      const filename = ttsBridge.generateOutputFilename(title, subtitle, author, authorFileAs, year);
+      return { success: true, data: filename };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Library audiobook queue handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('library:copy-to-queue', async (_event, sourcePath: string, filename: string) => {
+    try {
+      const documentsPath = app.getPath('documents');
+      const queuePath = path.join(documentsPath, 'BookForge', 'audiobooks', 'queue');
+      await fs.mkdir(queuePath, { recursive: true });
+
+      const destPath = path.join(queuePath, filename);
+
+      // Check if sourcePath is a data URL (base64 encoded content)
+      if (sourcePath.startsWith('data:')) {
+        // Extract base64 content from data URL
+        const matches = sourcePath.match(/^data:[^;]+;base64,(.+)$/);
+        if (!matches || !matches[1]) {
+          return { success: false, error: 'Invalid data URL format' };
+        }
+        const base64Content = matches[1];
+        const buffer = Buffer.from(base64Content, 'base64');
+        await fs.writeFile(destPath, buffer);
+      } else {
+        // It's a regular file path
+        await fs.copyFile(sourcePath, destPath);
+      }
+
+      return { success: true, destinationPath: destPath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('library:list-queue', async () => {
+    try {
+      const documentsPath = app.getPath('documents');
+      const queuePath = path.join(documentsPath, 'BookForge', 'audiobooks', 'queue');
+
+      try {
+        const entries = await fs.readdir(queuePath, { withFileTypes: true });
+        const epubFiles = entries.filter(e => e.isFile() && e.name.toLowerCase().endsWith('.epub'));
+
+        const files = await Promise.all(epubFiles.map(async (e) => {
+          const filePath = path.join(queuePath, e.name);
+          const stats = await fs.stat(filePath);
+          return {
+            path: filePath,
+            filename: e.name,
+            size: stats.size,
+            addedAt: stats.mtime.toISOString()
+          };
+        }));
+
+        return { success: true, files };
+      } catch {
+        // Queue folder doesn't exist yet
+        return { success: true, files: [] };
+      }
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('library:get-audiobooks-path', async () => {
+    const documentsPath = app.getPath('documents');
+    const basePath = path.join(documentsPath, 'BookForge', 'audiobooks');
+    return {
+      success: true,
+      queuePath: path.join(basePath, 'queue'),
+      completedPath: path.join(basePath, 'completed')
+    };
   });
 }
 

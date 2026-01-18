@@ -141,9 +141,15 @@ export class PdfService {
   async exportCleanPdf(
     pdfPath: string,
     deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
-    ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>
+    ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>,
+    deletedPages?: Set<number>,
+    chapters?: Chapter[]
   ): Promise<string> {
-    return this.electron.exportCleanPdf(pdfPath, deletedRegions, ocrBlocks);
+    // Convert Set to Array for IPC serialization
+    const deletedPagesArray = deletedPages ? Array.from(deletedPages) : undefined;
+    // Convert chapters to plain objects for IPC
+    const chaptersArray = chapters?.map(c => ({ title: c.title, page: c.page, level: c.level || 1 }));
+    return this.electron.exportCleanPdf(pdfPath, deletedRegions, ocrBlocks, deletedPagesArray, chaptersArray);
   }
 
   /**
@@ -152,11 +158,14 @@ export class PdfService {
    */
   async exportPdfRerendered(
     deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
-    ocrBlocks: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>
+    ocrBlocks: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>,
+    deletedPages?: Set<number>
   ): Promise<string> {
+    // Convert Set to Array for IPC serialization
+    const deletedPagesArray = deletedPages ? Array.from(deletedPages) : undefined;
     // Use the backgrounds-removed export with scale 2.0 (same as standard export quality)
     // This creates a new PDF from rendered pages + embedded OCR text
-    return this.electron.exportPdfNoBackgrounds(2.0, deletedRegions, ocrBlocks);
+    return this.electron.exportPdfNoBackgrounds(2.0, deletedRegions, ocrBlocks, deletedPagesArray);
   }
 
   /**

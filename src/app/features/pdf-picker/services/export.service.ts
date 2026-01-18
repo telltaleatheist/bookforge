@@ -1,4 +1,5 @@
 import { Injectable, inject } from '@angular/core';
+import { Router } from '@angular/router';
 import { PdfService, TextBlock } from './pdf.service';
 import { Chapter } from '../../../core/services/electron.service';
 
@@ -32,6 +33,7 @@ export interface DeletedRegion {
   width: number;
   height: number;
   isImage?: boolean;
+  text?: string;  // Text content for content-based matching
 }
 
 export interface HighlightRect {
@@ -39,6 +41,7 @@ export interface HighlightRect {
   y: number;
   w: number;
   h: number;
+  text?: string;  // Text content for content-based matching
 }
 
 export interface ExportResult {
@@ -51,6 +54,13 @@ export interface ExportResult {
   regionCount?: number;
 }
 
+// Pattern from deleted custom categories to strip from exported text
+export interface DeletedCategoryPattern {
+  pattern: string;
+  caseSensitive: boolean;
+  literalMode: boolean;
+}
+
 /**
  * ExportService - Handles TXT, EPUB, and PDF export functionality
  *
@@ -61,7 +71,13 @@ export interface ExportResult {
 })
 export class ExportService {
   private readonly pdfService = inject(PdfService);
+  private readonly router = inject(Router);
   private crc32Table: number[] | null = null;
+
+  // Check if we're running in Electron
+  private get electron(): typeof window.electron | null {
+    return typeof window !== 'undefined' && window.electron ? window.electron : null;
+  }
 
   /**
    * Export text content to a .txt file
@@ -126,7 +142,8 @@ export class ExportService {
     deletedIds: Set<string>,
     pdfName: string,
     textCorrections?: Map<string, string>,
-    deletedPages?: Set<number>
+    deletedPages?: Set<number>,
+    deletedPatterns?: DeletedCategoryPattern[]
   ): Promise<ExportResult> {
     const exportBlocks = blocks
       .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
@@ -149,7 +166,11 @@ export class ExportService {
       }
 
       // Use corrected text if available, otherwise original
-      const blockText = textCorrections?.get(block.id) ?? block.text;
+      let blockText = textCorrections?.get(block.id) ?? block.text;
+      // Strip deleted custom category patterns first
+      if (deletedPatterns && deletedPatterns.length > 0) {
+        blockText = this.stripDeletedPatterns(blockText, deletedPatterns);
+      }
       const cleanedText = this.stripFootnoteRefs(blockText);
       if (cleanedText.trim()) {
         pageMap.get(block.page)!.push(`<p>${this.escapeHtml(cleanedText)}</p>`);
@@ -192,7 +213,8 @@ export class ExportService {
     chapters: Chapter[],
     pdfName: string,
     textCorrections?: Map<string, string>,
-    deletedPages?: Set<number>
+    deletedPages?: Set<number>,
+    deletedPatterns?: DeletedCategoryPattern[]
   ): Promise<ExportResult> {
     const exportBlocks = blocks
       .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
@@ -245,7 +267,11 @@ export class ExportService {
       }
 
       // Add block to current chapter
-      const blockText = textCorrections?.get(block.id) ?? block.text;
+      let blockText = textCorrections?.get(block.id) ?? block.text;
+      // Strip deleted custom category patterns first
+      if (deletedPatterns && deletedPatterns.length > 0) {
+        blockText = this.stripDeletedPatterns(blockText, deletedPatterns);
+      }
       const cleanedText = this.stripFootnoteRefs(blockText);
       if (cleanedText.trim()) {
         currentContent.push(`<p>${this.escapeHtml(cleanedText)}</p>`);
@@ -301,33 +327,42 @@ export class ExportService {
   ): Promise<ExportResult> {
     const deletedRegions: DeletedRegion[] = [];
     const ocrBlocks: OcrTextBlock[] = [];
-    let hasDeletedImages = false;
+
+    // Track which specific pages have deleted images (not just a global flag)
+    const pagesWithDeletedImages = new Set<number>();
 
     // Add deleted blocks and check for deleted images (skip blocks on deleted pages)
     for (const block of blocks) {
       if (deletedPages?.has(block.page)) continue; // Skip blocks on deleted pages
       if (deletedBlockIds.has(block.id)) {
+        // Use corrected text if available
+        const text = textCorrections?.get(block.id) ?? block.text;
         deletedRegions.push({
           page: block.page,
           x: block.x,
           y: block.y,
           width: block.width,
           height: block.height,
-          isImage: block.is_image
+          isImage: block.is_image,
+          text: text  // Include text for content-based matching in PDF export
         });
         if (block.is_image) {
-          hasDeletedImages = true;
+          pagesWithDeletedImages.add(block.page);
         }
       }
     }
 
-    // If images were deleted, collect ALL non-deleted text blocks to embed
-    // This ensures text survives when scanned page images are removed.
-    // Handles both: OCR blocks created by BookForge AND pre-existing text layers
-    if (hasDeletedImages) {
+    // If images were deleted, collect ONLY actual OCR blocks from pages with deleted images.
+    // OCR blocks (is_ocr: true) contain text recognized from scanned images that would
+    // otherwise be lost when the image is removed. We DON'T collect regular text blocks
+    // because they already exist as text layers in the PDF and would cause duplication.
+    if (pagesWithDeletedImages.size > 0) {
       for (const block of blocks) {
         if (deletedPages?.has(block.page)) continue; // Skip blocks on deleted pages
-        if (!block.is_image && !deletedBlockIds.has(block.id)) {
+        // Only add OCR text for pages that actually had images deleted
+        if (!pagesWithDeletedImages.has(block.page)) continue;
+        // Only collect actual OCR blocks, not regular text blocks
+        if (block.is_ocr && !deletedBlockIds.has(block.id)) {
           // Use corrected text if available
           const text = textCorrections?.get(block.id) ?? block.text;
           ocrBlocks.push({
@@ -357,7 +392,8 @@ export class ExportService {
                 x: rect.x,
                 y: rect.y,
                 width: rect.w,
-                height: rect.h
+                height: rect.h,
+                text: rect.text  // Include text for content-based matching
               });
             }
           }
@@ -379,29 +415,14 @@ export class ExportService {
       };
     }
 
-    // When we have deleted images AND OCR text, use re-rendering approach
-    // This reliably embeds OCR text by creating a new PDF from rendered pages
-    // (the standard redaction approach has issues with mupdf content streams)
-    let pdfBase64: string;
-    if (hasDeletedImages && ocrBlocks.length > 0) {
-      pdfBase64 = await this.pdfService.exportPdfRerendered(deletedRegions, ocrBlocks);
-    } else {
-      pdfBase64 = await this.pdfService.exportCleanPdf(libraryPath, deletedRegions, ocrBlocks);
-    }
+    // Use standard redaction-based export with bookmarks handled by PyMuPDF bridge
+    // The bridge handles page remapping for bookmarks internally
+    const pdfBase64 = await this.pdfService.exportCleanPdf(libraryPath, deletedRegions, ocrBlocks, deletedPages, chapters);
 
-    // Add chapter bookmarks if chapters are provided
-    // Filter out chapters on deleted pages and adjust page numbers
-    let bookmarksAdded = 0;
-    if (chapters && chapters.length > 0) {
-      const exportChapters = chapters.filter(c => !deletedPages?.has(c.page));
-      if (exportChapters.length > 0) {
-        const pdfWithBookmarks = await this.pdfService.addBookmarksToPdf(pdfBase64, exportChapters);
-        if (pdfWithBookmarks) {
-          pdfBase64 = pdfWithBookmarks;
-          bookmarksAdded = exportChapters.length;
-        }
-      }
-    }
+    // Count bookmarks that will be added (chapters not on deleted pages)
+    const bookmarksAdded = chapters
+      ? chapters.filter(c => !deletedPages?.has(c.page)).length
+      : 0;
 
     const binaryString = atob(pdfBase64);
     const bytes = new Uint8Array(binaryString.length);
@@ -423,6 +444,165 @@ export class ExportService {
       regionCount: deletedRegions.length,
       chapterCount: bookmarksAdded
     };
+  }
+
+  /**
+   * Export content to EPUB and add to audiobook producer queue
+   * Creates EPUB with chapter structure, copies to queue, and navigates to audiobook producer
+   */
+  async exportToAudiobook(
+    blocks: ExportableBlock[],
+    deletedIds: Set<string>,
+    chapters: Chapter[],
+    pdfName: string,
+    textCorrections?: Map<string, string>,
+    deletedPages?: Set<number>,
+    deletedPatterns?: DeletedCategoryPattern[],
+    navigateAfter: boolean = true
+  ): Promise<ExportResult> {
+    if (!this.electron) {
+      return {
+        success: false,
+        message: 'Audiobook export is only available in Electron'
+      };
+    }
+
+    const exportBlocks = blocks
+      .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
+      .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
+
+    // Filter out chapters on deleted pages
+    const exportChapters = chapters.filter(c => !deletedPages?.has(c.page));
+
+    if (exportBlocks.length === 0) {
+      return {
+        success: false,
+        message: 'No text to export. All blocks have been deleted.'
+      };
+    }
+
+    const bookTitle = pdfName.replace(/\.(pdf|epub)$/i, '');
+
+    // Sort chapters by page and position (using filtered chapters)
+    const sortedChapters = [...exportChapters].sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return (a.y || 0) - (b.y || 0);
+    });
+
+    // Group blocks by chapter
+    const chapterSections: { title: string; level: number; content: string[] }[] = [];
+    let currentChapterIndex = 0;
+    let currentContent: string[] = [];
+    let currentTitle = 'Introduction'; // Default for content before first chapter
+
+    for (const block of exportBlocks) {
+      // Check if we've reached a new chapter
+      while (
+        currentChapterIndex < sortedChapters.length &&
+        (block.page > sortedChapters[currentChapterIndex].page ||
+         (block.page === sortedChapters[currentChapterIndex].page &&
+          block.y >= (sortedChapters[currentChapterIndex].y || 0)))
+      ) {
+        // Save previous chapter content
+        if (currentContent.length > 0) {
+          chapterSections.push({
+            title: currentTitle,
+            level: currentChapterIndex === 0 ? 1 : (sortedChapters[currentChapterIndex - 1]?.level || 1),
+            content: currentContent
+          });
+        }
+        // Start new chapter
+        currentTitle = sortedChapters[currentChapterIndex].title;
+        currentContent = [];
+        currentChapterIndex++;
+      }
+
+      // Add block to current chapter
+      let blockText = textCorrections?.get(block.id) ?? block.text;
+      // Strip deleted custom category patterns first
+      if (deletedPatterns && deletedPatterns.length > 0) {
+        blockText = this.stripDeletedPatterns(blockText, deletedPatterns);
+      }
+      const cleanedText = this.stripFootnoteRefs(blockText);
+      if (cleanedText.trim()) {
+        currentContent.push(`<p>${this.escapeHtml(cleanedText)}</p>`);
+      }
+    }
+
+    // Don't forget the last chapter
+    if (currentContent.length > 0) {
+      chapterSections.push({
+        title: currentTitle,
+        level: sortedChapters.length > 0 ? (sortedChapters[sortedChapters.length - 1]?.level || 1) : 1,
+        content: currentContent
+      });
+    }
+
+    if (chapterSections.length === 0) {
+      return {
+        success: false,
+        message: 'No content to export after organizing by chapters.'
+      };
+    }
+
+    // Generate the EPUB blob
+    const epub = this.generateEpubBlobWithChapters(bookTitle, chapterSections);
+    const filename = this.generateFilename(pdfName, 'epub');
+
+    // Convert blob to array buffer then to base64
+    const arrayBuffer = await epub.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+
+    // Write to a temporary file in the system temp directory
+    // Then copy to the audiobook queue
+    try {
+      // First check if the queue path is available
+      const pathResult = await this.electron.library.getAudiobooksPath();
+      if (!pathResult.success || !pathResult.queuePath) {
+        return {
+          success: false,
+          message: 'Library not configured. Please complete the onboarding setup first.'
+        };
+      }
+
+      // Save EPUB to a temporary location, then copy to queue
+      // For now, we'll use the downloads mechanism as a workaround
+      // and then copy the file to the queue
+      // TODO: Implement direct IPC-based file writing
+
+      // Create a data URL from the bytes
+      const base64 = btoa(String.fromCharCode(...bytes));
+      const dataUrl = `data:application/epub+zip;base64,${base64}`;
+
+      // Copy to queue using IPC
+      const copyResult = await this.electron.library.copyToQueue(dataUrl, filename);
+
+      if (!copyResult.success) {
+        return {
+          success: false,
+          message: copyResult.error || 'Failed to copy EPUB to audiobook queue'
+        };
+      }
+
+      // Navigate to audiobook producer if requested
+      if (navigateAfter) {
+        this.router.navigate(['/audiobook']);
+      }
+
+      return {
+        success: true,
+        message: `Exported EPUB with ${chapterSections.length} chapters to Audiobook Producer.`,
+        filename,
+        chapterCount: chapterSections.length,
+        blockCount: exportBlocks.length
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      return {
+        success: false,
+        message: `Failed to export to audiobook: ${message}`
+      };
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -467,6 +647,36 @@ export class ExportService {
     cleaned = cleaned.replace(/  +/g, ' ');
 
     return cleaned.trim();
+  }
+
+  /**
+   * Strip matches of deleted custom category patterns from text
+   */
+  private stripDeletedPatterns(text: string, patterns: DeletedCategoryPattern[]): string {
+    let result = text;
+
+    for (const patternDef of patterns) {
+      try {
+        let patternStr = patternDef.pattern;
+
+        // If literal mode, escape regex special characters
+        if (patternDef.literalMode) {
+          patternStr = patternStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+
+        const flags = patternDef.caseSensitive ? 'g' : 'gi';
+        const regex = new RegExp(patternStr, flags);
+        result = result.replace(regex, '');
+      } catch (e) {
+        // Invalid regex pattern, skip it
+        console.warn('Invalid regex pattern in deleted category:', patternDef.pattern, e);
+      }
+    }
+
+    // Clean up any double spaces left behind
+    result = result.replace(/  +/g, ' ');
+
+    return result;
   }
 
   private escapeHtml(text: string): string {

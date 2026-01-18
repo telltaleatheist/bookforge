@@ -9,6 +9,8 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { pdfBridgeManager, RedactionRegion, Bookmark } from './pdf-bridge';
+import { PyMuPdfBridge, BinaryPdfBridge } from './pdf-pymupdf-bridge';
 
 const execAsync = promisify(exec);
 
@@ -121,6 +123,7 @@ export interface DeletedRegion {
   width: number;
   height: number;
   isImage?: boolean;
+  text?: string;  // Text content for matching (more reliable than position)
 }
 
 // OCR text block for embedding in exported PDF
@@ -867,6 +870,7 @@ export class PDFAnalyzer {
     const isItalic = fontLower.includes('italic') || fontLower.includes('oblique');
 
     // Create character-level spans for precise selection (e.g., footnote numbers)
+    // Keep in screen coordinates (Y=0 at top) for viewer display
     for (const char of chars) {
       // Skip whitespace
       if (char.char === ' ' || char.char === '\t' || char.char === '\n') continue;
@@ -1879,190 +1883,244 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Export a cleaned PDF with deleted regions removed
-   * Note: Only works with PDF files (redaction is PDF-specific)
-   *
-   * Image regions are redacted separately with text_method=0 to preserve
-   * any text that might overlap the image area.
-   *
-   * When ocrBlocks are provided and images are deleted, the OCR text is embedded
-   * into the PDF to replace the deleted image content.
+   * Initialize PDF bridge for redaction operations
+   * Call this once at startup
    */
+  async initializePdfBridge(): Promise<void> {
+    // Register bridges in order of preference
+    pdfBridgeManager.register(new BinaryPdfBridge());  // Prefer compiled binary if available
+    pdfBridgeManager.register(new PyMuPdfBridge());    // Fall back to Python subprocess
+
+    try {
+      await pdfBridgeManager.initialize();
+    } catch (e) {
+      console.warn('[PDFAnalyzer] No PDF bridge available for redaction:', e);
+      // Don't throw - redaction will fail gracefully when attempted
+    }
+  }
+
+  // Simplified chapter type for bookmarks (only fields needed for export)
   async exportPdf(
     pdfPath: string,
     deletedRegions: DeletedRegion[],
-    ocrBlocks?: OcrTextBlock[]
+    ocrBlocks?: OcrTextBlock[],
+    deletedPages?: Set<number>,
+    chapters?: Array<{title: string; page: number; level: number}>
+  ): Promise<string> {
+    // Use PDF bridge for reliable redaction
+    // mupdf.js redaction API has a bug where text is not actually removed
+
+    // Initialize bridge if not already done
+    if (!pdfBridgeManager.isInitialized()) {
+      await this.initializePdfBridge();
+    }
+
+    // Convert regions to bridge format
+    const regions: RedactionRegion[] = deletedRegions.map(r => ({
+      page: r.page,
+      x: r.x,
+      y: r.y,
+      width: r.width,
+      height: r.height,
+      isImage: r.isImage || false
+    }));
+
+    // Convert chapters to bookmarks with remapped page numbers
+    let bookmarks: Bookmark[] = [];
+    if (chapters && chapters.length > 0 && deletedPages && deletedPages.size > 0) {
+      // Create page mapping: original page -> new page number (after deletions)
+      const pageMapping = new Map<number, number>();
+      let newPageNum = 0;
+      // Estimate max page from regions and chapters
+      const maxPage = Math.max(
+        ...regions.map(r => r.page),
+        ...chapters.map(c => c.page),
+        ...(deletedPages ? Array.from(deletedPages) : [])
+      ) + 1;
+
+      for (let origPage = 0; origPage < maxPage + 100; origPage++) {
+        if (!deletedPages.has(origPage)) {
+          pageMapping.set(origPage, newPageNum);
+          newPageNum++;
+        }
+      }
+
+      // Filter chapters on deleted pages and remap page numbers
+      bookmarks = chapters
+        .filter(c => !deletedPages.has(c.page))
+        .map(c => ({
+          title: c.title,
+          page: pageMapping.get(c.page) ?? c.page,
+          level: c.level || 1
+        }));
+    } else if (chapters && chapters.length > 0) {
+      // No deleted pages, use chapters as-is
+      bookmarks = chapters.map(c => ({
+        title: c.title,
+        page: c.page,
+        level: c.level || 1
+      }));
+    }
+
+    // Use /tmp on macOS instead of os.tmpdir() which returns /var/folders/...
+    const tmpDir = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
+    const outputPath = path.join(tmpDir, `bookforge-output-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
+
+    try {
+      console.log(`[ExportPdf] Using ${pdfBridgeManager.getBridge().getName()}`);
+      console.log(`[ExportPdf] Input: ${pdfPath}`);
+      console.log(`[ExportPdf] Regions: ${regions.length}, Deleted pages: ${deletedPages?.size || 0}, Bookmarks: ${bookmarks.length}`);
+
+      // Call bridge with bookmarks
+      await pdfBridgeManager.getBridge().redact(
+        pdfPath,
+        outputPath,
+        regions,
+        {
+          deletedPages: deletedPages ? Array.from(deletedPages) : [],
+          bookmarks: bookmarks
+        }
+      );
+
+      // Read the output PDF
+      const outputData = await fsPromises.readFile(outputPath);
+
+      // If we have OCR blocks to embed, do that with mupdf.js
+      // (Bridge handled redaction and bookmarks, mupdf.js can handle text addition)
+      if (ocrBlocks && ocrBlocks.length > 0) {
+        const finalData = await this.embedOcrText(outputData, ocrBlocks, deletedPages);
+        return finalData;
+      }
+
+      // Return base64 encoded PDF
+      return outputData.toString('base64');
+
+    } finally {
+      // Clean up temp file
+      try {
+        await fsPromises.unlink(outputPath);
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  /**
+   * Embed OCR text blocks into a PDF using mupdf.js
+   * Called after PyMuPDF redaction to add back OCR text for scanned pages
+   */
+  private async embedOcrText(
+    pdfData: Buffer,
+    ocrBlocks: OcrTextBlock[],
+    deletedPages?: Set<number>
   ): Promise<string> {
     const mupdfLib = await getMupdf();
-    const data = fs.readFileSync(pdfPath);
-    const mimeType = getMimeType(pdfPath);
-    const doc = mupdfLib.Document.openDocument(data, mimeType);
+    const doc = mupdfLib.Document.openDocument(pdfData, 'application/pdf');
     const pdfDoc = doc.asPDF();
 
     if (!pdfDoc) {
-      throw new Error('Source must be a PDF file for PDF export with redactions');
+      return pdfData.toString('base64');
     }
 
-    // Separate image and text regions, grouped by page
-    const imageRegionsByPage = new Map<number, DeletedRegion[]>();
-    const textRegionsByPage = new Map<number, DeletedRegion[]>();
+    const totalPages = pdfDoc.countPages();
 
-    for (const region of deletedRegions) {
-      const targetMap = region.isImage ? imageRegionsByPage : textRegionsByPage;
-      if (!targetMap.has(region.page)) {
-        targetMap.set(region.page, []);
+    // Create page mapping (after deletions)
+    const pageMapping = new Map<number, number>();
+    let newPageNum = 0;
+    // We need to know the original page count before deletions
+    // Since PyMuPDF already deleted pages, we work with the current document
+    // The ocrBlocks have original page numbers, but PyMuPDF has already remapped them
+    // So we need to recalculate based on deleted pages
+
+    // Build mapping from original page -> new page
+    let origPageCount = totalPages + (deletedPages?.size || 0);
+    for (let origPage = 0; origPage < origPageCount; origPage++) {
+      if (!deletedPages?.has(origPage)) {
+        pageMapping.set(origPage, newPageNum);
+        newPageNum++;
       }
-      targetMap.get(region.page)!.push(region);
     }
 
-    // Group OCR blocks by page
+    // Group OCR blocks by mapped page number
     const ocrByPage = new Map<number, OcrTextBlock[]>();
-    if (ocrBlocks && ocrBlocks.length > 0) {
-      for (const block of ocrBlocks) {
-        if (!ocrByPage.has(block.page)) {
-          ocrByPage.set(block.page, []);
-        }
-        ocrByPage.get(block.page)!.push(block);
+    for (const block of ocrBlocks) {
+      if (deletedPages?.has(block.page)) continue;
+
+      const mappedPage = pageMapping.get(block.page);
+      if (mappedPage === undefined || mappedPage >= totalPages) continue;
+
+      if (!ocrByPage.has(mappedPage)) {
+        ocrByPage.set(mappedPage, []);
       }
+      ocrByPage.get(mappedPage)!.push(block);
     }
 
-    // Get all unique page numbers
-    const allPages = new Set([...imageRegionsByPage.keys(), ...textRegionsByPage.keys()]);
-
-    // Track pages that need OCR text added
-    const pagesNeedingOcrText: number[] = [];
-
-    // Process each page
-    for (const pageNum of allPages) {
-      if (pageNum >= pdfDoc.countPages()) continue;
-
-      const page = pdfDoc.loadPage(pageNum) as any; // PDFPage type
-
-      // First pass: Apply image-only redactions (preserve text)
-      const imageRegions = imageRegionsByPage.get(pageNum) || [];
-      if (imageRegions.length > 0) {
-        for (const region of imageRegions) {
-          const rect: [number, number, number, number] = [
-            region.x,
-            region.y,
-            region.x + region.width,
-            region.y + region.height,
-          ];
-          const annot = page.createAnnotation('Redact');
-          annot.setRect(rect);
-        }
-        // Apply with: no black boxes, redact images, no line art, NO text
-        // This preserves any text that overlaps the image
-        page.applyRedactions(false, 2, 0, 0);
-
-        // Mark this page as needing OCR text if OCR blocks exist for it
-        if (ocrByPage.has(pageNum)) {
-          pagesNeedingOcrText.push(pageNum);
-        }
-      }
-
-      // Second pass: Apply text redactions (normal behavior)
-      const textRegions = textRegionsByPage.get(pageNum) || [];
-      if (textRegions.length > 0) {
-        for (const region of textRegions) {
-          const rect: [number, number, number, number] = [
-            region.x,
-            region.y,
-            region.x + region.width,
-            region.y + region.height,
-          ];
-          const annot = page.createAnnotation('Redact');
-          annot.setRect(rect);
-        }
-        // Apply with: no black boxes, redact images, line art, AND text
-        page.applyRedactions(false, 2, 2, 2);
-      }
+    if (ocrByPage.size === 0) {
+      return pdfData.toString('base64');
     }
 
-    // Add OCR text to pages where images were deleted
-    // We need to add a Helvetica font to the document first
-    if (pagesNeedingOcrText.length > 0) {
-      // Create font dictionary for Helvetica
-      const fontDict = pdfDoc.addObject({
-        Type: 'Font',
-        Subtype: 'Type1',
-        BaseFont: 'Helvetica',
-        Encoding: 'WinAnsiEncoding'
-      });
+    // Create font dictionary for Helvetica
+    const fontDict = pdfDoc.addObject({
+      Type: 'Font',
+      Subtype: 'Type1',
+      BaseFont: 'Helvetica',
+      Encoding: 'WinAnsiEncoding'
+    });
 
-      for (const pageNum of pagesNeedingOcrText) {
-        const pageOcrBlocks = ocrByPage.get(pageNum) || [];
-        if (pageOcrBlocks.length === 0) continue;
+    for (const [pageNum, pageOcrBlocks] of ocrByPage) {
+      if (pageOcrBlocks.length === 0) continue;
 
-        const page = pdfDoc.loadPage(pageNum) as any;
-        const bounds = page.getBounds();
-        const pageHeight = bounds[3] - bounds[1];
+      const page = pdfDoc.loadPage(pageNum) as any;
+      const bounds = page.getBounds();
+      const pageHeight = bounds[3] - bounds[1];
 
-        // Build text content stream
-        let textContent = 'BT\n';  // Begin text
+      // Build text content stream
+      let textContent = 'BT\n';
 
-        for (const block of pageOcrBlocks) {
-          // Escape special characters in PDF string
-          const escapedText = block.text
-            .replace(/\\/g, '\\\\')
-            .replace(/\(/g, '\\(')
-            .replace(/\)/g, '\\)');
+      for (const block of pageOcrBlocks) {
+        const escapedText = block.text
+          .replace(/\\/g, '\\\\')
+          .replace(/\(/g, '\\(')
+          .replace(/\)/g, '\\)');
 
-          // Calculate position (PDF coordinates: origin at bottom-left, y increases upward)
-          // OCR coordinates: origin at top-left, y increases downward
-          const fontSize = Math.max(8, Math.min(block.font_size || 12, 24));
-          const x = block.x;
-          const y = pageHeight - block.y - block.height;  // Flip y-axis
+        const fontSize = Math.max(8, Math.min(block.font_size || 12, 24));
+        const x = block.x;
+        const y = pageHeight - block.y - block.height;
 
-          // Add text positioning and drawing
-          textContent += `/F1 ${fontSize} Tf\n`;
-          textContent += `1 0 0 1 ${x.toFixed(2)} ${y.toFixed(2)} Tm\n`;
-          textContent += `(${escapedText}) Tj\n`;
-        }
+        textContent += `/F1 ${fontSize} Tf\n`;
+        textContent += `1 0 0 1 ${x.toFixed(2)} ${y.toFixed(2)} Tm\n`;
+        textContent += `(${escapedText}) Tj\n`;
+      }
 
-        textContent += 'ET\n';  // End text
+      textContent += 'ET\n';
 
-        // Add the text content as a new content stream
-        // First, add font to page resources
-        const pageObj = pdfDoc.findPage(pageNum);
-        const resources = pageObj.get('Resources');
+      // Add font to page resources
+      const pageObj = pdfDoc.findPage(pageNum);
+      const resources = pageObj.get('Resources');
 
-        // Get or create Font dictionary in resources
-        let fonts = resources.get('Font');
-        if (!fonts || fonts.isNull()) {
-          fonts = pdfDoc.addObject({});
-          resources.put('Font', fonts);
-        }
+      let fonts = resources.get('Font');
+      if (!fonts || fonts.isNull()) {
+        fonts = pdfDoc.addObject({});
+        resources.put('Font', fonts);
+      }
+      fonts.put('F1', fontDict);
 
-        // Add our font as F1
-        fonts.put('F1', fontDict);
+      // Create and append content stream
+      const textStream = pdfDoc.addStream(textContent, {});
+      const existingContents = pageObj.get('Contents');
 
-        // Create new content stream with OCR text
-        const textStream = pdfDoc.addStream(textContent, {});
-
-        // Append to existing page contents
-        const existingContents = pageObj.get('Contents');
-        if (existingContents && !existingContents.isNull()) {
-          if (existingContents.isArray()) {
-            // Contents is already an array, append to it
-            existingContents.push(textStream);
-          } else {
-            // Contents is a single stream, convert to array
-            const newContents = pdfDoc.addObject([existingContents, textStream]);
-            pageObj.put('Contents', newContents);
-          }
+      if (existingContents && !existingContents.isNull()) {
+        if (existingContents.isArray()) {
+          existingContents.push(textStream);
         } else {
-          // No existing contents, set our stream
-          pageObj.put('Contents', textStream);
+          const newContents = pdfDoc.addObject([existingContents, textStream]);
+          pageObj.put('Contents', newContents);
         }
+      } else {
+        pageObj.put('Contents', textStream);
       }
     }
 
-    // Save to buffer
-    const buffer = pdfDoc.saveToBuffer('compress');
-    const base64 = Buffer.from(buffer.asUint8Array()).toString('base64');
-
-    return base64;
+    const buffer = pdfDoc.saveToBuffer('garbage,compress');
+    return Buffer.from(buffer.asUint8Array()).toString('base64');
   }
 
   /**
@@ -2075,7 +2133,8 @@ export class PDFAnalyzer {
     scale: number = 2.0,
     progressCallback?: (current: number, total: number) => void,
     deletedRegions?: DeletedRegion[],
-    ocrBlocks?: OcrTextBlock[]
+    ocrBlocks?: OcrTextBlock[],
+    deletedPages?: Set<number>
   ): Promise<string> {
     const mupdfLib = await getMupdf();
 
@@ -2085,10 +2144,16 @@ export class PDFAnalyzer {
 
     const totalPages = this.doc.countPages();
 
-    // Group deleted regions by page for efficient lookup
+    // Calculate how many pages will be in the output (for progress reporting)
+    const outputPageCount = deletedPages ? totalPages - deletedPages.size : totalPages;
+
+    // Group deleted regions by page for efficient lookup (using original page numbers)
     const regionsByPage = new Map<number, DeletedRegion[]>();
     if (deletedRegions && deletedRegions.length > 0) {
       for (const region of deletedRegions) {
+        // Skip regions on deleted pages
+        if (deletedPages?.has(region.page)) continue;
+
         if (!regionsByPage.has(region.page)) {
           regionsByPage.set(region.page, []);
         }
@@ -2096,10 +2161,13 @@ export class PDFAnalyzer {
       }
     }
 
-    // Group OCR blocks by page
+    // Group OCR blocks by page (using original page numbers)
     const ocrByPage = new Map<number, OcrTextBlock[]>();
     if (ocrBlocks && ocrBlocks.length > 0) {
       for (const block of ocrBlocks) {
+        // Skip OCR blocks on deleted pages
+        if (deletedPages?.has(block.page)) continue;
+
         if (!ocrByPage.has(block.page)) {
           ocrByPage.set(block.page, []);
         }
@@ -2110,12 +2178,19 @@ export class PDFAnalyzer {
     // Create a new PDF document
     const outputDoc = new mupdfLib.PDFDocument() as any;
 
-    // Process each page
+    // Process each page (skipping deleted pages)
+    let outputPageNum = 0;
     for (let pageNum = 0; pageNum < totalPages; pageNum++) {
+      // Skip deleted pages
+      if (deletedPages?.has(pageNum)) {
+        continue;
+      }
+
       // Report progress
       if (progressCallback) {
-        progressCallback(pageNum, totalPages);
+        progressCallback(outputPageNum, outputPageCount);
       }
+      outputPageNum++;
 
       // Check if this page has deleted regions
       const pageRegions = regionsByPage.get(pageNum) || [];
@@ -2126,53 +2201,39 @@ export class PDFAnalyzer {
         const imageRegions = pageRegions.filter(r => r.isImage);
         const textRegions = pageRegions.filter(r => !r.isImage);
 
-        // Load a fresh copy of the PDF and apply redactions before rendering
-        const data = fs.readFileSync(this.pdfPath);
-        const mimeType = getMimeType(this.pdfPath);
-        const tempDoc = mupdfLib.Document.openDocument(data, mimeType);
-        const pdfDoc = tempDoc.asPDF();
+        // Render the page first
+        const page = this.doc.loadPage(pageNum);
+        const matrix = mupdfLib.Matrix.scale(scale, scale);
+        pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
 
-        if (pdfDoc) {
-          const pdfPage = pdfDoc.loadPage(pageNum) as any; // PDFPage type
+        // Manually paint white over ALL redaction regions (both image and text)
+        // This bypasses mupdf's unreliable redaction and works at the pixel level
+        const allRegions = [...imageRegions, ...textRegions];
+        if (allRegions.length > 0) {
+          const width = pixmap.getWidth();
+          const height = pixmap.getHeight();
+          const n = pixmap.getNumberOfComponents();
+          const samples = pixmap.getPixels();
 
-          // First pass: Apply image-only redactions (preserve text)
-          if (imageRegions.length > 0) {
-            for (const region of imageRegions) {
-              const rect: [number, number, number, number] = [
-                region.x,
-                region.y,
-                region.x + region.width,
-                region.y + region.height,
-              ];
-              const annot = pdfPage.createAnnotation('Redact');
-              annot.setRect(rect);
+          for (const region of allRegions) {
+            // Scale coordinates to match rendered resolution
+            const x1 = Math.floor(region.x * scale);
+            const y1 = Math.floor(region.y * scale);
+            const x2 = Math.ceil((region.x + region.width) * scale);
+            const y2 = Math.ceil((region.y + region.height) * scale);
+
+            // Paint white pixels in the region
+            for (let y = Math.max(0, y1); y < Math.min(height, y2); y++) {
+              for (let x = Math.max(0, x1); x < Math.min(width, x2); x++) {
+                const idx = (y * width + x) * n;
+                samples[idx] = 255;     // R
+                samples[idx + 1] = 255; // G
+                samples[idx + 2] = 255; // B
+                if (n > 3) samples[idx + 3] = 255; // A if present
+              }
             }
-            // Apply with: no black boxes, redact images, no line art, NO text
-            // This preserves any text that overlaps the image
-            pdfPage.applyRedactions(false, 2, 0, 0);
-          }
-
-          // Second pass: Apply text redactions (normal behavior)
-          if (textRegions.length > 0) {
-            for (const region of textRegions) {
-              const rect: [number, number, number, number] = [
-                region.x,
-                region.y,
-                region.x + region.width,
-                region.y + region.height,
-              ];
-              const annot = pdfPage.createAnnotation('Redact');
-              annot.setRect(rect);
-            }
-            // Apply with: no black boxes, redact images, line art, AND text
-            pdfPage.applyRedactions(false, 2, 2, 2);
           }
         }
-
-        // Render the page with redactions applied
-        const renderPage = tempDoc.loadPage(pageNum);
-        const matrix = mupdfLib.Matrix.scale(scale, scale);
-        pixmap = renderPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
       } else {
         // Render page normally (no redactions needed)
         const page = this.doc.loadPage(pageNum);

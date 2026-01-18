@@ -1489,6 +1489,7 @@ export class PdfViewerComponent implements AfterViewInit {
   selectLikeThis = output<TextBlock>();
   deleteLikeThis = output<TextBlock>();
   deleteBlock = output<string>();
+  highlightClick = output<{ catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();  // Click on category highlight
   revertBlock = output<string>();  // Revert text correction
   zoomChange = output<'in' | 'out'>();
   selectAllOnPage = output<number>();
@@ -2347,12 +2348,59 @@ export class PdfViewerComponent implements AfterViewInit {
       return;
     }
 
+    // Click-through selection: if block is already selected and there's a highlight underneath,
+    // emit highlightClick instead to allow cycling through overlapping elements
+    if (this.isSelected(block.id) && this.editorMode() === 'select') {
+      const highlight = this.findHighlightAtClick(event, block.page);
+      if (highlight) {
+        this.highlightClick.emit({
+          catId: highlight.catId,
+          rect: highlight.rect,
+          pageNum: block.page,
+          shiftKey: event.shiftKey,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey
+        });
+        return;
+      }
+    }
+
     this.blockClick.emit({
       block,
       shiftKey: event.shiftKey,
       metaKey: event.metaKey,
       ctrlKey: event.ctrlKey
     });
+  }
+
+  /**
+   * Find a highlight at the click position on the given page.
+   * Used for click-through selection when clicking an already-selected block.
+   */
+  private findHighlightAtClick(event: MouseEvent, pageNum: number): { catId: string; rect: { x: number; y: number; w: number; h: number; text: string } } | null {
+    // Get the SVG element from the event target
+    const target = event.target as SVGElement;
+    const svg = target.closest('svg');
+    if (!svg) return null;
+
+    // Convert click position to SVG coordinates
+    const pt = svg.createSVGPoint();
+    pt.x = event.clientX;
+    pt.y = event.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const svgP = pt.matrixTransform(ctm.inverse());
+
+    // Get highlights for this page and check which one contains the click point
+    const highlights = this.getHighlightsForPage(pageNum);
+    for (const highlight of highlights) {
+      const { x, y, w, h } = highlight.rect;
+      if (svgP.x >= x && svgP.x <= x + w && svgP.y >= y && svgP.y <= y + h) {
+        return { catId: highlight.catId, rect: highlight.rect };
+      }
+    }
+
+    return null;
   }
 
   onBlockDoubleClick(event: MouseEvent, block: TextBlock): void {
@@ -2448,7 +2496,7 @@ export class PdfViewerComponent implements AfterViewInit {
 
   // Accumulated scroll delta for smoother zoom
   private scrollDeltaAccumulator = 0;
-  private readonly SCROLL_THRESHOLD = 50; // Pixels of scroll needed to trigger zoom
+  private readonly SCROLL_THRESHOLD = 150; // Pixels of scroll needed to trigger zoom (higher = less sensitive)
 
   onWheel(event: WheelEvent): void {
     // Cmd/Ctrl + scroll for zoom

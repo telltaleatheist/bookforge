@@ -436,10 +436,12 @@ export class ElectronService {
   async exportCleanPdf(
     pdfPath: string,
     deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
-    ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>
+    ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>,
+    deletedPages?: number[],
+    chapters?: Array<{ title: string; page: number; level: number }>
   ): Promise<string> {
     if (this.isElectron) {
-      const result: PdfExportResult = await (window as any).electron.pdf.exportPdf(pdfPath, deletedRegions, ocrBlocks);
+      const result: PdfExportResult = await (window as any).electron.pdf.exportPdf(pdfPath, deletedRegions, ocrBlocks, deletedPages, chapters);
       if (result.success && result.data?.pdf_base64) {
         return result.data.pdf_base64;
       }
@@ -459,10 +461,11 @@ export class ElectronService {
   async exportPdfNoBackgrounds(
     scale: number = 2.0,
     deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
-    ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>
+    ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>,
+    deletedPages?: number[]
   ): Promise<string> {
     if (this.isElectron) {
-      const result: PdfExportResult = await (window as any).electron.pdf.exportPdfNoBackgrounds(scale, deletedRegions, ocrBlocks);
+      const result: PdfExportResult = await (window as any).electron.pdf.exportPdfNoBackgrounds(scale, deletedRegions, ocrBlocks, deletedPages);
       if (result.success && result.data?.pdf_base64) {
         return result.data.pdf_base64;
       }

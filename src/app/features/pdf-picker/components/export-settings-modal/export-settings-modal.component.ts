@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 
-export type ExportFormat = 'pdf' | 'epub' | 'txt';
+export type ExportFormat = 'pdf' | 'epub' | 'txt' | 'audiobook';
 
 export interface ExportSettings {
   format: ExportFormat;
@@ -76,7 +76,29 @@ export interface ExportResult {
                 </svg>
                 <span>TXT</span>
               </button>
+              <button
+                class="format-btn"
+                [class.active]="format() === 'audiobook'"
+                (click)="format.set('audiobook')"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <circle cx="12" cy="12" r="10"/>
+                  <circle cx="12" cy="12" r="4"/>
+                  <path d="M12 8v4l3 3"/>
+                </svg>
+                <span>Audiobook</span>
+              </button>
             </div>
+
+            <!-- Audiobook info -->
+            @if (format() === 'audiobook') {
+              <div class="setting-row audiobook-info">
+                <div class="setting-info">
+                  <label>Export to Audiobook Producer</label>
+                  <p>Creates an EPUB with chapters and adds it to your Audiobook Producer queue for TTS conversion.</p>
+                </div>
+              </div>
+            }
 
             <!-- Quality setting (only shown for PDF when backgrounds are removed) -->
             @if (format() === 'pdf' && removeBackgrounds()) {
@@ -130,7 +152,7 @@ export interface ExportResult {
               Cancel
             </desktop-button>
             <desktop-button variant="primary" (click)="confirm()">
-              Export {{ format().toUpperCase() }}
+              {{ format() === 'audiobook' ? 'Send to Audiobook Producer' : 'Export ' + format().toUpperCase() }}
             </desktop-button>
           </div>
         </div>
@@ -405,6 +427,9 @@ export class ExportSettingsModalComponent {
     const ext = this.format();
     if (ext === 'pdf' && this.removeBackgrounds()) {
       return `${baseName}_clean.pdf`;
+    }
+    if (ext === 'audiobook') {
+      return `${baseName}.epub → Audiobook Queue`;
     }
     return `${baseName}_exported.${ext}`;
   }

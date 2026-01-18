@@ -1,4 +1,4 @@
-import { Component, OnInit, inject } from '@angular/core';
+import { Component, OnInit, inject, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterOutlet } from '@angular/router';
 import {
@@ -8,6 +8,9 @@ import {
   DesktopButtonComponent,
   DesktopThemeService
 } from './creamsicle-desktop';
+import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.component';
+import { OnboardingComponent } from './components/onboarding/onboarding.component';
+import { LibraryService } from './core/services/library.service';
 
 @Component({
   selector: 'app-root',
@@ -17,9 +20,16 @@ import {
     RouterOutlet,
     WindowChromeComponent,
     StatusBarComponent,
-    DesktopButtonComponent
+    DesktopButtonComponent,
+    NavRailComponent,
+    OnboardingComponent
   ],
   template: `
+    <!-- Onboarding wizard (shown on first launch) -->
+    @if (!libraryService.isConfigured() && !libraryService.loading()) {
+      <app-onboarding (complete)="onOnboardingComplete()" />
+    }
+
     <div class="app-container" [attr.data-theme]="themeService.resolvedTheme()">
       <desktop-window
         [showTitlebar]="true"
@@ -35,12 +45,22 @@ import {
         <!-- Titlebar Right -->
         <ng-container titlebar-right>
           <desktop-button variant="ghost" size="xs" [iconOnly]="true" (click)="toggleTheme()">
-            {{ themeService.resolvedTheme() === 'dark' ? '☀' : '☾' }}
+            {{ themeService.resolvedTheme() === 'dark' ? '&#9728;' : '&#9790;' }}
           </desktop-button>
         </ng-container>
 
-        <!-- Router Outlet - features manage their own headers -->
-        <router-outlet />
+        <!-- Main content area with nav rail -->
+        <div class="app-layout">
+          <!-- Navigation Rail -->
+          @if (libraryService.isConfigured()) {
+            <app-nav-rail [items]="navItems" />
+          }
+
+          <!-- Router Outlet - features manage their own headers -->
+          <div class="app-content">
+            <router-outlet />
+          </div>
+        </div>
 
         <!-- Status Bar -->
         <ng-container statusbar>
@@ -71,7 +91,24 @@ import {
       width: 70px; // Space for traffic lights on macOS
     }
 
-    // Make routed components fill the window body
+    .app-layout {
+      display: flex;
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .app-content {
+      flex: 1;
+      min-width: 0; // Allow flex shrinking
+      height: 100%;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    // Make routed components fill the content area
     :host ::ng-deep router-outlet + * {
       flex: 1;
       width: 100%;
@@ -80,14 +117,31 @@ import {
   `]
 })
 export class App implements OnInit {
-  themeService = inject(DesktopThemeService);
+  readonly themeService = inject(DesktopThemeService);
+  readonly libraryService = inject(LibraryService);
+
+  // Navigation items for the nav rail
+  readonly navItems: NavRailItem[] = [
+    {
+      id: 'library',
+      icon: '\u{1F4DA}', // Books emoji
+      label: 'Library',
+      route: '/library'
+    },
+    {
+      id: 'audiobook',
+      icon: '\u{1F3A7}', // Headphones emoji
+      label: 'Audio',
+      route: '/audiobook'
+    }
+  ];
 
   statusLeftItems: StatusBarItem[] = [
     { id: 'version', text: 'v1.0.0' },
   ];
 
   statusRightItems: StatusBarItem[] = [
-    { id: 'theme', text: 'System', icon: '🎨', clickable: true },
+    { id: 'theme', text: 'System', icon: '\u{1F3A8}', clickable: true },
   ];
 
   ngOnInit() {
@@ -96,5 +150,10 @@ export class App implements OnInit {
 
   toggleTheme() {
     this.themeService.toggleTheme();
+  }
+
+  onOnboardingComplete(): void {
+    // Onboarding complete - the view will update automatically
+    // because libraryService.isConfigured() is a computed signal
   }
 }

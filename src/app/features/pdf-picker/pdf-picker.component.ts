@@ -4,7 +4,7 @@ import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.s
 import { ElectronService, Chapter } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
-import { ExportService } from './services/export.service';
+import { ExportService, DeletedCategoryPattern } from './services/export.service';
 import { PageRenderService } from './services/page-render.service';
 import { OcrPostProcessorService } from './services/ocr-post-processor.service';
 import { DesktopThemeService, UiSize } from '../../creamsicle-desktop/services/theme.service';
@@ -330,6 +330,7 @@ interface AlertModal {
               (selectLikeThis)="selectLikeThis($event)"
               (deleteLikeThis)="deleteLikeThis($event)"
               (deleteBlock)="deleteBlock($event)"
+              (highlightClick)="onHighlightClick($event)"
               (revertBlock)="revertBlockText($event)"
               (zoomChange)="onZoomChange($event)"
               (selectAllOnPage)="selectAllOnPage($event)"
@@ -1926,10 +1927,10 @@ export class PdfPickerComponent {
       this.redo();
     }
 
-    // Ctrl/Cmd + O to switch to library tab
+    // Ctrl/Cmd + O to show library view
     if ((event.metaKey || event.ctrlKey) && event.key === 'o') {
       event.preventDefault();
-      this.switchToLibraryTab();
+      this.showLibraryView();
     }
 
     // Ctrl/Cmd + W to close current tab or hide window
@@ -2175,6 +2176,49 @@ export class PdfPickerComponent {
     return `${categoryId}:${page}:${Math.round(x)}:${Math.round(y)}`;
   }
 
+  /**
+   * Get patterns from deleted custom category highlights.
+   * These patterns (the actual matched text) will be used to strip matching text during EPUB export.
+   */
+  private getDeletedCategoryPatterns(): DeletedCategoryPattern[] {
+    const deletedIds = this.deletedHighlightIds();
+    if (deletedIds.size === 0) return [];
+
+    // Collect unique matched texts from deleted highlights
+    const matchedTexts = new Set<string>();
+    const highlights = this.categoryHighlights();
+
+    for (const [categoryId, pageMap] of highlights) {
+      // Only process custom categories
+      if (!categoryId.startsWith('custom_')) continue;
+
+      for (const [pageStr, rects] of Object.entries(pageMap)) {
+        const page = parseInt(pageStr);
+        for (const rect of rects) {
+          const highlightId = this.getHighlightId(categoryId, page, rect.x, rect.y);
+          if (deletedIds.has(highlightId) && rect.text) {
+            // The highlight stores the matched text - use it as a literal pattern
+            matchedTexts.add(rect.text);
+          }
+        }
+      }
+    }
+
+    if (matchedTexts.size === 0) return [];
+
+    // Convert matched texts to literal patterns
+    const patterns: DeletedCategoryPattern[] = [];
+    for (const text of matchedTexts) {
+      patterns.push({
+        pattern: text,
+        caseSensitive: true,  // Match exactly what was highlighted
+        literalMode: true     // Treat as literal text, not regex
+      });
+    }
+
+    return patterns;
+  }
+
   // Combined highlights: when regex panel is open, ONLY show regex preview (hide others)
   // Also filters out highlights for disabled categories
   readonly combinedHighlights = computed<CategoryHighlights>(() => {
@@ -2300,32 +2344,18 @@ export class PdfPickerComponent {
   readonly openDocuments = signal<OpenDocument[]>([]);
   readonly activeDocumentId = signal<string | null>(null);
 
-  // Special library tab ID
-  private readonly LIBRARY_TAB_ID = '__library__';
+  // Computed: active tab ID for tab bar
+  readonly activeTabId = computed(() => this.activeDocumentId());
 
-  // Computed: active tab ID for tab bar (returns LIBRARY_TAB_ID when no document active)
-  readonly activeTabId = computed(() => this.activeDocumentId() || this.LIBRARY_TAB_ID);
-
-  // Computed: tabs for tab bar (Library tab + open documents)
+  // Computed: tabs for tab bar (open documents only)
   readonly documentTabs = computed<DocumentTab[]>(() => {
-    const libraryTab: DocumentTab = {
-      id: this.LIBRARY_TAB_ID,
-      name: 'Library',
-      path: '',
-      hasUnsavedChanges: false,
-      icon: '📚',
-      closable: false
-    };
-
-    const docTabs = this.openDocuments().map(doc => ({
+    return this.openDocuments().map(doc => ({
       id: doc.id,
       name: doc.name,
       path: doc.path,
       hasUnsavedChanges: doc.hasUnsavedChanges,
       closable: true
     }));
-
-    return [libraryTab, ...docTabs];
   });
 
   // Toolbar items (computed based on state)
@@ -2844,8 +2874,8 @@ export class PdfPickerComponent {
     }
   }
 
-  switchToLibraryTab(): void {
-    // Save current document state and switch to library tab
+  showLibraryView(): void {
+    // Save current document state and show library view
     this.saveCurrentDocumentState();
     this.activeDocumentId.set(null);
     this.pdfLoaded.set(false);
@@ -3601,6 +3631,28 @@ export class PdfPickerComponent {
     }
   }
 
+  /**
+   * Handle click on a custom category highlight (click-through selection).
+   * Toggles the deleted state of the highlight.
+   */
+  onHighlightClick(event: { catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }): void {
+    const highlightId = this.getHighlightId(event.catId, event.pageNum, event.rect.x, event.rect.y);
+    const deletedIds = this.deletedHighlightIds();
+
+    // Toggle deleted state
+    const newDeletedIds = new Set(deletedIds);
+    if (deletedIds.has(highlightId)) {
+      newDeletedIds.delete(highlightId);
+      console.log(`Restored highlight: ${highlightId}`);
+    } else {
+      newDeletedIds.add(highlightId);
+      console.log(`Deleted highlight: ${highlightId} (text: "${event.rect.text}")`);
+    }
+
+    this.deletedHighlightIds.set(newDeletedIds);
+    this.hasUnsavedChanges.set(true);
+  }
+
   revertBlockText(blockId: string): void {
     // Clear the text correction to revert to original
     this.editorState.clearTextCorrection(blockId);
@@ -3856,6 +3908,7 @@ export class PdfPickerComponent {
   async exportEpub(): Promise<void> {
     // Use chapter-aware export if chapters are defined
     const chapters = this.chapters();
+    const deletedPatterns = this.getDeletedCategoryPatterns();
     const result = chapters.length > 0
       ? await this.exportService.exportEpubWithChapters(
           this.blocks(),
@@ -3863,14 +3916,16 @@ export class PdfPickerComponent {
           chapters,
           this.pdfName(),
           this.textCorrections(),
-          this.deletedPages()
+          this.deletedPages(),
+          deletedPatterns
         )
       : await this.exportService.exportEpub(
           this.blocks(),
           this.deletedBlockIds(),
           this.pdfName(),
           this.textCorrections(),
-          this.deletedPages()
+          this.deletedPages(),
+          deletedPatterns
         );
 
     this.showAlert({
@@ -4037,6 +4092,9 @@ export class PdfPickerComponent {
         case 'epub':
           await this.exportAsEpub();
           break;
+        case 'audiobook':
+          await this.exportToAudiobook();
+          break;
         case 'pdf':
         default:
           await this.exportAsPdf(settings);
@@ -4090,6 +4148,7 @@ export class PdfPickerComponent {
 
     // Use chapter-aware export if chapters are defined
     const chapters = this.chapters();
+    const deletedPatterns = this.getDeletedCategoryPatterns();
     const result = chapters.length > 0
       ? await this.exportService.exportEpubWithChapters(
           this.blocks(),
@@ -4097,19 +4156,57 @@ export class PdfPickerComponent {
           chapters,
           this.pdfName(),
           this.editorState.textCorrections(),
-          this.deletedPages()
+          this.deletedPages(),
+          deletedPatterns
         )
       : await this.exportService.exportEpub(
           this.blocks(),
           this.deletedBlockIds(),
           this.pdfName(),
           this.editorState.textCorrections(),
-          this.deletedPages()
+          this.deletedPages(),
+          deletedPatterns
         );
 
     if (result.success) {
       this.showAlert({
         title: 'Export Complete',
+        message: result.message,
+        type: 'success'
+      });
+    } else {
+      this.showAlert({
+        title: 'Export Failed',
+        message: result.message,
+        type: 'error'
+      });
+    }
+  }
+
+  /**
+   * Export to Audiobook Producer
+   */
+  private async exportToAudiobook(): Promise<void> {
+    this.loadingText.set('Preparing audiobook export...');
+
+    const chapters = this.chapters();
+    const deletedPatterns = this.getDeletedCategoryPatterns();
+
+    const result = await this.exportService.exportToAudiobook(
+      this.blocks(),
+      this.deletedBlockIds(),
+      chapters,
+      this.pdfName(),
+      this.editorState.textCorrections(),
+      this.deletedPages(),
+      deletedPatterns,
+      true // Navigate to audiobook producer after
+    );
+
+    if (result.success) {
+      // Success message will be shown briefly before navigation
+      this.showAlert({
+        title: 'Sent to Audiobook Producer',
         message: result.message,
         type: 'success'
       });
@@ -4255,19 +4352,14 @@ export class PdfPickerComponent {
         this.chapters()
       );
 
-      if (result.success) {
-        this.showAlert({
-          title: 'Export Complete',
-          message: result.message,
-          type: 'success'
-        });
-      } else {
+      if (!result.success) {
         this.showAlert({
           title: 'Nothing Changed',
           message: result.message,
           type: 'info'
         });
       }
+      // Success case: file downloads automatically, no modal needed
     }
   }
 
@@ -6499,14 +6591,6 @@ export class PdfPickerComponent {
 
   // Tab management methods
   onTabSelected(tab: DocumentTab): void {
-    // Handle library tab
-    if (tab.id === this.LIBRARY_TAB_ID) {
-      this.saveCurrentDocumentState();
-      this.activeDocumentId.set(null);
-      this.pdfLoaded.set(false);
-      return;
-    }
-
     if (tab.id === this.activeDocumentId()) return;
 
     // Save current document state
@@ -6517,9 +6601,6 @@ export class PdfPickerComponent {
   }
 
   onTabClosed(tab: DocumentTab): void {
-    // Library tab cannot be closed
-    if (tab.id === this.LIBRARY_TAB_ID) return;
-
     const docs = this.openDocuments();
     const docIndex = docs.findIndex(d => d.id === tab.id);
     if (docIndex === -1) return;
@@ -6536,14 +6617,14 @@ export class PdfPickerComponent {
     const newDocs = docs.filter(d => d.id !== tab.id);
     this.openDocuments.set(newDocs);
 
-    // If closing active tab, switch to another or library
+    // If closing active tab, switch to another or show library view
     if (tab.id === this.activeDocumentId()) {
       if (newDocs.length > 0) {
         // Switch to previous tab or first available
         const newIndex = Math.max(0, docIndex - 1);
         this.restoreDocumentState(newDocs[newIndex].id);
       } else {
-        // No more documents - switch to library tab
+        // No more documents - show library view
         this.activeDocumentId.set(null);
         this.pdfLoaded.set(false);
       }
@@ -6553,7 +6634,7 @@ export class PdfPickerComponent {
   closeCurrentTabOrHideWindow(): void {
     const activeId = this.activeDocumentId();
 
-    // If on library tab (no active document), hide the window
+    // If in library view (no active document), hide the window
     if (!activeId) {
       this.electronService.windowHide();
       return;

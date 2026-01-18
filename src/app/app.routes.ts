@@ -3,16 +3,26 @@ import { Routes } from '@angular/router';
 export const routes: Routes = [
   {
     path: '',
-    redirectTo: 'pdf-picker',
+    redirectTo: 'library',
     pathMatch: 'full'
   },
   {
-    path: 'pdf-picker',
+    path: 'library',
     loadComponent: () => import('./features/pdf-picker/pdf-picker.component').then(m => m.PdfPickerComponent)
+  },
+  {
+    path: 'audiobook',
+    loadComponent: () => import('./features/audiobook/audiobook.component').then(m => m.AudiobookComponent)
   },
   {
     path: 'settings',
     loadComponent: () => import('./features/settings/settings.component').then(m => m.SettingsComponent)
+  },
+  // Legacy route for backwards compatibility
+  {
+    path: 'pdf-picker',
+    redirectTo: 'library',
+    pathMatch: 'full'
   },
   {
     path: 'home',

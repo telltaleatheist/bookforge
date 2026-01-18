@@ -68,11 +68,25 @@ interface RegexMatch {
         </div>
 
         <div class="form-group">
+          <label>Pattern Presets</label>
+          <select
+            class="preset-select"
+            [ngModel]="selectedPreset()"
+            (ngModelChange)="onPresetChange($event)"
+          >
+            <option value="">Custom pattern...</option>
+            @for (preset of patternPresets; track preset.value) {
+              <option [value]="preset.value">{{ preset.label }}</option>
+            }
+          </select>
+        </div>
+
+        <div class="form-group">
           <label>Regex Pattern</label>
           <input
             type="text"
             [ngModel]="regexPattern()"
-            (ngModelChange)="regexPatternChange.emit($event)"
+            (ngModelChange)="onPatternChange($event)"
             placeholder="e.g., \\[\\d+\\]"
           />
         </div>
@@ -470,6 +484,22 @@ interface RegexMatch {
           border-radius: $radius-sm;
           cursor: pointer;
           padding: 0;
+        }
+
+        select.preset-select {
+          width: 100%;
+          padding: var(--ui-spacing-xs) var(--ui-spacing-sm);
+          border: 1px solid var(--border-default);
+          border-radius: $radius-sm;
+          background: var(--bg-surface);
+          color: var(--text-primary);
+          font-size: var(--ui-font-sm);
+          cursor: pointer;
+
+          &:focus {
+            outline: none;
+            border-color: var(--accent);
+          }
         }
       }
 
@@ -1038,6 +1068,21 @@ export class CategoriesPanelComponent {
   readonly regexExpanded = signal(false);
   readonly filtersExpanded = signal(false);
   readonly contextMenu = signal<{ x: number; y: number; categoryId: string } | null>(null);
+  readonly selectedPreset = signal<string>('');
+
+  // Pattern presets for common reference formats
+  readonly patternPresets = [
+    { label: 'Numbers (1-999)', value: '^\\d{1,3}$' },
+    { label: 'Numbers with period (1. 2. 3.)', value: '^\\d{1,3}\\.$' },
+    { label: 'Bracketed numbers [1] [2]', value: '^\\[\\d{1,3}\\]$' },
+    { label: 'Parenthesized numbers (1) (2)', value: '^\\(\\d{1,3}\\)$' },
+    { label: 'Superscript digits ¹²³', value: '^[¹²³⁴⁵⁶⁷⁸⁹⁰]+$' },
+    { label: 'Roman numerals (i, ii, iv)', value: '^[ivxlcdm]+$' },
+    { label: 'Roman (uppercase) I, II, IV', value: '^[IVXLCDM]+$' },
+    { label: 'Letters (a, b, c)', value: '^[a-z]$' },
+    { label: 'Letters (uppercase A, B, C)', value: '^[A-Z]$' },
+    { label: 'Asterisk references *†‡', value: '^[*†‡§¶]+$' },
+  ];
 
   // Check if any filters are active (not default)
   // Default is all categories selected (filter contains all IDs)
@@ -1095,6 +1140,24 @@ export class CategoriesPanelComponent {
     const newState = !this.regexExpanded();
     this.regexExpanded.set(newState);
     this.regexExpandedChange.emit(newState);
+  }
+
+  onPresetChange(value: string): void {
+    this.selectedPreset.set(value);
+    if (value) {
+      this.regexPatternChange.emit(value);
+      // When selecting a preset, disable literal mode since presets are actual regex
+      this.regexLiteralModeChange.emit(false);
+    }
+  }
+
+  onPatternChange(value: string): void {
+    this.regexPatternChange.emit(value);
+    // When manually editing, clear preset selection if pattern doesn't match any preset
+    const matchingPreset = this.patternPresets.find(p => p.value === value);
+    if (!matchingPreset) {
+      this.selectedPreset.set('');
+    }
   }
 
   // Check if blocks are available

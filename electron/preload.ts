@@ -284,6 +284,117 @@ export interface RenderWithPreviewsResult {
   fileHash: string;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EPUB Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface EpubMetadata {
+  title: string;
+  subtitle?: string;
+  author: string;
+  authorFileAs?: string;
+  year?: string;
+  language: string;
+  coverPath?: string;
+  identifier?: string;
+  publisher?: string;
+  description?: string;
+}
+
+export interface EpubChapter {
+  id: string;
+  title: string;
+  href: string;
+  order: number;
+  wordCount: number;
+}
+
+export interface EpubStructure {
+  metadata: EpubMetadata;
+  chapters: EpubChapter[];
+  spine: string[];
+  opfPath: string;
+  rootPath: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Types (Ollama)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface OllamaModel {
+  name: string;
+  size: number;
+  modifiedAt: string;
+}
+
+export interface AICleanupOptions {
+  fixHyphenation: boolean;
+  fixOcrArtifacts: boolean;
+  expandAbbreviations: boolean;
+}
+
+export interface CleanupProgress {
+  chapterId: string;
+  chapterTitle: string;
+  currentChunk: number;
+  totalChunks: number;
+  percentage: number;
+}
+
+export interface CleanupResult {
+  success: boolean;
+  cleanedText?: string;
+  error?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TTS Types (ebook2audiobook)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ConversionPhase = 'preparing' | 'converting' | 'merging' | 'complete' | 'error';
+
+export interface VoiceInfo {
+  id: string;
+  name: string;
+  language: string;
+}
+
+export interface TTSSettings {
+  device: 'gpu' | 'mps' | 'cpu';
+  language: string;
+  voice: string;
+  temperature: number;
+  speed: number;
+}
+
+export interface TTSProgress {
+  phase: ConversionPhase;
+  currentChapter: number;
+  totalChapters: number;
+  percentage: number;
+  estimatedRemaining: number;
+  message?: string;
+  error?: string;
+}
+
+export interface ConversionResult {
+  success: boolean;
+  outputPath?: string;
+  error?: string;
+  duration?: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audiobook Queue Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface QueueFileInfo {
+  path: string;
+  filename: string;
+  size: number;
+  addedAt: string;
+}
+
 export interface ElectronAPI {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
@@ -300,8 +411,8 @@ export interface ElectronAPI {
     getCacheSize: (fileHash: string) => Promise<{ success: boolean; data?: { size: number }; error?: string }>;
     getTotalCacheSize: () => Promise<{ success: boolean; data?: { size: number }; error?: string }>;
     exportText: (enabledCategories: string[]) => Promise<{ success: boolean; data?: { text: string; char_count: number }; error?: string }>;
-    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
-    exportPdfNoBackgrounds: (scale?: number, deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
+    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
+    exportPdfNoBackgrounds: (scale?: number, deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
     findSimilar: (blockId: string) => Promise<{ success: boolean; data?: { similar_ids: string[]; count: number }; error?: string }>;
     findSpansInRect: (page: number, x: number, y: number, width: number, height: number) => Promise<{ success: boolean; data?: TextSpan[]; error?: string }>;
     analyzeSamples: (sampleSpans: TextSpan[]) => Promise<{ success: boolean; data?: SamplePattern; error?: string }>;
@@ -347,6 +458,60 @@ export interface ElectronAPI {
       alreadyExists?: boolean;
       error?: string;
     }>;
+    copyToQueue: (sourcePath: string, filename: string) => Promise<{
+      success: boolean;
+      destinationPath?: string;
+      error?: string;
+    }>;
+    listQueue: () => Promise<{
+      success: boolean;
+      files?: QueueFileInfo[];
+      error?: string;
+    }>;
+    getAudiobooksPath: () => Promise<{
+      success: boolean;
+      queuePath?: string;
+      completedPath?: string;
+      error?: string;
+    }>;
+  };
+  epub: {
+    parse: (epubPath: string) => Promise<{ success: boolean; data?: EpubStructure; error?: string }>;
+    getCover: (epubPath?: string) => Promise<{ success: boolean; data?: string | null; error?: string }>;
+    getChapterText: (chapterId: string) => Promise<{ success: boolean; data?: string; error?: string }>;
+    getMetadata: () => Promise<{ success: boolean; data?: EpubMetadata | null; error?: string }>;
+    getChapters: () => Promise<{ success: boolean; data?: EpubChapter[]; error?: string }>;
+    close: () => Promise<{ success: boolean; error?: string }>;
+  };
+  ai: {
+    checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: OllamaModel[]; error?: string }; error?: string }>;
+    getModels: () => Promise<{ success: boolean; data?: OllamaModel[]; error?: string }>;
+    cleanupChapter: (
+      text: string,
+      options: AICleanupOptions,
+      chapterId: string,
+      chapterTitle: string,
+      model?: string
+    ) => Promise<{ success: boolean; data?: CleanupResult; error?: string }>;
+    onCleanupProgress: (callback: (progress: CleanupProgress) => void) => () => void;
+  };
+  tts: {
+    checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; version?: string; error?: string }; error?: string }>;
+    getVoices: () => Promise<{ success: boolean; data?: VoiceInfo[]; error?: string }>;
+    startConversion: (
+      epubPath: string,
+      outputDir: string,
+      settings: TTSSettings
+    ) => Promise<{ success: boolean; data?: ConversionResult; error?: string }>;
+    stopConversion: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
+    generateFilename: (
+      title: string,
+      subtitle?: string,
+      author?: string,
+      authorFileAs?: string,
+      year?: string
+    ) => Promise<{ success: boolean; data?: string; error?: string }>;
+    onProgress: (callback: (progress: TTSProgress) => void) => () => void;
   };
   ocr: {
     isAvailable: () => Promise<{ success: boolean; available?: boolean; version?: string | null; error?: string }>;
@@ -420,10 +585,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:get-total-cache-size'),
     exportText: (enabledCategories: string[]) =>
       ipcRenderer.invoke('pdf:export-text', enabledCategories),
-    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>) =>
-      ipcRenderer.invoke('pdf:export-pdf', pdfPath, deletedRegions, ocrBlocks),
-    exportPdfNoBackgrounds: (scale: number = 2.0, deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>) =>
-      ipcRenderer.invoke('pdf:export-pdf-no-backgrounds', scale, deletedRegions, ocrBlocks),
+    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[], chapters?: Array<{ title: string; page: number; level: number }>) =>
+      ipcRenderer.invoke('pdf:export-pdf', pdfPath, deletedRegions, ocrBlocks, deletedPages, chapters),
+    exportPdfNoBackgrounds: (scale: number = 2.0, deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) =>
+      ipcRenderer.invoke('pdf:export-pdf-no-backgrounds', scale, deletedRegions, ocrBlocks, deletedPages),
     findSimilar: (blockId: string) =>
       ipcRenderer.invoke('pdf:find-similar', blockId),
     findSpansInRect: (page: number, x: number, y: number, width: number, height: number) =>
@@ -483,6 +648,80 @@ const electronAPI: ElectronAPI = {
   library: {
     importFile: (sourcePath: string) =>
       ipcRenderer.invoke('library:import-file', sourcePath),
+    copyToQueue: (sourcePath: string, filename: string) =>
+      ipcRenderer.invoke('library:copy-to-queue', sourcePath, filename),
+    listQueue: () =>
+      ipcRenderer.invoke('library:list-queue'),
+    getAudiobooksPath: () =>
+      ipcRenderer.invoke('library:get-audiobooks-path'),
+  },
+  epub: {
+    parse: (epubPath: string) =>
+      ipcRenderer.invoke('epub:parse', epubPath),
+    getCover: (epubPath?: string) =>
+      ipcRenderer.invoke('epub:get-cover', epubPath),
+    getChapterText: (chapterId: string) =>
+      ipcRenderer.invoke('epub:get-chapter-text', chapterId),
+    getMetadata: () =>
+      ipcRenderer.invoke('epub:get-metadata'),
+    getChapters: () =>
+      ipcRenderer.invoke('epub:get-chapters'),
+    close: () =>
+      ipcRenderer.invoke('epub:close'),
+  },
+  ai: {
+    checkConnection: () =>
+      ipcRenderer.invoke('ai:check-connection'),
+    getModels: () =>
+      ipcRenderer.invoke('ai:get-models'),
+    cleanupChapter: (
+      text: string,
+      options: AICleanupOptions,
+      chapterId: string,
+      chapterTitle: string,
+      model?: string
+    ) =>
+      ipcRenderer.invoke('ai:cleanup-chapter', text, options, chapterId, chapterTitle, model),
+    onCleanupProgress: (callback: (progress: CleanupProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: CleanupProgress) => {
+        callback(progress);
+      };
+      ipcRenderer.on('ai:cleanup-progress', listener);
+      return () => {
+        ipcRenderer.removeListener('ai:cleanup-progress', listener);
+      };
+    },
+  },
+  tts: {
+    checkAvailable: () =>
+      ipcRenderer.invoke('tts:check-available'),
+    getVoices: () =>
+      ipcRenderer.invoke('tts:get-voices'),
+    startConversion: (
+      epubPath: string,
+      outputDir: string,
+      settings: TTSSettings
+    ) =>
+      ipcRenderer.invoke('tts:start-conversion', epubPath, outputDir, settings),
+    stopConversion: () =>
+      ipcRenderer.invoke('tts:stop-conversion'),
+    generateFilename: (
+      title: string,
+      subtitle?: string,
+      author?: string,
+      authorFileAs?: string,
+      year?: string
+    ) =>
+      ipcRenderer.invoke('tts:generate-filename', title, subtitle, author, authorFileAs, year),
+    onProgress: (callback: (progress: TTSProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: TTSProgress) => {
+        callback(progress);
+      };
+      ipcRenderer.on('tts:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('tts:progress', listener);
+      };
+    },
   },
   ocr: {
     isAvailable: () =>
