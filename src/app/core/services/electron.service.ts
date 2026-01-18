@@ -729,6 +729,20 @@ export class ElectronService {
     return { success: true, libraryPath: sourcePath, alreadyExists: false };
   }
 
+  /**
+   * Copy a file to the audiobook producer queue folder
+   */
+  async copyToAudiobookQueue(sourcePath: string, filename: string): Promise<{
+    success: boolean;
+    destinationPath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.library.copyToQueue(sourcePath, filename);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   // OCR operations (Tesseract)
   async ocrIsAvailable(): Promise<{ available: boolean; version: string | null }> {
     if (this.isElectron) {
@@ -783,5 +797,42 @@ export class ElectronService {
     if (this.isElectron) {
       await (window as any).electron.window.close();
     }
+  }
+
+  // AI operations
+  async checkAIConnection(provider: 'ollama' | 'claude' | 'openai'): Promise<{
+    available: boolean;
+    error?: string;
+    models?: string[];
+  }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ai.checkProviderConnection(provider);
+      if (result.success && result.data) {
+        return result.data;
+      }
+      return { available: false, error: result.error || 'Connection failed' };
+    }
+    return { available: false, error: 'Not running in Electron' };
+  }
+
+  // Diff comparison operations (for AI cleanup diff view)
+  async loadDiffComparison(originalPath: string, cleanedPath: string): Promise<{
+    success: boolean;
+    chapters?: Array<{
+      id: string;
+      title: string;
+      originalText: string;
+      cleanedText: string;
+    }>;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.diff.loadComparison(originalPath, cleanedPath);
+      if (result.success && result.data) {
+        return { success: true, chapters: result.data.chapters };
+      }
+      return { success: false, error: result.error || 'Failed to load comparison' };
+    }
+    return { success: false, error: 'Not running in Electron' };
   }
 }

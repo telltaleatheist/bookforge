@@ -33,18 +33,6 @@ export interface NavRailItem {
           </button>
         }
       </div>
-
-      <div class="nav-footer">
-        <button
-          class="nav-item"
-          [class.active]="isActive('/settings')"
-          title="Settings"
-          (click)="navigate('/settings')"
-        >
-          <span class="nav-icon">&#9881;</span>
-          <span class="nav-label">Settings</span>
-        </button>
-      </div>
     </nav>
   `,
   styles: [`
@@ -62,21 +50,10 @@ export interface NavRailItem {
     }
 
     .nav-items {
-      flex: 1;
       display: flex;
       flex-direction: column;
       align-items: center;
       gap: 0.25rem;
-    }
-
-    .nav-footer {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 0.25rem;
-      padding-top: 0.5rem;
-      border-top: 1px solid var(--border-default);
-      margin: 0 0.5rem;
     }
 
     .nav-item {
@@ -159,6 +136,12 @@ export class NavRailComponent {
       icon: '\u{1F3A7}', // Headphones emoji
       label: 'Audio',
       route: '/audiobook'
+    },
+    {
+      id: 'queue',
+      icon: '\u{23F3}', // Hourglass emoji
+      label: 'Queue',
+      route: '/queue'
     }
   ]);
 

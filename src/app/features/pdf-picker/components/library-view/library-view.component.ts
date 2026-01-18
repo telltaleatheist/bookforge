@@ -138,6 +138,11 @@ export interface ProjectFile {
             Open
           </button>
           <div class="context-divider"></div>
+          <button class="context-menu-item" (click)="onContextMenuTransferToAudiobook()">
+            <span class="context-icon">🎧</span>
+            Transfer to Audiobook
+          </button>
+          <div class="context-divider"></div>
           <button class="context-menu-item" (click)="onContextMenuClearCache()">
             <span class="context-icon">🧹</span>
             Clear Rendered Data
@@ -575,6 +580,8 @@ export class LibraryViewComponent implements OnInit {
   projectsDeleted = output<string[]>(); // Array of deleted project paths
   // Output for error messages
   error = output<string>();
+  // Output for transferring to audiobook
+  transferToAudiobook = output<ProjectFile[]>();
 
   readonly projects = signal<ProjectFile[]>([]);
   readonly isDragActive = signal(false);
@@ -822,6 +829,14 @@ export class LibraryViewComponent implements OnInit {
       .filter((h): h is string => !!h);
     if (hashes.length > 0) {
       this.clearCache.emit(hashes);
+    }
+  }
+
+  onContextMenuTransferToAudiobook(): void {
+    this.contextMenuVisible.set(false);
+    const selected = this.selectedProjects();
+    if (selected.length > 0) {
+      this.transferToAudiobook.emit(selected);
     }
   }
 

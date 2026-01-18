@@ -227,8 +227,8 @@ function getAllTags(xml: string, tagName: string): Array<{ content: string; attr
     const content = match[2] || '';
     const attributes: Record<string, string> = {};
 
-    // Parse attributes
-    const attrPattern = /(\w+(?::\w+)?)\s*=\s*["']([^"']*)["']/g;
+    // Parse attributes (supports hyphenated names like full-path, media-type)
+    const attrPattern = /([\w-]+(?::[\w-]+)?)\s*=\s*["']([^"']*)["']/g;
     let attrMatch;
     while ((attrMatch = attrPattern.exec(attrString)) !== null) {
       attributes[attrMatch[1]] = attrMatch[2];
@@ -452,10 +452,132 @@ class EpubProcessor {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ZIP Writing (for saving modified EPUBs)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const deflateRaw = promisify(zlib.deflateRaw);
+
+class ZipWriter {
+  private entries: Array<{ name: string; data: Buffer; isCompressed: boolean }> = [];
+
+  addFile(name: string, data: Buffer, compress: boolean = true): void {
+    this.entries.push({ name, data, isCompressed: compress });
+  }
+
+  async write(outputPath: string): Promise<void> {
+    const centralDirectory: Buffer[] = [];
+    const fileData: Buffer[] = [];
+    let offset = 0;
+
+    for (const entry of this.entries) {
+      const nameBuffer = Buffer.from(entry.name, 'utf8');
+      let compressedData: Buffer;
+      let compressionMethod: number;
+
+      if (entry.isCompressed && entry.data.length > 0) {
+        compressedData = await deflateRaw(entry.data) as Buffer;
+        compressionMethod = 8; // Deflate
+      } else {
+        compressedData = entry.data;
+        compressionMethod = 0; // Store
+      }
+
+      // CRC32 of uncompressed data
+      const crc = this.crc32(entry.data);
+
+      // Local file header
+      const localHeader = Buffer.alloc(30 + nameBuffer.length);
+      localHeader.writeUInt32LE(0x04034b50, 0); // Signature
+      localHeader.writeUInt16LE(20, 4); // Version needed
+      localHeader.writeUInt16LE(0, 6); // Flags
+      localHeader.writeUInt16LE(compressionMethod, 8);
+      localHeader.writeUInt16LE(0, 10); // Modified time
+      localHeader.writeUInt16LE(0, 12); // Modified date
+      localHeader.writeUInt32LE(crc, 14);
+      localHeader.writeUInt32LE(compressedData.length, 18);
+      localHeader.writeUInt32LE(entry.data.length, 22);
+      localHeader.writeUInt16LE(nameBuffer.length, 26);
+      localHeader.writeUInt16LE(0, 28); // Extra field length
+      nameBuffer.copy(localHeader, 30);
+
+      fileData.push(localHeader, compressedData);
+
+      // Central directory entry
+      const centralEntry = Buffer.alloc(46 + nameBuffer.length);
+      centralEntry.writeUInt32LE(0x02014b50, 0); // Signature
+      centralEntry.writeUInt16LE(20, 4); // Version made by
+      centralEntry.writeUInt16LE(20, 6); // Version needed
+      centralEntry.writeUInt16LE(0, 8); // Flags
+      centralEntry.writeUInt16LE(compressionMethod, 10);
+      centralEntry.writeUInt16LE(0, 12); // Modified time
+      centralEntry.writeUInt16LE(0, 14); // Modified date
+      centralEntry.writeUInt32LE(crc, 16);
+      centralEntry.writeUInt32LE(compressedData.length, 20);
+      centralEntry.writeUInt32LE(entry.data.length, 24);
+      centralEntry.writeUInt16LE(nameBuffer.length, 28);
+      centralEntry.writeUInt16LE(0, 30); // Extra field length
+      centralEntry.writeUInt16LE(0, 32); // Comment length
+      centralEntry.writeUInt16LE(0, 34); // Disk number
+      centralEntry.writeUInt16LE(0, 36); // Internal attributes
+      centralEntry.writeUInt32LE(0, 38); // External attributes
+      centralEntry.writeUInt32LE(offset, 42); // Local header offset
+      nameBuffer.copy(centralEntry, 46);
+
+      centralDirectory.push(centralEntry);
+      offset += localHeader.length + compressedData.length;
+    }
+
+    // End of central directory
+    const centralDirSize = centralDirectory.reduce((sum, b) => sum + b.length, 0);
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0); // Signature
+    eocd.writeUInt16LE(0, 4); // Disk number
+    eocd.writeUInt16LE(0, 6); // Central dir disk
+    eocd.writeUInt16LE(this.entries.length, 8); // Entries on disk
+    eocd.writeUInt16LE(this.entries.length, 10); // Total entries
+    eocd.writeUInt32LE(centralDirSize, 12);
+    eocd.writeUInt32LE(offset, 16); // Central dir offset
+    eocd.writeUInt16LE(0, 20); // Comment length
+
+    // Write everything
+    const output = Buffer.concat([...fileData, ...centralDirectory, eocd]);
+    await fs.writeFile(outputPath, output);
+  }
+
+  private crc32(data: Buffer): number {
+    let crc = 0xFFFFFFFF;
+    const table = this.getCrc32Table();
+    for (let i = 0; i < data.length; i++) {
+      crc = (crc >>> 8) ^ table[(crc ^ data[i]) & 0xFF];
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  private static crc32Table: number[] | null = null;
+
+  private getCrc32Table(): number[] {
+    if (ZipWriter.crc32Table) return ZipWriter.crc32Table;
+
+    const table: number[] = [];
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let j = 0; j < 8; j++) {
+        c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      }
+      table[i] = c >>> 0;
+    }
+    ZipWriter.crc32Table = table;
+    return table;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Exported Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
 let currentProcessor: EpubProcessor | null = null;
+// Track modified chapter content for saving
+const modifiedChapters: Map<string, string> = new Map();
 
 export async function parseEpub(epubPath: string): Promise<EpubStructure> {
   if (currentProcessor) {
@@ -508,6 +630,190 @@ export function closeEpub(): void {
     currentProcessor.close();
     currentProcessor = null;
   }
+  modifiedChapters.clear();
+}
+
+/**
+ * Update chapter text content (stored in memory until saveModifiedEpub is called)
+ */
+export async function updateChapterText(chapterId: string, newText: string): Promise<void> {
+  if (!currentProcessor) {
+    throw new Error('No EPUB open');
+  }
+
+  const structure = currentProcessor.getStructure();
+  if (!structure) {
+    throw new Error('No EPUB structure');
+  }
+
+  const chapter = structure.chapters.find(c => c.id === chapterId);
+  if (!chapter) {
+    throw new Error(`Chapter not found: ${chapterId}`);
+  }
+
+  // Store the modified text
+  modifiedChapters.set(chapterId, newText);
+}
+
+/**
+ * Save the EPUB with modified chapter content
+ */
+export async function saveModifiedEpub(outputPath: string): Promise<void> {
+  if (!currentProcessor) {
+    throw new Error('No EPUB open');
+  }
+
+  const structure = currentProcessor.getStructure();
+  if (!structure) {
+    throw new Error('No EPUB structure');
+  }
+
+  const zipWriter = new ZipWriter();
+
+  // Get all entries from the original EPUB
+  const entries = (currentProcessor as any).zipReader?.getEntries() || [];
+
+  for (const entryName of entries) {
+    // Check if this is a chapter file that was modified
+    let isModified = false;
+    let modifiedContent: string | null = null;
+
+    for (const chapter of structure.chapters) {
+      const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
+      if (entryName === href && modifiedChapters.has(chapter.id)) {
+        isModified = true;
+        modifiedContent = modifiedChapters.get(chapter.id) || null;
+        break;
+      }
+    }
+
+    if (isModified && modifiedContent !== null) {
+      // Read original XHTML and replace body content
+      const originalXhtml = await currentProcessor.readFile(entryName);
+      const newXhtml = replaceXhtmlBody(originalXhtml, modifiedContent);
+      zipWriter.addFile(entryName, Buffer.from(newXhtml, 'utf8'));
+    } else {
+      // Copy file as-is
+      const data = await currentProcessor.readBinaryFile(entryName);
+      // Don't compress mimetype file (EPUB spec requirement)
+      const compress = entryName !== 'mimetype';
+      zipWriter.addFile(entryName, data, compress);
+    }
+  }
+
+  await zipWriter.write(outputPath);
+}
+
+/**
+ * Replace the body content in an XHTML document while preserving the structure
+ */
+function replaceXhtmlBody(xhtml: string, newText: string): string {
+  // Find the body tag
+  const bodyMatch = xhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  if (!bodyMatch) {
+    // No body tag, return as-is
+    return xhtml;
+  }
+
+  // Convert plain text to paragraphs
+  const paragraphs = newText.split(/\n\n+/).filter(p => p.trim());
+  const htmlContent = paragraphs.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
+
+  // Replace body content
+  return xhtml.replace(
+    /<body([^>]*)>[\s\S]*<\/body>/i,
+    `<body$1>\n${htmlContent}\n</body>`
+  );
+}
+
+/**
+ * Escape text for XML
+ */
+function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Comparison Functions (for diff view)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Load an EPUB for comparison without modifying global state.
+ * Returns chapter content for all chapters.
+ */
+export async function loadEpubForComparison(epubPath: string): Promise<{
+  chapters: Array<{
+    id: string;
+    title: string;
+    text: string;
+  }>;
+}> {
+  const processor = new EpubProcessor();
+  try {
+    const structure = await processor.open(epubPath);
+
+    const chapters = [];
+    for (const chapter of structure.chapters) {
+      try {
+        const text = await processor.getChapterText(chapter.id);
+        chapters.push({
+          id: chapter.id,
+          title: chapter.title,
+          text
+        });
+      } catch {
+        // Skip chapters that can't be read
+        chapters.push({
+          id: chapter.id,
+          title: chapter.title,
+          text: ''
+        });
+      }
+    }
+
+    return { chapters };
+  } finally {
+    processor.close();
+  }
+}
+
+/**
+ * Compare two EPUBs and return their chapter contents for diffing.
+ * Returns matched chapters by ID.
+ */
+export async function compareEpubs(originalPath: string, cleanedPath: string): Promise<{
+  chapters: Array<{
+    id: string;
+    title: string;
+    originalText: string;
+    cleanedText: string;
+  }>;
+}> {
+  const [original, cleaned] = await Promise.all([
+    loadEpubForComparison(originalPath),
+    loadEpubForComparison(cleanedPath)
+  ]);
+
+  // Create a map of cleaned chapters by ID
+  const cleanedMap = new Map(cleaned.chapters.map(c => [c.id, c]));
+
+  // Match chapters by ID
+  const chapters = original.chapters.map(origChapter => {
+    const cleanedChapter = cleanedMap.get(origChapter.id);
+    return {
+      id: origChapter.id,
+      title: origChapter.title,
+      originalText: origChapter.text,
+      cleanedText: cleanedChapter?.text || ''
+    };
+  });
+
+  return { chapters };
 }
 
 // Export the processor for direct use if needed

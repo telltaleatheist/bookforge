@@ -12,6 +12,7 @@ import { MetadataEditorComponent, EpubMetadata } from './components/metadata-edi
 import { AiCleanupPanelComponent } from './components/ai-cleanup-panel/ai-cleanup-panel.component';
 import { TtsSettingsComponent, TTSSettings } from './components/tts-settings/tts-settings.component';
 import { ProgressPanelComponent, TTSProgress } from './components/progress-panel/progress-panel.component';
+import { DiffViewComponent } from './components/diff-view/diff-view.component';
 import { EpubService } from './services/epub.service';
 import { AudiobookService } from './services/audiobook.service';
 
@@ -30,7 +31,8 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
     MetadataEditorComponent,
     AiCleanupPanelComponent,
     TtsSettingsComponent,
-    ProgressPanelComponent
+    ProgressPanelComponent,
+    DiffViewComponent
   ],
   template: `
     <!-- Toolbar -->
@@ -43,7 +45,7 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
     <div class="audiobook-container">
       <desktop-split-pane [primarySize]="280" [minSize]="200" [maxSize]="600">
         <!-- Left Panel: Queue -->
-        <div left-pane class="queue-panel">
+        <div pane-primary class="queue-panel">
           <div class="panel-header">
             <h3>Audiobook Queue</h3>
             <desktop-button variant="ghost" size="xs" [iconOnly]="true" title="Add EPUB" (click)="addToQueue()">
@@ -60,7 +62,7 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
         </div>
 
         <!-- Right Panel: Details -->
-        <div right-pane class="details-panel">
+        <div pane-secondary class="details-panel">
           @if (selectedItem()) {
             <!-- Workflow tabs -->
             <div class="workflow-tabs">
@@ -87,19 +89,49 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
               </button>
             </div>
 
+            <!-- View Options (when cleaned version exists) -->
+            @if (selectedItem()?.hasCleaned) {
+              <div class="view-options">
+                <span class="view-label">View:</span>
+                <button
+                  class="view-btn"
+                  [class.active]="viewMode() === 'original'"
+                  (click)="setViewMode('original')"
+                >
+                  Original
+                </button>
+                <button
+                  class="view-btn"
+                  [class.active]="viewMode() === 'cleaned'"
+                  (click)="setViewMode('cleaned')"
+                >
+                  Cleaned
+                </button>
+                <button
+                  class="view-btn diff"
+                  (click)="openDiffView()"
+                >
+                  View Diff
+                </button>
+              </div>
+            }
+
             <!-- Tab content -->
             <div class="tab-content">
               @switch (workflowState()) {
                 @case ('metadata') {
                   <app-metadata-editor
                     [metadata]="selectedMetadata()"
+                    [saving]="savingMetadata()"
                     (metadataChange)="onMetadataChange($event)"
                     (coverChange)="onCoverChange($event)"
+                    (save)="onSaveMetadata($event)"
                   />
                 }
                 @case ('cleanup') {
                   <app-ai-cleanup-panel
-                    [epubPath]="selectedItem()!.path"
+                    [epubPath]="currentEpubPath()"
+                    [metadata]="{ title: selectedMetadata()?.title, author: selectedMetadata()?.author }"
                     (cleanupComplete)="onCleanupComplete()"
                   />
                 }
@@ -112,6 +144,8 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
                   } @else {
                     <app-tts-settings
                       [settings]="ttsSettings()"
+                      [epubPath]="currentEpubPath()"
+                      [metadata]="{ title: selectedMetadata()?.title, author: selectedMetadata()?.author }"
                       (settingsChange)="onTtsSettingsChange($event)"
                       (startConversion)="startConversion()"
                     />
@@ -133,6 +167,19 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
         </div>
       </desktop-split-pane>
     </div>
+
+    <!-- Diff View Modal -->
+    @if (showDiffModal()) {
+      <div class="diff-modal-backdrop" (click)="closeDiffModal()">
+        <div class="diff-modal" (click)="$event.stopPropagation()">
+          <app-diff-view
+            [originalPath]="diffPaths()!.originalPath"
+            [cleanedPath]="diffPaths()!.cleanedPath"
+            (close)="closeDiffModal()"
+          />
+        </div>
+      </div>
+    }
   `,
   styles: [`
     :host {
@@ -237,6 +284,98 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
         max-width: 300px;
       }
     }
+
+    .view-options {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      background: var(--bg-subtle);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .view-label {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      margin-right: 0.25rem;
+    }
+
+    .view-btn {
+      padding: 0.25rem 0.625rem;
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      background: var(--bg-base);
+      color: var(--text-secondary);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.15s;
+
+      &:hover {
+        background: var(--bg-hover);
+        border-color: var(--border-default);
+      }
+
+      &.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: white;
+      }
+
+      &.diff {
+        margin-left: auto;
+        background: color-mix(in srgb, var(--accent) 10%, transparent);
+        border-color: var(--accent);
+        color: var(--accent);
+
+        &:hover {
+          background: color-mix(in srgb, var(--accent) 20%, transparent);
+        }
+      }
+    }
+
+    .diff-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      animation: fadeIn 0.15s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .diff-modal {
+      width: 90%;
+      max-width: 1200px;
+      height: 80%;
+      max-height: 800px;
+      background: var(--bg-elevated);
+      border-radius: 12px;
+      box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
+      overflow: hidden;
+      animation: slideUp 0.2s ease;
+
+      app-diff-view {
+        height: 100%;
+      }
+    }
+
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
   `]
 })
 export class AudiobookComponent implements OnInit, OnDestroy {
@@ -267,6 +406,12 @@ export class AudiobookComponent implements OnInit, OnDestroy {
     temperature: 0.75,
     speed: 1.0
   });
+  readonly savingMetadata = signal(false);
+
+  // View mode state (original vs cleaned)
+  readonly viewMode = signal<'original' | 'cleaned'>('cleaned');
+  readonly showDiffModal = signal(false);
+  readonly diffPaths = signal<{ originalPath: string; cleanedPath: string } | null>(null);
 
   // Check if we're running in Electron
   private get electron(): any {
@@ -284,6 +429,21 @@ export class AudiobookComponent implements OnInit, OnDestroy {
     const item = this.selectedItem();
     if (!item) return null;
     return item.metadata;
+  });
+
+  // Current EPUB path based on view mode (original or cleaned)
+  readonly currentEpubPath = computed(() => {
+    const item = this.selectedItem();
+    if (!item) return '';
+
+    // If cleaned version exists and we're in cleaned mode, use the cleaned path
+    if (item.hasCleaned && this.viewMode() === 'cleaned' && item.projectId) {
+      // Construct cleaned path from project folder
+      const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
+      return `${originalDir}/cleaned.epub`;
+    }
+
+    return item.path;
   });
 
   // Toolbar
@@ -361,21 +521,49 @@ export class AudiobookComponent implements OnInit, OnDestroy {
       // Parse EPUB to get metadata
       const structure = await this.epubService.open(file.path);
       if (structure) {
+        // Try to load saved metadata - parse author into first/last
+        const authorParts = (structure.metadata.author || '').trim().split(' ');
+        let authorFirst = '';
+        let authorLast = '';
+        if (authorParts.length >= 2) {
+          authorLast = authorParts.pop() || '';
+          authorFirst = authorParts.join(' ');
+        } else if (authorParts.length === 1) {
+          authorFirst = authorParts[0];
+        }
+
+        let metadata: EpubMetadata = {
+          title: structure.metadata.title,
+          subtitle: structure.metadata.subtitle,
+          author: structure.metadata.author,
+          authorFirst,
+          authorLast,
+          year: structure.metadata.year,
+          language: structure.metadata.language,
+          coverPath: structure.metadata.coverPath
+        };
+
+        // Check for saved metadata override
+        if (this.electron) {
+          try {
+            const savedResult = await this.electron.library.loadMetadata(file.path);
+            if (savedResult.success && savedResult.metadata) {
+              metadata = { ...metadata, ...savedResult.metadata };
+            }
+          } catch {
+            // No saved metadata, use EPUB defaults
+          }
+        }
+
         items.push({
-          id: file.path, // Use path as unique ID
+          id: file.path,
           path: file.path,
           filename: file.filename,
-          metadata: {
-            title: structure.metadata.title,
-            subtitle: structure.metadata.subtitle,
-            author: structure.metadata.author,
-            authorFileAs: structure.metadata.authorFileAs,
-            year: structure.metadata.year,
-            language: structure.metadata.language,
-            coverPath: structure.metadata.coverPath
-          },
+          metadata,
           status: 'pending',
-          addedAt: new Date(file.addedAt)
+          addedAt: new Date(file.addedAt),
+          projectId: file.projectId,
+          hasCleaned: file.hasCleaned
         });
         await this.epubService.close();
       }
@@ -440,7 +628,28 @@ export class AudiobookComponent implements OnInit, OnDestroy {
   }
 
   onCoverChange(coverData: string): void {
-    // TODO: Update cover image in EPUB
+    // Cover is stored in metadata, will be saved with saveMetadata
+  }
+
+  async onSaveMetadata(metadata: EpubMetadata): Promise<void> {
+    const item = this.selectedItem();
+    if (!item || !this.electron) return;
+
+    this.savingMetadata.set(true);
+
+    try {
+      const result = await this.electron.library.saveMetadata(item.path, metadata);
+      if (result.success) {
+        // Update local state
+        this.onMetadataChange(metadata);
+      } else {
+        console.error('Failed to save metadata:', result.error);
+      }
+    } catch (err) {
+      console.error('Failed to save metadata:', err);
+    } finally {
+      this.savingMetadata.set(false);
+    }
   }
 
   onCleanupComplete(): void {
@@ -519,5 +728,28 @@ export class AudiobookComponent implements OnInit, OnDestroy {
         }
       }
     }
+  }
+
+  // View mode methods
+  setViewMode(mode: 'original' | 'cleaned'): void {
+    this.viewMode.set(mode);
+  }
+
+  openDiffView(): void {
+    const item = this.selectedItem();
+    if (!item || !item.hasCleaned) return;
+
+    // Construct paths from the project folder
+    const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
+    this.diffPaths.set({
+      originalPath: `${originalDir}/original.epub`,
+      cleanedPath: `${originalDir}/cleaned.epub`
+    });
+    this.showDiffModal.set(true);
+  }
+
+  closeDiffModal(): void {
+    this.showDiffModal.set(false);
+    this.diffPaths.set(null);
   }
 }

@@ -152,8 +152,8 @@ export interface CropRect {
                         [attr.y]="currentMarqueeRect()!.y"
                         [attr.width]="currentMarqueeRect()!.width"
                         [attr.height]="currentMarqueeRect()!.height"
-                        fill="rgba(255, 107, 53, 0.15)"
-                        stroke="var(--accent, #ff6b35)"
+                        fill="rgba(255, 149, 0, 0.45)"
+                        stroke="var(--accent, #FF9500)"
                         stroke-width="2"
                         stroke-dasharray="6,3"
                       />
@@ -171,7 +171,7 @@ export interface CropRect {
                         [attr.y]="highlight.rect.y"
                         [attr.width]="highlight.rect.w"
                         [attr.height]="highlight.rect.h"
-                        [attr.fill]="highlight.deleted ? 'rgba(255, 68, 68, 0.2)' : highlight.color + '40'"
+                        [attr.fill]="highlight.deleted ? 'rgba(255, 68, 68, 0.3)' : highlight.color + '70'"
                         [attr.stroke]="highlight.deleted ? '#ff4444' : highlight.color"
                         stroke-width="1"
                       >
@@ -302,7 +302,7 @@ export interface CropRect {
                       [attr.y1]="0"
                       [attr.x2]="getSplitLineX(pageNum)"
                       [attr.y2]="getPageDimensions(pageNum)?.height || 0"
-                      stroke="#ff6b35"
+                      stroke="#FF9500"
                       stroke-width="3"
                       stroke-dasharray="10,5"
                     />
@@ -325,7 +325,7 @@ export interface CropRect {
                       width="16"
                       height="60"
                       rx="4"
-                      fill="#ff6b35"
+                      fill="#FF9500"
                       style="cursor: ew-resize; pointer-events: none"
                     />
                     <!-- Page number labels -->
@@ -577,7 +577,7 @@ export interface CropRect {
                         [attr.y]="highlight.rect.y"
                         [attr.width]="highlight.rect.w"
                         [attr.height]="highlight.rect.h"
-                        [attr.fill]="highlight.color + '30'"
+                        [attr.fill]="highlight.color + '70'"
                         [attr.stroke]="highlight.color"
                       />
                       @if (highlight.deleted) {
@@ -644,8 +644,8 @@ export interface CropRect {
                         [attr.y]="currentMarqueeRect()!.y"
                         [attr.width]="currentMarqueeRect()!.width"
                         [attr.height]="currentMarqueeRect()!.height"
-                        fill="rgba(255, 107, 53, 0.15)"
-                        stroke="var(--accent, #ff6b35)"
+                        fill="rgba(255, 149, 0, 0.45)"
+                        stroke="var(--accent, #FF9500)"
                         stroke-width="2"
                         stroke-dasharray="6,3"
                       />
@@ -880,7 +880,7 @@ export interface CropRect {
       top: 0;
       bottom: 0;
       width: 4px;
-      background: var(--accent, #ff6b35);
+      background: var(--accent, #FF9500);
       border-radius: 2px;
       animation: dropIndicatorPulse 0.5s ease-in-out infinite;
     }
@@ -1018,12 +1018,12 @@ export interface CropRect {
     /* Page selected (for organize/chapters mode) */
     .page-wrapper.page-selected {
       .page-content {
-        outline: 3px solid var(--accent, #ff6b35);
+        outline: 3px solid var(--accent, #FF9500);
         outline-offset: -3px;
       }
 
       .page-label {
-        background: var(--accent, #ff6b35);
+        background: var(--accent, #FF9500);
         color: white;
       }
     }
@@ -1047,8 +1047,8 @@ export interface CropRect {
 
     .page-marquee-box {
       position: absolute;
-      background: var(--selected-bg-muted, rgba(255, 107, 53, 0.15));
-      border: 2px solid var(--accent, #ff6b35);
+      background: var(--selected-bg-muted, rgba(255, 149, 0, 0.35));
+      border: 2px solid var(--accent, #FF9500);
       pointer-events: none;
       z-index: 50;
     }
@@ -1120,7 +1120,7 @@ export interface CropRect {
     }
 
     .crop-border {
-      stroke: var(--accent, #ff6b35);
+      stroke: var(--accent, #FF9500);
       stroke-width: 3;
       stroke-dasharray: 8,4;
       cursor: move;
@@ -1129,7 +1129,7 @@ export interface CropRect {
     }
 
     .crop-handle {
-      fill: var(--accent, #ff6b35);
+      fill: var(--accent, #FF9500);
       stroke: white;
       stroke-width: 1.5;
       pointer-events: all;
@@ -2063,12 +2063,12 @@ export class PdfViewerComponent implements AfterViewInit {
 
   getBlockFill(block: TextBlock): string {
     const cat = this.categories()[block.category_id];
-    return (cat?.color || '#ff6b35') + '40';
+    return (cat?.color || '#FF9500') + '70';
   }
 
   getBlockStroke(block: TextBlock): string {
     const cat = this.categories()[block.category_id];
-    return cat?.color || '#ff6b35';
+    return cat?.color || '#FF9500';
   }
 
   isSelected(blockId: string): boolean {

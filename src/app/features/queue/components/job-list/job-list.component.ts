@@ -1,0 +1,353 @@
+/**
+ * Job List Component - Displays queue jobs with status and actions
+ */
+
+import { Component, input, output, computed } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
+
+@Component({
+  selector: 'app-job-list',
+  standalone: true,
+  imports: [CommonModule, DesktopButtonComponent],
+  template: `
+    <div class="job-list">
+      @for (job of jobs(); track job.id) {
+        <div
+          class="job-item"
+          [class.processing]="job.status === 'processing'"
+          [class.complete]="job.status === 'complete'"
+          [class.error]="job.status === 'error'"
+          [class.selected]="job.id === selectedJobId()"
+          (click)="select.emit(job.id)"
+        >
+          <!-- Status indicator -->
+          <div class="status-indicator" [class]="job.status">
+            @switch (job.status) {
+              @case ('pending') {
+                <span class="icon">&#9711;</span>
+              }
+              @case ('processing') {
+                <span class="icon spinning">&#10227;</span>
+              }
+              @case ('complete') {
+                <span class="icon">&#10003;</span>
+              }
+              @case ('error') {
+                <span class="icon">&#10007;</span>
+              }
+            }
+          </div>
+
+          <!-- Job info -->
+          <div class="job-info">
+            <div class="job-title">
+              <span class="job-type-badge" [class]="job.type">
+                {{ getJobTypeLabel(job.type) }}
+              </span>
+              <span class="filename">{{ job.epubFilename }}</span>
+            </div>
+            @if (job.metadata?.title) {
+              <div class="job-meta">{{ job.metadata!.title }}</div>
+            }
+            @if (job.status === 'processing' && job.progress !== undefined) {
+              <div class="progress-bar">
+                <div class="progress-fill" [style.width.%]="job.progress"></div>
+              </div>
+            }
+            @if (job.status === 'error' && job.error) {
+              <div class="error-message">{{ job.error }}</div>
+            }
+          </div>
+
+          <!-- Actions -->
+          <div class="job-actions">
+            @if (job.status === 'pending') {
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [iconOnly]="true"
+                title="Move up"
+                (click)="moveUp.emit(job.id)"
+              >
+                &#8593;
+              </desktop-button>
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [iconOnly]="true"
+                title="Move down"
+                (click)="moveDown.emit(job.id)"
+              >
+                &#8595;
+              </desktop-button>
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [iconOnly]="true"
+                title="Remove"
+                (click)="remove.emit(job.id)"
+              >
+                &#10005;
+              </desktop-button>
+            }
+            @if (job.status === 'processing') {
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [iconOnly]="true"
+                title="Cancel"
+                (click)="cancel.emit(job.id)"
+              >
+                &#9632;
+              </desktop-button>
+            }
+            @if (job.status === 'error') {
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [iconOnly]="true"
+                title="Retry"
+                (click)="retry.emit(job.id)"
+              >
+                &#8635;
+              </desktop-button>
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [iconOnly]="true"
+                title="Remove"
+                (click)="remove.emit(job.id)"
+              >
+                &#10005;
+              </desktop-button>
+            }
+            @if (job.status === 'complete') {
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [iconOnly]="true"
+                title="Remove"
+                (click)="remove.emit(job.id)"
+              >
+                &#10005;
+              </desktop-button>
+            }
+          </div>
+        </div>
+      } @empty {
+        <div class="empty-list">
+          <p>No jobs in queue</p>
+        </div>
+      }
+    </div>
+  `,
+  styles: [`
+    .job-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .job-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      padding: 0.75rem;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      transition: all 0.15s ease;
+      cursor: pointer;
+
+      &:hover {
+        background: var(--bg-hover);
+      }
+
+      &.selected {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 10%, var(--bg-subtle));
+      }
+
+      &.processing {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 5%, var(--bg-subtle));
+      }
+
+      &.complete {
+        border-color: var(--success);
+        opacity: 0.8;
+
+        &.selected {
+          opacity: 1;
+          border-color: var(--accent);
+        }
+      }
+
+      &.error {
+        border-color: var(--error);
+
+        &.selected {
+          border-color: var(--accent);
+        }
+      }
+    }
+
+    .status-indicator {
+      flex-shrink: 0;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+
+      .icon {
+        line-height: 1;
+      }
+
+      &.pending {
+        color: var(--text-secondary);
+      }
+
+      &.processing {
+        color: var(--accent);
+      }
+
+      &.complete {
+        color: var(--success);
+      }
+
+      &.error {
+        color: var(--error);
+      }
+    }
+
+    .spinning {
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .job-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .job-title {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .job-type-badge {
+      font-size: 0.625rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      padding: 0.125rem 0.375rem;
+      border-radius: 3px;
+      letter-spacing: 0.02em;
+
+      &.ocr-cleanup {
+        background: var(--accent-subtle);
+        color: var(--accent);
+      }
+
+      &.tts-conversion {
+        background: var(--selected-bg-muted);
+        color: var(--accent-hover);
+      }
+    }
+
+    .filename {
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .job-meta {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      margin-top: 0.25rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .progress-bar {
+      height: 4px;
+      background: var(--bg-elevated);
+      border-radius: 2px;
+      margin-top: 0.5rem;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+      transition: width 0.3s ease;
+    }
+
+    .error-message {
+      font-size: 0.75rem;
+      color: var(--error);
+      margin-top: 0.25rem;
+    }
+
+    .job-actions {
+      display: flex;
+      gap: 0.25rem;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .job-item:hover .job-actions {
+      opacity: 1;
+    }
+
+    .job-item.processing .job-actions,
+    .job-item.error .job-actions {
+      opacity: 1;
+    }
+
+    .empty-list {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+    }
+  `]
+})
+export class JobListComponent {
+  // Inputs
+  readonly jobs = input<QueueJob[]>([]);
+  readonly selectedJobId = input<string | null>(null);
+
+  // Outputs
+  readonly remove = output<string>();
+  readonly retry = output<string>();
+  readonly cancel = output<string>();
+  readonly moveUp = output<string>();
+  readonly moveDown = output<string>();
+  readonly select = output<string>();
+
+  getJobTypeLabel(type: JobType): string {
+    switch (type) {
+      case 'ocr-cleanup':
+        return 'OCR';
+      case 'tts-conversion':
+        return 'TTS';
+      default:
+        return type;
+    }
+  }
+}

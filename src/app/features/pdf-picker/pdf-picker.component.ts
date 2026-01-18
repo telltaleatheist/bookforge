@@ -1,5 +1,6 @@
 import { Component, inject, signal, computed, HostListener, ViewChild, ElementRef, effect, DestroyRef, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Router } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
 import { ElectronService, Chapter } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit } from './services/editor-state.service';
@@ -20,11 +21,10 @@ import { FilePickerComponent } from './components/file-picker/file-picker.compon
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
 import { SplitPanelComponent, SplitConfig } from './components/split-panel/split-panel.component';
 import { ChaptersPanelComponent } from './components/chapters-panel/chapters-panel.component';
-import { LibraryViewComponent } from './components/library-view/library-view.component';
+import { LibraryViewComponent, ProjectFile } from './components/library-view/library-view.component';
 import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
 import { OcrSettingsModalComponent, OcrSettings, OcrPageResult, OcrCompletionEvent } from './components/ocr-settings-modal/ocr-settings-modal.component';
 import { InlineTextEditorComponent, TextEditResult } from './components/inline-text-editor/inline-text-editor.component';
-import { SettingsModalComponent } from './components/settings-modal/settings-modal.component';
 import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportFormat } from './components/export-settings-modal/export-settings-modal.component';
 import { BackgroundProgressComponent, BackgroundJob } from './components/background-progress/background-progress.component';
 import { OcrJobService, OcrJob } from './services/ocr-job.service';
@@ -153,7 +153,6 @@ interface AlertModal {
     TabBarComponent,
     OcrSettingsModalComponent,
     InlineTextEditorComponent,
-    SettingsModalComponent,
     ExportSettingsModalComponent,
     BackgroundProgressComponent,
   ],
@@ -493,6 +492,7 @@ interface AlertModal {
           (clearCache)="onClearCache($event)"
           (projectsDeleted)="onProjectsDeleted($event)"
           (error)="onLibraryError($event)"
+          (transferToAudiobook)="onTransferToAudiobook($event)"
         />
 
       </div>
@@ -640,14 +640,6 @@ interface AlertModal {
         (close)="showOcrSettings.set(false)"
         (ocrCompleted)="onOcrCompleted($event)"
         (backgroundJobStarted)="onBackgroundOcrStarted($event)"
-      />
-    }
-
-
-    <!-- Settings Modal -->
-    @if (showSettings()) {
-      <app-settings-modal
-        (close)="showSettings.set(false)"
       />
     }
 
@@ -1713,6 +1705,7 @@ export class PdfPickerComponent {
   private readonly pdfService = inject(PdfService);
   private readonly electronService = inject(ElectronService);
   private readonly exportService = inject(ExportService);
+  private readonly router = inject(Router);
   private readonly pageRenderService = inject(PageRenderService);
   private readonly ocrPostProcessor = inject(OcrPostProcessorService);
   private readonly ocrJobService = inject(OcrJobService);
@@ -2042,7 +2035,6 @@ export class PdfPickerComponent {
   };
 
   readonly showFilePicker = signal(false);
-  readonly showSettings = signal(false);
   readonly showExportSettings = signal(false);
   readonly loading = signal(false);
   readonly loadingText = signal('Loading...');
@@ -2401,48 +2393,16 @@ export class PdfPickerComponent {
         { id: 'zoom-out', type: 'button', icon: '−', tooltip: 'Zoom out' },
         { id: 'zoom-level', type: 'button', label: `${this.zoom()}%`, disabled: true },
         { id: 'zoom-in', type: 'button', icon: '+', tooltip: 'Zoom in' },
-        { id: 'zoom-reset', type: 'button', label: 'Reset', tooltip: 'Reset zoom' },
-        { id: 'divider3', type: 'divider' },
-        {
-          id: 'ui-size',
-          type: 'dropdown',
-          icon: '⚙',
-          label: this.getUiSizeLabel(),
-          tooltip: 'UI Size',
-          items: [
-            { id: 'ui-small', label: 'Small' },
-            { id: 'ui-medium', label: 'Medium' },
-            { id: 'ui-large', label: 'Large' }
-          ]
-        },
-        { id: 'settings', type: 'button', icon: '⚙️', tooltip: 'Settings' }
+        { id: 'zoom-reset', type: 'button', label: 'Reset', tooltip: 'Reset zoom' }
       ];
     }
 
     // When no PDF is open, show minimal toolbar
     return [
       ...baseItems,
-      { id: 'spacer', type: 'spacer' },
-      {
-        id: 'ui-size',
-        type: 'dropdown',
-        icon: '⚙',
-        label: this.getUiSizeLabel(),
-        tooltip: 'UI Size',
-        items: [
-          { id: 'ui-small', label: 'Small' },
-          { id: 'ui-medium', label: 'Medium' },
-          { id: 'ui-large', label: 'Large' }
-        ]
-      },
-      { id: 'settings', type: 'button', icon: '⚙️', tooltip: 'Settings' }
+      { id: 'spacer', type: 'spacer' }
     ];
   });
-
-  private getUiSizeLabel(): string {
-    const size = this.themeService.uiSize();
-    return size.charAt(0).toUpperCase() + size.slice(1);
-  }
 
   // Computed values
   readonly visibleBlocks = computed(() => {
@@ -2568,9 +2528,6 @@ export class PdfPickerComponent {
       case 'zoom-reset':
         this.userAdjustedZoom = true;
         this.zoom.set(100);
-        break;
-      case 'settings':
-        this.showSettings.set(true);
         break;
     }
   }
@@ -2971,6 +2928,73 @@ export class PdfPickerComponent {
       message,
       type: 'error'
     });
+  }
+
+  /**
+   * Handle transfer to audiobook from library view.
+   * For EPUB sources, copies directly to the audiobook queue.
+   * For PDF sources, needs to be opened first to export.
+   */
+  async onTransferToAudiobook(projects: ProjectFile[]): Promise<void> {
+    if (projects.length === 0) return;
+
+    const epubProjects = projects.filter(p => p.sourceName.toLowerCase().endsWith('.epub'));
+    const pdfProjects = projects.filter(p => !p.sourceName.toLowerCase().endsWith('.epub'));
+
+    // Handle PDFs - they need to be opened first to export
+    if (pdfProjects.length > 0 && epubProjects.length === 0) {
+      this.alertModal.set({
+        title: 'Open Project First',
+        message: 'PDF projects need to be opened first before transferring to audiobook. Open the project and use Export → Audiobook from the toolbar.',
+        type: 'info'
+      });
+      return;
+    }
+
+    // Warn about PDFs if mixed selection
+    if (pdfProjects.length > 0) {
+      this.alertModal.set({
+        title: 'Partial Transfer',
+        message: `${pdfProjects.length} PDF project(s) skipped. Only EPUB projects can be transferred directly. Open PDF projects and use Export → Audiobook from the toolbar.`,
+        type: 'info'
+      });
+    }
+
+    // Copy EPUB files to audiobook queue
+    let successCount = 0;
+    const errors: string[] = [];
+
+    for (const project of epubProjects) {
+      try {
+        const result = await this.electronService.copyToAudiobookQueue(
+          project.sourcePath,
+          project.sourceName
+        );
+        if (result.success) {
+          successCount++;
+        } else {
+          errors.push(`${project.sourceName}: ${result.error || 'Unknown error'}`);
+        }
+      } catch (err) {
+        errors.push(`${project.sourceName}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      }
+    }
+
+    if (successCount > 0) {
+      this.alertModal.set({
+        title: 'Transferred to Audiobook',
+        message: `${successCount} EPUB${successCount > 1 ? 's' : ''} added to Audiobook Producer.${errors.length > 0 ? `\n\nFailed: ${errors.join(', ')}` : ''}`,
+        type: 'success'
+      });
+      // Navigate to audiobook producer
+      this.router.navigate(['/audiobook']);
+    } else if (errors.length > 0) {
+      this.alertModal.set({
+        title: 'Transfer Failed',
+        message: errors.join('\n'),
+        type: 'error'
+      });
+    }
   }
 
   private closePdf(): void {

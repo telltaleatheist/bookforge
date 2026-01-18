@@ -1,10 +1,17 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { ElectronService } from './electron.service';
+import {
+  AIConfig,
+  DEFAULT_AI_CONFIG,
+  OLLAMA_MODELS,
+  CLAUDE_MODELS,
+  OPENAI_MODELS
+} from '../models/ai-config.types';
 
 /**
  * Setting field types matching plugin-types.ts
  */
-export type SettingFieldType = 'string' | 'number' | 'boolean' | 'select' | 'path';
+export type SettingFieldType = 'string' | 'number' | 'boolean' | 'select' | 'path' | 'password';
 
 /**
  * Schema for a setting field
@@ -73,22 +80,6 @@ export class SettingsService {
         icon: '⚙️',
         fields: [
           {
-            key: 'autoSave',
-            type: 'boolean',
-            label: 'Auto-save projects',
-            description: 'Automatically save projects when changes are made',
-            default: true,
-          },
-          {
-            key: 'autoSaveInterval',
-            type: 'number',
-            label: 'Auto-save interval (seconds)',
-            description: 'How often to auto-save (minimum 10 seconds)',
-            default: 30,
-            min: 10,
-            max: 300,
-          },
-          {
             key: 'maxRecentFiles',
             type: 'number',
             label: 'Recent files limit',
@@ -100,43 +91,18 @@ export class SettingsService {
         ],
       },
       {
-        id: 'appearance',
-        name: 'Appearance',
-        description: 'Visual settings',
-        icon: '🎨',
-        fields: [
-          {
-            key: 'theme',
-            type: 'select',
-            label: 'Theme',
-            description: 'Application color theme',
-            default: 'dark',
-            options: [
-              { value: 'light', label: 'Light' },
-              { value: 'dark', label: 'Dark' },
-              { value: 'system', label: 'System' },
-            ],
-          },
-          {
-            key: 'uiScale',
-            type: 'select',
-            label: 'UI Scale',
-            description: 'Interface size',
-            default: 'normal',
-            options: [
-              { value: 'compact', label: 'Compact' },
-              { value: 'normal', label: 'Normal' },
-              { value: 'large', label: 'Large' },
-            ],
-          },
-        ],
-      },
-      {
         id: 'storage',
         name: 'Storage',
         description: 'Manage cached data and storage',
         icon: '💾',
         fields: [], // Storage section has custom UI, not standard fields
+      },
+      {
+        id: 'ai',
+        name: 'AI',
+        description: 'Configure AI provider for OCR text cleanup',
+        icon: '🤖',
+        fields: [], // AI section has custom UI
       },
     ];
 
@@ -275,6 +241,47 @@ export class SettingsService {
       }
     }
 
+    // Initialize AI config with defaults
+    defaults['aiConfig'] = { ...DEFAULT_AI_CONFIG };
+
     this.values.set(defaults);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // AI Configuration
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Get AI configuration
+   */
+  getAIConfig(): AIConfig {
+    const config = this.values()['aiConfig'] as AIConfig | undefined;
+    if (!config) {
+      return { ...DEFAULT_AI_CONFIG };
+    }
+    // Merge with defaults to ensure all fields exist
+    return {
+      ...DEFAULT_AI_CONFIG,
+      ...config,
+      ollama: { ...DEFAULT_AI_CONFIG.ollama, ...config.ollama },
+      claude: { ...DEFAULT_AI_CONFIG.claude, ...config.claude },
+      openai: { ...DEFAULT_AI_CONFIG.openai, ...config.openai }
+    };
+  }
+
+  /**
+   * Set AI configuration
+   */
+  setAIConfig(config: AIConfig): void {
+    this.values.update(v => ({ ...v, aiConfig: config }));
+    this.saveSettings();
+  }
+
+  /**
+   * Update a single AI config field
+   */
+  updateAIConfig(updates: Partial<AIConfig>): void {
+    const current = this.getAIConfig();
+    this.setAIConfig({ ...current, ...updates });
   }
 }

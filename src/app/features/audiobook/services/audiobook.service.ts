@@ -42,6 +42,9 @@ export interface QueueFileInfo {
   filename: string;
   size: number;
   addedAt: string;
+  // Project-based fields
+  projectId?: string;
+  hasCleaned?: boolean;
 }
 
 export type AvailabilityStatus = 'unknown' | 'checking' | 'available' | 'unavailable';
@@ -256,8 +259,8 @@ export class AudiobookService {
   async generateFilename(
     title: string,
     subtitle?: string,
-    author?: string,
-    authorFileAs?: string,
+    authorFirst?: string,
+    authorLast?: string,
     year?: string
   ): Promise<string> {
     if (!this.electron) {
@@ -266,10 +269,15 @@ export class AudiobookService {
     }
 
     try {
+      // Build author in "Last, First" format
+      const authorFileAs = authorLast
+        ? (authorFirst ? `${authorLast}, ${authorFirst}` : authorLast)
+        : authorFirst || '';
+
       const result = await this.electron.tts.generateFilename(
         title,
         subtitle,
-        author,
+        authorFirst && authorLast ? `${authorFirst} ${authorLast}` : (authorFirst || authorLast || ''),
         authorFileAs,
         year
       );

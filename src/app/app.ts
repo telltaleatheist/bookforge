@@ -5,7 +5,6 @@ import {
   WindowChromeComponent,
   StatusBarComponent,
   StatusBarItem,
-  DesktopButtonComponent,
   DesktopThemeService
 } from './creamsicle-desktop';
 import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.component';
@@ -20,7 +19,6 @@ import { LibraryService } from './core/services/library.service';
     RouterOutlet,
     WindowChromeComponent,
     StatusBarComponent,
-    DesktopButtonComponent,
     NavRailComponent,
     OnboardingComponent
   ],
@@ -126,6 +124,18 @@ export class App implements OnInit {
       icon: '\u{1F3A7}', // Headphones emoji
       label: 'Audio',
       route: '/audiobook'
+    },
+    {
+      id: 'queue',
+      icon: '\u{23F3}', // Hourglass emoji
+      label: 'Queue',
+      route: '/queue'
+    },
+    {
+      id: 'settings',
+      icon: '\u{2699}', // Gear emoji
+      label: 'Settings',
+      route: '/settings'
     }
   ];
 
@@ -139,10 +149,6 @@ export class App implements OnInit {
 
   ngOnInit() {
     this.themeService.initializeTheme();
-  }
-
-  toggleTheme() {
-    this.themeService.toggleTheme();
   }
 
   onOnboardingComplete(): void {

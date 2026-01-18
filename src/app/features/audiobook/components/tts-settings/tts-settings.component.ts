@@ -1,7 +1,9 @@
-import { Component, input, output, signal, OnInit } from '@angular/core';
+import { Component, input, output, signal, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { QueueService } from '../../../queue/services/queue.service';
 
 export interface TTSSettings {
   device: 'gpu' | 'mps' | 'cpu';
@@ -191,6 +193,36 @@ export interface VoiceOption {
           >
             Start Conversion
           </desktop-button>
+        </div>
+
+        <!-- Add to Queue Section -->
+        <div class="queue-section">
+          <div class="queue-divider">
+            <span>OR</span>
+          </div>
+          <div class="queue-content">
+            <h4>Process via Queue</h4>
+            <p>Add this EPUB to the processing queue for automatic TTS conversion. Jobs run in the background.</p>
+            <div class="queue-actions">
+              <desktop-button
+                variant="secondary"
+                [disabled]="!ttsAvailable() || addingToQueue()"
+                (click)="addToQueue()"
+              >
+                @if (addingToQueue()) {
+                  Adding...
+                } @else {
+                  Add to Queue
+                }
+              </desktop-button>
+              @if (addedToQueue()) {
+                <span class="queue-status success">Added to queue</span>
+                <desktop-button variant="ghost" size="sm" (click)="goToQueue()">
+                  View Queue
+                </desktop-button>
+              }
+            </div>
+          </div>
         </div>
       }
     </div>
@@ -424,9 +456,71 @@ export interface VoiceOption {
       display: flex;
       justify-content: center;
     }
+
+    .queue-section {
+      margin-top: 1.5rem;
+    }
+
+    .queue-divider {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1rem;
+
+      &::before,
+      &::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: var(--border-default);
+      }
+
+      span {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+    }
+
+    .queue-content {
+      background: var(--bg-subtle);
+      padding: 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+
+      h4 {
+        margin: 0 0 0.5rem 0;
+        font-size: 0.875rem;
+        color: var(--text-primary);
+      }
+
+      p {
+        margin: 0 0 1rem 0;
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+      }
+    }
+
+    .queue-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .queue-status {
+      font-size: 0.8125rem;
+
+      &.success {
+        color: var(--accent-success);
+      }
+    }
   `]
 })
 export class TtsSettingsComponent implements OnInit {
+  private readonly queueService = inject(QueueService);
+  private readonly router = inject(Router);
+
   // Inputs
   readonly settings = input<TTSSettings>({
     device: 'mps',
@@ -435,6 +529,8 @@ export class TtsSettingsComponent implements OnInit {
     temperature: 0.75,
     speed: 1.0
   });
+  readonly epubPath = input<string>('');
+  readonly metadata = input<{ title?: string; author?: string } | undefined>(undefined);
 
   // Outputs
   readonly settingsChange = output<TTSSettings>();
@@ -444,6 +540,8 @@ export class TtsSettingsComponent implements OnInit {
   readonly ttsAvailable = signal(false);
   readonly checkingStatus = signal(true);
   readonly showAdvanced = signal(false);
+  readonly addingToQueue = signal(false);
+  readonly addedToQueue = signal(false);
   readonly availableVoices = signal<VoiceOption[]>([
     { id: 'en_default', name: 'Default English', language: 'en' },
     { id: 'en_male', name: 'English Male', language: 'en' },
@@ -502,5 +600,39 @@ export class TtsSettingsComponent implements OnInit {
       const mins = baseTime % 60;
       this.estimatedTime.set(`~${hours}h ${mins}m`);
     }
+  }
+
+  async addToQueue(): Promise<void> {
+    const path = this.epubPath();
+    if (!path) return;
+
+    this.addingToQueue.set(true);
+    this.addedToQueue.set(false);
+
+    try {
+      const currentSettings = this.settings();
+      await this.queueService.addJob({
+        type: 'tts-conversion',
+        epubPath: path,
+        metadata: this.metadata(),
+        config: {
+          type: 'tts-conversion',
+          device: currentSettings.device,
+          language: currentSettings.language,
+          voice: currentSettings.voice,
+          temperature: currentSettings.temperature,
+          speed: currentSettings.speed
+        }
+      });
+      this.addedToQueue.set(true);
+    } catch (err) {
+      console.error('Failed to add to queue:', err);
+    } finally {
+      this.addingToQueue.set(false);
+    }
+  }
+
+  goToQueue(): void {
+    this.router.navigate(['/queue']);
   }
 }

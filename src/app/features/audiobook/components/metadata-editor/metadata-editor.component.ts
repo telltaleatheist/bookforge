@@ -1,4 +1,4 @@
-import { Component, input, output, signal, computed, effect } from '@angular/core';
+import { Component, input, output, signal, computed, effect, HostListener } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
@@ -7,11 +7,13 @@ export interface EpubMetadata {
   title: string;
   subtitle?: string;
   author: string;
-  authorFileAs?: string;
+  authorFirst?: string;
+  authorLast?: string;
   year?: string;
   language: string;
   coverPath?: string;
   coverData?: string;
+  outputFilename?: string;
 }
 
 @Component({
@@ -28,7 +30,7 @@ export interface EpubMetadata {
           } @else {
             <div class="no-cover">
               <span class="icon">&#128247;</span>
-              <span>Click to add cover</span>
+              <span>Click or paste image</span>
             </div>
           }
         </div>
@@ -65,26 +67,25 @@ export interface EpubMetadata {
 
         <div class="form-row">
           <div class="form-group">
-            <label for="author">Author</label>
+            <label for="authorFirst">Author First Name</label>
             <input
-              id="author"
+              id="authorFirst"
               type="text"
-              [ngModel]="formData().author"
-              (ngModelChange)="updateField('author', $event)"
-              placeholder="Author name"
+              [ngModel]="formData().authorFirst"
+              (ngModelChange)="updateAuthorField('authorFirst', $event)"
+              placeholder="First name"
             />
           </div>
 
           <div class="form-group">
-            <label for="authorFileAs">Author (File As)</label>
+            <label for="authorLast">Author Last Name</label>
             <input
-              id="authorFileAs"
+              id="authorLast"
               type="text"
-              [ngModel]="formData().authorFileAs"
-              (ngModelChange)="updateField('authorFileAs', $event)"
-              placeholder="Last, First"
+              [ngModel]="formData().authorLast"
+              (ngModelChange)="updateAuthorField('authorLast', $event)"
+              placeholder="Last name"
             />
-            <span class="hint">Used for sorting (e.g., "Smith, John")</span>
           </div>
         </div>
 
@@ -120,10 +121,36 @@ export interface EpubMetadata {
           </div>
         </div>
 
-        <!-- Output filename preview -->
-        <div class="output-preview">
-          <label>Output Filename</label>
-          <div class="preview-text">{{ outputFilename() }}</div>
+        <!-- Output filename (editable) -->
+        <div class="form-group filename-group">
+          <label for="outputFilename">Output Filename</label>
+          <input
+            id="outputFilename"
+            type="text"
+            [ngModel]="formData().outputFilename || generatedFilename()"
+            (ngModelChange)="updateField('outputFilename', $event)"
+            (focus)="onFilenameFocus()"
+            placeholder="filename.m4b"
+            class="filename-input"
+          />
+          <span class="hint">Auto-generated from metadata. Edit to customize.</span>
+        </div>
+
+        <!-- Save button -->
+        <div class="save-section">
+          <desktop-button
+            variant="primary"
+            (click)="onSave()"
+            [disabled]="saving()"
+          >
+            @if (saving()) {
+              Saving...
+            } @else if (saveSuccess()) {
+              Saved!
+            } @else {
+              Save Metadata
+            }
+          </desktop-button>
         </div>
       </div>
 
@@ -249,50 +276,51 @@ export interface EpubMetadata {
       }
     }
 
-    .output-preview {
+    .filename-group {
       margin-top: 1rem;
-      padding: 1rem;
-      background: var(--bg-subtle);
-      border-radius: 6px;
 
-      label {
-        display: block;
-        font-size: 0.75rem;
-        font-weight: 500;
-        color: var(--text-secondary);
-        text-transform: uppercase;
-        letter-spacing: 0.02em;
-        margin-bottom: 0.5rem;
-      }
-
-      .preview-text {
+      .filename-input {
         font-family: monospace;
         font-size: 0.8125rem;
-        color: var(--text-primary);
-        word-break: break-all;
       }
+    }
+
+    .save-section {
+      margin-top: 1.5rem;
+      display: flex;
+      justify-content: flex-end;
     }
   `]
 })
 export class MetadataEditorComponent {
   // Inputs
   readonly metadata = input<EpubMetadata | null>(null);
+  readonly saving = input<boolean>(false);
 
   // Outputs
   readonly metadataChange = output<EpubMetadata>();
   readonly coverChange = output<string>();
+  readonly save = output<EpubMetadata>();
+
+  // Local state for save feedback
+  readonly saveSuccess = signal(false);
 
   // Internal form state
   readonly formData = signal<EpubMetadata>({
     title: '',
     subtitle: '',
     author: '',
-    authorFileAs: '',
+    authorFirst: '',
+    authorLast: '',
     year: '',
     language: 'en',
     coverPath: '',
-    coverData: ''
+    coverData: '',
+    outputFilename: ''
   });
+
+  // Track if user has manually edited the filename
+  private filenameManuallyEdited = false;
 
   // Cover preview
   readonly coverPreview = computed(() => {
@@ -300,8 +328,8 @@ export class MetadataEditorComponent {
     return data.coverData || null;
   });
 
-  // Computed output filename
-  readonly outputFilename = computed(() => {
+  // Generated filename (used when not manually edited)
+  readonly generatedFilename = computed(() => {
     const data = this.formData();
     let filename = data.title || 'Untitled';
 
@@ -311,17 +339,15 @@ export class MetadataEditorComponent {
 
     filename += '.';
 
-    if (data.authorFileAs) {
-      filename += ` ${data.authorFileAs}.`;
-    } else if (data.author) {
-      // Auto-convert "First Last" to "Last, First"
-      const parts = data.author.trim().split(' ');
-      if (parts.length >= 2) {
-        const last = parts.pop();
-        filename += ` ${last}, ${parts.join(' ')}.`;
-      } else {
-        filename += ` ${data.author}.`;
+    // Use Last, First format
+    if (data.authorLast) {
+      filename += ` ${data.authorLast}`;
+      if (data.authorFirst) {
+        filename += `, ${data.authorFirst}`;
       }
+      filename += '.';
+    } else if (data.authorFirst) {
+      filename += ` ${data.authorFirst}.`;
     }
 
     if (data.year) {
@@ -334,30 +360,90 @@ export class MetadataEditorComponent {
     return filename.replace(/\s+/g, ' ').replace(/\.\s*\./g, '.');
   });
 
+  private wasSaving = false;
+
   constructor() {
     // Sync form data with input metadata
     effect(() => {
       const meta = this.metadata();
       if (meta) {
-        this.formData.set({ ...meta });
+        // Parse author into first/last if not already set
+        let authorFirst = meta.authorFirst || '';
+        let authorLast = meta.authorLast || '';
+
+        if (!authorFirst && !authorLast && meta.author) {
+          const parts = meta.author.trim().split(' ');
+          if (parts.length >= 2) {
+            authorLast = parts.pop() || '';
+            authorFirst = parts.join(' ');
+          } else {
+            authorFirst = meta.author;
+          }
+        }
+
+        this.formData.set({
+          ...meta,
+          authorFirst,
+          authorLast
+        });
+
+        // Reset manual edit flag when loading new metadata
+        this.filenameManuallyEdited = !!meta.outputFilename;
       }
+    }, { allowSignalWrites: true });
+
+    // Show "Saved!" when saving completes
+    effect(() => {
+      const isSaving = this.saving();
+      if (this.wasSaving && !isSaving) {
+        // Saving just finished
+        this.saveSuccess.set(true);
+        setTimeout(() => this.saveSuccess.set(false), 2000);
+      }
+      this.wasSaving = isSaving;
     }, { allowSignalWrites: true });
   }
 
   updateField(field: keyof EpubMetadata, value: string): void {
     this.formData.update(data => ({ ...data, [field]: value }));
 
-    // Auto-generate authorFileAs if not set
-    if (field === 'author' && !this.formData().authorFileAs) {
-      const parts = value.trim().split(' ');
-      if (parts.length >= 2) {
-        const last = parts.pop();
-        const fileAs = `${last}, ${parts.join(' ')}`;
-        this.formData.update(data => ({ ...data, authorFileAs: fileAs }));
-      }
+    // Track if filename was manually edited
+    if (field === 'outputFilename') {
+      this.filenameManuallyEdited = true;
+    }
+
+    // If other fields change and filename wasn't manually edited, clear it to use generated
+    if (field !== 'outputFilename' && !this.filenameManuallyEdited) {
+      this.formData.update(data => ({ ...data, outputFilename: '' }));
     }
 
     this.metadataChange.emit(this.formData());
+  }
+
+  updateAuthorField(field: 'authorFirst' | 'authorLast', value: string): void {
+    this.formData.update(data => {
+      const updated = { ...data, [field]: value };
+      // Also update the combined author field
+      const first = field === 'authorFirst' ? value : data.authorFirst || '';
+      const last = field === 'authorLast' ? value : data.authorLast || '';
+      updated.author = [first, last].filter(Boolean).join(' ');
+      return updated;
+    });
+
+    // If filename wasn't manually edited, clear it to use generated
+    if (!this.filenameManuallyEdited) {
+      this.formData.update(data => ({ ...data, outputFilename: '' }));
+    }
+
+    this.metadataChange.emit(this.formData());
+  }
+
+  onFilenameFocus(): void {
+    // If no custom filename yet, populate with generated one so user can edit it
+    const data = this.formData();
+    if (!data.outputFilename) {
+      this.formData.update(d => ({ ...d, outputFilename: this.generatedFilename() }));
+    }
   }
 
   selectCover(): void {
@@ -395,5 +481,27 @@ export class MetadataEditorComponent {
     this.formData.update(data => ({ ...data, coverData: '', coverPath: '' }));
     this.coverChange.emit('');
     this.metadataChange.emit(this.formData());
+  }
+
+  onSave(): void {
+    this.save.emit(this.formData());
+  }
+
+  @HostListener('window:paste', ['$event'])
+  onPaste(event: ClipboardEvent): void {
+    const items = event.clipboardData?.items;
+    if (!items) return;
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith('image/')) {
+        event.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          this.readCoverFile(file);
+        }
+        break;
+      }
+    }
   }
 }

@@ -15,6 +15,10 @@ export const routes: Routes = [
     loadComponent: () => import('./features/audiobook/audiobook.component').then(m => m.AudiobookComponent)
   },
   {
+    path: 'queue',
+    loadComponent: () => import('./features/queue/queue.component').then(m => m.QueueComponent)
+  },
+  {
     path: 'settings',
     loadComponent: () => import('./features/settings/settings.component').then(m => m.SettingsComponent)
   },

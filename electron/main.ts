@@ -1189,6 +1189,20 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // Diff Comparison handlers (for AI cleanup diff view)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('diff:load-comparison', async (_event, originalPath: string, cleanedPath: string) => {
+    try {
+      const { compareEpubs } = await import('./epub-processor.js');
+      const result = await compareEpubs(originalPath, cleanedPath);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // AI Bridge handlers (Ollama integration)
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1224,6 +1238,33 @@ function setupIpcHandlers(): void {
       const { aiBridge } = await import('./ai-bridge.js');
       const result = await aiBridge.cleanupText(text, options, chapterId, chapterTitle, model, mainWindow);
       return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ai:check-provider-connection', async (
+    _event,
+    provider: 'ollama' | 'claude' | 'openai'
+  ) => {
+    try {
+      const { aiBridge } = await import('./ai-bridge.js');
+      const result = await aiBridge.checkProviderConnection(provider);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Shell handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('shell:open-external', async (_event, url: string) => {
+    try {
+      const { shell } = await import('electron');
+      await shell.openExternal(url);
+      return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1297,76 +1338,518 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Library audiobook queue handlers
+  // Audiobook Project handlers
+  // Each audiobook is a folder containing: original.epub, cleaned.epub, project.json, output.m4b
   // ─────────────────────────────────────────────────────────────────────────────
 
-  ipcMain.handle('library:copy-to-queue', async (_event, sourcePath: string, filename: string) => {
+  const getAudiobooksBasePath = () => {
+    const documentsPath = app.getPath('documents');
+    return path.join(documentsPath, 'BookForge', 'audiobooks');
+  };
+
+  // Helper to generate a unique project folder name
+  const generateProjectId = (filename: string): string => {
+    const baseName = filename.replace(/\.epub$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const timestamp = Date.now().toString(36);
+    return `${baseName}_${timestamp}`;
+  };
+
+  // Helper to load project.json from a folder
+  const loadProjectFile = async (folderPath: string): Promise<any | null> => {
     try {
-      const documentsPath = app.getPath('documents');
-      const queuePath = path.join(documentsPath, 'BookForge', 'audiobooks', 'queue');
-      await fs.mkdir(queuePath, { recursive: true });
+      const projectJsonPath = path.join(folderPath, 'project.json');
+      const content = await fs.readFile(projectJsonPath, 'utf-8');
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
+  };
 
-      const destPath = path.join(queuePath, filename);
+  // Helper to save project.json
+  const saveProjectFile = async (folderPath: string, data: any): Promise<void> => {
+    const projectJsonPath = path.join(folderPath, 'project.json');
+    await fs.writeFile(projectJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+  };
 
-      // Check if sourcePath is a data URL (base64 encoded content)
+  // Create a new audiobook project from an EPUB file
+  ipcMain.handle('audiobook:create-project', async (_event, sourcePath: string, originalFilename: string) => {
+    try {
+      const basePath = getAudiobooksBasePath();
+      await fs.mkdir(basePath, { recursive: true });
+
+      // Generate unique project ID/folder name
+      const projectId = generateProjectId(originalFilename);
+      const folderPath = path.join(basePath, projectId);
+      await fs.mkdir(folderPath, { recursive: true });
+
+      // Copy EPUB as original.epub
+      const originalPath = path.join(folderPath, 'original.epub');
+
       if (sourcePath.startsWith('data:')) {
-        // Extract base64 content from data URL
+        // Handle base64 data URL
         const matches = sourcePath.match(/^data:[^;]+;base64,(.+)$/);
         if (!matches || !matches[1]) {
           return { success: false, error: 'Invalid data URL format' };
         }
-        const base64Content = matches[1];
-        const buffer = Buffer.from(base64Content, 'base64');
-        await fs.writeFile(destPath, buffer);
+        const buffer = Buffer.from(matches[1], 'base64');
+        await fs.writeFile(originalPath, buffer);
       } else {
-        // It's a regular file path
-        await fs.copyFile(sourcePath, destPath);
+        // Copy from file path
+        await fs.copyFile(sourcePath, originalPath);
       }
 
-      return { success: true, destinationPath: destPath };
+      // Create initial project.json
+      const now = new Date().toISOString();
+      const projectData = {
+        version: 1,
+        originalFilename,
+        metadata: {
+          title: '',
+          author: '',
+          language: 'en'
+        },
+        state: {
+          cleanupStatus: 'none',
+          ttsStatus: 'none'
+        },
+        createdAt: now,
+        modifiedAt: now
+      };
+
+      await saveProjectFile(folderPath, projectData);
+
+      return {
+        success: true,
+        projectId,
+        folderPath,
+        originalPath
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('library:list-queue', async () => {
+  // List all audiobook projects
+  ipcMain.handle('audiobook:list-projects', async () => {
     try {
-      const documentsPath = app.getPath('documents');
-      const queuePath = path.join(documentsPath, 'BookForge', 'audiobooks', 'queue');
+      const basePath = getAudiobooksBasePath();
 
       try {
-        const entries = await fs.readdir(queuePath, { withFileTypes: true });
-        const epubFiles = entries.filter(e => e.isFile() && e.name.toLowerCase().endsWith('.epub'));
+        const entries = await fs.readdir(basePath, { withFileTypes: true });
+        const folders = entries.filter(e => e.isDirectory());
 
-        const files = await Promise.all(epubFiles.map(async (e) => {
-          const filePath = path.join(queuePath, e.name);
-          const stats = await fs.stat(filePath);
+        const projects = await Promise.all(folders.map(async (folder) => {
+          const folderPath = path.join(basePath, folder.name);
+          const projectData = await loadProjectFile(folderPath);
+
+          if (!projectData) {
+            return null; // Not a valid project folder
+          }
+
+          // Check which files exist
+          const [hasOriginal, hasCleaned, hasOutput] = await Promise.all([
+            fs.access(path.join(folderPath, 'original.epub')).then(() => true).catch(() => false),
+            fs.access(path.join(folderPath, 'cleaned.epub')).then(() => true).catch(() => false),
+            fs.access(path.join(folderPath, 'output.m4b')).then(() => true).catch(() => false)
+          ]);
+
           return {
-            path: filePath,
-            filename: e.name,
-            size: stats.size,
-            addedAt: stats.mtime.toISOString()
+            id: folder.name,
+            folderPath,
+            originalFilename: projectData.originalFilename,
+            metadata: projectData.metadata,
+            state: projectData.state,
+            hasOriginal,
+            hasCleaned,
+            hasOutput,
+            createdAt: projectData.createdAt,
+            modifiedAt: projectData.modifiedAt
           };
         }));
 
-        return { success: true, files };
+        // Filter out null (invalid folders) and sort by modifiedAt descending
+        const validProjects = projects
+          .filter((p): p is NonNullable<typeof p> => p !== null)
+          .sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
+
+        return { success: true, projects: validProjects };
       } catch {
-        // Queue folder doesn't exist yet
-        return { success: true, files: [] };
+        // Folder doesn't exist yet
+        return { success: true, projects: [] };
       }
     } catch (err) {
       return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Get a single project's details
+  ipcMain.handle('audiobook:get-project', async (_event, projectId: string) => {
+    try {
+      const basePath = getAudiobooksBasePath();
+      const folderPath = path.join(basePath, projectId);
+
+      const projectData = await loadProjectFile(folderPath);
+      if (!projectData) {
+        return { success: false, error: 'Project not found' };
+      }
+
+      const [hasOriginal, hasCleaned, hasOutput] = await Promise.all([
+        fs.access(path.join(folderPath, 'original.epub')).then(() => true).catch(() => false),
+        fs.access(path.join(folderPath, 'cleaned.epub')).then(() => true).catch(() => false),
+        fs.access(path.join(folderPath, 'output.m4b')).then(() => true).catch(() => false)
+      ]);
+
+      return {
+        success: true,
+        project: {
+          id: projectId,
+          folderPath,
+          originalFilename: projectData.originalFilename,
+          metadata: projectData.metadata,
+          state: projectData.state,
+          hasOriginal,
+          hasCleaned,
+          hasOutput,
+          createdAt: projectData.createdAt,
+          modifiedAt: projectData.modifiedAt
+        }
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Save project metadata and state
+  ipcMain.handle('audiobook:save-project', async (_event, projectId: string, updates: { metadata?: any; state?: any }) => {
+    try {
+      const basePath = getAudiobooksBasePath();
+      const folderPath = path.join(basePath, projectId);
+
+      const projectData = await loadProjectFile(folderPath);
+      if (!projectData) {
+        return { success: false, error: 'Project not found' };
+      }
+
+      // Merge updates
+      if (updates.metadata) {
+        projectData.metadata = { ...projectData.metadata, ...updates.metadata };
+      }
+      if (updates.state) {
+        projectData.state = { ...projectData.state, ...updates.state };
+      }
+      projectData.modifiedAt = new Date().toISOString();
+
+      await saveProjectFile(folderPath, projectData);
+
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Delete an audiobook project
+  ipcMain.handle('audiobook:delete-project', async (_event, projectId: string) => {
+    try {
+      const basePath = getAudiobooksBasePath();
+      const folderPath = path.join(basePath, projectId);
+
+      await fs.rm(folderPath, { recursive: true, force: true });
+
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Get paths for a project (for opening EPUBs, etc.)
+  ipcMain.handle('audiobook:get-paths', async (_event, projectId: string) => {
+    const basePath = getAudiobooksBasePath();
+    const folderPath = path.join(basePath, projectId);
+
+    return {
+      success: true,
+      folderPath,
+      originalPath: path.join(folderPath, 'original.epub'),
+      cleanedPath: path.join(folderPath, 'cleaned.epub'),
+      outputPath: path.join(folderPath, 'output.m4b')
+    };
+  });
+
+  // Legacy compatibility handlers (can be removed later)
+  ipcMain.handle('library:copy-to-queue', async (_event, sourcePath: string, filename: string) => {
+    // Redirect to create-project
+    const result = await (ipcMain as any)._events['audiobook:create-project'][0](
+      { sender: mainWindow?.webContents },
+      sourcePath,
+      filename
+    );
+    if (result.success) {
+      return { success: true, destinationPath: result.originalPath };
+    }
+    return result;
+  });
+
+  ipcMain.handle('library:list-queue', async () => {
+    // Redirect to list-projects, convert to old format
+    const basePath = getAudiobooksBasePath();
+    try {
+      const entries = await fs.readdir(basePath, { withFileTypes: true });
+      const folders = entries.filter(e => e.isDirectory());
+
+      const files = await Promise.all(folders.map(async (folder) => {
+        const folderPath = path.join(basePath, folder.name);
+        const projectData = await loadProjectFile(folderPath);
+        const originalPath = path.join(folderPath, 'original.epub');
+
+        try {
+          const stats = await fs.stat(originalPath);
+          return {
+            path: originalPath,
+            filename: projectData?.originalFilename || folder.name + '.epub',
+            size: stats.size,
+            addedAt: projectData?.createdAt || stats.mtime.toISOString(),
+            projectId: folder.name,
+            hasCleaned: await fs.access(path.join(folderPath, 'cleaned.epub')).then(() => true).catch(() => false)
+          };
+        } catch {
+          return null;
+        }
+      }));
+
+      return { success: true, files: files.filter((f): f is NonNullable<typeof f> => f !== null) };
+    } catch {
+      return { success: true, files: [] };
     }
   });
 
   ipcMain.handle('library:get-audiobooks-path', async () => {
-    const documentsPath = app.getPath('documents');
-    const basePath = path.join(documentsPath, 'BookForge', 'audiobooks');
+    const basePath = getAudiobooksBasePath();
     return {
       success: true,
-      queuePath: path.join(basePath, 'queue'),
-      completedPath: path.join(basePath, 'completed')
+      queuePath: basePath,
+      completedPath: basePath
     };
+  });
+
+  ipcMain.handle('library:save-metadata', async (_event, epubPath: string, metadata: unknown) => {
+    // Find project by epub path and save metadata
+    try {
+      const basePath = getAudiobooksBasePath();
+      // Extract project folder from path
+      const relativePath = path.relative(basePath, epubPath);
+      const projectId = relativePath.split(path.sep)[0];
+
+      if (projectId) {
+        const folderPath = path.join(basePath, projectId);
+        const projectData = await loadProjectFile(folderPath);
+        if (projectData) {
+          projectData.metadata = { ...projectData.metadata, ...(metadata as Record<string, unknown>) };
+          projectData.modifiedAt = new Date().toISOString();
+          await saveProjectFile(folderPath, projectData);
+          return { success: true };
+        }
+      }
+      return { success: false, error: 'Project not found' };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('library:load-metadata', async (_event, epubPath: string) => {
+    try {
+      const basePath = getAudiobooksBasePath();
+      const relativePath = path.relative(basePath, epubPath);
+      const projectId = relativePath.split(path.sep)[0];
+
+      if (projectId) {
+        const folderPath = path.join(basePath, projectId);
+        const projectData = await loadProjectFile(folderPath);
+        if (projectData) {
+          return { success: true, metadata: projectData.metadata };
+        }
+      }
+      return { success: true, metadata: null };
+    } catch {
+      return { success: true, metadata: null };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Processing Queue handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Track running jobs for cancellation
+  const runningJobs = new Map<string, { cancel: () => void }>();
+
+  ipcMain.handle('queue:run-ocr-cleanup', async (
+    _event,
+    jobId: string,
+    epubPath: string,
+    model?: string,
+    aiConfig?: {
+      provider: 'ollama' | 'claude' | 'openai';
+      ollama?: { baseUrl: string; model: string };
+      claude?: { apiKey: string; model: string };
+      openai?: { apiKey: string; model: string };
+    }
+  ) => {
+    try {
+      const { aiBridge } = await import('./ai-bridge.js');
+
+      // Create cancellation token
+      let cancelled = false;
+      const cancelFn = () => { cancelled = true; };
+      runningJobs.set(jobId, { cancel: cancelFn });
+
+      // Run OCR cleanup with provider config
+      const result = await aiBridge.cleanupEpub(
+        epubPath,
+        jobId,
+        model || 'llama3.2',
+        mainWindow,
+        (progress) => {
+          if (cancelled) return;
+          // Progress is sent via mainWindow.webContents.send in cleanupEpub
+        },
+        aiConfig
+      );
+
+      // Remove from running jobs
+      runningJobs.delete(jobId);
+
+      // Send completion event
+      if (mainWindow && !cancelled) {
+        mainWindow.webContents.send('queue:job-complete', {
+          jobId,
+          success: result.success,
+          outputPath: result.outputPath,
+          error: result.error
+        });
+      }
+
+      return { success: result.success, data: result };
+    } catch (err) {
+      runningJobs.delete(jobId);
+      const error = (err as Error).message;
+
+      if (mainWindow) {
+        mainWindow.webContents.send('queue:job-complete', {
+          jobId,
+          success: false,
+          error
+        });
+      }
+
+      return { success: false, error };
+    }
+  });
+
+  ipcMain.handle('queue:run-tts-conversion', async (
+    _event,
+    jobId: string,
+    epubPath: string,
+    settings: { device: 'gpu' | 'mps' | 'cpu'; language: string; voice: string; temperature: number; speed: number; outputFilename?: string }
+  ) => {
+    try {
+      const { ttsBridge } = await import('./tts-bridge.js');
+      ttsBridge.setMainWindow(mainWindow);
+
+      // Get output directory
+      const documentsPath = app.getPath('documents');
+      const outputDir = path.join(documentsPath, 'BookForge', 'audiobooks', 'completed');
+      await fs.mkdir(outputDir, { recursive: true });
+
+      // Create cancellation token
+      const cancelFn = () => { ttsBridge.stopConversion(); };
+      runningJobs.set(jobId, { cancel: cancelFn });
+
+      // Forward TTS progress to queue progress
+      const progressHandler = (_event: Electron.IpcMainEvent, progress: any) => {
+        if (mainWindow) {
+          mainWindow.webContents.send('queue:progress', {
+            jobId,
+            type: 'tts-conversion',
+            phase: progress.phase,
+            progress: progress.percentage,
+            message: progress.message,
+            currentChunk: progress.currentChapter,
+            totalChunks: progress.totalChapters
+          });
+        }
+      };
+
+      // Note: TTS progress comes via tts:progress event, we'll just wait for completion
+
+      // Run TTS conversion
+      const result = await ttsBridge.startConversion(epubPath, outputDir, settings);
+
+      // Remove from running jobs
+      runningJobs.delete(jobId);
+
+      // Send completion event
+      if (mainWindow) {
+        mainWindow.webContents.send('queue:job-complete', {
+          jobId,
+          success: result.success,
+          outputPath: result.outputPath,
+          error: result.error
+        });
+      }
+
+      return { success: result.success, data: result };
+    } catch (err) {
+      runningJobs.delete(jobId);
+      const error = (err as Error).message;
+
+      if (mainWindow) {
+        mainWindow.webContents.send('queue:job-complete', {
+          jobId,
+          success: false,
+          error
+        });
+      }
+
+      return { success: false, error };
+    }
+  });
+
+  ipcMain.handle('queue:cancel-job', async (_event, jobId: string) => {
+    const job = runningJobs.get(jobId);
+    if (job) {
+      job.cancel();
+      runningJobs.delete(jobId);
+      return { success: true };
+    }
+    return { success: false, error: 'Job not found or not running' };
+  });
+
+  // Queue persistence handlers
+  ipcMain.handle('queue:save-state', async (_event, queueState: string) => {
+    try {
+      const bookforgePath = path.join(os.homedir(), 'Documents', 'BookForge');
+      await fs.mkdir(bookforgePath, { recursive: true });
+      const queueFile = path.join(bookforgePath, 'queue.json');
+      await atomicWriteFile(queueFile, queueState);
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: message };
+    }
+  });
+
+  ipcMain.handle('queue:load-state', async () => {
+    try {
+      const queueFile = path.join(os.homedir(), 'Documents', 'BookForge', 'queue.json');
+      const exists = fsSync.existsSync(queueFile);
+      if (!exists) {
+        return { success: true, data: null };
+      }
+      const content = await fs.readFile(queueFile, 'utf-8');
+      return { success: true, data: JSON.parse(content) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: message };
+    }
   });
 }
 

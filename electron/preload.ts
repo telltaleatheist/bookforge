@@ -318,8 +318,26 @@ export interface EpubStructure {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI Types (Ollama)
+// AI Types (Multi-provider)
 // ─────────────────────────────────────────────────────────────────────────────
+
+export type AIProvider = 'ollama' | 'claude' | 'openai';
+
+export interface AIProviderConfig {
+  provider: AIProvider;
+  ollama?: {
+    baseUrl: string;
+    model: string;
+  };
+  claude?: {
+    apiKey: string;
+    model: string;
+  };
+  openai?: {
+    apiKey: string;
+    model: string;
+  };
+}
 
 export interface OllamaModel {
   name: string;
@@ -393,6 +411,102 @@ export interface QueueFileInfo {
   filename: string;
   size: number;
   addedAt: string;
+  projectId?: string;
+  hasCleaned?: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audiobook Project Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AudiobookProjectMetadata {
+  title: string;
+  subtitle?: string;
+  author: string;
+  authorFirstName?: string;
+  authorLastName?: string;
+  year?: string;
+  language: string;
+  coverPath?: string;
+  outputFilename?: string;
+}
+
+export interface AudiobookProjectState {
+  cleanupStatus: 'none' | 'pending' | 'processing' | 'complete' | 'error';
+  cleanupProgress?: number;
+  cleanupError?: string;
+  cleanupJobId?: string;
+  ttsStatus: 'none' | 'pending' | 'processing' | 'complete' | 'error';
+  ttsProgress?: number;
+  ttsError?: string;
+  ttsJobId?: string;
+  ttsSettings?: {
+    device: 'gpu' | 'mps' | 'cpu';
+    language: string;
+    voice: string;
+    temperature: number;
+    speed: number;
+  };
+}
+
+export interface AudiobookProjectInfo {
+  id: string;
+  folderPath: string;
+  originalFilename: string;
+  metadata: AudiobookProjectMetadata;
+  state: AudiobookProjectState;
+  hasOriginal: boolean;
+  hasCleaned: boolean;
+  hasOutput: boolean;
+  createdAt: string;
+  modifiedAt: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Processing Queue Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type QueueJobType = 'ocr-cleanup' | 'tts-conversion';
+
+export interface QueueProgress {
+  jobId: string;
+  type: QueueJobType;
+  phase: string;
+  progress: number;
+  message?: string;
+  currentChunk?: number;
+  totalChunks?: number;
+}
+
+export interface QueueJobResult {
+  jobId: string;
+  success: boolean;
+  outputPath?: string;
+  error?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Diff Comparison Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface DiffComparisonChapter {
+  id: string;
+  title: string;
+  originalText: string;
+  cleanedText: string;
+}
+
+export interface DiffComparisonResult {
+  chapters: DiffComparisonChapter[];
+}
+
+export interface TtsJobConfig {
+  device: 'gpu' | 'mps' | 'cpu';
+  language: string;
+  voice: string;
+  temperature: number;
+  speed: number;
+  outputFilename?: string;
 }
 
 export interface ElectronAPI {
@@ -474,6 +588,50 @@ export interface ElectronAPI {
       completedPath?: string;
       error?: string;
     }>;
+    saveMetadata: (epubPath: string, metadata: EpubMetadata) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    loadMetadata: (epubPath: string) => Promise<{
+      success: boolean;
+      metadata?: EpubMetadata;
+      error?: string;
+    }>;
+  };
+  audiobook: {
+    createProject: (sourcePath: string, originalFilename: string) => Promise<{
+      success: boolean;
+      projectId?: string;
+      folderPath?: string;
+      originalPath?: string;
+      error?: string;
+    }>;
+    listProjects: () => Promise<{
+      success: boolean;
+      projects?: AudiobookProjectInfo[];
+      error?: string;
+    }>;
+    getProject: (projectId: string) => Promise<{
+      success: boolean;
+      project?: AudiobookProjectInfo;
+      error?: string;
+    }>;
+    saveProject: (projectId: string, updates: { metadata?: Partial<AudiobookProjectMetadata>; state?: Partial<AudiobookProjectState> }) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    deleteProject: (projectId: string) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    getPaths: (projectId: string) => Promise<{
+      success: boolean;
+      folderPath?: string;
+      originalPath?: string;
+      cleanedPath?: string;
+      outputPath?: string;
+      error?: string;
+    }>;
   };
   epub: {
     parse: (epubPath: string) => Promise<{ success: boolean; data?: EpubStructure; error?: string }>;
@@ -485,6 +643,7 @@ export interface ElectronAPI {
   };
   ai: {
     checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: OllamaModel[]; error?: string }; error?: string }>;
+    checkProviderConnection: (provider: 'ollama' | 'claude' | 'openai') => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
     getModels: () => Promise<{ success: boolean; data?: OllamaModel[]; error?: string }>;
     cleanupChapter: (
       text: string,
@@ -494,6 +653,9 @@ export interface ElectronAPI {
       model?: string
     ) => Promise<{ success: boolean; data?: CleanupResult; error?: string }>;
     onCleanupProgress: (callback: (progress: CleanupProgress) => void) => () => void;
+  };
+  shell: {
+    openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
   };
   tts: {
     checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; version?: string; error?: string }; error?: string }>;
@@ -530,6 +692,22 @@ export interface ElectronAPI {
     checkAvailability: (pluginId: string) => Promise<{ success: boolean; data?: { available: boolean; version?: string; path?: string; error?: string; installInstructions?: string }; error?: string }>;
     invoke: (pluginId: string, channel: string, ...args: unknown[]) => Promise<{ success: boolean; data?: unknown; error?: string }>;
     onProgress: (callback: (progress: PluginProgress) => void) => () => void;
+  };
+  queue: {
+    runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
+    runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
+    cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    saveState: (queueState: string) => Promise<{ success: boolean; error?: string }>;
+    loadState: () => Promise<{ success: boolean; data?: any; error?: string }>;
+    onProgress: (callback: (progress: QueueProgress) => void) => () => void;
+    onComplete: (callback: (result: QueueJobResult) => void) => () => void;
+  };
+  diff: {
+    loadComparison: (originalPath: string, cleanedPath: string) => Promise<{
+      success: boolean;
+      data?: DiffComparisonResult;
+      error?: string;
+    }>;
   };
   platform: string;
 }
@@ -654,6 +832,24 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('library:list-queue'),
     getAudiobooksPath: () =>
       ipcRenderer.invoke('library:get-audiobooks-path'),
+    saveMetadata: (epubPath: string, metadata: EpubMetadata) =>
+      ipcRenderer.invoke('library:save-metadata', epubPath, metadata),
+    loadMetadata: (epubPath: string) =>
+      ipcRenderer.invoke('library:load-metadata', epubPath),
+  },
+  audiobook: {
+    createProject: (sourcePath: string, originalFilename: string) =>
+      ipcRenderer.invoke('audiobook:create-project', sourcePath, originalFilename),
+    listProjects: () =>
+      ipcRenderer.invoke('audiobook:list-projects'),
+    getProject: (projectId: string) =>
+      ipcRenderer.invoke('audiobook:get-project', projectId),
+    saveProject: (projectId: string, updates: { metadata?: any; state?: any }) =>
+      ipcRenderer.invoke('audiobook:save-project', projectId, updates),
+    deleteProject: (projectId: string) =>
+      ipcRenderer.invoke('audiobook:delete-project', projectId),
+    getPaths: (projectId: string) =>
+      ipcRenderer.invoke('audiobook:get-paths', projectId),
   },
   epub: {
     parse: (epubPath: string) =>
@@ -672,6 +868,8 @@ const electronAPI: ElectronAPI = {
   ai: {
     checkConnection: () =>
       ipcRenderer.invoke('ai:check-connection'),
+    checkProviderConnection: (provider: 'ollama' | 'claude' | 'openai') =>
+      ipcRenderer.invoke('ai:check-provider-connection', provider),
     getModels: () =>
       ipcRenderer.invoke('ai:get-models'),
     cleanupChapter: (
@@ -691,6 +889,10 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('ai:cleanup-progress', listener);
       };
     },
+  },
+  shell: {
+    openExternal: (url: string) =>
+      ipcRenderer.invoke('shell:open-external', url),
   },
   tts: {
     checkAvailable: () =>
@@ -760,6 +962,40 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('plugin:progress', listener);
       };
     },
+  },
+  queue: {
+    runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig) =>
+      ipcRenderer.invoke('queue:run-ocr-cleanup', jobId, epubPath, model, aiConfig),
+    runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) =>
+      ipcRenderer.invoke('queue:run-tts-conversion', jobId, epubPath, config),
+    cancelJob: (jobId: string) =>
+      ipcRenderer.invoke('queue:cancel-job', jobId),
+    saveState: (queueState: string) =>
+      ipcRenderer.invoke('queue:save-state', queueState),
+    loadState: () =>
+      ipcRenderer.invoke('queue:load-state'),
+    onProgress: (callback: (progress: QueueProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: QueueProgress) => {
+        callback(progress);
+      };
+      ipcRenderer.on('queue:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('queue:progress', listener);
+      };
+    },
+    onComplete: (callback: (result: QueueJobResult) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, result: QueueJobResult) => {
+        callback(result);
+      };
+      ipcRenderer.on('queue:job-complete', listener);
+      return () => {
+        ipcRenderer.removeListener('queue:job-complete', listener);
+      };
+    },
+  },
+  diff: {
+    loadComparison: (originalPath: string, cleanedPath: string) =>
+      ipcRenderer.invoke('diff:load-comparison', originalPath, cleanedPath),
   },
   platform: process.platform,
 };

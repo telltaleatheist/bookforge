@@ -1,4 +1,4 @@
-import { Component, input, output, signal, HostListener } from '@angular/core';
+import { Component, input, output, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 
 export type QueueItemStatus = 'pending' | 'metadata' | 'cleanup' | 'converting' | 'complete' | 'error';
@@ -7,11 +7,13 @@ export interface EpubMetadata {
   title: string;
   subtitle?: string;
   author: string;
-  authorFileAs?: string;
+  authorFirst?: string;
+  authorLast?: string;
   year?: string;
   language: string;
   coverPath?: string;
   coverData?: string;
+  outputFilename?: string;
 }
 
 export interface QueueItem {
@@ -23,6 +25,9 @@ export interface QueueItem {
   progress?: number;
   error?: string;
   addedAt: Date;
+  // Project-based fields
+  projectId?: string;
+  hasCleaned?: boolean;
 }
 
 @Component({
@@ -37,7 +42,7 @@ export interface QueueItem {
       (dragleave)="onDragLeave($event)"
       (drop)="onDrop($event)"
     >
-      @if (items().length === 0) {
+      @if (!hasItems()) {
         <div class="empty-queue">
           <div class="drop-icon">&#128229;</div>
           <p>Drop EPUB files here</p>
@@ -69,6 +74,9 @@ export interface QueueItem {
                     @case ('converting') { <span>{{ item.progress || 0 }}%</span> }
                     @case ('complete') { <span>Complete</span> }
                     @case ('error') { <span>Error</span> }
+                  }
+                  @if (item.hasCleaned) {
+                    <span class="cleaned-badge" title="AI Cleanup complete">✓ Cleaned</span>
                   }
                 </div>
               </div>
@@ -198,6 +206,9 @@ export interface QueueItem {
     .item-status {
       font-size: 0.6875rem;
       margin-top: 0.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
 
       &[data-status="pending"] { color: var(--text-muted); }
       &[data-status="metadata"] { color: var(--accent-primary); }
@@ -205,6 +216,18 @@ export interface QueueItem {
       &[data-status="converting"] { color: var(--accent-info); }
       &[data-status="complete"] { color: var(--accent-success); }
       &[data-status="error"] { color: var(--accent-danger); }
+    }
+
+    .cleaned-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.125rem 0.375rem;
+      background: color-mix(in srgb, var(--accent-success) 15%, transparent);
+      color: var(--accent-success);
+      border-radius: 4px;
+      font-size: 0.625rem;
+      font-weight: 500;
     }
 
     .remove-btn {
@@ -234,6 +257,10 @@ export class AudiobookQueueComponent {
   // Inputs
   readonly items = input<QueueItem[]>([]);
   readonly selectedId = input<string | null>(null);
+
+  // Computed for reactivity
+  readonly itemCount = computed(() => this.items().length);
+  readonly hasItems = computed(() => this.items().length > 0);
 
   // Outputs
   readonly select = output<string>();

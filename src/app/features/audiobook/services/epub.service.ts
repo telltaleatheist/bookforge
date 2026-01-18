@@ -8,13 +8,15 @@ export interface EpubMetadata {
   title: string;
   subtitle?: string;
   author: string;
-  authorFileAs?: string;
+  authorFirst?: string;
+  authorLast?: string;
   year?: string;
   language: string;
   coverPath?: string;
   identifier?: string;
   publisher?: string;
   description?: string;
+  outputFilename?: string;
 }
 
 export interface EpubChapter {

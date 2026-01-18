@@ -6,6 +6,14 @@ import { SettingsService, SettingsSection, SettingField } from '../../core/servi
 import { PluginService, PluginInfo } from '../../core/services/plugin.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
+import {
+  AIConfig,
+  AIProvider,
+  ProviderStatus,
+  OLLAMA_MODELS,
+  CLAUDE_MODELS,
+  OPENAI_MODELS
+} from '../../core/models/ai-config.types';
 
 @Component({
   selector: 'app-settings',
@@ -110,6 +118,220 @@ import { DesktopButtonComponent } from '../../creamsicle-desktop';
                     {{ clearCacheStatus()!.message }}
                   </div>
                 }
+              </div>
+            } @else if (section.id === 'ai') {
+              <!-- AI Configuration Section -->
+              <div class="ai-section">
+                <!-- Provider Selection -->
+                <div class="ai-provider-select">
+                  <h3>AI Provider</h3>
+                  <p class="field-description">Select which AI service to use for OCR text cleanup</p>
+                  <div class="provider-cards">
+                    <button
+                      class="provider-card"
+                      [class.selected]="aiConfig().provider === 'ollama'"
+                      (click)="setAIProvider('ollama')"
+                    >
+                      <span class="provider-icon">🦙</span>
+                      <span class="provider-name">Ollama</span>
+                      <span class="provider-desc">Local, free</span>
+                      @if (ollamaStatus(); as status) {
+                        <span class="provider-status" [class.available]="status.available" [class.unavailable]="!status.available">
+                          {{ status.available ? 'Connected' : 'Not running' }}
+                        </span>
+                      }
+                    </button>
+                    <button
+                      class="provider-card"
+                      [class.selected]="aiConfig().provider === 'claude'"
+                      (click)="setAIProvider('claude')"
+                    >
+                      <span class="provider-icon">🧠</span>
+                      <span class="provider-name">Claude</span>
+                      <span class="provider-desc">Anthropic API</span>
+                      @if (aiConfig().claude.apiKey) {
+                        <span class="provider-status available">API Key Set</span>
+                      }
+                    </button>
+                    <button
+                      class="provider-card"
+                      [class.selected]="aiConfig().provider === 'openai'"
+                      (click)="setAIProvider('openai')"
+                    >
+                      <span class="provider-icon">🤖</span>
+                      <span class="provider-name">OpenAI</span>
+                      <span class="provider-desc">ChatGPT API</span>
+                      @if (aiConfig().openai.apiKey) {
+                        <span class="provider-status available">API Key Set</span>
+                      }
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Provider-specific settings -->
+                <div class="provider-settings">
+                  @switch (aiConfig().provider) {
+                    @case ('ollama') {
+                      <div class="settings-group">
+                        <h4>Ollama Settings</h4>
+                        <div class="field-row">
+                          <div class="field-info">
+                            <label class="field-label">Server URL</label>
+                            <p class="field-description">Ollama server address</p>
+                          </div>
+                          <div class="field-control">
+                            <input
+                              type="text"
+                              class="text-input"
+                              [value]="aiConfig().ollama.baseUrl"
+                              (change)="updateOllamaUrl($any($event.target).value)"
+                            />
+                          </div>
+                        </div>
+                        <div class="field-row">
+                          <div class="field-info">
+                            <label class="field-label">Connection Status</label>
+                          </div>
+                          <div class="field-control">
+                            <desktop-button
+                              variant="ghost"
+                              size="sm"
+                              (click)="checkOllamaConnection()"
+                              [disabled]="ollamaChecking()"
+                            >
+                              {{ ollamaChecking() ? 'Checking...' : 'Test Connection' }}
+                            </desktop-button>
+                          </div>
+                        </div>
+                        @if (ollamaStatus(); as status) {
+                          <div class="connection-status" [class.success]="status.available" [class.error]="!status.available">
+                            @if (status.available) {
+                              ✓ Connected to Ollama
+                              @if (status.models && status.models.length > 0) {
+                                <span class="models-available">({{ status.models.length }} models available)</span>
+                              }
+                            } @else {
+                              ✕ {{ status.error || 'Could not connect to Ollama' }}
+                            }
+                          </div>
+                        }
+                        <div class="field-row">
+                          <div class="field-info">
+                            <label class="field-label">Model</label>
+                            <p class="field-description">AI model to use for text cleanup</p>
+                          </div>
+                          <div class="field-control">
+                            @if (ollamaModels().length > 0) {
+                              <select
+                                class="select-input"
+                                [value]="aiConfig().ollama.model"
+                                (change)="updateOllamaModel($any($event.target).value)"
+                              >
+                                @for (model of ollamaModels(); track model.value) {
+                                  <option [value]="model.value">{{ model.label }}</option>
+                                }
+                              </select>
+                            } @else {
+                              <span class="no-models-hint">Test connection to see available models</span>
+                            }
+                          </div>
+                        </div>
+                      </div>
+                    }
+                    @case ('claude') {
+                      <div class="settings-group">
+                        <h4>Claude Settings</h4>
+                        <div class="field-row">
+                          <div class="field-info">
+                            <label class="field-label">API Key</label>
+                            <p class="field-description">Your Anthropic API key</p>
+                          </div>
+                          <div class="field-control">
+                            <input
+                              type="password"
+                              class="text-input api-key-input"
+                              [value]="aiConfig().claude.apiKey"
+                              placeholder="sk-ant-..."
+                              (change)="updateClaudeApiKey($any($event.target).value)"
+                            />
+                          </div>
+                        </div>
+                        <div class="field-row">
+                          <div class="field-info">
+                            <label class="field-label">Model</label>
+                            <p class="field-description">Claude model to use</p>
+                          </div>
+                          <div class="field-control">
+                            @if (claudeModelsLoading()) {
+                              <span class="no-models-hint">Loading models...</span>
+                            } @else if (claudeModels().length > 0) {
+                              <select
+                                class="select-input"
+                                [value]="aiConfig().claude.model"
+                                (change)="updateClaudeModel($any($event.target).value)"
+                              >
+                                @for (model of claudeModels(); track model.value) {
+                                  <option [value]="model.value">{{ model.label }}</option>
+                                }
+                              </select>
+                            } @else {
+                              <span class="no-models-hint">Enter API key first</span>
+                            }
+                          </div>
+                        </div>
+                        <div class="api-key-hint">
+                          Get your API key from <a href="#" (click)="openExternal('https://console.anthropic.com/settings/keys')">console.anthropic.com</a>
+                        </div>
+                      </div>
+                    }
+                    @case ('openai') {
+                      <div class="settings-group">
+                        <h4>OpenAI Settings</h4>
+                        <div class="field-row">
+                          <div class="field-info">
+                            <label class="field-label">API Key</label>
+                            <p class="field-description">Your OpenAI API key</p>
+                          </div>
+                          <div class="field-control">
+                            <input
+                              type="password"
+                              class="text-input api-key-input"
+                              [value]="aiConfig().openai.apiKey"
+                              placeholder="sk-..."
+                              (change)="updateOpenAIApiKey($any($event.target).value)"
+                            />
+                          </div>
+                        </div>
+                        <div class="field-row">
+                          <div class="field-info">
+                            <label class="field-label">Model</label>
+                            <p class="field-description">OpenAI model to use</p>
+                          </div>
+                          <div class="field-control">
+                            @if (openaiModelsLoading()) {
+                              <span class="no-models-hint">Loading models...</span>
+                            } @else if (openaiModels().length > 0) {
+                              <select
+                                class="select-input"
+                                [value]="aiConfig().openai.model"
+                                (change)="updateOpenAIModel($any($event.target).value)"
+                              >
+                                @for (model of openaiModels(); track model.value) {
+                                  <option [value]="model.value">{{ model.label }}</option>
+                                }
+                              </select>
+                            } @else {
+                              <span class="no-models-hint">Enter API key first</span>
+                            }
+                          </div>
+                        </div>
+                        <div class="api-key-hint">
+                          Get your API key from <a href="#" (click)="openExternal('https://platform.openai.com/api-keys')">platform.openai.com</a>
+                        </div>
+                      </div>
+                    }
+                  }
+                </div>
               </div>
             } @else {
               <div class="fields-list">
@@ -281,7 +503,7 @@ import { DesktopButtonComponent } from '../../creamsicle-desktop';
       }
 
       &.active {
-        background: var(--accent-muted);
+        background: color-mix(in srgb, var(--accent) 15%, transparent);
         color: var(--accent);
       }
     }
@@ -297,7 +519,7 @@ import { DesktopButtonComponent } from '../../creamsicle-desktop';
     .plugin-badge {
       font-size: 10px;
       padding: 2px 6px;
-      background: var(--accent-muted);
+      background: color-mix(in srgb, var(--accent) 15%, transparent);
       color: var(--accent);
       border-radius: 4px;
     }
@@ -335,12 +557,12 @@ import { DesktopButtonComponent } from '../../creamsicle-desktop';
       font-size: var(--ui-font-sm);
 
       &.available {
-        background: rgba(34, 197, 94, 0.1);
+        background: var(--success-bg);
         color: var(--success);
       }
 
       &.unavailable {
-        background: rgba(239, 68, 68, 0.1);
+        background: var(--error-bg);
         color: var(--error);
       }
     }
@@ -547,13 +769,157 @@ import { DesktopButtonComponent } from '../../creamsicle-desktop';
       font-size: var(--ui-font-sm);
 
       &.success {
-        background: rgba(34, 197, 94, 0.1);
+        background: var(--success-bg);
         color: var(--success);
       }
 
       &.error {
-        background: rgba(239, 68, 68, 0.1);
+        background: var(--error-bg);
         color: var(--error);
+      }
+    }
+
+    // AI Section Styles
+    .ai-section {
+      display: flex;
+      flex-direction: column;
+      gap: var(--ui-spacing-xl);
+    }
+
+    .ai-provider-select {
+      h3 {
+        margin: 0 0 var(--ui-spacing-xs) 0;
+        font-size: var(--ui-font-base);
+        font-weight: $font-weight-semibold;
+        color: var(--text-primary);
+      }
+
+      .field-description {
+        margin: 0 0 var(--ui-spacing-md) 0;
+      }
+    }
+
+    .provider-cards {
+      display: flex;
+      gap: var(--ui-spacing-md);
+    }
+
+    .provider-card {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--ui-spacing-xs);
+      padding: var(--ui-spacing-lg);
+      background: var(--bg-surface);
+      border: 2px solid var(--border-subtle);
+      border-radius: $radius-lg;
+      cursor: pointer;
+      transition: all $duration-fast $ease-out;
+
+      &:hover {
+        background: var(--bg-hover);
+        border-color: var(--border-default);
+      }
+
+      &.selected {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 15%, transparent);
+      }
+    }
+
+    .provider-icon {
+      font-size: 2rem;
+    }
+
+    .provider-name {
+      font-size: var(--ui-font-base);
+      font-weight: $font-weight-semibold;
+      color: var(--text-primary);
+    }
+
+    .provider-desc {
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+    }
+
+    .provider-status {
+      font-size: var(--ui-font-xs);
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-top: var(--ui-spacing-xs);
+
+      &.available {
+        background: var(--success-bg);
+        color: var(--success);
+      }
+
+      &.unavailable {
+        background: var(--error-bg);
+        color: var(--error);
+      }
+    }
+
+    .provider-settings {
+      background: var(--bg-surface);
+      border-radius: $radius-md;
+      padding: var(--ui-spacing-lg);
+    }
+
+    .settings-group {
+      h4 {
+        margin: 0 0 var(--ui-spacing-lg) 0;
+        font-size: var(--ui-font-base);
+        font-weight: $font-weight-semibold;
+        color: var(--text-primary);
+      }
+    }
+
+    .api-key-input {
+      width: 280px;
+      font-family: monospace;
+    }
+
+    .no-models-hint {
+      font-size: var(--ui-font-sm);
+      color: var(--text-tertiary);
+      font-style: italic;
+    }
+
+    .api-key-hint {
+      margin-top: var(--ui-spacing-md);
+      font-size: var(--ui-font-sm);
+      color: var(--text-tertiary);
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+
+        &:hover {
+          text-decoration: underline;
+        }
+      }
+    }
+
+    .connection-status {
+      margin-top: var(--ui-spacing-md);
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      border-radius: $radius-md;
+      font-size: var(--ui-font-sm);
+
+      &.success {
+        background: var(--success-bg);
+        color: var(--success);
+      }
+
+      &.error {
+        background: var(--error-bg);
+        color: var(--error);
+      }
+
+      .models-available {
+        opacity: 0.8;
+        margin-left: var(--ui-spacing-xs);
       }
     }
   `]
@@ -570,6 +936,43 @@ export class SettingsComponent implements OnInit {
   readonly totalCacheSize = signal(0);
   readonly cacheLoading = signal(false);
   readonly clearCacheStatus = signal<{ success: boolean; message: string } | null>(null);
+
+  // AI section state
+  readonly aiConfig = computed(() => this.settingsService.getAIConfig());
+  readonly ollamaStatus = signal<ProviderStatus | null>(null);
+  readonly ollamaChecking = signal(false);
+
+  // Dynamic model options - fetched from providers
+  readonly fetchedOllamaModels = signal<{ value: string; label: string }[]>([]);
+  readonly fetchedClaudeModels = signal<{ value: string; label: string }[]>([]);
+  readonly fetchedOpenaiModels = signal<{ value: string; label: string }[]>([]);
+  readonly claudeModelsLoading = signal(false);
+  readonly openaiModelsLoading = signal(false);
+
+  // Fallback static model options (used only when API unavailable)
+  readonly defaultOllamaModels = OLLAMA_MODELS;
+  readonly defaultClaudeModels = CLAUDE_MODELS;
+  readonly defaultOpenaiModels = OPENAI_MODELS;
+
+  // Computed: use fetched models if available, otherwise use defaults
+  readonly ollamaModels = computed(() => {
+    const fetched = this.fetchedOllamaModels();
+    return fetched.length > 0 ? fetched : this.defaultOllamaModels;
+  });
+
+  readonly claudeModels = computed(() => {
+    const fetched = this.fetchedClaudeModels();
+    // Only show models if API key is provided and models are fetched
+    if (!this.aiConfig().claude.apiKey) return [];
+    return fetched.length > 0 ? fetched : this.defaultClaudeModels;
+  });
+
+  readonly openaiModels = computed(() => {
+    const fetched = this.fetchedOpenaiModels();
+    // Only show models if API key is provided and models are fetched
+    if (!this.aiConfig().openai.apiKey) return [];
+    return fetched.length > 0 ? fetched : this.defaultOpenaiModels;
+  });
 
   // Combine built-in and plugin sections
   readonly allSections = computed(() => {
@@ -689,5 +1092,158 @@ export class SettingsComponent implements OnInit {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // AI Configuration Methods
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  setAIProvider(provider: AIProvider): void {
+    const config = this.settingsService.getAIConfig();
+    this.settingsService.setAIConfig({ ...config, provider });
+
+    // Check Ollama connection when selecting it
+    if (provider === 'ollama') {
+      this.checkOllamaConnection();
+    }
+  }
+
+  updateOllamaUrl(url: string): void {
+    const config = this.settingsService.getAIConfig();
+    this.settingsService.setAIConfig({
+      ...config,
+      ollama: { ...config.ollama, baseUrl: url }
+    });
+  }
+
+  updateOllamaModel(model: string): void {
+    const config = this.settingsService.getAIConfig();
+    this.settingsService.setAIConfig({
+      ...config,
+      ollama: { ...config.ollama, model }
+    });
+  }
+
+  updateClaudeApiKey(apiKey: string): void {
+    const config = this.settingsService.getAIConfig();
+    this.settingsService.setAIConfig({
+      ...config,
+      claude: { ...config.claude, apiKey }
+    });
+    // Fetch Claude models when API key is provided
+    if (apiKey && apiKey.startsWith('sk-ant-')) {
+      this.fetchClaudeModels(apiKey);
+    } else {
+      this.fetchedClaudeModels.set([]);
+    }
+  }
+
+  updateClaudeModel(model: string): void {
+    const config = this.settingsService.getAIConfig();
+    this.settingsService.setAIConfig({
+      ...config,
+      claude: { ...config.claude, model }
+    });
+  }
+
+  updateOpenAIApiKey(apiKey: string): void {
+    const config = this.settingsService.getAIConfig();
+    this.settingsService.setAIConfig({
+      ...config,
+      openai: { ...config.openai, apiKey }
+    });
+    // Fetch OpenAI models when API key is provided
+    if (apiKey && apiKey.startsWith('sk-')) {
+      this.fetchOpenAIModels(apiKey);
+    } else {
+      this.fetchedOpenaiModels.set([]);
+    }
+  }
+
+  updateOpenAIModel(model: string): void {
+    const config = this.settingsService.getAIConfig();
+    this.settingsService.setAIConfig({
+      ...config,
+      openai: { ...config.openai, model }
+    });
+  }
+
+  async checkOllamaConnection(): Promise<void> {
+    this.ollamaChecking.set(true);
+    try {
+      const result = await this.electronService.checkAIConnection('ollama');
+      this.ollamaStatus.set(result);
+
+      // Populate fetched models from Ollama
+      if (result.available && result.models) {
+        this.fetchedOllamaModels.set(
+          result.models.map(m => ({ value: m, label: m }))
+        );
+      }
+    } catch (err) {
+      this.ollamaStatus.set({
+        available: false,
+        error: err instanceof Error ? err.message : 'Connection failed'
+      });
+    } finally {
+      this.ollamaChecking.set(false);
+    }
+  }
+
+  private async fetchClaudeModels(apiKey: string): Promise<void> {
+    this.claudeModelsLoading.set(true);
+    try {
+      // Claude doesn't have a public models API, so we use the known models
+      // but only show them when API key is valid
+      this.fetchedClaudeModels.set([
+        { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+        { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
+        { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
+        { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus' }
+      ]);
+    } finally {
+      this.claudeModelsLoading.set(false);
+    }
+  }
+
+  private async fetchOpenAIModels(apiKey: string): Promise<void> {
+    this.openaiModelsLoading.set(true);
+    try {
+      // Fetch models from OpenAI API
+      const response = await fetch('https://api.openai.com/v1/models', {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        // Filter to only show GPT models suitable for text completion
+        const gptModels = (data.data as Array<{ id: string }>)
+          .filter(m => m.id.startsWith('gpt-4') || m.id.startsWith('gpt-3.5'))
+          .sort((a, b) => b.id.localeCompare(a.id))
+          .slice(0, 10)
+          .map(m => ({ value: m.id, label: m.id }));
+
+        this.fetchedOpenaiModels.set(gptModels.length > 0 ? gptModels : this.defaultOpenaiModels);
+      } else {
+        // If API fails, use default models
+        this.fetchedOpenaiModels.set(this.defaultOpenaiModels);
+      }
+    } catch {
+      // On error, use default models
+      this.fetchedOpenaiModels.set(this.defaultOpenaiModels);
+    } finally {
+      this.openaiModelsLoading.set(false);
+    }
+  }
+
+  openExternal(url: string): void {
+    // Open URL in system browser
+    if (window.electron?.shell) {
+      window.electron.shell.openExternal(url);
+    } else {
+      window.open(url, '_blank');
+    }
   }
 }
