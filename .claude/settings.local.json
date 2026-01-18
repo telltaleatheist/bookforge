@@ -45,7 +45,10 @@
       "Bash(npx ng build:*)",
       "Bash(python:*)",
       "Bash(pkill:*)",
-      "Bash(ng version:*)"
+      "Bash(ng version:*)",
+      "Bash(git checkout:*)",
+      "Bash(ng cache clean:*)",
+      "Bash(ng cache:*)"
     ]
   }
 }
