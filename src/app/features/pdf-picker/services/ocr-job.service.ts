@@ -9,7 +9,13 @@
 import { Injectable, inject, signal, computed } from '@angular/core';
 import { ElectronService } from '../../../core/services/electron.service';
 import { PluginService, PluginLayoutBlock } from '../../../core/services/plugin.service';
-import { OcrTextLine } from '../components/ocr-settings-modal/ocr-settings-modal.component';
+
+// Defined here to avoid circular dependency with ocr-settings-modal.component
+export interface OcrTextLine {
+  text: string;
+  confidence: number;
+  bbox: [number, number, number, number];  // [x1, y1, x2, y2]
+}
 
 export interface OcrJobResult {
   page: number;

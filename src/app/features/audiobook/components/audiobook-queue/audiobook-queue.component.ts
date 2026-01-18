@@ -276,6 +276,3 @@ export class AudiobookQueueComponent {
     this.remove.emit(id);
   }
 }
-
-// Re-export the metadata interface
-export { EpubMetadata } from './audiobook-queue.component';

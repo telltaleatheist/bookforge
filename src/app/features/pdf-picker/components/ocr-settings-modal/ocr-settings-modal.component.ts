@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { PluginService } from '../../../../core/services/plugin.service';
-import { OcrJobService } from '../../services/ocr-job.service';
+import { OcrJobService, OcrTextLine } from '../../services/ocr-job.service';
 
 export type OcrEngine = 'tesseract' | 'surya';
 export type OcrScope = 'all' | 'current' | 'selected' | 'range';
@@ -22,11 +22,7 @@ export interface OcrJob {
   rangeEnd?: number;
 }
 
-export interface OcrTextLine {
-  text: string;
-  confidence: number;
-  bbox: [number, number, number, number];  // [x1, y1, x2, y2]
-}
+export { OcrTextLine };
 
 // Layout detection categories from Surya (actual output format)
 export type LayoutLabel =

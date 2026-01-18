@@ -48,7 +48,9 @@
       "Bash(ng version:*)",
       "Bash(git checkout:*)",
       "Bash(ng cache clean:*)",
-      "Bash(ng cache:*)"
+      "Bash(ng cache:*)",
+      "Bash(npm ls:*)",
+      "Bash(npx madge:*)"
     ]
   }
 }
