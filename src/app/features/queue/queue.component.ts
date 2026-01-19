@@ -76,16 +76,51 @@ import { QueueJob, JobType } from './models/queue.types';
           </div>
 
           <div class="jobs-list-container">
-            <app-job-list
-              [jobs]="queueService.jobs()"
-              [selectedJobId]="selectedJobId()"
-              (remove)="removeJob($event)"
-              (retry)="retryJob($event)"
-              (cancel)="cancelJob($event)"
-              (moveUp)="moveJobUp($event)"
-              (moveDown)="moveJobDown($event)"
-              (select)="selectJob($event)"
-            />
+            <!-- Active jobs (pending/processing) -->
+            @if (activeJobs().length > 0) {
+              <app-job-list
+                [jobs]="activeJobs()"
+                [selectedJobId]="selectedJobId()"
+                (remove)="removeJob($event)"
+                (retry)="retryJob($event)"
+                (cancel)="cancelJob($event)"
+                (moveUp)="moveJobUp($event)"
+                (moveDown)="moveJobDown($event)"
+                (select)="selectJob($event)"
+              />
+            } @else if (finishedJobs().length === 0) {
+              <div class="empty-jobs">
+                <p>No jobs in queue</p>
+              </div>
+            }
+
+            <!-- Completed jobs accordion -->
+            @if (finishedJobs().length > 0) {
+              <div class="completed-accordion">
+                <button
+                  class="accordion-header"
+                  (click)="completedExpanded.set(!completedExpanded())"
+                >
+                  <span class="accordion-icon">{{ completedExpanded() ? '▼' : '▶' }}</span>
+                  <span class="accordion-title">Completed</span>
+                  <span class="accordion-count">{{ finishedJobs().length }}</span>
+                </button>
+                @if (completedExpanded()) {
+                  <div class="accordion-content">
+                    <app-job-list
+                      [jobs]="finishedJobs()"
+                      [selectedJobId]="selectedJobId()"
+                      (remove)="removeJob($event)"
+                      (retry)="retryJob($event)"
+                      (cancel)="cancelJob($event)"
+                      (moveUp)="moveJobUp($event)"
+                      (moveDown)="moveJobDown($event)"
+                      (select)="selectJob($event)"
+                    />
+                  </div>
+                }
+              </div>
+            }
           </div>
         </div>
 
@@ -99,13 +134,21 @@ import { QueueJob, JobType } from './models/queue.types';
               (cancel)="cancelCurrent()"
             />
           } @else if (selectedJob(); as selected) {
-            <!-- Show details for selected job -->
-            <app-job-details
-              [job]="selected"
-              (remove)="removeJob($event)"
-              (retry)="retryJob($event)"
-              (viewDiff)="openDiffModal($event)"
-            />
+            <!-- Show progress if selected job is processing, otherwise show details -->
+            @if (selected.status === 'processing') {
+              <app-job-progress
+                [job]="selected"
+                [message]="progressMessage()"
+                (cancel)="cancelCurrent()"
+              />
+            } @else {
+              <app-job-details
+                [job]="selected"
+                (remove)="removeJob($event)"
+                (retry)="retryJob($event)"
+                (viewDiff)="openDiffModal($event)"
+              />
+            }
           } @else if (queueService.jobs().length === 0) {
             <!-- Empty state -->
             <div class="empty-state">
@@ -132,15 +175,17 @@ import { QueueJob, JobType } from './models/queue.types';
               } @else {
                 <div class="idle-icon">&#9654;</div>
                 <h3>Ready to Process</h3>
-                <p>{{ queueService.pendingJobs().length }} job(s) in queue</p>
+                <p>{{ activeJobs().length }} job(s) in queue</p>
                 <p class="hint">Click a job to view details</p>
-                <desktop-button
-                  variant="primary"
-                  size="md"
-                  (click)="startQueue()"
-                >
-                  Start Processing
-                </desktop-button>
+                @if (activeJobs().length > 0) {
+                  <desktop-button
+                    variant="primary"
+                    size="md"
+                    (click)="startQueue()"
+                  >
+                    Start Processing
+                  </desktop-button>
+                }
               }
             </div>
           }
@@ -156,6 +201,7 @@ import { QueueJob, JobType } from './models/queue.types';
             [originalPath]="diffModalPaths()!.originalPath"
             [cleanedPath]="diffModalPaths()!.cleanedPath"
             (close)="closeDiffModal()"
+            (textEdited)="onDiffTextEdited($event)"
           />
         </div>
       </div>
@@ -238,6 +284,62 @@ import { QueueJob, JobType } from './models/queue.types';
       flex: 1;
       overflow-y: auto;
       padding: 0.75rem;
+    }
+
+    .empty-jobs {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+    }
+
+    .completed-accordion {
+      margin-top: 1rem;
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 0.75rem;
+    }
+
+    .accordion-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      width: 100%;
+      padding: 0.5rem;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      font-size: 0.75rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      transition: background 0.15s;
+
+      &:hover {
+        background: var(--bg-hover);
+      }
+    }
+
+    .accordion-icon {
+      font-size: 0.625rem;
+      opacity: 0.7;
+    }
+
+    .accordion-title {
+      flex: 1;
+      text-align: left;
+    }
+
+    .accordion-count {
+      background: var(--bg-elevated);
+      padding: 0.125rem 0.5rem;
+      border-radius: 10px;
+      font-size: 0.6875rem;
+    }
+
+    .accordion-content {
+      padding-top: 0.5rem;
     }
 
     .details-panel {
@@ -387,17 +489,38 @@ export class QueueComponent implements OnInit, OnDestroy {
     return this.queueService.jobs().find(j => j.id === id) || null;
   });
 
+  // Computed: active jobs (pending + processing)
+  readonly activeJobs = computed(() => {
+    return this.queueService.jobs().filter(j => j.status === 'pending' || j.status === 'processing');
+  });
+
+  // Computed: finished jobs (complete + error)
+  readonly finishedJobs = computed(() => {
+    return this.queueService.jobs().filter(j => j.status === 'complete' || j.status === 'error');
+  });
+
+  // Accordion state
+  readonly completedExpanded = signal(false);
+
   // Toolbar
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
     const isRunning = this.queueService.isRunning();
+    const hasCurrentJob = !!this.queueService.currentJob();
     return [
       {
         id: isRunning ? 'pause' : 'start',
         type: 'button',
         icon: isRunning ? '\u23F8' : '\u25B6',
         label: isRunning ? 'Pause' : 'Start',
-        tooltip: isRunning ? 'Pause queue processing' : 'Start queue processing'
+        tooltip: isRunning ? 'Pause queue (job will complete)' : 'Start queue processing'
       },
+      ...(hasCurrentJob ? [{
+        id: 'stop',
+        type: 'button' as const,
+        icon: '\u25A0',
+        label: 'Stop',
+        tooltip: 'Stop immediately and reset current job'
+      }] : []),
       { id: 'sep1', type: 'divider' },
       { id: 'spacer', type: 'spacer' }
     ];
@@ -419,11 +542,14 @@ export class QueueComponent implements OnInit, OnDestroy {
       case 'pause':
         this.queueService.pauseQueue();
         break;
+      case 'stop':
+        this.queueService.stopQueue();
+        break;
     }
   }
 
-  removeJob(jobId: string): void {
-    this.queueService.removeJob(jobId);
+  async removeJob(jobId: string): Promise<void> {
+    await this.queueService.removeJob(jobId);
   }
 
   retryJob(jobId: string): void {
@@ -471,12 +597,33 @@ export class QueueComponent implements OnInit, OnDestroy {
     this.diffModalPaths.set(null);
   }
 
+  async onDiffTextEdited(event: { chapterId: string; oldText: string; newText: string }): Promise<void> {
+    const paths = this.diffModalPaths();
+    if (!paths?.cleanedPath) return;
+
+    const electron = window.electron;
+    if (!electron?.epub) return;
+
+    const result = await electron.epub.editText(
+      paths.cleanedPath,
+      event.chapterId,
+      event.oldText,
+      event.newText
+    );
+
+    if (result.success) {
+      console.log('Text edit saved to EPUB');
+    } else {
+      console.error('Failed to save text edit:', result.error);
+    }
+  }
+
   private getStatusText(): string {
     const current = this.queueService.currentJob();
     const pending = this.queueService.pendingJobs().length;
 
     if (current) {
-      return `Processing: ${current.epubFilename}`;
+      return `Processing: ${current.metadata?.title || 'Untitled'}`;
     }
 
     if (!this.queueService.isRunning()) {

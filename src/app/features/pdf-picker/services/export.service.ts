@@ -549,12 +549,9 @@ export class ExportService {
     const epub = this.generateEpubBlobWithChapters(bookTitle, chapterSections);
     const filename = this.generateFilename(pdfName, 'epub');
 
-    // Convert blob to array buffer then to base64
+    // Convert blob to array buffer
     const arrayBuffer = await epub.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
 
-    // Write to a temporary file in the system temp directory
-    // Then copy to the audiobook queue
     try {
       // First check if the queue path is available
       const pathResult = await this.electron.library.getAudiobooksPath();
@@ -565,17 +562,14 @@ export class ExportService {
         };
       }
 
-      // Save EPUB to a temporary location, then copy to queue
-      // For now, we'll use the downloads mechanism as a workaround
-      // and then copy the file to the queue
-      // TODO: Implement direct IPC-based file writing
+      // Send ArrayBuffer directly to main process (no base64 encoding needed)
+      const metadata = {
+        title: bookTitle,
+        author: '',
+        language: 'en'
+      };
 
-      // Create a data URL from the bytes
-      const base64 = btoa(String.fromCharCode(...bytes));
-      const dataUrl = `data:application/epub+zip;base64,${base64}`;
-
-      // Copy to queue using IPC
-      const copyResult = await this.electron.library.copyToQueue(dataUrl, filename);
+      const copyResult = await this.electron.library.copyToQueue(arrayBuffer, filename, metadata);
 
       if (!copyResult.success) {
         return {

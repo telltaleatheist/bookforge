@@ -9,6 +9,7 @@
 
 import { BrowserWindow } from 'electron';
 import path from 'path';
+import { promises as fsPromises } from 'fs';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -71,7 +72,7 @@ export interface CleanupResult {
 const OLLAMA_BASE_URL = 'http://localhost:11434';
 const DEFAULT_MODEL = 'llama3.2';
 const CHUNK_SIZE = 8000; // characters per chunk
-const TIMEOUT_MS = 120000; // 2 minutes per chunk
+const TIMEOUT_MS = 180000; // 3 minutes per chunk (Ollama can be slow)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OCR Cleanup Prompt
@@ -83,25 +84,28 @@ const TIMEOUT_MS = 120000; // 2 minutes per chunk
  */
 function buildCleanupPrompt(_options: AICleanupOptions): string {
   // The options parameter is kept for API compatibility but the prompt is now unified
-  return `You are an OCR error correction specialist. Fix ONLY optical character recognition errors in this scanned book text.
+  return `You are an OCR error correction tool. Your ONLY job is to fix character-level scanning errors.
 
-FIX THESE OCR ERRORS:
-- Broken words with hyphen-space: "traditi- onal" → "traditional"
-- Character substitutions: rn→m, cl→d, li→h, vv→w, 0→O, l→I where appropriate
-- Number/letter confusion: 0/O, 1/l/I, 5/S based on context
-- Extra whitespace between words or letters
-- Misrecognized punctuation
+FIX ONLY THESE CHARACTER ERRORS:
+- Broken hyphenation: "traditi- onal" → "traditional"
+- Character misreads: rn→m, cl→d, li→h, vv→w where the result is a real word
+- Number/letter swaps: 0↔O, 1↔l↔I, 5↔S only when obviously wrong
+- Scrambled punctuation: fix clearly wrong punctuation
+- Extra spaces within words: "w o r d" → "word"
 
-EXPAND FOR SPEECH:
-- Era abbreviations: "500 BCE" → "500 B C E", "1200 AD" → "1200 A D"
-- Do NOT write out "before common era" - just spell the letters
+NEVER DO ANY OF THESE:
+- NEVER add words, numbers, dates, or any content not present in the input
+- NEVER remove words or content
+- NEVER combine or split sentences
+- NEVER rewrite or rephrase anything
+- NEVER fix grammar or improve style
+- NEVER fill in blanks, gaps, or missing information
+- NEVER use your knowledge to "correct" factual content
 
-CRITICAL RULES:
-- Use vocabulary knowledge to determine the correct word
-- Preserve ALL content - do not remove, summarize, or skip anything
-- Do not add commentary, explanations, or notes
-- Return ONLY the corrected text, nothing else
-- If unsure about a correction, leave the original text`;
+If you see "–" or "..." or a gap, LEAVE IT EXACTLY AS IS. Do not fill it in.
+If text seems incomplete or wrong, LEAVE IT EXACTLY AS IS.
+
+Output ONLY the text with character-level fixes. Nothing else.`;
 }
 
 /**
@@ -268,7 +272,16 @@ async function cleanChunkWithClaude(
     }
 
     const data = await response.json();
-    return data.content?.[0]?.text || text;
+    const cleaned = data.content?.[0]?.text || text;
+
+    // Safeguard: if AI returns significantly less text (less than 70%),
+    // it's likely truncating/removing content incorrectly - use original
+    if (cleaned.length < text.length * 0.7) {
+      console.warn(`Claude returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
+      return text;
+    }
+
+    return cleaned;
   } catch (error) {
     clearTimeout(timeoutId);
     throw error;
@@ -314,7 +327,16 @@ async function cleanChunkWithOpenAI(
     }
 
     const data = await response.json();
-    return data.choices?.[0]?.message?.content || text;
+    const cleaned = data.choices?.[0]?.message?.content || text;
+
+    // Safeguard: if AI returns significantly less text (less than 70%),
+    // it's likely truncating/removing content incorrectly - use original
+    if (cleaned.length < text.length * 0.7) {
+      console.warn(`OpenAI returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
+      return text;
+    }
+
+    return cleaned;
   } catch (error) {
     clearTimeout(timeoutId);
     throw error;
@@ -322,29 +344,57 @@ async function cleanChunkWithOpenAI(
 }
 
 /**
- * Clean up a chunk of text using the configured provider
+ * Clean up a chunk of text using the configured provider with retry logic
  */
 async function cleanChunkWithProvider(
   text: string,
   systemPrompt: string,
-  config: AIProviderConfig
+  config: AIProviderConfig,
+  maxRetries: number = 3
 ): Promise<string> {
-  switch (config.provider) {
-    case 'ollama':
-      return cleanChunk(text, systemPrompt, config.ollama?.model || DEFAULT_MODEL);
-    case 'claude':
-      if (!config.claude?.apiKey) {
-        throw new Error('Claude API key not configured');
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      switch (config.provider) {
+        case 'ollama':
+          return await cleanChunk(text, systemPrompt, config.ollama?.model || DEFAULT_MODEL);
+        case 'claude':
+          if (!config.claude?.apiKey) {
+            throw new Error('Claude API key not configured');
+          }
+          return await cleanChunkWithClaude(text, systemPrompt, config.claude.apiKey, config.claude.model);
+        case 'openai':
+          if (!config.openai?.apiKey) {
+            throw new Error('OpenAI API key not configured');
+          }
+          return await cleanChunkWithOpenAI(text, systemPrompt, config.openai.apiKey, config.openai.model);
+        default:
+          throw new Error(`Unknown provider: ${config.provider}`);
       }
-      return cleanChunkWithClaude(text, systemPrompt, config.claude.apiKey, config.claude.model);
-    case 'openai':
-      if (!config.openai?.apiKey) {
-        throw new Error('OpenAI API key not configured');
+    } catch (error) {
+      lastError = error as Error;
+      const isRetryableError = error instanceof Error && (
+        error.name === 'AbortError' ||
+        error.message.includes('fetch') ||
+        error.message.includes('network') ||
+        error.message.includes('ECONNREFUSED') ||
+        error.message.includes('ECONNRESET') ||
+        error.message.includes('socket') ||
+        error.message.includes('timeout')
+      );
+
+      // Retry on network/connection errors, but not on other errors
+      if (isRetryableError && attempt < maxRetries) {
+        console.warn(`Chunk attempt ${attempt} failed (${error}), retrying in ${attempt * 2}s...`);
+        await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+        continue;
       }
-      return cleanChunkWithOpenAI(text, systemPrompt, config.openai.apiKey, config.openai.model);
-    default:
-      throw new Error(`Unknown provider: ${config.provider}`);
+      throw error;
+    }
   }
+
+  throw lastError || new Error('Failed to clean chunk after retries');
 }
 
 /**
@@ -355,38 +405,41 @@ async function cleanChunk(
   systemPrompt: string,
   model: string = DEFAULT_MODEL
 ): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  console.log('[AI-BRIDGE] cleanChunk using model:', model);
 
-  try {
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        prompt: text,
-        system: systemPrompt,
-        stream: false,
-        options: {
-          temperature: 0.1, // Low temperature for consistent output
-          num_predict: text.length * 2 // Allow enough tokens
-        }
-      }),
-      signal: controller.signal
-    });
+  // Don't use AbortController - it gets triggered by dev server reloads
+  // Let Ollama handle its own timeouts via keep_alive
+  const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      prompt: text,
+      system: systemPrompt,
+      stream: false,
+      options: {
+        temperature: 0.1, // Low temperature for consistent output
+        num_predict: text.length * 2 // Allow enough tokens
+      },
+      keep_alive: '5m' // Keep model loaded for 5 minutes
+    })
+  });
 
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`Ollama returned HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    return data.response || text;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
+  if (!response.ok) {
+    throw new Error(`Ollama returned HTTP ${response.status}`);
   }
+
+  const data = await response.json();
+  const cleaned = data.response || text;
+
+  // Safeguard: if AI returns significantly less text (less than 70%),
+  // it's likely truncating/removing content incorrectly - use original
+  if (cleaned.length < text.length * 0.7) {
+    console.warn(`AI returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
+    return text;
+  }
+
+  return cleaned;
 }
 
 /**
@@ -572,6 +625,17 @@ export async function cleanupEpub(
   onProgress?: (progress: EpubCleanupProgress) => void,
   providerConfig?: AIProviderConfig
 ): Promise<EpubCleanupResult> {
+  // Debug logging to trace model selection
+  console.log('[AI-BRIDGE] cleanupEpub called with:', {
+    model,
+    providerConfig: providerConfig ? {
+      provider: providerConfig.provider,
+      ollamaModel: providerConfig.ollama?.model,
+      claudeModel: providerConfig.claude?.model,
+      openaiModel: providerConfig.openai?.model
+    } : 'undefined'
+  });
+
   // Use provided config or default to Ollama
   const config: AIProviderConfig = providerConfig || {
     provider: 'ollama',
@@ -613,11 +677,16 @@ export async function cleanupEpub(
     }
   };
 
-  try {
-    // Import epub processor dynamically
-    const { parseEpub, getChapters, getChapterText, updateChapterText, saveModifiedEpub, closeEpub } = await import('./epub-processor.js');
+  // Use a dedicated EpubProcessor instance for cleanup
+  // This avoids conflicts with the global processor used by the UI
+  let processor: InstanceType<typeof import('./epub-processor.js').EpubProcessor> | null = null;
+  const modifiedChapters: Map<string, string> = new Map();
 
-    // Load the EPUB
+  try {
+    // Import epub processor class directly (not the global functions)
+    const { EpubProcessor } = await import('./epub-processor.js');
+
+    // Load the EPUB with our own processor instance
     sendProgress({
       jobId,
       phase: 'loading',
@@ -629,12 +698,14 @@ export async function cleanupEpub(
       message: 'Loading EPUB...'
     });
 
-    await parseEpub(epubPath);
-    const chapters = getChapters();
+    processor = new EpubProcessor();
+    await processor.open(epubPath);
+    const structure = processor.getStructure();
+    const chapters = structure?.chapters || [];
     const totalChapters = chapters.length;
 
     if (totalChapters === 0) {
-      closeEpub();
+      processor.close();
       return { success: false, error: 'No chapters found in EPUB' };
     }
 
@@ -645,6 +716,13 @@ export async function cleanupEpub(
     // This supports the project-based structure where original.epub and cleaned.epub live together
     const epubDir = path.dirname(epubPath);
     const outputPath = path.join(epubDir, 'cleaned.epub');
+
+    // Delete any existing cleaned.epub to start fresh
+    try {
+      await fsPromises.unlink(outputPath);
+    } catch {
+      // File doesn't exist, that's fine
+    }
 
     // Process each chapter
     for (let i = 0; i < chapters.length; i++) {
@@ -662,8 +740,8 @@ export async function cleanupEpub(
         outputPath  // Include output path so UI can show diff during processing
       });
 
-      // Get chapter text
-      const text = await getChapterText(chapter.id);
+      // Get chapter text using our dedicated processor
+      const text = await processor.getChapterText(chapter.id);
       if (!text || text.trim().length === 0) {
         continue; // Skip empty chapters
       }
@@ -714,14 +792,14 @@ export async function cleanupEpub(
         }
       }
 
-      // Update chapter with cleaned text
+      // Update chapter with cleaned text (stored in our local map)
       const cleanedText = cleanedChunks.join('');
-      await updateChapterText(chapter.id, cleanedText);
+      modifiedChapters.set(chapter.id, cleanedText);
       chaptersProcessed++;
 
       // Save incrementally after each chapter so diff view can work during processing
       try {
-        await saveModifiedEpub(outputPath);
+        await saveModifiedEpubLocal(processor, modifiedChapters, outputPath);
       } catch (saveError) {
         console.error(`Failed to save after chapter ${i + 1}:`, saveError);
         // Continue processing even if incremental save fails
@@ -741,8 +819,9 @@ export async function cleanupEpub(
       outputPath
     });
 
-    await saveModifiedEpub(outputPath);
-    closeEpub();
+    await saveModifiedEpubLocal(processor, modifiedChapters, outputPath);
+    processor.close();
+    processor = null;
 
     sendProgress({
       jobId,
@@ -761,6 +840,12 @@ export async function cleanupEpub(
       chaptersProcessed
     };
   } catch (error) {
+    // Clean up processor on error
+    if (processor) {
+      try {
+        processor.close();
+      } catch { /* ignore */ }
+    }
     const message = error instanceof Error ? error.message : 'Unknown error';
     sendProgress({
       jobId,
@@ -774,6 +859,96 @@ export async function cleanupEpub(
     });
     return { success: false, error: message };
   }
+}
+
+/**
+ * Save modified EPUB using a dedicated processor instance.
+ * This is used by cleanupEpub to avoid conflicts with the global processor.
+ */
+async function saveModifiedEpubLocal(
+  processor: InstanceType<typeof import('./epub-processor.js').EpubProcessor>,
+  modifiedChapters: Map<string, string>,
+  outputPath: string
+): Promise<void> {
+  const { ZipWriter } = await import('./epub-processor.js');
+
+  const structure = processor.getStructure();
+  if (!structure) {
+    throw new Error('No EPUB structure');
+  }
+
+  const zipWriter = new ZipWriter();
+
+  // Get all entries from the original EPUB
+  const entries = (processor as any).zipReader?.getEntries() || [];
+
+  for (const entryName of entries) {
+    // Check if this is a chapter file that was modified
+    let isModified = false;
+    let modifiedContent: string | null = null;
+
+    for (const chapter of structure.chapters) {
+      // Match using rootPath like the original implementation
+      const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
+      if (entryName === href && modifiedChapters.has(chapter.id)) {
+        isModified = true;
+        modifiedContent = modifiedChapters.get(chapter.id) || null;
+        break;
+      }
+    }
+
+    if (isModified && modifiedContent !== null) {
+      // Read original XHTML
+      const originalXhtml = await processor.readFile(entryName);
+      // Replace body content with cleaned text
+      const newXhtml = replaceXhtmlBodyLocal(originalXhtml, modifiedContent);
+      zipWriter.addFile(entryName, Buffer.from(newXhtml, 'utf8'));
+    } else {
+      // Copy file as-is
+      const data = await processor.readBinaryFile(entryName);
+      // Don't compress mimetype file (EPUB spec requirement)
+      const compress = entryName !== 'mimetype';
+      zipWriter.addFile(entryName, data, compress);
+    }
+  }
+
+  // Write the output file
+  await zipWriter.write(outputPath);
+}
+
+/**
+ * Replace the body content in an XHTML document while preserving the structure.
+ * Local version for use with dedicated processor.
+ */
+function replaceXhtmlBodyLocal(xhtml: string, newText: string): string {
+  // Find the body tag
+  const bodyMatch = xhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  if (!bodyMatch) {
+    // No body tag, return as-is
+    return xhtml;
+  }
+
+  // Convert plain text to paragraphs
+  const paragraphs = newText.split(/\n\n+/).filter(p => p.trim());
+  const htmlContent = paragraphs.map(p => `<p>${escapeXmlLocal(p.trim())}</p>`).join('\n');
+
+  // Replace body content
+  return xhtml.replace(
+    /<body([^>]*)>[\s\S]*<\/body>/i,
+    `<body$1>\n${htmlContent}\n</body>`
+  );
+}
+
+/**
+ * Escape text for XML. Local version.
+ */
+function escapeXmlLocal(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

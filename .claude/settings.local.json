@@ -50,7 +50,13 @@
       "Bash(ng cache clean:*)",
       "Bash(ng cache:*)",
       "Bash(npm ls:*)",
-      "Bash(npx madge:*)"
+      "Bash(npx madge:*)",
+      "Bash(find:*)",
+      "Bash(kill:*)",
+      "Bash(curl:*)",
+      "Bash(for i in {1..5})",
+      "Bash(do pkill -9 -f \"ollama runner\")",
+      "Bash(done)"
     ]
   }
 }

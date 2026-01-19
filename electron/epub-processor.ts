@@ -442,7 +442,9 @@ class EpubProcessor {
     text = text.replace(/&lt;/g, '<');
     text = text.replace(/&gt;/g, '>');
     text = text.replace(/&quot;/g, '"');
+    text = text.replace(/&apos;/g, "'");
     text = text.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)));
+    text = text.replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
 
     // Clean up whitespace
     text = text.replace(/\s+/g, ' ').trim();
@@ -816,5 +818,74 @@ export async function compareEpubs(originalPath: string, cleanedPath: string): P
   return { chapters };
 }
 
-// Export the processor for direct use if needed
-export { EpubProcessor };
+/**
+ * Edit specific text within an EPUB file.
+ * Finds and replaces the old text with new text in the specified chapter.
+ */
+export async function editEpubText(
+  epubPath: string,
+  chapterId: string,
+  oldText: string,
+  newText: string
+): Promise<{ success: boolean; error?: string }> {
+  const processor = new EpubProcessor();
+
+  try {
+    const structure = await processor.open(epubPath);
+
+    // Find the chapter
+    const chapter = structure.chapters.find(c => c.id === chapterId);
+    if (!chapter) {
+      return { success: false, error: `Chapter not found: ${chapterId}` };
+    }
+
+    // Get the href for this chapter
+    const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
+
+    // Read the current XHTML content
+    const xhtml = await processor.readFile(href);
+
+    // Find the old text and replace it
+    if (!xhtml.includes(oldText)) {
+      return { success: false, error: 'Text not found in chapter' };
+    }
+
+    const newXhtml = xhtml.replace(oldText, newText);
+
+    // Create new EPUB with the modified chapter
+    const zipWriter = new ZipWriter();
+    const entries = (processor as any).zipReader?.getEntries() || [];
+
+    for (const entryName of entries) {
+      if (entryName === href) {
+        // Write modified content
+        zipWriter.addFile(entryName, Buffer.from(newXhtml, 'utf8'));
+      } else {
+        // Copy file as-is
+        const data = await processor.readBinaryFile(entryName);
+        const compress = entryName !== 'mimetype';
+        zipWriter.addFile(entryName, data, compress);
+      }
+    }
+
+    // Write to a temp file, then replace the original
+    const tempPath = epubPath + '.tmp';
+    await zipWriter.write(tempPath);
+
+    // Replace original with temp
+    const fs = await import('fs/promises');
+    await fs.rename(tempPath, epubPath);
+
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  } finally {
+    processor.close();
+  }
+}
+
+// Export the processor and ZipWriter for direct use if needed
+export { EpubProcessor, ZipWriter };

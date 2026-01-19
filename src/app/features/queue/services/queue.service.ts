@@ -46,6 +46,9 @@ declare global {
       ai?: {
         checkProviderConnection: (provider: AIProvider) => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
       };
+      epub?: {
+        editText: (epubPath: string, chapterId: string, oldText: string, newText: string) => Promise<{ success: boolean; error?: string }>;
+      };
     };
   }
 }
@@ -122,6 +125,7 @@ export class QueueService {
 
   /**
    * Load persisted queue state from disk
+   * Auto-resumes processing if there were pending jobs
    */
   private async loadPersistedState(): Promise<void> {
     const electron = window.electron;
@@ -131,7 +135,11 @@ export class QueueService {
       const result = await electron.queue.loadState();
       if (result.success && result.data) {
         const state = result.data as PersistedQueueState;
+        console.log('[QUEUE] Loading persisted state with', state.jobs?.length || 0, 'jobs');
         if (state.jobs && Array.isArray(state.jobs)) {
+          state.jobs.forEach((job, i) => {
+            console.log(`[QUEUE] Loaded job ${i}:`, job.id, job.type, (job.config as any)?.aiModel || 'no model');
+          });
           // Reset any "processing" jobs to "pending" (they were interrupted)
           const recoveredJobs = state.jobs.map(job => {
             if (job.status === 'processing') {
@@ -145,6 +153,8 @@ export class QueueService {
             return job;
           });
           this._jobs.set(recoveredJobs);
+
+          // Don't auto-resume - user must manually start the queue
         }
       }
     } catch (err) {
@@ -247,6 +257,7 @@ export class QueueService {
 
   /**
    * Add a new job to the queue
+   * Automatically starts processing if queue is idle
    */
   async addJob(request: CreateJobRequest): Promise<QueueJob> {
     const filename = request.epubPath.split('/').pop() || 'unknown.epub';
@@ -262,24 +273,38 @@ export class QueueService {
       config: this.buildJobConfig(request)
     };
 
+    console.log('[QUEUE] Job added:', {
+      jobId: job.id,
+      type: job.type,
+      config: job.config
+    });
+
     this._jobs.update(jobs => [...jobs, job]);
 
     // Save state after adding job
     this.saveState();
+
+    // Don't auto-start - user must manually start the queue
 
     return job;
   }
 
   /**
    * Remove a job from the queue
-   * Only pending or error jobs can be removed
+   * If the job is currently processing, it will be cancelled first
    */
-  removeJob(jobId: string): boolean {
+  async removeJob(jobId: string): Promise<boolean> {
     const job = this._jobs().find(j => j.id === jobId);
     if (!job) return false;
 
-    // Can't remove a job that's currently processing
-    if (job.status === 'processing') return false;
+    // If job is processing, cancel it first
+    if (job.status === 'processing') {
+      const electron = window.electron;
+      if (electron?.queue) {
+        await electron.queue.cancelJob(jobId);
+      }
+      this._currentJobId.set(null);
+    }
 
     this._jobs.update(jobs => jobs.filter(j => j.id !== jobId));
     this.saveState();
@@ -343,6 +368,39 @@ export class QueueService {
    */
   pauseQueue(): void {
     this._isRunning.set(false);
+  }
+
+  /**
+   * Stop queue processing immediately - kills current AI job and resets it to pending
+   */
+  async stopQueue(): Promise<void> {
+    this._isRunning.set(false);
+
+    const currentId = this._currentJobId();
+    if (!currentId) return;
+
+    const electron = window.electron;
+    if (!electron?.queue) return;
+
+    // Cancel the job (this will unload the AI model)
+    await electron.queue.cancelJob(currentId);
+
+    // Reset the job to pending so it can be restarted
+    this._jobs.update(jobs =>
+      jobs.map(j => {
+        if (j.id !== currentId) return j;
+        return {
+          ...j,
+          status: 'pending' as JobStatus,
+          error: undefined,
+          progress: undefined,
+          startedAt: undefined
+        };
+      })
+    );
+
+    this._currentJobId.set(null);
+    this.saveState();
   }
 
   /**
@@ -503,6 +561,16 @@ export class QueueService {
             model: config.aiModel
           } : undefined
         };
+        console.log('[QUEUE] Calling runOcrCleanup with:', {
+          jobId: job.id,
+          model: config.aiModel,
+          aiConfig: {
+            provider: aiConfig.provider,
+            ollamaModel: aiConfig.ollama?.model,
+            claudeModel: aiConfig.claude?.model,
+            openaiModel: aiConfig.openai?.model
+          }
+        });
         await electron.queue.runOcrCleanup(job.id, job.epubPath, config.aiModel, aiConfig);
       } else if (job.type === 'tts-conversion') {
         const config = job.config as TtsConversionConfig | undefined;

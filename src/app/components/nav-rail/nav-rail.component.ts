@@ -37,8 +37,8 @@ export interface NavRailItem {
   `,
   styles: [`
     .nav-rail {
-      width: 64px;
-      min-width: 64px;
+      width: 100px;
+      min-width: 100px;
       height: 100%;
       background: var(--bg-elevated);
       border-right: 1px solid var(--border-default);
@@ -58,8 +58,8 @@ export interface NavRailItem {
 
     .nav-item {
       position: relative;
-      width: 48px;
-      height: 48px;
+      width: 88px;
+      height: 52px;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -99,7 +99,8 @@ export interface NavRailItem {
       text-transform: uppercase;
       letter-spacing: 0.02em;
       opacity: 0.8;
-      white-space: nowrap;
+      text-align: center;
+      line-height: 1.2;
     }
 
     .nav-badge {

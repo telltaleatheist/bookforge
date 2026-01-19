@@ -1,143 +1,167 @@
-import { Component, input, output, signal, computed, OnInit, OnDestroy, inject } from '@angular/core';
+import { Component, input, signal, computed, OnInit, OnDestroy, inject, ElementRef, ViewChild, output } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { DiffPaneComponent } from './diff-pane.component';
 import { DiffService } from '../../services/diff.service';
-import { DiffChapter } from '../../../../core/models/diff.types';
+import { DiffChapter, DiffWord } from '../../../../core/models/diff.types';
 import { Subscription } from 'rxjs';
+
+/**
+ * A segment of text in the unified diff view.
+ * Can be unchanged text, or a change region with original/new text.
+ */
+interface DiffSegment {
+  type: 'unchanged' | 'change';
+  text: string;           // The displayed text (new/cleaned version for changes)
+  originalText?: string;  // Original text that was replaced (for changes)
+  changeIndex?: number;   // Index for navigation (only for changes with originalText)
+  contextBefore?: string; // Words before the change for tooltip context
+  contextAfter?: string;  // Words after the change for tooltip context
+  chapterId?: string;     // Chapter this segment belongs to (for editing)
+  segmentIndex?: number;  // Index within chapter segments (for editing)
+}
+
+interface EditState {
+  chapterId: string;
+  segmentIndex: number;
+  originalValue: string;
+  editedValue: string;
+}
+
+interface ChapterWithSegments {
+  id: string;
+  title: string;
+  segments: DiffSegment[];
+  changeCount: number;
+}
 
 @Component({
   selector: 'app-diff-view',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DiffPaneComponent],
+  imports: [CommonModule, DesktopButtonComponent],
   template: `
-    <div class="diff-view" [class.loading]="loading()" [class.expanded]="expanded()">
+    <div class="diff-view" [class.loading]="loading()">
       <!-- Header -->
       <div class="diff-header">
         <div class="header-left">
-          <h4>Compare Changes</h4>
+          <h4>Review Changes</h4>
           @if (totalChanges() > 0) {
-            <span class="total-changes">{{ totalChanges() }} total changes</span>
+            <span class="change-badge">{{ totalChanges() }} changes</span>
           }
         </div>
-        <div class="header-controls">
-          @if (chapters().length > 0) {
-            <!-- Chapter selector -->
-            <select
-              class="chapter-select"
-              [value]="currentChapterId()"
-              (change)="selectChapter($any($event.target).value)"
+        @if (totalChanges() > 0) {
+          <div class="change-nav">
+            <span class="change-position">{{ currentChangeIndex() + 1 }} of {{ totalChanges() }}</span>
+            <desktop-button
+              variant="ghost"
+              size="xs"
+              [disabled]="currentChangeIndex() <= 0"
+              (click)="goToPrevChange()"
             >
-              @for (chapter of chapters(); track chapter.id) {
-                <option [value]="chapter.id">
-                  {{ chapter.title }}
-                  @if (chapter.changeCount > 0) {
-                    ({{ chapter.changeCount }})
-                  }
-                </option>
-              }
-            </select>
-
-            <!-- Navigation buttons -->
-            <div class="nav-buttons">
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                [disabled]="!canGoPrevious()"
-                (click)="previousChapter()"
-              >
-                &#8592; Prev
-              </desktop-button>
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                [disabled]="!canGoNext()"
-                (click)="nextChapter()"
-              >
-                Next &#8594;
-              </desktop-button>
-            </div>
-          }
-
-          <!-- Expand/Collapse button -->
-          <desktop-button
-            variant="ghost"
-            size="xs"
-            (click)="toggleExpanded()"
-          >
-            {{ expanded() ? 'Collapse' : 'Expand' }}
-          </desktop-button>
-
-          <!-- Close button -->
-          <desktop-button
-            variant="ghost"
-            size="xs"
-            (click)="close.emit()"
-          >
-            &#10005;
-          </desktop-button>
-        </div>
+              ← Prev
+            </desktop-button>
+            <desktop-button
+              variant="ghost"
+              size="xs"
+              [disabled]="currentChangeIndex() >= totalChanges() - 1"
+              (click)="goToNextChange()"
+            >
+              Next →
+            </desktop-button>
+          </div>
+        }
       </div>
 
       <!-- Loading state -->
       @if (loading()) {
-        <div class="loading-state">
+        <div class="state-message">
           <span class="spinner">&#8635;</span>
-          <span>Loading comparison...</span>
+          <span>Loading...</span>
         </div>
       } @else if (error()) {
-        <div class="error-state">
-          <span class="error-icon">&#9888;</span>
+        <div class="state-message error">
           <span>{{ error() }}</span>
           <desktop-button variant="ghost" size="xs" (click)="retry()">
             Retry
           </desktop-button>
         </div>
-      } @else if (currentChapter()) {
-        <!-- Split pane view -->
-        <div class="diff-split">
-          <app-diff-pane
-            paneType="original"
-            [diffWords]="currentChapter()!.diffWords"
-            [plainText]="currentChapter()!.originalText"
-            [changeCount]="removedCount()"
-            [scrollPosition]="scrollPosition()"
-            [linkedScrolling]="linkedScrolling()"
-            (scrolled)="onLeftScroll($event)"
-          />
-          <div class="divider"></div>
-          <app-diff-pane
-            paneType="cleaned"
-            [diffWords]="currentChapter()!.diffWords"
-            [plainText]="currentChapter()!.cleanedText"
-            [changeCount]="addedCount()"
-            [scrollPosition]="scrollPosition()"
-            [linkedScrolling]="linkedScrolling()"
-            (scrolled)="onRightScroll($event)"
-          />
+      } @else if (chaptersWithSegments().length > 0) {
+        <!-- Full book content -->
+        <div class="book-content" #bookContent>
+          @for (chapter of chaptersWithSegments(); track chapter.id) {
+            <div class="chapter">
+              <h3 class="chapter-title">
+                {{ chapter.title }}
+                @if (chapter.changeCount > 0) {
+                  <span class="chapter-changes">({{ chapter.changeCount }} changes)</span>
+                }
+              </h3>
+              <div class="chapter-text">
+                @for (segment of chapter.segments; track $index) {
+                  @if (segment.type === 'unchanged') {
+                    <span>{{ segment.text }}</span>
+                  } @else if (segment.originalText) {
+                    @if (isEditing(chapter.id, $index)) {
+                      <span class="text-editing">
+                        <input
+                          type="text"
+                          class="edit-input"
+                          [value]="editState()?.editedValue"
+                          (input)="onEditInput($event)"
+                          (keydown.enter)="saveEdit()"
+                          (keydown.escape)="cancelEdit()"
+                          (blur)="onEditBlur()"
+                          #editInput
+                        />
+                        <span class="edit-hint">Enter to save, Esc to cancel</span>
+                      </span>
+                    } @else {
+                      <span
+                        class="text-changed"
+                        [class.focused]="segment.changeIndex === currentChangeIndex()"
+                        [attr.data-change-index]="segment.changeIndex"
+                        (mouseenter)="showTooltip($event, segment)"
+                        (mouseleave)="hideTooltip()"
+                        (click)="focusChange(segment.changeIndex!)"
+                        (dblclick)="startEdit(chapter.id, $index, segment)"
+                      >{{ segment.text }}</span>
+                    }
+                  } @else {
+                    <!-- Added text with no original - just show it without highlight -->
+                    <span>{{ segment.text }}</span>
+                  }
+                }
+              </div>
+            </div>
+          }
         </div>
 
-        <!-- Summary bar -->
-        <div class="diff-summary">
-          <span class="summary-item removed">
-            <span class="count">{{ removedCount() }}</span> removed
-          </span>
-          <span class="summary-item added">
-            <span class="count">{{ addedCount() }}</span> added
-          </span>
-          <label class="linked-toggle">
-            <input
-              type="checkbox"
-              [checked]="linkedScrolling()"
-              (change)="linkedScrolling.set($any($event.target).checked)"
-            />
-            Linked scrolling
-          </label>
+        <!-- Tooltip -->
+        @if (tooltipVisible() && tooltipSegment()?.originalText) {
+          <div
+            class="change-tooltip"
+            [style.left.px]="tooltipX()"
+            [style.top.px]="tooltipY()"
+          >
+            <div class="tooltip-label">Was:</div>
+            <div class="tooltip-original">
+              @if (tooltipSegment()!.contextBefore) {
+                <span class="context">...{{ tooltipSegment()!.contextBefore }}</span>
+              }
+              <span class="original-text">{{ tooltipSegment()!.originalText }}</span>
+              @if (tooltipSegment()!.contextAfter) {
+                <span class="context">{{ tooltipSegment()!.contextAfter }}...</span>
+              }
+            </div>
+          </div>
+        }
+
+        <!-- Footer -->
+        <div class="diff-footer">
+          <span class="hint">Click on highlighted text or use arrow buttons to navigate changes</span>
         </div>
       } @else {
-        <div class="empty-state">
-          <p>No diff data available.</p>
+        <div class="state-message">
+          <p>No changes to review.</p>
         </div>
       }
     </div>
@@ -150,16 +174,9 @@ import { Subscription } from 'rxjs';
       border: 1px solid var(--border-default);
       border-radius: 8px;
       overflow: hidden;
-      height: 300px;
-      transition: height 0.2s ease;
-
-      &.expanded {
-        height: 500px;
-      }
-
-      &.loading {
-        min-height: 120px;
-      }
+      height: 100%;
+      min-height: 300px;
+      position: relative;
     }
 
     .diff-header {
@@ -169,6 +186,7 @@ import { Subscription } from 'rxjs';
       padding: 0.5rem 0.75rem;
       background: var(--bg-subtle);
       border-bottom: 1px solid var(--border-default);
+      flex-shrink: 0;
 
       h4 {
         margin: 0;
@@ -184,45 +202,29 @@ import { Subscription } from 'rxjs';
       gap: 0.75rem;
     }
 
-    .total-changes {
+    .change-badge {
       font-size: 0.6875rem;
       padding: 0.125rem 0.5rem;
-      background: color-mix(in srgb, var(--accent) 15%, transparent);
-      color: var(--accent);
+      background: rgba(255, 107, 53, 0.2);
+      color: #ff6b35;
       border-radius: 10px;
+      font-weight: 500;
     }
 
-    .header-controls {
+    .change-nav {
       display: flex;
       align-items: center;
       gap: 0.5rem;
     }
 
-    .chapter-select {
-      padding: 0.25rem 0.5rem;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-subtle);
-      border-radius: 4px;
-      color: var(--text-primary);
+    .change-position {
       font-size: 0.75rem;
-      max-width: 200px;
-
-      &:focus {
-        outline: none;
-        border-color: var(--accent);
-      }
-
-      option {
-        background: var(--bg-surface);
-      }
+      color: var(--text-secondary);
+      min-width: 60px;
+      text-align: center;
     }
 
-    .nav-buttons {
-      display: flex;
-      gap: 0.25rem;
-    }
-
-    .loading-state, .error-state, .empty-state {
+    .state-message {
       flex: 1;
       display: flex;
       flex-direction: column;
@@ -231,13 +233,9 @@ import { Subscription } from 'rxjs';
       gap: 0.5rem;
       color: var(--text-secondary);
       font-size: 0.875rem;
-    }
 
-    .error-state {
-      color: var(--accent-danger);
-
-      .error-icon {
-        font-size: 1.5rem;
+      &.error {
+        color: var(--accent-danger);
       }
     }
 
@@ -252,69 +250,161 @@ import { Subscription } from 'rxjs';
       to { transform: rotate(360deg); }
     }
 
-    .diff-split {
+    .book-content {
       flex: 1;
-      display: flex;
-      gap: 0;
-      overflow: hidden;
-      padding: 0.5rem;
+      overflow: auto;
+      padding: 1rem 1.5rem;
+    }
 
-      > app-diff-pane {
-        flex: 1;
-        min-width: 0;
+    .chapter {
+      margin-bottom: 2rem;
+
+      &:last-child {
+        margin-bottom: 0;
       }
     }
 
-    .divider {
-      width: 1px;
-      background: var(--border-default);
-      margin: 0 0.5rem;
+    .chapter-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin: 0 0 0.75rem 0;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border-subtle);
     }
 
-    .diff-summary {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
+    .chapter-changes {
+      font-size: 0.75rem;
+      font-weight: 400;
+      color: #ff6b35;
+      margin-left: 0.5rem;
+    }
+
+    .chapter-text {
+      font-size: 0.9375rem;
+      line-height: 1.75;
+      color: var(--text-primary);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .text-changed {
+      background: rgba(255, 107, 53, 0.25);
+      border-radius: 2px;
+      padding: 1px 3px;
+      margin: 0 -1px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+
+      &:hover {
+        background: rgba(255, 107, 53, 0.4);
+      }
+
+      &.focused {
+        background: rgba(255, 107, 53, 0.5);
+        outline: 2px solid #ff6b35;
+        outline-offset: 1px;
+      }
+    }
+
+    .text-editing {
+      display: inline-flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .edit-input {
+      font-family: inherit;
+      font-size: inherit;
+      line-height: inherit;
+      padding: 2px 6px;
+      border: 2px solid #ff6b35;
+      border-radius: 3px;
+      background: var(--bg-default);
+      color: var(--text-primary);
+      outline: none;
+      min-width: 100px;
+      max-width: 400px;
+
+      &:focus {
+        box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.3);
+      }
+    }
+
+    .edit-hint {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 4px;
+      font-size: 0.625rem;
+      color: var(--text-tertiary);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    .change-tooltip {
+      position: fixed;
+      z-index: 1000;
+      max-width: 400px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+      padding: 0.5rem 0.75rem;
+      pointer-events: none;
+      animation: tooltipFadeIn 0.1s ease;
+    }
+
+    @keyframes tooltipFadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(4px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .tooltip-label {
+      font-size: 0.625rem;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 0.25rem;
+    }
+
+    .tooltip-original {
+      font-size: 0.8125rem;
+      line-height: 1.4;
+
+      .context {
+        color: var(--text-secondary);
+      }
+
+      .original-text {
+        color: var(--accent-danger, #e53935);
+        text-decoration: line-through;
+      }
+    }
+
+    .diff-footer {
       padding: 0.5rem 0.75rem;
       background: var(--bg-subtle);
       border-top: 1px solid var(--border-default);
-      font-size: 0.75rem;
+      flex-shrink: 0;
     }
 
-    .summary-item {
-      display: flex;
-      align-items: center;
-      gap: 0.25rem;
-      color: var(--text-secondary);
-
-      .count {
-        font-weight: 600;
-      }
-
-      &.removed .count {
-        color: var(--accent-danger);
-      }
-
-      &.added .count {
-        color: var(--accent-success);
-      }
-    }
-
-    .linked-toggle {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: 0.375rem;
-      color: var(--text-secondary);
-      cursor: pointer;
-
-      input[type="checkbox"] {
-        margin: 0;
-      }
+    .hint {
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
     }
   `]
 })
 export class DiffViewComponent implements OnInit, OnDestroy {
+  @ViewChild('bookContent') bookContentRef!: ElementRef<HTMLDivElement>;
+
   private readonly diffService = inject(DiffService);
   private subscriptions: Subscription[] = [];
 
@@ -322,50 +412,54 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   readonly originalPath = input<string>('');
   readonly cleanedPath = input<string>('');
 
-  // Outputs
-  readonly close = output<void>();
-
   // State
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
-  readonly expanded = signal(false);
-  readonly linkedScrolling = signal(true);
-  readonly scrollPosition = signal(0);
+  readonly currentChangeIndex = signal(0);
+
+  // Tooltip state
+  readonly tooltipVisible = signal(false);
+  readonly tooltipX = signal(0);
+  readonly tooltipY = signal(0);
+  readonly tooltipSegment = signal<DiffSegment | null>(null);
+
+  // Edit state
+  readonly editState = signal<EditState | null>(null);
+
+  // Output for text edits
+  readonly textEdited = output<{ chapterId: string; oldText: string; newText: string }>();
 
   // From service
   readonly chapters = signal<DiffChapter[]>([]);
-  readonly currentChapterId = signal<string>('');
-  readonly currentChapter = signal<DiffChapter | null>(null);
 
-  // Computed
-  readonly totalChanges = computed(() =>
-    this.chapters().reduce((sum, ch) => sum + ch.changeCount, 0)
-  );
-
-  readonly canGoPrevious = computed(() => {
-    const chapters = this.chapters();
-    const currentId = this.currentChapterId();
-    const index = chapters.findIndex(c => c.id === currentId);
-    return index > 0;
+  // Computed: total changes across all chapters (only those with originalText)
+  readonly totalChanges = computed(() => {
+    let count = 0;
+    for (const chapter of this.chaptersWithSegments()) {
+      for (const segment of chapter.segments) {
+        if (segment.type === 'change' && segment.originalText) {
+          count++;
+        }
+      }
+    }
+    return count;
   });
 
-  readonly canGoNext = computed(() => {
-    const chapters = this.chapters();
-    const currentId = this.currentChapterId();
-    const index = chapters.findIndex(c => c.id === currentId);
-    return index < chapters.length - 1;
-  });
-
-  readonly addedCount = computed(() => {
-    const chapter = this.currentChapter();
-    if (!chapter) return 0;
-    return chapter.diffWords.filter(w => w.type === 'added').length;
-  });
-
-  readonly removedCount = computed(() => {
-    const chapter = this.currentChapter();
-    if (!chapter) return 0;
-    return chapter.diffWords.filter(w => w.type === 'removed').length;
+  // Computed: all chapters with their segments pre-built
+  readonly chaptersWithSegments = computed((): ChapterWithSegments[] => {
+    let changeIndex = 0;
+    return this.chapters().map(chapter => {
+      const segments = this.buildSegments(chapter.diffWords, changeIndex, chapter.id);
+      // Count how many changes had originalText
+      const changesInChapter = segments.filter(s => s.type === 'change' && s.originalText).length;
+      changeIndex += changesInChapter;
+      return {
+        id: chapter.id,
+        title: chapter.title,
+        segments,
+        changeCount: changesInChapter
+      };
+    });
   });
 
   ngOnInit(): void {
@@ -376,14 +470,9 @@ export class DiffViewComponent implements OnInit, OnDestroy {
       this.diffService.session$.subscribe(session => {
         if (session) {
           this.chapters.set(session.chapters);
-          this.currentChapterId.set(session.currentChapterId);
-          this.currentChapter.set(
-            session.chapters.find(c => c.id === session.currentChapterId) || null
-          );
+          this.currentChangeIndex.set(0);
         } else {
           this.chapters.set([]);
-          this.currentChapterId.set('');
-          this.currentChapter.set(null);
         }
       })
     );
@@ -407,40 +496,233 @@ export class DiffViewComponent implements OnInit, OnDestroy {
     await this.diffService.loadComparison(original, cleaned);
   }
 
-  selectChapter(chapterId: string): void {
-    this.diffService.setCurrentChapter(chapterId);
-    this.scrollPosition.set(0); // Reset scroll on chapter change
+  /**
+   * Convert diffWords array into display segments.
+   * Groups changes (removed/added words) into change regions, handling interleaved patterns.
+   */
+  private buildSegments(diffWords: DiffWord[], startingChangeIndex: number, chapterId?: string): DiffSegment[] {
+    const segments: DiffSegment[] = [];
+    let i = 0;
+    let changeIndex = startingChangeIndex;
+    let segmentIndex = 0;
+
+    while (i < diffWords.length) {
+      const word = diffWords[i];
+
+      if (word.type === 'unchanged') {
+        // Accumulate consecutive unchanged words
+        let text = word.text;
+        i++;
+        while (i < diffWords.length && diffWords[i].type === 'unchanged') {
+          text += diffWords[i].text;
+          i++;
+        }
+        segments.push({ type: 'unchanged', text, chapterId, segmentIndex: segmentIndex++ });
+      } else {
+        // We have a change region - collect ALL removed and added words until we hit unchanged
+        // This handles interleaved patterns like: removed, added, removed, added
+        let removedText = '';
+        let addedText = '';
+
+        // Collect all change words (both removed and added) until we hit unchanged
+        while (i < diffWords.length && diffWords[i].type !== 'unchanged') {
+          if (diffWords[i].type === 'removed') {
+            removedText += diffWords[i].text;
+          } else if (diffWords[i].type === 'added') {
+            addedText += diffWords[i].text;
+          }
+          i++;
+        }
+
+        // Create the change segment
+        if (addedText) {
+          // Trim the original text to see if there's meaningful content
+          const trimmedOriginal = removedText.trim();
+          if (trimmedOriginal) {
+            segments.push({
+              type: 'change',
+              text: addedText,
+              originalText: trimmedOriginal,
+              changeIndex: changeIndex++,
+              chapterId,
+              segmentIndex: segmentIndex++
+            });
+          } else {
+            // No meaningful original - show as regular text
+            segments.push({ type: 'unchanged', text: addedText, chapterId, segmentIndex: segmentIndex++ });
+          }
+        }
+        // Pure deletions (no added text) are not shown - the cleaned view shows the result
+      }
+    }
+
+    // Add context to change segments - get the immediate surrounding word (1 before, 1 after)
+    for (let j = 0; j < segments.length; j++) {
+      if (segments[j].type === 'change' && segments[j].originalText) {
+        // Get the word immediately before the change
+        if (j > 0 && segments[j - 1].type === 'unchanged') {
+          segments[j].contextBefore = this.getLastWords(segments[j - 1].text, 1);
+        }
+        // Get the word immediately after the change
+        if (j < segments.length - 1 && segments[j + 1].type === 'unchanged') {
+          segments[j].contextAfter = this.getFirstWords(segments[j + 1].text, 1);
+        }
+      }
+    }
+
+    return segments;
   }
 
-  previousChapter(): void {
-    if (this.diffService.previousChapter()) {
-      this.scrollPosition.set(0);
+  goToNextChange(): void {
+    const total = this.totalChanges();
+    const current = this.currentChangeIndex();
+    if (current < total - 1) {
+      this.focusChange(current + 1);
     }
   }
 
-  nextChapter(): void {
-    if (this.diffService.nextChapter()) {
-      this.scrollPosition.set(0);
+  goToPrevChange(): void {
+    const current = this.currentChangeIndex();
+    if (current > 0) {
+      this.focusChange(current - 1);
     }
   }
 
-  toggleExpanded(): void {
-    this.expanded.update(v => !v);
+  focusChange(index: number): void {
+    this.currentChangeIndex.set(index);
+    this.scrollToChange(index);
   }
 
-  onLeftScroll(position: number): void {
-    if (this.linkedScrolling()) {
-      this.scrollPosition.set(position);
-    }
+  private scrollToChange(index: number): void {
+    // Use setTimeout to let Angular update the DOM first
+    setTimeout(() => {
+      const container = this.bookContentRef?.nativeElement;
+      if (!container) return;
+
+      const changeEl = container.querySelector(`[data-change-index="${index}"]`) as HTMLElement;
+      if (changeEl) {
+        // Scroll the change into view, centered vertically
+        changeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 0);
   }
 
-  onRightScroll(position: number): void {
-    if (this.linkedScrolling()) {
-      this.scrollPosition.set(position);
-    }
+  /** Extract the last N words from a text string */
+  private getLastWords(text: string, count: number): string {
+    const words = text.trim().split(/\s+/);
+    if (words.length <= count) return text.trim();
+    return words.slice(-count).join(' ');
+  }
+
+  /** Extract the first N words from a text string */
+  private getFirstWords(text: string, count: number): string {
+    const words = text.trim().split(/\s+/);
+    if (words.length <= count) return text.trim();
+    return words.slice(0, count).join(' ');
+  }
+
+  showTooltip(event: MouseEvent, segment: DiffSegment): void {
+    if (!segment.originalText) return;
+
+    const target = event.target as HTMLElement;
+    const rect = target.getBoundingClientRect();
+
+    // Position tooltip below the element
+    this.tooltipX.set(rect.left);
+    this.tooltipY.set(rect.bottom + 8);
+    this.tooltipSegment.set(segment);
+    this.tooltipVisible.set(true);
+  }
+
+  hideTooltip(): void {
+    this.tooltipVisible.set(false);
+    this.tooltipSegment.set(null);
   }
 
   retry(): void {
     this.loadComparison();
+  }
+
+  /** Public method to refresh the diff comparison */
+  refresh(): void {
+    this.loadComparison();
+  }
+
+  /** Check if a specific segment is being edited */
+  isEditing(chapterId: string, segmentIndex: number): boolean {
+    const state = this.editState();
+    return state !== null && state.chapterId === chapterId && state.segmentIndex === segmentIndex;
+  }
+
+  /** Start editing a segment */
+  startEdit(chapterId: string, segmentIndex: number, segment: DiffSegment): void {
+    this.hideTooltip();
+    this.editState.set({
+      chapterId,
+      segmentIndex,
+      originalValue: segment.text,
+      editedValue: segment.text
+    });
+
+    // Focus the input after Angular updates the DOM
+    setTimeout(() => {
+      const input = document.querySelector('.edit-input') as HTMLInputElement;
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }, 0);
+  }
+
+  /** Handle input changes */
+  onEditInput(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const state = this.editState();
+    if (state) {
+      this.editState.set({
+        ...state,
+        editedValue: input.value
+      });
+    }
+  }
+
+  /** Save the edit */
+  saveEdit(): void {
+    const state = this.editState();
+    if (!state) return;
+
+    // Only emit if the value actually changed
+    if (state.editedValue !== state.originalValue) {
+      // Update the segment in our local state
+      const chapters = this.chaptersWithSegments();
+      const chapter = chapters.find(c => c.id === state.chapterId);
+      if (chapter && chapter.segments[state.segmentIndex]) {
+        chapter.segments[state.segmentIndex].text = state.editedValue;
+      }
+
+      // Emit the change
+      this.textEdited.emit({
+        chapterId: state.chapterId,
+        oldText: state.originalValue,
+        newText: state.editedValue
+      });
+    }
+
+    this.editState.set(null);
+  }
+
+  /** Cancel the edit */
+  cancelEdit(): void {
+    this.editState.set(null);
+  }
+
+  /** Handle blur - save on blur unless cancelled */
+  onEditBlur(): void {
+    // Small delay to allow click on other elements
+    setTimeout(() => {
+      if (this.editState()) {
+        this.saveEdit();
+      }
+    }, 100);
   }
 }

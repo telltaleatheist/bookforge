@@ -572,7 +572,7 @@ export interface ElectronAPI {
       alreadyExists?: boolean;
       error?: string;
     }>;
-    copyToQueue: (sourcePath: string, filename: string) => Promise<{
+    copyToQueue: (data: ArrayBuffer | string, filename: string, metadata?: { title?: string; author?: string; language?: string }) => Promise<{
       success: boolean;
       destinationPath?: string;
       error?: string;
@@ -640,6 +640,7 @@ export interface ElectronAPI {
     getMetadata: () => Promise<{ success: boolean; data?: EpubMetadata | null; error?: string }>;
     getChapters: () => Promise<{ success: boolean; data?: EpubChapter[]; error?: string }>;
     close: () => Promise<{ success: boolean; error?: string }>;
+    editText: (epubPath: string, chapterId: string, oldText: string, newText: string) => Promise<{ success: boolean; error?: string }>;
   };
   ai: {
     checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: OllamaModel[]; error?: string }; error?: string }>;
@@ -826,8 +827,8 @@ const electronAPI: ElectronAPI = {
   library: {
     importFile: (sourcePath: string) =>
       ipcRenderer.invoke('library:import-file', sourcePath),
-    copyToQueue: (sourcePath: string, filename: string) =>
-      ipcRenderer.invoke('library:copy-to-queue', sourcePath, filename),
+    copyToQueue: (data: ArrayBuffer | string, filename: string, metadata?: { title?: string; author?: string; language?: string }) =>
+      ipcRenderer.invoke('library:copy-to-queue', data, filename, metadata),
     listQueue: () =>
       ipcRenderer.invoke('library:list-queue'),
     getAudiobooksPath: () =>
@@ -864,6 +865,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:get-chapters'),
     close: () =>
       ipcRenderer.invoke('epub:close'),
+    editText: (epubPath: string, chapterId: string, oldText: string, newText: string) =>
+      ipcRenderer.invoke('epub:edit-text', epubPath, chapterId, oldText, newText),
   },
   ai: {
     checkConnection: () =>

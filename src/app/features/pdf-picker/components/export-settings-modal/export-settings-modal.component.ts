@@ -86,7 +86,7 @@ export interface ExportResult {
                   <circle cx="12" cy="12" r="4"/>
                   <path d="M12 8v4l3 3"/>
                 </svg>
-                <span>Audiobook</span>
+                <span>Audiobook Producer</span>
               </button>
             </div>
 

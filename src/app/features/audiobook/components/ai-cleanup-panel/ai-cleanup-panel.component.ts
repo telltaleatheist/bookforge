@@ -82,7 +82,7 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
             (change)="selectModel($any($event.target).value)"
           >
             @for (model of availableModels(); track model.value) {
-              <option [value]="model.value">{{ model.label }}</option>
+              <option [value]="model.value" [selected]="model.value === selectedModel()">{{ model.label }}</option>
             }
           </select>
         } @else {
@@ -563,9 +563,14 @@ export class AiCleanupPanelComponent implements OnInit {
         }));
         this.ollamaModels.set(models);
 
-        // Set default model if none selected and we have models
-        if (!this.selectedModel() && models.length > 0) {
+        // Validate selected model exists, otherwise use first available
+        const currentModel = this.selectedModel();
+        const modelExists = models.some((m: { value: string }) => m.value === currentModel);
+        if ((!currentModel || !modelExists) && models.length > 0) {
+          console.log('[AI-CLEANUP] Selected model', currentModel, 'not in available models, defaulting to', models[0].value);
           this.selectedModel.set(models[0].value);
+        } else {
+          console.log('[AI-CLEANUP] Using model:', currentModel);
         }
       } else {
         this.ollamaConnected.set(false);

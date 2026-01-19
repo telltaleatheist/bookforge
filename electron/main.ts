@@ -1188,6 +1188,16 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('epub:edit-text', async (_event, epubPath: string, chapterId: string, oldText: string, newText: string) => {
+    try {
+      const { editEpubText } = await import('./epub-processor.js');
+      const result = await editEpubText(epubPath, chapterId, oldText, newText);
+      return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Diff Comparison handlers (for AI cleanup diff view)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1575,9 +1585,13 @@ function setupIpcHandlers(): void {
     };
   });
 
-  // Legacy compatibility handlers (can be removed later)
-  ipcMain.handle('library:copy-to-queue', async (_event, sourcePath: string, filename: string) => {
-    // Create a project folder for this EPUB
+  // Copy EPUB to audiobook queue (accepts ArrayBuffer directly or file path)
+  ipcMain.handle('library:copy-to-queue', async (
+    _event,
+    data: ArrayBuffer | string,
+    filename: string,
+    metadata?: { title?: string; author?: string; language?: string }
+  ) => {
     try {
       const basePath = getAudiobooksBasePath();
       await fs.mkdir(basePath, { recursive: true });
@@ -1588,22 +1602,35 @@ function setupIpcHandlers(): void {
 
       const originalPath = path.join(folderPath, 'original.epub');
 
-      if (sourcePath.startsWith('data:')) {
-        const matches = sourcePath.match(/^data:[^;]+;base64,(.+)$/);
+      // Handle different input types
+      if (data instanceof ArrayBuffer || (data && typeof data === 'object' && 'byteLength' in data)) {
+        // ArrayBuffer from renderer - write directly
+        const buffer = Buffer.from(data as ArrayBuffer);
+        await fs.writeFile(originalPath, buffer);
+      } else if (typeof data === 'string' && data.startsWith('data:')) {
+        // Legacy: base64 data URL
+        const matches = data.match(/^data:[^;]+;base64,(.+)$/);
         if (!matches || !matches[1]) {
           return { success: false, error: 'Invalid data URL format' };
         }
         const buffer = Buffer.from(matches[1], 'base64');
         await fs.writeFile(originalPath, buffer);
+      } else if (typeof data === 'string') {
+        // File path - copy the file
+        await fs.copyFile(data, originalPath);
       } else {
-        await fs.copyFile(sourcePath, originalPath);
+        return { success: false, error: 'Invalid data format' };
       }
 
       const now = new Date().toISOString();
       const projectData = {
         version: 1,
         originalFilename: filename,
-        metadata: { title: '', author: '', language: 'en' },
+        metadata: {
+          title: metadata?.title || '',
+          author: metadata?.author || '',
+          language: metadata?.language || 'en'
+        },
         state: { cleanupStatus: 'none', ttsStatus: 'none' },
         createdAt: now,
         modifiedAt: now
@@ -1706,7 +1733,7 @@ function setupIpcHandlers(): void {
   // ─────────────────────────────────────────────────────────────────────────────
 
   // Track running jobs for cancellation
-  const runningJobs = new Map<string, { cancel: () => void }>();
+  const runningJobs = new Map<string, { cancel: () => void; model?: string }>();
 
   ipcMain.handle('queue:run-ocr-cleanup', async (
     _event,
@@ -1720,13 +1747,25 @@ function setupIpcHandlers(): void {
       openai?: { apiKey: string; model: string };
     }
   ) => {
+    console.log('[IPC] queue:run-ocr-cleanup received:', {
+      jobId,
+      model,
+      aiConfig: aiConfig ? {
+        provider: aiConfig.provider,
+        ollamaModel: aiConfig.ollama?.model,
+        claudeModel: aiConfig.claude?.model,
+        openaiModel: aiConfig.openai?.model
+      } : 'undefined'
+    });
+
     try {
       const { aiBridge } = await import('./ai-bridge.js');
 
       // Create cancellation token
       let cancelled = false;
       const cancelFn = () => { cancelled = true; };
-      runningJobs.set(jobId, { cancel: cancelFn });
+      const modelToUse = aiConfig?.ollama?.model || model || 'llama3.2';
+      runningJobs.set(jobId, { cancel: cancelFn, model: modelToUse });
 
       // Run OCR cleanup with provider config
       const result = await aiBridge.cleanupEpub(
@@ -1845,6 +1884,19 @@ function setupIpcHandlers(): void {
     if (job) {
       job.cancel();
       runningJobs.delete(jobId);
+
+      // Also unload any running Ollama model to free memory
+      try {
+        await fetch('http://localhost:11434/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: job.model || 'llama3.2', keep_alive: 0 })
+        });
+        console.log('[IPC] Ollama model unloaded after cancel');
+      } catch {
+        // Ollama might not be running, ignore
+      }
+
       return { success: true };
     }
     return { success: false, error: 'Job not found or not running' };

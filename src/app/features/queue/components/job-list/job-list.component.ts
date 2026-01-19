@@ -46,10 +46,13 @@ import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
               <span class="job-type-badge" [class]="job.type">
                 {{ getJobTypeLabel(job.type) }}
               </span>
-              <span class="filename">{{ job.epubFilename }}</span>
+              <span class="book-title">{{ job.metadata?.title || 'Untitled' }}</span>
             </div>
-            @if (job.metadata?.title) {
-              <div class="job-meta">{{ job.metadata!.title }}</div>
+            @if (job.metadata?.author) {
+              <div class="job-meta">{{ job.metadata!.author }}</div>
+            }
+            @if (job.type === 'ocr-cleanup' && getOcrModel(job)) {
+              <div class="job-meta model">🤖 {{ getOcrModel(job) }}</div>
             }
             @if (job.status === 'processing' && job.progress !== undefined) {
               <div class="progress-bar">
@@ -69,7 +72,7 @@ import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
                 size="xs"
                 [iconOnly]="true"
                 title="Move up"
-                (click)="moveUp.emit(job.id)"
+                (click)="moveUp.emit(job.id); $event.stopPropagation()"
               >
                 &#8593;
               </desktop-button>
@@ -78,30 +81,26 @@ import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
                 size="xs"
                 [iconOnly]="true"
                 title="Move down"
-                (click)="moveDown.emit(job.id)"
+                (click)="moveDown.emit(job.id); $event.stopPropagation()"
               >
                 &#8595;
               </desktop-button>
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                [iconOnly]="true"
+              <button
+                class="remove-btn"
                 title="Remove"
-                (click)="remove.emit(job.id)"
+                (click)="remove.emit(job.id); $event.stopPropagation()"
               >
-                &#10005;
-              </desktop-button>
+                ✕
+              </button>
             }
             @if (job.status === 'processing') {
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                [iconOnly]="true"
+              <button
+                class="cancel-btn"
                 title="Cancel"
-                (click)="cancel.emit(job.id)"
+                (click)="cancel.emit(job.id); $event.stopPropagation()"
               >
-                &#9632;
-              </desktop-button>
+                ■
+              </button>
             }
             @if (job.status === 'error') {
               <desktop-button
@@ -109,30 +108,26 @@ import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
                 size="xs"
                 [iconOnly]="true"
                 title="Retry"
-                (click)="retry.emit(job.id)"
+                (click)="retry.emit(job.id); $event.stopPropagation()"
               >
                 &#8635;
               </desktop-button>
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                [iconOnly]="true"
+              <button
+                class="remove-btn"
                 title="Remove"
-                (click)="remove.emit(job.id)"
+                (click)="remove.emit(job.id); $event.stopPropagation()"
               >
-                &#10005;
-              </desktop-button>
+                ✕
+              </button>
             }
             @if (job.status === 'complete') {
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                [iconOnly]="true"
+              <button
+                class="remove-btn"
                 title="Remove"
-                (click)="remove.emit(job.id)"
+                (click)="remove.emit(job.id); $event.stopPropagation()"
               >
-                &#10005;
-              </desktop-button>
+                ✕
+              </button>
             }
           </div>
         </div>
@@ -264,7 +259,7 @@ import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
       }
     }
 
-    .filename {
+    .book-title {
       font-size: 0.875rem;
       font-weight: 500;
       color: var(--text-primary);
@@ -280,6 +275,11 @@ import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+
+      &.model {
+        color: var(--text-tertiary);
+        font-size: 0.6875rem;
+      }
     }
 
     .progress-bar {
@@ -305,6 +305,7 @@ import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
 
     .job-actions {
       display: flex;
+      align-items: center;
       gap: 0.25rem;
       opacity: 0;
       transition: opacity 0.15s ease;
@@ -317,6 +318,39 @@ import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
     .job-item.processing .job-actions,
     .job-item.error .job-actions {
       opacity: 1;
+    }
+
+    .remove-btn,
+    .cancel-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.15s ease;
+    }
+
+    .remove-btn {
+      background: color-mix(in srgb, var(--error) 15%, transparent);
+      color: var(--error);
+
+      &:hover {
+        background: color-mix(in srgb, var(--error) 30%, transparent);
+      }
+    }
+
+    .cancel-btn {
+      background: color-mix(in srgb, var(--warning, orange) 15%, transparent);
+      color: var(--warning, orange);
+
+      &:hover {
+        background: color-mix(in srgb, var(--warning, orange) 30%, transparent);
+      }
     }
 
     .empty-list {
@@ -349,5 +383,11 @@ export class JobListComponent {
       default:
         return type;
     }
+  }
+
+  getOcrModel(job: QueueJob): string | null {
+    if (job.type !== 'ocr-cleanup' || !job.config) return null;
+    const config = job.config as { aiModel?: string };
+    return config.aiModel || null;
   }
 }

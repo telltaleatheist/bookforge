@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, OnInit, OnDestroy, DestroyRef } from '@angular/core';
+import { Component, inject, signal, computed, OnInit, OnDestroy, DestroyRef, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
   SplitPaneComponent,
@@ -6,7 +6,6 @@ import {
   ToolbarItem,
   DesktopButtonComponent
 } from '../../creamsicle-desktop';
-import { LibraryService } from '../../core/services/library.service';
 import { AudiobookQueueComponent, QueueItem } from './components/audiobook-queue/audiobook-queue.component';
 import { MetadataEditorComponent, EpubMetadata } from './components/metadata-editor/metadata-editor.component';
 import { AiCleanupPanelComponent } from './components/ai-cleanup-panel/ai-cleanup-panel.component';
@@ -17,7 +16,7 @@ import { EpubService } from './services/epub.service';
 import { AudiobookService } from './services/audiobook.service';
 
 // Workflow states for the audiobook producer
-type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
+type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'complete';
 
 @Component({
   selector: 'app-audiobook',
@@ -87,37 +86,20 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
               >
                 Convert
               </button>
+              @if (selectedItem()?.hasCleaned) {
+                <button
+                  class="tab"
+                  [class.active]="workflowState() === 'diff'"
+                  (click)="setWorkflowState('diff')"
+                >
+                  Review Changes
+                </button>
+              }
             </div>
 
-            <!-- View Options (when cleaned version exists) -->
-            @if (selectedItem()?.hasCleaned) {
-              <div class="view-options">
-                <span class="view-label">View:</span>
-                <button
-                  class="view-btn"
-                  [class.active]="viewMode() === 'original'"
-                  (click)="setViewMode('original')"
-                >
-                  Original
-                </button>
-                <button
-                  class="view-btn"
-                  [class.active]="viewMode() === 'cleaned'"
-                  (click)="setViewMode('cleaned')"
-                >
-                  Cleaned
-                </button>
-                <button
-                  class="view-btn diff"
-                  (click)="openDiffView()"
-                >
-                  View Diff
-                </button>
-              </div>
-            }
 
             <!-- Tab content -->
-            <div class="tab-content">
+            <div class="tab-content" [class.diff-tab]="workflowState() === 'diff'">
               @switch (workflowState()) {
                 @case ('metadata') {
                   <app-metadata-editor
@@ -130,7 +112,7 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
                 }
                 @case ('cleanup') {
                   <app-ai-cleanup-panel
-                    [epubPath]="currentEpubPath()"
+                    [epubPath]="originalEpubPath()"
                     [metadata]="{ title: selectedMetadata()?.title, author: selectedMetadata()?.author }"
                     (cleanupComplete)="onCleanupComplete()"
                   />
@@ -151,6 +133,15 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
                     />
                   }
                 }
+                @case ('diff') {
+                  @if (diffPaths()) {
+                    <app-diff-view
+                      [originalPath]="diffPaths()!.originalPath"
+                      [cleanedPath]="diffPaths()!.cleanedPath"
+                      (textEdited)="onDiffTextEdited($event)"
+                    />
+                  }
+                }
               }
             </div>
           } @else {
@@ -168,18 +159,6 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
       </desktop-split-pane>
     </div>
 
-    <!-- Diff View Modal -->
-    @if (showDiffModal()) {
-      <div class="diff-modal-backdrop" (click)="closeDiffModal()">
-        <div class="diff-modal" (click)="$event.stopPropagation()">
-          <app-diff-view
-            [originalPath]="diffPaths()!.originalPath"
-            [cleanedPath]="diffPaths()!.cleanedPath"
-            (close)="closeDiffModal()"
-          />
-        </div>
-      </div>
-    }
   `,
   styles: [`
     :host {
@@ -255,6 +234,16 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
       flex: 1;
       overflow: auto;
       padding: 1rem;
+
+      &.diff-tab {
+        padding: 0.5rem;
+        display: flex;
+        flex-direction: column;
+
+        app-diff-view {
+          flex: 1;
+        }
+      }
     }
 
     .empty-state {
@@ -285,101 +274,9 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'complete';
       }
     }
 
-    .view-options {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.5rem 1rem;
-      background: var(--bg-subtle);
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .view-label {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      margin-right: 0.25rem;
-    }
-
-    .view-btn {
-      padding: 0.25rem 0.625rem;
-      border: 1px solid var(--border-subtle);
-      border-radius: 4px;
-      background: var(--bg-base);
-      color: var(--text-secondary);
-      font-size: 0.75rem;
-      cursor: pointer;
-      transition: all 0.15s;
-
-      &:hover {
-        background: var(--bg-hover);
-        border-color: var(--border-default);
-      }
-
-      &.active {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: white;
-      }
-
-      &.diff {
-        margin-left: auto;
-        background: color-mix(in srgb, var(--accent) 10%, transparent);
-        border-color: var(--accent);
-        color: var(--accent);
-
-        &:hover {
-          background: color-mix(in srgb, var(--accent) 20%, transparent);
-        }
-      }
-    }
-
-    .diff-modal-backdrop {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(4px);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 1000;
-      animation: fadeIn 0.15s ease;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-
-    .diff-modal {
-      width: 90%;
-      max-width: 1200px;
-      height: 80%;
-      max-height: 800px;
-      background: var(--bg-elevated);
-      border-radius: 12px;
-      box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
-      overflow: hidden;
-      animation: slideUp 0.2s ease;
-
-      app-diff-view {
-        height: 100%;
-      }
-    }
-
-    @keyframes slideUp {
-      from {
-        opacity: 0;
-        transform: translateY(20px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
   `]
 })
 export class AudiobookComponent implements OnInit, OnDestroy {
-  private readonly libraryService = inject(LibraryService);
   private readonly epubService = inject(EpubService);
   private readonly audiobookService = inject(AudiobookService);
   private readonly destroyRef = inject(DestroyRef);
@@ -408,10 +305,11 @@ export class AudiobookComponent implements OnInit, OnDestroy {
   });
   readonly savingMetadata = signal(false);
 
-  // View mode state (original vs cleaned)
-  readonly viewMode = signal<'original' | 'cleaned'>('cleaned');
-  readonly showDiffModal = signal(false);
+  // Diff view state
   readonly diffPaths = signal<{ originalPath: string; cleanedPath: string } | null>(null);
+
+  // ViewChild reference to diff view for manual refresh
+  @ViewChild(DiffViewComponent) diffViewRef?: DiffViewComponent;
 
   // Check if we're running in Electron
   private get electron(): any {
@@ -431,14 +329,21 @@ export class AudiobookComponent implements OnInit, OnDestroy {
     return item.metadata;
   });
 
-  // Current EPUB path based on view mode (original or cleaned)
+  // Path to original EPUB (always use this for cleanup)
+  readonly originalEpubPath = computed(() => {
+    const item = this.selectedItem();
+    if (!item) return '';
+    // item.path already points to original.epub
+    return item.path;
+  });
+
+  // Path to best available EPUB for TTS (cleaned if exists, otherwise original)
   readonly currentEpubPath = computed(() => {
     const item = this.selectedItem();
     if (!item) return '';
 
-    // If cleaned version exists and we're in cleaned mode, use the cleaned path
-    if (item.hasCleaned && this.viewMode() === 'cleaned' && item.projectId) {
-      // Construct cleaned path from project folder
+    // For TTS, prefer the cleaned version if it exists
+    if (item.hasCleaned && item.projectId) {
       const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
       return `${originalDir}/cleaned.epub`;
     }
@@ -509,6 +414,10 @@ export class AudiobookComponent implements OnInit, OnDestroy {
         break;
       case 'refresh':
         this.loadQueue();
+        // Also refresh diff view if on the diff tab
+        if (this.workflowState() === 'diff' && this.diffViewRef) {
+          this.diffViewRef.refresh();
+        }
         break;
     }
   }
@@ -559,7 +468,14 @@ export class AudiobookComponent implements OnInit, OnDestroy {
           id: file.path,
           path: file.path,
           filename: file.filename,
-          metadata,
+          metadata: {
+            ...metadata,
+            // Never show internal filenames like "cleaned.epub" or "original.epub"
+            // Always prefer the actual book title from EPUB metadata
+            title: metadata.title && !metadata.title.match(/^(cleaned|original)\.epub$/i)
+              ? metadata.title
+              : structure.metadata.title || 'Untitled'
+          },
           status: 'pending',
           addedAt: new Date(file.addedAt),
           projectId: file.projectId,
@@ -614,6 +530,18 @@ export class AudiobookComponent implements OnInit, OnDestroy {
 
   setWorkflowState(state: WorkflowState): void {
     this.workflowState.set(state);
+
+    // Set diff paths when switching to diff tab
+    if (state === 'diff') {
+      const item = this.selectedItem();
+      if (item?.hasCleaned) {
+        const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
+        this.diffPaths.set({
+          originalPath: `${originalDir}/original.epub`,
+          cleanedPath: `${originalDir}/cleaned.epub`
+        });
+      }
+    }
   }
 
   onMetadataChange(metadata: EpubMetadata): void {
@@ -730,26 +658,23 @@ export class AudiobookComponent implements OnInit, OnDestroy {
     }
   }
 
-  // View mode methods
-  setViewMode(mode: 'original' | 'cleaned'): void {
-    this.viewMode.set(mode);
+  async onDiffTextEdited(event: { chapterId: string; oldText: string; newText: string }): Promise<void> {
+    const paths = this.diffPaths();
+    if (!paths?.cleanedPath || !this.electron) return;
+
+    // Save the edit to the cleaned EPUB
+    const result = await this.electron.epub.editText(
+      paths.cleanedPath,
+      event.chapterId,
+      event.oldText,
+      event.newText
+    );
+
+    if (result.success) {
+      console.log('Text edit saved to EPUB');
+    } else {
+      console.error('Failed to save text edit:', result.error);
+    }
   }
 
-  openDiffView(): void {
-    const item = this.selectedItem();
-    if (!item || !item.hasCleaned) return;
-
-    // Construct paths from the project folder
-    const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
-    this.diffPaths.set({
-      originalPath: `${originalDir}/original.epub`,
-      cleanedPath: `${originalDir}/cleaned.epub`
-    });
-    this.showDiffModal.set(true);
-  }
-
-  closeDiffModal(): void {
-    this.showDiffModal.set(false);
-    this.diffPaths.set(null);
-  }
 }

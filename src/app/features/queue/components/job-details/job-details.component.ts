@@ -69,19 +69,13 @@ import { QueueJob, OcrCleanupConfig, TtsConversionConfig } from '../../models/qu
           }
         </div>
 
-        <!-- File Info -->
+        <!-- Book Info -->
         <div class="info-section">
-          <h4>File</h4>
+          <h4>Book</h4>
           <div class="info-row">
-            <span class="info-label">Filename</span>
-            <span class="info-value filename">{{ selectedJob.epubFilename }}</span>
+            <span class="info-label">Title</span>
+            <span class="info-value">{{ selectedJob.metadata?.title || 'Untitled' }}</span>
           </div>
-          @if (selectedJob.metadata?.title) {
-            <div class="info-row">
-              <span class="info-label">Title</span>
-              <span class="info-value">{{ selectedJob.metadata!.title }}</span>
-            </div>
-          }
           @if (selectedJob.metadata?.author) {
             <div class="info-row">
               <span class="info-label">Author</span>
@@ -313,11 +307,6 @@ import { QueueJob, OcrCleanupConfig, TtsConversionConfig } from '../../models/qu
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-
-      &.filename {
-        font-family: var(--font-mono, monospace);
-        font-size: 0.75rem;
-      }
     }
 
     .error-section {

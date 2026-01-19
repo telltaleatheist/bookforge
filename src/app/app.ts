@@ -4,7 +4,6 @@ import { RouterOutlet } from '@angular/router';
 import {
   WindowChromeComponent,
   StatusBarComponent,
-  StatusBarItem,
   DesktopThemeService
 } from './creamsicle-desktop';
 import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.component';
@@ -56,9 +55,8 @@ import { LibraryService } from './core/services/library.service';
         <!-- Status Bar -->
         <ng-container statusbar>
           <desktop-status-bar
-            [leftItems]="statusLeftItems"
-            [rightItems]="statusRightItems"
-            centerText="Ready"
+            [leftItems]="[]"
+            [rightItems]="[]"
           />
         </ng-container>
       </desktop-window>
@@ -122,7 +120,7 @@ export class App implements OnInit {
     {
       id: 'audiobook',
       icon: '\u{1F3A7}', // Headphones emoji
-      label: 'Audio',
+      label: 'Audiobook Producer',
       route: '/audiobook'
     },
     {
@@ -137,14 +135,6 @@ export class App implements OnInit {
       label: 'Settings',
       route: '/settings'
     }
-  ];
-
-  statusLeftItems: StatusBarItem[] = [
-    { id: 'version', text: 'v1.0.0' },
-  ];
-
-  statusRightItems: StatusBarItem[] = [
-    { id: 'theme', text: 'System', icon: '\u{1F3A8}', clickable: true },
   ];
 
   ngOnInit() {

@@ -36,10 +36,9 @@ import { QueueJob } from '../../models/queue.types';
             }
           </div>
 
-          <div class="job-file">{{ currentJob.epubFilename }}</div>
-
-          @if (currentJob.metadata?.title) {
-            <div class="job-title">{{ currentJob.metadata!.title }}</div>
+          <div class="job-title">{{ currentJob.metadata?.title || 'Untitled' }}</div>
+          @if (currentJob.metadata?.author) {
+            <div class="job-author">{{ currentJob.metadata!.author }}</div>
           }
         </div>
 
@@ -116,13 +115,13 @@ import { QueueJob } from '../../models/queue.types';
       font-size: 1rem;
     }
 
-    .job-file {
+    .job-title {
       font-size: 1rem;
       font-weight: 500;
       color: var(--text-primary);
     }
 
-    .job-title {
+    .job-author {
       font-size: 0.875rem;
       color: var(--text-secondary);
       margin-top: 0.25rem;
