@@ -142,14 +142,24 @@ interface ChapterWithSegments {
             [style.left.px]="tooltipX()"
             [style.top.px]="tooltipY()"
           >
-            <div class="tooltip-label">Was:</div>
+            <div class="tooltip-label">Original:</div>
             <div class="tooltip-original">
               @if (tooltipSegment()!.contextBefore) {
-                <span class="context">...{{ tooltipSegment()!.contextBefore }}</span>
+                <span class="context">"...{{ tooltipSegment()!.contextBefore }} </span>
               }
               <span class="original-text">{{ tooltipSegment()!.originalText }}</span>
               @if (tooltipSegment()!.contextAfter) {
-                <span class="context">{{ tooltipSegment()!.contextAfter }}...</span>
+                <span class="context"> {{ tooltipSegment()!.contextAfter }}..."</span>
+              }
+            </div>
+            <div class="tooltip-label" style="margin-top: 6px;">Changed to:</div>
+            <div class="tooltip-new">
+              @if (tooltipSegment()!.contextBefore) {
+                <span class="context">"...{{ tooltipSegment()!.contextBefore }} </span>
+              }
+              <span class="new-text">{{ tooltipSegment()!.text }}</span>
+              @if (tooltipSegment()!.contextAfter) {
+                <span class="context"> {{ tooltipSegment()!.contextAfter }}..."</span>
               }
             </div>
           </div>
@@ -375,18 +385,30 @@ interface ChapterWithSegments {
       margin-bottom: 0.25rem;
     }
 
-    .tooltip-original {
+    .tooltip-original,
+    .tooltip-new {
       font-size: 0.8125rem;
       line-height: 1.4;
 
       .context {
         color: var(--text-secondary);
       }
+    }
 
-      .original-text {
-        color: var(--accent-danger, #e53935);
-        text-decoration: line-through;
-      }
+    .tooltip-original .original-text {
+      color: var(--accent-danger, #e53935);
+      text-decoration: line-through;
+      background: rgba(229, 57, 53, 0.15);
+      padding: 1px 2px;
+      border-radius: 2px;
+    }
+
+    .tooltip-new .new-text {
+      color: #ff6b35;
+      font-weight: 500;
+      background: rgba(255, 107, 53, 0.15);
+      padding: 1px 2px;
+      border-radius: 2px;
     }
 
     .diff-footer {
@@ -556,16 +578,16 @@ export class DiffViewComponent implements OnInit, OnDestroy {
       }
     }
 
-    // Add context to change segments - get the immediate surrounding word (1 before, 1 after)
+    // Add context to change segments - get 2-3 surrounding words for context
     for (let j = 0; j < segments.length; j++) {
       if (segments[j].type === 'change' && segments[j].originalText) {
-        // Get the word immediately before the change
+        // Get 2-3 words before the change for context
         if (j > 0 && segments[j - 1].type === 'unchanged') {
-          segments[j].contextBefore = this.getLastWords(segments[j - 1].text, 1);
+          segments[j].contextBefore = this.getLastWords(segments[j - 1].text, 3);
         }
-        // Get the word immediately after the change
+        // Get 2-3 words after the change for context
         if (j < segments.length - 1 && segments[j + 1].type === 'unchanged') {
-          segments[j].contextAfter = this.getFirstWords(segments[j + 1].text, 1);
+          segments[j].contextAfter = this.getFirstWords(segments[j + 1].text, 3);
         }
       }
     }

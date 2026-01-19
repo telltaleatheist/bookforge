@@ -1723,6 +1723,44 @@ export class PdfPickerComponent {
     }
   });
 
+  // Tab persistence - localStorage keys
+  private readonly OPEN_TABS_KEY = 'bookforge-open-tabs';
+  private readonly ACTIVE_TAB_KEY = 'bookforge-active-tab';
+
+  // Tab persistence - save open document paths to localStorage
+  private readonly tabPersistenceEffect = effect(() => {
+    const docs = this.openDocuments();
+    const activeId = this.activeDocumentId();
+
+    // Save project paths for documents that have a project file
+    const projectPaths = docs
+      .filter(d => d.projectPath)
+      .map(d => d.projectPath as string);
+
+    try {
+      if (projectPaths.length > 0) {
+        localStorage.setItem(this.OPEN_TABS_KEY, JSON.stringify(projectPaths));
+        if (activeId) {
+          const activeDoc = docs.find(d => d.id === activeId);
+          if (activeDoc?.projectPath) {
+            localStorage.setItem(this.ACTIVE_TAB_KEY, activeDoc.projectPath);
+          }
+        }
+      } else {
+        localStorage.removeItem(this.OPEN_TABS_KEY);
+        localStorage.removeItem(this.ACTIVE_TAB_KEY);
+      }
+    } catch {
+      // Ignore localStorage errors
+    }
+  });
+
+  // Tab restoration - restore open documents from localStorage on init
+  private readonly tabRestoration = (() => {
+    // Use setTimeout to ensure this runs after component is fully initialized
+    setTimeout(() => this.restoreOpenTabs(), 0);
+  })();
+
   // Register global OCR job completion handler
   private readonly ocrJobCompletionHandler = (() => {
     this.ocrJobService.onJobComplete((job) => {
@@ -6744,5 +6782,42 @@ export class PdfPickerComponent {
 
   private generateDocumentId(): string {
     return 'doc_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
+  }
+
+  /**
+   * Restore open tabs from localStorage.
+   * Called on component init to preserve tabs across route navigation.
+   */
+  private async restoreOpenTabs(): Promise<void> {
+    try {
+      const savedPaths = localStorage.getItem(this.OPEN_TABS_KEY);
+      const activeTabPath = localStorage.getItem(this.ACTIVE_TAB_KEY);
+
+      if (!savedPaths) return;
+
+      const projectPaths: string[] = JSON.parse(savedPaths);
+      if (!Array.isArray(projectPaths) || projectPaths.length === 0) return;
+
+      console.log('[restoreOpenTabs] Restoring tabs:', projectPaths);
+
+      // Load each project
+      for (const path of projectPaths) {
+        try {
+          await this.loadProjectFromPath(path);
+        } catch (err) {
+          console.error('[restoreOpenTabs] Failed to load project:', path, err);
+        }
+      }
+
+      // Restore active tab if specified and still exists
+      if (activeTabPath) {
+        const activeDoc = this.openDocuments().find(d => d.projectPath === activeTabPath);
+        if (activeDoc) {
+          this.restoreDocumentState(activeDoc.id);
+        }
+      }
+    } catch (err) {
+      console.error('[restoreOpenTabs] Failed to restore tabs:', err);
+    }
   }
 }
