@@ -104,6 +104,22 @@ export class SettingsService {
         icon: '🤖',
         fields: [], // AI section has custom UI
       },
+      {
+        id: 'audiobook',
+        name: 'Audiobook',
+        description: 'Configure audiobook output settings',
+        icon: '🎧',
+        fields: [
+          {
+            key: 'audiobookOutputDir',
+            type: 'path',
+            label: 'Output Directory',
+            description: 'Where completed audiobooks are saved. Leave empty for default (~/Documents/BookForge/audiobooks/completed)',
+            default: '',
+            placeholder: 'Default: ~/Documents/BookForge/audiobooks/completed',
+          },
+        ],
+      },
     ];
 
     this.sections.set(builtinSections);

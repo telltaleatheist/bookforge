@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, OnInit, OnDestroy, DestroyRef, ViewChild } from '@angular/core';
+import { Component, inject, signal, computed, OnInit, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
   SplitPaneComponent,
@@ -10,10 +10,10 @@ import { AudiobookQueueComponent, QueueItem } from './components/audiobook-queue
 import { MetadataEditorComponent, EpubMetadata } from './components/metadata-editor/metadata-editor.component';
 import { AiCleanupPanelComponent } from './components/ai-cleanup-panel/ai-cleanup-panel.component';
 import { TtsSettingsComponent, TTSSettings } from './components/tts-settings/tts-settings.component';
-import { ProgressPanelComponent, TTSProgress } from './components/progress-panel/progress-panel.component';
 import { DiffViewComponent } from './components/diff-view/diff-view.component';
 import { EpubService } from './services/epub.service';
 import { AudiobookService } from './services/audiobook.service';
+import { ElectronService } from '../../core/services/electron.service';
 
 // Workflow states for the audiobook producer
 type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'complete';
@@ -30,7 +30,6 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'co
     MetadataEditorComponent,
     AiCleanupPanelComponent,
     TtsSettingsComponent,
-    ProgressPanelComponent,
     DiffViewComponent
   ],
   template: `
@@ -108,6 +107,7 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'co
                     (metadataChange)="onMetadataChange($event)"
                     (coverChange)="onCoverChange($event)"
                     (save)="onSaveMetadata($event)"
+                    (showInFinder)="onShowInFinder()"
                   />
                 }
                 @case ('cleanup') {
@@ -118,20 +118,12 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'co
                   />
                 }
                 @case ('convert') {
-                  @if (isConverting()) {
-                    <app-progress-panel
-                      [progress]="conversionProgress()"
-                      (cancel)="cancelConversion()"
-                    />
-                  } @else {
-                    <app-tts-settings
-                      [settings]="ttsSettings()"
-                      [epubPath]="currentEpubPath()"
-                      [metadata]="{ title: selectedMetadata()?.title, author: selectedMetadata()?.author }"
-                      (settingsChange)="onTtsSettingsChange($event)"
-                      (startConversion)="startConversion()"
-                    />
-                  }
+                  <app-tts-settings
+                    [settings]="ttsSettings()"
+                    [epubPath]="currentEpubPath()"
+                    [metadata]="{ title: selectedMetadata()?.title, author: selectedMetadata()?.author, outputFilename: selectedMetadata()?.outputFilename || generatedFilename() }"
+                    (settingsChange)="onTtsSettingsChange($event)"
+                  />
                 }
                 @case ('diff') {
                   @if (diffPaths()) {
@@ -276,32 +268,26 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'co
 
   `]
 })
-export class AudiobookComponent implements OnInit, OnDestroy {
+export class AudiobookComponent implements OnInit {
   private readonly epubService = inject(EpubService);
   private readonly audiobookService = inject(AudiobookService);
-  private readonly destroyRef = inject(DestroyRef);
-
-  // Progress listener cleanup
-  private unsubscribeProgress: (() => void) | null = null;
+  private readonly electronService = inject(ElectronService);
 
   // State
   readonly queueItems = signal<QueueItem[]>([]);
   readonly selectedItemId = signal<string | null>(null);
   readonly workflowState = signal<WorkflowState>('metadata');
-  readonly isConverting = signal(false);
-  readonly conversionProgress = signal<TTSProgress>({
-    phase: 'preparing',
-    currentChapter: 0,
-    totalChapters: 0,
-    percentage: 0,
-    estimatedRemaining: 0
-  });
   readonly ttsSettings = signal<TTSSettings>({
     device: 'mps',
     language: 'en',
-    voice: 'en_default',
-    temperature: 0.75,
-    speed: 1.0
+    ttsEngine: 'xtts',
+    fineTuned: 'ScarlettJohansson',
+    temperature: 0.7,
+    topP: 0.9,
+    topK: 40,
+    repetitionPenalty: 2.0,
+    speed: 1.0,
+    enableTextSplitting: false
   });
   readonly savingMetadata = signal(false);
 
@@ -351,6 +337,49 @@ export class AudiobookComponent implements OnInit, OnDestroy {
     return item.path;
   });
 
+  // Generated filename from metadata (used when no custom filename set)
+  readonly generatedFilename = computed(() => {
+    const meta = this.selectedMetadata();
+    if (!meta) return 'audiobook.m4b';
+
+    let filename = meta.title || 'Untitled';
+
+    if (meta.subtitle) {
+      filename += ` - ${meta.subtitle}`;
+    }
+
+    filename += '.';
+
+    // Use Last, First format
+    if (meta.authorLast) {
+      filename += ` ${meta.authorLast}`;
+      if (meta.authorFirst) {
+        filename += `, ${meta.authorFirst}`;
+      }
+      filename += '.';
+    } else if (meta.authorFirst) {
+      filename += ` ${meta.authorFirst}.`;
+    } else if (meta.author) {
+      // Parse author into Last, First
+      const parts = meta.author.trim().split(' ');
+      if (parts.length >= 2) {
+        const last = parts.pop();
+        filename += ` ${last}, ${parts.join(' ')}.`;
+      } else {
+        filename += ` ${meta.author}.`;
+      }
+    }
+
+    if (meta.year) {
+      filename += ` (${meta.year})`;
+    }
+
+    filename += '.m4b';
+
+    // Clean up the filename
+    return filename.replace(/\s+/g, ' ').replace(/\.\s*\./g, '.');
+  });
+
   // Toolbar
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
     return [
@@ -374,37 +403,6 @@ export class AudiobookComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.loadQueue();
-    this.setupProgressListener();
-
-    // Cleanup on destroy
-    this.destroyRef.onDestroy(() => {
-      if (this.unsubscribeProgress) {
-        this.unsubscribeProgress();
-      }
-    });
-  }
-
-  ngOnDestroy(): void {
-    if (this.unsubscribeProgress) {
-      this.unsubscribeProgress();
-    }
-  }
-
-  private setupProgressListener(): void {
-    if (!this.electron) return;
-
-    this.unsubscribeProgress = this.electron.tts.onProgress((progress: TTSProgress) => {
-      this.conversionProgress.set(progress);
-
-      // Update converting state based on phase
-      if (progress.phase === 'complete') {
-        this.isConverting.set(false);
-        this.workflowState.set('complete');
-        this.loadQueue(); // Refresh queue
-      } else if (progress.phase === 'error') {
-        this.isConverting.set(false);
-      }
-    });
   }
 
   onToolbarAction(item: ToolbarItem): void {
@@ -489,7 +487,7 @@ export class AudiobookComponent implements OnInit, OnDestroy {
 
     // If there's no selection but we have items, select the first one
     if (!this.selectedItemId() && items.length > 0) {
-      this.selectedItemId.set(items[0].id);
+      this.selectItem(items[0].id);
     }
   }
 
@@ -506,13 +504,29 @@ export class AudiobookComponent implements OnInit, OnDestroy {
         return; // Only EPUBs are supported
       }
 
-      // Copy to queue
+      // Copy to queue (handles duplicates)
       const filename = filePath.split('/').pop() || 'unknown.epub';
-      const copyResult = await this.audiobookService.copyToQueue(filePath, filename);
+      await this.addEpubToQueue(filePath, filename);
+    }
+  }
 
-      if (copyResult.success) {
-        await this.loadQueue();
-      }
+  /**
+   * Add an EPUB to the queue, replacing any existing entry with the same filename
+   */
+  private async addEpubToQueue(filePath: string, filename: string): Promise<void> {
+    // Check for existing item with same filename and remove it first
+    const existingItem = this.queueItems().find(
+      item => item.filename.toLowerCase() === filename.toLowerCase()
+    );
+    if (existingItem) {
+      console.log('[Audiobook] Replacing existing item:', existingItem.filename);
+      await this.removeFromQueue(existingItem.id);
+    }
+
+    // Copy to queue
+    const copyResult = await this.audiobookService.copyToQueue(filePath, filename);
+    if (copyResult.success) {
+      await this.loadQueue();
     }
   }
 
@@ -522,9 +536,21 @@ export class AudiobookComponent implements OnInit, OnDestroy {
   }
 
   async removeFromQueue(id: string): Promise<void> {
+    // Find the item to get its projectId
+    const item = this.queueItems().find(i => i.id === id);
+
+    // Remove from UI immediately
     this.queueItems.update(items => items.filter(item => item.id !== id));
     if (this.selectedItemId() === id) {
       this.selectedItemId.set(null);
+    }
+
+    // Delete the project folder from disk if it has a projectId
+    if (item?.projectId) {
+      const result = await this.electronService.deleteAudiobookProject(item.projectId);
+      if (!result.success) {
+        console.error('[Audiobook] Failed to delete project folder:', result.error);
+      }
     }
   }
 
@@ -589,57 +615,6 @@ export class AudiobookComponent implements OnInit, OnDestroy {
     this.ttsSettings.set(settings);
   }
 
-  async startConversion(): Promise<void> {
-    const item = this.selectedItem();
-    if (!item) return;
-
-    this.isConverting.set(true);
-    this.conversionProgress.set({
-      phase: 'preparing',
-      currentChapter: 0,
-      totalChapters: 0,
-      percentage: 0,
-      estimatedRemaining: 0,
-      message: 'Starting conversion...'
-    });
-
-    // Update settings in service
-    this.audiobookService.setSettings(this.ttsSettings());
-
-    // Get output directory
-    const paths = await this.audiobookService.getAudiobooksPath();
-    const outputDir = paths.completedPath || '';
-
-    if (!outputDir) {
-      this.isConverting.set(false);
-      return;
-    }
-
-    // Start conversion
-    const result = await this.audiobookService.startConversion(item.path, outputDir);
-
-    if (!result.success) {
-      this.isConverting.set(false);
-      this.conversionProgress.update(p => ({
-        ...p,
-        phase: 'error',
-        error: result.error
-      }));
-    }
-  }
-
-  async cancelConversion(): Promise<void> {
-    await this.audiobookService.stopConversion();
-    this.isConverting.set(false);
-    this.conversionProgress.set({
-      phase: 'preparing',
-      currentChapter: 0,
-      totalChapters: 0,
-      percentage: 0,
-      estimatedRemaining: 0
-    });
-  }
-
   async onFilesDropped(files: File[]): Promise<void> {
     if (!this.electron) return;
 
@@ -649,10 +624,7 @@ export class AudiobookComponent implements OnInit, OnDestroy {
         // In Electron, dropped files have a `path` property
         const filePath = (file as any).path;
         if (filePath) {
-          const copyResult = await this.audiobookService.copyToQueue(filePath, file.name);
-          if (copyResult.success) {
-            await this.loadQueue();
-          }
+          await this.addEpubToQueue(filePath, file.name);
         }
       }
     }
@@ -674,6 +646,20 @@ export class AudiobookComponent implements OnInit, OnDestroy {
       console.log('Text edit saved to EPUB');
     } else {
       console.error('Failed to save text edit:', result.error);
+    }
+  }
+
+  async onShowInFinder(): Promise<void> {
+    // Open the completed audiobooks folder
+    if (!this.electron) return;
+
+    try {
+      const pathsResult = await this.electron.library.getAudiobooksPath();
+      if (pathsResult.success && pathsResult.completedPath) {
+        await this.electron.shell.openPath(pathsResult.completedPath);
+      }
+    } catch (err) {
+      console.error('Error opening audiobooks folder:', err);
     }
   }
 

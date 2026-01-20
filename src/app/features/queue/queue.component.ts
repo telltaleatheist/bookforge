@@ -11,6 +11,7 @@ import {
   DesktopButtonComponent
 } from '../../creamsicle-desktop';
 import { QueueService } from './services/queue.service';
+import { ElectronService } from '../../core/services/electron.service';
 import { JobListComponent } from './components/job-list/job-list.component';
 import { JobProgressComponent } from './components/job-progress/job-progress.component';
 import { JobDetailsComponent } from './components/job-details/job-details.component';
@@ -147,6 +148,7 @@ import { QueueJob, JobType } from './models/queue.types';
                 (remove)="removeJob($event)"
                 (retry)="retryJob($event)"
                 (viewDiff)="openDiffModal($event)"
+                (showInFolder)="showInFolder($event)"
               />
             }
           } @else if (queueService.jobs().length === 0) {
@@ -471,6 +473,7 @@ import { QueueJob, JobType } from './models/queue.types';
 })
 export class QueueComponent implements OnInit, OnDestroy {
   readonly queueService = inject(QueueService);
+  private readonly electronService = inject(ElectronService);
   private readonly destroyRef = inject(DestroyRef);
 
   // Progress message state
@@ -558,6 +561,10 @@ export class QueueComponent implements OnInit, OnDestroy {
 
   cancelJob(jobId: string): void {
     this.queueService.cancelCurrent();
+  }
+
+  async showInFolder(filePath: string): Promise<void> {
+    await this.electronService.showItemInFolder(filePath);
   }
 
   cancelCurrent(): void {

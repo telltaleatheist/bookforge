@@ -1,4 +1,4 @@
-import { Component, input, output, signal, computed } from '@angular/core';
+import { Component, input, output, signal, computed, effect, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 
@@ -81,7 +81,7 @@ export interface TTSProgress {
       @if (progress().phase === 'converting' || progress().phase === 'merging') {
         <div class="time-remaining">
           <span class="label">Estimated time remaining:</span>
-          <span class="value">{{ formatTime(progress().estimatedRemaining) }}</span>
+          <span class="value">{{ formatTime(displayedTimeRemaining()) }}</span>
         </div>
       }
 
@@ -341,7 +341,7 @@ export interface TTSProgress {
     }
   `]
 })
-export class ProgressPanelComponent {
+export class ProgressPanelComponent implements OnDestroy {
   // Inputs
   readonly progress = input<TTSProgress>({
     phase: 'preparing',
@@ -357,6 +357,55 @@ export class ProgressPanelComponent {
   // State
   readonly showLog = signal(false);
   readonly logOutput = signal('Starting conversion...\n');
+
+  // Countdown timer state
+  readonly displayedTimeRemaining = signal(0);
+  private countdownInterval: ReturnType<typeof setInterval> | null = null;
+  private lastEstimate = 0;
+
+  constructor() {
+    // Sync countdown with incoming estimates and start/stop timer based on phase
+    effect(() => {
+      const prog = this.progress();
+      const newEstimate = prog.estimatedRemaining;
+
+      // Update displayed time when estimate changes significantly (new update from service)
+      // or when it's the first estimate
+      if (newEstimate !== this.lastEstimate && newEstimate > 0) {
+        this.displayedTimeRemaining.set(newEstimate);
+        this.lastEstimate = newEstimate;
+      }
+
+      // Start or stop the countdown based on phase
+      if (prog.phase === 'converting' || prog.phase === 'merging') {
+        this.startCountdown();
+      } else {
+        this.stopCountdown();
+      }
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.stopCountdown();
+  }
+
+  private startCountdown(): void {
+    if (this.countdownInterval) return; // Already running
+
+    this.countdownInterval = setInterval(() => {
+      const current = this.displayedTimeRemaining();
+      if (current > 0) {
+        this.displayedTimeRemaining.set(current - 1);
+      }
+    }, 1000);
+  }
+
+  private stopCountdown(): void {
+    if (this.countdownInterval) {
+      clearInterval(this.countdownInterval);
+      this.countdownInterval = null;
+    }
+  }
 
   // Circle progress calculations
   readonly circumference = Math.PI * 2 * 45; // 2 * PI * radius

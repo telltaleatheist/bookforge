@@ -9,17 +9,29 @@
 // LIGHT THEME - Warm Cream Base
 // =============================================================================
 
+// Accent color palette - Cyan/Teal (modern, professional)
+$cyan-50: #ecfeff;
+$cyan-100: #cffafe;
+$cyan-200: #a5f3fc;
+$cyan-300: #67e8f9;
+$cyan-400: #22d3ee;
+$cyan-500: #06b6d4;
+$cyan-600: #0891b2;
+$cyan-700: #0e7490;
+$cyan-800: #155e75;
+$cyan-900: #164e63;
+
 :root,
 [data-theme='light'] {
   // -------------------------------------------------------------------------
   // Accent Colors
   // -------------------------------------------------------------------------
-  --accent: #{$orange-500};
-  --accent-hover: #{$orange-600};
-  --accent-active: #{$orange-700};
-  --accent-muted: #{$orange-100};
-  --accent-subtle: rgba(255, 107, 53, 0.1);
-  --accent-glow: #{$glow-subtle};
+  --accent: #{$cyan-500};
+  --accent-hover: #{$cyan-600};
+  --accent-active: #{$cyan-700};
+  --accent-muted: #{$cyan-100};
+  --accent-subtle: rgba(6, 182, 212, 0.1);
+  --accent-glow: 0 0 20px rgba(6, 182, 212, 0.3);
 
   // -------------------------------------------------------------------------
   // Background Layers
@@ -47,7 +59,7 @@
   --text-muted: #{$neutral-400};
   --text-disabled: #{$neutral-300};
   --text-inverse: #{$white};
-  --text-accent: #{$orange-600};
+  --text-accent: #{$cyan-600};
 
   // -------------------------------------------------------------------------
   // Border Colors
@@ -55,7 +67,7 @@
   --border-default: #{$neutral-200};
   --border-subtle: #{$neutral-150};
   --border-strong: #{$neutral-300};
-  --border-accent: #{$orange-500};
+  --border-accent: #{$cyan-500};
   --border-input: #{$neutral-250};
 
   // -------------------------------------------------------------------------
@@ -66,21 +78,21 @@
   --pressed-bg: rgba(24, 23, 21, 0.12);
 
   // Selection (accent-based)
-  --selected-bg: #{$orange-500};
+  --selected-bg: #{$cyan-500};
   --selected-text: #{$white};
-  --selected-bg-muted: #{$orange-100};
-  --selected-text-muted: #{$orange-700};
+  --selected-bg-muted: #{$cyan-100};
+  --selected-text-muted: #{$cyan-700};
 
   // Focus
-  --focus-ring: #{$shadow-focus};
+  --focus-ring: 0 0 0 2px rgba(6, 182, 212, 0.4);
   --focus-ring-error: #{$shadow-focus-error};
 
   // -------------------------------------------------------------------------
-  // Scrollbar (orange accent)
+  // Scrollbar (cyan accent)
   // -------------------------------------------------------------------------
   --scrollbar-track: #{$neutral-200};
-  --scrollbar-thumb: #{$orange-400};
-  --scrollbar-thumb-hover: #{$orange-500};
+  --scrollbar-thumb: #{$cyan-400};
+  --scrollbar-thumb-hover: #{$cyan-500};
 
   // -------------------------------------------------------------------------
   // Semantic Colors
@@ -127,12 +139,12 @@
   // -------------------------------------------------------------------------
   // Accent Colors
   // -------------------------------------------------------------------------
-  --accent: #{$orange-500};
-  --accent-hover: #{$orange-400};
-  --accent-active: #{$orange-300};
-  --accent-muted: rgba(255, 128, 0, 0.85);
-  --accent-subtle: rgba(255, 128, 0, 0.25);
-  --accent-glow: #{$glow-accent};
+  --accent: #{$cyan-400};
+  --accent-hover: #{$cyan-300};
+  --accent-active: #{$cyan-200};
+  --accent-muted: rgba(6, 182, 212, 0.2);
+  --accent-subtle: rgba(6, 182, 212, 0.12);
+  --accent-glow: 0 0 20px rgba(34, 211, 238, 0.4);
 
   // -------------------------------------------------------------------------
   // Background Layers
@@ -160,7 +172,7 @@
   --text-muted: #{$neutral-600};
   --text-disabled: #{$neutral-700};
   --text-inverse: #{$neutral-900};
-  --text-accent: #{$orange-400};
+  --text-accent: #{$cyan-400};
 
   // -------------------------------------------------------------------------
   // Border Colors
@@ -168,7 +180,7 @@
   --border-default: #{$neutral-700};
   --border-subtle: #{$neutral-800};
   --border-strong: #{$neutral-600};
-  --border-accent: #{$orange-500};
+  --border-accent: #{$cyan-400};
   --border-input: #{$neutral-700};
 
   // -------------------------------------------------------------------------
@@ -179,21 +191,21 @@
   --pressed-bg: rgba(255, 255, 255, 0.12);
 
   // Selection (accent-based)
-  --selected-bg: #{$orange-500};
+  --selected-bg: #{$cyan-500};
   --selected-text: #{$white};
-  --selected-bg-muted: rgba(255, 107, 53, 0.2);
-  --selected-text-muted: #{$orange-400};
+  --selected-bg-muted: rgba(6, 182, 212, 0.2);
+  --selected-text-muted: #{$cyan-400};
 
   // Focus
-  --focus-ring: #{$shadow-focus};
+  --focus-ring: 0 0 0 2px rgba(34, 211, 238, 0.4);
   --focus-ring-error: #{$shadow-focus-error};
 
   // -------------------------------------------------------------------------
-  // Scrollbar (orange accent)
+  // Scrollbar (cyan accent)
   // -------------------------------------------------------------------------
   --scrollbar-track: #{$neutral-800};
-  --scrollbar-thumb: #{$orange-500};
-  --scrollbar-thumb-hover: #{$orange-400};
+  --scrollbar-thumb: #{$cyan-500};
+  --scrollbar-thumb-hover: #{$cyan-400};
 
   // -------------------------------------------------------------------------
   // Semantic Colors

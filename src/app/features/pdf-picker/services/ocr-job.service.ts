@@ -283,17 +283,14 @@ export class OcrJobService {
           }
         }
 
-        // Run Surya layout detection if available (regardless of OCR engine)
-        if (result) {
+        // Run Surya layout detection ONLY if Surya is the selected engine
+        // (Don't run Surya when Tesseract is selected - it causes unnecessary memory pressure)
+        if (result && job.engine === 'surya') {
           try {
-            const allPlugins = this.pluginService.plugins();
-            console.log(`[OCR Job] Plugins loaded: ${allPlugins.length}, names: ${allPlugins.map(p => p.id).join(', ')}`);
             const suryaPlugin = this.pluginService.getPlugin('surya-ocr');
-            console.log(`[OCR Job] Surya plugin check: ${suryaPlugin ? `found, available=${suryaPlugin.available}` : 'not found'}`);
             if (suryaPlugin?.available) {
               console.log(`[OCR Job] Running layout detection for page ${pageNum}`);
               const layoutResult = await this.pluginService.detectLayout('surya-ocr', imageData);
-              console.log(`[OCR Job] Layout result:`, layoutResult.success, layoutResult.layoutBlocks?.length || 0, layoutResult.error);
               if (layoutResult.success && layoutResult.layoutBlocks) {
                 result.layoutBlocks = layoutResult.layoutBlocks;
                 console.log(`[OCR Job] Layout detection returned ${layoutResult.layoutBlocks.length} blocks for page ${pageNum}`);
@@ -301,7 +298,6 @@ export class OcrJobService {
             }
           } catch (layoutErr) {
             console.warn(`[OCR Job] Layout detection failed for page ${pageNum}:`, layoutErr);
-            // Continue without layout - not a fatal error
           }
         }
 

@@ -503,16 +503,22 @@ export interface DiffComparisonResult {
 export interface TtsJobConfig {
   device: 'gpu' | 'mps' | 'cpu';
   language: string;
-  voice: string;
+  ttsEngine: string;
+  fineTuned: string;
   temperature: number;
+  topP: number;
+  topK: number;
+  repetitionPenalty: number;
   speed: number;
+  enableTextSplitting: boolean;
   outputFilename?: string;
+  outputDir?: string;
 }
 
 export interface ElectronAPI {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
-    renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
+    renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>, removeBackground?: boolean) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderBlankPage: (pageNum: number, scale?: number) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderAllPages: (pdfPath: string, scale?: number, concurrency?: number) => Promise<{ success: boolean; data?: { paths: string[] }; error?: string }>;
     renderWithPreviews: (pdfPath: string, concurrency?: number) => Promise<{ success: boolean; data?: RenderWithPreviewsResult; error?: string }>;
@@ -527,6 +533,7 @@ export interface ElectronAPI {
     exportText: (enabledCategories: string[]) => Promise<{ success: boolean; data?: { text: string; char_count: number }; error?: string }>;
     exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
     exportPdfNoBackgrounds: (scale?: number, deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
+    exportPdfWysiwyg: (deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, deletedPages?: number[], scale?: number, ocrPages?: Array<{page: number; blocks: Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>}>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
     findSimilar: (blockId: string) => Promise<{ success: boolean; data?: { similar_ids: string[]; count: number }; error?: string }>;
     findSpansInRect: (page: number, x: number, y: number, width: number, height: number) => Promise<{ success: boolean; data?: TextSpan[]; error?: string }>;
     analyzeSamples: (sampleSpans: TextSpan[]) => Promise<{ success: boolean; data?: SamplePattern; error?: string }>;
@@ -538,6 +545,8 @@ export interface ElectronAPI {
     outlineToChapters: (outline: OutlineItem[]) => Promise<{ success: boolean; data?: Chapter[]; error?: string }>;
     detectChapters: () => Promise<{ success: boolean; data?: Chapter[]; error?: string }>;
     addBookmarks: (pdfBase64: string, chapters: Chapter[]) => Promise<{ success: boolean; data?: string; error?: string }>;
+    // WYSIWYG export from canvas-rendered images
+    assembleFromImages: (pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: Chapter[]) => Promise<string | null>;
   };
   fs: {
     browse: (dirPath: string) => Promise<{
@@ -545,6 +554,8 @@ export interface ElectronAPI {
       parent: string;
       items: Array<{ name: string; path: string; type: string; size: number | null }>;
     }>;
+    readBinary: (filePath: string) => Promise<{ success: boolean; data?: Uint8Array; error?: string }>;
+    exists: (filePath: string) => Promise<boolean>;
   };
   project: {
     save: (projectData: unknown, suggestedName?: string) => Promise<ProjectSaveResult>;
@@ -553,6 +564,7 @@ export interface ElectronAPI {
   };
   dialog: {
     openPdf: () => Promise<OpenPdfResult>;
+    openFolder: () => Promise<{ success: boolean; canceled?: boolean; folderPath?: string; error?: string }>;
   };
   projects: {
     ensureFolder: () => Promise<{ success: boolean; path?: string; error?: string }>;
@@ -641,6 +653,8 @@ export interface ElectronAPI {
     getChapters: () => Promise<{ success: boolean; data?: EpubChapter[]; error?: string }>;
     close: () => Promise<{ success: boolean; error?: string }>;
     editText: (epubPath: string, chapterId: string, oldText: string, newText: string) => Promise<{ success: boolean; error?: string }>;
+    exportWithRemovals: (inputPath: string, removals: Record<string, Array<{ chapterId: string; text: string; cfi: string }>>, outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
+    copyFile: (inputPath: string, outputPath: string) => Promise<{ success: boolean; error?: string }>;
   };
   ai: {
     checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: OllamaModel[]; error?: string }; error?: string }>;
@@ -657,6 +671,8 @@ export interface ElectronAPI {
   };
   shell: {
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
+    showItemInFolder: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+    openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>;
   };
   tts: {
     checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; version?: string; error?: string }; error?: string }>;
@@ -710,6 +726,13 @@ export interface ElectronAPI {
       error?: string;
     }>;
   };
+  ebookConvert: {
+    isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
+    getSupportedExtensions: () => Promise<{ success: boolean; data?: string[]; error?: string }>;
+    isConvertible: (filePath: string) => Promise<{ success: boolean; data?: { convertible: boolean; native: boolean }; error?: string }>;
+    convert: (inputPath: string, outputDir?: string) => Promise<{ success: boolean; data?: { outputPath: string }; error?: string }>;
+    convertToLibrary: (inputPath: string) => Promise<{ success: boolean; data?: { outputPath: string }; error?: string }>;
+  };
   platform: string;
 }
 
@@ -717,8 +740,8 @@ const electronAPI: ElectronAPI = {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) =>
       ipcRenderer.invoke('pdf:analyze', pdfPath, maxPages),
-    renderPage: (pageNum: number, scale: number = 2.0, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>) =>
-      ipcRenderer.invoke('pdf:render-page', pageNum, scale, pdfPath, redactRegions, fillRegions),
+    renderPage: (pageNum: number, scale: number = 2.0, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>, removeBackground?: boolean) =>
+      ipcRenderer.invoke('pdf:render-page', pageNum, scale, pdfPath, redactRegions, fillRegions, removeBackground),
     renderBlankPage: (pageNum: number, scale: number = 2.0) =>
       ipcRenderer.invoke('pdf:render-blank-page', pageNum, scale),
     renderAllPages: (pdfPath: string, scale: number = 2.0, concurrency: number = 4) =>
@@ -768,6 +791,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:export-pdf', pdfPath, deletedRegions, ocrBlocks, deletedPages, chapters),
     exportPdfNoBackgrounds: (scale: number = 2.0, deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) =>
       ipcRenderer.invoke('pdf:export-pdf-no-backgrounds', scale, deletedRegions, ocrBlocks, deletedPages),
+    exportPdfWysiwyg: (deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, deletedPages?: number[], scale: number = 2.0, ocrPages?: Array<{page: number; blocks: Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>}>) =>
+      ipcRenderer.invoke('pdf:export-pdf-wysiwyg', deletedRegions, deletedPages, scale, ocrPages),
     findSimilar: (blockId: string) =>
       ipcRenderer.invoke('pdf:find-similar', blockId),
     findSpansInRect: (page: number, x: number, y: number, width: number, height: number) =>
@@ -789,10 +814,16 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:detect-chapters'),
     addBookmarks: (pdfBase64: string, chapters: Chapter[]) =>
       ipcRenderer.invoke('pdf:add-bookmarks', pdfBase64, chapters),
+    assembleFromImages: (pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: Chapter[]) =>
+      ipcRenderer.invoke('pdf:assemble-from-images', pages, chapters),
   },
   fs: {
     browse: (dirPath: string) =>
       ipcRenderer.invoke('fs:browse', dirPath),
+    readBinary: (filePath: string) =>
+      ipcRenderer.invoke('file:read-binary', filePath),
+    exists: (filePath: string) =>
+      ipcRenderer.invoke('fs:exists', filePath),
   },
   project: {
     save: (projectData: unknown, suggestedName?: string) =>
@@ -805,6 +836,8 @@ const electronAPI: ElectronAPI = {
   dialog: {
     openPdf: () =>
       ipcRenderer.invoke('dialog:open-pdf'),
+    openFolder: () =>
+      ipcRenderer.invoke('dialog:open-folder'),
   },
   projects: {
     ensureFolder: () =>
@@ -867,6 +900,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:close'),
     editText: (epubPath: string, chapterId: string, oldText: string, newText: string) =>
       ipcRenderer.invoke('epub:edit-text', epubPath, chapterId, oldText, newText),
+    exportWithRemovals: (inputPath: string, removals: Record<string, Array<{ chapterId: string; text: string; cfi: string }>>, outputPath?: string) =>
+      ipcRenderer.invoke('epub:export-with-removals', inputPath, removals, outputPath),
+    copyFile: (inputPath: string, outputPath: string) =>
+      ipcRenderer.invoke('epub:copy-file', inputPath, outputPath),
   },
   ai: {
     checkConnection: () =>
@@ -896,6 +933,10 @@ const electronAPI: ElectronAPI = {
   shell: {
     openExternal: (url: string) =>
       ipcRenderer.invoke('shell:open-external', url),
+    showItemInFolder: (filePath: string) =>
+      ipcRenderer.invoke('shell:show-item-in-folder', filePath),
+    openPath: (filePath: string) =>
+      ipcRenderer.invoke('shell:open-path', filePath),
   },
   tts: {
     checkAvailable: () =>
@@ -995,6 +1036,18 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('queue:job-complete', listener);
       };
     },
+  },
+  ebookConvert: {
+    isAvailable: () =>
+      ipcRenderer.invoke('ebook-convert:is-available'),
+    getSupportedExtensions: () =>
+      ipcRenderer.invoke('ebook-convert:get-supported-extensions'),
+    isConvertible: (filePath: string) =>
+      ipcRenderer.invoke('ebook-convert:is-convertible', filePath),
+    convert: (inputPath: string, outputDir?: string) =>
+      ipcRenderer.invoke('ebook-convert:convert', inputPath, outputDir),
+    convertToLibrary: (inputPath: string) =>
+      ipcRenderer.invoke('ebook-convert:convert-to-library', inputPath),
   },
   diff: {
     loadComparison: (originalPath: string, cleanedPath: string) =>

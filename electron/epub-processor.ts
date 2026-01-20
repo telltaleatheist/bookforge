@@ -394,19 +394,34 @@ class EpubProcessor {
 
     // Build chapters from spine
     const chapters: EpubChapter[] = [];
+    // Accept multiple content types that EPUBs might use
+    const validMediaTypes = new Set([
+      'application/xhtml+xml',
+      'text/html',
+      'text/x-oeb1-document',
+      'application/x-dtbook+xml'
+    ]);
+
+    console.log('[EPUB] Spine has', spine.length, 'items');
     for (let i = 0; i < spine.length; i++) {
       const id = spine[i];
       const item = manifest[id];
-      if (item && item.mediaType === 'application/xhtml+xml') {
-        chapters.push({
-          id,
-          title: `Chapter ${i + 1}`,
-          href: item.href,
-          order: i,
-          wordCount: 0
-        });
+      if (item) {
+        console.log('[EPUB] Spine item', i, ':', id, '->', item.href, '(', item.mediaType, ')');
+        if (validMediaTypes.has(item.mediaType)) {
+          chapters.push({
+            id,
+            title: `Chapter ${i + 1}`,
+            href: item.href,
+            order: i,
+            wordCount: 0
+          });
+        }
+      } else {
+        console.log('[EPUB] Spine item', i, ':', id, '- NOT IN MANIFEST');
       }
     }
+    console.log('[EPUB] Found', chapters.length, 'chapters');
 
     return {
       metadata,
@@ -884,6 +899,289 @@ export async function editEpubText(
     };
   } finally {
     processor.close();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Text Removal Functions (for EPUB editor export)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Text removal instruction
+ */
+export interface TextRemovalEntry {
+  chapterId: string;
+  text: string;
+  cfi: string;
+}
+
+/**
+ * Remove specified text from an EPUB and save to a new file.
+ * Groups removals by chapter for efficient processing.
+ */
+export async function exportEpubWithRemovals(
+  inputPath: string,
+  removals: Map<string, TextRemovalEntry[]>,
+  outputPath: string
+): Promise<{ success: boolean; outputPath?: string; error?: string }> {
+  const processor = new EpubProcessor();
+
+  try {
+    const structure = await processor.open(inputPath);
+    const zipWriter = new ZipWriter();
+    const entries = (processor as any).zipReader?.getEntries() || [];
+
+    // Build a map of chapter ID -> href
+    const chapterHrefs = new Map<string, string>();
+    for (const chapter of structure.chapters) {
+      chapterHrefs.set(chapter.id, chapter.href);
+    }
+
+    for (const entryName of entries) {
+      // Check if this entry is a chapter that needs modifications
+      let modified = false;
+      let modifiedContent: string | null = null;
+
+      // Find if this entry matches any chapter with removals
+      for (const [chapterId, chapterRemovals] of removals) {
+        const chapterHref = chapterHrefs.get(chapterId);
+        if (!chapterHref) continue;
+
+        const fullHref = structure.rootPath ? `${structure.rootPath}/${chapterHref}` : chapterHref;
+
+        if (entryName === fullHref && chapterRemovals.length > 0) {
+          // Read the original XHTML
+          const originalXhtml = await processor.readFile(entryName);
+
+          // Apply removals
+          modifiedContent = applyTextRemovals(originalXhtml, chapterRemovals);
+          modified = true;
+          break;
+        }
+      }
+
+      if (modified && modifiedContent !== null) {
+        zipWriter.addFile(entryName, Buffer.from(modifiedContent, 'utf8'));
+      } else {
+        // Copy file as-is
+        const data = await processor.readBinaryFile(entryName);
+        const compress = entryName !== 'mimetype';
+        zipWriter.addFile(entryName, data, compress);
+      }
+    }
+
+    await zipWriter.write(outputPath);
+
+    return {
+      success: true,
+      outputPath
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  } finally {
+    processor.close();
+  }
+}
+
+/**
+ * Apply text removals to an XHTML document using CFI-based positioning.
+ *
+ * The CFI (Canonical Fragment Identifier) contains the path to the exact element
+ * and character offset. We parse the CFI to navigate to the correct location.
+ *
+ * CFI format example: epubcfi(/6/4!/4/2/1:5,/4/2/1:15)
+ * - /6/4 = spine position (which chapter)
+ * - ! separates spine from content path
+ * - /4/2/1 = path within XHTML (even numbers = element indices, 1-indexed)
+ * - :5,:15 = character offset range within the text node
+ */
+function applyTextRemovals(xhtml: string, removals: TextRemovalEntry[]): string {
+  if (removals.length === 0) return xhtml;
+
+  console.log(`[EPUB Export] Processing ${removals.length} text removals`);
+
+  // Parse XHTML using DOMParser
+  const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+
+  // Parse as XHTML
+  const doc = parser.parseFromString(xhtml, 'application/xhtml+xml');
+
+  // Track which removals succeeded
+  const processedRemovals: { node: any; start: number; end: number; text: string }[] = [];
+
+  for (const removal of removals) {
+    const text = removal.text;
+    if (!text) continue;
+
+    console.log(`[EPUB Export] Processing removal: text="${text}", cfi="${removal.cfi}"`);
+
+    // Try to find the element using CFI path
+    let targetNode: any = null;
+    let charStart = 0;
+    let charEnd = text.length;
+
+    if (removal.cfi) {
+      // Parse CFI to extract element path and character offsets
+      // CFI format from epub.js: epubcfi(/6/4[chap01]!/4/2/1:5,/4/2/1:10)
+      // The part after ! is the document path
+      const cfiContent = removal.cfi.match(/!(.+)$/)?.[1] || '';
+      console.log(`[EPUB Export] CFI content after !: "${cfiContent}"`);
+
+      // Check for range (has comma) or single point
+      const rangeParts = cfiContent.split(',');
+      let startPath = rangeParts[0];
+      let endPath = rangeParts[1] || startPath;
+      console.log(`[EPUB Export] startPath="${startPath}", endPath="${endPath}"`);
+
+      // Parse start offset
+      const startMatch = startPath.match(/:(\d+)$/);
+      if (startMatch) {
+        charStart = parseInt(startMatch[1], 10);
+        startPath = startPath.replace(/:(\d+)$/, '');
+      }
+
+      // Parse end offset
+      const endMatch = endPath.match(/:(\d+)$/);
+      if (endMatch) {
+        charEnd = parseInt(endMatch[1], 10);
+      }
+
+      // Navigate to element using path
+      // Path like /4/2/6/1 means: body(4) -> div(2) -> p(6) -> text(1)
+      const pathParts = startPath.split('/').filter(p => p);
+      let current: any = doc.documentElement; // Start at root
+
+      for (const part of pathParts) {
+        if (!current) break;
+
+        // Parse index (and optional id assertion like "4[chapter1]")
+        const indexMatch = part.match(/^(\d+)(?:\[([^\]]+)\])?$/);
+        if (!indexMatch) continue;
+
+        const cfiIndex = parseInt(indexMatch[1], 10);
+        // CFI indices: even = element, odd = text node
+        // CFI is 1-indexed, so /2 = 1st element, /4 = 2nd element, etc.
+        const isTextNode = cfiIndex % 2 === 1;
+        const childIndex = Math.floor(cfiIndex / 2);
+
+        if (isTextNode) {
+          // Find the nth text node (CFI text node index)
+          const textNodeIndex = Math.floor(cfiIndex / 2);
+          let textCount = 0;
+          for (let i = 0; i < current.childNodes.length; i++) {
+            const child = current.childNodes[i];
+            if (child.nodeType === 3) { // TEXT_NODE
+              if (textCount === textNodeIndex) {
+                targetNode = child;
+                break;
+              }
+              textCount++;
+            }
+          }
+        } else {
+          // Find the nth element
+          let elemCount = 0;
+          for (let i = 0; i < current.childNodes.length; i++) {
+            const child = current.childNodes[i];
+            if (child.nodeType === 1) { // ELEMENT_NODE
+              if (elemCount === childIndex - 1) {
+                current = child;
+                break;
+              }
+              elemCount++;
+            }
+          }
+        }
+      }
+
+      // If we ended on an element, get its first text node
+      if (current && current.nodeType === 1 && !targetNode) {
+        for (let i = 0; i < current.childNodes.length; i++) {
+          if (current.childNodes[i].nodeType === 3) {
+            targetNode = current.childNodes[i];
+            break;
+          }
+        }
+      }
+    }
+
+    // If CFI navigation succeeded, use exact position
+    if (targetNode && targetNode.nodeType === 3) {
+      const nodeText = targetNode.nodeValue || '';
+      // Verify the text matches at the expected position
+      if (nodeText.substring(charStart, charStart + text.length) === text) {
+        processedRemovals.push({
+          node: targetNode,
+          start: charStart,
+          end: charStart + text.length,
+          text
+        });
+      } else {
+        // Text doesn't match at CFI position - log for debugging
+        console.error(`CFI text mismatch: expected "${text}" at offset ${charStart}, found "${nodeText.substring(charStart, charStart + text.length + 20)}..."`);
+      }
+    } else {
+      // CFI navigation failed
+      console.error(`CFI navigation failed for: ${removal.cfi}, text: "${text}"`);
+    }
+  }
+
+  // Apply removals (in reverse order to preserve positions within same node)
+  // Group by node first
+  const byNode = new Map<any, typeof processedRemovals>();
+  for (const removal of processedRemovals) {
+    const existing = byNode.get(removal.node) || [];
+    existing.push(removal);
+    byNode.set(removal.node, existing);
+  }
+
+  // For each node, sort removals by position (descending) and apply
+  for (const [node, nodeRemovals] of byNode) {
+    nodeRemovals.sort((a, b) => b.start - a.start);
+    let nodeText = node.nodeValue || '';
+    for (const removal of nodeRemovals) {
+      nodeText = nodeText.substring(0, removal.start) + nodeText.substring(removal.end);
+    }
+    node.nodeValue = nodeText;
+  }
+
+  // Serialize back to string
+  let result = serializer.serializeToString(doc);
+
+  // Clean up any empty elements that might result from removals
+  result = result
+    .replace(/<sup[^>]*>\s*<\/sup>/g, '')       // Empty sup tags
+    .replace(/<sub[^>]*>\s*<\/sub>/g, '')       // Empty sub tags
+    .replace(/<a[^>]*>\s*<\/a>/g, '')           // Empty anchor tags
+    .replace(/<span[^>]*>\s*<\/span>/g, '')     // Empty spans
+    .replace(/<p[^>]*>\s*<\/p>/g, '')           // Empty paragraphs
+    .replace(/\s+<\/p>/g, '</p>')               // Trailing whitespace in paragraphs
+    .replace(/<p>\s+/g, '<p>');                 // Leading whitespace in paragraphs
+
+  return result;
+}
+
+/**
+ * Copy an EPUB file to a new location
+ */
+export async function copyEpubFile(
+  inputPath: string,
+  outputPath: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const data = await fs.readFile(inputPath);
+    await fs.writeFile(outputPath, data);
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Copy failed'
+    };
   }
 }
 

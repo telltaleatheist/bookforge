@@ -50,7 +50,7 @@ import { QueueJob } from '../../models/queue.types';
             ></div>
           </div>
           <div class="progress-text">
-            {{ currentJob.progress || 0 }}%
+            {{ (currentJob.progress || 0) | number:'1.1-1' }}%
           </div>
         </div>
 

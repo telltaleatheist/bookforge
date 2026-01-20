@@ -27,8 +27,8 @@ export interface CropRect {
         </div>
       </div>
     } @else {
-      <!-- Use CDK virtual scrolling for vertical layout, regular scroll for grid/organize -->
-      @if (layout() !== 'grid' && editorMode() !== 'organize') {
+      <!-- Use CDK virtual scrolling for vertical layout, regular scroll for grid/edit/organize -->
+      @if (layout() !== 'grid' && editorMode() !== 'select' && editorMode() !== 'edit') {
         <cdk-virtual-scroll-viewport
           #cdkViewport
           class="pdf-viewport"
@@ -69,7 +69,6 @@ export interface CropRect {
                   [class.sample-mode]="sampleMode()"
                   [class.marquee-mode]="isMarqueeSelecting()"
                   [class.edit-mode]="editorMode() === 'edit'"
-                  [class.organize-mode]="editorMode() === 'organize'"
                   [attr.viewBox]="getViewBox(pageNum)"
                   preserveAspectRatio="none"
                   (mousedown)="onOverlayMouseDown($event, pageNum)"
@@ -83,6 +82,7 @@ export interface CropRect {
                       @if (shouldShowTextOverlay(block)) {
                         <foreignObject
                           class="text-overlay"
+                          [class.deleted]="isDeleted(block.id)"
                           [attr.x]="getBlockX(block)"
                           [attr.y]="getBlockY(block)"
                           [attr.width]="getBlockWidth(block)"
@@ -91,6 +91,7 @@ export interface CropRect {
                           <div
                             xmlns="http://www.w3.org/1999/xhtml"
                             class="text-overlay-content"
+                            [class.deleted]="isDeleted(block.id)"
                             [style.font-size.px]="getOverlayFontSize(block)"
                             [style.width.px]="getBlockWidth(block)"
                           >{{ getDisplayText(block) }}</div>
@@ -152,51 +153,53 @@ export interface CropRect {
                         [attr.y]="currentMarqueeRect()!.y"
                         [attr.width]="currentMarqueeRect()!.width"
                         [attr.height]="currentMarqueeRect()!.height"
-                        fill="rgba(255, 149, 0, 0.45)"
-                        stroke="var(--accent, #FF9500)"
+                        fill="var(--accent-subtle, rgba(6, 182, 212, 0.12))"
+                        stroke="var(--accent, #06b6d4)"
                         stroke-width="2"
-                        stroke-dasharray="6,3"
                       />
                     }
                   }
 
                   <!-- Category highlights (lightweight match rects for custom categories + regex preview) -->
                   <!-- Shown in normal mode and regex search mode, hidden in crop/sample mode -->
+                  <!-- Clicking on a highlight toggles its deleted state -->
                   @if (!cropMode() && !sampleMode()) {
                     @for (highlight of getHighlightsForPage(pageNum); track $index) {
-                      <rect
-                        class="highlight-rect"
-                        [class.deleted]="highlight.deleted"
-                        [attr.x]="highlight.rect.x"
-                        [attr.y]="highlight.rect.y"
-                        [attr.width]="highlight.rect.w"
-                        [attr.height]="highlight.rect.h"
-                        [attr.fill]="highlight.deleted ? 'rgba(255, 68, 68, 0.3)' : highlight.color + '70'"
-                        [attr.stroke]="highlight.deleted ? '#ff4444' : highlight.color"
-                        stroke-width="1"
-                      >
-                        <title>{{ highlight.rect.text }}</title>
-                      </rect>
-                      @if (highlight.deleted) {
-                        <line
-                          [attr.x1]="highlight.rect.x"
-                          [attr.y1]="highlight.rect.y"
-                          [attr.x2]="highlight.rect.x + highlight.rect.w"
-                          [attr.y2]="highlight.rect.y + highlight.rect.h"
-                          stroke="#ff4444"
+                      <g class="highlight-group" (click)="onHighlightRectClick($event, highlight, pageNum)" style="cursor: pointer;">
+                        <rect
+                          class="highlight-rect"
+                          [class.deleted]="highlight.deleted"
+                          [attr.x]="highlight.rect.x"
+                          [attr.y]="highlight.rect.y"
+                          [attr.width]="highlight.rect.w"
+                          [attr.height]="highlight.rect.h"
+                          [attr.fill]="highlight.deleted ? 'rgba(255, 68, 68, 0.15)' : highlight.color + '70'"
+                          [attr.stroke]="highlight.deleted ? '#ff4444' : highlight.color"
                           stroke-width="1"
-                          class="highlight-delete-mark"
-                        />
-                        <line
-                          [attr.x1]="highlight.rect.x + highlight.rect.w"
-                          [attr.y1]="highlight.rect.y"
-                          [attr.x2]="highlight.rect.x"
-                          [attr.y2]="highlight.rect.y + highlight.rect.h"
-                          stroke="#ff4444"
-                          stroke-width="1"
-                          class="highlight-delete-mark"
-                        />
-                      }
+                        >
+                          <title>{{ highlight.rect.text }} (click to toggle deletion)</title>
+                        </rect>
+                        @if (highlight.deleted) {
+                          <line
+                            [attr.x1]="highlight.rect.x"
+                            [attr.y1]="highlight.rect.y"
+                            [attr.x2]="highlight.rect.x + highlight.rect.w"
+                            [attr.y2]="highlight.rect.y + highlight.rect.h"
+                            stroke="#ff4444"
+                            stroke-width="1"
+                            class="highlight-delete-mark"
+                          />
+                          <line
+                            [attr.x1]="highlight.rect.x + highlight.rect.w"
+                            [attr.y1]="highlight.rect.y"
+                            [attr.x2]="highlight.rect.x"
+                            [attr.y2]="highlight.rect.y + highlight.rect.h"
+                            stroke="#ff4444"
+                            stroke-width="1"
+                            class="highlight-delete-mark"
+                          />
+                        }
+                      </g>
                     }
                   }
 
@@ -433,7 +436,7 @@ export interface CropRect {
           <div
             class="pdf-container"
             [class.grid]="layout() === 'grid'"
-            [class.organize-mode]="editorMode() === 'organize'"
+            [class.organize-mode]="editorMode() === 'select' || editorMode() === 'edit'"
           >
             @for (pageNum of pageNumbers(); track pageNum; let idx = $index) {
               <div
@@ -447,7 +450,7 @@ export interface CropRect {
                 [class.drag-over]="dragOverIndex() === idx"
                 [class.drag-over-before]="dragOverIndex() === idx && dropTargetIndex === idx"
                 [class.drag-over-after]="dragOverIndex() === idx && dropTargetIndex === idx + 1"
-                [draggable]="editorMode() === 'organize'"
+                [draggable]="editorMode() === 'select' || editorMode() === 'edit'"
                 (click)="onPageClick($event, pageNum)"
                 (contextmenu)="onPageContextMenu($event, pageNum)"
                 (dragstart)="onPageDragStart($event, idx, pageNum)"
@@ -475,7 +478,6 @@ export interface CropRect {
                     [class.crop-mode]="cropMode()"
                     [class.sample-mode]="sampleMode()"
                     [class.edit-mode]="editorMode() === 'edit'"
-                    [class.organize-mode]="editorMode() === 'organize'"
                     [attr.viewBox]="getViewBox(pageNum)"
                     preserveAspectRatio="none"
                     (mousedown)="onOverlayMouseDown($event, pageNum)"
@@ -570,36 +572,38 @@ export interface CropRect {
                       }
                     }
                     @for (highlight of getHighlightsForPage(pageNum); track highlight.catId + '-' + $index) {
-                      <rect
-                        class="highlight-rect"
-                        [class.deleted]="highlight.deleted"
-                        [attr.x]="highlight.rect.x"
-                        [attr.y]="highlight.rect.y"
-                        [attr.width]="highlight.rect.w"
-                        [attr.height]="highlight.rect.h"
-                        [attr.fill]="highlight.color + '70'"
-                        [attr.stroke]="highlight.color"
-                      />
-                      @if (highlight.deleted) {
-                        <line
-                          [attr.x1]="highlight.rect.x"
-                          [attr.y1]="highlight.rect.y"
-                          [attr.x2]="highlight.rect.x + highlight.rect.w"
-                          [attr.y2]="highlight.rect.y + highlight.rect.h"
+                      <g class="highlight-group" (click)="onHighlightRectClick($event, highlight, pageNum)" style="cursor: pointer;">
+                        <rect
+                          class="highlight-rect"
+                          [class.deleted]="highlight.deleted"
+                          [attr.x]="highlight.rect.x"
+                          [attr.y]="highlight.rect.y"
+                          [attr.width]="highlight.rect.w"
+                          [attr.height]="highlight.rect.h"
+                          [attr.fill]="highlight.color + '70'"
                           [attr.stroke]="highlight.color"
-                          stroke-width="1"
-                          class="delete-mark"
                         />
-                        <line
-                          [attr.x1]="highlight.rect.x + highlight.rect.w"
-                          [attr.y1]="highlight.rect.y"
-                          [attr.x2]="highlight.rect.x"
-                          [attr.y2]="highlight.rect.y + highlight.rect.h"
-                          [attr.stroke]="highlight.color"
-                          stroke-width="1"
-                          class="delete-mark"
-                        />
-                      }
+                        @if (highlight.deleted) {
+                          <line
+                            [attr.x1]="highlight.rect.x"
+                            [attr.y1]="highlight.rect.y"
+                            [attr.x2]="highlight.rect.x + highlight.rect.w"
+                            [attr.y2]="highlight.rect.y + highlight.rect.h"
+                            [attr.stroke]="highlight.color"
+                            stroke-width="1"
+                            class="delete-mark"
+                          />
+                          <line
+                            [attr.x1]="highlight.rect.x + highlight.rect.w"
+                            [attr.y1]="highlight.rect.y"
+                            [attr.x2]="highlight.rect.x"
+                            [attr.y2]="highlight.rect.y + highlight.rect.h"
+                            [attr.stroke]="highlight.color"
+                            stroke-width="1"
+                            class="delete-mark"
+                          />
+                        }
+                      </g>
                     }
                     <!-- Chapter markers (grid mode) -->
                     @if (chapters().length > 0 || chaptersMode()) {
@@ -644,10 +648,9 @@ export interface CropRect {
                         [attr.y]="currentMarqueeRect()!.y"
                         [attr.width]="currentMarqueeRect()!.width"
                         [attr.height]="currentMarqueeRect()!.height"
-                        fill="rgba(255, 149, 0, 0.45)"
-                        stroke="var(--accent, #FF9500)"
+                        fill="var(--accent-subtle, rgba(6, 182, 212, 0.12))"
+                        stroke="var(--accent, #06b6d4)"
                         stroke-width="2"
-                        stroke-dasharray="6,3"
                       />
                     }
                   </svg>
@@ -1047,8 +1050,8 @@ export interface CropRect {
 
     .page-marquee-box {
       position: absolute;
-      background: var(--selected-bg-muted, rgba(255, 149, 0, 0.35));
-      border: 2px solid var(--accent, #FF9500);
+      background: var(--accent-subtle, rgba(6, 182, 212, 0.12));
+      border: 2px solid var(--accent, #06b6d4);
       pointer-events: none;
       z-index: 50;
     }
@@ -1188,11 +1191,6 @@ export interface CropRect {
       cursor: text;
     }
 
-    .block-overlay.organize-mode .block-rect {
-      opacity: 0;
-      pointer-events: none;
-    }
-
     .block-overlay .block-rect:hover {
       stroke-width: 1.5 !important;
       filter: brightness(1.2);
@@ -1209,10 +1207,9 @@ export interface CropRect {
     }
 
     .block-overlay .block-rect.deleted {
-      fill: rgba(255, 68, 68, 0.2) !important;
-      stroke: #ff4444 !important;
-      stroke-dasharray: 4, 2;
-      opacity: 0.6;
+      fill: rgba(255, 68, 68, 0.15) !important;
+      stroke: transparent !important;
+      opacity: 0.5;
     }
 
     .block-overlay .block-rect.search-highlight {
@@ -1242,24 +1239,32 @@ export interface CropRect {
     }
 
     // Category highlight rects (lightweight pattern matches)
+    // Click to toggle deleted state
+    .block-overlay .highlight-group {
+      pointer-events: all;
+      cursor: pointer;
+    }
+
     .block-overlay .highlight-rect {
-      pointer-events: none;
+      pointer-events: all;
       stroke-width: 1;
       opacity: 0.8;
     }
 
     .block-overlay .highlight-rect.deleted {
+      fill: rgba(255, 68, 68, 0.15) !important;
+      stroke: #ff4444 !important;
       stroke-dasharray: 4, 2;
-      opacity: 0.6;
+      opacity: 0.5;
     }
 
     .highlight-delete-mark {
-      pointer-events: none;
+      pointer-events: none;  // Let clicks pass through to parent group
       opacity: 0.8;
     }
 
     .delete-mark {
-      pointer-events: none;
+      pointer-events: none;  // Let clicks pass through to parent group
       opacity: 0.8;
     }
 
@@ -1301,6 +1306,12 @@ export interface CropRect {
     .text-overlay-content.corrected.moved {
       background: #ffffff;
       border: 1px dashed #00bcd4;
+    }
+
+    /* Deleted text - faded ghost text so user can still read what's being removed */
+    .text-overlay-content.deleted {
+      opacity: 0.35;
+      color: #666666;
     }
 
     /* Tooltip */
@@ -1424,7 +1435,7 @@ export class PdfViewerComponent implements AfterViewInit {
   pageImages = input<Map<number, string>>(new Map()); // Signal-tracked page images for reactivity
   cropMode = input<boolean>(false);
   cropCurrentPage = input<number>(0);
-  editorMode = input<string>('select'); // 'select' | 'edit' | 'crop' | 'organize' | 'split'
+  editorMode = input<string>('select'); // 'select' | 'edit' | 'crop' | 'split'
   pageOrder = input<number[]>([]); // Custom page order for organize mode
 
   // Split mode inputs
@@ -1530,6 +1541,17 @@ export class PdfViewerComponent implements AfterViewInit {
   private scrollThrottleTimer: ReturnType<typeof setTimeout> | null = null;
   private lastScrollTime = 0;
 
+  // Cycling selection state - for clicking through overlapping blocks
+  private lastClickPosition: { x: number; y: number; pageNum: number } | null = null;
+  private lastClickTime = 0;
+  private overlappingBlocksAtClick: TextBlock[] = [];
+  private cycleIndex = 0;
+  // Cycling window: clicks faster than 250ms are double-clicks, slower than 800ms are new selections
+  // Only cycle for clicks between 250-800ms
+  private readonly DOUBLE_CLICK_THRESHOLD = 250; // ms - clicks faster than this are double-clicks
+  private readonly CYCLE_CLICK_MAX = 800; // ms - clicks slower than this are new selections
+  private readonly CLICK_POSITION_TOLERANCE = 20; // SVG units - clicks within this distance are considered same position
+
   // Grid pagination - limit initial render for performance
   readonly gridPageLimit = signal(24); // Show 24 pages initially (6x4 grid)
   private readonly GRID_PAGE_INCREMENT = 24;
@@ -1563,8 +1585,8 @@ export class PdfViewerComponent implements AfterViewInit {
     const allPages = this.pageNumbers();
     if (allPages.length === 0) return { start: 0, end: 0, pages: [] as number[] };
 
-    // In grid mode or organize mode, show all pages (they're small)
-    if (this.layout() === 'grid' || this.editorMode() === 'organize') {
+    // In grid mode or edit/select mode, show all pages (they're small)
+    if (this.layout() === 'grid' || this.editorMode() === 'select' || this.editorMode() === 'edit') {
       return { start: 0, end: allPages.length, pages: allPages };
     }
 
@@ -1835,6 +1857,7 @@ export class PdfViewerComponent implements AfterViewInit {
       this.blocksWithTextOverlay();
       this.blankedPages();
       this.pageImages();
+      this.selectedBlockIds(); // Track selection changes for visual updates
 
       // Force Angular to re-render the component
       setTimeout(() => {
@@ -2081,12 +2104,28 @@ export class PdfViewerComponent implements AfterViewInit {
 
   /**
    * Check if a deleted block should be hidden from rendering.
-   * Deleted image blocks are always hidden since the page re-render handles
-   * removing them visually (no need for X marks over the whole page).
+   * Full-page background images are hidden (no X marks on them).
+   * Smaller deleted blocks show with X marks so user can see what's removed.
    */
   shouldHideDeletedBlock(block: TextBlock): boolean {
-    // Always hide deleted image blocks - the page is re-rendered without them
-    return !!block.is_image && this.isDeleted(block.id);
+    // Only consider hiding if block is actually deleted
+    if (!this.isDeleted(block.id)) return false;
+
+    // Hide full-page image blocks (background scans) - don't show giant X across page
+    if (block.is_image) {
+      const pageDims = this.pageDimensions()[block.page];
+      if (pageDims) {
+        const pageArea = pageDims.width * pageDims.height;
+        const blockArea = block.width * block.height;
+        // If image covers more than 70% of page, it's a background - hide it
+        if (blockArea > pageArea * 0.7) {
+          return true;
+        }
+      }
+    }
+
+    // Show all other deleted blocks (text, smaller images) with X marks
+    return false;
   }
 
   hasCorrectedText(blockId: string): boolean {
@@ -2184,24 +2223,25 @@ export class PdfViewerComponent implements AfterViewInit {
     // When removeBackgrounds is on OR page is blanked, show overlays for ALL blocks with text
     // This treats blankedPages exactly like removeBackgrounds for those specific pages
     if (this.removeBackgrounds() || pageIsBlanked) {
-      // For non-deleted blocks: always show text
-      if (!deleted) {
-        return true;
-      }
-      // For deleted image blocks with text (OCR extracted): show the text since image is gone
-      if (block.is_image && block.text) {
-        return true;
-      }
+      // Always show text (including deleted blocks - they'll appear faded)
+      return true;
     }
 
     // Normal mode (no background removal, page not blanked)
+    // OCR blocks always show text overlay (they have no visual in the PDF)
+    if (block.is_ocr) {
+      return true;
+    }
+
+    // Show overlay for blocks with corrections/offsets/resizes
     if (!deleted) {
-      // OCR blocks always show text overlay (they have no visual in the PDF)
-      if (block.is_ocr) {
-        return true;
-      }
-      // Show overlay for blocks with corrections/offsets/resizes
       if (this.hasCorrectedText(block.id) || this.hasOffset(block.id) || this.blockSizes().has(block.id)) return true;
+    }
+
+    // Show faded text for deleted OCR blocks (so user can still read what's being removed)
+    // For non-OCR blocks, the native PDF text is already visible, so no overlay needed
+    if (deleted && !block.is_image && block.text && block.is_ocr) {
+      return true;
     }
 
     return false;
@@ -2337,6 +2377,28 @@ export class PdfViewerComponent implements AfterViewInit {
     // Image loaded - SVG overlay will match automatically
   }
 
+  /**
+   * Handle click on a category highlight rect - toggles its deleted state
+   */
+  onHighlightRectClick(
+    event: MouseEvent,
+    highlight: { catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; color: string; deleted: boolean },
+    pageNum: number
+  ): void {
+    event.preventDefault();
+    event.stopPropagation();
+
+    // Emit the highlight click event to toggle deleted state
+    this.highlightClick.emit({
+      catId: highlight.catId,
+      rect: highlight.rect,
+      pageNum,
+      shiftKey: event.shiftKey,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey
+    });
+  }
+
   onBlockClick(event: MouseEvent, block: TextBlock): void {
     event.preventDefault();
     event.stopPropagation();
@@ -2348,29 +2410,138 @@ export class PdfViewerComponent implements AfterViewInit {
       return;
     }
 
-    // Click-through selection: if block is already selected and there's a highlight underneath,
-    // emit highlightClick instead to allow cycling through overlapping elements
-    if (this.isSelected(block.id) && this.editorMode() === 'select') {
-      const highlight = this.findHighlightAtClick(event, block.page);
-      if (highlight) {
-        this.highlightClick.emit({
-          catId: highlight.catId,
-          rect: highlight.rect,
-          pageNum: block.page,
-          shiftKey: event.shiftKey,
-          metaKey: event.metaKey,
-          ctrlKey: event.ctrlKey
-        });
-        return;
-      }
-    }
+    const now = Date.now();
+    const timeSinceLastClick = now - this.lastClickTime;
 
-    this.blockClick.emit({
-      block,
-      shiftKey: event.shiftKey,
-      metaKey: event.metaKey,
-      ctrlKey: event.ctrlKey
+    // Get click position in SVG coordinates
+    const clickPos = this.getClickPositionInSVG(event, block.page);
+
+    // Check if this click is at the same position as the last click (for cycling)
+    const isSamePosition = this.lastClickPosition &&
+      this.lastClickPosition.pageNum === block.page &&
+      clickPos &&
+      Math.abs(clickPos.x - this.lastClickPosition.x) < this.CLICK_POSITION_TOLERANCE &&
+      Math.abs(clickPos.y - this.lastClickPosition.y) < this.CLICK_POSITION_TOLERANCE;
+
+    // Cycling window: between double-click speed and max cycle time
+    // Too fast = double-click (let dblclick handler deal with it)
+    // Too slow = new selection
+    // Just right = cycle through overlapping blocks
+    const isTooFastForCycle = timeSinceLastClick < this.DOUBLE_CLICK_THRESHOLD;
+    const isWithinCycleWindow = timeSinceLastClick >= this.DOUBLE_CLICK_THRESHOLD &&
+                                 timeSinceLastClick < this.CYCLE_CLICK_MAX;
+    const shouldCycle = isSamePosition && isWithinCycleWindow && this.overlappingBlocksAtClick.length > 1;
+
+    // Debug logging
+    console.log('[Cycling] click:', {
+      clickPos,
+      lastPos: this.lastClickPosition,
+      isSamePosition,
+      timeSinceLastClick,
+      isTooFastForCycle,
+      isWithinCycleWindow,
+      overlappingCount: this.overlappingBlocksAtClick.length,
+      shouldCycle
     });
+
+    if (shouldCycle) {
+      // Cycle to next overlapping block
+      this.cycleIndex = (this.cycleIndex + 1) % this.overlappingBlocksAtClick.length;
+      const cycledBlock = this.overlappingBlocksAtClick[this.cycleIndex];
+
+      this.lastClickTime = now;
+
+      this.blockClick.emit({
+        block: cycledBlock,
+        shiftKey: event.shiftKey,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey
+      });
+    } else if (isTooFastForCycle && isSamePosition) {
+      // Click is too fast - likely second click of a double-click
+      // Don't emit blockClick, just update time so cycling state is preserved
+      // The dblclick handler will fire and use the correct block from cycling state
+      this.lastClickTime = now;
+      console.log('[Cycling] Skipping click emission - potential double-click');
+    } else {
+      // New click position - find all overlapping blocks
+      if (clickPos) {
+        this.overlappingBlocksAtClick = this.findBlocksAtPosition(clickPos.x, clickPos.y, block.page);
+        console.log('[Cycling] Found overlapping blocks:', this.overlappingBlocksAtClick.map(b => ({
+          id: b.id,
+          category: b.category_id,
+          isImage: b.is_image,
+          area: b.width * b.height
+        })));
+        this.cycleIndex = 0;
+        this.lastClickPosition = { x: clickPos.x, y: clickPos.y, pageNum: block.page };
+      } else {
+        this.overlappingBlocksAtClick = [block];
+        this.cycleIndex = 0;
+        this.lastClickPosition = null;
+      }
+
+      this.lastClickTime = now;
+
+      // Emit the first block in the sorted list (smallest/most specific)
+      // This ensures clicking on overlapping blocks starts with the most specific one
+      const blockToSelect = this.overlappingBlocksAtClick.length > 0
+        ? this.overlappingBlocksAtClick[0]
+        : block;
+
+      this.blockClick.emit({
+        block: blockToSelect,
+        shiftKey: event.shiftKey,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey
+      });
+    }
+  }
+
+  /**
+   * Get click position in SVG coordinates
+   */
+  private getClickPositionInSVG(event: MouseEvent, pageNum: number): { x: number; y: number } | null {
+    const target = event.target as SVGElement;
+    const svg = target.closest('svg');
+    if (!svg) return null;
+
+    const pt = svg.createSVGPoint();
+    pt.x = event.clientX;
+    pt.y = event.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const svgP = pt.matrixTransform(ctm.inverse());
+
+    return { x: svgP.x, y: svgP.y };
+  }
+
+  /**
+   * Find all blocks that contain the given position on the specified page.
+   * Returns blocks sorted by area (smallest first) so more specific blocks are selected first.
+   */
+  private findBlocksAtPosition(x: number, y: number, pageNum: number): TextBlock[] {
+    const allBlocks = this.blocks();
+    const pageBlocks = allBlocks.filter(b => b.page === pageNum);
+
+    // Find blocks that contain the click point
+    const containingBlocks = pageBlocks.filter(block => {
+      const bx = this.getBlockX(block);
+      const by = this.getBlockY(block);
+      const bw = this.getBlockWidth(block);
+      const bh = this.getBlockHeight(block);
+
+      return x >= bx && x <= bx + bw && y >= by && y <= by + bh;
+    });
+
+    // Sort by area (smallest first) - more specific/smaller blocks should be selected first
+    containingBlocks.sort((a, b) => {
+      const areaA = this.getBlockWidth(a) * this.getBlockHeight(a);
+      const areaB = this.getBlockWidth(b) * this.getBlockHeight(b);
+      return areaA - areaB;
+    });
+
+    return containingBlocks;
   }
 
   /**
@@ -2407,12 +2578,30 @@ export class PdfViewerComponent implements AfterViewInit {
     event.preventDefault();
     event.stopPropagation();
 
+    // Use the block from cycling state if available, otherwise find the smallest
+    // block at this position. This ensures double-click uses the same block
+    // that single-click would select.
+    let targetBlock = block;
+    if (this.overlappingBlocksAtClick.length > 0) {
+      // Use the currently cycled block
+      targetBlock = this.overlappingBlocksAtClick[this.cycleIndex];
+    } else {
+      // No cycling state - find overlapping blocks now
+      const clickPos = this.getClickPositionInSVG(event, block.page);
+      if (clickPos) {
+        const overlapping = this.findBlocksAtPosition(clickPos.x, clickPos.y, block.page);
+        if (overlapping.length > 0) {
+          targetBlock = overlapping[0]; // Smallest block
+        }
+      }
+    }
+
     // Get screen coordinates of the block for inline editing
     const target = event.target as SVGRectElement;
     const rect = target.getBoundingClientRect();
 
     this.blockDoubleClick.emit({
-      block,
+      block: targetBlock,
       metaKey: event.metaKey,
       ctrlKey: event.ctrlKey,
       screenX: rect.left,
@@ -2496,7 +2685,7 @@ export class PdfViewerComponent implements AfterViewInit {
 
   // Accumulated scroll delta for smoother zoom
   private scrollDeltaAccumulator = 0;
-  private readonly SCROLL_THRESHOLD = 150; // Pixels of scroll needed to trigger zoom (higher = less sensitive)
+  private readonly SCROLL_THRESHOLD = 300; // Pixels of scroll needed to trigger zoom (higher = less sensitive)
 
   onWheel(event: WheelEvent): void {
     // Cmd/Ctrl + scroll for zoom
@@ -2557,9 +2746,9 @@ export class PdfViewerComponent implements AfterViewInit {
     this.pageMenuVisible.set(false);
   }
 
-  // Page drag/drop for organize mode
+  // Page drag/drop for edit/select mode
   onPageDragStart(event: DragEvent, index: number, pageNum: number): void {
-    if (this.editorMode() !== 'organize') {
+    if (this.editorMode() !== 'select' && this.editorMode() !== 'edit') {
       event.preventDefault();
       return;
     }
@@ -2581,7 +2770,7 @@ export class PdfViewerComponent implements AfterViewInit {
   }
 
   onPageDragOver(event: DragEvent, index: number): void {
-    if (this.editorMode() !== 'organize' || this.draggedPageIndex === null) return;
+    if ((this.editorMode() !== 'select' && this.editorMode() !== 'edit') || this.draggedPageIndex === null) return;
 
     event.preventDefault();
     if (event.dataTransfer) {
@@ -2665,6 +2854,12 @@ export class PdfViewerComponent implements AfterViewInit {
     // Don't handle if clicking on buttons or other interactive elements
     const target = event.target as HTMLElement;
     if (target.closest('button') || target.closest('input') || target.closest('.block-rect')) {
+      return;
+    }
+
+    // Don't handle page selection if clicking on page content (image/svg overlay)
+    // Page selection should only happen when clicking outside the page content area
+    if (target.closest('.page-content')) {
       return;
     }
 
@@ -2865,7 +3060,7 @@ export class PdfViewerComponent implements AfterViewInit {
     if (!this.viewport?.nativeElement) return;
 
     // For virtual scroll mode, calculate the offset and scroll there
-    if (this.layout() !== 'grid' && this.editorMode() !== 'organize') {
+    if (this.layout() !== 'grid' && this.editorMode() !== 'select' && this.editorMode() !== 'edit') {
       const offset = this.getPageOffset(pageNum);
       this.viewport.nativeElement.scrollTop = offset;
       return;
@@ -3422,4 +3617,224 @@ export class PdfViewerComponent implements AfterViewInit {
     document.removeEventListener('mousemove', this.onBlockDragMove);
     document.removeEventListener('mouseup', this.onBlockDragEnd);
   };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EXPORT: Render page with text overlays composited onto canvas
+  // This is the WYSIWYG export method - what you see is what you get
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Render a single page with all text overlays composited onto a canvas.
+   * For export, deleted content is removed (white) without X marks.
+   *
+   * @param pageNum - Page number (0-indexed)
+   * @param scale - Render scale (default 2.0 for good quality)
+   * @returns Promise<string> - Data URL of the rendered page image
+   */
+  async renderPageForExport(pageNum: number, scale: number = 2.0): Promise<string> {
+    const dims = this.pageDimensions()[pageNum];
+    if (!dims) {
+      throw new Error(`No dimensions for page ${pageNum}`);
+    }
+
+    const canvasWidth = Math.round(dims.width * scale);
+    const canvasHeight = Math.round(dims.height * scale);
+
+    // Create canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const ctx = canvas.getContext('2d')!;
+
+    // Determine if this page should show white background (all images deleted)
+    const pageIsBlanked = this.blankedPages().has(pageNum) ||
+                          this.pagesWithAllImagesDeleted().has(pageNum) ||
+                          this.removeBackgrounds();
+
+    // Get page blocks once for use throughout this function
+    const pageBlocks = this.getPageBlocks(pageNum);
+
+    // Check if this page has any image blocks (for diagnostic logging)
+    const imageBlocksOnPage = pageBlocks.filter(b => b.is_image);
+    const hasImages = imageBlocksOnPage.length > 0;
+
+    if (pageIsBlanked) {
+      // White background
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    } else {
+      // Draw the page image
+      const imgUrl = this.pageImages().get(pageNum);
+      if (imgUrl && imgUrl !== 'loading') {
+        await this.drawImageToCanvas(ctx, imgUrl, canvasWidth, canvasHeight);
+      } else {
+        // Fallback to white if no image
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+      }
+
+      // Paint deleted regions white (cleanly removed in export, no X marks)
+      for (const block of pageBlocks) {
+        if (this.isDeleted(block.id)) {
+          // Use white to cleanly remove deleted content
+          ctx.fillStyle = '#ffffff';
+
+          const x = block.x * scale;
+          const y = block.y * scale;
+          const w = block.width * scale;
+          const h = block.height * scale;
+          ctx.fillRect(x, y, w, h);
+        }
+      }
+
+      // Paint deleted custom category highlights white (e.g., footnote numbers)
+      const pageHighlights = this.getHighlightsForPage(pageNum);
+      const deletedHighlights = pageHighlights.filter(h => h.deleted);
+
+      if (deletedHighlights.length > 0) {
+        console.log(`[renderPageForExport] Page ${pageNum}: ${deletedHighlights.length} deleted highlights`);
+        console.log(`  Canvas: ${canvasWidth}x${canvasHeight}, Scale: ${scale}, Page dims: ${dims.width}x${dims.height}`);
+        if (hasImages) {
+          console.log(`  PAGE HAS ${imageBlocksOnPage.length} IMAGE(S):`);
+          for (const img of imageBlocksOnPage) {
+            console.log(`    - Image at (${img.x.toFixed(1)}, ${img.y.toFixed(1)}) size ${img.width.toFixed(1)}x${img.height.toFixed(1)}`);
+          }
+        }
+      }
+
+      for (const highlight of deletedHighlights) {
+        ctx.fillStyle = '#ffffff';
+        const x = highlight.rect.x * scale;
+        const y = highlight.rect.y * scale;
+        const w = highlight.rect.w * scale;
+        const h = highlight.rect.h * scale;
+        const yRatio = highlight.rect.y / dims.height;
+        console.log(`  - "${highlight.rect.text}" at (${highlight.rect.x.toFixed(1)}, ${highlight.rect.y.toFixed(1)}) yRatio=${yRatio.toFixed(3)} -> scaled (${x.toFixed(1)}, ${y.toFixed(1)})${hasImages ? ' [PAGE HAS IMAGES]' : ''}`);
+        ctx.fillRect(x, y, w, h);
+      }
+    }
+
+    // Draw text overlays for NON-deleted blocks only (deleted text is removed in export)
+    for (const block of pageBlocks) {
+      // Only draw text for non-deleted blocks that should show text overlay
+      if (this.shouldShowTextOverlay(block) && !this.isDeleted(block.id)) {
+        this.drawTextBlockToCanvas(ctx, block, scale);
+      }
+    }
+
+    // Export does NOT include delete markers - content is cleanly removed
+    return canvas.toDataURL('image/png');
+  }
+
+  /**
+   * Draw an image onto the canvas
+   */
+  private drawImageToCanvas(ctx: CanvasRenderingContext2D, imgUrl: string, width: number, height: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve();
+      };
+      img.onerror = reject;
+      img.src = imgUrl;
+    });
+  }
+
+  /**
+   * Draw a text block onto the canvas
+   */
+  private drawTextBlockToCanvas(ctx: CanvasRenderingContext2D, block: TextBlock, scale: number): void {
+    const text = this.getDisplayText(block);
+    if (!text) return;
+
+    const fontSize = this.getOverlayFontSize(block) * scale;
+    const x = this.getBlockX(block) * scale;
+    const y = this.getBlockY(block) * scale;
+    const width = this.getBlockWidth(block) * scale;
+    const height = this.getExpandedHeight(block) * scale;
+
+    const deleted = this.isDeleted(block.id);
+
+    // Set font
+    ctx.font = `${fontSize}px sans-serif`;
+    ctx.textBaseline = 'top';
+
+    // Set color based on deleted state
+    if (deleted) {
+      ctx.fillStyle = 'rgba(102, 102, 102, 0.35)';  // Faded gray for deleted
+    } else {
+      ctx.fillStyle = '#000000';  // Black for normal text
+    }
+
+    // Simple text wrapping
+    const lineHeight = fontSize * 1.15;
+    const words = text.split(/\s+/);
+    let line = '';
+    let currentY = y + fontSize * 0.1;  // Small top padding
+
+    for (const word of words) {
+      const testLine = line + (line ? ' ' : '') + word;
+      const metrics = ctx.measureText(testLine);
+
+      if (metrics.width > width && line) {
+        ctx.fillText(line, x, currentY);
+        line = word;
+        currentY += lineHeight;
+
+        // Stop if we've exceeded the block height
+        if (currentY > y + height) break;
+      } else {
+        line = testLine;
+      }
+    }
+
+    // Draw remaining text
+    if (line && currentY <= y + height) {
+      ctx.fillText(line, x, currentY);
+    }
+  }
+
+  /**
+   * Draw delete marker (X) onto the canvas
+   */
+  private drawDeleteMarkerToCanvas(ctx: CanvasRenderingContext2D, block: TextBlock, scale: number): void {
+    const x = this.getBlockX(block) * scale;
+    const y = this.getBlockY(block) * scale;
+    const w = this.getBlockWidth(block) * scale;
+    const h = this.getBlockHeight(block) * scale;
+
+    ctx.strokeStyle = '#ff4444';
+    ctx.lineWidth = 2 * scale;
+
+    // Draw X
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + w, y + h);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x + w, y);
+    ctx.lineTo(x, y + h);
+    ctx.stroke();
+  }
+
+  /**
+   * Render all pages for export.
+   * Returns an array of data URLs, one per page (excluding deleted pages).
+   */
+  async renderAllPagesForExport(scale: number = 2.0): Promise<Array<{ pageNum: number; dataUrl: string }>> {
+    const results: Array<{ pageNum: number; dataUrl: string }> = [];
+    const deletedPages = this.deletedPages();
+    const totalPages = this.totalPages();
+
+    for (let pageNum = 0; pageNum < totalPages; pageNum++) {
+      if (deletedPages.has(pageNum)) continue;
+
+      const dataUrl = await this.renderPageForExport(pageNum, scale);
+      results.push({ pageNum, dataUrl });
+    }
+
+    return results;
+  }
 }

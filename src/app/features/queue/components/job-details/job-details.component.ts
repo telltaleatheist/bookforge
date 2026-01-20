@@ -104,8 +104,12 @@ import { QueueJob, OcrCleanupConfig, TtsConversionConfig } from '../../models/qu
                 <span class="info-value">{{ selectedJob.config.device.toUpperCase() }}</span>
               </div>
               <div class="info-row">
-                <span class="info-label">Voice</span>
-                <span class="info-value">{{ selectedJob.config.voice }}</span>
+                <span class="info-label">Voice Model</span>
+                <span class="info-value">{{ selectedJob.config.fineTuned }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">TTS Engine</span>
+                <span class="info-value">{{ selectedJob.config.ttsEngine }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Language</span>
@@ -160,7 +164,7 @@ import { QueueJob, OcrCleanupConfig, TtsConversionConfig } from '../../models/qu
             <div class="progress-bar-large">
               <div class="progress-fill" [style.width.%]="selectedJob.progress || 0"></div>
             </div>
-            <div class="progress-text">{{ selectedJob.progress || 0 }}%</div>
+            <div class="progress-text">{{ (selectedJob.progress || 0) | number:'1.1-1' }}%</div>
           </div>
         }
 
@@ -181,6 +185,20 @@ import { QueueJob, OcrCleanupConfig, TtsConversionConfig } from '../../models/qu
                 Compare original vs cleaned
               }
             </span>
+          </div>
+        }
+
+        <!-- Show in Finder button for completed TTS jobs -->
+        @if (selectedJob.type === 'tts-conversion' && selectedJob.status === 'complete' && selectedJob.outputPath) {
+          <div class="output-section">
+            <desktop-button
+              variant="secondary"
+              size="sm"
+              (click)="onShowInFolder(selectedJob.outputPath!)"
+            >
+              Show in Finder
+            </desktop-button>
+            <span class="output-hint">Open audiobook location</span>
           </div>
         }
       </div>
@@ -370,7 +388,8 @@ import { QueueJob, OcrCleanupConfig, TtsConversionConfig } from '../../models/qu
       text-align: right;
     }
 
-    .diff-section {
+    .diff-section,
+    .output-section {
       display: flex;
       align-items: center;
       gap: 0.75rem;
@@ -379,7 +398,8 @@ import { QueueJob, OcrCleanupConfig, TtsConversionConfig } from '../../models/qu
       border-top: 1px solid var(--border-subtle);
     }
 
-    .diff-hint {
+    .diff-hint,
+    .output-hint {
       font-size: 0.75rem;
       color: var(--text-muted);
     }
@@ -393,6 +413,7 @@ export class JobDetailsComponent {
   readonly remove = output<string>();
   readonly retry = output<string>();
   readonly viewDiff = output<{ originalPath: string; cleanedPath: string }>();
+  readonly showInFolder = output<string>();
 
   isOcrConfig(config: any): config is OcrCleanupConfig {
     return config?.type === 'ocr-cleanup';
@@ -448,5 +469,9 @@ export class JobDetailsComponent {
         cleanedPath: job.outputPath
       });
     }
+  }
+
+  onShowInFolder(path: string): void {
+    this.showInFolder.emit(path);
   }
 }

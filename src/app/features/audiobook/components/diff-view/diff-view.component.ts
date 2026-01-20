@@ -396,18 +396,18 @@ interface ChapterWithSegments {
     }
 
     .tooltip-original .original-text {
-      color: var(--accent-danger, #e53935);
+      color: var(--text-primary);
       text-decoration: line-through;
-      background: rgba(229, 57, 53, 0.15);
-      padding: 1px 2px;
+      background: rgba(255, 107, 53, 0.25);
+      padding: 1px 3px;
       border-radius: 2px;
     }
 
     .tooltip-new .new-text {
-      color: #ff6b35;
+      color: var(--text-primary);
       font-weight: 500;
-      background: rgba(255, 107, 53, 0.15);
-      padding: 1px 2px;
+      background: rgba(255, 107, 53, 0.25);
+      padding: 1px 3px;
       border-radius: 2px;
     }
 

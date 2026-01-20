@@ -15,39 +15,26 @@ let mainWindow: BrowserWindow | null = null;
 // This avoids file:// security restrictions
 function registerPageProtocol(): void {
   protocol.handle('bookforge-page', async (request) => {
-    // URL format: bookforge-page://C:/Users/... (Windows) or bookforge-page:///Users/... (Mac)
-    // The URL class parses these differently:
-    // - Windows: hostname="C", pathname="/Users/..."
-    // - Mac: hostname="Users", pathname="/telltale/..." (first path component becomes host!)
-    console.log('[Protocol] Request URL:', request.url);
-
+    // URL format: bookforge-page://path or bookforge-page:///path
+    // Extract path after the protocol prefix, handling various formats
     let filePath: string;
-    try {
-      const url = new URL(request.url);
-      // On Windows, the drive letter (C:) becomes the hostname
-      // pathname will be /Users/... and hostname will be C or c
-      if (url.hostname && /^[A-Za-z]$/.test(url.hostname)) {
-        // Windows path: reconstruct as C:/path
-        filePath = `${url.hostname.toUpperCase()}:${url.pathname}`;
-      } else if (url.hostname) {
-        // Unix path where first component was parsed as hostname
-        // e.g., bookforge-page:///Users/foo -> hostname="Users", pathname="/foo"
-        // Reconstruct as /hostname/pathname
-        filePath = `/${url.hostname}${url.pathname}`;
-      } else {
-        // Unix path with empty hostname (shouldn't normally happen but handle it)
-        filePath = url.pathname;
-      }
-      filePath = decodeURIComponent(filePath);
-    } catch {
-      // Fallback to simple string parsing if URL parsing fails
-      filePath = decodeURIComponent(request.url.replace('bookforge-page://', ''));
+
+    // Simple extraction: remove protocol prefix and decode
+    const urlStr = request.url;
+    if (urlStr.startsWith('bookforge-page:///')) {
+      // Triple slash format: bookforge-page:///Users/...
+      filePath = urlStr.substring('bookforge-page://'.length);
+    } else if (urlStr.startsWith('bookforge-page://')) {
+      // Double slash format: bookforge-page://Users/... - add leading slash
+      filePath = '/' + urlStr.substring('bookforge-page://'.length);
+    } else {
+      filePath = urlStr.replace('bookforge-page:', '');
     }
-    console.log('[Protocol] Parsed path:', filePath);
+
+    filePath = decodeURIComponent(filePath);
 
     // Normalize to platform-specific separators
     filePath = filePath.split('/').join(path.sep);
-    console.log('[Protocol] Final path:', filePath);
 
     try {
       // Read file directly from disk
@@ -103,6 +90,17 @@ function createWindow(): void {
   // Clear window title to prevent tooltip on macOS drag region
   mainWindow.setTitle(' ');
 
+  // Prevent Backspace from triggering browser back navigation
+  // The keydown event still reaches the renderer for Angular to handle
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    // Prevent all navigation except initial load
+    // This stops Backspace from going "back" in history
+    const currentUrl = mainWindow?.webContents.getURL() || '';
+    if (url !== currentUrl && !url.startsWith('http://localhost:') && !url.startsWith('file://')) {
+      event.preventDefault();
+    }
+  });
+
   // Load Angular app
   if (isDev) {
     mainWindow.loadURL('http://localhost:4250');
@@ -147,10 +145,11 @@ function setupIpcHandlers(): void {
     scale: number = 2.0,
     pdfPath?: string,
     redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>,
-    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>
+    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>,
+    removeBackground?: boolean
   ) => {
     try {
-      const image = await pdfAnalyzer.renderPage(pageNum, scale, pdfPath, redactRegions, fillRegions);
+      const image = await pdfAnalyzer.renderPage(pageNum, scale, pdfPath, redactRegions, fillRegions, removeBackground);
       return { success: true, data: { image } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -336,6 +335,32 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // WYSIWYG PDF export - renders pages exactly as the viewer shows them
+  // For pages with deleted background images, renders OCR text on white background
+  ipcMain.handle('pdf:export-pdf-wysiwyg', async (
+    event,
+    deletedRegions?: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>,
+    deletedPages?: number[],
+    scale: number = 2.0,
+    ocrPages?: Array<{page: number; blocks: Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>}>
+  ) => {
+    try {
+      const deletedPagesSet = deletedPages ? new Set(deletedPages) : undefined;
+      const pdfBase64 = await pdfAnalyzer.exportPdfWysiwyg(
+        deletedRegions,
+        deletedPagesSet,
+        scale,
+        (current, total) => {
+          event.sender.send('pdf:export-progress', { current, total });
+        },
+        ocrPages
+      );
+      return { success: true, data: { pdf_base64: pdfBase64 } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('pdf:find-similar', async (_event, blockId: string) => {
     try {
       const result = pdfAnalyzer.findSimilar(blockId);
@@ -432,6 +457,18 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // WYSIWYG export: Assemble PDF from canvas-rendered images
+  ipcMain.handle('pdf:assemble-from-images', async (_event, pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: any[]) => {
+    try {
+      console.log(`[pdf:assemble-from-images] Assembling PDF from ${pages.length} canvas images`);
+      const result = await pdfAnalyzer.assembleFromImages(pages, chapters);
+      return result;
+    } catch (err) {
+      console.error('[pdf:assemble-from-images] Error:', err);
+      return null;
+    }
+  });
+
   // File system handlers
   ipcMain.handle('fs:browse', async (_event, dirPath: string) => {
     const fs = await import('fs/promises');
@@ -474,6 +511,16 @@ function setupIpcHandlers(): void {
       parent: path.dirname(dirPath),
       items: items.slice(0, 100),
     };
+  });
+
+  ipcMain.handle('fs:exists', async (_event, filePath: string) => {
+    const fs = await import('fs/promises');
+    try {
+      await fs.access(filePath);
+      return true;
+    } catch {
+      return false;
+    }
   });
 
   // Project file handlers
@@ -541,9 +588,10 @@ function setupIpcHandlers(): void {
     if (!mainWindow) return { success: false, error: 'No window' };
 
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Open PDF',
+      title: 'Open Document',
       filters: [
-        { name: 'Documents', extensions: ['pdf', 'epub'] },
+        { name: 'Ebooks', extensions: ['pdf', 'epub', 'azw3', 'azw', 'mobi', 'kfx', 'prc', 'fb2'] },
+        { name: 'Documents', extensions: ['docx', 'odt', 'rtf', 'txt', 'html', 'htm'] },
         { name: 'All Files', extensions: ['*'] }
       ],
       properties: ['openFile']
@@ -554,6 +602,22 @@ function setupIpcHandlers(): void {
     }
 
     return { success: true, filePath: result.filePaths[0] };
+  });
+
+  // Open folder picker dialog
+  ipcMain.handle('dialog:open-folder', async () => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Select Folder',
+      properties: ['openDirectory', 'createDirectory']
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, canceled: true };
+    }
+
+    return { success: true, folderPath: result.filePaths[0] };
   });
 
   // Projects folder management
@@ -846,47 +910,22 @@ function setupIpcHandlers(): void {
         }
       }
 
-      // Now check which library files can be safely deleted
-      // (i.e., no other projects reference them)
-      if (libraryFilesToDelete.length > 0) {
-        // Get all remaining projects to check for references
-        const remainingHashes = new Set<string>();
-
-        const scanForHashes = async (folder: string) => {
+      // Delete library files and cache for deleted projects
+      for (const { hash, libraryPath } of libraryFilesToDelete) {
+        // Delete the source file from library
+        if (libraryPath.startsWith(filesFolder)) {
           try {
-            const entries = await fs.readdir(folder, { withFileTypes: true });
-            for (const entry of entries) {
-              if (!entry.isFile() || !entry.name.endsWith('.bfp')) continue;
-              const entryPath = path.join(folder, entry.name);
-              // Skip if this file was just deleted
-              if (deleted.includes(entryPath)) continue;
-              try {
-                const content = await fs.readFile(entryPath, 'utf-8');
-                const data = JSON.parse(content);
-                if (data.file_hash) {
-                  remainingHashes.add(data.file_hash);
-                }
-              } catch {
-                // Skip unreadable files
-              }
-            }
+            await fs.unlink(libraryPath);
           } catch {
-            // Folder doesn't exist
+            // Library file may not exist or be locked - not critical
           }
-        };
+        }
 
-        await scanForHashes(projectsFolder);
-        await scanForHashes(libraryRoot);
-
-        // Delete library files that are no longer referenced
-        for (const { hash, libraryPath } of libraryFilesToDelete) {
-          if (!remainingHashes.has(hash) && libraryPath.startsWith(filesFolder)) {
-            try {
-              await fs.unlink(libraryPath);
-            } catch {
-              // Library file may not exist or be locked - not critical
-            }
-          }
+        // Clear all cache (render + analysis) for this file
+        try {
+          pdfAnalyzer.clearCache(hash);
+        } catch {
+          // Cache may not exist - not critical
         }
       }
 
@@ -1125,6 +1164,21 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // File System handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Read a file as binary (ArrayBuffer) - used for epub.js loading
+  ipcMain.handle('file:read-binary', async (_event, filePath: string) => {
+    try {
+      const buffer = await fs.readFile(filePath);
+      // Return as Uint8Array which can be transferred to renderer
+      return { success: true, data: buffer };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // EPUB Processing handlers (for Audiobook Producer)
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1193,6 +1247,93 @@ function setupIpcHandlers(): void {
       const { editEpubText } = await import('./epub-processor.js');
       const result = await editEpubText(epubPath, chapterId, oldText, newText);
       return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // EPUB export with text removals (for EPUB editor)
+  ipcMain.handle('epub:export-with-removals', async (_event, inputPath: string, removals: Record<string, Array<{ chapterId: string; text: string; cfi: string }>>, outputPath?: string) => {
+    try {
+      const { exportEpubWithRemovals } = await import('./epub-processor.js');
+
+      // Convert the object back to a Map
+      const removalsMap = new Map<string, Array<{ chapterId: string; text: string; cfi: string }>>();
+      for (const [chapterId, entries] of Object.entries(removals)) {
+        removalsMap.set(chapterId, entries);
+      }
+
+      // Determine output path
+      const finalOutputPath = outputPath || inputPath.replace(/\.epub$/i, '_edited.epub');
+
+      const result = await exportEpubWithRemovals(inputPath, removalsMap, finalOutputPath);
+      return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Copy EPUB file
+  ipcMain.handle('epub:copy-file', async (_event, inputPath: string, outputPath: string) => {
+    try {
+      const { copyEpubFile } = await import('./epub-processor.js');
+      const result = await copyEpubFile(inputPath, outputPath);
+      return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Ebook Convert handlers (Calibre CLI integration for format conversion)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('ebook-convert:is-available', async () => {
+    try {
+      const { ebookConvertBridge } = await import('./ebook-convert-bridge.js');
+      const available = await ebookConvertBridge.isAvailable();
+      return { success: true, data: { available } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebook-convert:get-supported-extensions', async () => {
+    try {
+      const { ebookConvertBridge } = await import('./ebook-convert-bridge.js');
+      const extensions = ebookConvertBridge.getSupportedExtensions();
+      return { success: true, data: extensions };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebook-convert:is-convertible', async (_event, filePath: string) => {
+    try {
+      const { ebookConvertBridge } = await import('./ebook-convert-bridge.js');
+      const convertible = ebookConvertBridge.isConvertibleFormat(filePath);
+      const native = ebookConvertBridge.isNativeFormat(filePath);
+      return { success: true, data: { convertible, native } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebook-convert:convert', async (_event, inputPath: string, outputDir?: string) => {
+    try {
+      const { ebookConvertBridge } = await import('./ebook-convert-bridge.js');
+      const result = await ebookConvertBridge.convertToEpub(inputPath, outputDir);
+      return { success: result.success, data: { outputPath: result.outputPath }, error: result.error };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebook-convert:convert-to-library', async (_event, inputPath: string) => {
+    try {
+      const { ebookConvertBridge } = await import('./ebook-convert-bridge.js');
+      const result = await ebookConvertBridge.convertToLibrary(inputPath);
+      return { success: result.success, data: { outputPath: result.outputPath }, error: result.error };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1280,6 +1421,26 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('shell:show-item-in-folder', async (_event, filePath: string) => {
+    try {
+      const { shell } = await import('electron');
+      shell.showItemInFolder(filePath);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('shell:open-path', async (_event, filePath: string) => {
+    try {
+      const { shell } = await import('electron');
+      await shell.openPath(filePath);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // TTS Bridge handlers (ebook2audiobook)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1308,7 +1469,18 @@ function setupIpcHandlers(): void {
     _event,
     epubPath: string,
     outputDir: string,
-    settings: { device: 'gpu' | 'mps' | 'cpu'; language: string; voice: string; temperature: number; speed: number }
+    settings: {
+      device: 'gpu' | 'mps' | 'cpu';
+      language: string;
+      ttsEngine: string;
+      fineTuned: string;
+      temperature: number;
+      topP: number;
+      topK: number;
+      repetitionPenalty: number;
+      speed: number;
+      enableTextSplitting: boolean;
+    }
   ) => {
     try {
       const { ttsBridge } = await import('./tts-bridge.js');
@@ -1814,23 +1986,42 @@ function setupIpcHandlers(): void {
     _event,
     jobId: string,
     epubPath: string,
-    settings: { device: 'gpu' | 'mps' | 'cpu'; language: string; voice: string; temperature: number; speed: number; outputFilename?: string }
+    settings: {
+      device: 'gpu' | 'mps' | 'cpu';
+      language: string;
+      ttsEngine: string;
+      fineTuned: string;
+      temperature: number;
+      topP: number;
+      topK: number;
+      repetitionPenalty: number;
+      speed: number;
+      enableTextSplitting: boolean;
+      outputFilename?: string;
+      outputDir?: string;
+    }
   ) => {
     try {
       const { ttsBridge } = await import('./tts-bridge.js');
       ttsBridge.setMainWindow(mainWindow);
 
-      // Get output directory
-      const documentsPath = app.getPath('documents');
-      const outputDir = path.join(documentsPath, 'BookForge', 'audiobooks', 'completed');
+      // Get output directory - use custom if provided, otherwise default
+      let outputDir: string;
+      if (settings.outputDir && settings.outputDir.trim()) {
+        outputDir = settings.outputDir;
+      } else {
+        const documentsPath = app.getPath('documents');
+        outputDir = path.join(documentsPath, 'BookForge', 'audiobooks', 'completed');
+      }
       await fs.mkdir(outputDir, { recursive: true });
 
       // Create cancellation token
       const cancelFn = () => { ttsBridge.stopConversion(); };
       runningJobs.set(jobId, { cancel: cancelFn });
 
-      // Forward TTS progress to queue progress
-      const progressHandler = (_event: Electron.IpcMainEvent, progress: any) => {
+      // Run TTS conversion with queue progress callback
+      const result = await ttsBridge.startConversion(epubPath, outputDir, settings, (progress) => {
+        console.log('[TTS->Queue] Forwarding progress:', progress.phase, progress.percentage + '%');
         if (mainWindow) {
           mainWindow.webContents.send('queue:progress', {
             jobId,
@@ -1842,12 +2033,7 @@ function setupIpcHandlers(): void {
             totalChunks: progress.totalChapters
           });
         }
-      };
-
-      // Note: TTS progress comes via tts:progress event, we'll just wait for completion
-
-      // Run TTS conversion
-      const result = await ttsBridge.startConversion(epubPath, outputDir, settings);
+      }, settings.outputFilename);
 
       // Remove from running jobs
       runningJobs.delete(jobId);

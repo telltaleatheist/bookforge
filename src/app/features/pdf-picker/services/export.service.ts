@@ -61,6 +61,16 @@ export interface DeletedCategoryPattern {
   literalMode: boolean;
 }
 
+// Deleted highlight with coordinates for precise removal
+export interface DeletedHighlight {
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;
+}
+
 /**
  * ExportService - Handles TXT, EPUB, and PDF export functionality
  *
@@ -143,7 +153,7 @@ export class ExportService {
     pdfName: string,
     textCorrections?: Map<string, string>,
     deletedPages?: Set<number>,
-    deletedPatterns?: DeletedCategoryPattern[]
+    deletedHighlights?: DeletedHighlight[]
   ): Promise<ExportResult> {
     const exportBlocks = blocks
       .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
@@ -167,13 +177,17 @@ export class ExportService {
 
       // Use corrected text if available, otherwise original
       let blockText = textCorrections?.get(block.id) ?? block.text;
-      // Strip deleted custom category patterns first
-      if (deletedPatterns && deletedPatterns.length > 0) {
-        blockText = this.stripDeletedPatterns(blockText, deletedPatterns);
+
+      // Strip deleted highlights from this block using coordinate-based matching
+      if (deletedHighlights && deletedHighlights.length > 0) {
+        blockText = this.stripHighlightsFromBlock(
+          { ...block, text: blockText },
+          deletedHighlights
+        );
       }
-      const cleanedText = this.stripFootnoteRefs(blockText);
-      if (cleanedText.trim()) {
-        pageMap.get(block.page)!.push(`<p>${this.escapeHtml(cleanedText)}</p>`);
+
+      if (blockText.trim()) {
+        pageMap.get(block.page)!.push(`<p>${this.escapeHtml(blockText)}</p>`);
       }
     }
 
@@ -214,97 +228,34 @@ export class ExportService {
     pdfName: string,
     textCorrections?: Map<string, string>,
     deletedPages?: Set<number>,
-    deletedPatterns?: DeletedCategoryPattern[]
+    deletedHighlights?: DeletedHighlight[]
   ): Promise<ExportResult> {
-    const exportBlocks = blocks
-      .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
-      .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
+    const result = this.generateEpubBlobInternal(
+      blocks,
+      deletedIds,
+      chapters,
+      pdfName,
+      textCorrections,
+      deletedPages,
+      deletedHighlights
+    );
 
-    // Filter out chapters on deleted pages
-    const exportChapters = chapters.filter(c => !deletedPages?.has(c.page));
-
-    if (exportBlocks.length === 0) {
+    if (!result.success || !result.blob) {
       return {
         success: false,
-        message: 'No text to export. All blocks have been deleted.'
+        message: result.message || 'Failed to generate EPUB'
       };
     }
 
-    const bookTitle = pdfName.replace(/\.pdf$/i, '');
-
-    // Sort chapters by page and position (using filtered chapters)
-    const sortedChapters = [...exportChapters].sort((a, b) => {
-      if (a.page !== b.page) return a.page - b.page;
-      return (a.y || 0) - (b.y || 0);
-    });
-
-    // Group blocks by chapter
-    const chapterSections: { title: string; level: number; content: string[] }[] = [];
-    let currentChapterIndex = 0;
-    let currentContent: string[] = [];
-    let currentTitle = 'Introduction'; // Default for content before first chapter
-
-    for (const block of exportBlocks) {
-      // Check if we've reached a new chapter
-      while (
-        currentChapterIndex < sortedChapters.length &&
-        (block.page > sortedChapters[currentChapterIndex].page ||
-         (block.page === sortedChapters[currentChapterIndex].page &&
-          block.y >= (sortedChapters[currentChapterIndex].y || 0)))
-      ) {
-        // Save previous chapter content
-        if (currentContent.length > 0) {
-          chapterSections.push({
-            title: currentTitle,
-            level: currentChapterIndex === 0 ? 1 : (sortedChapters[currentChapterIndex - 1]?.level || 1),
-            content: currentContent
-          });
-        }
-        // Start new chapter
-        currentTitle = sortedChapters[currentChapterIndex].title;
-        currentContent = [];
-        currentChapterIndex++;
-      }
-
-      // Add block to current chapter
-      let blockText = textCorrections?.get(block.id) ?? block.text;
-      // Strip deleted custom category patterns first
-      if (deletedPatterns && deletedPatterns.length > 0) {
-        blockText = this.stripDeletedPatterns(blockText, deletedPatterns);
-      }
-      const cleanedText = this.stripFootnoteRefs(blockText);
-      if (cleanedText.trim()) {
-        currentContent.push(`<p>${this.escapeHtml(cleanedText)}</p>`);
-      }
-    }
-
-    // Don't forget the last chapter
-    if (currentContent.length > 0) {
-      chapterSections.push({
-        title: currentTitle,
-        level: sortedChapters.length > 0 ? (sortedChapters[sortedChapters.length - 1]?.level || 1) : 1,
-        content: currentContent
-      });
-    }
-
-    if (chapterSections.length === 0) {
-      return {
-        success: false,
-        message: 'No content to export after organizing by chapters.'
-      };
-    }
-
-    const epub = this.generateEpubBlobWithChapters(bookTitle, chapterSections);
     const filename = this.generateFilename(pdfName, 'epub');
-
-    this.downloadBlob(epub, filename);
+    this.downloadBlob(result.blob, filename);
 
     return {
       success: true,
-      message: `Exported EPUB with ${chapterSections.length} chapters, ${exportBlocks.length} blocks.`,
+      message: `Exported EPUB with ${result.chapterCount} chapters, ${result.blockCount} blocks.`,
       filename,
-      chapterCount: chapterSections.length,
-      blockCount: exportBlocks.length
+      chapterCount: result.chapterCount,
+      blockCount: result.blockCount
     };
   }
 
@@ -326,56 +277,66 @@ export class ExportService {
     chapters?: Chapter[]
   ): Promise<ExportResult> {
     const deletedRegions: DeletedRegion[] = [];
-    const ocrBlocks: OcrTextBlock[] = [];
 
-    // Track which specific pages have deleted images (not just a global flag)
-    const pagesWithDeletedImages = new Set<number>();
+    console.log(`[exportPdf] Starting export. Total blocks: ${blocks.length}, deletedBlockIds: ${deletedBlockIds.size}`);
 
-    // Add deleted blocks and check for deleted images (skip blocks on deleted pages)
+    // Group blocks by page
+    const blocksByPage = new Map<number, ExportableBlock[]>();
     for (const block of blocks) {
-      if (deletedPages?.has(block.page)) continue; // Skip blocks on deleted pages
+      if (!blocksByPage.has(block.page)) {
+        blocksByPage.set(block.page, []);
+      }
+      blocksByPage.get(block.page)!.push(block);
+    }
+
+    // Identify pages where ALL image blocks are deleted (background image removed)
+    // These pages should show OCR text instead of the original page
+    const pagesWithDeletedBackground = new Set<number>();
+    const ocrBlocksByPage = new Map<number, ExportableBlock[]>();
+
+    for (const [pageNum, pageBlocks] of blocksByPage) {
+      if (deletedPages?.has(pageNum)) continue;
+
+      const imageBlocks = pageBlocks.filter(b => b.is_image);
+      const ocrBlocks = pageBlocks.filter(b => b.is_ocr && !deletedBlockIds.has(b.id));
+
+      // Check if all images on this page are deleted
+      if (imageBlocks.length > 0 && imageBlocks.every(b => deletedBlockIds.has(b.id))) {
+        console.log(`[exportPdf] Page ${pageNum}: all images deleted, will render OCR text (${ocrBlocks.length} blocks)`);
+        pagesWithDeletedBackground.add(pageNum);
+        if (ocrBlocks.length > 0) {
+          // Apply text corrections to OCR blocks
+          const correctedBlocks = ocrBlocks.map(b => ({
+            ...b,
+            text: textCorrections?.get(b.id) ?? b.text
+          }));
+          ocrBlocksByPage.set(pageNum, correctedBlocks);
+        }
+      }
+    }
+
+    // Collect deleted blocks (skip blocks on deleted pages and pages with deleted backgrounds)
+    for (const block of blocks) {
+      if (deletedPages?.has(block.page)) continue;
+      if (pagesWithDeletedBackground.has(block.page)) continue; // Skip - handled specially
       if (deletedBlockIds.has(block.id)) {
-        // Use corrected text if available
-        const text = textCorrections?.get(block.id) ?? block.text;
+        console.log(`[exportPdf] Deleted block: page=${block.page}, (${block.x.toFixed(1)}, ${block.y.toFixed(1)}) ${block.width.toFixed(1)}x${block.height.toFixed(1)}, isOCR=${block.is_ocr}`);
         deletedRegions.push({
           page: block.page,
           x: block.x,
           y: block.y,
           width: block.width,
           height: block.height,
-          isImage: block.is_image,
-          text: text  // Include text for content-based matching in PDF export
+          isImage: block.is_image
         });
-        if (block.is_image) {
-          pagesWithDeletedImages.add(block.page);
-        }
       }
     }
 
-    // If images were deleted, collect ONLY actual OCR blocks from pages with deleted images.
-    // OCR blocks (is_ocr: true) contain text recognized from scanned images that would
-    // otherwise be lost when the image is removed. We DON'T collect regular text blocks
-    // because they already exist as text layers in the PDF and would cause duplication.
-    if (pagesWithDeletedImages.size > 0) {
-      for (const block of blocks) {
-        if (deletedPages?.has(block.page)) continue; // Skip blocks on deleted pages
-        // Only add OCR text for pages that actually had images deleted
-        if (!pagesWithDeletedImages.has(block.page)) continue;
-        // Only collect actual OCR blocks, not regular text blocks
-        if (block.is_ocr && !deletedBlockIds.has(block.id)) {
-          // Use corrected text if available
-          const text = textCorrections?.get(block.id) ?? block.text;
-          ocrBlocks.push({
-            page: block.page,
-            x: block.x,
-            y: block.y,
-            width: block.width,
-            height: block.height,
-            text: text,
-            font_size: block.font_size || 12
-          });
-        }
-      }
+    console.log(`[exportPdf] Collected ${deletedRegions.length} deleted regions (${deletedRegions.filter(r => r.isImage).length} images)`);
+    if (deletedRegions.length > 0) {
+      console.log(`[exportPdf] First few regions:`, deletedRegions.slice(0, 3).map(r =>
+        `page ${r.page}: (${r.x.toFixed(0)}, ${r.y.toFixed(0)}) ${r.width.toFixed(0)}x${r.height.toFixed(0)} isImage=${r.isImage}`
+      ));
     }
 
     // Add deleted custom category highlights (skip deleted pages)
@@ -401,7 +362,7 @@ export class ExportService {
       }
     }
 
-    if (deletedRegions.length === 0) {
+    if (deletedRegions.length === 0 && pagesWithDeletedBackground.size === 0) {
       return {
         success: false,
         message: 'No blocks or highlights have been deleted. The exported PDF would be identical to the original.'
@@ -415,14 +376,60 @@ export class ExportService {
       };
     }
 
-    // Use standard redaction-based export with bookmarks handled by PyMuPDF bridge
-    // The bridge handles page remapping for bookmarks internally
-    const pdfBase64 = await this.pdfService.exportCleanPdf(libraryPath, deletedRegions, ocrBlocks, deletedPages, chapters);
+    // Convert OCR blocks map to array format for IPC
+    // IMPORTANT: Include ALL pages with deleted backgrounds, even ones with no OCR text
+    // These pages should render as blank white instead of showing the original scanned image
+    const ocrBlocksForExport: Array<{page: number; blocks: Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>}> = [];
+    for (const pageNum of pagesWithDeletedBackground) {
+      const pageBlocks = ocrBlocksByPage.get(pageNum) || [];
+      ocrBlocksForExport.push({
+        page: pageNum,
+        blocks: pageBlocks.map(b => ({
+          x: b.x,
+          y: b.y,
+          width: b.width,
+          height: b.height,
+          text: b.text,
+          font_size: b.font_size || 12
+        }))
+      });
+    }
 
-    // Count bookmarks that will be added (chapters not on deleted pages)
-    const bookmarksAdded = chapters
-      ? chapters.filter(c => !deletedPages?.has(c.page)).length
-      : 0;
+    // Use WYSIWYG export - renders pages exactly as the viewer shows them
+    // This guarantees visual fidelity: what you see is what you get
+    console.log(`[exportPdf] Calling WYSIWYG export with ${deletedRegions.length} regions, ${deletedPages?.size || 0} deleted pages, ${pagesWithDeletedBackground.size} pages with OCR text`);
+    let pdfBase64 = await this.pdfService.exportPdfWysiwyg(
+      deletedRegions,
+      deletedPages,
+      2.0,
+      ocrBlocksForExport.length > 0 ? ocrBlocksForExport : undefined
+    );
+
+    // Add bookmarks if chapters are provided
+    let bookmarksAdded = 0;
+    if (chapters && chapters.length > 0) {
+      // Filter out chapters on deleted pages and remap page numbers
+      const validChapters = chapters.filter(c => !deletedPages?.has(c.page));
+      if (validChapters.length > 0) {
+        // Remap page numbers to account for deleted pages
+        const remappedChapters = validChapters.map(c => {
+          let newPage = c.page;
+          if (deletedPages) {
+            // Count how many deleted pages come before this chapter's page
+            for (const dp of deletedPages) {
+              if (dp < c.page) newPage--;
+            }
+          }
+          return { ...c, page: newPage };
+        });
+
+        const withBookmarks = await this.pdfService.addBookmarksToPdf(pdfBase64, remappedChapters);
+        if (withBookmarks) {
+          pdfBase64 = withBookmarks;
+          bookmarksAdded = remappedChapters.length;
+        }
+      }
+    }
 
     const binaryString = atob(pdfBase64);
     const bytes = new Uint8Array(binaryString.length);
@@ -447,8 +454,89 @@ export class ExportService {
   }
 
   /**
-   * Export content to EPUB and add to audiobook producer queue
-   * Creates EPUB with chapter structure, copies to queue, and navigates to audiobook producer
+   * Export PDF from canvas-rendered page images (WYSIWYG approach)
+   *
+   * This is the true WYSIWYG export - it takes screenshots of what the viewer shows
+   * and assembles them into a PDF. Guaranteed to match the viewer exactly.
+   *
+   * @param renderedPages - Array of { pageNum, dataUrl } from viewer's renderAllPagesForExport()
+   * @param pageDimensions - Page dimensions in PDF points
+   * @param pdfName - Original PDF name for generating output filename
+   * @param chapters - Optional chapter bookmarks to add
+   */
+  async exportPdfFromCanvas(
+    renderedPages: Array<{ pageNum: number; dataUrl: string }>,
+    pageDimensions: Array<{ width: number; height: number }>,
+    pdfName: string,
+    chapters?: Chapter[]
+  ): Promise<ExportResult> {
+    if (!this.electron) {
+      return {
+        success: false,
+        message: 'PDF export is only available in Electron'
+      };
+    }
+
+    if (renderedPages.length === 0) {
+      return {
+        success: false,
+        message: 'No pages to export'
+      };
+    }
+
+    console.log(`[exportPdfFromCanvas] Exporting ${renderedPages.length} canvas-rendered pages`);
+
+    try {
+      // Send rendered pages to main process for PDF assembly
+      const pdfBase64 = await this.electron.pdf.assembleFromImages(
+        renderedPages.map(p => ({
+          pageNum: p.pageNum,
+          imageData: p.dataUrl,
+          width: pageDimensions[p.pageNum]?.width || 612,
+          height: pageDimensions[p.pageNum]?.height || 792
+        })),
+        chapters
+      );
+
+      if (!pdfBase64) {
+        return {
+          success: false,
+          message: 'Failed to assemble PDF from images'
+        };
+      }
+
+      // Convert base64 to blob and download
+      const binaryString = atob(pdfBase64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const filename = this.generateFilename(pdfName, 'pdf');
+      this.downloadBlob(
+        new Blob([bytes], { type: 'application/pdf' }),
+        filename
+      );
+
+      const chapterMsg = chapters && chapters.length > 0 ? ` with ${chapters.length} bookmarks` : '';
+      return {
+        success: true,
+        message: `Exported PDF with ${renderedPages.length} pages${chapterMsg}.`,
+        filename,
+        regionCount: renderedPages.length
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      return {
+        success: false,
+        message: `Failed to export PDF: ${message}`
+      };
+    }
+  }
+
+  /**
+   * Export content to EPUB and save to audiobook producer queue.
+   * Uses generateEpubBlobInternal to create the EPUB, then saves to queue folder.
    */
   async exportToAudiobook(
     blocks: ExportableBlock[],
@@ -457,7 +545,7 @@ export class ExportService {
     pdfName: string,
     textCorrections?: Map<string, string>,
     deletedPages?: Set<number>,
-    deletedPatterns?: DeletedCategoryPattern[],
+    deletedHighlights?: DeletedHighlight[],
     navigateAfter: boolean = true
   ): Promise<ExportResult> {
     if (!this.electron) {
@@ -467,93 +555,28 @@ export class ExportService {
       };
     }
 
-    const exportBlocks = blocks
-      .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
-      .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
+    // Generate EPUB using the shared internal method
+    const epubResult = this.generateEpubBlobInternal(
+      blocks,
+      deletedIds,
+      chapters,
+      pdfName,
+      textCorrections,
+      deletedPages,
+      deletedHighlights
+    );
 
-    // Filter out chapters on deleted pages
-    const exportChapters = chapters.filter(c => !deletedPages?.has(c.page));
-
-    if (exportBlocks.length === 0) {
+    if (!epubResult.success || !epubResult.blob) {
       return {
         success: false,
-        message: 'No text to export. All blocks have been deleted.'
+        message: epubResult.message || 'Failed to generate EPUB'
       };
     }
 
-    const bookTitle = pdfName.replace(/\.(pdf|epub)$/i, '');
-
-    // Sort chapters by page and position (using filtered chapters)
-    const sortedChapters = [...exportChapters].sort((a, b) => {
-      if (a.page !== b.page) return a.page - b.page;
-      return (a.y || 0) - (b.y || 0);
-    });
-
-    // Group blocks by chapter
-    const chapterSections: { title: string; level: number; content: string[] }[] = [];
-    let currentChapterIndex = 0;
-    let currentContent: string[] = [];
-    let currentTitle = 'Introduction'; // Default for content before first chapter
-
-    for (const block of exportBlocks) {
-      // Check if we've reached a new chapter
-      while (
-        currentChapterIndex < sortedChapters.length &&
-        (block.page > sortedChapters[currentChapterIndex].page ||
-         (block.page === sortedChapters[currentChapterIndex].page &&
-          block.y >= (sortedChapters[currentChapterIndex].y || 0)))
-      ) {
-        // Save previous chapter content
-        if (currentContent.length > 0) {
-          chapterSections.push({
-            title: currentTitle,
-            level: currentChapterIndex === 0 ? 1 : (sortedChapters[currentChapterIndex - 1]?.level || 1),
-            content: currentContent
-          });
-        }
-        // Start new chapter
-        currentTitle = sortedChapters[currentChapterIndex].title;
-        currentContent = [];
-        currentChapterIndex++;
-      }
-
-      // Add block to current chapter
-      let blockText = textCorrections?.get(block.id) ?? block.text;
-      // Strip deleted custom category patterns first
-      if (deletedPatterns && deletedPatterns.length > 0) {
-        blockText = this.stripDeletedPatterns(blockText, deletedPatterns);
-      }
-      const cleanedText = this.stripFootnoteRefs(blockText);
-      if (cleanedText.trim()) {
-        currentContent.push(`<p>${this.escapeHtml(cleanedText)}</p>`);
-      }
-    }
-
-    // Don't forget the last chapter
-    if (currentContent.length > 0) {
-      chapterSections.push({
-        title: currentTitle,
-        level: sortedChapters.length > 0 ? (sortedChapters[sortedChapters.length - 1]?.level || 1) : 1,
-        content: currentContent
-      });
-    }
-
-    if (chapterSections.length === 0) {
-      return {
-        success: false,
-        message: 'No content to export after organizing by chapters.'
-      };
-    }
-
-    // Generate the EPUB blob
-    const epub = this.generateEpubBlobWithChapters(bookTitle, chapterSections);
     const filename = this.generateFilename(pdfName, 'epub');
-
-    // Convert blob to array buffer
-    const arrayBuffer = await epub.arrayBuffer();
+    const arrayBuffer = await epubResult.blob.arrayBuffer();
 
     try {
-      // First check if the queue path is available
       const pathResult = await this.electron.library.getAudiobooksPath();
       if (!pathResult.success || !pathResult.queuePath) {
         return {
@@ -562,14 +585,12 @@ export class ExportService {
         };
       }
 
-      // Send ArrayBuffer directly to main process (no base64 encoding needed)
-      const metadata = {
+      const bookTitle = pdfName.replace(/\.(pdf|epub)$/i, '');
+      const copyResult = await this.electron.library.copyToQueue(arrayBuffer, filename, {
         title: bookTitle,
         author: '',
         language: 'en'
-      };
-
-      const copyResult = await this.electron.library.copyToQueue(arrayBuffer, filename, metadata);
+      });
 
       if (!copyResult.success) {
         return {
@@ -578,17 +599,16 @@ export class ExportService {
         };
       }
 
-      // Navigate to audiobook producer if requested
       if (navigateAfter) {
         this.router.navigate(['/audiobook']);
       }
 
       return {
         success: true,
-        message: `Exported EPUB with ${chapterSections.length} chapters to Audiobook Producer.`,
+        message: `Exported EPUB with ${epubResult.chapterCount} chapters to Audiobook Producer.`,
         filename,
-        chapterCount: chapterSections.length,
-        blockCount: exportBlocks.length
+        chapterCount: epubResult.chapterCount,
+        blockCount: epubResult.blockCount
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -602,6 +622,95 @@ export class ExportService {
   // ─────────────────────────────────────────────────────────────────────────────
   // Private helpers
   // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Internal method to generate EPUB blob with chapter structure.
+   * Used by both exportEpubWithChapters and exportToAudiobook.
+   */
+  private generateEpubBlobInternal(
+    blocks: ExportableBlock[],
+    deletedIds: Set<string>,
+    chapters: Chapter[],
+    pdfName: string,
+    textCorrections?: Map<string, string>,
+    deletedPages?: Set<number>,
+    deletedHighlights?: DeletedHighlight[]
+  ): { success: boolean; blob?: Blob; message?: string; chapterCount?: number; blockCount?: number } {
+    const exportBlocks = blocks
+      .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
+      .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
+
+    const exportChapters = chapters.filter(c => !deletedPages?.has(c.page));
+
+    if (exportBlocks.length === 0) {
+      return { success: false, message: 'No text to export. All blocks have been deleted.' };
+    }
+
+    const bookTitle = pdfName.replace(/\.(pdf|epub)$/i, '');
+
+    const sortedChapters = [...exportChapters].sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return (a.y || 0) - (b.y || 0);
+    });
+
+    const chapterSections: { title: string; level: number; content: string[] }[] = [];
+    let currentChapterIndex = 0;
+    let currentContent: string[] = [];
+    let currentTitle = 'Introduction';
+
+    for (const block of exportBlocks) {
+      while (
+        currentChapterIndex < sortedChapters.length &&
+        (block.page > sortedChapters[currentChapterIndex].page ||
+         (block.page === sortedChapters[currentChapterIndex].page &&
+          block.y >= (sortedChapters[currentChapterIndex].y || 0)))
+      ) {
+        if (currentContent.length > 0) {
+          chapterSections.push({
+            title: currentTitle,
+            level: currentChapterIndex === 0 ? 1 : (sortedChapters[currentChapterIndex - 1]?.level || 1),
+            content: currentContent
+          });
+        }
+        currentTitle = sortedChapters[currentChapterIndex].title;
+        currentContent = [];
+        currentChapterIndex++;
+      }
+
+      let blockText = textCorrections?.get(block.id) ?? block.text;
+
+      if (deletedHighlights && deletedHighlights.length > 0) {
+        blockText = this.stripHighlightsFromBlock(
+          { ...block, text: blockText },
+          deletedHighlights
+        );
+      }
+
+      if (blockText.trim()) {
+        currentContent.push(`<p>${this.escapeHtml(blockText)}</p>`);
+      }
+    }
+
+    if (currentContent.length > 0) {
+      chapterSections.push({
+        title: currentTitle,
+        level: sortedChapters.length > 0 ? (sortedChapters[sortedChapters.length - 1]?.level || 1) : 1,
+        content: currentContent
+      });
+    }
+
+    if (chapterSections.length === 0) {
+      return { success: false, message: 'No content to export after organizing by chapters.' };
+    }
+
+    const blob = this.generateEpubBlobWithChapters(bookTitle, chapterSections);
+    return {
+      success: true,
+      blob,
+      chapterCount: chapterSections.length,
+      blockCount: exportBlocks.length
+    };
+  }
 
   private generateFilename(pdfName: string, extension: string): string {
     const baseName = pdfName
@@ -621,30 +730,74 @@ export class ExportService {
   }
 
   private stripFootnoteRefs(text: string): string {
-    // Unicode superscript numbers: ⁰¹²³⁴⁵⁶⁷⁸⁹
-    const superscriptPattern = /[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g;
+    // WYSIWYG: Export should ONLY remove content that was explicitly marked as deleted.
+    // No automatic stripping of footnote references, superscripts, or anything else.
+    // If users want to remove footnote refs, they should use custom categories to
+    // highlight and delete them explicitly.
+    return text;
+  }
 
-    // Regular numbers that look like footnote refs:
-    // - Numbers at end of words (word123 -> word)
-    // - Numbers after punctuation with no space (text.1 -> text.)
-    const inlineRefPattern = /(?<=\w)(\d{1,3})(?=[\s\.,;:!?\)]|$)/g;
+  /**
+   * Check if two bounding boxes overlap.
+   * Uses a small tolerance to handle floating point imprecision.
+   */
+  private bboxOverlaps(
+    block: { x: number; y: number; width: number; height: number },
+    highlight: { x: number; y: number; w: number; h: number }
+  ): boolean {
+    const tolerance = 2; // pixels tolerance for edge cases
 
-    // Bracketed references: [1], [12], (1), (12)
-    const bracketedPattern = /[\[\(]\d{1,3}[\]\)]/g;
+    const blockRight = block.x + block.width;
+    const blockBottom = block.y + block.height;
+    const highlightRight = highlight.x + highlight.w;
+    const highlightBottom = highlight.y + highlight.h;
 
-    let cleaned = text;
-    cleaned = cleaned.replace(superscriptPattern, '');
-    cleaned = cleaned.replace(bracketedPattern, '');
-    cleaned = cleaned.replace(inlineRefPattern, '');
+    // Check if boxes overlap (with tolerance)
+    return !(
+      highlight.x > blockRight + tolerance ||
+      highlightRight < block.x - tolerance ||
+      highlight.y > blockBottom + tolerance ||
+      highlightBottom < block.y - tolerance
+    );
+  }
+
+  /**
+   * Strip deleted highlights from block text using coordinate-based matching.
+   * Only removes text from highlights that overlap with the block's bounding box.
+   */
+  private stripHighlightsFromBlock(
+    block: ExportableBlock,
+    deletedHighlights: DeletedHighlight[]
+  ): string {
+    let text = block.text;
+
+    // Find highlights on the same page that overlap with this block
+    const overlappingHighlights = deletedHighlights.filter(h =>
+      h.page === block.page && this.bboxOverlaps(block, h)
+    );
+
+    if (overlappingHighlights.length === 0) {
+      return text;
+    }
+
+    // Remove each highlight's text from the block
+    for (const highlight of overlappingHighlights) {
+      if (highlight.text && text.includes(highlight.text)) {
+        // Only remove the FIRST occurrence to be precise
+        // (if same text appears multiple times, only the one at this position should be removed)
+        text = text.replace(highlight.text, '');
+      }
+    }
 
     // Clean up any double spaces left behind
-    cleaned = cleaned.replace(/  +/g, ' ');
+    text = text.replace(/  +/g, ' ').trim();
 
-    return cleaned.trim();
+    return text;
   }
 
   /**
    * Strip matches of deleted custom category patterns from text
+   * @deprecated Use stripHighlightsFromBlock for coordinate-based removal
    */
   private stripDeletedPatterns(text: string, patterns: DeletedCategoryPattern[]): string {
     let result = text;

@@ -25,7 +25,7 @@ interface RegexMatch {
 
     <!-- Create Custom Category Section (Collapsible) -->
     <div class="create-category-section">
-      <button class="section-header" (click)="createSectionExpanded.set(!createSectionExpanded())">
+      <button class="section-header" (click)="toggleCreateSection()">
         <span class="expand-icon">{{ createSectionExpanded() ? '▼' : '▶' }}</span>
         <span>Create Category</span>
       </button>
@@ -251,8 +251,8 @@ interface RegexMatch {
         <div class="regex-preview">
           <div class="preview-header">
             <span>{{ regexMatchCount() }} matches</span>
-            @if (regexMatchCount() > 5000) {
-              <span class="preview-limit">(showing first 5000)</span>
+            @if (regexMatchCount() > 10000) {
+              <span class="preview-limit">(showing first 10000)</span>
             }
           </div>
           @if (regexMatches().length > 0) {
@@ -1063,6 +1063,9 @@ export class CategoriesPanelComponent {
   regexPageRangeEndChange = output<number>();
   regexSpecificPagesChange = output<string>();
 
+  // Create section state (can be controlled by parent)
+  createSectionExpandedChange = output<boolean>();
+
   // Local state
   readonly createSectionExpanded = signal(false);
   readonly regexExpanded = signal(false);
@@ -1134,6 +1137,18 @@ export class CategoriesPanelComponent {
       const allCategories = this.categories().map(c => c.id);
       this.regexCategoryFilterChange.emit(allCategories);
     }
+  }
+
+  toggleCreateSection(): void {
+    const newState = !this.createSectionExpanded();
+    this.createSectionExpanded.set(newState);
+    this.createSectionExpandedChange.emit(newState);
+  }
+
+  collapseCreateSection(): void {
+    this.createSectionExpanded.set(false);
+    this.regexExpanded.set(false);
+    this.createSectionExpandedChange.emit(false);
   }
 
   toggleRegexPanel(): void {

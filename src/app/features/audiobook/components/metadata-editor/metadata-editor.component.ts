@@ -152,6 +152,16 @@ export interface EpubMetadata {
             }
           </desktop-button>
         </div>
+
+        <!-- Show in Finder button for completed audiobooks -->
+        <div class="output-section">
+          <desktop-button
+            variant="secondary"
+            (click)="onShowInFinder()"
+          >
+            Open Audiobooks Folder
+          </desktop-button>
+        </div>
       </div>
 
       <!-- Hidden file input for cover selection -->
@@ -290,6 +300,18 @@ export interface EpubMetadata {
       display: flex;
       justify-content: flex-end;
     }
+
+    .output-section {
+      margin-top: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+
+      .output-hint {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
+    }
   `]
 })
 export class MetadataEditorComponent {
@@ -301,6 +323,7 @@ export class MetadataEditorComponent {
   readonly metadataChange = output<EpubMetadata>();
   readonly coverChange = output<string>();
   readonly save = output<EpubMetadata>();
+  readonly showInFinder = output<void>();
 
   // Local state for save feedback
   readonly saveSuccess = signal(false);
@@ -485,6 +508,10 @@ export class MetadataEditorComponent {
 
   onSave(): void {
     this.save.emit(this.formData());
+  }
+
+  onShowInFinder(): void {
+    this.showInFinder.emit();
   }
 
   @HostListener('window:paste', ['$event'])

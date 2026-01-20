@@ -10,11 +10,12 @@ import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { QueueService } from '../../../queue/services/queue.service';
 import { SettingsService } from '../../../../core/services/settings.service';
 import { AIProvider } from '../../../../core/models/ai-config.types';
+import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success-modal.component';
 
 @Component({
   selector: 'app-ai-cleanup-panel',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, QueueSuccessModalComponent],
   template: `
     <div class="ai-cleanup-panel">
       <div class="panel-header">
@@ -132,27 +133,13 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
     </div>
 
     <!-- Success Modal -->
-    @if (showSuccessModal()) {
-      <div class="modal-backdrop" (click)="closeSuccessModal()">
-        <div class="success-modal" (click)="$event.stopPropagation()">
-          <div class="success-icon">
-            <span>&#10003;</span>
-          </div>
-          <div class="success-content">
-            <h3>Added to Queue</h3>
-            <p>Your EPUB has been added to the processing queue.</p>
-          </div>
-          <div class="success-actions">
-            <button class="action-btn primary" (click)="goToQueue()">
-              View Queue
-            </button>
-            <button class="action-btn secondary" (click)="closeSuccessModal()">
-              Continue Editing
-            </button>
-          </div>
-        </div>
-      </div>
-    }
+    <app-queue-success-modal
+      [show]="showSuccessModal()"
+      title="Added to Queue"
+      message="Your EPUB has been added to the processing queue for AI cleanup."
+      (close)="closeSuccessModal()"
+      (viewQueue)="goToQueue()"
+    />
   `,
   styles: [`
     .ai-cleanup-panel {
@@ -338,122 +325,6 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
     .actions {
       display: flex;
       gap: 0.75rem;
-    }
-
-    /* Success Modal */
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(4px);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 1000;
-      animation: fadeIn 0.15s ease;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-
-    @keyframes modalPop {
-      from {
-        opacity: 0;
-        transform: scale(0.95) translateY(10px);
-      }
-      to {
-        opacity: 1;
-        transform: scale(1) translateY(0);
-      }
-    }
-
-    .success-modal {
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      border-radius: 16px;
-      width: 340px;
-      overflow: hidden;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
-      animation: modalPop 0.2s ease;
-    }
-
-    .success-icon {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 2rem 2rem 1rem;
-
-      span {
-        width: 64px;
-        height: 64px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 2rem;
-        background: color-mix(in srgb, var(--success) 15%, transparent);
-        color: var(--success);
-      }
-    }
-
-    .success-content {
-      padding: 0 2rem 1.5rem;
-      text-align: center;
-
-      h3 {
-        margin: 0 0 0.5rem 0;
-        font-size: 1.25rem;
-        font-weight: 600;
-        color: var(--text-primary);
-      }
-
-      p {
-        margin: 0;
-        font-size: 0.875rem;
-        color: var(--text-secondary);
-        line-height: 1.5;
-      }
-    }
-
-    .success-actions {
-      display: flex;
-      flex-direction: column;
-      border-top: 1px solid var(--border-subtle);
-
-      .action-btn {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0.875rem 1rem;
-        border: none;
-        background: transparent;
-        font-size: 0.9375rem;
-        font-weight: 500;
-        cursor: pointer;
-        transition: background 0.15s;
-
-        &:not(:last-child) {
-          border-bottom: 1px solid var(--border-subtle);
-        }
-
-        &.primary {
-          color: var(--accent);
-
-          &:hover {
-            background: color-mix(in srgb, var(--accent) 8%, transparent);
-          }
-        }
-
-        &.secondary {
-          color: var(--text-secondary);
-
-          &:hover {
-            background: var(--bg-hover);
-          }
-        }
-      }
     }
   `]
 })

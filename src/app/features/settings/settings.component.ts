@@ -389,6 +389,13 @@ import {
                               [placeholder]="field.placeholder || 'Enter path...'"
                               (change)="setFieldValue(field, $any($event.target).value)"
                             />
+                            <desktop-button
+                              variant="ghost"
+                              size="sm"
+                              (click)="browseForFolder(field)"
+                            >
+                              Browse...
+                            </desktop-button>
                           </div>
                         }
                         @default {
@@ -1092,6 +1099,13 @@ export class SettingsComponent implements OnInit {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  }
+
+  async browseForFolder(field: SettingField): Promise<void> {
+    const result = await this.electronService.openFolderDialog();
+    if (result.success && result.folderPath) {
+      this.setFieldValue(field, result.folderPath);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

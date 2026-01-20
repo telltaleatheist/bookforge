@@ -19,9 +19,14 @@ export type ConversionPhase = 'preparing' | 'converting' | 'merging' | 'complete
 export interface TTSSettings {
   device: 'gpu' | 'mps' | 'cpu';
   language: string;
-  voice: string;
+  ttsEngine: string;        // e.g., 'xtts'
+  fineTuned: string;        // voice model e.g., 'ScarlettJohansson'
   temperature: number;
+  topP: number;
+  topK: number;
+  repetitionPenalty: number;
   speed: number;
+  enableTextSplitting: boolean;
 }
 
 export interface TTSProgress {
@@ -123,6 +128,34 @@ export async function getVoices(): Promise<VoiceInfo[]> {
 function parseProgressLine(line: string, currentProgress: TTSProgress): TTSProgress {
   const trimmed = line.trim();
 
+  // ebook2audiobook progress pattern: "Converting 0.50%: : 27/5223"
+  const e2aMatch = trimmed.match(/Converting\s+([\d.]+)%.*?(\d+)\/(\d+)/i);
+  if (e2aMatch) {
+    const percent = parseFloat(e2aMatch[1]);
+    const current = parseInt(e2aMatch[2]);
+    const total = parseInt(e2aMatch[3]);
+    return {
+      ...currentProgress,
+      phase: 'converting',
+      currentChapter: current,
+      totalChapters: total,
+      percentage: percent, // Keep decimal precision for accurate progress
+      message: `Converting sentence ${current} of ${total} (${percent.toFixed(1)}%)`
+    };
+  }
+
+  // Simpler ebook2audiobook pattern: just "Converting X.XX%"
+  const e2aSimpleMatch = trimmed.match(/Converting\s+([\d.]+)%/i);
+  if (e2aSimpleMatch) {
+    const percent = parseFloat(e2aSimpleMatch[1]);
+    return {
+      ...currentProgress,
+      phase: 'converting',
+      percentage: percent, // Keep decimal precision
+      message: `Converting... ${percent.toFixed(1)}%`
+    };
+  }
+
   // Chapter progress pattern: "Processing chapter X of Y"
   const chapterMatch = trimmed.match(/chapter\s+(\d+)\s+of\s+(\d+)/i);
   if (chapterMatch) {
@@ -191,7 +224,9 @@ function estimateRemaining(progress: TTSProgress): number {
 export async function startConversion(
   epubPath: string,
   outputDir: string,
-  settings: TTSSettings
+  settings: TTSSettings,
+  onProgress?: (progress: TTSProgress) => void,
+  desiredFilename?: string
 ): Promise<ConversionResult> {
   // Check availability first
   const available = await checkAvailable();
@@ -199,26 +234,26 @@ export async function startConversion(
     return { success: false, error: available.error };
   }
 
-  // Build command arguments
+  // Build command arguments - matching BookForge's _build_tts_command
+  const appPath = path.join(e2aPath, 'app.py');
   const args = [
-    'app.py',
+    appPath,
     '--headless',
     '--ebook', epubPath,
-    '--output_folder', outputDir,
+    '--output_dir', outputDir,
+    '--device', settings.device,
     '--language', settings.language,
-    '--device', settings.device
+    '--tts_engine', settings.ttsEngine || 'xtts',
+    '--fine_tuned', settings.fineTuned || 'ScarlettJohansson',
+    '--temperature', settings.temperature.toString(),
+    '--top_p', settings.topP.toString(),
+    '--top_k', settings.topK.toString(),
+    '--repetition_penalty', settings.repetitionPenalty.toString(),
+    '--speed', settings.speed.toString()
   ];
 
-  if (settings.voice) {
-    args.push('--voice', settings.voice);
-  }
-
-  if (settings.temperature !== 0.75) {
-    args.push('--temperature', settings.temperature.toString());
-  }
-
-  if (settings.speed !== 1.0) {
-    args.push('--length_scale', (1 / settings.speed).toString());
+  if (settings.enableTextSplitting) {
+    args.push('--enable_text_splitting');
   }
 
   startTime = Date.now();
@@ -236,15 +271,26 @@ export async function startConversion(
     let stderr = '';
     let outputFile = '';
 
-    currentProcess = spawn('python3', args, {
+    // Use conda run to activate the ebook2audiobook environment
+    // --no-capture-output prevents conda from buffering all stdout/stderr
+    const fullArgs = ['run', '--no-capture-output', '-n', 'ebook2audiobook', 'python', ...args];
+    console.log('[TTS] Starting ebook2audiobook with command:');
+    console.log('[TTS]   conda', fullArgs.join(' '));
+    console.log('[TTS]   cwd:', e2aPath);
+
+    currentProcess = spawn('conda', fullArgs, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      shell: true
     });
+
+    console.log('[TTS] Process spawned with PID:', currentProcess.pid);
 
     currentProcess.stdout?.on('data', (data: Buffer) => {
       const lines = data.toString().split('\n');
       for (const line of lines) {
         if (line.trim()) {
+          console.log('[TTS stdout]', line.trim());
           progress = parseProgressLine(line, progress);
           progress.estimatedRemaining = estimateRemaining(progress);
 
@@ -258,6 +304,10 @@ export async function startConversion(
           if (mainWindow) {
             mainWindow.webContents.send('tts:progress', progress);
           }
+          // Also call the progress callback if provided
+          if (onProgress) {
+            onProgress(progress);
+          }
         }
       }
     });
@@ -268,17 +318,23 @@ export async function startConversion(
       const lines = data.toString().split('\n');
       for (const line of lines) {
         if (line.trim()) {
+          console.log('[TTS stderr]', line.trim());
           progress = parseProgressLine(line, progress);
           progress.estimatedRemaining = estimateRemaining(progress);
 
           if (mainWindow) {
             mainWindow.webContents.send('tts:progress', progress);
           }
+          // Also call the progress callback if provided
+          if (onProgress) {
+            onProgress(progress);
+          }
         }
       }
     });
 
-    currentProcess.on('close', (code) => {
+    currentProcess.on('close', async (code) => {
+      console.log('[TTS] Process closed with code:', code);
       currentProcess = null;
       const duration = Math.round((Date.now() - startTime) / 1000);
 
@@ -295,9 +351,39 @@ export async function startConversion(
           });
         }
 
+        // Find the actual output file if not detected from stdout
+        let finalOutputPath = outputFile;
+        if (!finalOutputPath) {
+          try {
+            const files = await fs.readdir(outputDir);
+            const m4bFile = files.find(f => f.endsWith('.m4b'));
+            if (m4bFile) {
+              finalOutputPath = path.join(outputDir, m4bFile);
+              console.log('[TTS] Found output file:', finalOutputPath);
+            }
+          } catch (err) {
+            console.error('[TTS] Error finding output file:', err);
+          }
+        }
+
+        // Rename to desired filename if provided
+        if (finalOutputPath && desiredFilename) {
+          try {
+            const desiredPath = path.join(outputDir, desiredFilename);
+            if (finalOutputPath !== desiredPath) {
+              await fs.rename(finalOutputPath, desiredPath);
+              console.log('[TTS] Renamed output file to:', desiredPath);
+              finalOutputPath = desiredPath;
+            }
+          } catch (err) {
+            console.error('[TTS] Error renaming output file:', err);
+            // Continue with original filename if rename fails
+          }
+        }
+
         resolve({
           success: true,
-          outputPath: outputFile || path.join(outputDir, 'audiobook.m4b'),
+          outputPath: finalOutputPath || path.join(outputDir, 'audiobook.m4b'),
           duration
         });
       } else {

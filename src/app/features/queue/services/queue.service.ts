@@ -621,12 +621,18 @@ export class QueueService {
       if (!config) return undefined;
       return {
         type: 'tts-conversion',
-        device: config.device || 'cpu',
+        device: config.device || 'mps',
         language: config.language || 'en',
-        voice: config.voice || 'en_default',
-        temperature: config.temperature ?? 0.75,
+        ttsEngine: config.ttsEngine || 'xtts',
+        fineTuned: config.fineTuned || 'ScarlettJohansson',
+        temperature: config.temperature ?? 0.7,
+        topP: config.topP ?? 0.9,
+        topK: config.topK ?? 40,
+        repetitionPenalty: config.repetitionPenalty ?? 2.0,
         speed: config.speed ?? 1.0,
-        outputFilename: config.outputFilename
+        enableTextSplitting: config.enableTextSplitting ?? false,
+        outputFilename: config.outputFilename,
+        outputDir: config.outputDir
       };
     }
     return undefined;

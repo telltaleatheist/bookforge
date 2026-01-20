@@ -51,10 +51,16 @@ export interface TtsConversionConfig {
   type: 'tts-conversion';
   device: 'gpu' | 'mps' | 'cpu';
   language: string;
-  voice: string;
+  ttsEngine: string;        // e.g., 'xtts'
+  fineTuned: string;        // voice model e.g., 'ScarlettJohansson'
   temperature: number;
+  topP: number;
+  topK: number;
+  repetitionPenalty: number;
   speed: number;
+  enableTextSplitting: boolean;
   outputFilename?: string;
+  outputDir?: string;       // Custom output directory (empty = default)
 }
 
 // Queue state

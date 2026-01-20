@@ -22,6 +22,10 @@ export const routes: Routes = [
     path: 'settings',
     loadComponent: () => import('./features/settings/settings.component').then(m => m.SettingsComponent)
   },
+  {
+    path: 'epub-editor',
+    loadComponent: () => import('./features/epub-editor/epub-editor.component').then(m => m.EpubEditorComponent)
+  },
   // Legacy route for backwards compatibility
   {
     path: 'pdf-picker',

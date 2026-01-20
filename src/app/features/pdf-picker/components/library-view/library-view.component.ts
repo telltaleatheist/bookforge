@@ -48,6 +48,9 @@ export interface ProjectFile {
           <desktop-button variant="primary" size="md" icon="📂" (click)="openFile.emit()">
             Open PDF
           </desktop-button>
+          <desktop-button variant="ghost" size="md" icon="📖" (click)="openEpubEditor.emit()">
+            EPUB Editor
+          </desktop-button>
         </div>
       </div>
 
@@ -68,7 +71,13 @@ export interface ProjectFile {
 
       <!-- Library content -->
       <div class="library-content">
-        @if (projects().length === 0) {
+        @if (loading() && projects().length === 0) {
+          <div class="empty-library loading">
+            <div class="empty-icon loading-spinner">⏳</div>
+            <h2>Loading Projects...</h2>
+            <p>Please wait while your library is loaded</p>
+          </div>
+        } @else if (projects().length === 0) {
           <div class="empty-library">
             <div class="empty-icon">📚</div>
             <h2>No Projects Yet</h2>
@@ -142,6 +151,12 @@ export interface ProjectFile {
             <span class="context-icon">🎧</span>
             Transfer to Audiobook Producer
           </button>
+          @if (isSelectedEpub()) {
+            <button class="context-menu-item" (click)="onContextMenuOpenInEpubEditor()">
+              <span class="context-icon">📖</span>
+              Open in EPUB Editor
+            </button>
+          }
           <div class="context-divider"></div>
           <button class="context-menu-item" (click)="onContextMenuClearCache()">
             <span class="context-icon">🧹</span>
@@ -420,6 +435,16 @@ export interface ProjectFile {
         font-size: calc(var(--ui-icon-size) * 2);
         opacity: 0.5;
         margin-bottom: var(--ui-spacing-lg);
+
+        &.loading-spinner {
+          animation: spin 1.5s linear infinite;
+          opacity: 0.7;
+        }
+      }
+
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
       }
 
       h2 {
@@ -582,8 +607,13 @@ export class LibraryViewComponent implements OnInit {
   error = output<string>();
   // Output for transferring to audiobook
   transferToAudiobook = output<ProjectFile[]>();
+  // Output for opening EPUB in dedicated EPUB editor
+  openInEpubEditor = output<string>(); // Emits source path
+  // Output for opening EPUB editor file picker
+  openEpubEditor = output<void>();
 
   readonly projects = signal<ProjectFile[]>([]);
+  readonly loading = signal(true);  // Start with loading = true
   readonly isDragActive = signal(false);
   readonly cardSize = signal(147);
 
@@ -840,6 +870,24 @@ export class LibraryViewComponent implements OnInit {
     }
   }
 
+  /**
+   * Check if exactly one project is selected and it's an EPUB file
+   */
+  isSelectedEpub(): boolean {
+    const selected = this.selectedProjects();
+    if (selected.length !== 1) return false;
+    const sourceName = selected[0].sourceName.toLowerCase();
+    return sourceName.endsWith('.epub');
+  }
+
+  onContextMenuOpenInEpubEditor(): void {
+    this.contextMenuVisible.set(false);
+    const selected = this.selectedProjects();
+    if (selected.length === 1) {
+      this.openInEpubEditor.emit(selected[0].sourcePath);
+    }
+  }
+
   openSelectedProjects(): void {
     const selected = this.selectedProjects();
     if (selected.length === 0) return;
@@ -862,6 +910,7 @@ export class LibraryViewComponent implements OnInit {
   }
 
   async loadProjects(): Promise<void> {
+    this.loading.set(true);
     const result = await this.electronService.projectsList();
     if (result.success) {
       const projectFiles: ProjectFile[] = result.projects.map(p => ({
@@ -870,6 +919,7 @@ export class LibraryViewComponent implements OnInit {
         thumbnail: 'loading'
       }));
       this.projects.set(projectFiles);
+      this.loading.set(false);
 
       // Load thumbnails for each project's source PDF
       for (const project of projectFiles) {
@@ -887,6 +937,8 @@ export class LibraryViewComponent implements OnInit {
           );
         }
       }
+    } else {
+      this.loading.set(false);
     }
   }
 
@@ -1025,7 +1077,7 @@ export class LibraryViewComponent implements OnInit {
     }
   }
 
-  onDrop(event: DragEvent): void {
+  async onDrop(event: DragEvent): Promise<void> {
     event.preventDefault();
     event.stopPropagation();
     this.dragCounter = 0;
@@ -1035,12 +1087,34 @@ export class LibraryViewComponent implements OnInit {
     if (files && files.length > 0) {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
+        const filePath = (file as any).path;
+        if (!filePath) continue;
+
         const fileName = file.name.toLowerCase();
+
+        // Check if it's a native format (PDF/EPUB)
         if (fileName.endsWith('.pdf') || fileName.endsWith('.epub')) {
-          const filePath = (file as any).path;
-          if (filePath) {
-            this.fileSelected.emit(filePath);
-            return;
+          this.fileSelected.emit(filePath);
+          return;
+        }
+
+        // Check if it's a convertible format (AZW3, MOBI, etc.)
+        const formatInfo = await this.electronService.isEbookConvertible(filePath);
+        if (formatInfo.convertible) {
+          // Check if ebook-convert is available
+          const available = await this.electronService.isEbookConvertAvailable();
+          if (available) {
+            console.log('[Library] Converting', fileName, 'to EPUB...');
+            const result = await this.electronService.convertEbookToLibrary(filePath);
+            if (result.success && result.outputPath) {
+              console.log('[Library] Conversion successful:', result.outputPath);
+              this.fileSelected.emit(result.outputPath);
+              return;
+            } else {
+              console.error('[Library] Conversion failed:', result.error);
+            }
+          } else {
+            console.log('[Library] ebook-convert not available, cannot convert', fileName);
           }
         }
       }

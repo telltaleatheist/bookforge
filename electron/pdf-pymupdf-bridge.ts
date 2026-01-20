@@ -136,6 +136,28 @@ export class PyMuPdfBridge implements PdfBridge {
     // Use redact with no regions, just deleted pages
     await this.redact(inputPath, outputPath, [], { deletedPages: pages });
   }
+
+  async removeImages(
+    inputPath: string,
+    outputPath: string,
+    imageRegions: RedactionRegion[],
+    options?: RedactionOptions
+  ): Promise<void> {
+    // For PyMuPDF bridge, use regular redaction with image regions
+    // The Python script handles image removal via redaction
+    await this.redact(inputPath, outputPath, imageRegions, options);
+  }
+
+  async removeWithOverlay(
+    inputPath: string,
+    outputPath: string,
+    regions: RedactionRegion[],
+    options?: RedactionOptions
+  ): Promise<void> {
+    // PyMuPDF fallback: use redaction (overlay method only available in mupdf.js)
+    console.warn('[PyMuPDFBridge] removeWithOverlay not available, falling back to redact()');
+    await this.redact(inputPath, outputPath, regions, options);
+  }
 }
 
 /**
@@ -231,5 +253,26 @@ export class BinaryPdfBridge implements PdfBridge {
     pages: number[]
   ): Promise<void> {
     await this.redact(inputPath, outputPath, [], { deletedPages: pages });
+  }
+
+  async removeImages(
+    inputPath: string,
+    outputPath: string,
+    imageRegions: RedactionRegion[],
+    options?: RedactionOptions
+  ): Promise<void> {
+    // For Binary bridge, use regular redaction with image regions
+    await this.redact(inputPath, outputPath, imageRegions, options);
+  }
+
+  async removeWithOverlay(
+    inputPath: string,
+    outputPath: string,
+    regions: RedactionRegion[],
+    options?: RedactionOptions
+  ): Promise<void> {
+    // Binary bridge fallback: use redaction (overlay method only available in mupdf.js)
+    console.warn('[BinaryPdfBridge] removeWithOverlay not available, falling back to redact()');
+    await this.redact(inputPath, outputPath, regions, options);
   }
 }

@@ -13,13 +13,15 @@
     "build:electron": "npx tsc -p tsconfig.electron.json",
     "electron:dev": "npm run build:electron && concurrently \"ng serve --port 4250\" \"wait-on http://localhost:4250 && electron .\"",
     "electron:build": "npm run build:electron && npm run build:prod && electron-builder",
-    "package:mac": "npm run electron:build -- --mac",
-    "package:win": "npm run electron:build -- --win",
-    "package:win-x64": "npm run electron:build -- --win --x64",
-    "package:linux": "npm run electron:build -- --linux",
+    "package:mac": "npm run download:mupdf && npm run electron:build -- --mac",
+    "package:win": "npm run download:mupdf && npm run electron:build -- --win",
+    "package:win-x64": "npm run download:mupdf && npm run electron:build -- --win --x64",
+    "package:linux": "npm run download:mupdf && npm run electron:build -- --linux",
     "watch": "ng build --watch --configuration development",
     "watch:electron": "npx tsc -p tsconfig.electron.json --watch",
-    "test": "ng test"
+    "test": "ng test",
+    "download:mupdf": "node scripts/download-mupdf.js",
+    "postinstall": "npm run download:mupdf || echo 'MuPDF download skipped (run npm run download:mupdf manually if needed)'"
   },
   "prettier": {
     "printWidth": 100,
@@ -41,6 +43,7 @@
     "@angular/forms": "^21.0.0",
     "@angular/platform-browser": "^21.0.0",
     "@angular/router": "^21.0.0",
+    "epubjs": "^0.3.93",
     "mupdf": "^1.27.0",
     "node-tesseract-ocr": "^2.2.1",
     "pdf-lib": "^1.17.1",
@@ -76,15 +79,33 @@
     "mac": {
       "category": "public.app-category.productivity",
       "target": "dmg",
-      "icon": "bookforge-icon.png"
+      "icon": "bookforge-icon.png",
+      "extraResources": [
+        {
+          "from": "resources/bin/mutool-${arch}",
+          "to": "bin/mutool-${arch}"
+        }
+      ]
     },
     "win": {
       "target": "nsis",
-      "icon": "bookforge-icon.png"
+      "icon": "bookforge-icon.png",
+      "extraResources": [
+        {
+          "from": "resources/bin/mutool.exe",
+          "to": "bin/mutool.exe"
+        }
+      ]
     },
     "linux": {
       "target": "AppImage",
-      "icon": "bookforge-icon.png"
+      "icon": "bookforge-icon.png",
+      "extraResources": [
+        {
+          "from": "resources/bin/mutool-linux",
+          "to": "bin/mutool-linux"
+        }
+      ]
     }
   }
 }

@@ -56,7 +56,32 @@
       "Bash(curl:*)",
       "Bash(for i in {1..5})",
       "Bash(do pkill -9 -f \"ollama runner\")",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(/Applications/calibre.app/Contents/MacOS/ebook-convert:*)",
+      "Bash(npm info:*)",
+      "WebFetch(domain:poppler.freedesktop.org)",
+      "Bash(pdftotext:*)",
+      "Bash(pdftohtml:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(/Volumes/Callisto/Projects/BookForgeApp/resources/bin/pdftotext-arm64:*)",
+      "Bash(xargs:*)",
+      "Bash(qpdf:*)",
+      "Bash(otool -L:*)",
+      "Bash(DYLD_LIBRARY_PATH=/Volumes/Callisto/Projects/BookForgeApp/resources/bin/lib-arm64 /Volumes/Callisto/Projects/BookForgeApp/resources/bin/pdftotext-arm64:*)",
+      "WebFetch(domain:bugs.ghostscript.com)",
+      "WebFetch(domain:mupdf.com)",
+      "Bash(/opt/homebrew/bin/pdfinfo:*)",
+      "Bash(/opt/homebrew/bin/pdftotext:*)",
+      "Bash(make:*)",
+      "Bash(chmod:*)",
+      "Bash(resources/bin/mutool-arm64:*)",
+      "Bash(./resources/bin/mutool-arm64 draw:*)",
+      "Bash(echo:*)",
+      "Bash(pgrep:*)",
+      "Bash(ebook-convert:*)",
+      "Bash(conda run:*)",
+      "Bash(/Users/telltale/Projects/ebook2audiobook/python_env/bin/pip show:*)",
+      "Bash(/Users/telltale/Projects/ebook2audiobook/python_env/bin/python:*)"
     ]
   }
 }

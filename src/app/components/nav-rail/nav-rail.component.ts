@@ -168,6 +168,12 @@ export class NavRailComponent {
   }
 
   navigate(route: string): void {
-    this.router.navigate([route]);
+    // If clicking the already-active route, add a query param to trigger "return home" behavior
+    // This allows components to detect re-clicks and show their home/list view
+    if (this.isActive(route)) {
+      this.router.navigate([route], { queryParams: { home: Date.now() } });
+    } else {
+      this.router.navigate([route]);
+    }
   }
 }

@@ -245,6 +245,19 @@ export class ElectronService {
     return response.json();
   }
 
+  // Read a file as binary data (ArrayBuffer)
+  async readFileBinary(filePath: string): Promise<{ success: boolean; data?: ArrayBuffer; error?: string }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.fs.readBinary(filePath);
+      if (result.success && result.data) {
+        // Convert Uint8Array to ArrayBuffer
+        return { success: true, data: result.data.buffer };
+      }
+      return result;
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   // PDF operations (pure TypeScript - no Python!)
   async analyzePdf(pdfPath: string, maxPages?: number): Promise<PdfAnalyzeResult> {
     if (this.isElectron) {
@@ -261,10 +274,11 @@ export class ElectronService {
     scale: number = 2.0,
     pdfPath?: string,
     redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>,
-    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>
+    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>,
+    removeBackground?: boolean
   ): Promise<string | null> {
     if (this.isElectron) {
-      const result: PdfRenderResult = await (window as any).electron.pdf.renderPage(pageNum, scale, pdfPath, redactRegions, fillRegions);
+      const result: PdfRenderResult = await (window as any).electron.pdf.renderPage(pageNum, scale, pdfPath, redactRegions, fillRegions, removeBackground);
       if (result.success && result.data?.image) {
         return `data:image/png;base64,${result.data.image}`;
       }
@@ -476,6 +490,30 @@ export class ElectronService {
     throw new Error('PDF export not available in browser mode');
   }
 
+  /**
+   * Export PDF with WYSIWYG rendering - exactly what the viewer shows
+   * Renders each page as an image (with all deletions applied at pixel level),
+   * then creates a new PDF from those images. Guarantees visual fidelity.
+   * For pages with deleted background images, renders OCR text on white background.
+   */
+  async exportPdfWysiwyg(
+    deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
+    deletedPages?: number[],
+    scale: number = 2.0,
+    ocrPages?: Array<{page: number; blocks: Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>}>
+  ): Promise<string> {
+    if (this.isElectron) {
+      const result: PdfExportResult = await (window as any).electron.pdf.exportPdfWysiwyg(deletedRegions, deletedPages, scale, ocrPages);
+      if (result.success && result.data?.pdf_base64) {
+        return result.data.pdf_base64;
+      }
+      const errorMsg = result.error || 'Unknown error';
+      console.error('Failed to export PDF (WYSIWYG):', errorMsg);
+      throw new Error(errorMsg);
+    }
+    throw new Error('PDF export not available in browser mode');
+  }
+
   async findSimilarBlocks(blockId: string): Promise<{ similar_ids: string[]; count: number } | null> {
     if (this.isElectron) {
       const result = await (window as any).electron.pdf.findSimilar(blockId);
@@ -657,6 +695,14 @@ export class ElectronService {
     });
   }
 
+  // Native folder dialog
+  async openFolderDialog(): Promise<{ success: boolean; canceled?: boolean; folderPath?: string; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.dialog.openFolder();
+    }
+    return { success: false, error: 'Folder selection not available in browser mode' };
+  }
+
   // Projects folder management
   async projectsEnsureFolder(): Promise<{ success: boolean; path?: string; error?: string }> {
     if (this.isElectron) {
@@ -832,6 +878,125 @@ export class ElectronService {
         return { success: true, chapters: result.data.chapters };
       }
       return { success: false, error: result.error || 'Failed to load comparison' };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // Ebook conversion operations (Calibre CLI integration)
+  async isEbookConvertAvailable(): Promise<boolean> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ebookConvert.isAvailable();
+      return result.success && result.data?.available === true;
+    }
+    return false;
+  }
+
+  async getEbookSupportedExtensions(): Promise<string[]> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ebookConvert.getSupportedExtensions();
+      if (result.success && result.data) {
+        return result.data;
+      }
+    }
+    return ['.epub', '.pdf']; // Fallback to native formats only
+  }
+
+  async isEbookConvertible(filePath: string): Promise<{ convertible: boolean; native: boolean }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ebookConvert.isConvertible(filePath);
+      if (result.success && result.data) {
+        return result.data;
+      }
+    }
+    // Fallback: check extension manually for native formats
+    const ext = filePath.toLowerCase().split('.').pop();
+    return {
+      convertible: false,
+      native: ext === 'epub' || ext === 'pdf'
+    };
+  }
+
+  async convertEbook(inputPath: string, outputDir?: string): Promise<{
+    success: boolean;
+    outputPath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ebookConvert.convert(inputPath, outputDir);
+      if (result.success && result.data) {
+        return { success: true, outputPath: result.data.outputPath };
+      }
+      return { success: false, error: result.error || 'Conversion failed' };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async convertEbookToLibrary(inputPath: string): Promise<{
+    success: boolean;
+    outputPath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ebookConvert.convertToLibrary(inputPath);
+      if (result.success && result.data) {
+        return { success: true, outputPath: result.data.outputPath };
+      }
+      return { success: false, error: result.error || 'Conversion failed' };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // Audiobook project operations
+  async deleteAudiobookProject(projectId: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.audiobook.deleteProject(projectId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // EPUB export operations (for EPUB editor)
+  async exportEpubWithRemovals(
+    inputPath: string,
+    removals: Map<string, Array<{ chapterId: string; text: string; cfi: string }>>,
+    outputPath?: string
+  ): Promise<{
+    success: boolean;
+    outputPath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      // Convert Map to plain object for IPC
+      const removalsObj: Record<string, Array<{ chapterId: string; text: string; cfi: string }>> = {};
+      removals.forEach((entries, chapterId) => {
+        removalsObj[chapterId] = entries;
+      });
+
+      return (window as any).electron.epub.exportWithRemovals(inputPath, removalsObj, outputPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async copyFile(inputPath: string, outputPath: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.epub.copyFile(inputPath, outputPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // Shell operations
+  async showItemInFolder(filePath: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.shell.showItemInFolder(filePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async openPath(filePath: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.shell.openPath(filePath);
     }
     return { success: false, error: 'Not running in Electron' };
   }

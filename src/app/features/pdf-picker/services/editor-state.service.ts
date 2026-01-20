@@ -2,7 +2,7 @@ import { Injectable, signal, computed } from '@angular/core';
 import { TextBlock, Category, PageDimension } from './pdf.service';
 
 export interface HistoryAction {
-  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize';
+  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages';
   blockIds: string[];
   selectionBefore: string[];
   selectionAfter: string[];
@@ -22,6 +22,10 @@ export interface HistoryAction {
   heightBefore?: number;
   widthAfter?: number;
   heightAfter?: number;
+  // For page actions
+  pageNumbers?: number[];
+  pageOrderBefore?: number[];
+  pageOrderAfter?: number[];
 }
 
 /**
@@ -75,6 +79,7 @@ export class PdfEditorStateService {
   readonly deletedBlockIds = signal<Set<string>>(new Set());
   readonly selectedBlockIds = signal<string[]>([]);
   readonly pageOrder = signal<number[]>([]);
+  readonly deletedPages = signal<Set<number>>(new Set());  // Pages excluded from export
 
   // Background removal state
   readonly removeBackgrounds = signal(false);
@@ -530,13 +535,9 @@ export class PdfEditorStateService {
   deleteBlocks(blockIds: string[]): void {
     if (blockIds.length === 0) return;
 
-    // Filter out OCR blocks - they are authoritative text and should never be deleted
-    // (deleting images should not delete the OCR text that was extracted from them)
+    // Allow deletion of any block (OCR blocks are now deletable - user has undo if needed)
     const blocksById = new Map(this.blocks().map(b => [b.id, b]));
-    const deletableIds = blockIds.filter(id => {
-      const block = blocksById.get(id);
-      return block && !block.is_ocr;
-    });
+    const deletableIds = blockIds.filter(id => !!blocksById.get(id));
 
     if (deletableIds.length === 0) return;
 
@@ -584,6 +585,78 @@ export class PdfEditorStateService {
     this.markChanged();
   }
 
+  // Page deletion with history
+  deletePages(pageNumbers: number[]): void {
+    if (pageNumbers.length === 0) return;
+
+    const deleted = new Set(this.deletedPages());
+    pageNumbers.forEach(p => deleted.add(p));
+    this.deletedPages.set(deleted);
+
+    this.pushHistory({
+      type: 'deletePage',
+      blockIds: [],
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      pageNumbers: [...pageNumbers]
+    });
+
+    this.markChanged();
+  }
+
+  restorePages(pageNumbers: number[]): void {
+    if (pageNumbers.length === 0) return;
+
+    const deleted = new Set(this.deletedPages());
+    pageNumbers.forEach(p => deleted.delete(p));
+    this.deletedPages.set(deleted);
+
+    this.pushHistory({
+      type: 'restorePage',
+      blockIds: [],
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      pageNumbers: [...pageNumbers]
+    });
+
+    this.markChanged();
+  }
+
+  // Toggle page deletion (delete if not deleted, restore if deleted)
+  togglePageDeletion(pageNumbers: number[]): void {
+    if (pageNumbers.length === 0) return;
+
+    const deleted = this.deletedPages();
+    const allDeleted = pageNumbers.every(p => deleted.has(p));
+
+    if (allDeleted) {
+      this.restorePages(pageNumbers);
+    } else {
+      // Delete only the non-deleted pages
+      const toDelete = pageNumbers.filter(p => !deleted.has(p));
+      this.deletePages(toDelete);
+    }
+  }
+
+  // Page reordering with history
+  setPageOrder(newOrder: number[], pushToHistory = true): void {
+    const oldOrder = [...this.pageOrder()];
+    this.pageOrder.set(newOrder);
+
+    if (pushToHistory) {
+      this.pushHistory({
+        type: 'reorderPages',
+        blockIds: [],
+        selectionBefore: [...this.selectedBlockIds()],
+        selectionAfter: [...this.selectedBlockIds()],
+        pageOrderBefore: oldOrder,
+        pageOrderAfter: [...newOrder]
+      });
+    }
+
+    this.markChanged();
+  }
+
   // Undo/Redo
   undo(): HistoryAction | undefined {
     const action = this.undoStack.pop();
@@ -619,8 +692,21 @@ export class PdfEditorStateService {
       } else {
         this.setBlockSize(blockId, action.widthBefore ?? 0, action.heightBefore ?? 0, false);
       }
-    } else {
-      // Reverse delete/restore action
+    } else if (action.type === 'deletePage') {
+      // Reverse page deletion - restore pages
+      const deleted = new Set(this.deletedPages());
+      action.pageNumbers?.forEach(p => deleted.delete(p));
+      this.deletedPages.set(deleted);
+    } else if (action.type === 'restorePage') {
+      // Reverse page restoration - delete pages again
+      const deleted = new Set(this.deletedPages());
+      action.pageNumbers?.forEach(p => deleted.add(p));
+      this.deletedPages.set(deleted);
+    } else if (action.type === 'reorderPages') {
+      // Reverse page reorder
+      this.pageOrder.set(action.pageOrderBefore ?? []);
+    } else if (action.type === 'delete' || action.type === 'restore') {
+      // Reverse block delete/restore action
       const deleted = new Set(this.deletedBlockIds());
       if (action.type === 'delete') {
         action.blockIds.forEach(id => deleted.delete(id));
@@ -670,8 +756,21 @@ export class PdfEditorStateService {
       // Re-apply resize
       const blockId = action.blockIds[0];
       this.setBlockSize(blockId, action.widthAfter ?? 0, action.heightAfter ?? 0, false);
-    } else {
-      // Re-apply delete/restore action
+    } else if (action.type === 'deletePage') {
+      // Re-apply page deletion
+      const deleted = new Set(this.deletedPages());
+      action.pageNumbers?.forEach(p => deleted.add(p));
+      this.deletedPages.set(deleted);
+    } else if (action.type === 'restorePage') {
+      // Re-apply page restoration
+      const deleted = new Set(this.deletedPages());
+      action.pageNumbers?.forEach(p => deleted.delete(p));
+      this.deletedPages.set(deleted);
+    } else if (action.type === 'reorderPages') {
+      // Re-apply page reorder
+      this.pageOrder.set(action.pageOrderAfter ?? []);
+    } else if (action.type === 'delete' || action.type === 'restore') {
+      // Re-apply block delete/restore action
       const deleted = new Set(this.deletedBlockIds());
       if (action.type === 'delete') {
         action.blockIds.forEach(id => deleted.add(id));
@@ -746,12 +845,6 @@ export class PdfEditorStateService {
     this.undoStack = [...history.undoStack];
     this.redoStack = [...history.redoStack];
     this.updateHistorySignals();
-  }
-
-  // Page ordering
-  setPageOrder(order: number[]): void {
-    this.pageOrder.set(order);
-    this.markChanged();
   }
 
   resetPageOrder(): void {

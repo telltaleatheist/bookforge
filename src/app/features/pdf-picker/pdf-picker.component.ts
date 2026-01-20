@@ -1,11 +1,11 @@
 import { Component, inject, signal, computed, HostListener, ViewChild, ElementRef, effect, DestroyRef, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { Router } from '@angular/router';
+import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
 import { ElectronService, Chapter } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
-import { ExportService, DeletedCategoryPattern } from './services/export.service';
+import { ExportService, DeletedHighlight } from './services/export.service';
 import { PageRenderService } from './services/page-render.service';
 import { OcrPostProcessorService } from './services/ocr-post-processor.service';
 import { DesktopThemeService, UiSize } from '../../creamsicle-desktop/services/theme.service';
@@ -493,6 +493,8 @@ interface AlertModal {
           (projectsDeleted)="onProjectsDeleted($event)"
           (error)="onLibraryError($event)"
           (transferToAudiobook)="onTransferToAudiobook($event)"
+          (openInEpubEditor)="onOpenInEpubEditor($event)"
+          (openEpubEditor)="onOpenEpubEditorPicker()"
         />
 
       </div>
@@ -513,19 +515,21 @@ interface AlertModal {
       />
     }
 
-    <!-- Loading Overlay -->
-    @if (loading()) {
+    <!-- Loading Overlay (only for initial analysis, not page rendering) -->
+    @if (loading() && !pdfLoaded()) {
       <div class="loading-overlay">
         <div class="loading-spinner"></div>
         <p>{{ loadingText() }}</p>
-        @if (renderProgress().total > 0) {
-          <div class="progress-container">
-            <div class="progress-bar">
-              <div class="progress-fill" [style.width.%]="renderProgressPercent()"></div>
-            </div>
-            <span class="progress-text">{{ renderProgress().current }} / {{ renderProgress().total }} pages</span>
-          </div>
-        }
+      </div>
+    }
+
+    <!-- Non-blocking page render progress (shown while browsing) -->
+    @if (pageRenderService.isLoading() && pdfLoaded()) {
+      <div class="render-progress-bar">
+        <div class="render-progress-fill" [style.width.%]="renderProgressPercent()"></div>
+        <span class="render-progress-text">
+          Rendering {{ pageRenderService.loadingProgress().current }} / {{ pageRenderService.loadingProgress().total }}
+        </span>
       </div>
     }
 
@@ -1177,6 +1181,37 @@ interface AlertModal {
       to { opacity: 1; }
     }
 
+    /* Non-blocking page render progress bar */
+    .render-progress-bar {
+      position: fixed;
+      bottom: 0;
+      left: 100px; /* Account for nav rail */
+      right: 0;
+      height: 24px;
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--border-default);
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      padding: 0 $spacing-4;
+    }
+
+    .render-progress-fill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      background: color-mix(in srgb, var(--accent) 20%, transparent);
+      transition: width 0.15s ease-out;
+    }
+
+    .render-progress-text {
+      position: relative;
+      z-index: 1;
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+    }
+
     .modal-overlay {
       position: fixed;
       inset: 0;
@@ -1706,7 +1741,8 @@ export class PdfPickerComponent {
   private readonly electronService = inject(ElectronService);
   private readonly exportService = inject(ExportService);
   private readonly router = inject(Router);
-  private readonly pageRenderService = inject(PageRenderService);
+  private readonly route = inject(ActivatedRoute);
+  readonly pageRenderService = inject(PageRenderService);
   private readonly ocrPostProcessor = inject(OcrPostProcessorService);
   private readonly ocrJobService = inject(OcrJobService);
   readonly themeService = inject(DesktopThemeService);
@@ -1761,10 +1797,21 @@ export class PdfPickerComponent {
     setTimeout(() => this.restoreOpenTabs(), 0);
   })();
 
+  // Nav-rail "home" button handler - when clicking library while already on library
+  private readonly navHomeHandler = (() => {
+    this.route.queryParams.subscribe(params => {
+      if (params['home'] && this.pdfLoaded()) {
+        // Clicking library button while on library - show library view but keep tabs
+        this.showLibraryView();
+        // Clear the query param to avoid re-triggering
+        this.router.navigate([], { queryParams: {}, replaceUrl: true });
+      }
+    });
+  })();
+
   // Register global OCR job completion handler
   private readonly ocrJobCompletionHandler = (() => {
     this.ocrJobService.onJobComplete((job) => {
-      console.log(`[OCR] Global completion handler: job ${job.id} completed with ${job.results.length} results`);
       // Convert OcrJobResult to OcrPageResult and process (including layoutBlocks)
       // Cast layoutBlocks to LayoutBlock[] since PluginLayoutBlock.label is string but LayoutBlock.label is a union type
       const results: OcrPageResult[] = job.results.map(r => ({
@@ -1781,6 +1828,7 @@ export class PdfPickerComponent {
   })();
 
   @ViewChild(PdfViewerComponent) pdfViewer!: PdfViewerComponent;
+  @ViewChild(CategoriesPanelComponent) categoriesPanel?: CategoriesPanelComponent;
   @ViewChild('searchInput') searchInputRef?: ElementRef<HTMLInputElement>;
 
   // Fixed sidebar width - doesn't change with window size
@@ -1903,7 +1951,6 @@ export class PdfPickerComponent {
   onKeyDown(event: KeyboardEvent): void {
     // Inline text editor is open - let it handle its own shortcuts
     if (this.showInlineEditor()) {
-      // Don't process other shortcuts when inline editor is open
       return;
     }
 
@@ -1919,13 +1966,24 @@ export class PdfPickerComponent {
         this.saveTextEdit();
         return;
       }
-      // Don't process other shortcuts when text editor is open
       return;
     }
 
-    // Delete/Backspace to delete selected blocks or custom category highlights
+    // Delete/Backspace to delete selected blocks, pages, or custom category highlights
     if (event.key === 'Delete' || event.key === 'Backspace') {
-      // First, try to delete selected blocks
+      // Don't capture if focused on an input element
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      // Check for selected pages first (works in select, edit, and organize modes)
+      if (this.selectedPageNumbers().size > 0) {
+        event.preventDefault();
+        this.onDeleteSelectedPages(this.selectedPageNumbers());
+        return;
+      }
+
+      // Try to delete/restore selected blocks (toggles deletion state)
       if (this.selectedBlockIds().length > 0) {
         event.preventDefault();
         this.deleteSelectedBlocks();
@@ -2013,12 +2071,6 @@ export class PdfPickerComponent {
           if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
             event.preventDefault();
             this.setMode('crop');
-          }
-          break;
-        case 'r': // R for rearrange/organize
-          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
-            event.preventDefault();
-            this.setMode('organize');
           }
           break;
         case 'p': // P for page split
@@ -2207,15 +2259,14 @@ export class PdfPickerComponent {
   }
 
   /**
-   * Get patterns from deleted custom category highlights.
-   * These patterns (the actual matched text) will be used to strip matching text during EPUB export.
+   * Get deleted highlights with their coordinates for coordinate-based EPUB export.
+   * Returns highlights that have been marked for deletion.
    */
-  private getDeletedCategoryPatterns(): DeletedCategoryPattern[] {
+  private getDeletedHighlights(): DeletedHighlight[] {
     const deletedIds = this.deletedHighlightIds();
     if (deletedIds.size === 0) return [];
 
-    // Collect unique matched texts from deleted highlights
-    const matchedTexts = new Set<string>();
+    const result: DeletedHighlight[] = [];
     const highlights = this.categoryHighlights();
 
     for (const [categoryId, pageMap] of highlights) {
@@ -2227,26 +2278,20 @@ export class PdfPickerComponent {
         for (const rect of rects) {
           const highlightId = this.getHighlightId(categoryId, page, rect.x, rect.y);
           if (deletedIds.has(highlightId) && rect.text) {
-            // The highlight stores the matched text - use it as a literal pattern
-            matchedTexts.add(rect.text);
+            result.push({
+              page,
+              x: rect.x,
+              y: rect.y,
+              w: rect.w,
+              h: rect.h,
+              text: rect.text
+            });
           }
         }
       }
     }
 
-    if (matchedTexts.size === 0) return [];
-
-    // Convert matched texts to literal patterns
-    const patterns: DeletedCategoryPattern[] = [];
-    for (const text of matchedTexts) {
-      patterns.push({
-        pattern: text,
-        caseSensitive: true,  // Match exactly what was highlighted
-        literalMode: true     // Treat as literal text, not regex
-      });
-    }
-
-    return patterns;
+    return result;
   }
 
   // Combined highlights: when regex panel is open, ONLY show regex preview (hide others)
@@ -2323,9 +2368,8 @@ export class PdfPickerComponent {
   readonly currentMode = signal<EditorMode>('select');
   readonly modes: ModeInfo[] = [
     { id: 'select', icon: '🎯', label: 'Select', tooltip: 'Select and delete blocks (S)' },
-    { id: 'edit', icon: '✏️', label: 'Edit', tooltip: 'Double-click to edit text (E)' },
+    { id: 'edit', icon: '✏️', label: 'Edit', tooltip: 'Edit text, reorder/delete pages (E)' },
     { id: 'crop', icon: '✂️', label: 'Crop', tooltip: 'Draw rectangle to crop (C)' },
-    { id: 'organize', icon: '📑', label: 'Organize', tooltip: 'Reorder pages (R)' },
     { id: 'split', icon: '📖', label: 'Split', tooltip: 'Split scanned pages (P)' },
     { id: 'ocr', icon: '👁️', label: 'OCR', tooltip: 'OCR scanned pages (O)' },
     { id: 'chapters', icon: '📚', label: 'Chapters', tooltip: 'Mark chapter starts (H)' }
@@ -2359,10 +2403,13 @@ export class PdfPickerComponent {
   readonly detectingChapters = signal(false);
   readonly finalizingChapters = signal(false);
   readonly selectedChapterId = signal<string | null>(null);
-  readonly deletedPages = signal<Set<number>>(new Set());  // Pages excluded from export
+
+  // Page deletion - delegate to editor state (has undo/redo support)
+  get deletedPages() { return this.editorState.deletedPages; }
 
   // Organize mode state
-  readonly organizeMode = computed(() => this.currentMode() === 'organize');
+  // Select and Edit modes include organize functionality (page selection, deletion, reordering)
+  readonly organizeMode = computed(() => this.currentMode() === 'select' || this.currentMode() === 'edit' || this.currentMode() === 'organize');
   readonly selectedPageNumbers = signal<Set<number>>(new Set());  // Selected pages for bulk operations
   private lastSelectedPage: number | null = null;  // For shift-click range selection
 
@@ -3035,6 +3082,39 @@ export class PdfPickerComponent {
     }
   }
 
+  /**
+   * Open an EPUB file in the dedicated EPUB editor with CFI-based highlight tracking
+   */
+  onOpenInEpubEditor(sourcePath: string): void {
+    // Navigate to epub-editor with the source path as a query parameter
+    this.router.navigate(['/epub-editor'], {
+      queryParams: { path: sourcePath }
+    });
+  }
+
+  /**
+   * Open file picker to select an EPUB and open it in the EPUB editor
+   */
+  async onOpenEpubEditorPicker(): Promise<void> {
+    // Reuse the PDF dialog which also accepts EPUB files
+    const result = await this.electronService.openPdfDialog();
+    if (result.success && result.filePath) {
+      // Only navigate if it's an EPUB file
+      if (result.filePath.toLowerCase().endsWith('.epub')) {
+        this.router.navigate(['/epub-editor'], {
+          queryParams: { path: result.filePath }
+        });
+      } else {
+        // Show error for non-EPUB files
+        this.showAlert({
+          title: 'Invalid File Type',
+          message: 'Please select an EPUB file for the EPUB Editor.',
+          type: 'error'
+        });
+      }
+    }
+  }
+
   private closePdf(): void {
     // Reset all state to show library view
     this.pdfLoaded.set(false);
@@ -3053,12 +3133,35 @@ export class PdfPickerComponent {
   }
 
   async loadPdf(path: string): Promise<void> {
-    console.log('[loadPdf] Starting for path:', path);
     this.showFilePicker.set(false);
+
+    // Check if file needs conversion (AZW3, MOBI, etc.)
+    const formatInfo = await this.electronService.isEbookConvertible(path);
+    if (formatInfo.convertible && !formatInfo.native) {
+      // Check if ebook-convert is available
+      const available = await this.electronService.isEbookConvertAvailable();
+      if (available) {
+        this.loading.set(true);
+        this.loadingText.set('Converting to EPUB...');
+        console.log('[PdfPicker] Converting', path, 'to EPUB...');
+        const convResult = await this.electronService.convertEbookToLibrary(path);
+        if (convResult.success && convResult.outputPath) {
+          console.log('[PdfPicker] Conversion successful:', convResult.outputPath);
+          path = convResult.outputPath; // Use converted EPUB
+        } else {
+          console.error('[PdfPicker] Conversion failed:', convResult.error);
+          this.loading.set(false);
+          return; // Can't proceed without conversion
+        }
+      } else {
+        console.log('[PdfPicker] ebook-convert not available, cannot open', path);
+        this.loading.set(false);
+        return; // Silently ignore unsupported format
+      }
+    }
 
     // Check if this PDF is already open (by original path or library path)
     const existingDoc = this.openDocuments().find(d => d.path === path || d.libraryPath === path);
-    console.log('[loadPdf] existingDoc check:', existingDoc ? `found ${existingDoc.id}, blocks: ${existingDoc.blocks.length}` : 'not found');
     if (existingDoc) {
       // Switch to existing tab
       this.saveCurrentDocumentState();
@@ -3074,16 +3177,13 @@ export class PdfPickerComponent {
 
     try {
       // Import file to library (copies file and deduplicates by hash)
-      console.log('[loadPdf] Importing file to library:', path);
       const importResult = await this.electronService.libraryImportFile(path);
-      console.log('[loadPdf] Import result:', importResult);
       if (!importResult.success || !importResult.libraryPath) {
         throw new Error(importResult.error || 'Failed to import file to library');
       }
 
       const libraryPath = importResult.libraryPath;
       const fileHash = importResult.hash || '';
-      console.log('[loadPdf] libraryPath:', libraryPath, 'fileHash:', fileHash);
 
       // Check if already open by hash (same file, different path)
       const existingByHash = this.openDocuments().find(d => d.fileHash === fileHash && fileHash);
@@ -3124,7 +3224,6 @@ export class PdfPickerComponent {
       this.activeDocumentId.set(docId);
 
       // Set current state via service
-      console.log('Loading document with blocks:', result.blocks.length, 'blocks, categories:', Object.keys(result.categories).length);
       this.editorState.loadDocument({
         blocks: result.blocks,
         categories: result.categories,
@@ -3135,18 +3234,16 @@ export class PdfPickerComponent {
         libraryPath: libraryPath,
         fileHash: fileHash
       });
-      console.log('After loadDocument, editorState.blocks:', this.editorState.blocks().length);
       this.pageRenderService.clear();
       this.projectService.reset();
       this.blankedPages.set(new Set());  // Clear blanked pages for new document
 
       this.saveRecentFile(path, result.pdf_name);
 
-      // Load page images - use effectivePath() to get the actual file location
-      this.loadingText.set('Rendering pages...');
+      // Initialize page rendering - starts in background, doesn't block
       this.pageRenderService.initialize(this.effectivePath(), result.page_count);
-      await this.pageRenderService.loadAllPageImages(result.page_count);
 
+      // Show document immediately - pages will load progressively
       this.pdfLoaded.set(true);
 
       // Reset zoom tracking for new document and auto-zoom for grid
@@ -3158,6 +3255,10 @@ export class PdfPickerComponent {
 
       // Auto-create project file for this document
       await this.autoCreateProject(path, result.pdf_name);
+
+      // Start page rendering in background (non-blocking)
+      // Pages will appear as they complete via the pageRenderService signals
+      this.pageRenderService.loadAllPageImages(result.page_count);
     } catch (err) {
       console.error('Failed to load PDF:', err);
       this.showAlert({
@@ -3172,20 +3273,36 @@ export class PdfPickerComponent {
 
   onBlockClick(event: { block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }): void {
     const { block, shiftKey, metaKey, ctrlKey } = event;
-    const isMultiSelect = shiftKey || metaKey || ctrlKey;
+    const isCmdOrCtrl = metaKey || ctrlKey;
 
-    if (isMultiSelect) {
-      // Multi-select: toggle this block in selection
+    // Clear page selection when selecting blocks (mutually exclusive)
+    if (this.selectedPageNumbers().size > 0) {
+      this.selectedPageNumbers.set(new Set());
+    }
+
+    if (isCmdOrCtrl && !shiftKey) {
+      // Cmd/Ctrl+click (without shift): deselect if selected, otherwise add to selection
       const selected = [...this.selectedBlockIds()];
       const idx = selected.indexOf(block.id);
       if (idx >= 0) {
+        // Already selected - deselect it
         selected.splice(idx, 1);
+        this.selectedBlockIds.set(selected);
       } else {
+        // Not selected - add to selection (additive)
+        selected.push(block.id);
+        this.selectedBlockIds.set(selected);
+      }
+    } else if (shiftKey) {
+      // Shift+click: add to selection (always additive, never removes)
+      const selected = [...this.selectedBlockIds()];
+      if (!selected.includes(block.id)) {
         selected.push(block.id);
       }
       this.selectedBlockIds.set(selected);
     } else {
-      // Single click: select just this block
+      // Single click (no modifiers): select just this block
+      // This is the cycling behavior - each click highlights the next overlapping block
       this.selectedBlockIds.set([block.id]);
     }
   }
@@ -3464,22 +3581,8 @@ export class PdfPickerComponent {
    * Re-render a page with all edited blocks' original positions redacted
    */
   private rerenderPageWithEdits(pageNum: number): void {
-    // If all images on this page are deleted, render a blank page
-    // This matches the "Remove Backgrounds" behavior
-    const allImagesDeleted = this.areAllImagesDeletedOnPage(pageNum);
-
-    if (allImagesDeleted) {
-      this.pageRenderService.renderBlankPage(pageNum);
-      // Add to blankedPages so pdf-viewer shows text overlays
-      this.blankedPages.update(pages => {
-        const newPages = new Set(pages);
-        newPages.add(pageNum);
-        return newPages;
-      });
-      return;
-    }
-
-    // Page is not fully blanked - remove from blankedPages if it was there
+    // Always remove from blankedPages - we no longer use blank page rendering
+    // Instead, we paint white over deleted images to preserve original text positioning
     this.blankedPages.update(pages => {
       if (pages.has(pageNum)) {
         const newPages = new Set(pages);
@@ -3494,6 +3597,7 @@ export class PdfPickerComponent {
 
     if (redactRegions.length > 0 || fillRegions.length > 0) {
       // Pass both redact regions (for deleted/edited) and fill regions (for moved)
+      // This includes deleted images - they get painted white while preserving native PDF text
       this.pageRenderService.rerenderPageWithRedactions(
         pageNum,
         redactRegions.length > 0 ? redactRegions : undefined,
@@ -3610,8 +3714,8 @@ export class PdfPickerComponent {
   }
 
   onPageReorder(newOrder: number[]): void {
-    this.pageOrder.set(newOrder);
-    this.hasUnsavedChanges.set(true);
+    // Use editor state for undo/redo support
+    this.editorState.setPageOrder(newOrder);
   }
 
   deleteSelectedBlocks(): void {
@@ -3620,7 +3724,7 @@ export class PdfPickerComponent {
 
     const deleted = this.deletedBlockIds();
 
-    // Check if ALL selected blocks are already deleted
+    // Check if ALL selected blocks are already deleted - toggle to restore
     const allDeleted = selected.every(id => deleted.has(id));
 
     if (allDeleted) {
@@ -3705,10 +3809,8 @@ export class PdfPickerComponent {
     const newDeletedIds = new Set(deletedIds);
     if (deletedIds.has(highlightId)) {
       newDeletedIds.delete(highlightId);
-      console.log(`Restored highlight: ${highlightId}`);
     } else {
       newDeletedIds.add(highlightId);
-      console.log(`Deleted highlight: ${highlightId} (text: "${event.rect.text}")`);
     }
 
     this.deletedHighlightIds.set(newDeletedIds);
@@ -3734,7 +3836,7 @@ export class PdfPickerComponent {
     if (action.type === 'toggleBackgrounds') {
       await this.applyRemoveBackgrounds(action.backgroundsBefore ?? false);
     } else if (action.type === 'delete' || action.type === 'restore') {
-      // Re-render affected pages when deletion state changes
+      // Re-render affected pages when block deletion state changes
       const affectedPages = new Set<number>();
       for (const blockId of action.blockIds) {
         const block = this.editorState.getBlock(blockId);
@@ -3744,6 +3846,7 @@ export class PdfPickerComponent {
         this.rerenderPageWithEdits(pageNum);
       }
     }
+    // Page deletion/restoration/reorder are handled by signals automatically
   }
 
   async redo(): Promise<void> {
@@ -3754,7 +3857,7 @@ export class PdfPickerComponent {
     if (action.type === 'toggleBackgrounds') {
       await this.applyRemoveBackgrounds(action.backgroundsAfter ?? false);
     } else if (action.type === 'delete' || action.type === 'restore') {
-      // Re-render affected pages when deletion state changes
+      // Re-render affected pages when block deletion state changes
       const affectedPages = new Set<number>();
       for (const blockId of action.blockIds) {
         const block = this.editorState.getBlock(blockId);
@@ -3764,6 +3867,7 @@ export class PdfPickerComponent {
         this.rerenderPageWithEdits(pageNum);
       }
     }
+    // Page deletion/restoration/reorder are handled by signals automatically
   }
 
   // Click on category: add/enable. Cmd/Ctrl+click: remove/disable
@@ -3795,91 +3899,26 @@ export class PdfPickerComponent {
     // Clear focused custom category when clicking a regular category
     this.focusedCategoryId.set(null);
 
-    // Regular categories: add/remove blocks from selection
-    const deleted = this.deletedBlockIds();
+    // Regular categories: select ALL blocks in category (including deleted ones)
+    // User can press Delete to toggle deletion state
     const allBlocks = this.blocks();
     const categoryBlocks = allBlocks.filter(b => b.category_id === categoryId);
-    const nonDeletedBlocks = categoryBlocks.filter(b => !deleted.has(b.id));
-    const ocrBlocks = nonDeletedBlocks.filter(b => b.is_ocr);
+    const blockIds = categoryBlocks.map(b => b.id);
 
-    console.log(`[selectCategory] categoryId: ${categoryId}`);
-    console.log(`[selectCategory] total: ${allBlocks.length}, inCategory: ${categoryBlocks.length}, notDeleted: ${nonDeletedBlocks.length}, isOCR: ${ocrBlocks.length}`);
-
-    // Log details of blocks in this category to debug miscategorization
-    if (nonDeletedBlocks.length > 0 && nonDeletedBlocks.length <= 20) {
-      console.log(`[selectCategory] Blocks in category '${categoryId}':`);
-      for (const block of nonDeletedBlocks) {
-        const textPreview = block.text.substring(0, 80).replace(/\n/g, ' ');
-        console.log(`  - page ${block.page}, y=${block.y.toFixed(0)}, lines=${block.line_count}, len=${block.text.length}: "${textPreview}..."`);
-      }
-    } else if (nonDeletedBlocks.length > 20) {
-      console.log(`[selectCategory] Too many blocks (${nonDeletedBlocks.length}) to log individually`);
-    }
-
-    const blockIds = nonDeletedBlocks.map(b => b.id);
-    // Check for duplicate IDs
-    const uniqueIds = new Set(blockIds);
-    if (uniqueIds.size !== blockIds.length) {
-      console.error(`[selectCategory] DUPLICATE IDs DETECTED! ${blockIds.length} total, ${uniqueIds.size} unique`);
-      // Find the duplicates
-      const seen = new Set<string>();
-      const duplicates: string[] = [];
-      for (const id of blockIds) {
-        if (seen.has(id)) {
-          duplicates.push(id);
-        }
-        seen.add(id);
-      }
-      console.error(`[selectCategory] Duplicate IDs:`, duplicates);
-    }
-    console.log(`[selectCategory] Selecting ${blockIds.length} block IDs for category: ${categoryId}`);
-
-    // Debug: verify all blockIds are from the correct category
-    const categoryCheck = new Map<string, number>();
-    for (const id of blockIds) {
-      const block = allBlocks.find(b => b.id === id);
-      if (block) {
-        const cat = block.category_id;
-        categoryCheck.set(cat, (categoryCheck.get(cat) || 0) + 1);
-      }
-    }
-    console.log(`[selectCategory] Category breakdown of selected blocks:`, Object.fromEntries(categoryCheck));
+    if (blockIds.length === 0) return;
 
     const existing = new Set(this.selectedBlockIds());
-    console.log(`[selectCategory] existing selection before: ${existing.size} IDs`);
-    const allSelected = blockIds.length > 0 && blockIds.every(id => existing.has(id));
+    const allSelected = blockIds.every(id => existing.has(id));
 
     // Toggle behavior: if all blocks from this category are selected, remove them
     // Otherwise, add them (keeps other categories selected)
     if (allSelected) {
-      // All blocks from this category are selected - remove them
       blockIds.forEach(id => existing.delete(id));
-      console.log(`[selectCategory] After delete, existing size: ${existing.size}`);
-      const newSelection = [...existing];
-      console.log(`[selectCategory] Setting selection to ${newSelection.length} IDs`);
-      this.selectedBlockIds.set(newSelection);
-      console.log(`[selectCategory] After set, signal has: ${this.selectedBlockIds().length} IDs`);
     } else {
-      // Add this category's blocks to selection (additive)
       blockIds.forEach(id => existing.add(id));
-      console.log(`[selectCategory] After add, existing size: ${existing.size}`);
-      const newSelection = [...existing];
-      console.log(`[selectCategory] Setting selection to ${newSelection.length} IDs`);
-      this.selectedBlockIds.set(newSelection);
-      console.log(`[selectCategory] After set, signal has: ${this.selectedBlockIds().length} IDs`);
     }
 
-    // Debug: verify final selection
-    const finalSelection = this.selectedBlockIds();
-    const finalCategoryCheck = new Map<string, number>();
-    for (const id of finalSelection) {
-      const block = allBlocks.find(b => b.id === id);
-      if (block) {
-        const cat = block.category_id;
-        finalCategoryCheck.set(cat, (finalCategoryCheck.get(cat) || 0) + 1);
-      }
-    }
-    console.log(`[selectCategory] FINAL selection category breakdown:`, Object.fromEntries(finalCategoryCheck));
+    this.selectedBlockIds.set([...existing]);
   }
 
   // Select inverse: toggle selection of all blocks in a category
@@ -3960,17 +3999,19 @@ export class PdfPickerComponent {
       this.deletedPages()
     );
 
-    this.showAlert({
-      title: result.success ? 'Export Complete' : 'Nothing to Export',
-      message: result.message,
-      type: result.success ? 'success' : 'warning'
-    });
+    if (!result.success) {
+      this.showAlert({
+        title: 'Nothing to Export',
+        message: result.message,
+        type: 'warning'
+      });
+    }
   }
 
   async exportEpub(): Promise<void> {
     // Use chapter-aware export if chapters are defined
     const chapters = this.chapters();
-    const deletedPatterns = this.getDeletedCategoryPatterns();
+    const deletedHighlights = this.getDeletedHighlights();
     const result = chapters.length > 0
       ? await this.exportService.exportEpubWithChapters(
           this.blocks(),
@@ -3979,7 +4020,7 @@ export class PdfPickerComponent {
           this.pdfName(),
           this.textCorrections(),
           this.deletedPages(),
-          deletedPatterns
+          deletedHighlights
         )
       : await this.exportService.exportEpub(
           this.blocks(),
@@ -3987,14 +4028,16 @@ export class PdfPickerComponent {
           this.pdfName(),
           this.textCorrections(),
           this.deletedPages(),
-          deletedPatterns
+          deletedHighlights
         );
 
-    this.showAlert({
-      title: result.success ? 'Export Complete' : 'Nothing to Export',
-      message: result.message,
-      type: result.success ? 'success' : 'warning'
-    });
+    if (!result.success) {
+      this.showAlert({
+        title: 'Nothing to Export',
+        message: result.message,
+        type: 'warning'
+      });
+    }
   }
 
   /**
@@ -4187,13 +4230,7 @@ export class PdfPickerComponent {
       this.deletedPages()
     );
 
-    if (result.success) {
-      this.showAlert({
-        title: 'Export Complete',
-        message: result.message,
-        type: 'success'
-      });
-    } else {
+    if (!result.success) {
       this.showAlert({
         title: 'Export Failed',
         message: result.message,
@@ -4210,7 +4247,7 @@ export class PdfPickerComponent {
 
     // Use chapter-aware export if chapters are defined
     const chapters = this.chapters();
-    const deletedPatterns = this.getDeletedCategoryPatterns();
+    const deletedHighlights = this.getDeletedHighlights();
     const result = chapters.length > 0
       ? await this.exportService.exportEpubWithChapters(
           this.blocks(),
@@ -4219,7 +4256,7 @@ export class PdfPickerComponent {
           this.pdfName(),
           this.editorState.textCorrections(),
           this.deletedPages(),
-          deletedPatterns
+          deletedHighlights
         )
       : await this.exportService.exportEpub(
           this.blocks(),
@@ -4227,16 +4264,10 @@ export class PdfPickerComponent {
           this.pdfName(),
           this.editorState.textCorrections(),
           this.deletedPages(),
-          deletedPatterns
+          deletedHighlights
         );
 
-    if (result.success) {
-      this.showAlert({
-        title: 'Export Complete',
-        message: result.message,
-        type: 'success'
-      });
-    } else {
+    if (!result.success) {
       this.showAlert({
         title: 'Export Failed',
         message: result.message,
@@ -4252,7 +4283,7 @@ export class PdfPickerComponent {
     this.loadingText.set('Preparing audiobook export...');
 
     const chapters = this.chapters();
-    const deletedPatterns = this.getDeletedCategoryPatterns();
+    const deletedHighlights = this.getDeletedHighlights();
 
     const result = await this.exportService.exportToAudiobook(
       this.blocks(),
@@ -4261,18 +4292,11 @@ export class PdfPickerComponent {
       this.pdfName(),
       this.editorState.textCorrections(),
       this.deletedPages(),
-      deletedPatterns,
+      deletedHighlights,
       true // Navigate to audiobook producer after
     );
 
-    if (result.success) {
-      // Success message will be shown briefly before navigation
-      this.showAlert({
-        title: 'Sent to Audiobook Producer',
-        message: result.message,
-        type: 'success'
-      });
-    } else {
+    if (!result.success) {
       this.showAlert({
         title: 'Export Failed',
         message: result.message,
@@ -4283,94 +4307,32 @@ export class PdfPickerComponent {
 
   /**
    * Export as PDF format (with optional background removal)
+   *
+   * Image deletion now uses object-level removal (preserves fonts perfectly).
+   * The removeBackgrounds option is for paper cleanup (yellowed → white) only,
+   * which requires page rasterization and is only used when no content deletions.
    */
   private async exportAsPdf(settings: ExportSettings): Promise<void> {
-    if (settings.removeBackgrounds) {
-      // Export with background removal
-      this.loadingText.set('Preparing export...');
+    // Check if we have any deletions (blocks, highlights, or pages)
+    const hasDeletedBlocks = this.deletedBlockIds().size > 0;
+    const hasDeletedHighlights = this.deletedHighlightIds().size > 0;
+    const hasDeletedPages = this.deletedPages().size > 0;
+    const hasAnyDeletions = hasDeletedBlocks || hasDeletedHighlights || hasDeletedPages;
 
-      // Collect deleted regions to apply as redactions before rendering
-      const deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }> = [];
+    // Use rasterization path ONLY for pure paper background cleanup (no deletions)
+    // When there are deletions, always use object-level manipulation to preserve fonts
+    if (settings.removeBackgrounds && !hasAnyDeletions) {
+      // Pure paper background cleanup (yellowed paper → white, no content changes)
+      this.loadingText.set('Cleaning paper backgrounds...');
 
-      // Add deleted blocks
-      const deletedBlockIds = this.deletedBlockIds();
-      for (const block of this.blocks()) {
-        if (deletedBlockIds.has(block.id)) {
-          deletedRegions.push({
-            page: block.page,
-            x: block.x,
-            y: block.y,
-            width: block.width,
-            height: block.height,
-            isImage: block.is_image
-          });
-        }
-      }
-
-      // Add deleted custom category highlights
-      const deletedHighlightIds = this.deletedHighlightIds();
-      if (deletedHighlightIds.size > 0) {
-        for (const [categoryId, pageMap] of this.categoryHighlights()) {
-          for (const [pageStr, rects] of Object.entries(pageMap)) {
-            const page = parseInt(pageStr);
-            for (const rect of rects) {
-              const highlightId = this.getHighlightId(categoryId, page, rect.x, rect.y);
-              if (deletedHighlightIds.has(highlightId)) {
-                deletedRegions.push({
-                  page,
-                  x: rect.x,
-                  y: rect.y,
-                  width: rect.w,
-                  height: rect.h
-                });
-              }
-            }
-          }
-        }
-      }
-
-      // Collect OCR blocks to embed as real text (survives image deletion)
-      // Only include OCR blocks on pages where images were deleted
-      const pagesWithDeletedImages = new Set<number>();
-      for (const region of deletedRegions) {
-        if (region.isImage) {
-          pagesWithDeletedImages.add(region.page);
-        }
-      }
-
-      const ocrBlocks: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }> = [];
-      if (pagesWithDeletedImages.size > 0) {
-        for (const block of this.blocks()) {
-          // Include OCR blocks that are not deleted and on pages with deleted images
-          if (block.is_ocr && !deletedBlockIds.has(block.id) && pagesWithDeletedImages.has(block.page)) {
-            ocrBlocks.push({
-              page: block.page,
-              x: block.x,
-              y: block.y,
-              width: block.width,
-              height: block.height,
-              text: block.text,
-              font_size: block.font_size
-            });
-          }
-        }
-      }
-
-      // Subscribe to export progress
       const unsubscribe = this.electronService.onExportProgress((progress) => {
         this.loadingText.set(`Processing page ${progress.current + 1} of ${progress.total}...`);
       });
 
       let pdfBase64: string;
       try {
-        // Convert quality setting to scale factor
         const scale = this.getScaleFromQuality(settings.quality);
-        // Pass deleted regions and OCR blocks to be embedded in the PDF
-        pdfBase64 = await this.electronService.exportPdfNoBackgrounds(
-          scale,
-          deletedRegions.length > 0 ? deletedRegions : undefined,
-          ocrBlocks.length > 0 ? ocrBlocks : undefined
-        );
+        pdfBase64 = await this.electronService.exportPdfNoBackgrounds(scale);
       } finally {
         unsubscribe();
       }
@@ -4391,37 +4353,62 @@ export class PdfPickerComponent {
       a.download = `${baseName}_clean.pdf`;
       a.click();
       URL.revokeObjectURL(url);
-
-      this.showAlert({
-        title: 'Export Complete',
-        message: `PDF exported: ${a.download}`,
-        type: 'success'
-      });
     } else {
-      // Standard export with redactions
-      this.loadingText.set('Generating PDF...');
+      // WYSIWYG canvas-based export - screenshots what the viewer shows
+      // This guarantees visual fidelity: what you see is what you get
+      this.loadingText.set('Rendering pages for export...');
 
-      const result = await this.exportService.exportPdf(
-        this.blocks(),
-        this.deletedBlockIds(),
-        this.deletedHighlightIds(),
-        this.categoryHighlights(),
-        this.libraryPath(),
-        this.pdfName(),
-        this.getHighlightId.bind(this),
-        this.textCorrections(),
-        this.deletedPages(),
-        this.chapters()
-      );
+      try {
+        const scale = this.getScaleFromQuality(settings.quality);
+        const totalPages = this.pageNumbers().length;
 
-      if (!result.success) {
+        // Render all pages from the viewer's canvas (composites text overlays)
+        const renderedPages: Array<{ pageNum: number; dataUrl: string }> = [];
+
+        for (let i = 0; i < totalPages; i++) {
+          const pageNum = this.pageNumbers()[i];
+
+          // Skip deleted pages
+          if (this.deletedPages().has(pageNum)) continue;
+
+          this.loadingText.set(`Rendering page ${i + 1} of ${totalPages}...`);
+
+          // Render the page with text overlays composited onto canvas
+          const dataUrl = await this.pdfViewer?.renderPageForExport(pageNum, scale);
+          if (dataUrl) {
+            renderedPages.push({ pageNum, dataUrl });
+          }
+        }
+
+        this.loadingText.set('Assembling PDF...');
+
+        // Get page dimensions for the PDF
+        const pageDims = this.pageDimensions();
+
+        // Call the new canvas-based export
+        const result = await this.exportService.exportPdfFromCanvas(
+          renderedPages,
+          pageDims,
+          this.pdfName(),
+          this.chapters()
+        );
+
+        if (!result.success) {
+          this.showAlert({
+            title: 'Export Failed',
+            message: result.message,
+            type: 'error'
+          });
+        }
+        // Success case: file downloads automatically, no modal needed
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
         this.showAlert({
-          title: 'Nothing Changed',
-          message: result.message,
-          type: 'info'
+          title: 'Export Failed',
+          message: `Failed to export PDF: ${message}`,
+          type: 'error'
         });
       }
-      // Success case: file downloads automatically, no modal needed
     }
   }
 
@@ -4529,7 +4516,6 @@ export class PdfPickerComponent {
 
       if (existing) {
         // Use existing project
-        console.log(`Found existing project: ${existing.path}`);
         this.projectPath.set(existing.path);
         return;
       }
@@ -4601,7 +4587,6 @@ export class PdfPickerComponent {
       if (result.success && result.filePath) {
         this.projectPath.set(result.filePath);
         this.hasUnsavedChanges.set(false);
-        console.log('Auto-created project:', result.filePath);
       }
     }
   }
@@ -4722,7 +4707,6 @@ export class PdfPickerComponent {
   }
 
   private restoreCustomCategories(customCategories: CustomCategoryData[]): void {
-    console.log(`Restoring ${customCategories.length} custom categories from project`);
 
     for (const data of customCategories) {
       // Restore the category to editorState.categories
@@ -4751,7 +4735,6 @@ export class PdfPickerComponent {
         return updated;
       });
 
-      console.log(`  Restored category "${category.name}" with highlights on ${Object.keys(data.highlights).length} pages`);
     }
   }
 
@@ -4853,7 +4836,6 @@ export class PdfPickerComponent {
       if (importResult.success && importResult.libraryPath) {
         libraryPath = importResult.libraryPath;
         fileHash = importResult.hash || '';
-        console.log('[loadProject] Imported old project to library:', libraryPath, 'hash:', fileHash);
       } else {
         // Fall back to source path if import fails
         libraryPath = project.source_path;
@@ -4915,22 +4897,21 @@ export class PdfPickerComponent {
       if (project.chapters && project.chapters.length > 0) {
         this.chapters.set(project.chapters);
         this.chaptersSource.set(project.chapters_source || 'manual');
-        console.log(`  Restored ${project.chapters.length} chapters`);
       }
 
       // Restore deleted pages
       if (project.deleted_pages && project.deleted_pages.length > 0) {
         this.deletedPages.set(new Set(project.deleted_pages));
-        console.log(`  Restored ${project.deleted_pages.length} deleted pages`);
       }
 
       this.pageRenderService.clear();
       this.projectService.projectPath.set(result.filePath || null);
 
-      // Load page images - use effectivePath() to get the actual file location
-      this.loadingText.set('Rendering pages...');
+      // Initialize page rendering - starts in background, doesn't block
       this.pageRenderService.initialize(this.effectivePath(), pdfResult.page_count);
-      await this.pageRenderService.loadAllPageImages(pdfResult.page_count);
+
+      // Start page rendering in background (non-blocking)
+      this.pageRenderService.loadAllPageImages(pdfResult.page_count);
     } catch (err) {
       console.error('Failed to load project source file:', err);
       this.showAlert({
@@ -4997,7 +4978,6 @@ export class PdfPickerComponent {
       if (importResult.success && importResult.libraryPath) {
         libraryPath = importResult.libraryPath;
         fileHash = importResult.hash || '';
-        console.log('[loadProjectFromPath] Imported old project to library:', libraryPath, 'hash:', fileHash);
       } else {
         // Fall back to source path if import fails
         libraryPath = project.source_path;
@@ -5008,9 +4988,7 @@ export class PdfPickerComponent {
     const pdfPathToLoad = libraryPath;
 
     try {
-      console.log('[loadProjectFromPath] Analyzing PDF:', pdfPathToLoad);
       const pdfResult = await this.pdfService.analyzePdf(pdfPathToLoad);
-      console.log('[loadProjectFromPath] Analysis result blocks:', pdfResult.blocks.length, 'categories:', Object.keys(pdfResult.categories).length);
 
       // Create new document for tabs
       const docId = this.generateDocumentId();
@@ -5090,13 +5068,11 @@ export class PdfPickerComponent {
       if (project.chapters && project.chapters.length > 0) {
         this.chapters.set(project.chapters);
         this.chaptersSource.set(project.chapters_source || 'manual');
-        console.log(`[loadProject] Restored ${project.chapters.length} chapters`);
       }
 
       // Restore deleted pages
       if (project.deleted_pages && project.deleted_pages.length > 0) {
         this.deletedPages.set(new Set(project.deleted_pages));
-        console.log(`[loadProject] Restored ${project.deleted_pages.length} deleted pages`);
       }
 
       // Restore OCR blocks and categories - these replace PDF-analyzed blocks on their pages
@@ -5105,12 +5081,10 @@ export class PdfPickerComponent {
         const ocrPages = [...new Set(project.ocr_blocks.map(b => b.page))];
         // Replace PDF blocks with OCR blocks on those pages
         this.editorState.replaceTextBlocksOnPages(ocrPages, project.ocr_blocks);
-        console.log(`[loadProject] Restored ${project.ocr_blocks.length} OCR blocks on ${ocrPages.length} page(s)`);
 
         // Restore OCR categories if saved (these match the OCR block categorization)
         if (project.ocr_categories) {
           this.editorState.categories.set(project.ocr_categories);
-          console.log(`[loadProject] Restored OCR categories:`, Object.keys(project.ocr_categories));
         }
       }
 
@@ -5122,17 +5096,21 @@ export class PdfPickerComponent {
       this.pageRenderService.clear();
       this.projectService.projectPath.set(actualProjectPath);
 
-      // Load page images - use effectivePath() to get the actual file location
-      this.loadingText.set('Rendering pages...');
+      // Initialize page rendering - starts in background, doesn't block
       this.pageRenderService.initialize(this.effectivePath(), pdfResult.page_count);
-      await this.pageRenderService.loadAllPageImages(pdfResult.page_count);
 
-      // Apply background removal if it was enabled in the project
-      if (project.remove_backgrounds) {
-        await this.applyRemoveBackgrounds(true);
-      }
-
+      // Show document immediately
       this.pdfLoaded.set(true);
+
+      // Start page rendering in background
+      // If background removal is enabled, apply it after pages load
+      if (project.remove_backgrounds) {
+        this.pageRenderService.loadAllPageImages(pdfResult.page_count).then(() => {
+          this.applyRemoveBackgrounds(true);
+        });
+      } else {
+        this.pageRenderService.loadAllPageImages(pdfResult.page_count);
+      }
     } catch (err) {
       console.error('Failed to load project source file:', err);
       this.showAlert({
@@ -5324,11 +5302,12 @@ export class PdfPickerComponent {
 
     // Log stats for debugging
     const pageCount = Object.keys(matchesByPage).length;
-    console.log(`Created category "${categoryName}" with ${total} matches across ${pageCount} pages`);
-    console.log(`  Memory saved: ~${(total * 160 / 1024).toFixed(0)}KB by using lightweight storage`);
 
     this.hasUnsavedChanges.set(true);
     this.exitSampleMode();
+
+    // Collapse the create category accordion
+    this.categoriesPanel?.collapseCreateSection();
 
     this.showAlert({
       title: 'Category Created',
@@ -5523,6 +5502,10 @@ export class PdfPickerComponent {
     if (result?.data) {
       let matches = result.data.matches;
 
+      // Validate positions - filter out matches not within known text blocks
+      // This filters out text from embedded figures/tables with incorrect coordinates
+      matches = this.validateMatchPositions(matches);
+
       // Apply page filter (client-side)
       matches = this.applyPageFilter(matches, pageFilterType, pageRangeStart, pageRangeEnd, specificPages);
 
@@ -5530,8 +5513,8 @@ export class PdfPickerComponent {
       // Empty filter = no categories selected = filter out everything
       matches = this.applyCategoryFilter(matches, categoryFilter);
 
-      // Store first 5000 matches for preview (performance limit)
-      this.regexMatches.set(matches.slice(0, 5000));
+      // Store first 10000 matches for preview (performance limit)
+      this.regexMatches.set(matches.slice(0, 10000));
       this.regexMatchCount.set(matches.length);
     } else {
       this.regexMatches.set([]);
@@ -5632,6 +5615,85 @@ export class PdfPickerComponent {
     });
   }
 
+  /**
+   * Validate match positions - filter out matches that:
+   * 1. Fall within any image block bounds (text from embedded figures/tables has unreliable coordinates)
+   * 2. Don't fall within any known text block
+   * This filters out text from embedded figures/tables that may have incorrect coordinates.
+   */
+  private validateMatchPositions(matches: MatchRect[]): MatchRect[] {
+    const blocks = this.blocks();
+    const pageDims = this.pageDimensions();
+
+    // Get all image blocks for position checking
+    const imageBlocks = blocks.filter(b => b.is_image);
+
+    // Track pages that have images (coordinates may be unreliable)
+    const pagesWithImages = new Set(imageBlocks.map(b => b.page));
+
+    let filteredInImage = 0;
+    let filteredNoBlock = 0;
+    let filteredSuspicious = 0;
+    let kept = 0;
+
+    const result = matches.filter(match => {
+      const pageDim = pageDims[match.page];
+
+      // First, check if match falls within ANY image block
+      // Text inside images/figures/tables often has unreliable coordinates
+      for (const imgBlock of imageBlocks) {
+        if (imgBlock.page !== match.page) continue;
+
+        const inImage = match.x >= imgBlock.x - 10 &&
+                       match.y >= imgBlock.y - 10 &&
+                       match.x + match.w <= imgBlock.x + imgBlock.width + 10 &&
+                       match.y + match.h <= imgBlock.y + imgBlock.height + 10;
+
+        if (inImage) {
+          // Match is inside an image area - skip it
+          filteredInImage++;
+          return false;
+        }
+      }
+
+      // On pages with images, apply stricter coordinate validation
+      // Reject matches with coordinates outside reasonable page bounds
+      if (pagesWithImages.has(match.page) && pageDim) {
+        const maxX = pageDim.width * 0.95;
+        const maxY = pageDim.height * 0.98;
+        if (match.x < 0 || match.y < 0 || match.x > maxX || match.y > maxY) {
+          filteredSuspicious++;
+          console.log(`[validateMatchPositions] Suspicious coords on page ${match.page} (has images): "${match.text}" at (${match.x.toFixed(1)}, ${match.y.toFixed(1)}), page size: ${pageDim.width}x${pageDim.height}`);
+          return false;
+        }
+      }
+
+      // Find any text block on this page that contains this match
+      for (const block of blocks) {
+        if (block.page !== match.page) continue;
+        if (block.is_image) continue; // Skip image blocks
+
+        // Check if match is within this block's bounds (with some tolerance)
+        const tolerance = 5;
+        const inBlock = match.x >= block.x - tolerance &&
+                       match.y >= block.y - tolerance &&
+                       match.x + match.w <= block.x + block.width + tolerance &&
+                       match.y + match.h <= block.y + block.height + tolerance;
+
+        if (inBlock) {
+          kept++;
+          return true;
+        }
+      }
+      filteredNoBlock++;
+      console.log(`[validateMatchPositions] Filtered match on page ${match.page}: "${match.text}" at (${match.x.toFixed(1)}, ${match.y.toFixed(1)}) - not in any text block`);
+      return false;
+    });
+
+    console.log(`[validateMatchPositions] Results: ${kept} kept, ${filteredInImage} filtered (in image), ${filteredSuspicious} filtered (suspicious coords), ${filteredNoBlock} filtered (no block)`);
+    return result;
+  }
+
   async createRegexCategory(): Promise<void> {
     const pattern = this.regexPattern();
     const name = this.regexCategoryName();
@@ -5663,7 +5725,6 @@ export class PdfPickerComponent {
       this.hasUnsavedChanges.set(true);
       this.regexPanelExpanded.set(false);
       this.editingCategoryId.set(null);
-      console.log(`Updated category "${name}" (name/color only)`);
       return;
     }
 
@@ -5682,6 +5743,26 @@ export class PdfPickerComponent {
 
     const { matches, matchesByPage, total } = matchesResult.data;
 
+    // Filter matches to only include those within known text blocks
+    // This filters out text from embedded figures/tables with incorrect coordinates
+    const validatedMatches = this.validateMatchPositions(matches);
+    const validatedByPage: Record<number, MatchRect[]> = {};
+    for (const match of validatedMatches) {
+      if (!validatedByPage[match.page]) {
+        validatedByPage[match.page] = [];
+      }
+      validatedByPage[match.page].push(match);
+    }
+
+    if (validatedMatches.length === 0) {
+      this.showAlert({
+        title: 'No Valid Matches',
+        message: 'No matches found within visible text blocks. The matches may be inside embedded figures or tables.',
+        type: 'info'
+      });
+      return;
+    }
+
     // Use existing ID if editing, otherwise generate new
     const catId = editingId || ('custom_regex_' + Date.now().toString(36));
 
@@ -5689,13 +5770,13 @@ export class PdfPickerComponent {
     const newCategory: Category = {
       id: catId,
       name: name,
-      description: `Regex: ${pattern} (${total} matches)`,
+      description: `Regex: ${pattern} (${validatedMatches.length} matches)`,
       color: color,
-      block_count: total,
-      char_count: matches.reduce((sum, m) => sum + m.text.length, 0),
+      block_count: validatedMatches.length,
+      char_count: validatedMatches.reduce((sum, m) => sum + m.text.length, 0),
       font_size: minSize || 10,
       region: 'body',
-      sample_text: matches[0]?.text || '',
+      sample_text: validatedMatches[0]?.text || '',
       enabled: true
     };
 
@@ -5708,7 +5789,7 @@ export class PdfPickerComponent {
     // Store lightweight highlights by page (same as sample mode)
     this.categoryHighlights.update(highlights => {
       const newHighlights = new Map(highlights);
-      newHighlights.set(catId, matchesByPage);
+      newHighlights.set(catId, validatedByPage);
       return newHighlights;
     });
 
@@ -5719,7 +5800,9 @@ export class PdfPickerComponent {
     this.regexPanelExpanded.set(false);
     this.editingCategoryId.set(null);
 
-    console.log(`${editingId ? 'Updated' : 'Created'} regex category "${name}" with ${total} span matches`);
+    // Collapse the create category accordion
+    this.categoriesPanel?.collapseCreateSection();
+
   }
 
   deleteCustomCategory(categoryId: string): void {
@@ -5745,24 +5828,39 @@ export class PdfPickerComponent {
     // Mark as having unsaved changes
     this.hasUnsavedChanges.set(true);
 
-    console.log(`Deleted custom category: ${categoryId}`);
   }
 
-  // Mark all highlights from a custom category as deleted (shows X, keeps in list)
+  // Toggle deletion state for all highlights in a custom category
+  // If all are deleted -> un-delete all; otherwise -> delete all
   clearCustomCategoryHighlights(categoryId: string): void {
     const highlights = this.categoryHighlights().get(categoryId);
     if (!highlights) return;
 
-    // Mark all highlights as deleted
-    const newDeletedIds = new Set(this.deletedHighlightIds());
-    let count = 0;
+    const currentDeletedIds = this.deletedHighlightIds();
+    const newDeletedIds = new Set(currentDeletedIds);
 
+    // Collect all highlight IDs for this category
+    const categoryHighlightIds: string[] = [];
     for (const [pageStr, rects] of Object.entries(highlights)) {
       const page = parseInt(pageStr);
       for (const rect of rects) {
         const id = this.getHighlightId(categoryId, page, rect.x, rect.y);
+        categoryHighlightIds.push(id);
+      }
+    }
+
+    // Check if ALL highlights in this category are already deleted
+    const allDeleted = categoryHighlightIds.every(id => currentDeletedIds.has(id));
+
+    if (allDeleted) {
+      // UN-DELETE all highlights in this category
+      for (const id of categoryHighlightIds) {
+        newDeletedIds.delete(id);
+      }
+    } else {
+      // DELETE all highlights in this category
+      for (const id of categoryHighlightIds) {
         newDeletedIds.add(id);
-        count++;
       }
     }
 
@@ -5770,8 +5868,6 @@ export class PdfPickerComponent {
 
     // Mark as having unsaved changes
     this.hasUnsavedChanges.set(true);
-
-    console.log(`Marked ${count} highlights as deleted from custom category: ${categoryId}`);
   }
 
   editCustomCategory(categoryId: string): void {
@@ -5798,7 +5894,6 @@ export class PdfPickerComponent {
     // Expand the panel
     this.regexPanelExpanded.set(true);
 
-    console.log(`Editing custom category: ${categoryId} (${cat.name})`);
   }
 
   toggleCategoryEnabled(categoryId: string): void {
@@ -6055,7 +6150,6 @@ export class PdfPickerComponent {
       if (result && Math.abs(result.angle) > 0.1) {
         // Only apply correction if angle is significant (> 0.1 degrees)
         this.lastDeskewAngle.set(result.angle);
-        console.log(`Page ${pageNum + 1}: Detected ${result.angle.toFixed(2)}° skew (confidence: ${result.confidence})`);
 
         // TODO: Apply the rotation to the page
         // This would require either:
@@ -6065,7 +6159,6 @@ export class PdfPickerComponent {
         // For now, we just detect and report the angle
       } else {
         this.lastDeskewAngle.set(result?.angle ?? 0);
-        console.log(`Page ${pageNum + 1}: No significant skew detected`);
       }
     } catch (err) {
       console.error('Deskew detection failed:', err);
@@ -6088,7 +6181,6 @@ export class PdfPickerComponent {
         if (chapters.length > 0) {
           this.chapters.set(chapters);
           this.chaptersSource.set('toc');
-          console.log(`Loaded ${chapters.length} chapters from document outline`);
         }
       }
     } catch (err) {
@@ -6114,7 +6206,6 @@ export class PdfPickerComponent {
           this.chaptersSource.set(existing.length > 0 ? 'mixed' : 'heuristic');
         }
 
-        console.log(`Detected ${newChapters.length} additional chapters`);
       } else {
         this.showAlert({
           title: 'No Chapters Found',
@@ -6273,18 +6364,9 @@ export class PdfPickerComponent {
     }
   }
 
-  // Page deletion methods (for chapters/export mode)
+  // Page deletion methods (with undo/redo support via editor state)
   togglePageDeleted(pageNum: number): void {
-    this.deletedPages.update(pages => {
-      const newPages = new Set(pages);
-      if (newPages.has(pageNum)) {
-        newPages.delete(pageNum);
-      } else {
-        newPages.add(pageNum);
-      }
-      return newPages;
-    });
-    this.hasUnsavedChanges.set(true);
+    this.editorState.togglePageDeletion([pageNum]);
   }
 
   isPageDeleted(pageNum: number): boolean {
@@ -6296,13 +6378,21 @@ export class PdfPickerComponent {
   }
 
   clearDeletedPages(): void {
-    this.deletedPages.set(new Set());
-    this.hasUnsavedChanges.set(true);
+    // Restore all deleted pages (with undo support)
+    const deletedArray = [...this.deletedPages()];
+    if (deletedArray.length > 0) {
+      this.editorState.restorePages(deletedArray);
+    }
   }
 
-  // Page selection methods (for organize/chapters mode)
+  // Page selection methods (for edit/organize/chapters mode)
   onPageSelect(event: { pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }): void {
     const { pageNum, shiftKey, metaKey, ctrlKey } = event;
+
+    // Clear block selection when selecting pages (mutually exclusive)
+    if (this.selectedBlockIds().length > 0) {
+      this.selectedBlockIds.set([]);
+    }
 
     this.selectedPageNumbers.update(selected => {
       const newSelected = new Set(selected);
@@ -6343,18 +6433,12 @@ export class PdfPickerComponent {
       return;
     }
 
-    // Delete all selected pages
-    this.deletedPages.update(deleted => {
-      const newDeleted = new Set(deleted);
-      for (const page of pages) {
-        newDeleted.add(page);
-      }
-      return newDeleted;
-    });
+    // Toggle page deletion (delete if not deleted, restore if all are deleted)
+    const pageArray = [...pages];
+    this.editorState.togglePageDeletion(pageArray);
 
-    // Clear selection after delete
+    // Clear selection after action
     this.selectedPageNumbers.set(new Set());
-    this.hasUnsavedChanges.set(true);
   }
 
   clearPageSelection(): void {
@@ -6393,7 +6477,6 @@ export class PdfPickerComponent {
     const results = Array.isArray(event) ? event : event.results;
     const useSuryaCategories = Array.isArray(event) ? false : event.useSuryaCategories;
 
-    console.log('OCR completed:', results.length, 'pages processed, useSuryaCategories:', useSuryaCategories);
 
     // Count total text lines with bboxes
     const totalLines = results.reduce((sum, r) => sum + (r.textLines?.length || 0), 0);
@@ -6439,18 +6522,18 @@ export class PdfPickerComponent {
 
     // Convert OCR text lines to TextBlocks
     const newBlocks: TextBlock[] = [];
-    let blockIdCounter = Date.now();
+    // Use random suffix + page + index for unique IDs across all OCR batches
+    const ocrBatchId = Math.random().toString(36).substring(2, 8);
+    let lineCounter = 0;
     const pagesWithOcrResults: number[] = [];  // Only pages that actually have OCR results
 
     for (const result of results) {
       if (!result.textLines || result.textLines.length === 0) {
-        console.log(`[OCR] Page ${result.page}: No textLines, text length: ${result.text?.length || 0}`);
         continue;  // Skip pages with no OCR results - don't remove their existing blocks
       }
 
       // Only track pages that actually have OCR results
       pagesWithOcrResults.push(result.page);
-      console.log(`[OCR] Page ${result.page}: ${result.textLines.length} textLines`);
 
       const pageWidth = pageDims[result.page]?.width || 600;
       const pageHeight = pageDims[result.page]?.height || 800;
@@ -6458,9 +6541,6 @@ export class PdfPickerComponent {
       // Log first line of first page for debugging
       if (result.textLines.length > 0 && result.page === pagesWithOcrResults[0]) {
         const firstLine = result.textLines[0];
-        console.log(`[OCR DEBUG] Page ${result.page} dimensions: ${pageWidth} x ${pageHeight}`);
-        console.log(`[OCR DEBUG] First line raw bbox: [${firstLine.bbox.join(', ')}]`);
-        console.log(`[OCR DEBUG] First line scaled (÷${renderScale}): [${(firstLine.bbox[0]/renderScale).toFixed(1)}, ${(firstLine.bbox[1]/renderScale).toFixed(1)}, ${(firstLine.bbox[2]/renderScale).toFixed(1)}, ${(firstLine.bbox[3]/renderScale).toFixed(1)}]`);
       }
 
       for (const line of result.textLines) {
@@ -6510,7 +6590,7 @@ export class PdfPickerComponent {
         estimatedFontSize = Math.max(minFontSize, Math.min(maxFontSize, estimatedFontSize));
 
         const block: TextBlock = {
-          id: `ocr_${blockIdCounter++}`,
+          id: `ocr_p${result.page}_${ocrBatchId}_${lineCounter++}`,
           page: result.page,
           x: x1 / renderScale,
           y: pdfY,
@@ -6533,9 +6613,7 @@ export class PdfPickerComponent {
     const layoutBlocksByPage = new Map<number, any[]>();
     // Debug: check what layout data is coming in
     const pagesWithLayout = results.filter(r => r.layoutBlocks && r.layoutBlocks.length > 0);
-    console.log(`[OCR] Layout blocks received: ${pagesWithLayout.length}/${results.length} pages have layout data`);
     if (pagesWithLayout.length === 0 && results.length > 0) {
-      console.log(`[OCR] First result layoutBlocks:`, results[0].layoutBlocks);
     }
     for (const result of results) {
       if (result.layoutBlocks && result.layoutBlocks.length > 0) {
@@ -6550,9 +6628,7 @@ export class PdfPickerComponent {
           ] as [number, number, number, number]
         }));
         layoutBlocksByPage.set(result.page, scaledBlocks);
-        console.log(`[OCR Layout] Page ${result.page}: ${scaledBlocks.length} layout blocks (scale: ${renderScale})`);
         scaledBlocks.forEach((b, i) => {
-          console.log(`  [${i}] ${b.label}: (${b.bbox[0].toFixed(1)}, ${b.bbox[1].toFixed(1)}) to (${b.bbox[2].toFixed(1)}, ${b.bbox[3].toFixed(1)})`);
         });
       }
     }
@@ -6565,7 +6641,6 @@ export class PdfPickerComponent {
     const newCategories = processedResult.categories;
 
     const hasLayoutData = useSuryaCategories && layoutBlocksByPage.size > 0;
-    console.log(`[OCR] Post-processing: ${newBlocks.length} lines → ${processedBlocks.length} blocks (Surya categories: ${hasLayoutData ? 'enabled' : 'disabled'})`);
 
     // Merge new OCR categories with existing categories
     const existingCategories = this.categories();
@@ -6607,7 +6682,6 @@ export class PdfPickerComponent {
       for (const pageNum of pagesWithOcrResults) {
         const fillRegions = ocrFillRegionsByPage.get(pageNum);
         if (fillRegions && fillRegions.length > 0) {
-          console.log(`[OCR] Re-rendering page ${pageNum} with ${fillRegions.length} OCR fill regions`);
           this.pageRenderService.rerenderPageWithRedactions(pageNum, undefined, fillRegions);
         }
       }
@@ -6621,10 +6695,7 @@ export class PdfPickerComponent {
 
     // Log results for debugging
     if (processedBlocks.length > 0) {
-      console.log(`[OCR] Created ${processedBlocks.length} text blocks (from ${newBlocks.length} lines) on ${pagesWithOcrResults.length} page(s)`);
-      console.log(`[OCR] Categories created:`, Object.keys(newCategories).join(', '));
     } else {
-      console.log(`[OCR] Processed ${results.length} page(s) but no text was detected`);
     }
   }
 
@@ -6632,7 +6703,6 @@ export class PdfPickerComponent {
    * Called when an OCR job starts in the background
    */
   onBackgroundOcrStarted(jobId: string): void {
-    console.log(`[OCR] Background job started: ${jobId}`);
     // The job will continue running and call onOcrCompleted when done
     // via the completion callback registered in the OcrJobService
   }
@@ -6742,7 +6812,6 @@ export class PdfPickerComponent {
     const doc = this.openDocuments().find(d => d.id === docId);
     if (!doc) return;
 
-    console.log('[restoreDocumentState] Restoring doc:', docId, 'blocks:', doc.blocks.length, 'categories:', Object.keys(doc.categories).length);
 
     this.activeDocumentId.set(docId);
 
@@ -6759,7 +6828,6 @@ export class PdfPickerComponent {
       deletedBlockIds: doc.deletedBlockIds,
       pageOrder: doc.pageOrder
     });
-    console.log('[restoreDocumentState] After loadDocument, editorState.blocks:', this.editorState.blocks().length);
 
     // Restore additional state
     this.editorState.selectedBlockIds.set(doc.selectedBlockIds);
@@ -6798,7 +6866,6 @@ export class PdfPickerComponent {
       const projectPaths: string[] = JSON.parse(savedPaths);
       if (!Array.isArray(projectPaths) || projectPaths.length === 0) return;
 
-      console.log('[restoreOpenTabs] Restoring tabs:', projectPaths);
 
       // Load each project
       for (const path of projectPaths) {

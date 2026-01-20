@@ -280,9 +280,10 @@ export class OcrPostProcessorService {
     });
 
     // Convert back to TextBlock format
-    let blockIdCounter = Date.now();
-    return categorizedBlocks.map(merged => ({
-      id: `ocr_proc_${blockIdCounter++}`,
+    // Use page number + random suffix + index to ensure unique IDs across all pages
+    const randomSuffix = Math.random().toString(36).substring(2, 8);
+    return categorizedBlocks.map((merged, index) => ({
+      id: `ocr_p${pageNum}_${randomSuffix}_${index}`,
       page: pageNum,
       x: merged.x,
       y: merged.y,

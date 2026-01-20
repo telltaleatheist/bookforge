@@ -4,13 +4,20 @@ import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { QueueService } from '../../../queue/services/queue.service';
+import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success-modal.component';
+import { SettingsService } from '../../../../core/services/settings.service';
 
 export interface TTSSettings {
   device: 'gpu' | 'mps' | 'cpu';
   language: string;
-  voice: string;
+  ttsEngine: string;        // e.g., 'xtts'
+  fineTuned: string;        // voice model e.g., 'ScarlettJohansson'
   temperature: number;
+  topP: number;
+  topK: number;
+  repetitionPenalty: number;
   speed: number;
+  enableTextSplitting: boolean;
 }
 
 export interface VoiceOption {
@@ -23,7 +30,7 @@ export interface VoiceOption {
 @Component({
   selector: 'app-tts-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, QueueSuccessModalComponent],
   template: `
     <div class="tts-settings">
       <!-- ebook2audiobook Status -->
@@ -123,11 +130,11 @@ export interface VoiceOption {
           </div>
 
           <div class="form-group">
-            <label for="voice">Voice Model</label>
+            <label for="fineTuned">Voice Model</label>
             <select
-              id="voice"
-              [ngModel]="settings().voice"
-              (ngModelChange)="updateSetting('voice', $event)"
+              id="fineTuned"
+              [ngModel]="settings().fineTuned"
+              (ngModelChange)="updateSetting('fineTuned', $event)"
             >
               @for (voice of availableVoices(); track voice.id) {
                 <option [value]="voice.id">{{ voice.name }}</option>
@@ -176,56 +183,36 @@ export interface VoiceOption {
           }
         </div>
 
-        <!-- Estimated Time -->
-        <div class="estimate-section">
-          <div class="estimate-label">Estimated Conversion Time</div>
-          <div class="estimate-value">{{ estimatedTime() }}</div>
-          <div class="estimate-note">Based on EPUB size and device selection</div>
-        </div>
-
-        <!-- Start Button -->
+        <!-- Actions -->
         <div class="actions">
           <desktop-button
             variant="primary"
             size="lg"
-            [disabled]="!ttsAvailable()"
-            (click)="startConversion.emit()"
+            [disabled]="!ttsAvailable() || addingToQueue()"
+            (click)="addToQueue()"
           >
-            Start Conversion
+            @if (addingToQueue()) {
+              Adding to Queue...
+            } @else {
+              Add to Queue
+            }
           </desktop-button>
         </div>
 
-        <!-- Add to Queue Section -->
-        <div class="queue-section">
-          <div class="queue-divider">
-            <span>OR</span>
-          </div>
-          <div class="queue-content">
-            <h4>Process via Queue</h4>
-            <p>Add this EPUB to the processing queue for automatic TTS conversion. Jobs run in the background.</p>
-            <div class="queue-actions">
-              <desktop-button
-                variant="secondary"
-                [disabled]="!ttsAvailable() || addingToQueue()"
-                (click)="addToQueue()"
-              >
-                @if (addingToQueue()) {
-                  Adding...
-                } @else {
-                  Add to Queue
-                }
-              </desktop-button>
-              @if (addedToQueue()) {
-                <span class="queue-status success">Added to queue</span>
-                <desktop-button variant="ghost" size="sm" (click)="goToQueue()">
-                  View Queue
-                </desktop-button>
-              }
-            </div>
-          </div>
+        <div class="queue-info">
+          <p>The conversion will be added to the processing queue. You can start processing from the Queue page.</p>
         </div>
       }
     </div>
+
+    <!-- Success Modal -->
+    <app-queue-success-modal
+      [show]="showSuccessModal()"
+      title="Added to Queue"
+      message="Your TTS conversion job has been added to the processing queue."
+      (close)="closeSuccessModal()"
+      (viewQueue)="goToQueue()"
+    />
   `,
   styles: [`
     .tts-settings {
@@ -425,94 +412,20 @@ export interface VoiceOption {
       gap: 1rem;
     }
 
-    .estimate-section {
-      text-align: center;
-      padding: 1.5rem;
-      background: var(--bg-subtle);
-      border-radius: 8px;
-
-      .estimate-label {
-        font-size: 0.75rem;
-        color: var(--text-muted);
-        text-transform: uppercase;
-        letter-spacing: 0.02em;
-        margin-bottom: 0.5rem;
-      }
-
-      .estimate-value {
-        font-size: 1.5rem;
-        font-weight: 600;
-        color: var(--text-primary);
-      }
-
-      .estimate-note {
-        margin-top: 0.5rem;
-        font-size: 0.75rem;
-        color: var(--text-muted);
-      }
-    }
-
     .actions {
       display: flex;
       justify-content: center;
+      margin-top: 1rem;
     }
 
-    .queue-section {
-      margin-top: 1.5rem;
-    }
-
-    .queue-divider {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-      margin-bottom: 1rem;
-
-      &::before,
-      &::after {
-        content: '';
-        flex: 1;
-        height: 1px;
-        background: var(--border-default);
-      }
-
-      span {
-        font-size: 0.75rem;
-        color: var(--text-muted);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-    }
-
-    .queue-content {
-      background: var(--bg-subtle);
-      padding: 1rem;
-      border-radius: 8px;
-      border: 1px solid var(--border-subtle);
-
-      h4 {
-        margin: 0 0 0.5rem 0;
-        font-size: 0.875rem;
-        color: var(--text-primary);
-      }
+    .queue-info {
+      margin-top: 1rem;
+      text-align: center;
 
       p {
-        margin: 0 0 1rem 0;
-        font-size: 0.8125rem;
-        color: var(--text-secondary);
-      }
-    }
-
-    .queue-actions {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
-
-    .queue-status {
-      font-size: 0.8125rem;
-
-      &.success {
-        color: var(--accent-success);
+        margin: 0;
+        font-size: 0.75rem;
+        color: var(--text-muted);
       }
     }
   `]
@@ -520,36 +433,38 @@ export interface VoiceOption {
 export class TtsSettingsComponent implements OnInit {
   private readonly queueService = inject(QueueService);
   private readonly router = inject(Router);
+  private readonly settingsService = inject(SettingsService);
 
   // Inputs
   readonly settings = input<TTSSettings>({
     device: 'mps',
     language: 'en',
-    voice: 'en_default',
-    temperature: 0.75,
-    speed: 1.0
+    ttsEngine: 'xtts',
+    fineTuned: 'ScarlettJohansson',
+    temperature: 0.7,
+    topP: 0.9,
+    topK: 40,
+    repetitionPenalty: 2.0,
+    speed: 1.0,
+    enableTextSplitting: false
   });
   readonly epubPath = input<string>('');
-  readonly metadata = input<{ title?: string; author?: string } | undefined>(undefined);
+  readonly metadata = input<{ title?: string; author?: string; outputFilename?: string } | undefined>(undefined);
 
   // Outputs
   readonly settingsChange = output<TTSSettings>();
-  readonly startConversion = output<void>();
 
   // State
   readonly ttsAvailable = signal(false);
   readonly checkingStatus = signal(true);
   readonly showAdvanced = signal(false);
   readonly addingToQueue = signal(false);
-  readonly addedToQueue = signal(false);
+  readonly showSuccessModal = signal(false);
   readonly availableVoices = signal<VoiceOption[]>([
-    { id: 'en_default', name: 'Default English', language: 'en' },
-    { id: 'en_male', name: 'English Male', language: 'en' },
-    { id: 'en_female', name: 'English Female', language: 'en' }
+    { id: 'ScarlettJohansson', name: 'Scarlett Johansson', language: 'en', description: 'Natural, warm female voice' },
+    { id: 'DavidAttenborough', name: 'David Attenborough', language: 'en', description: 'Documentary-style narration' },
+    { id: 'default', name: 'Default XTTS', language: 'en', description: 'Standard XTTS voice' }
   ]);
-
-  // Computed estimated time
-  readonly estimatedTime = signal('~45 minutes');
 
   ngOnInit(): void {
     this.checkStatus();
@@ -573,33 +488,6 @@ export class TtsSettingsComponent implements OnInit {
     const current = this.settings();
     const updated = { ...current, [key]: value };
     this.settingsChange.emit(updated);
-    this.updateEstimate(updated);
-  }
-
-  private updateEstimate(settings: TTSSettings): void {
-    // Simple estimate based on device
-    let baseTime = 60; // minutes for a typical book
-    switch (settings.device) {
-      case 'mps':
-        baseTime = 45;
-        break;
-      case 'gpu':
-        baseTime = 30;
-        break;
-      case 'cpu':
-        baseTime = 120;
-        break;
-    }
-    // Adjust for speed
-    baseTime = Math.round(baseTime / settings.speed);
-
-    if (baseTime < 60) {
-      this.estimatedTime.set(`~${baseTime} minutes`);
-    } else {
-      const hours = Math.floor(baseTime / 60);
-      const mins = baseTime % 60;
-      this.estimatedTime.set(`~${hours}h ${mins}m`);
-    }
   }
 
   async addToQueue(): Promise<void> {
@@ -607,24 +495,32 @@ export class TtsSettingsComponent implements OnInit {
     if (!path) return;
 
     this.addingToQueue.set(true);
-    this.addedToQueue.set(false);
 
     try {
       const currentSettings = this.settings();
+      const meta = this.metadata();
+      const outputDir = this.settingsService.get<string>('audiobookOutputDir') || '';
       await this.queueService.addJob({
         type: 'tts-conversion',
         epubPath: path,
-        metadata: this.metadata(),
+        metadata: meta,
         config: {
           type: 'tts-conversion',
           device: currentSettings.device,
           language: currentSettings.language,
-          voice: currentSettings.voice,
+          ttsEngine: currentSettings.ttsEngine,
+          fineTuned: currentSettings.fineTuned,
           temperature: currentSettings.temperature,
-          speed: currentSettings.speed
+          topP: currentSettings.topP,
+          topK: currentSettings.topK,
+          repetitionPenalty: currentSettings.repetitionPenalty,
+          speed: currentSettings.speed,
+          enableTextSplitting: currentSettings.enableTextSplitting,
+          outputFilename: meta?.outputFilename,
+          outputDir: outputDir || undefined
         }
       });
-      this.addedToQueue.set(true);
+      this.showSuccessModal.set(true);
     } catch (err) {
       console.error('Failed to add to queue:', err);
     } finally {
@@ -632,7 +528,12 @@ export class TtsSettingsComponent implements OnInit {
     }
   }
 
+  closeSuccessModal(): void {
+    this.showSuccessModal.set(false);
+  }
+
   goToQueue(): void {
+    this.closeSuccessModal();
     this.router.navigate(['/queue']);
   }
 }

@@ -169,6 +169,22 @@ export class PdfService {
   }
 
   /**
+   * Export PDF with WYSIWYG rendering - exactly what the viewer shows
+   * Renders each page as an image (with all deletions applied at pixel level),
+   * then creates a new PDF from those images. Guarantees visual fidelity.
+   * For pages with deleted background images, renders OCR text on white background.
+   */
+  async exportPdfWysiwyg(
+    deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
+    deletedPages?: Set<number>,
+    scale: number = 2.0,
+    ocrPages?: Array<{page: number; blocks: Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>}>
+  ): Promise<string> {
+    const deletedPagesArray = deletedPages ? Array.from(deletedPages) : undefined;
+    return this.electron.exportPdfWysiwyg(deletedRegions, deletedPagesArray, scale, ocrPages);
+  }
+
+  /**
    * Add chapter bookmarks (outline) to an exported PDF
    */
   async addBookmarksToPdf(pdfBase64: string, chapters: Chapter[]): Promise<string | null> {

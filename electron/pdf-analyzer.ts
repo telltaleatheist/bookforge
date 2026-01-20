@@ -9,10 +9,13 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { pdfBridgeManager, RedactionRegion, Bookmark } from './pdf-bridge';
-import { PyMuPdfBridge, BinaryPdfBridge } from './pdf-pymupdf-bridge';
+import { pdfBridgeManager, RedactionRegion, Bookmark, MupdfJsBridge } from './pdf-bridge';
+import { MutoolBridge } from './mutool-bridge';
 
 const execAsync = promisify(exec);
+
+// Cache version - increment this when changing extraction logic to invalidate old caches
+const ANALYSIS_CACHE_VERSION = 6;  // v6: fixed image deduplication across pages
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -81,6 +84,8 @@ export interface Category {
 export interface PageDimension {
   width: number;
   height: number;
+  originX?: number;  // Page origin X offset (for non-zero MediaBox)
+  originY?: number;  // Page origin Y offset (for non-zero MediaBox)
 }
 
 export interface AnalyzeResult {
@@ -190,6 +195,7 @@ export class PDFAnalyzer {
   private pageDimensions: PageDimension[] = [];
   private doc: any = null; // mupdf.PDFDocument | mupdf.Document
   private pdfPath: string | null = null;
+  private mutoolBridge: MutoolBridge = new MutoolBridge();
 
   /**
    * Get the base cache directory for BookForge
@@ -209,6 +215,7 @@ export class PDFAnalyzer {
 
   /**
    * Get path for cached analysis data
+   * Includes version number to invalidate cache when extraction logic changes
    */
   private async getAnalysisCachePath(fileHash: string): Promise<string> {
     const cacheDir = path.join(this.getAnalysisCacheDir(), fileHash);
@@ -217,7 +224,8 @@ export class PDFAnalyzer {
     } catch {
       await fsPromises.mkdir(cacheDir, { recursive: true });
     }
-    return path.join(cacheDir, 'analysis.json');
+    // Include version in filename to invalidate old caches
+    return path.join(cacheDir, `analysis-v${ANALYSIS_CACHE_VERSION}.json`);
   }
 
   /**
@@ -227,7 +235,6 @@ export class PDFAnalyzer {
     const cachePath = await this.getAnalysisCachePath(fileHash);
     try {
       const data = await fsPromises.readFile(cachePath, 'utf-8');
-      console.log(`Loaded cached analysis for ${fileHash}`);
       return JSON.parse(data);
     } catch (err) {
       // File doesn't exist or read failed
@@ -242,7 +249,6 @@ export class PDFAnalyzer {
     const cachePath = await this.getAnalysisCachePath(fileHash);
     try {
       await fsPromises.writeFile(cachePath, JSON.stringify(result), 'utf-8');
-      console.log(`Saved analysis cache for ${fileHash}`);
     } catch (err) {
       console.error('Failed to save analysis cache:', err);
     }
@@ -290,28 +296,101 @@ export class PDFAnalyzer {
     const totalPages = this.doc.countPages();
     const pageCount = maxPages ? Math.min(totalPages, maxPages) : totalPages;
 
-    // Get page dimensions
+    // Get page dimensions (including origin for coordinate transformation)
     for (let pageNum = 0; pageNum < pageCount; pageNum++) {
       const page = this.doc.loadPage(pageNum);
       const bounds = page.getBounds();
       this.pageDimensions.push({
         width: bounds[2] - bounds[0],
         height: bounds[3] - bounds[1],
+        originX: bounds[0],  // Store origin for coordinate transformation
+        originY: bounds[1],
       });
     }
 
-    // Extract blocks from each page
-    for (let pageNum = 0; pageNum < pageCount; pageNum++) {
-      await this.extractPageBlocks(pageNum);
+    // Determine if this is a PDF (mutool only works with PDFs, not EPUBs)
+    const isPdf = mimeType === 'application/pdf' || pdfPath.toLowerCase().endsWith('.pdf');
+
+    // Use mutool for text extraction (character-level precision, font info)
+    let usedMutool = false;
+    if (isPdf) {
+      try {
+        const mutoolAvailable = await this.mutoolBridge.isAvailable();
+        if (mutoolAvailable) {
+          // Extract both blocks and spans in one pass (more efficient)
+          const { blocks: mutoolBlocks, spans: mutoolSpans } = await this.mutoolBridge.extractAll(
+            pdfPath,
+            pageCount,
+            this.pageDimensions
+          );
+
+          // Convert MutoolTextBlock to TextBlock (compatible interfaces)
+          this.blocks = mutoolBlocks.map(mb => ({
+            id: mb.id,
+            page: mb.page,
+            x: mb.x,
+            y: mb.y,
+            width: mb.width,
+            height: mb.height,
+            text: mb.text,
+            font_size: mb.font_size,
+            font_name: mb.font_name,
+            char_count: mb.char_count,
+            region: mb.region,
+            category_id: mb.category_id,
+            is_bold: mb.is_bold,
+            is_italic: mb.is_italic,
+            is_superscript: mb.is_superscript,
+            is_image: mb.is_image,
+            is_footnote_marker: mb.is_footnote_marker,
+            line_count: mb.line_count
+          }));
+
+          // Convert MutoolTextSpan to TextSpan
+          this.spans = mutoolSpans.map(ms => ({
+            id: ms.id,
+            page: ms.page,
+            x: ms.x,
+            y: ms.y,
+            width: ms.width,
+            height: ms.height,
+            text: ms.text,
+            font_size: ms.font_size,
+            font_name: ms.font_name,
+            is_bold: ms.is_bold,
+            is_italic: ms.is_italic,
+            baseline_offset: ms.baseline_offset,
+            block_id: ms.block_id
+          }));
+
+          usedMutool = true;
+
+          // Also extract images using mupdf.js (mutool stext doesn't include images)
+          const imageBlocks = await this.extractImageBlocks(pageCount);
+          if (imageBlocks.length > 0) {
+            this.blocks.push(...imageBlocks);
+          }
+        } else {
+          throw new Error('mutool binary not found - run "npm run download:mupdf"');
+        }
+      } catch (err) {
+        console.error('mutool extraction failed:', (err as Error).message);
+        throw err; // Don't silently fall back - mutool is required
+      }
     }
 
-    // Extract spans using mutool for precise character-level positions
-    await this.extractSpansWithMutool(pdfPath, pageCount);
+    // For non-PDF documents (EPUBs), use mupdf.js
+    if (!usedMutool) {
+      // Extract blocks from each page using mupdf.js
+      for (let pageNum = 0; pageNum < pageCount; pageNum++) {
+        await this.extractPageBlocks(pageNum);
+      }
+
+      // No span extraction for EPUBs (mutool doesn't support them)
+    }
 
     // Generate categories
     this.generateCategories();
-
-    console.log(`PDF analysis complete: ${this.blocks.length} blocks, ${this.spans.length} spans extracted`);
 
     const result: AnalyzeResult = {
       blocks: this.blocks,
@@ -452,16 +531,7 @@ export class PDFAnalyzer {
           }
 
           // Check if line has spans (from preserve-spans option)
-          // Debug: log line structure on first text block of first page
-          if (pageNum === 0 && blockIdx === 0 && block.lines.indexOf(line) === 0) {
-            console.log('First line keys:', Object.keys(line));
-            console.log('First line structure:', JSON.stringify(line, null, 2).substring(0, 500));
-          }
           if (line.spans && Array.isArray(line.spans)) {
-            // Debug: log first span structure on first page
-            if (pageNum === 0 && block.lines.indexOf(line) === 0 && line.spans.length > 0) {
-              console.log('Sample span structure:', JSON.stringify(line.spans[0], null, 2));
-            }
             // Process each span separately
             for (const span of line.spans) {
               const spanText = span.text || '';
@@ -709,190 +779,95 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Extract spans using mutool binary for precise character positions
+   * Extract image blocks using mupdf.js
+   * Called after mutool text extraction to add image detection
    */
-  private async extractSpansWithMutool(pdfPath: string, pageCount: number): Promise<void> {
-    try {
-      // Check if mutool is available
-      const mutoolPath = await this.findMutool();
-      if (!mutoolPath) {
-        console.log('mutool not found, skipping span extraction');
-        return;
-      }
+  private async extractImageBlocks(pageCount: number): Promise<TextBlock[]> {
+    if (!this.doc) return [];
 
-      console.log(`Extracting spans with mutool from ${pageCount} pages...`);
+    const imageBlocks: TextBlock[] = [];
+    const imageRects = new Set<string>();
+    let totalBlocks = 0;
+    let imageBlocksFound = 0;
 
-      // Use a temp file to avoid shell buffer limits on large PDFs
-      const tmpFile = path.join(os.tmpdir(), `bookforge-stext-${Date.now()}.xml`);
+    for (let pageNum = 0; pageNum < pageCount; pageNum++) {
+      const page = this.doc.loadPage(pageNum);
+      const stext = page.toStructuredText('preserve-whitespace,preserve-images');
+      const jsonStr = stext.asJSON(1);
+      const stextData = JSON.parse(jsonStr);
 
-      try {
-        // Run mutool asynchronously to avoid blocking the main thread
-        // Note: Don't use stderr redirection - 2>NUL creates a file named NUL in Git Bash on Windows
-        await execAsync(`"${mutoolPath}" draw -F stext -o "${tmpFile}" "${pdfPath}"`, {
-          maxBuffer: 10 * 1024 * 1024
+      for (const block of stextData.blocks || []) {
+        totalBlocks++;
+
+        // Only process image blocks
+        if (block.type !== 'image' && !block.image) continue;
+
+        imageBlocksFound++;
+
+        // Parse bbox - raw coordinates from mupdf.js
+        let rawX: number, rawY: number, width: number, height: number;
+        if (Array.isArray(block.bbox) && block.bbox.length >= 4) {
+          const [x0, y0, x1, y1] = block.bbox;
+          rawX = x0;
+          rawY = y0;
+          width = x1 - x0;
+          height = y1 - y0;
+        } else if (block.bbox && typeof block.bbox.x === 'number') {
+          rawX = block.bbox.x;
+          rawY = block.bbox.y;
+          width = block.bbox.w;
+          height = block.bbox.h;
+        } else {
+          continue;
+        }
+
+        // Skip very small images
+        if (width < 20 || height < 20) continue;
+
+        // Apply origin offset (same as mutool-bridge does for text)
+        // This ensures image and text coordinates are in the same coordinate system
+        const pageDim = this.pageDimensions[pageNum];
+        const originX = pageDim?.originX || 0;
+        const originY = pageDim?.originY || 0;
+        const x = rawX - originX;
+        const y = rawY - originY;
+
+        // Log if there's a significant origin adjustment
+        if (originX !== 0 || originY !== 0) {
+          console.log(`[extractImageBlocks] Page ${pageNum}: Adjusting image coords from raw (${rawX.toFixed(1)}, ${rawY.toFixed(1)}) to adjusted (${x.toFixed(1)}, ${y.toFixed(1)}) with origin (${originX}, ${originY})`);
+        }
+
+        // Dedupe by page + rect (must include page number!) - using adjusted coordinates
+        const rectKey = `${pageNum}:${Math.round(x)},${Math.round(y)},${Math.round(x + width)},${Math.round(y + height)}`;
+        if (imageRects.has(rectKey)) continue;
+        imageRects.add(rectKey);
+
+        const blockId = this.hashId(`${pageNum}:img:${x.toFixed(0)},${y.toFixed(0)}`);
+
+        imageBlocks.push({
+          id: blockId,
+          page: pageNum,
+          x,
+          y,
+          width,
+          height,
+          text: `[Image ${Math.round(width)}x${Math.round(height)}]`,
+          font_size: 0,
+          font_name: 'image',
+          char_count: 0,
+          region: 'body',
+          category_id: '',
+          is_bold: false,
+          is_italic: false,
+          is_superscript: false,
+          is_image: true,
+          is_footnote_marker: false,
+          line_count: 0,
         });
-
-        // Read the temp file asynchronously
-        const result = await fsPromises.readFile(tmpFile, 'utf-8');
-        console.log(`  Got ${result.length} bytes of XML output`);
-
-        // Parse the XML output
-        this.parseSpansFromXml(result);
-
-        console.log(`  Extracted ${this.spans.length} spans with mutool`);
-        if (this.spans.length > 0) {
-          // Log first few spans for debugging
-          console.log(`  Sample spans:`);
-          for (let i = 0; i < Math.min(3, this.spans.length); i++) {
-            const s = this.spans[i];
-            console.log(`    Page ${s.page}: "${s.text.substring(0, 30)}" at (${s.x.toFixed(1)}, ${s.y.toFixed(1)})`);
-          }
-        }
-      } finally {
-        // Clean up temp file
-        try {
-          await fsPromises.unlink(tmpFile);
-        } catch {
-          // Ignore cleanup errors
-        }
-      }
-    } catch (err) {
-      console.log('mutool span extraction failed:', (err as Error).message);
-    }
-  }
-
-  private async findMutool(): Promise<string | null> {
-    // Check common locations - include Windows paths
-    const paths = process.platform === 'win32'
-      ? [
-          'mutool', // Try PATH first on Windows
-          'C:\\Program Files\\MuPDF\\mutool.exe',
-          'C:\\Program Files (x86)\\MuPDF\\mutool.exe'
-        ]
-      : [
-          '/opt/homebrew/bin/mutool',
-          '/usr/local/bin/mutool',
-          '/usr/bin/mutool',
-          'mutool' // Try PATH
-        ];
-
-    for (const p of paths) {
-      try {
-        await execAsync(`"${p}" -v`);
-        return p;
-      } catch {
-        // Not found at this path
-      }
-    }
-    return null;
-  }
-
-  private parseSpansFromXml(xml: string): void {
-    // Parse mutool stext XML output to extract spans
-    // Format: <page><block><line><font><char>...</font></line></block></page>
-
-    let currentPage = -1;
-    let currentFontName = '';
-    let currentFontSize = 0;
-    let spanChars: Array<{ char: string; x: number; y: number; x2: number; y2: number }> = [];
-    let pageCount = 0;
-    let fontCount = 0;
-    let charCount = 0;
-
-    const lines = xml.split('\n');
-    console.log(`  Parsing ${lines.length} lines of XML...`);
-
-    for (const line of lines) {
-      // Track page
-      const pageMatch = line.match(/<page id="page(\d+)"/);
-      if (pageMatch) {
-        // Flush previous span
-        this.flushSpan(currentPage, currentFontName, currentFontSize, spanChars);
-        spanChars = [];
-        currentPage = parseInt(pageMatch[1]) - 1; // Convert to 0-indexed
-        pageCount++;
-        continue;
-      }
-
-      // Track font changes
-      const fontMatch = line.match(/<font name="([^"]*)" size="([^"]*)"/);
-      if (fontMatch) {
-        // Flush previous span on font change
-        this.flushSpan(currentPage, currentFontName, currentFontSize, spanChars);
-        spanChars = [];
-        currentFontName = fontMatch[1];
-        currentFontSize = parseFloat(fontMatch[2]);
-        fontCount++;
-        continue;
-      }
-
-      // End of font section
-      if (line.includes('</font>')) {
-        this.flushSpan(currentPage, currentFontName, currentFontSize, spanChars);
-        spanChars = [];
-        continue;
-      }
-
-      // Parse character with quad coordinates
-      const charMatch = line.match(/<char quad="([^"]*)"[^>]*c="([^"]*)"/);
-      if (charMatch) {
-        const quad = charMatch[1].split(' ').map(parseFloat);
-        const char = charMatch[2];
-        // quad format: x0 y0 x1 y0 x0 y1 x1 y1 (top-left, top-right, bottom-left, bottom-right)
-        if (quad.length >= 8) {
-          spanChars.push({
-            char: char === '&amp;' ? '&' : char === '&lt;' ? '<' : char === '&gt;' ? '>' : char === '&quot;' ? '"' : char,
-            x: quad[0],
-            y: quad[1],
-            x2: quad[2],
-            y2: quad[5]
-          });
-          charCount++;
-        }
       }
     }
 
-    // Flush final span
-    this.flushSpan(currentPage, currentFontName, currentFontSize, spanChars);
-    console.log(`  XML parsing complete: ${pageCount} pages, ${fontCount} fonts, ${charCount} chars`);
-  }
-
-  private flushSpan(
-    page: number,
-    fontName: string,
-    fontSize: number,
-    chars: Array<{ char: string; x: number; y: number; x2: number; y2: number }>
-  ): void {
-    if (page < 0 || chars.length === 0) return;
-
-    const fontLower = fontName.toLowerCase();
-    const isBold = fontLower.includes('bold');
-    const isItalic = fontLower.includes('italic') || fontLower.includes('oblique');
-
-    // Create character-level spans for precise selection (e.g., footnote numbers)
-    // Keep in screen coordinates (Y=0 at top) for viewer display
-    for (const char of chars) {
-      // Skip whitespace
-      if (char.char === ' ' || char.char === '\t' || char.char === '\n') continue;
-
-      const spanId = this.hashId(`${page}:char:${char.x.toFixed(0)},${char.y.toFixed(0)}:${char.char}`);
-
-      this.spans.push({
-        id: spanId,
-        page,
-        x: char.x,
-        y: char.y,
-        width: char.x2 - char.x,
-        height: char.y2 - char.y,
-        text: char.char,
-        font_size: fontSize,
-        font_name: fontName,
-        is_bold: isBold,
-        is_italic: isItalic,
-        baseline_offset: 0,
-        block_id: '',
-      });
-    }
+    return imageBlocks;
   }
 
   /**
@@ -1189,14 +1164,13 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Clean up cache for a specific file hash
+   * Clean up cache for a specific file hash (includes render cache and analysis cache)
    */
   clearCache(fileHash: string): void {
     const cacheDir = path.join(this.getCacheBaseDir(), fileHash);
     if (fs.existsSync(cacheDir)) {
       try {
         fs.rmSync(cacheDir, { recursive: true, force: true });
-        console.log(`Cleared cache for ${fileHash}`);
       } catch (err) {
         console.error('Failed to clear cache:', err);
       }
@@ -1384,13 +1358,22 @@ export class PDFAnalyzer {
       }
     };
 
-    // Render previews in batches (fast)
-    for (let i = 0; i < totalPages; i += concurrency * 2) {
+    // Render previews in batches
+    // First batch: render initial pages immediately so user sees content fast
+    const initialBatchSize = Math.min(3, totalPages);
+    for (let j = 0; j < initialBatchSize; j++) {
+      await renderPreview(j);
+    }
+
+    // Remaining pages: render in batches with yields to keep UI responsive
+    for (let i = initialBatchSize; i < totalPages; i += concurrency * 2) {
       const batch = [];
       for (let j = i; j < Math.min(i + concurrency * 2, totalPages); j++) {
         batch.push(renderPreview(j));
       }
       await Promise.all(batch);
+      // Yield control to event loop so UI can update and respond to clicks
+      await new Promise(resolve => setImmediate(resolve));
     }
 
     // Phase 2: Render full quality in background (don't await)
@@ -1543,6 +1526,75 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Sample background color from around a specific rectangular region.
+   * Samples pixels just outside the region to determine local background.
+   */
+  private sampleBackgroundColorAroundRegion(
+    samples: Uint8ClampedArray | Uint8Array,
+    width: number,
+    height: number,
+    components: number,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number
+  ): { r: number; g: number; b: number } {
+    const margin = 5; // How far outside the region to sample
+    const sampleCount = 20; // Number of samples per edge
+
+    let totalR = 0, totalG = 0, totalB = 0;
+    let count = 0;
+
+    const samplePixel = (x: number, y: number) => {
+      const px = Math.floor(x);
+      const py = Math.floor(y);
+      if (px >= 0 && px < width && py >= 0 && py < height) {
+        const idx = (py * width + px) * components;
+        totalR += samples[idx];
+        totalG += samples[idx + 1];
+        totalB += samples[idx + 2];
+        count++;
+      }
+    };
+
+    // Sample along top edge (above region)
+    for (let i = 0; i < sampleCount; i++) {
+      const x = x1 + (x2 - x1) * i / (sampleCount - 1);
+      samplePixel(x, y1 - margin);
+    }
+
+    // Sample along bottom edge (below region)
+    for (let i = 0; i < sampleCount; i++) {
+      const x = x1 + (x2 - x1) * i / (sampleCount - 1);
+      samplePixel(x, y2 + margin);
+    }
+
+    // Sample along left edge (left of region)
+    for (let i = 0; i < sampleCount; i++) {
+      const y = y1 + (y2 - y1) * i / (sampleCount - 1);
+      samplePixel(x1 - margin, y);
+    }
+
+    // Sample along right edge (right of region)
+    for (let i = 0; i < sampleCount; i++) {
+      const y = y1 + (y2 - y1) * i / (sampleCount - 1);
+      samplePixel(x2 + margin, y);
+    }
+
+    // Fallback: if no samples (region at edge), sample page corners
+    if (count === 0) {
+      const bgColor = this.sampleBackgroundColor(samples, width, height, components);
+      return { r: bgColor[0], g: bgColor[1], b: bgColor[2] };
+    }
+
+    return {
+      r: Math.round(totalR / count),
+      g: Math.round(totalG / count),
+      b: Math.round(totalB / count)
+    };
+  }
+
+  /**
    * Fill a rectangle in pixel data with a solid color
    */
   private fillRectInPixels(
@@ -1570,17 +1622,59 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Apply background removal to pixel data - turns background-colored pixels to white.
+   * Works on scanned pages with yellowed/gray backgrounds.
+   */
+  private applyBackgroundRemoval(
+    samples: Uint8ClampedArray | Uint8Array,
+    width: number,
+    height: number,
+    components: number
+  ): void {
+    // Sample background color from corners and edges
+    const bgColor = this.sampleBackgroundColor(samples, width, height, components);
+    const [bgR, bgG, bgB] = bgColor;
+
+    // Replace background-like pixels with white
+    const tolerance = 60; // Color distance tolerance
+    const luminanceThreshold = 180; // Minimum luminance to be considered background
+
+    for (let i = 0; i < samples.length; i += components) {
+      const r = samples[i];
+      const g = samples[i + 1];
+      const b = samples[i + 2];
+
+      // Calculate luminance (perceived brightness)
+      const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+
+      // Calculate color distance from detected background
+      const dr = r - bgR;
+      const dg = g - bgG;
+      const db = b - bgB;
+      const colorDist = Math.sqrt(dr * dr + dg * dg + db * db);
+
+      // If pixel is light AND close to background color, make it white
+      if (luminance > luminanceThreshold && colorDist < tolerance) {
+        samples[i] = 255;     // R
+        samples[i + 1] = 255; // G
+        samples[i + 2] = 255; // B
+      }
+    }
+  }
+
+  /**
    * Render a page as PNG (base64)
    * @param redactRegions - Optional regions to blank out before rendering (for deleted/edited blocks)
    * @param fillRegions - Optional regions to fill with background color (for moved blocks)
-   * Uses the same redaction approach as exportPdfWithBackgroundsRemoved for consistency
+   * @param removeBackground - If true, also apply background removal (yellowed paper -> white)
    */
   async renderPage(
     pageNum: number,
     scale: number = 2.0,
     pdfPath?: string,
     redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>,
-    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>
+    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>,
+    removeBackground?: boolean
   ): Promise<string> {
     const mupdfLib = await getMupdf();
 
@@ -1600,67 +1694,52 @@ export class PDFAnalyzer {
       const mimeType = getMimeType(pathToUse);
       const tempDoc = mupdfLib.Document.openDocument(data, mimeType);
 
-      // Apply redactions using the same approach as export (which works)
-      if (hasRedactions && redactRegions) {
+      // Separate image and text regions
+      const imageRegions = redactRegions ? redactRegions.filter(r => r.isImage) : [];
+      const textRegions = redactRegions ? redactRegions.filter(r => !r.isImage) : [];
+
+      // Only use mupdf redaction for TEXT regions (not images)
+      // For images, we'll paint over them with background color after rendering
+      // This preserves the exact original text positioning
+      if (textRegions.length > 0) {
         const pdfDoc = tempDoc.asPDF();
         if (pdfDoc) {
           const pdfPage = pdfDoc.loadPage(pageNum) as any;
 
-          // Separate image and text regions
-          const imageRegions = redactRegions.filter(r => r.isImage);
-          const textRegions = redactRegions.filter(r => !r.isImage);
-
-          // First pass: Apply image-only redactions (preserve text/line art)
-          if (imageRegions.length > 0) {
-            for (const region of imageRegions) {
-              const rect: [number, number, number, number] = [
-                region.x,
-                region.y,
-                region.x + region.width,
-                region.y + region.height,
-              ];
-              const annot = pdfPage.createAnnotation('Redact');
-              annot.setRect(rect);
-            }
-            // Apply with: no black boxes, redact images, no line art, NO text
-            pdfPage.applyRedactions(false, 2, 0, 0);
+          for (const region of textRegions) {
+            const rect: [number, number, number, number] = [
+              region.x,
+              region.y,
+              region.x + region.width,
+              region.y + region.height,
+            ];
+            const annot = pdfPage.createAnnotation('Redact');
+            annot.setRect(rect);
           }
-
-          // Second pass: Apply text redactions
-          if (textRegions.length > 0) {
-            for (const region of textRegions) {
-              const rect: [number, number, number, number] = [
-                region.x,
-                region.y,
-                region.x + region.width,
-                region.y + region.height,
-              ];
-              const annot = pdfPage.createAnnotation('Redact');
-              annot.setRect(rect);
-            }
-            // Apply with: no black boxes, redact images, line art, AND text
-            pdfPage.applyRedactions(false, 2, 2, 2);
-          }
+          // Apply with: no black boxes, redact images, line art, AND text
+          pdfPage.applyRedactions(false, 2, 2, 0);
         }
       }
 
-      // Render the page with redactions applied
+      // Render the page (with text redactions applied if any)
       const renderPage = tempDoc.loadPage(pageNum);
       const matrix = mupdfLib.Matrix.scale(scale, scale);
       const pixmap = renderPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
 
-      // Apply background-color fill for moved blocks
-      if (fillRegions && fillRegions.length > 0) {
+      // Now paint over deleted images AND fill regions with background color
+      // This preserves exact text positioning while removing unwanted images
+      const hasImageOrFillRegions = imageRegions.length > 0 || (fillRegions && fillRegions.length > 0);
+      if (hasImageOrFillRegions) {
         const width = pixmap.getWidth();
         const height = pixmap.getHeight();
         const n = pixmap.getNumberOfComponents();
         const samples = pixmap.getPixels();
 
-        // Sample background color from page margins
+        // Sample background color from page margins (works for yellowed/scanned pages)
         const bgColor = this.sampleBackgroundColor(samples, width, height, n);
 
-        // Fill each region with background color (scaled to render coordinates)
-        for (const region of fillRegions) {
+        // Paint over deleted images with background color
+        for (const region of imageRegions) {
           this.fillRectInPixels(samples, width, height, n, {
             x: region.x * scale,
             y: region.y * scale,
@@ -1668,13 +1747,34 @@ export class PDFAnalyzer {
             h: region.height * scale
           }, bgColor);
         }
+
+        // Fill regions for moved blocks
+        if (fillRegions) {
+          for (const region of fillRegions) {
+            this.fillRectInPixels(samples, width, height, n, {
+              x: region.x * scale,
+              y: region.y * scale,
+              w: region.width * scale,
+              h: region.height * scale
+            }, bgColor);
+          }
+        }
+      }
+
+      // Apply background removal if requested (turns yellowed paper to white)
+      if (removeBackground) {
+        const width = pixmap.getWidth();
+        const height = pixmap.getHeight();
+        const n = pixmap.getNumberOfComponents();
+        const samples = pixmap.getPixels();
+        this.applyBackgroundRemoval(samples, width, height, n);
       }
 
       const pngData = pixmap.asPNG();
       return Buffer.from(pngData).toString('base64');
     }
 
-    // No redactions - check if we have fill regions
+    // No redactions - check if we have fill regions or background removal
     const hasFillRegions = fillRegions && fillRegions.length > 0;
 
     if (hasFillRegions) {
@@ -1709,6 +1809,11 @@ export class PDFAnalyzer {
         }, bgColor);
       }
 
+      // Apply background removal if requested (turns yellowed paper to white)
+      if (removeBackground) {
+        this.applyBackgroundRemoval(samples, width, height, n);
+      }
+
       const pngData = pixmap.asPNG();
       return Buffer.from(pngData).toString('base64');
     }
@@ -1721,6 +1826,16 @@ export class PDFAnalyzer {
     const page = this.doc.loadPage(pageNum);
     const matrix = mupdfLib.Matrix.scale(scale, scale);
     const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+
+    // Apply background removal if requested (turns yellowed paper to white)
+    if (removeBackground) {
+      const width = pixmap.getWidth();
+      const height = pixmap.getHeight();
+      const n = pixmap.getNumberOfComponents();
+      const samples = pixmap.getPixels();
+      this.applyBackgroundRemoval(samples, width, height, n);
+    }
+
     const pngData = pixmap.asPNG();
 
     return Buffer.from(pngData).toString('base64');
@@ -1887,16 +2002,10 @@ export class PDFAnalyzer {
    * Call this once at startup
    */
   async initializePdfBridge(): Promise<void> {
-    // Register bridges in order of preference
-    pdfBridgeManager.register(new BinaryPdfBridge());  // Prefer compiled binary if available
-    pdfBridgeManager.register(new PyMuPdfBridge());    // Fall back to Python subprocess
+    // Use mupdf.js exclusively - no fallbacks (fallbacks hide bugs)
+    pdfBridgeManager.register(new MupdfJsBridge());
 
-    try {
-      await pdfBridgeManager.initialize();
-    } catch (e) {
-      console.warn('[PDFAnalyzer] No PDF bridge available for redaction:', e);
-      // Don't throw - redaction will fail gracefully when attempted
-    }
+    await pdfBridgeManager.initialize();
   }
 
   // Simplified chapter type for bookmarks (only fields needed for export)
@@ -1907,8 +2016,13 @@ export class PDFAnalyzer {
     deletedPages?: Set<number>,
     chapters?: Array<{title: string; page: number; level: number}>
   ): Promise<string> {
-    // Use PDF bridge for reliable redaction
-    // mupdf.js redaction API has a bug where text is not actually removed
+    console.log(`[exportPdf] Received ${deletedRegions.length} deleted regions, ${ocrBlocks?.length || 0} OCR blocks`);
+    if (ocrBlocks && ocrBlocks.length > 0) {
+      console.log(`[exportPdf] First OCR block: page ${ocrBlocks[0].page}, text: "${ocrBlocks[0].text.substring(0, 50)}..."`);
+    } else {
+      console.log(`[exportPdf] NO OCR blocks received from Angular!`);
+    }
+    // Use PDF bridge for redaction (prefers mupdf.js, falls back to PyMuPDF)
 
     // Initialize bridge if not already done
     if (!pdfBridgeManager.isInitialized()) {
@@ -1967,31 +2081,55 @@ export class PDFAnalyzer {
     const outputPath = path.join(tmpDir, `bookforge-output-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
 
     try {
-      console.log(`[ExportPdf] Using ${pdfBridgeManager.getBridge().getName()}`);
-      console.log(`[ExportPdf] Input: ${pdfPath}`);
-      console.log(`[ExportPdf] Regions: ${regions.length}, Deleted pages: ${deletedPages?.size || 0}, Bookmarks: ${bookmarks.length}`);
+      // Log region breakdown
+      const imageRegions = regions.filter(r => r.isImage);
+      const textRegions = regions.filter(r => !r.isImage);
+      console.log(`[exportPdf] Total regions: ${regions.length}, Image regions: ${imageRegions.length}, Text regions: ${textRegions.length}`);
 
-      // Call bridge with bookmarks
-      await pdfBridgeManager.getBridge().redact(
-        pdfPath,
-        outputPath,
-        regions,
-        {
-          deletedPages: deletedPages ? Array.from(deletedPages) : [],
-          bookmarks: bookmarks
-        }
-      );
+      // Use overlay method to remove content by painting over it
+      // This avoids MuPDF's redaction API which corrupts fonts and text positioning
+      if (regions.length > 0) {
+        console.log(`[exportPdf] Using removeWithOverlay for ${regions.length} regions (avoids font corruption)`);
+        await pdfBridgeManager.getBridge().removeWithOverlay(
+          pdfPath,
+          outputPath,
+          regions,
+          {
+            deletedPages: deletedPages ? Array.from(deletedPages) : [],
+            bookmarks: bookmarks
+          }
+        );
+      } else {
+        // No regions to remove, just handle deleted pages and bookmarks
+        console.log(`[exportPdf] No regions to remove, just handling page deletions/bookmarks`);
+        await pdfBridgeManager.getBridge().redact(
+          pdfPath,
+          outputPath,
+          [],
+          {
+            deletedPages: deletedPages ? Array.from(deletedPages) : [],
+            bookmarks: bookmarks
+          }
+        );
+      }
 
       // Read the output PDF
       const outputData = await fsPromises.readFile(outputPath);
+      console.log(`[exportPdf] After redaction, PDF size: ${outputData.length} bytes`);
 
       // If we have OCR blocks to embed, do that with mupdf.js
       // (Bridge handled redaction and bookmarks, mupdf.js can handle text addition)
       if (ocrBlocks && ocrBlocks.length > 0) {
+        console.log(`[exportPdf] Embedding ${ocrBlocks.length} OCR blocks into PDF`);
+        for (const block of ocrBlocks.slice(0, 3)) {
+          console.log(`[exportPdf]   OCR block page ${block.page}: "${block.text.substring(0, 50)}..."`);
+        }
         const finalData = await this.embedOcrText(outputData, ocrBlocks, deletedPages);
+        console.log(`[exportPdf] Final PDF base64 length: ${finalData.length}`);
         return finalData;
       }
 
+      console.log(`[exportPdf] No OCR blocks to embed, returning redacted PDF`);
       // Return base64 encoded PDF
       return outputData.toString('base64');
 
@@ -2012,13 +2150,16 @@ export class PDFAnalyzer {
     ocrBlocks: OcrTextBlock[],
     deletedPages?: Set<number>
   ): Promise<string> {
+    console.log(`[embedOcrText] Starting with ${ocrBlocks.length} OCR blocks, PDF size: ${pdfData.length} bytes`);
     const mupdfLib = await getMupdf();
     const doc = mupdfLib.Document.openDocument(pdfData, 'application/pdf');
     const pdfDoc = doc.asPDF();
 
     if (!pdfDoc) {
+      console.error(`[embedOcrText] Failed to open PDF document`);
       return pdfData.toString('base64');
     }
+    console.log(`[embedOcrText] Opened PDF, ${pdfDoc.countPages()} pages`);
 
     const totalPages = pdfDoc.countPages();
 
@@ -2120,7 +2261,9 @@ export class PDFAnalyzer {
     }
 
     const buffer = pdfDoc.saveToBuffer('garbage,compress');
-    return Buffer.from(buffer.asUint8Array()).toString('base64');
+    const result = Buffer.from(buffer.asUint8Array());
+    console.log(`[embedOcrText] Final PDF size: ${result.length} bytes`);
+    return result.toString('base64');
   }
 
   /**
@@ -2395,6 +2538,213 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Export PDF with WYSIWYG rendering - exactly what the viewer shows
+   *
+   * UNIFIED APPROACH: Every page goes through the renderer. No exceptions.
+   *
+   * For each page:
+   * 1. Render to pixmap (same as viewer's renderPage)
+   * 2. Apply deletions by painting regions white
+   * 3. For pages with deleted background images, create white canvas and render OCR text as image
+   * 4. Add rendered image to output PDF
+   *
+   * This guarantees visual fidelity because export uses the exact same rendering as the viewer.
+   */
+  async exportPdfWysiwyg(
+    deletedRegions?: DeletedRegion[],
+    deletedPages?: Set<number>,
+    scale: number = 2.0,
+    progressCallback?: (current: number, total: number) => void,
+    ocrPages?: Array<{page: number; blocks: Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>}>
+  ): Promise<string> {
+    const mupdfLib = await getMupdf();
+
+    if (!this.doc) {
+      throw new Error('No document loaded');
+    }
+
+    // Build set of pages that have deleted backgrounds (will render white + OCR text)
+    const ocrPageSet = new Set<number>();
+    const ocrPageBlocks = new Map<number, Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>>();
+    if (ocrPages) {
+      for (const pageData of ocrPages) {
+        ocrPageSet.add(pageData.page);
+        ocrPageBlocks.set(pageData.page, pageData.blocks);
+      }
+    }
+
+    console.log(`[exportPdfWysiwyg] UNIFIED EXPORT: ${deletedRegions?.length || 0} deleted regions, ${deletedPages?.size || 0} deleted pages, ${ocrPageSet.size} pages with deleted backgrounds`);
+
+    const totalPages = this.doc.countPages();
+    const outputPageCount = deletedPages ? totalPages - deletedPages.size : totalPages;
+
+    // Group deleted regions by page
+    const regionsByPage = new Map<number, DeletedRegion[]>();
+    if (deletedRegions && deletedRegions.length > 0) {
+      for (const region of deletedRegions) {
+        if (deletedPages?.has(region.page)) continue;
+        if (!regionsByPage.has(region.page)) {
+          regionsByPage.set(region.page, []);
+        }
+        regionsByPage.get(region.page)!.push(region);
+      }
+    }
+
+    // Create output PDF
+    const outputDoc = new mupdfLib.PDFDocument() as any;
+
+    let processedPages = 0;
+    for (let pageNum = 0; pageNum < totalPages; pageNum++) {
+      if (deletedPages?.has(pageNum)) continue;
+
+      if (progressCallback) {
+        progressCallback(processedPages, outputPageCount);
+      }
+
+      const dims = this.pageDimensions[pageNum];
+      const pageWidth = dims?.width || 612;
+      const pageHeight = dims?.height || 792;
+      const pixelWidth = Math.round(pageWidth * scale);
+      const pixelHeight = Math.round(pageHeight * scale);
+
+      let pixmap: any;
+
+      // ========================================
+      // UNIFIED PATH: Always render to pixmap
+      // ========================================
+
+      if (ocrPageSet.has(pageNum)) {
+        // Page has deleted background - render white page with OCR text AS AN IMAGE
+        console.log(`[exportPdfWysiwyg] Page ${pageNum}: Rendering white + OCR text as image`);
+
+        const ocrBlocks = ocrPageBlocks.get(pageNum) || [];
+
+        // Create a temporary PDF with white background + text, then render it
+        const tempDoc = new mupdfLib.PDFDocument() as any;
+        const mediaBox: [number, number, number, number] = [0, 0, pageWidth, pageHeight];
+
+        if (ocrBlocks.length > 0) {
+          // Build content stream with text
+          let content = 'BT\n';
+
+          for (const block of ocrBlocks) {
+            // PDF y-coordinate (y=0 at bottom)
+            const pdfY = pageHeight - block.y - block.height;
+            const fontSize = Math.max(6, Math.min(72, block.font_size || 12));
+
+            // Escape text for PDF
+            const escapedText = block.text
+              .replace(/\\/g, '\\\\')
+              .replace(/\(/g, '\\(')
+              .replace(/\)/g, '\\)')
+              .replace(/\n/g, ' ');
+
+            content += `/F1 ${fontSize} Tf\n`;
+            content += `1 0 0 1 ${block.x.toFixed(2)} ${pdfY.toFixed(2)} Tm\n`;
+            content += `(${escapedText}) Tj\n`;
+          }
+
+          content += 'ET\n';
+
+          // Add Helvetica font
+          const fontDict = tempDoc.addObject({
+            Type: 'Font',
+            Subtype: 'Type1',
+            BaseFont: 'Helvetica',
+            Encoding: 'WinAnsiEncoding'
+          });
+          const resources = tempDoc.addObject({ Font: { F1: fontDict } });
+          const pageObj = tempDoc.addPage(mediaBox, 0, resources, content);
+          tempDoc.insertPage(-1, pageObj);
+        } else {
+          // Blank white page
+          const pageObj = tempDoc.addPage(mediaBox, 0, null, '');
+          tempDoc.insertPage(-1, pageObj);
+        }
+
+        // RENDER the temp document to pixmap - this is the key!
+        const tempPage = tempDoc.loadPage(0);
+        const matrix = mupdfLib.Matrix.scale(scale, scale);
+        pixmap = tempPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+
+        console.log(`[exportPdfWysiwyg] Page ${pageNum}: Rendered OCR page to ${pixmap.getWidth()}x${pixmap.getHeight()} pixmap`);
+
+      } else {
+        // Normal page - render from source document
+        const page = this.doc.loadPage(pageNum);
+        const matrix = mupdfLib.Matrix.scale(scale, scale);
+        pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+
+        // Apply deletions by painting regions
+        const pageRegions = regionsByPage.get(pageNum) || [];
+        if (pageRegions.length > 0) {
+          const width = pixmap.getWidth();
+          const height = pixmap.getHeight();
+          const n = pixmap.getNumberOfComponents();
+          const samples = pixmap.getPixels();
+
+          console.log(`[exportPdfWysiwyg] Page ${pageNum}: Painting ${pageRegions.length} deleted regions`);
+
+          for (const region of pageRegions) {
+            // Flip Y-axis (PDF y=0 at bottom, pixmap y=0 at top)
+            const flippedY = pageHeight - region.y - region.height;
+
+            const x1 = Math.floor(region.x * scale);
+            const y1 = Math.floor(flippedY * scale);
+            const x2 = Math.ceil((region.x + region.width) * scale);
+            const y2 = Math.ceil((flippedY + region.height) * scale);
+
+            // Skip suspicious large regions
+            const regionArea = (x2 - x1) * (y2 - y1);
+            if (regionArea > width * height * 0.5) {
+              console.warn(`[exportPdfWysiwyg] Skipping suspicious large region on page ${pageNum}`);
+              continue;
+            }
+
+            // Sample background color
+            const bgColor = this.sampleBackgroundColorAroundRegion(samples, width, height, n, x1, y1, x2, y2);
+
+            // Paint the region
+            for (let y = Math.max(0, y1); y < Math.min(height, y2); y++) {
+              for (let x = Math.max(0, x1); x < Math.min(width, x2); x++) {
+                const idx = (y * width + x) * n;
+                samples[idx] = bgColor.r;
+                samples[idx + 1] = bgColor.g;
+                samples[idx + 2] = bgColor.b;
+                if (n > 3) samples[idx + 3] = 255;
+              }
+            }
+          }
+        }
+      }
+
+      // ========================================
+      // UNIFIED OUTPUT: Always add as image
+      // ========================================
+
+      const image = new mupdfLib.Image(pixmap, undefined);
+      const outputMediaBox: [number, number, number, number] = [0, 0, pageWidth, pageHeight];
+      const content = `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Img Do Q`;
+
+      const imgRef = outputDoc.addImage(image);
+      const resources = outputDoc.addObject({ XObject: { Img: imgRef } });
+      const pageObj = outputDoc.addPage(outputMediaBox, 0, resources, content);
+      outputDoc.insertPage(-1, pageObj);
+
+      processedPages++;
+    }
+
+    if (progressCallback) {
+      progressCallback(outputPageCount, outputPageCount);
+    }
+
+    const buffer = outputDoc.saveToBuffer('compress');
+    const base64 = Buffer.from(buffer.asUint8Array()).toString('base64');
+    console.log(`[exportPdfWysiwyg] Exported ${processedPages} pages, ${buffer.asUint8Array().length} bytes`);
+    return base64;
+  }
+
+  /**
    * Close the document
    */
   close(): void {
@@ -2406,28 +2756,83 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Assemble PDF from canvas-rendered images (WYSIWYG export)
+   *
+   * This takes screenshots from the viewer canvas and assembles them into a PDF.
+   * Guarantees exact match with what the viewer shows.
+   *
+   * @param pages - Array of { pageNum, imageData (data URL), width, height }
+   * @param chapters - Optional chapter bookmarks to add
+   * @returns Base64-encoded PDF
+   */
+  async assembleFromImages(
+    pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>,
+    chapters?: Chapter[]
+  ): Promise<string> {
+    const mupdfLib = await getMupdf();
+
+    console.log(`[assembleFromImages] Creating PDF from ${pages.length} canvas images`);
+
+    // Create output PDF
+    const outputDoc = new mupdfLib.PDFDocument() as any;
+
+    for (const page of pages) {
+      // Extract base64 from data URL
+      const base64Match = page.imageData.match(/^data:image\/\w+;base64,(.+)$/);
+      if (!base64Match) {
+        console.error(`[assembleFromImages] Invalid data URL for page ${page.pageNum}`);
+        continue;
+      }
+
+      const base64Data = base64Match[1];
+      const imageBuffer = Buffer.from(base64Data, 'base64');
+
+      // Create image from PNG data
+      const image = new mupdfLib.Image(imageBuffer);
+
+      // Create page with the image
+      const mediaBox: [number, number, number, number] = [0, 0, page.width, page.height];
+      const content = `q ${page.width} 0 0 ${page.height} 0 0 cm /Img Do Q`;
+
+      const imgRef = outputDoc.addImage(image);
+      const resources = outputDoc.addObject({ XObject: { Img: imgRef } });
+      const pageObj = outputDoc.addPage(mediaBox, 0, resources, content);
+      outputDoc.insertPage(-1, pageObj);
+    }
+
+    // Save to buffer
+    let buffer = outputDoc.saveToBuffer('compress');
+    let base64 = Buffer.from(buffer.asUint8Array()).toString('base64');
+
+    // Add bookmarks if chapters provided
+    if (chapters && chapters.length > 0) {
+      try {
+        const pdfData = Buffer.from(base64, 'base64');
+        const withBookmarks = await this.addBookmarksToPdf(pdfData, chapters);
+        base64 = Buffer.from(withBookmarks).toString('base64');
+        console.log(`[assembleFromImages] Added ${chapters.length} bookmarks`);
+      } catch (err) {
+        console.warn(`[assembleFromImages] Failed to add bookmarks:`, err);
+      }
+    }
+
+    console.log(`[assembleFromImages] Created PDF with ${pages.length} pages`);
+    return base64;
+  }
+
+  /**
    * Find blocks within or near a given rectangle on a page
    * Falls back to spans if available, otherwise uses blocks
    */
   findSpansInRect(page: number, x: number, y: number, width: number, height: number): TextSpan[] {
-    console.log(`findSpansInRect: page=${page}, rect=(${x.toFixed(1)}, ${y.toFixed(1)}, ${width.toFixed(1)}x${height.toFixed(1)})`);
-    console.log(`  Total spans in document: ${this.spans.length}`);
-
     // First try spans if we have them
     const pageSpans = this.spans.filter(s => s.page === page);
-    console.log(`  Spans on page ${page}: ${pageSpans.length}`);
 
     if (pageSpans.length > 0) {
-      const result = this.findSpansInRectFromSpans(page, x, y, width, height, pageSpans);
-      console.log(`  Found ${result.length} matching spans`);
-      if (result.length > 0) {
-        console.log(`  First match: "${result[0].text}" at (${result[0].x.toFixed(1)}, ${result[0].y.toFixed(1)})`);
-      }
-      return result;
+      return this.findSpansInRectFromSpans(page, x, y, width, height, pageSpans);
     }
 
     // Fall back to blocks - convert matching blocks to "pseudo-spans"
-    console.log(`findSpansInRect: Using blocks (no spans available)`);
     const pageBlocks = this.blocks.filter(b => b.page === page);
 
     const centerX = x + width / 2;
@@ -2471,8 +2876,6 @@ export class PDFAnalyzer {
         matchingBlocks = [nearest.block];
       }
     }
-
-    console.log(`  Found ${matchingBlocks.length} blocks at (${x.toFixed(0)}, ${y.toFixed(0)})`);
 
     // Convert blocks to TextSpan format for compatibility
     return matchingBlocks.map(block => ({
@@ -2582,11 +2985,6 @@ export class PDFAnalyzer {
       grouped.push(current);
     }
 
-    console.log(`  Grouped ${spans.length} char spans into ${grouped.length} token spans`);
-    if (grouped.length > 0) {
-      console.log(`  Sample tokens: ${grouped.slice(0, 5).map(s => `"${s.text}"`).join(', ')}`);
-    }
-
     return grouped;
   }
 
@@ -2597,24 +2995,17 @@ export class PDFAnalyzer {
   analyzesamples(sampleSpans: TextSpan[]): SpanFingerprint | null {
     if (sampleSpans.length === 0) return null;
 
-    console.log(`analyzeSamples: ${sampleSpans.length} sample spans`);
-    console.log(`  Raw sample texts: ${sampleSpans.map(s => `"${s.text}" (size=${s.font_size.toFixed(1)}, baseline=${s.baseline_offset.toFixed(1)})`).join(', ')}`);
-
     // Filter samples to only include spans with similar properties.
     // When user draws boxes, they might accidentally catch body text too.
     // Use the most common font size to filter out accidentally-selected body text.
     const filteredSpans = this.filterSimilarSpans(sampleSpans);
-    console.log(`  After filtering: ${filteredSpans.length} similar spans`);
-    console.log(`  Filtered texts: ${filteredSpans.map(s => `"${s.text}"`).join(', ')}`);
 
     if (filteredSpans.length === 0) {
-      console.log('  ERROR: No similar spans after filtering');
       return null;
     }
 
     const texts = filteredSpans.map(s => s.text.trim()).filter(t => t.length > 0);
     if (texts.length === 0) {
-      console.log('  ERROR: No non-empty text in samples');
       return null;
     }
 
@@ -2698,9 +3089,6 @@ export class PDFAnalyzer {
       description: descriptions.length > 0 ? descriptions.join(', ') : 'matches sample properties'
     };
 
-    console.log(`  Fingerprint: ${fingerprint.description}`);
-    console.log(`  Filters: fontSize=${useFontSize}, fontName=${useFontName}, charClass=${charClass}, length=${useLength}`);
-
     return fingerprint;
   }
 
@@ -2763,9 +3151,6 @@ export class PDFAnalyzer {
     // Filter to only spans within 1pt of the most common size
     const filtered = spans.filter(s => Math.abs(s.font_size - mostCommonSize) <= 1);
 
-    console.log(`  filterSimilarSpans: ${spans.length} spans -> ${filtered.length} (size=${mostCommonSize})`);
-    console.log(`    Size groups: ${[...sizeGroups.entries()].map(([s, g]) => `${s}pt: ${g.length}`).join(', ')}`);
-
     return filtered.length > 0 ? filtered : spans;
   }
 
@@ -2802,8 +3187,6 @@ export class PDFAnalyzer {
 
     // Group character spans into tokens for matching
     const groupedSpans = this.groupAdjacentSpans(this.spans);
-    console.log(`findMatchingSpans: Searching ${groupedSpans.length} grouped spans`);
-    console.log(`  Fingerprint: ${fingerprint.description}`);
 
     for (const span of groupedSpans) {
       if (this.matchesFingerprint(span, fingerprint)) {
@@ -2825,8 +3208,6 @@ export class PDFAnalyzer {
         matchesByPage[span.page].push(match);
       }
     }
-
-    console.log(`  Found ${matches.length} matches across ${Object.keys(matchesByPage).length} pages`);
 
     return {
       matches,
@@ -2857,27 +3238,49 @@ export class PDFAnalyzer {
     try {
       regex = new RegExp(pattern, flags);
     } catch {
-      console.log(`findSpansByRegex: Invalid regex pattern: ${pattern}`);
+      console.error(`findSpansByRegex: Invalid regex pattern: ${pattern}`);
       return { matches: [], matchesByPage: {}, total: 0, pattern };
+    }
+
+    // Identify pages that have image blocks (mutool coordinates may be wrong on these)
+    const pagesWithImages = new Set<number>();
+    for (const block of this.blocks) {
+      if (block.is_image) {
+        pagesWithImages.add(block.page);
+      }
+    }
+
+    // Debug: log page dimensions to check for origin offsets
+    console.log('[findSpansByRegex] Searching for pattern:', pattern);
+    console.log('[findSpansByRegex] Pages with images (will use mupdf.js for these):', Array.from(pagesWithImages).join(', ') || 'none');
+    console.log('[findSpansByRegex] Page dimensions with non-zero origins:');
+    for (let i = 0; i < this.pageDimensions.length; i++) {
+      const dim = this.pageDimensions[i];
+      if (dim.originX !== 0 || dim.originY !== 0) {
+        console.log(`  Page ${i}: ${dim.width}x${dim.height}, origin=(${dim.originX}, ${dim.originY})${pagesWithImages.has(i) ? ' [HAS IMAGES]' : ''}`);
+      }
     }
 
     // Group character spans into tokens for matching
     const groupedSpans = this.groupAdjacentSpans(this.spans);
-    console.log(`findSpansByRegex: Searching ${groupedSpans.length} grouped spans with pattern: ${pattern}`);
-    console.log(`  Case sensitive: ${caseSensitive}`);
-    console.log(`  Font size filter: ${minFontSize} - ${maxFontSize}`);
-    console.log(`  Baseline filter: ${minBaseline ?? 'any'} - ${maxBaseline ?? 'any'}`);
 
-    for (const span of groupedSpans) {
+    // Debug: track first few matches per page
+    const debugMatchesPerPage: Record<number, number> = {};
+    // Track coordinate statistics for pages with/without images
+    const imagePageCoords: Array<{page: number; y: number; yRatio: number; text: string}> = [];
+    const normalPageCoords: Array<{page: number; y: number; yRatio: number; text: string}> = [];
+
+    // Helper function to process a span and check for matches
+    const processSpan = (span: TextSpan, source: string) => {
       const text = span.text.trim();
-      if (text.length === 0) continue;
+      if (text.length === 0) return;
 
       // Font size filter
-      if (span.font_size < minFontSize || span.font_size > maxFontSize) continue;
+      if (span.font_size < minFontSize || span.font_size > maxFontSize) return;
 
       // Baseline offset filter (for superscript/subscript detection)
-      if (minBaseline !== null && span.baseline_offset < minBaseline) continue;
-      if (maxBaseline !== null && span.baseline_offset > maxBaseline) continue;
+      if (minBaseline !== null && span.baseline_offset < minBaseline) return;
+      if (maxBaseline !== null && span.baseline_offset > maxBaseline) return;
 
       // Check if this span's text matches the pattern
       regex.lastIndex = 0;
@@ -2891,6 +3294,25 @@ export class PDFAnalyzer {
           text: text
         };
 
+        const dim = this.pageDimensions[span.page];
+        const hasImages = pagesWithImages.has(span.page);
+        const yRatio = dim ? span.y / dim.height : 0;
+
+        // Track coordinate statistics
+        if (hasImages) {
+          imagePageCoords.push({ page: span.page, y: span.y, yRatio, text });
+        } else {
+          normalPageCoords.push({ page: span.page, y: span.y, yRatio, text });
+        }
+
+        // Debug: log first 5 matches per page, with source info
+        const pageMatchCount = debugMatchesPerPage[span.page] || 0;
+        if (pageMatchCount < 5) {
+          const sourceFlag = hasImages ? ' [PAGE HAS IMAGES]' : '';
+          console.log(`[findSpansByRegex] Match on page ${span.page}: "${text}" at (${span.x.toFixed(1)}, ${span.y.toFixed(1)}) size ${span.width.toFixed(1)}x${span.height.toFixed(1)}, yRatio=${yRatio.toFixed(3)}, page dim: ${dim?.width}x${dim?.height}${sourceFlag}`);
+        }
+        debugMatchesPerPage[span.page] = pageMatchCount + 1;
+
         matches.push(match);
 
         // Group by page for O(1) lookup during render
@@ -2899,15 +3321,187 @@ export class PDFAnalyzer {
         }
         matchesByPage[span.page].push(match);
       }
+    };
+
+    // Process all mutool spans
+    for (const span of groupedSpans) {
+      const hasImages = pagesWithImages.has(span.page);
+      processSpan(span, hasImages ? 'mutool-image-page' : 'mutool');
     }
 
-    console.log(`  Found ${matches.length} span matches across ${Object.keys(matchesByPage).length} pages`);
+    // Log coordinate comparison between pages with/without images
+    if (imagePageCoords.length > 0 && normalPageCoords.length > 0) {
+      const avgImageYRatio = imagePageCoords.reduce((sum, c) => sum + c.yRatio, 0) / imagePageCoords.length;
+      const avgNormalYRatio = normalPageCoords.reduce((sum, c) => sum + c.yRatio, 0) / normalPageCoords.length;
+      console.log(`[findSpansByRegex] COORDINATE ANALYSIS:`);
+      console.log(`  - Pages WITH images: ${imagePageCoords.length} matches, avg yRatio=${avgImageYRatio.toFixed(3)}`);
+      console.log(`  - Pages WITHOUT images: ${normalPageCoords.length} matches, avg yRatio=${avgNormalYRatio.toFixed(3)}`);
+      if (Math.abs(avgImageYRatio - avgNormalYRatio) > 0.1) {
+        console.log(`  - WARNING: Large yRatio difference (${Math.abs(avgImageYRatio - avgNormalYRatio).toFixed(3)}) - possible coordinate system mismatch!`);
+      }
+    }
 
     return {
       matches,
       matchesByPage,
       total: matches.length,
       pattern
+    };
+  }
+
+  /**
+   * Extract text spans from a specific page using mupdf.js structured text.
+   * This can be used as an alternative to mutool for pages where mutool
+   * reports incorrect coordinates (e.g., pages with Form XObjects).
+   */
+  extractSpansFromPageMupdf(pageNum: number): TextSpan[] {
+    if (!this.doc) return [];
+
+    const page = this.doc.loadPage(pageNum);
+    const pageDim = this.pageDimensions[pageNum];
+    const originX = pageDim?.originX || 0;
+    const originY = pageDim?.originY || 0;
+    const pageHeight = pageDim?.height || 792;
+
+    console.log(`[extractSpansFromPageMupdf] Page ${pageNum}: dims=${pageDim?.width}x${pageDim?.height}, origin=(${originX}, ${originY})`);
+
+    // Get structured text with character-level detail
+    const stext = page.toStructuredText('preserve-whitespace,preserve-spans');
+    const jsonStr = stext.asJSON(1);
+    const stextData = JSON.parse(jsonStr);
+
+    const spans: TextSpan[] = [];
+    let spanCount = 0;
+    let loggedSamples = 0;
+
+    for (const block of stextData.blocks || []) {
+      if (block.type === 'image' || block.image) continue;
+
+      for (const line of block.lines || []) {
+        for (const span of line.spans || []) {
+          const text = span.text || '';
+          if (!text.trim()) continue;
+
+          // Parse bbox - mupdf.js returns [x0, y0, x1, y1] in device coordinates
+          let x: number, y: number, width: number, height: number;
+          let rawY0 = 0, rawY1 = 0;
+          if (Array.isArray(span.bbox) && span.bbox.length >= 4) {
+            const [x0, y0, x1, y1] = span.bbox;
+            rawY0 = y0;
+            rawY1 = y1;
+            x = x0 - originX;
+            y = y0 - originY;
+            width = x1 - x0;
+            height = y1 - y0;
+          } else if (span.bbox && typeof span.bbox.x === 'number') {
+            x = span.bbox.x - originX;
+            rawY0 = span.bbox.y;
+            rawY1 = span.bbox.y + span.bbox.h;
+            y = span.bbox.y - originY;
+            width = span.bbox.w;
+            height = span.bbox.h;
+          } else {
+            continue;
+          }
+
+          // Log first 10 spans and any that look like footnote numbers
+          const isFootnoteCandidate = /^\d{1,2}$/.test(text.trim());
+          if (loggedSamples < 10 || isFootnoteCandidate) {
+            const yRatio = y / pageHeight;
+            console.log(`  [mupdf span] "${text.trim().substring(0, 20)}" rawBbox=[${span.bbox?.join(',')}] -> y=${y.toFixed(1)} yRatio=${yRatio.toFixed(3)}${isFootnoteCandidate ? ' [FOOTNOTE?]' : ''}`);
+            if (!isFootnoteCandidate) loggedSamples++;
+          }
+
+          const fontName = span.font || 'unknown';
+          const fontSize = span.size || 10;
+          const fontLower = fontName.toLowerCase();
+
+          spans.push({
+            id: this.hashId(`mupdf:${pageNum}:${x.toFixed(0)},${y.toFixed(0)}:${spanCount++}`),
+            page: pageNum,
+            x,
+            y,
+            width,
+            height,
+            text,
+            font_size: fontSize,
+            font_name: fontName,
+            is_bold: fontLower.includes('bold'),
+            is_italic: fontLower.includes('italic') || fontLower.includes('oblique'),
+            baseline_offset: 0,
+            block_id: ''
+          });
+        }
+      }
+    }
+
+    console.log(`[extractSpansFromPageMupdf] Page ${pageNum}: extracted ${spans.length} spans`);
+    return spans;
+  }
+
+  /**
+   * Compare mutool and mupdf.js coordinates for a page to detect XObject issues.
+   * Returns diagnostic info about coordinate differences.
+   */
+  diagnosePageCoordinates(pageNum: number): {
+    mutoolSpanCount: number;
+    mupdfSpanCount: number;
+    hasSignificantDifference: boolean;
+    sampleComparisons: Array<{
+      text: string;
+      mutoolY: number;
+      mupdfY: number;
+      yDiff: number;
+    }>;
+  } {
+    // Get mutool spans for this page
+    const mutoolSpans = this.spans.filter(s => s.page === pageNum);
+
+    // Get mupdf spans for this page
+    const mupdfSpans = this.extractSpansFromPageMupdf(pageNum);
+
+    const pageDim = this.pageDimensions[pageNum];
+    const pageHeight = pageDim?.height || 792;
+
+    // Try to match spans by text content and compare coordinates
+    const comparisons: Array<{ text: string; mutoolY: number; mupdfY: number; yDiff: number }> = [];
+
+    for (const mutoolSpan of mutoolSpans.slice(0, 20)) { // Check first 20 spans
+      const text = mutoolSpan.text.trim();
+      if (text.length < 2) continue;
+
+      // Find matching mupdf span by text
+      const mupdfMatch = mupdfSpans.find(s => s.text.trim() === text);
+      if (mupdfMatch) {
+        const yDiff = Math.abs(mutoolSpan.y - mupdfMatch.y);
+        comparisons.push({
+          text: text.substring(0, 20),
+          mutoolY: mutoolSpan.y,
+          mupdfY: mupdfMatch.y,
+          yDiff
+        });
+      }
+    }
+
+    // Check if there's a significant coordinate difference
+    const significantDiffs = comparisons.filter(c => c.yDiff > pageHeight * 0.05); // > 5% of page height
+    const hasSignificantDifference = significantDiffs.length > comparisons.length * 0.3; // > 30% have big diffs
+
+    console.log(`[diagnosePageCoordinates] Page ${pageNum}:`);
+    console.log(`  mutool spans: ${mutoolSpans.length}, mupdf spans: ${mupdfSpans.length}`);
+    console.log(`  Comparisons: ${comparisons.length}, significant diffs: ${significantDiffs.length}`);
+    if (comparisons.length > 0) {
+      console.log(`  Sample comparisons:`);
+      for (const c of comparisons.slice(0, 5)) {
+        console.log(`    "${c.text}": mutool Y=${c.mutoolY.toFixed(1)}, mupdf Y=${c.mupdfY.toFixed(1)}, diff=${c.yDiff.toFixed(1)}`);
+      }
+    }
+
+    return {
+      mutoolSpanCount: mutoolSpans.length,
+      mupdfSpanCount: mupdfSpans.length,
+      hasSignificantDifference,
+      sampleComparisons: comparisons.slice(0, 10)
     };
   }
 
@@ -2969,6 +3563,44 @@ export class PDFAnalyzer {
       case 'mixed': return true;  // Match anything
       default: return true;
     }
+  }
+
+  /**
+   * Extract simple search patterns from a regex.
+   * For numeric patterns like ^\d{1,3}$, generates actual numbers to search.
+   * For more complex patterns, returns an empty array (will fall back to span matching).
+   */
+  private getSimplePatternsFromRegex(pattern: string): string[] {
+    const patterns: string[] = [];
+
+    // Detect numeric-only patterns: ^\d+$, ^\d{1,2}$, ^\d{1,3}$, etc.
+    const numericMatch = pattern.match(/^\^?\\d(\+|\{(\d+),?(\d+)?\})\$?$/);
+    if (numericMatch) {
+      let minDigits = 1;
+      let maxDigits = 3; // Default max for \d+
+
+      if (numericMatch[2]) {
+        minDigits = parseInt(numericMatch[2], 10);
+        maxDigits = numericMatch[3] ? parseInt(numericMatch[3], 10) : minDigits;
+      }
+
+      // Generate numbers from 1 to max for the digit range
+      // For footnote numbers, we typically want 1-999
+      const maxNum = Math.pow(10, maxDigits) - 1;
+      const minNum = Math.pow(10, minDigits - 1);
+
+      // Generate a reasonable set of numbers
+      for (let i = Math.max(1, minNum); i <= Math.min(maxNum, 200); i++) {
+        patterns.push(String(i));
+      }
+
+      console.log(`[getSimplePatternsFromRegex] Numeric pattern "${pattern}": generating ${patterns.length} numbers (${minNum}-${Math.min(maxNum, 200)})`);
+      return patterns;
+    }
+
+    // For other patterns, we can't easily enumerate - return empty
+    console.log(`[getSimplePatternsFromRegex] Complex pattern "${pattern}": cannot enumerate, will use span matching`);
+    return patterns;
   }
 
   /**
@@ -3238,8 +3870,6 @@ export class PDFAnalyzer {
       if (topLevelChapters.length > 0) {
         insertChaptersRecursive(sortedChapters, 0);
       }
-
-      console.log(`Added ${sortedChapters.length} bookmarks to PDF`);
     } catch (err) {
       console.error('Failed to add bookmarks:', err);
       // Return original PDF if bookmark addition fails
