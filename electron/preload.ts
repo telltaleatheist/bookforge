@@ -500,6 +500,13 @@ export interface DiffComparisonResult {
   chapters: DiffComparisonChapter[];
 }
 
+export interface DiffLoadProgress {
+  phase: 'loading-original' | 'loading-cleaned' | 'complete';
+  currentChapter: number;
+  totalChapters: number;
+  chapterTitle?: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Play Tab Types (XTTS Streaming)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -536,6 +543,68 @@ export interface TtsJobConfig {
   enableTextSplitting: boolean;
   outputFilename?: string;
   outputDir?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Parallel TTS Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ParallelWorkerStatus = 'pending' | 'running' | 'complete' | 'error';
+
+export interface ParallelWorkerState {
+  id: number;
+  sentenceStart: number;
+  sentenceEnd: number;
+  currentSentence: number;
+  completedSentences: number;
+  status: ParallelWorkerStatus;
+  error?: string;
+  pid?: number;
+}
+
+export interface ParallelTtsSettings {
+  device: 'gpu' | 'mps' | 'cpu';
+  language: string;
+  ttsEngine: string;
+  fineTuned: string;
+  temperature: number;
+  topP: number;
+  topK: number;
+  repetitionPenalty: number;
+  speed: number;
+  enableTextSplitting: boolean;
+}
+
+export interface ParallelConversionConfig {
+  workerCount: number;
+  epubPath: string;
+  outputDir: string;
+  settings: ParallelTtsSettings;
+  parallelMode: 'sentences' | 'chapters';
+}
+
+export interface ParallelAggregatedProgress {
+  phase: 'preparing' | 'converting' | 'assembling' | 'complete' | 'error';
+  totalSentences: number;
+  completedSentences: number;
+  percentage: number;
+  activeWorkers: number;
+  workers: ParallelWorkerState[];
+  estimatedRemaining: number;
+  message?: string;
+  error?: string;
+}
+
+export interface ParallelConversionResult {
+  success: boolean;
+  outputPath?: string;
+  error?: string;
+  duration?: number;
+}
+
+export interface HardwareRecommendation {
+  count: number;
+  reason: string;
 }
 
 export interface ElectronAPI {
@@ -580,6 +649,7 @@ export interface ElectronAPI {
     }>;
     readBinary: (filePath: string) => Promise<{ success: boolean; data?: Uint8Array; error?: string }>;
     exists: (filePath: string) => Promise<boolean>;
+    writeText: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>;
   };
   project: {
     save: (projectData: unknown, suggestedName?: string) => Promise<ProjectSaveResult>;
@@ -589,6 +659,8 @@ export interface ElectronAPI {
   dialog: {
     openPdf: () => Promise<OpenPdfResult>;
     openFolder: () => Promise<{ success: boolean; canceled?: boolean; folderPath?: string; error?: string }>;
+    saveEpub: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+    saveText: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
   };
   projects: {
     ensureFolder: () => Promise<{ success: boolean; path?: string; error?: string }>;
@@ -633,6 +705,11 @@ export interface ElectronAPI {
       metadata?: EpubMetadata;
       error?: string;
     }>;
+    loadCoverImage: (projectId: string, coverFilename: string) => Promise<{
+      success: boolean;
+      coverData?: string;
+      error?: string;
+    }>;
   };
   audiobook: {
     createProject: (sourcePath: string, originalFilename: string) => Promise<{
@@ -675,6 +752,7 @@ export interface ElectronAPI {
     setCover: (coverDataUrl: string) => Promise<{ success: boolean; error?: string }>;
     getChapterText: (chapterId: string) => Promise<{ success: boolean; data?: string; error?: string }>;
     getMetadata: () => Promise<{ success: boolean; data?: EpubMetadata | null; error?: string }>;
+    setMetadata: (metadata: Partial<EpubMetadata>) => Promise<{ success: boolean; error?: string }>;
     getChapters: () => Promise<{ success: boolean; data?: EpubChapter[]; error?: string }>;
     close: () => Promise<{ success: boolean; error?: string }>;
     saveModified: (outputPath: string) => Promise<{ success: boolean; data?: { outputPath: string }; error?: string }>;
@@ -754,6 +832,7 @@ export interface ElectronAPI {
       data?: DiffComparisonResult;
       error?: string;
     }>;
+    onLoadProgress: (callback: (progress: DiffLoadProgress) => void) => () => void;
   };
   ebookConvert: {
     isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
@@ -777,6 +856,15 @@ export interface ElectronAPI {
     onAudioGenerated: (callback: (event: PlayAudioGeneratedEvent) => void) => () => void;
     onStatus: (callback: (status: { message: string }) => void) => () => void;
     onSessionEnded: (callback: (data: { code: number }) => void) => () => void;
+  };
+  parallelTts: {
+    detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: HardwareRecommendation; error?: string }>;
+    startConversion: (jobId: string, config: ParallelConversionConfig) => Promise<{ success: boolean; data?: ParallelConversionResult; error?: string }>;
+    stopConversion: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
+    getProgress: (jobId: string) => Promise<{ success: boolean; data?: ParallelAggregatedProgress | null; error?: string }>;
+    isActive: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
+    onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number }) => void) => () => void;
   };
   platform: string;
 }
@@ -871,6 +959,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('file:read-binary', filePath),
     exists: (filePath: string) =>
       ipcRenderer.invoke('fs:exists', filePath),
+    writeText: (filePath: string, content: string) =>
+      ipcRenderer.invoke('fs:write-text', filePath, content),
   },
   project: {
     save: (projectData: unknown, suggestedName?: string) =>
@@ -885,6 +975,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('dialog:open-pdf'),
     openFolder: () =>
       ipcRenderer.invoke('dialog:open-folder'),
+    saveEpub: (defaultName?: string) =>
+      ipcRenderer.invoke('dialog:save-epub', defaultName),
+    saveText: (defaultName?: string) =>
+      ipcRenderer.invoke('dialog:save-text', defaultName),
   },
   projects: {
     ensureFolder: () =>
@@ -917,6 +1011,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('library:save-metadata', epubPath, metadata),
     loadMetadata: (epubPath: string) =>
       ipcRenderer.invoke('library:load-metadata', epubPath),
+    loadCoverImage: (projectId: string, coverFilename: string) =>
+      ipcRenderer.invoke('library:load-cover-image', projectId, coverFilename),
   },
   audiobook: {
     createProject: (sourcePath: string, originalFilename: string) =>
@@ -943,6 +1039,18 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:get-chapter-text', chapterId),
     getMetadata: () =>
       ipcRenderer.invoke('epub:get-metadata'),
+    setMetadata: (metadata: Partial<{
+      title: string;
+      subtitle?: string;
+      author: string;
+      authorFileAs?: string;
+      year?: string;
+      language: string;
+      identifier?: string;
+      publisher?: string;
+      description?: string;
+    }>) =>
+      ipcRenderer.invoke('epub:set-metadata', metadata),
     getChapters: () =>
       ipcRenderer.invoke('epub:get-chapters'),
     close: () =>
@@ -1109,6 +1217,11 @@ const electronAPI: ElectronAPI = {
   diff: {
     loadComparison: (originalPath: string, cleanedPath: string) =>
       ipcRenderer.invoke('diff:load-comparison', originalPath, cleanedPath),
+    onLoadProgress: (callback: (progress: DiffLoadProgress) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, progress: DiffLoadProgress) => callback(progress);
+      ipcRenderer.on('diff:load-progress', handler);
+      return () => ipcRenderer.removeListener('diff:load-progress', handler);
+    },
   },
   play: {
     startSession: () =>
@@ -1154,6 +1267,36 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('play:session-ended', listener);
       return () => {
         ipcRenderer.removeListener('play:session-ended', listener);
+      };
+    },
+  },
+  parallelTts: {
+    detectRecommendedWorkerCount: () =>
+      ipcRenderer.invoke('parallel-tts:detect-worker-count'),
+    startConversion: (jobId: string, config: ParallelConversionConfig) =>
+      ipcRenderer.invoke('parallel-tts:start-conversion', jobId, config),
+    stopConversion: (jobId: string) =>
+      ipcRenderer.invoke('parallel-tts:stop-conversion', jobId),
+    getProgress: (jobId: string) =>
+      ipcRenderer.invoke('parallel-tts:get-progress', jobId),
+    isActive: (jobId: string) =>
+      ipcRenderer.invoke('parallel-tts:is-active', jobId),
+    onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: ParallelAggregatedProgress }) => {
+        callback(data);
+      };
+      ipcRenderer.on('parallel-tts:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('parallel-tts:progress', listener);
+      };
+    },
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number }) => {
+        callback(data);
+      };
+      ipcRenderer.on('parallel-tts:complete', listener);
+      return () => {
+        ipcRenderer.removeListener('parallel-tts:complete', listener);
       };
     },
   },

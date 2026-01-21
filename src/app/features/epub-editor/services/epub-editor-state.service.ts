@@ -9,6 +9,7 @@ import {
   deserializeCategoryHighlights,
   SerializedCategoryHighlights,
 } from '../../../core/models/epub-highlight.types';
+import { BookMetadata, EpubChapter } from '../../../core/models/book-metadata.types';
 
 /**
  * EpubEditorStateService - Manages all editor state for an EPUB document
@@ -49,6 +50,18 @@ export class EpubEditorStateService {
   // Selection and deletion state
   readonly deletedHighlightIds = signal<Set<string>>(new Set());
   readonly selectedHighlightIds = signal<string[]>([]);
+
+  // Block-based deletion state (new system)
+  readonly deletedBlockIds = signal<Set<string>>(new Set());
+  readonly selectedBlockIds = signal<string[]>([]);
+
+  // Chapter markers for export
+  readonly chapters = signal<EpubChapter[]>([]);
+  readonly chaptersSource = signal<'toc' | 'heuristic' | 'manual' | 'mixed'>('manual');
+  readonly selectedChapterId = signal<string | null>(null);
+
+  // Book metadata for export
+  readonly metadata = signal<BookMetadata>({});
 
   // Undo/redo state
   private undoStack: EpubHistoryAction[] = [];
@@ -179,6 +192,10 @@ export class EpubEditorStateService {
     categories?: Record<string, EpubCategory>;
     categoryHighlights?: EpubCategoryHighlights | SerializedCategoryHighlights;
     deletedHighlightIds?: Set<string> | string[];
+    deletedBlockIds?: Set<string> | string[];
+    chapters?: EpubChapter[];
+    chaptersSource?: 'toc' | 'heuristic' | 'manual' | 'mixed';
+    metadata?: BookMetadata;
   }): void {
     this.epubPath.set(data.epubPath);
     this.epubName.set(data.epubName);
@@ -213,6 +230,30 @@ export class EpubEditorStateService {
     }
 
     this.selectedHighlightIds.set([]);
+
+    // Handle deleted block IDs (could be Set or array)
+    if (data.deletedBlockIds) {
+      if (data.deletedBlockIds instanceof Set) {
+        this.deletedBlockIds.set(data.deletedBlockIds);
+      } else {
+        this.deletedBlockIds.set(new Set(data.deletedBlockIds));
+      }
+    } else {
+      this.deletedBlockIds.set(new Set());
+    }
+    this.selectedBlockIds.set([]);
+
+    // Handle chapters
+    this.chapters.set(data.chapters || []);
+    this.chaptersSource.set(data.chaptersSource || 'manual');
+    this.selectedChapterId.set(null);
+
+    // Handle metadata (initialize from EPUB metadata if not provided)
+    this.metadata.set(data.metadata || {
+      title: data.title,
+      author: data.author,
+    });
+
     this.currentChapterId.set(null);
     this.epubLoaded.set(true);
 
@@ -238,6 +279,12 @@ export class EpubEditorStateService {
     this.categoryHighlights.set(new Map());
     this.deletedHighlightIds.set(new Set());
     this.selectedHighlightIds.set([]);
+    this.deletedBlockIds.set(new Set());
+    this.selectedBlockIds.set([]);
+    this.chapters.set([]);
+    this.chaptersSource.set('manual');
+    this.selectedChapterId.set(null);
+    this.metadata.set({});
     this.epubLoaded.set(false);
     this.clearHistory();
     this.hasUnsavedChanges.set(false);
@@ -510,6 +557,228 @@ export class EpubEditorStateService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // Block-Based Deletion Methods
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Toggle deletion state of a block
+   */
+  toggleBlockDeletion(blockId: string): void {
+    const deleted = new Set(this.deletedBlockIds());
+    const wasDeleted = deleted.has(blockId);
+
+    if (wasDeleted) {
+      deleted.delete(blockId);
+    } else {
+      deleted.add(blockId);
+    }
+
+    this.deletedBlockIds.set(deleted);
+
+    // Push to undo stack
+    this.pushHistory({
+      type: wasDeleted ? 'restore' : 'delete',
+      highlightIds: [blockId],
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()]
+    });
+
+    this.markChanged();
+  }
+
+  /**
+   * Delete multiple blocks
+   */
+  deleteBlocks(blockIds: string[]): void {
+    if (blockIds.length === 0) return;
+
+    const deleted = new Set(this.deletedBlockIds());
+    blockIds.forEach(id => deleted.add(id));
+    this.deletedBlockIds.set(deleted);
+
+    this.pushHistory({
+      type: 'delete',
+      highlightIds: blockIds,
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: []
+    });
+
+    this.selectedBlockIds.set([]);
+    this.markChanged();
+  }
+
+  /**
+   * Restore multiple blocks
+   */
+  restoreBlocks(blockIds: string[]): void {
+    if (blockIds.length === 0) return;
+
+    const deleted = new Set(this.deletedBlockIds());
+    blockIds.forEach(id => deleted.delete(id));
+    this.deletedBlockIds.set(deleted);
+
+    this.pushHistory({
+      type: 'restore',
+      highlightIds: blockIds,
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()]
+    });
+
+    this.markChanged();
+  }
+
+  /**
+   * Check if a block is deleted
+   */
+  isBlockDeleted(blockId: string): boolean {
+    return this.deletedBlockIds().has(blockId);
+  }
+
+  /**
+   * Select a block
+   */
+  selectBlock(blockId: string, addToSelection: boolean = false): void {
+    if (addToSelection) {
+      const current = this.selectedBlockIds();
+      if (current.includes(blockId)) {
+        this.selectedBlockIds.set(current.filter(id => id !== blockId));
+      } else {
+        this.selectedBlockIds.set([...current, blockId]);
+      }
+    } else {
+      this.selectedBlockIds.set([blockId]);
+    }
+  }
+
+  /**
+   * Clear block selection
+   */
+  clearBlockSelection(): void {
+    this.selectedBlockIds.set([]);
+  }
+
+  /**
+   * Delete selected blocks
+   */
+  deleteSelectedBlocks(): void {
+    this.deleteBlocks(this.selectedBlockIds());
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Chapter Methods
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Add a chapter marker
+   */
+  addChapter(chapter: EpubChapter): void {
+    this.chapters.update(chapters => {
+      const newChapters = [...chapters, chapter];
+      // Sort by section index, then by y position
+      return newChapters.sort((a, b) => {
+        if (a.sectionIndex !== b.sectionIndex) return a.sectionIndex - b.sectionIndex;
+        return (a.y || 0) - (b.y || 0);
+      });
+    });
+    this.selectedChapterId.set(chapter.id);
+    this.updateChaptersSource();
+    this.markChanged();
+  }
+
+  /**
+   * Remove a chapter marker
+   */
+  removeChapter(chapterId: string): void {
+    this.chapters.update(chapters => chapters.filter(c => c.id !== chapterId));
+    if (this.selectedChapterId() === chapterId) {
+      this.selectedChapterId.set(null);
+    }
+    this.updateChaptersSource();
+    this.markChanged();
+  }
+
+  /**
+   * Rename a chapter
+   */
+  renameChapter(chapterId: string, newTitle: string): void {
+    this.chapters.update(chapters =>
+      chapters.map(c => c.id === chapterId ? { ...c, title: newTitle } : c)
+    );
+    this.markChanged();
+  }
+
+  /**
+   * Update chapter position (for dragging)
+   */
+  updateChapterPosition(chapterId: string, sectionIndex: number, sectionHref: string, y: number, blockId?: string, blockText?: string): void {
+    this.chapters.update(chapters => {
+      const updated = chapters.map(c => {
+        if (c.id === chapterId) {
+          const updatedChapter = { ...c, sectionIndex, sectionHref, y, blockId };
+          // Optionally update title if snapped to a new block (only for manually named chapters)
+          if (blockText && c.source === 'manual') {
+            updatedChapter.title = blockText.length > 80 ? blockText.substring(0, 77) + '...' : blockText;
+          }
+          return updatedChapter;
+        }
+        return c;
+      });
+      // Re-sort after update
+      return updated.sort((a, b) => {
+        if (a.sectionIndex !== b.sectionIndex) return a.sectionIndex - b.sectionIndex;
+        return (a.y || 0) - (b.y || 0);
+      });
+    });
+    this.markChanged();
+  }
+
+  /**
+   * Clear all chapters
+   */
+  clearChapters(): void {
+    this.chapters.set([]);
+    this.selectedChapterId.set(null);
+    this.chaptersSource.set('manual');
+    this.markChanged();
+  }
+
+  /**
+   * Set chapters from TOC or detection
+   */
+  setChapters(chapters: EpubChapter[], source: 'toc' | 'heuristic' | 'manual'): void {
+    this.chapters.set(chapters);
+    this.chaptersSource.set(source);
+    this.markChanged();
+  }
+
+  /**
+   * Update chapters source based on current chapters
+   */
+  private updateChaptersSource(): void {
+    const chapters = this.chapters();
+    if (chapters.length === 0) {
+      this.chaptersSource.set('manual');
+      return;
+    }
+
+    const sources = new Set(chapters.map(c => c.source));
+    if (sources.size === 1) {
+      const firstSource = sources.values().next().value;
+      this.chaptersSource.set(firstSource ?? 'manual');
+    } else {
+      this.chaptersSource.set('mixed');
+    }
+  }
+
+  /**
+   * Update book metadata
+   */
+  updateMetadata(metadata: BookMetadata): void {
+    this.metadata.set(metadata);
+    this.markChanged();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // Undo/Redo Methods
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -521,19 +790,19 @@ export class EpubEditorStateService {
     if (!action) return undefined;
 
     if (action.type === 'delete') {
-      // Reverse deletion - restore highlights
-      const deleted = new Set(this.deletedHighlightIds());
+      // Reverse deletion - restore blocks
+      const deleted = new Set(this.deletedBlockIds());
       action.highlightIds.forEach(id => deleted.delete(id));
-      this.deletedHighlightIds.set(deleted);
+      this.deletedBlockIds.set(deleted);
     } else if (action.type === 'restore') {
-      // Reverse restoration - delete highlights
-      const deleted = new Set(this.deletedHighlightIds());
+      // Reverse restoration - delete blocks
+      const deleted = new Set(this.deletedBlockIds());
       action.highlightIds.forEach(id => deleted.add(id));
-      this.deletedHighlightIds.set(deleted);
+      this.deletedBlockIds.set(deleted);
     }
 
     // Restore selection
-    this.selectedHighlightIds.set(action.selectionBefore);
+    this.selectedBlockIds.set(action.selectionBefore);
 
     // Push to redo stack
     this.redoStack.push(action);
@@ -552,18 +821,18 @@ export class EpubEditorStateService {
 
     if (action.type === 'delete') {
       // Re-apply deletion
-      const deleted = new Set(this.deletedHighlightIds());
+      const deleted = new Set(this.deletedBlockIds());
       action.highlightIds.forEach(id => deleted.add(id));
-      this.deletedHighlightIds.set(deleted);
+      this.deletedBlockIds.set(deleted);
     } else if (action.type === 'restore') {
       // Re-apply restoration
-      const deleted = new Set(this.deletedHighlightIds());
+      const deleted = new Set(this.deletedBlockIds());
       action.highlightIds.forEach(id => deleted.delete(id));
-      this.deletedHighlightIds.set(deleted);
+      this.deletedBlockIds.set(deleted);
     }
 
     // Restore selection
-    this.selectedHighlightIds.set(action.selectionAfter);
+    this.selectedBlockIds.set(action.selectionAfter);
 
     // Push to undo stack
     this.undoStack.push(action);
@@ -638,6 +907,10 @@ export class EpubEditorStateService {
     categories: Record<string, EpubCategory>;
     categoryHighlights: SerializedCategoryHighlights;
     deletedHighlightIds: string[];
+    deletedBlockIds: string[];
+    chapters: EpubChapter[];
+    chaptersSource: 'toc' | 'heuristic' | 'manual' | 'mixed';
+    metadata: BookMetadata;
     undoStack: EpubHistoryAction[];
     redoStack: EpubHistoryAction[];
   } {
@@ -649,6 +922,10 @@ export class EpubEditorStateService {
       categories: this.categories(),
       categoryHighlights: serializeCategoryHighlights(this.categoryHighlights()),
       deletedHighlightIds: Array.from(this.deletedHighlightIds()),
+      deletedBlockIds: Array.from(this.deletedBlockIds()),
+      chapters: this.chapters(),
+      chaptersSource: this.chaptersSource(),
+      metadata: this.metadata(),
       undoStack: this.undoStack,
       redoStack: this.redoStack,
     };

@@ -1,7 +1,7 @@
 import { Component, input, signal, computed, OnInit, OnDestroy, inject, ElementRef, ViewChild, output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { DiffService } from '../../services/diff.service';
+import { DiffService, DiffLoadingProgress } from '../../services/diff.service';
 import { DiffChapter, DiffWord } from '../../../../core/models/diff.types';
 import { Subscription } from 'rxjs';
 
@@ -72,9 +72,36 @@ interface ChapterWithSegments {
 
       <!-- Loading state -->
       @if (loading()) {
-        <div class="state-message">
-          <span class="spinner">&#8635;</span>
-          <span>Loading...</span>
+        <div class="state-message loading-state">
+          @if (loadingProgress(); as progress) {
+            <div class="progress-container">
+              <div class="progress-bar">
+                <div class="progress-fill" [style.width.%]="progress.percentage"></div>
+              </div>
+              <div class="progress-info">
+                <span class="progress-phase">
+                  @switch (progress.phase) {
+                    @case ('loading-original') { Loading original... }
+                    @case ('loading-cleaned') { Loading cleaned... }
+                    @case ('computing-diff') { Computing differences... }
+                    @default { Loading... }
+                  }
+                </span>
+                <span class="progress-detail">
+                  @if (progress.chapterTitle) {
+                    {{ progress.chapterTitle }}
+                  }
+                  @if (progress.totalChapters > 0) {
+                    ({{ progress.currentChapter }}/{{ progress.totalChapters }})
+                  }
+                </span>
+                <span class="progress-percent">{{ progress.percentage }}%</span>
+              </div>
+            </div>
+          } @else {
+            <span class="spinner">&#8635;</span>
+            <span>Loading...</span>
+          }
         </div>
       } @else if (error()) {
         <div class="state-message error">
@@ -168,6 +195,13 @@ interface ChapterWithSegments {
     </div>
   `,
   styles: [`
+    :host {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+    }
+
     .diff-view {
       display: flex;
       flex-direction: column;
@@ -175,8 +209,9 @@ interface ChapterWithSegments {
       border: 1px solid var(--border-default);
       border-radius: 8px;
       overflow: hidden;
-      height: 100%;
-      min-height: 300px;
+      flex: 1;
+      min-height: 0;
+      width: 100%;
       position: relative;
     }
 
@@ -238,6 +273,60 @@ interface ChapterWithSegments {
       &.error {
         color: var(--accent-danger);
       }
+
+      &.loading-state {
+        padding: 2rem;
+      }
+    }
+
+    .progress-container {
+      width: 100%;
+      max-width: 400px;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .progress-bar {
+      height: 8px;
+      background: var(--bg-subtle);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #ff6b35 0%, #ff8c5a 100%);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+
+    .progress-info {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.25rem;
+    }
+
+    .progress-phase {
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .progress-detail {
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+      max-width: 300px;
+      text-overflow: ellipsis;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .progress-percent {
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
     }
 
     .spinner {
@@ -451,6 +540,7 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
   readonly currentChangeIndex = signal(0);
+  readonly loadingProgress = signal<DiffLoadingProgress | null>(null);
 
   // Tooltip state
   readonly tooltipVisible = signal(false);
@@ -502,6 +592,7 @@ export class DiffViewComponent implements OnInit, OnDestroy {
     this.subscriptions.push(
       this.diffService.loading$.subscribe(loading => this.loading.set(loading)),
       this.diffService.error$.subscribe(error => this.error.set(error)),
+      this.diffService.loadingProgress$.subscribe(progress => this.loadingProgress.set(progress)),
       this.diffService.session$.subscribe(session => {
         if (session) {
           this.chapters.set(session.chapters);

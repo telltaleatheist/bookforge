@@ -7,6 +7,7 @@ import {
   OnDestroy,
   ViewChild,
   HostListener,
+  effect,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -15,16 +16,28 @@ import { EpubjsService } from './services/epubjs.service';
 import { EpubEditorStateService } from './services/epub-editor-state.service';
 import { EpubSearchService, EpubSearchMatch } from './services/epub-search.service';
 import { EpubExportService } from './services/epub-export.service';
-import { EpubViewerComponent, EpubSelectionEvent } from './components/epub-viewer/epub-viewer.component';
+import { EpubViewerComponent, EpubSelectionEvent, EpubHighlightClickEvent } from './components/epub-viewer/epub-viewer.component';
+import { EpubBlock, ChapterMarkerEvent, ChapterMarkerDragEvent } from './services/epubjs.service';
 import { EpubCategoriesPanelComponent } from './components/epub-categories-panel/epub-categories-panel.component';
 import { ChapterNavComponent } from './components/chapter-nav/chapter-nav.component';
-import { ElectronService } from '../../core/services/electron.service';
+import { ChaptersPanelComponent } from '../pdf-picker/components/chapters-panel/chapters-panel.component';
+import { ExportSettingsModalComponent, ExportResult, ExportFormat } from '../pdf-picker/components/export-settings-modal/export-settings-modal.component';
+import { SplitPaneComponent } from '../../creamsicle-desktop';
+import { ElectronService, Chapter } from '../../core/services/electron.service';
 import { EpubHighlight, EpubCategory, getEpubHighlightId, EpubChapterInfo } from '../../core/models/epub-highlight.types';
+import { BookMetadata, EpubChapter } from '../../core/models/book-metadata.types';
 
 /**
  * Editor modes
  */
-type EditorMode = 'select' | 'search' | 'categories';
+type EditorMode = 'select' | 'search' | 'chapters';
+
+interface ModeInfo {
+  id: EditorMode;
+  icon: string;
+  label: string;
+  tooltip: string;
+}
 
 /**
  * EpubEditorComponent - Main page for EPUB editing
@@ -39,7 +52,16 @@ type EditorMode = 'select' | 'search' | 'categories';
 @Component({
   selector: 'app-epub-editor',
   standalone: true,
-  imports: [CommonModule, FormsModule, EpubViewerComponent, EpubCategoriesPanelComponent, ChapterNavComponent],
+  imports: [
+    CommonModule,
+    FormsModule,
+    EpubViewerComponent,
+    EpubCategoriesPanelComponent,
+    ChapterNavComponent,
+    ChaptersPanelComponent,
+    ExportSettingsModalComponent,
+    SplitPaneComponent
+  ],
   template: `
     <div class="epub-editor">
       <!-- Toolbar -->
@@ -57,7 +79,12 @@ type EditorMode = 'select' | 'search' | 'categories';
         </div>
 
         <div class="toolbar-center">
-          <!-- Empty center area - modes removed -->
+          <!-- Chapter navigation in center -->
+          @if (epubSource() && epubjs.isLoaded()) {
+            <app-chapter-nav
+              (chapterChanged)="onChapterNavChange($event)"
+            ></app-chapter-nav>
+          }
         </div>
 
         <div class="toolbar-right">
@@ -80,115 +107,173 @@ type EditorMode = 'select' | 'search' | 'categories';
           <button
             class="btn primary"
             [disabled]="!editorState.epubLoaded()"
-            (click)="exportEpub()"
-            title="Export EPUB"
+            (click)="showExportModal()"
+            title="Export (Cmd+E)"
           >
             Export
-          </button>
-          <button
-            class="btn"
-            [disabled]="!editorState.epubLoaded()"
-            (click)="transferToAudiobook()"
-            title="Transfer to Audiobook Producer"
-          >
-            \u{1F3A7} Audiobook
           </button>
         </div>
       </header>
 
-      <!-- Main content -->
-      <div class="main-content">
-        <!-- Left sidebar (always visible with search + categories) -->
-        <aside class="sidebar">
-          <!-- Search section -->
-          <div class="search-panel">
-            <h3>Search & Create Categories</h3>
-            <div class="search-input-group">
-              <input
-                type="text"
-                [(ngModel)]="searchQuery"
-                placeholder="Enter search pattern..."
-                (keyup.enter)="performSearch()"
-              />
-              <button class="btn" (click)="performSearch()" [disabled]="!searchQuery">
-                Search
-              </button>
+      <!-- Main Layout -->
+      @if (epubSource()) {
+        <desktop-split-pane
+          direction="horizontal"
+          [primarySize]="splitSize()"
+          [minSize]="400"
+          [maxSize]="3000"
+          (sizeChanged)="onSplitSizeChanged($event)"
+        >
+          <!-- Primary: Left Tools + Viewer -->
+          <div pane-primary class="viewer-pane-container">
+            <!-- Left Tools Sidebar -->
+            <div class="tools-sidebar">
+              <div class="tools-section">
+                <div class="tools-label">Tools</div>
+                @for (mode of modes; track mode.id) {
+                  <button
+                    class="menu-item"
+                    [class.active]="currentMode() === mode.id"
+                    [title]="mode.tooltip"
+                    (click)="setMode(mode.id)"
+                  >
+                    <span class="menu-icon">{{ mode.icon }}</span>
+                    <span class="menu-text">{{ mode.label }}</span>
+                  </button>
+                }
+              </div>
+
+              <div class="tools-divider"></div>
+
+              <div class="tools-section">
+                <div class="tools-label">Actions</div>
+                <button
+                  class="menu-item"
+                  [class.active]="editorState.selectedHighlightIds().length > 0"
+                  title="Delete selected highlights"
+                  [disabled]="editorState.selectedHighlightIds().length === 0"
+                  (click)="deleteSelectedHighlights()"
+                >
+                  <span class="menu-icon">🗑️</span>
+                  <span class="menu-text">Delete Selected</span>
+                </button>
+              </div>
             </div>
-            <label class="checkbox-label">
-              <input type="checkbox" [(ngModel)]="useRegex" />
-              Use regex
-            </label>
 
-            @if (isSearching()) {
-              <div class="searching">Searching...</div>
-            }
+            <!-- Viewer Area -->
+            <div class="viewer-wrapper">
+              @if (epubSource()) {
+                <app-epub-viewer
+                  [epubSource]="epubSource()"
+                  (selectionChanged)="onSelection($event)"
+                  (chapterChanged)="onChapterChange($event)"
+                  (highlightClicked)="onHighlightClick($event)"
+                  (blockClicked)="onBlockClick($event)"
+                  (marqueeSelect)="onMarqueeSelect($event)"
+                  (iframeKeydown)="onIframeKeydown($event)"
+                  (chapterMarkerClicked)="onChapterMarkerClick($event)"
+                  (chapterMarkerDragged)="onChapterMarkerDrag($event)"
+                  (chapterPlacement)="onChapterPlacement($event)"
+                  (loaded)="onEpubLoaded()"
+                  (loadError)="onEpubError($event)"
+                ></app-epub-viewer>
+              }
+            </div>
+          </div>
 
-            @if (searchResults().length > 0) {
-              <div class="search-results">
-                <div class="results-header">
-                  <span>{{ searchResults().length }} matches</span>
-                  <button class="btn small primary" (click)="createCategoryFromResults()">
-                    + Create Category
+          <!-- Secondary: Categories Panel (Right Side) -->
+          <div pane-secondary class="categories-pane">
+            <!-- Search Section -->
+            @if (currentMode() === 'search') {
+              <div class="search-panel">
+                <h3>Search & Create Categories</h3>
+                <div class="search-input-group">
+                  <input
+                    type="text"
+                    [(ngModel)]="searchQuery"
+                    placeholder="Enter search pattern..."
+                    (keyup.enter)="performSearch()"
+                  />
+                  <button class="btn" (click)="performSearch()" [disabled]="!searchQuery">
+                    Search
                   </button>
                 </div>
-                <div class="results-list">
-                  @for (result of searchResults(); track result.cfi) {
-                    <div
-                      class="result-item"
-                      (click)="goToResult(result)"
-                      [class.selected]="selectedResult()?.cfi === result.cfi"
-                    >
-                      <span class="result-chapter">{{ result.chapterLabel }}</span>
-                      <span class="result-text">{{ result.excerpt }}</span>
+                <label class="checkbox-label">
+                  <input type="checkbox" [(ngModel)]="useRegex" />
+                  Use regex
+                </label>
+
+                @if (isSearching()) {
+                  <div class="searching">Searching...</div>
+                }
+
+                @if (searchResults().length > 0) {
+                  <div class="search-results">
+                    <div class="results-header">
+                      <span>{{ searchResults().length }} matches</span>
+                      <button class="btn small primary" (click)="createCategoryFromResults()">
+                        + Create Category
+                      </button>
                     </div>
-                  }
-                </div>
+                    <div class="results-list">
+                      @for (result of searchResults(); track result.cfi) {
+                        <div
+                          class="result-item"
+                          (click)="goToResult(result)"
+                          [class.selected]="selectedResult()?.cfi === result.cfi"
+                        >
+                          <span class="result-chapter">{{ result.chapterLabel }}</span>
+                          <span class="result-text">{{ result.excerpt }}</span>
+                        </div>
+                      }
+                    </div>
+                  </div>
+                }
+
+                <div class="panel-divider"></div>
               </div>
             }
+
+            <!-- Chapters Panel -->
+            @if (currentMode() === 'chapters') {
+              <app-chapters-panel
+                [chapters]="chaptersForPanel()"
+                [chaptersSource]="editorState.chaptersSource()"
+                [detecting]="detectingChapters()"
+                [finalizing]="finalizingChapters()"
+                [selectedChapterId]="editorState.selectedChapterId()"
+                [metadata]="editorState.metadata()"
+                [sourceName]="editorState.epubName()"
+                (cancel)="setMode('select')"
+                (autoDetect)="autoDetectChapters()"
+                (clearChapters)="clearChapters()"
+                (selectChapter)="selectChapter($event)"
+                (removeChapter)="removeChapter($event)"
+                (finalizeChapters)="finalizeChapters()"
+                (renameChapter)="renameChapter($event)"
+                (metadataChange)="onMetadataChange($event)"
+                (saveMetadata)="saveMetadata()"
+              ></app-chapters-panel>
+            } @else {
+              <!-- Categories Panel (for select/search modes) -->
+              <app-epub-categories-panel
+                [blocks]="epubjs.blocks()"
+                (categorySelected)="onCategorySelected($event)"
+                (jumpToHighlight)="onJumpToHighlight($event)"
+                (switchToSearch)="setMode('search')"
+              ></app-epub-categories-panel>
+            }
           </div>
-
-          <!-- Divider -->
-          <div class="sidebar-divider"></div>
-
-          <!-- Categories section -->
-          <div class="categories-section">
-            <app-epub-categories-panel
-              (categorySelected)="onCategorySelected($event)"
-              (jumpToHighlight)="onJumpToHighlight($event)"
-            ></app-epub-categories-panel>
-          </div>
-        </aside>
-
-        <!-- EPUB viewer -->
-        <div class="viewer-area">
-          <!-- Chapter navigation bar -->
-          @if (epubSource() && epubjs.isLoaded()) {
-            <div class="chapter-nav-bar">
-              <app-chapter-nav
-                (chapterChanged)="onChapterNavChange($event)"
-              ></app-chapter-nav>
-            </div>
-          }
-
-          @if (epubSource()) {
-            <app-epub-viewer
-              [epubSource]="epubSource()"
-              (selectionChanged)="onSelection($event)"
-              (chapterChanged)="onChapterChange($event)"
-              (loaded)="onEpubLoaded()"
-              (loadError)="onEpubError($event)"
-            ></app-epub-viewer>
-          } @else {
-            <div class="empty-state">
-              <span class="icon">\u{1F4D6}</span>
-              <h3>No EPUB loaded</h3>
-              <p>Open an EPUB file from the library to start editing.</p>
-              <button class="btn primary" (click)="openFilePicker()">Open EPUB</button>
-            </div>
-          }
+        </desktop-split-pane>
+      } @else {
+        <!-- Empty State -->
+        <div class="empty-state">
+          <span class="icon">\u{1F4D6}</span>
+          <h3>No EPUB loaded</h3>
+          <p>Open an EPUB file from the library to start editing.</p>
+          <button class="btn primary" (click)="openFilePicker()">Open EPUB</button>
         </div>
-
-      </div>
+      }
 
       <!-- Status bar -->
       <footer class="status-bar">
@@ -196,11 +281,20 @@ type EditorMode = 'select' | 'search' | 'categories';
           @if (editorState.currentChapterId()) {
             <span>Chapter: {{ getCurrentChapterLabel() }}</span>
           }
+          @if (currentMode() === 'select') {
+            <span class="mode-hint">Click to select, Delete key to remove, click deleted to restore</span>
+          }
         </div>
         <div class="status-center">
-          <span class="included">{{ editorState.includedChars() | number }} chars included</span>
-          <span class="divider">|</span>
-          <span class="excluded">{{ editorState.excludedChars() | number }} chars excluded</span>
+          <span class="stat">{{ epubjs.blocks().length }} blocks</span>
+          @if (editorState.selectedBlockIds().length > 0) {
+            <span class="divider">|</span>
+            <span class="selected-count">{{ editorState.selectedBlockIds().length }} selected</span>
+          }
+          @if (editorState.deletedBlockIds().size > 0) {
+            <span class="divider">|</span>
+            <span class="excluded">{{ editorState.deletedBlockIds().size }} deleted</span>
+          }
         </div>
         <div class="status-right">
           @if (editorState.hasUnsavedChanges()) {
@@ -234,6 +328,16 @@ type EditorMode = 'select' | 'search' | 'categories';
         </div>
       </div>
     }
+
+    <!-- Export Settings Modal -->
+    @if (showExportSettings()) {
+      <app-export-settings-modal
+        [pdfName]="editorState.epubName() || 'Untitled'"
+        [totalPages]="epubjs.totalChapters()"
+        [availableFormats]="['epub', 'txt', 'audiobook']"
+        (result)="onExportResult($event)"
+      />
+    }
   `,
   styles: [`
     :host {
@@ -257,6 +361,7 @@ type EditorMode = 'select' | 'search' | 'categories';
       padding: 0 1rem;
       background: var(--bg-elevated);
       border-bottom: 1px solid var(--border-default);
+      flex-shrink: 0;
     }
 
     .toolbar-left, .toolbar-right {
@@ -268,6 +373,8 @@ type EditorMode = 'select' | 'search' | 'categories';
     .toolbar-center {
       display: flex;
       align-items: center;
+      flex: 1;
+      justify-content: center;
     }
 
     .doc-info {
@@ -288,58 +395,110 @@ type EditorMode = 'select' | 'search' | 'categories';
       color: var(--text-secondary);
     }
 
-    .mode-switcher {
+    /* Main Layout */
+    .viewer-pane-container {
       display: flex;
-      gap: 2px;
-      background: var(--bg-surface);
-      padding: 2px;
-      border-radius: 6px;
+      height: 100%;
+      overflow: hidden;
     }
 
-    .mode-btn {
+    /* Left Tools Sidebar */
+    .tools-sidebar {
+      width: 180px;
+      min-width: 180px;
+      background: var(--bg-elevated);
+      border-right: 1px solid var(--border-default);
+      display: flex;
+      flex-direction: column;
+      padding: 0.5rem 0;
+    }
+
+    .tools-section {
+      padding: 0 0.5rem;
+    }
+
+    .tools-label {
+      font-size: 0.625rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      padding: 0.5rem 0.75rem 0.25rem;
+      letter-spacing: 0.05em;
+    }
+
+    .tools-divider {
+      height: 1px;
+      background: var(--border-default);
+      margin: 0.5rem 0;
+    }
+
+    .menu-item {
       display: flex;
       align-items: center;
-      gap: 0.25rem;
-      padding: 0.375rem 0.75rem;
-      background: transparent;
-      border: none;
+      gap: 0.5rem;
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid transparent;
       border-radius: 4px;
+      background: transparent;
       color: var(--text-secondary);
       font-size: 0.75rem;
       cursor: pointer;
+      text-align: left;
       transition: all 0.15s ease;
 
-      &:hover {
+      &:hover:not(:disabled) {
         background: var(--bg-hover);
         color: var(--text-primary);
       }
 
       &.active {
-        background: var(--accent-primary);
-        color: white;
+        background: var(--accent-subtle);
+        border-color: var(--accent);
+
+        .menu-text {
+          color: var(--accent);
+          font-weight: 500;
+        }
       }
 
-      .icon {
-        font-size: 1rem;
+      &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
     }
 
-    /* Main content */
-    .main-content {
-      display: flex;
+    .menu-icon {
+      font-size: 1rem;
+      width: 1.25rem;
+      text-align: center;
+    }
+
+    .menu-text {
+      flex: 1;
+    }
+
+    /* Viewer Wrapper */
+    .viewer-wrapper {
       flex: 1;
       overflow: hidden;
-    }
-
-    .sidebar {
-      width: 320px;
-      min-width: 320px;
-      background: var(--bg-elevated);
-      border-right: 1px solid var(--border-default);
-      padding: 1rem;
-      overflow-y: auto;
       display: flex;
       flex-direction: column;
+    }
+
+    /* Categories Pane (Right Side) */
+    .categories-pane {
+      height: 100%;
+      overflow-y: auto;
+      background: var(--bg-elevated);
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Search Panel */
+    .search-panel {
+      flex-shrink: 0;
 
       h3 {
         margin: 0 0 0.75rem 0;
@@ -349,42 +508,6 @@ type EditorMode = 'select' | 'search' | 'categories';
       }
     }
 
-    .search-panel {
-      flex-shrink: 0;
-    }
-
-    .sidebar-divider {
-      height: 1px;
-      background: var(--border-default);
-      margin: 1rem 0;
-      flex-shrink: 0;
-    }
-
-    .categories-section {
-      flex: 1;
-      overflow-y: auto;
-      min-height: 0;
-    }
-
-    .selection-sidebar {
-      border-right: none;
-      border-left: 1px solid var(--border-default);
-    }
-
-    .viewer-area {
-      flex: 1;
-      padding: 1rem;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .chapter-nav-bar {
-      padding: 0 0 0.75rem 0;
-      flex-shrink: 0;
-    }
-
-    /* Search panel */
     .search-input-group {
       display: flex;
       gap: 0.5rem;
@@ -407,7 +530,7 @@ type EditorMode = 'select' | 'search' | 'categories';
       gap: 0.5rem;
       font-size: 0.75rem;
       color: var(--text-secondary);
-      margin-bottom: 1rem;
+      margin-bottom: 0.5rem;
     }
 
     .searching {
@@ -417,7 +540,7 @@ type EditorMode = 'select' | 'search' | 'categories';
     }
 
     .search-results {
-      margin-top: 1rem;
+      margin-top: 0.5rem;
     }
 
     .results-header {
@@ -433,7 +556,7 @@ type EditorMode = 'select' | 'search' | 'categories';
       display: flex;
       flex-direction: column;
       gap: 0.25rem;
-      max-height: 400px;
+      max-height: 300px;
       overflow-y: auto;
     }
 
@@ -471,67 +594,10 @@ type EditorMode = 'select' | 'search' | 'categories';
       overflow: hidden;
     }
 
-    /* Categories panel */
-    .category-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-    }
-
-    .category-item {
-      padding: 0.75rem;
-      background: var(--bg-surface);
-      border-radius: 4px;
-      border-left: 3px solid var(--accent-primary);
-    }
-
-    .category-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 0.5rem;
-    }
-
-    .category-name {
-      font-weight: 500;
-      font-size: 0.875rem;
-      color: var(--text-primary);
-    }
-
-    .category-count {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      background: var(--bg-elevated);
-      padding: 0.125rem 0.375rem;
-      border-radius: 10px;
-    }
-
-    .category-actions {
-      display: flex;
-      gap: 0.5rem;
-    }
-
-    .empty-message {
-      color: var(--text-secondary);
-      font-size: 0.875rem;
-    }
-
-    /* Selection sidebar */
-    .selected-text-preview {
-      background: var(--bg-surface);
-      padding: 0.75rem;
-      border-radius: 4px;
-      font-size: 0.875rem;
-      color: var(--text-primary);
-      max-height: 200px;
-      overflow-y: auto;
-      margin-bottom: 1rem;
-    }
-
-    .selection-actions {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
+    .panel-divider {
+      height: 1px;
+      background: var(--border-default);
+      margin: 1rem 0;
     }
 
     /* Empty state */
@@ -540,7 +606,7 @@ type EditorMode = 'select' | 'search' | 'categories';
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100%;
+      flex: 1;
       gap: 0.5rem;
       color: var(--text-secondary);
 
@@ -570,6 +636,17 @@ type EditorMode = 'select' | 'search' | 'categories';
       border-top: 1px solid var(--border-default);
       font-size: 0.75rem;
       color: var(--text-secondary);
+      flex-shrink: 0;
+    }
+
+    .status-left {
+      display: flex;
+      gap: 1rem;
+    }
+
+    .mode-hint {
+      color: var(--text-tertiary);
+      font-style: italic;
     }
 
     .status-center {
@@ -579,6 +656,10 @@ type EditorMode = 'select' | 'search' | 'categories';
 
     .included {
       color: var(--accent-success);
+    }
+
+    .selected-count {
+      color: var(--accent);
     }
 
     .excluded {
@@ -620,14 +701,6 @@ type EditorMode = 'select' | 'search' | 'categories';
 
         &:hover:not(:disabled) {
           background: var(--accent-primary-hover);
-        }
-      }
-
-      &.danger {
-        color: var(--accent-danger);
-
-        &:hover:not(:disabled) {
-          background: color-mix(in srgb, var(--accent-danger) 10%, transparent);
         }
       }
 
@@ -728,9 +801,20 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
 
   @ViewChild(EpubViewerComponent) viewer!: EpubViewerComponent;
 
+  // Editor modes
+  readonly modes: ModeInfo[] = [
+    { id: 'select', icon: '🎯', label: 'Select', tooltip: 'Click blocks to select/delete (S)' },
+    { id: 'search', icon: '🔍', label: 'Search', tooltip: 'Search and create categories (F)' },
+    { id: 'chapters', icon: '📑', label: 'Chapters', tooltip: 'Define chapter markers (H)' },
+  ];
+
+  // Layout constants
+  private readonly CATEGORIES_WIDTH = 280;
+
   // Local state
-  readonly mode = signal<EditorMode>('select');
+  readonly currentMode = signal<EditorMode>('select');
   readonly epubSource = signal<string | ArrayBuffer | null>(null);
+  readonly splitSize = signal(Math.max(400, window.innerWidth - this.CATEGORIES_WIDTH));
 
   // Selection state
   readonly selectedText = signal<string | null>(null);
@@ -749,6 +833,72 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
   newCategoryDescription = '';
   newCategoryColor = '#ffff00';
 
+  // Export modal
+  readonly showExportSettings = signal(false);
+
+  // Chapters state
+  readonly detectingChapters = signal(false);
+  readonly finalizingChapters = signal(false);
+
+  /**
+   * Convert EpubChapter to Chapter format for the ChaptersPanel
+   * (ChaptersPanel expects page-based Chapter, we use sectionIndex)
+   */
+  readonly chaptersForPanel = computed<Chapter[]>(() => {
+    return this.editorState.chapters().map(ch => ({
+      id: ch.id,
+      title: ch.title,
+      page: ch.sectionIndex, // Use sectionIndex as "page"
+      blockId: ch.blockId,
+      y: ch.y,
+      level: ch.level,
+      source: ch.source,
+      confidence: ch.confidence,
+    }));
+  });
+
+  constructor() {
+    // Sync deleted blocks with the viewer when deletion state changes
+    effect(() => {
+      const deletedBlocks = this.editorState.deletedBlockIds();
+      if (this.viewer) {
+        this.viewer.setDeletedBlocks(deletedBlocks);
+      }
+    });
+
+    // Sync selected blocks with the viewer when selection state changes
+    effect(() => {
+      const selectedBlocks = new Set(this.editorState.selectedBlockIds());
+      if (this.viewer) {
+        this.viewer.setSelectedBlocks(selectedBlocks);
+      }
+    });
+
+    // Sync chapter markers with the viewer
+    effect(() => {
+      const chapters = this.editorState.chapters();
+      if (this.viewer) {
+        this.viewer.setChapterMarkers(chapters);
+      }
+    });
+
+    // Sync chapters mode with the viewer
+    effect(() => {
+      const isChaptersMode = this.currentMode() === 'chapters';
+      if (this.viewer) {
+        this.viewer.setChaptersMode(isChaptersMode);
+      }
+    });
+
+    // Sync selected chapter ID with the viewer
+    effect(() => {
+      const selectedChapterId = this.editorState.selectedChapterId();
+      if (this.viewer) {
+        this.viewer.setSelectedChapterId(selectedChapterId);
+      }
+    });
+  }
+
   ngOnInit(): void {
     // Check for epub path in route params or query params
     this.route.queryParams.subscribe(params => {
@@ -756,9 +906,18 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
         this.loadEpubFromPath(params['path']);
       }
     });
+
+    // Listen for window resize
+    window.addEventListener('resize', this.onWindowResize);
   }
 
+  private onWindowResize = (): void => {
+    // Update split size to maintain categories panel width
+    this.splitSize.set(Math.max(400, window.innerWidth - this.CATEGORIES_WIDTH));
+  };
+
   ngOnDestroy(): void {
+    window.removeEventListener('resize', this.onWindowResize);
     this.epubjs.destroy();
     this.editorState.reset();
   }
@@ -769,20 +928,32 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
   @HostListener('window:keydown', ['$event'])
   handleKeydown(event: KeyboardEvent): void {
     // Mode shortcuts (when not in input)
-    if ((event.target as HTMLElement).tagName !== 'INPUT') {
+    if ((event.target as HTMLElement).tagName !== 'INPUT' && (event.target as HTMLElement).tagName !== 'TEXTAREA') {
       if (event.key === 's' || event.key === 'S') {
         event.preventDefault();
         this.setMode('select');
       } else if (event.key === 'f' || event.key === 'F') {
         event.preventDefault();
         this.setMode('search');
-      } else if (event.key === 'c' || event.key === 'C') {
+      } else if (event.key === 'h' || event.key === 'H') {
         event.preventDefault();
-        this.setMode('categories');
+        this.setMode('chapters');
+      }
+
+      // Delete/Backspace to mark selected blocks as deleted
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        this.deleteSelectedBlocks();
+      }
+
+      // Escape to clear selection
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        this.editorState.clearBlockSelection();
       }
     }
 
-    // Undo/redo
+    // Undo/redo and export shortcut
     if (event.metaKey || event.ctrlKey) {
       if (event.key === 'z' && !event.shiftKey) {
         event.preventDefault();
@@ -790,7 +961,51 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
       } else if ((event.key === 'z' && event.shiftKey) || event.key === 'y') {
         event.preventDefault();
         this.redo();
+      } else if (event.key === 'e') {
+        event.preventDefault();
+        if (this.editorState.epubLoaded()) {
+          this.showExportSettings.set(true);
+        }
+      } else if (event.key === 'a') {
+        // Cmd+A to select all blocks
+        event.preventDefault();
+        this.selectAllBlocks();
       }
+    }
+  }
+
+  /**
+   * Delete selected blocks
+   */
+  deleteSelectedBlocks(): void {
+    const selected = this.editorState.selectedBlockIds();
+    if (selected.length > 0) {
+      this.editorState.deleteBlocks(selected);
+    }
+  }
+
+  /**
+   * Select all blocks
+   */
+  selectAllBlocks(): void {
+    const allBlockIds = this.epubjs.blocks().map(b => b.id);
+    this.editorState.selectedBlockIds.set(allBlockIds);
+  }
+
+  /**
+   * Handle marquee selection
+   */
+  onMarqueeSelect(event: { blockIds: string[]; additive: boolean }): void {
+    const { blockIds, additive } = event;
+
+    if (additive) {
+      // Add to existing selection
+      const current = new Set(this.editorState.selectedBlockIds());
+      blockIds.forEach(id => current.add(id));
+      this.editorState.selectedBlockIds.set(Array.from(current));
+    } else {
+      // Replace selection
+      this.editorState.selectedBlockIds.set(blockIds);
     }
   }
 
@@ -799,11 +1014,7 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
    */
   async loadEpubFromPath(filePath: string): Promise<void> {
     try {
-      // Read the file via Electron
-      // For now, we'll just set the path directly - epub.js can handle file paths
       this.epubSource.set(filePath);
-
-      // Extract filename
       const filename = filePath.split('/').pop() || 'Untitled.epub';
       this.editorState.epubPath.set(filePath);
       this.editorState.epubName.set(filename);
@@ -837,14 +1048,20 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
    * Set editor mode
    */
   setMode(newMode: EditorMode): void {
-    this.mode.set(newMode);
+    this.currentMode.set(newMode);
+  }
+
+  /**
+   * Handle split pane resize
+   */
+  onSplitSizeChanged(size: number): void {
+    this.splitSize.set(size);
   }
 
   /**
    * Handle EPUB loaded
    */
   onEpubLoaded(): void {
-    // Update editor state with epub.js data
     this.editorState.loadDocument({
       epubPath: this.editorState.epubPath(),
       epubName: this.editorState.epubName(),
@@ -853,6 +1070,34 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
       coverUrl: this.epubjs.coverUrl(),
       totalChapters: this.epubjs.totalChapters(),
     });
+
+    // Auto-load chapters from EPUB's TOC
+    this.loadChaptersFromToc();
+
+    // Sync initial deleted blocks state to viewer
+    setTimeout(() => {
+      if (this.viewer) {
+        this.viewer.setDeletedBlocks(this.editorState.deletedBlockIds());
+      }
+    }, 100);
+  }
+
+  /**
+   * Load chapters from the EPUB's table of contents
+   */
+  private loadChaptersFromToc(): void {
+    const tocChapters = this.epubjs.chapters();
+    if (tocChapters.length > 0) {
+      const chapters: EpubChapter[] = tocChapters.map((toc, index) => ({
+        id: `toc-${index}-${Date.now()}`,
+        title: toc.label,
+        sectionIndex: toc.index,
+        sectionHref: toc.href,
+        level: 1,
+        source: 'toc' as const,
+      }));
+      this.editorState.setChapters(chapters, 'toc');
+    }
   }
 
   /**
@@ -860,7 +1105,6 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
    */
   onEpubError(error: string): void {
     console.error('EPUB load error:', error);
-    // Could show a toast notification here
   }
 
   /**
@@ -876,6 +1120,77 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
    */
   onChapterChange(chapterId: string): void {
     this.editorState.currentChapterId.set(chapterId);
+  }
+
+  /**
+   * Handle highlight click - toggle deletion state (legacy, for search-based highlights)
+   */
+  onHighlightClick(event: EpubHighlightClickEvent): void {
+    if (event.highlightId) {
+      this.editorState.toggleHighlightDeletion(event.highlightId);
+      this.refreshHighlights();
+    }
+  }
+
+  /**
+   * Handle block click - select or restore if deleted
+   */
+  onBlockClick(event: { block: EpubBlock; additive: boolean }): void {
+    const { block, additive } = event;
+
+    // In chapters mode, clicking creates chapter markers
+    if (this.currentMode() === 'chapters') {
+      this.handleChapterModeBlockClick(block, additive);
+      return;
+    }
+
+    // If block is deleted, restore it on click
+    if (this.editorState.isBlockDeleted(block.id)) {
+      this.editorState.restoreBlocks([block.id]);
+      return;
+    }
+
+    // Otherwise, toggle selection
+    this.editorState.selectBlock(block.id, additive);
+  }
+
+  /**
+   * Handle keydown events forwarded from the iframe
+   */
+  onIframeKeydown(event: KeyboardEvent): void {
+    // Delete/Backspace to mark selected blocks as deleted
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      event.preventDefault();
+      this.deleteSelectedBlocks();
+    }
+
+    // Escape to clear selection
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.editorState.clearBlockSelection();
+    }
+
+    // Cmd+A to select all blocks
+    if ((event.metaKey || event.ctrlKey) && event.key === 'a') {
+      event.preventDefault();
+      this.selectAllBlocks();
+    }
+  }
+
+  /**
+   * Delete selected highlights
+   */
+  deleteSelectedHighlights(): void {
+    this.editorState.deleteSelectedHighlights();
+    this.refreshHighlights();
+  }
+
+  /**
+   * Refresh all highlights to reflect current deletion state
+   */
+  private refreshHighlights(): void {
+    this.viewer.clearAllHighlights();
+    this.viewer.applyAllHighlights();
   }
 
   /**
@@ -963,84 +1278,7 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
     }
 
     this.closeCreateCategoryModal();
-    this.setMode('categories');
-  }
-
-  /**
-   * Search for selected text
-   */
-  searchSelectedText(): void {
-    const text = this.selectedText();
-    if (!text) return;
-
-    this.searchQuery = text;
-    this.setMode('search');
-    this.performSearch();
-  }
-
-  /**
-   * Create highlight from current selection
-   */
-  createHighlightFromSelection(): void {
-    const cfi = this.selectedCfi();
-    const text = this.selectedText();
-    if (!cfi || !text) return;
-
-    // For now, just add a temporary highlight
-    // In a full implementation, this would open a category selector
-    this.viewer.addHighlight(cfi, 'selection', '#6495ED');
-  }
-
-  /**
-   * Select all highlights in a category
-   */
-  selectAllInCategory(categoryId: string): void {
-    this.editorState.selectAllInCategory(categoryId);
-  }
-
-  /**
-   * Delete all highlights in a category
-   */
-  deleteCategoryHighlights(categoryId: string): void {
-    this.editorState.deleteCategory(categoryId);
-  }
-
-  /**
-   * Undo last action
-   */
-  undo(): void {
-    this.editorState.undo();
-  }
-
-  /**
-   * Redo last undone action
-   */
-  redo(): void {
-    this.editorState.redo();
-  }
-
-  /**
-   * Export EPUB with deletions applied
-   */
-  async exportEpub(): Promise<void> {
-    try {
-      const preview = this.exportService.getExportPreview();
-      console.log(`Exporting EPUB with ${preview.deletedCount} deletions (${preview.deletedChars} chars)`);
-
-      const result = await this.exportService.exportWithDeletions();
-
-      if (result.success) {
-        console.log(`EPUB exported successfully to: ${result.outputPath}`);
-        // Mark as saved
-        this.editorState.markSaved();
-        // Could show a success notification here
-      } else {
-        console.error('Export failed:', result.error);
-        // Could show an error notification here
-      }
-    } catch (error) {
-      console.error('Export error:', error);
-    }
+    this.setMode('select');
   }
 
   /**
@@ -1048,7 +1286,6 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
    */
   onCategorySelected(categoryId: string): void {
     console.log('Category selected:', categoryId);
-    // Could scroll to first highlight in category
   }
 
   /**
@@ -1066,9 +1303,100 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
   }
 
   /**
+   * Undo last action
+   */
+  undo(): void {
+    this.editorState.undo();
+    this.refreshHighlights();
+  }
+
+  /**
+   * Redo last undone action
+   */
+  redo(): void {
+    this.editorState.redo();
+    this.refreshHighlights();
+  }
+
+  /**
+   * Show export modal
+   */
+  showExportModal(): void {
+    this.showExportSettings.set(true);
+  }
+
+  /**
+   * Handle export modal result
+   */
+  async onExportResult(result: ExportResult): Promise<void> {
+    this.showExportSettings.set(false);
+
+    if (!result.confirmed || !result.settings) {
+      return;
+    }
+
+    const format = result.settings.format;
+
+    if (format === 'audiobook') {
+      await this.transferToAudiobook();
+    } else if (format === 'epub') {
+      await this.exportEpub();
+    } else if (format === 'txt') {
+      await this.exportAsText();
+    }
+  }
+
+  /**
+   * Export EPUB with deletions applied
+   */
+  async exportEpub(): Promise<void> {
+    try {
+      const preview = this.exportService.getExportPreview();
+      console.log(`Exporting EPUB with ${preview.deletedCount} deletions (${preview.deletedChars} chars)`);
+
+      const result = await this.exportService.exportWithDeletions();
+
+      if (result.success) {
+        console.log(`EPUB exported successfully to: ${result.outputPath}`);
+        this.editorState.markSaved();
+      } else {
+        console.error('Export failed:', result.error);
+      }
+    } catch (error) {
+      console.error('Export error:', error);
+    }
+  }
+
+  /**
+   * Export as plain text
+   */
+  async exportAsText(): Promise<void> {
+    try {
+      const result = await this.exportService.exportAsText();
+
+      if (result.success && result.text) {
+        const epubName = this.editorState.epubName() || 'export';
+        const baseName = epubName.replace(/\.[^.]+$/, '');
+        const dialogResult = await this.electron.showSaveTextDialog(`${baseName}.txt`);
+
+        if (dialogResult.success && dialogResult.filePath) {
+          const writeResult = await this.electron.writeTextFile(dialogResult.filePath, result.text);
+          if (writeResult.success) {
+            console.log('Text exported successfully to:', dialogResult.filePath);
+          } else {
+            console.error('Failed to write text file:', writeResult.error);
+          }
+        }
+      } else {
+        console.error('Export as text failed:', result.error);
+      }
+    } catch (error) {
+      console.error('Export as text error:', error);
+    }
+  }
+
+  /**
    * Transfer EPUB to Audiobook Producer
-   * If there are deletions, exports first then transfers
-   * Otherwise transfers the original file
    */
   async transferToAudiobook(): Promise<void> {
     const epubPath = this.editorState.epubPath();
@@ -1079,7 +1407,6 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
       let transferPath = epubPath;
       const deletedCount = this.editorState.deletedHighlightIds().size;
 
-      // If there are deletions, export first
       if (deletedCount > 0) {
         const exportResult = await this.exportService.exportWithDeletions();
         if (!exportResult.success || !exportResult.outputPath) {
@@ -1090,12 +1417,10 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
         this.editorState.markSaved();
       }
 
-      // Copy to audiobook queue
       const result = await this.electron.copyToAudiobookQueue(transferPath, epubName);
 
       if (result.success) {
         console.log('EPUB transferred to Audiobook Producer');
-        // Navigate to audiobook producer
         this.router.navigate(['/audiobook']);
       } else {
         console.error('Transfer to Audiobook failed:', result.error);
@@ -1103,5 +1428,158 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
     } catch (error) {
       console.error('Transfer error:', error);
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Chapter Methods
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Auto-detect chapters from EPUB TOC (re-detect if already loaded)
+   */
+  async autoDetectChapters(): Promise<void> {
+    this.detectingChapters.set(true);
+    try {
+      this.loadChaptersFromToc();
+    } catch (error) {
+      console.error('Failed to auto-detect chapters:', error);
+    } finally {
+      this.detectingChapters.set(false);
+    }
+  }
+
+  /**
+   * Clear all chapters
+   */
+  clearChapters(): void {
+    this.editorState.clearChapters();
+  }
+
+  /**
+   * Select a chapter
+   */
+  selectChapter(chapterId: string): void {
+    this.editorState.selectedChapterId.set(chapterId);
+    // Navigate to the chapter
+    const chapter = this.editorState.chapters().find(c => c.id === chapterId);
+    if (chapter) {
+      this.viewer.goToChapter(chapter.sectionIndex);
+    }
+  }
+
+  /**
+   * Remove a chapter
+   */
+  removeChapter(chapterId: string): void {
+    this.editorState.removeChapter(chapterId);
+  }
+
+  /**
+   * Rename a chapter
+   */
+  renameChapter(event: { chapterId: string; newTitle: string }): void {
+    this.editorState.renameChapter(event.chapterId, event.newTitle);
+  }
+
+  /**
+   * Finalize chapters
+   */
+  async finalizeChapters(): Promise<void> {
+    this.finalizingChapters.set(true);
+    try {
+      // Save the project with chapter data
+      // For now, just mark as complete and exit chapters mode
+      this.editorState.markChanged();
+      this.setMode('select');
+    } finally {
+      this.finalizingChapters.set(false);
+    }
+  }
+
+  /**
+   * Handle metadata change from chapters panel
+   */
+  onMetadataChange(metadata: BookMetadata): void {
+    this.editorState.updateMetadata(metadata);
+  }
+
+  /**
+   * Save metadata
+   */
+  saveMetadata(): void {
+    this.editorState.markChanged();
+  }
+
+  /**
+   * Handle block click in chapters mode - create chapter marker
+   */
+  private handleChapterModeBlockClick(block: EpubBlock, additive: boolean): void {
+    // Check if this block already has a chapter marker
+    const existingChapter = this.editorState.chapters().find(c => c.blockId === block.id);
+    if (existingChapter) {
+      // Toggle: remove if already marked
+      this.editorState.removeChapter(existingChapter.id);
+      return;
+    }
+
+    // Get section info from block
+    const sectionHref = block.sectionHref;
+    const sectionIndex = this.epubjs.chapters().findIndex(ch => ch.href === sectionHref);
+
+    // Create new chapter
+    const level = additive ? 2 : 1; // Shift+click for section (level 2)
+    const chapter: EpubChapter = {
+      id: `manual-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      title: block.text.length > 80 ? block.text.substring(0, 77) + '...' : block.text,
+      sectionIndex: sectionIndex >= 0 ? sectionIndex : 0,
+      sectionHref,
+      blockId: block.id,
+      y: block.element.getBoundingClientRect().top,
+      level,
+      source: 'manual',
+    };
+
+    this.editorState.addChapter(chapter);
+  }
+
+  /**
+   * Handle chapter marker click - select the chapter
+   */
+  onChapterMarkerClick(event: ChapterMarkerEvent): void {
+    this.editorState.selectedChapterId.set(event.chapterId);
+  }
+
+  /**
+   * Handle chapter marker drag - update position
+   */
+  onChapterMarkerDrag(event: ChapterMarkerDragEvent): void {
+    this.editorState.updateChapterPosition(
+      event.chapterId,
+      event.sectionIndex,
+      event.sectionHref,
+      event.y,
+      event.blockId,
+      event.blockText
+    );
+  }
+
+  /**
+   * Handle chapter placement (click in empty area in chapters mode)
+   */
+  onChapterPlacement(event: ChapterMarkerDragEvent): void {
+    // Create new chapter at the clicked position
+    const chapter: EpubChapter = {
+      id: `manual-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      title: event.blockText || 'New Chapter',
+      sectionIndex: event.sectionIndex,
+      sectionHref: event.sectionHref,
+      blockId: event.blockId,
+      y: event.y,
+      level: 1,
+      source: 'manual',
+    };
+
+    this.editorState.addChapter(chapter);
+    this.editorState.selectedChapterId.set(chapter.id);
   }
 }

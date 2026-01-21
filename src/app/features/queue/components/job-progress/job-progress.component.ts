@@ -1,11 +1,23 @@
 /**
  * Job Progress Component - Displays detailed progress for the current job
+ *
+ * Implements Google Maps-style dynamic ETA calculation:
+ * - Tracks time per chunk completion
+ * - Calculates rolling average
+ * - Counts down between updates
+ * - Recalculates when new data arrives
  */
 
 import { Component, input, output, computed, signal, effect, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { QueueJob } from '../../models/queue.types';
+
+// ETA calculation state
+interface ETAState {
+  lastChunksCompleted: number;     // Last known chunks completed count
+  estimatedSecondsRemaining: number; // Current ETA countdown value
+}
 
 @Component({
   selector: 'app-job-progress',
@@ -54,8 +66,8 @@ import { QueueJob } from '../../models/queue.types';
           </div>
         </div>
 
-        @if (message()) {
-          <div class="progress-message">{{ message() }}</div>
+        @if (currentJob.progressMessage) {
+          <div class="progress-message">{{ currentJob.progressMessage }}</div>
         }
 
         <div class="progress-stats">
@@ -67,6 +79,12 @@ import { QueueJob } from '../../models/queue.types';
             <span class="stat-label">ETA</span>
             <span class="stat-value">{{ etaFormatted() }}</span>
           </div>
+          @if (job()?.totalChunksInJob) {
+            <div class="stat">
+              <span class="stat-label">Chunks</span>
+              <span class="stat-value">{{ job()!.chunksCompletedInJob || 0 }}/{{ job()!.totalChunksInJob }}</span>
+            </div>
+          }
         </div>
       </div>
     } @else {
@@ -225,8 +243,17 @@ export class JobProgressComponent implements OnDestroy {
   private timerInterval: ReturnType<typeof setInterval> | null = null;
   private readonly tick = signal(0);
 
-  // Track when job started for ETA calculation
+  // Track when job started for elapsed time
   private jobStartTime: number | null = null;
+
+  // ETA calculation state
+  private etaState: ETAState = {
+    lastChunksCompleted: 0,
+    estimatedSecondsRemaining: 0
+  };
+
+  // Signal to track current ETA countdown (decrements every second)
+  private readonly etaCountdown = signal<number>(0);
 
   constructor() {
     // Start timer when job changes
@@ -238,6 +265,22 @@ export class JobProgressComponent implements OnDestroy {
       } else {
         this.stopTimer();
         this.jobStartTime = null;
+        this.resetETAState();
+      }
+    });
+
+    // Track chunk completions and recalculate ETA
+    effect(() => {
+      const j = this.job();
+      if (!j || j.status !== 'processing') return;
+
+      const chunksCompleted = j.chunksCompletedInJob || 0;
+
+      // Check if a new chunk was completed
+      if (chunksCompleted > this.etaState.lastChunksCompleted) {
+        this.etaState.lastChunksCompleted = chunksCompleted;
+        // Recalculate ETA based on total elapsed time and chunks completed
+        this.recalculateETA(j);
       }
     });
   }
@@ -246,10 +289,61 @@ export class JobProgressComponent implements OnDestroy {
     this.stopTimer();
   }
 
+  private resetETAState(): void {
+    this.etaState = {
+      lastChunksCompleted: 0,
+      estimatedSecondsRemaining: 0
+    };
+    this.etaCountdown.set(0);
+  }
+
+  /**
+   * Recalculate ETA based on total elapsed time and chunks completed.
+   *
+   * Simple algorithm:
+   * 1. avgTimePerChunk = totalElapsedTime / chunksCompleted
+   * 2. remainingChunks = totalChunksInJob - chunksCompleted
+   * 3. ETA = remainingChunks × avgTimePerChunk
+   */
+  private recalculateETA(job: QueueJob): void {
+    const chunksCompleted = job.chunksCompletedInJob || 0;
+    const totalChunksInJob = job.totalChunksInJob || job.totalChunks || 0;
+
+    if (chunksCompleted === 0 || totalChunksInJob === 0 || !this.jobStartTime) {
+      return;
+    }
+
+    // Total elapsed time since job started
+    const totalElapsedMs = Date.now() - this.jobStartTime;
+    const totalElapsedSec = totalElapsedMs / 1000;
+
+    // Average time per chunk = total elapsed / chunks completed
+    const avgTimePerChunkSec = totalElapsedSec / chunksCompleted;
+
+    // Remaining chunks
+    const remainingChunks = totalChunksInJob - chunksCompleted;
+
+    // ETA = remaining chunks × avg time per chunk
+    const remainingSeconds = Math.round(remainingChunks * avgTimePerChunkSec);
+
+    // Update countdown
+    this.etaState.estimatedSecondsRemaining = remainingSeconds;
+    this.etaCountdown.set(remainingSeconds);
+
+    console.log(`[ETA] ${chunksCompleted}/${totalChunksInJob} done in ${totalElapsedSec.toFixed(0)}s → ${avgTimePerChunkSec.toFixed(1)}s/chunk`);
+    console.log(`[ETA] ${remainingChunks} remaining × ${avgTimePerChunkSec.toFixed(1)}s = ${remainingSeconds}s (${this.formatDuration(remainingSeconds)})`);
+  }
+
   private startTimer(): void {
     if (this.timerInterval) return;
     this.timerInterval = setInterval(() => {
       this.tick.update(t => t + 1);
+
+      // Countdown the ETA (but don't go below 0)
+      const currentEta = this.etaCountdown();
+      if (currentEta > 0) {
+        this.etaCountdown.set(currentEta - 1);
+      }
     }, 1000);
   }
 
@@ -273,18 +367,30 @@ export class JobProgressComponent implements OnDestroy {
     return this.formatDuration(elapsed);
   });
 
-  // Computed: ETA based on progress
+  // Computed: ETA - uses chunk-based countdown when available, falls back to percentage-based
   readonly etaFormatted = computed(() => {
     const j = this.job();
-    const elapsed = this.elapsedSeconds();
-    const progress = j?.progress || 0;
+    const countdown = this.etaCountdown();
+    this.tick(); // Subscribe to tick for countdown updates
 
-    if (progress <= 0 || elapsed <= 0) {
-      return 'Calculating...';
+    if (!j || j.status !== 'processing') {
+      return '-';
     }
 
+    const progress = j?.progress || 0;
     if (progress >= 100) {
       return 'Complete';
+    }
+
+    // If we have chunk-based ETA, use it
+    if (countdown > 0) {
+      return this.formatDuration(countdown);
+    }
+
+    // Fall back to percentage-based ETA if no chunk data yet
+    const elapsed = this.elapsedSeconds();
+    if (progress <= 0 || elapsed <= 0) {
+      return 'Calculating...';
     }
 
     // Calculate remaining time: (elapsed / progress) * remaining
@@ -293,6 +399,8 @@ export class JobProgressComponent implements OnDestroy {
   });
 
   private formatDuration(seconds: number): string {
+    if (seconds < 0) seconds = 0;
+
     if (seconds < 60) {
       return `${seconds}s`;
     }

@@ -194,6 +194,42 @@ export class EpubService {
   }
 
   /**
+   * Update metadata fields
+   * This sets the metadata in memory and marks it for saving when the EPUB is saved
+   */
+  async setMetadata(metadata: Partial<EpubMetadata>): Promise<boolean> {
+    if (!this.electron) {
+      this._error.set('Electron API not available');
+      return false;
+    }
+
+    try {
+      const result = await this.electron.epub.setMetadata(metadata);
+      if (!result.success) {
+        console.error('[EpubService] Failed to set metadata:', result.error);
+        this._error.set(result.error || 'Failed to set metadata');
+        return false;
+      }
+
+      // Update local structure with new metadata
+      const currentStructure = this._structure();
+      if (currentStructure) {
+        this._structure.set({
+          ...currentStructure,
+          metadata: { ...currentStructure.metadata, ...metadata }
+        });
+      }
+
+      this._hasModifications = true;
+      return true;
+    } catch (err) {
+      console.error('[EpubService] Error setting metadata:', err);
+      this._error.set(err instanceof Error ? err.message : 'Unknown error');
+      return false;
+    }
+  }
+
+  /**
    * Save the EPUB with any modifications (cover, text edits) to a new file
    * Returns the path to the saved file
    */

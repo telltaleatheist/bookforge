@@ -926,6 +926,21 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Subscribe to diff loading progress events
+   */
+  onDiffLoadProgress(callback: (progress: {
+    phase: 'loading-original' | 'loading-cleaned' | 'complete';
+    currentChapter: number;
+    totalChapters: number;
+    chapterTitle?: string;
+  }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.diff.onLoadProgress(callback);
+    }
+    return () => {}; // No-op for non-Electron
+  }
+
   // Ebook conversion operations (Calibre CLI integration)
   async isEbookConvertAvailable(): Promise<boolean> {
     if (this.isElectron) {
@@ -1026,6 +1041,40 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.epub.copyFile(inputPath, outputPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async showSaveEpubDialog(defaultName?: string): Promise<{
+    success: boolean;
+    canceled?: boolean;
+    filePath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.dialog.saveEpub(defaultName);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async showSaveTextDialog(defaultName?: string): Promise<{
+    success: boolean;
+    canceled?: boolean;
+    filePath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.dialog.saveText(defaultName);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async writeTextFile(filePath: string, content: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.fs.writeText(filePath, content);
     }
     return { success: false, error: 'Not running in Electron' };
   }

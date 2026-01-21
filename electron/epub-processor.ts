@@ -597,6 +597,8 @@ let currentProcessor: EpubProcessor | null = null;
 const modifiedChapters: Map<string, string> = new Map();
 // Track modified cover image (buffer and media type)
 let modifiedCover: { data: Buffer; mediaType: string } | null = null;
+// Track modified metadata for saving
+let modifiedMetadata: Partial<EpubMetadata> | null = null;
 
 export async function parseEpub(epubPath: string): Promise<EpubStructure> {
   if (currentProcessor) {
@@ -635,7 +637,22 @@ export async function getChapterText(chapterId: string): Promise<string> {
 export function getMetadata(): EpubMetadata | null {
   if (!currentProcessor) return null;
   const structure = currentProcessor.getStructure();
+  // Return modified metadata merged with original if available
+  if (modifiedMetadata && structure?.metadata) {
+    return { ...structure.metadata, ...modifiedMetadata };
+  }
   return structure?.metadata || null;
+}
+
+/**
+ * Set metadata to be saved when saveModifiedEpub is called
+ * Only provided fields will be updated; others remain unchanged
+ */
+export function setMetadata(metadata: Partial<EpubMetadata>): void {
+  if (!currentProcessor) {
+    throw new Error('No EPUB open');
+  }
+  modifiedMetadata = { ...modifiedMetadata, ...metadata };
 }
 
 export function getChapters(): EpubChapter[] {
@@ -651,6 +668,7 @@ export function closeEpub(): void {
   }
   modifiedChapters.clear();
   modifiedCover = null;
+  modifiedMetadata = null;
 }
 
 /**
@@ -729,7 +747,7 @@ export function clearCover(): void {
 }
 
 /**
- * Save the EPUB with modified chapter content and/or cover
+ * Save the EPUB with modified chapter content, cover, and/or metadata
  */
 export async function saveModifiedEpub(outputPath: string): Promise<void> {
   if (!currentProcessor) {
@@ -763,6 +781,15 @@ export async function saveModifiedEpub(outputPath: string): Promise<void> {
       continue;
     }
 
+    // Check if this is the OPF file and we have modified metadata
+    if (modifiedMetadata && entryName === structure.opfPath) {
+      console.log(`[EPUB] Updating metadata in: ${entryName}`);
+      const originalOpf = await currentProcessor.readFile(entryName);
+      const newOpf = updateOpfMetadata(originalOpf, modifiedMetadata);
+      zipWriter.addFile(entryName, Buffer.from(newOpf, 'utf8'));
+      continue;
+    }
+
     // Check if this is a chapter file that was modified
     let isModified = false;
     let modifiedContent: string | null = null;
@@ -791,6 +818,75 @@ export async function saveModifiedEpub(outputPath: string): Promise<void> {
   }
 
   await zipWriter.write(outputPath);
+}
+
+/**
+ * Update metadata in an OPF (Open Packaging Format) file
+ */
+function updateOpfMetadata(opf: string, metadata: Partial<EpubMetadata>): string {
+  let result = opf;
+
+  // Helper to update or add a dc: element
+  const updateDcElement = (tagName: string, value: string | undefined) => {
+    if (value === undefined) return;
+
+    const regex = new RegExp(`<dc:${tagName}[^>]*>([^<]*)</dc:${tagName}>`, 'i');
+    const match = result.match(regex);
+
+    if (match) {
+      // Replace existing element, preserving attributes
+      result = result.replace(regex, `<dc:${tagName}${match[0].match(/[^>]*>/)![0].slice(0, -1)}>${escapeXml(value)}</dc:${tagName}>`);
+    } else {
+      // Add new element inside <metadata> tag
+      const metadataMatch = result.match(/<metadata[^>]*>/i);
+      if (metadataMatch) {
+        const insertPoint = metadataMatch.index! + metadataMatch[0].length;
+        result = result.slice(0, insertPoint) + `\n    <dc:${tagName}>${escapeXml(value)}</dc:${tagName}>` + result.slice(insertPoint);
+      }
+    }
+  };
+
+  // Update each metadata field
+  if (metadata.title !== undefined) {
+    updateDcElement('title', metadata.title);
+  }
+
+  if (metadata.author !== undefined) {
+    updateDcElement('creator', metadata.author);
+  }
+
+  if (metadata.year !== undefined) {
+    updateDcElement('date', metadata.year);
+  }
+
+  if (metadata.language !== undefined) {
+    updateDcElement('language', metadata.language);
+  }
+
+  if (metadata.publisher !== undefined) {
+    updateDcElement('publisher', metadata.publisher);
+  }
+
+  if (metadata.description !== undefined) {
+    updateDcElement('description', metadata.description);
+  }
+
+  // Handle authorFileAs as file-as attribute on creator element
+  if (metadata.authorFileAs !== undefined) {
+    // Look for opf:file-as attribute on creator
+    const creatorRegex = /<dc:creator([^>]*)>([^<]*)<\/dc:creator>/i;
+    const creatorMatch = result.match(creatorRegex);
+    if (creatorMatch) {
+      let attributes = creatorMatch[1];
+      // Remove existing file-as attribute if present
+      attributes = attributes.replace(/\s*opf:file-as="[^"]*"/g, '');
+      // Add new file-as attribute
+      attributes = ` opf:file-as="${escapeXml(metadata.authorFileAs)}"` + attributes;
+      result = result.replace(creatorRegex, `<dc:creator${attributes}>${creatorMatch[2]}</dc:creator>`);
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -872,10 +968,25 @@ export async function loadEpubForComparison(epubPath: string): Promise<{
 }
 
 /**
+ * Progress callback for comparison loading
+ */
+export interface CompareEpubsProgress {
+  phase: 'loading-original' | 'loading-cleaned' | 'complete';
+  currentChapter: number;
+  totalChapters: number;
+  chapterTitle?: string;
+}
+
+/**
  * Compare two EPUBs and return their chapter contents for diffing.
  * Returns matched chapters by ID.
+ * Supports optional progress callback for UI feedback.
  */
-export async function compareEpubs(originalPath: string, cleanedPath: string): Promise<{
+export async function compareEpubs(
+  originalPath: string,
+  cleanedPath: string,
+  onProgress?: (progress: CompareEpubsProgress) => void
+): Promise<{
   chapters: Array<{
     id: string;
     title: string;
@@ -883,16 +994,71 @@ export async function compareEpubs(originalPath: string, cleanedPath: string): P
     cleanedText: string;
   }>;
 }> {
-  const [original, cleaned] = await Promise.all([
-    loadEpubForComparison(originalPath),
-    loadEpubForComparison(cleanedPath)
-  ]);
+  // Load original with progress
+  const originalProcessor = new EpubProcessor();
+  const originalChapters: Array<{ id: string; title: string; text: string }> = [];
+
+  try {
+    const originalStructure = await originalProcessor.open(originalPath);
+    const totalOriginal = originalStructure.chapters.length;
+
+    for (let i = 0; i < originalStructure.chapters.length; i++) {
+      const chapter = originalStructure.chapters[i];
+      if (onProgress) {
+        onProgress({
+          phase: 'loading-original',
+          currentChapter: i + 1,
+          totalChapters: totalOriginal,
+          chapterTitle: chapter.title
+        });
+      }
+
+      try {
+        const text = await originalProcessor.getChapterText(chapter.id);
+        originalChapters.push({ id: chapter.id, title: chapter.title, text });
+      } catch {
+        originalChapters.push({ id: chapter.id, title: chapter.title, text: '' });
+      }
+    }
+  } finally {
+    originalProcessor.close();
+  }
+
+  // Load cleaned with progress
+  const cleanedProcessor = new EpubProcessor();
+  const cleanedChapters: Array<{ id: string; title: string; text: string }> = [];
+
+  try {
+    const cleanedStructure = await cleanedProcessor.open(cleanedPath);
+    const totalCleaned = cleanedStructure.chapters.length;
+
+    for (let i = 0; i < cleanedStructure.chapters.length; i++) {
+      const chapter = cleanedStructure.chapters[i];
+      if (onProgress) {
+        onProgress({
+          phase: 'loading-cleaned',
+          currentChapter: i + 1,
+          totalChapters: totalCleaned,
+          chapterTitle: chapter.title
+        });
+      }
+
+      try {
+        const text = await cleanedProcessor.getChapterText(chapter.id);
+        cleanedChapters.push({ id: chapter.id, title: chapter.title, text });
+      } catch {
+        cleanedChapters.push({ id: chapter.id, title: chapter.title, text: '' });
+      }
+    }
+  } finally {
+    cleanedProcessor.close();
+  }
 
   // Create a map of cleaned chapters by ID
-  const cleanedMap = new Map(cleaned.chapters.map(c => [c.id, c]));
+  const cleanedMap = new Map(cleanedChapters.map(c => [c.id, c]));
 
   // Match chapters by ID
-  const chapters = original.chapters.map(origChapter => {
+  const chapters = originalChapters.map(origChapter => {
     const cleanedChapter = cleanedMap.get(origChapter.id);
     return {
       id: origChapter.id,
@@ -901,6 +1067,14 @@ export async function compareEpubs(originalPath: string, cleanedPath: string): P
       cleanedText: cleanedChapter?.text || ''
     };
   });
+
+  if (onProgress) {
+    onProgress({
+      phase: 'complete',
+      currentChapter: chapters.length,
+      totalChapters: chapters.length
+    });
+  }
 
   return { chapters };
 }

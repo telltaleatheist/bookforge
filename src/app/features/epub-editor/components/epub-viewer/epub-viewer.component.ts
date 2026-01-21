@@ -13,10 +13,11 @@ import {
   HostListener,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { EpubjsService } from '../../services/epubjs.service';
+import { EpubjsService, EpubBlock, ChapterMarkerEvent, ChapterMarkerDragEvent } from '../../services/epubjs.service';
 import { EpubEditorStateService } from '../../services/epub-editor-state.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { EpubHighlight, getEpubHighlightId } from '../../../../core/models/epub-highlight.types';
+import { EpubChapter } from '../../../../core/models/book-metadata.types';
 import type { Contents } from 'epubjs';
 
 /**
@@ -26,6 +27,16 @@ export interface EpubSelectionEvent {
   cfi: string;
   text: string;
   chapterId: string | null;
+}
+
+/**
+ * Highlight click event
+ */
+export interface EpubHighlightClickEvent {
+  cfi: string;
+  highlightId?: string;
+  categoryId?: string;
+  data: Record<string, unknown>;
 }
 
 /**
@@ -289,6 +300,13 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   // Outputs
   readonly selectionChanged = output<EpubSelectionEvent>();
   readonly chapterChanged = output<string>();
+  readonly highlightClicked = output<EpubHighlightClickEvent>();
+  readonly blockClicked = output<{ block: EpubBlock; additive: boolean }>();
+  readonly marqueeSelect = output<{ blockIds: string[]; additive: boolean }>();
+  readonly iframeKeydown = output<KeyboardEvent>(); // Forward keyboard events from iframe
+  readonly chapterMarkerClicked = output<ChapterMarkerEvent>();
+  readonly chapterMarkerDragged = output<ChapterMarkerDragEvent>();
+  readonly chapterPlacement = output<ChapterMarkerDragEvent>();
   readonly loaded = output<void>();
   readonly loadError = output<string>();
 
@@ -409,7 +427,51 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
         }
       });
 
-      // Inject custom styles
+      // Set up highlight click handler
+      this.epubjs.onHighlightClick((cfi, data) => {
+        this.highlightClicked.emit({
+          cfi,
+          highlightId: data['highlightId'] as string | undefined,
+          categoryId: data['categoryId'] as string | undefined,
+          data
+        });
+      });
+
+      // Set up block click handler
+      this.epubjs.onBlockClick((block, additive) => {
+        this.blockClicked.emit({ block, additive });
+      });
+
+      // Set up marquee selection handler
+      this.epubjs.onMarqueeSelect((blockIds, additive) => {
+        this.marqueeSelect.emit({ blockIds, additive });
+      });
+
+      // Set up clear selection handler (click on empty space)
+      this.epubjs.onClearSelection(() => {
+        // Emit empty marquee select to clear selection
+        this.marqueeSelect.emit({ blockIds: [], additive: false });
+      });
+
+      // Forward keyboard events from iframe to parent
+      this.epubjs.onKeydown((event) => {
+        this.iframeKeydown.emit(event);
+      });
+
+      // Set up chapter marker callbacks
+      this.epubjs.onChapterMarkerClick((event) => {
+        this.chapterMarkerClicked.emit(event);
+      });
+
+      this.epubjs.onChapterMarkerDrag((event) => {
+        this.chapterMarkerDragged.emit(event);
+      });
+
+      this.epubjs.onChapterPlacement((event) => {
+        this.chapterPlacement.emit(event);
+      });
+
+      // Inject custom styles including block styles
       this.injectCustomStyles();
 
       this.loading.set(false);
@@ -509,6 +571,48 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   /**
+   * Set which blocks are deleted (updates visual state)
+   */
+  setDeletedBlocks(blockIds: Set<string>): void {
+    this.epubjs.setDeletedBlocks(blockIds);
+  }
+
+  /**
+   * Set which blocks are selected (updates visual state)
+   */
+  setSelectedBlocks(blockIds: Set<string>): void {
+    this.epubjs.setSelectedBlocks(blockIds);
+  }
+
+  /**
+   * Get all detected blocks
+   */
+  getBlocks(): EpubBlock[] {
+    return this.epubjs.blocks();
+  }
+
+  /**
+   * Set chapter markers to display
+   */
+  setChapterMarkers(chapters: EpubChapter[]): void {
+    this.epubjs.setChapterMarkers(chapters);
+  }
+
+  /**
+   * Set chapters mode (enables chapter marker interactions)
+   */
+  setChaptersMode(enabled: boolean): void {
+    this.epubjs.setChaptersMode(enabled);
+  }
+
+  /**
+   * Set selected chapter ID
+   */
+  setSelectedChapterId(chapterId: string | null): void {
+    this.epubjs.setSelectedChapterId(chapterId);
+  }
+
+  /**
    * Update highlight styles based on deletion state
    */
   private updateHighlightStyles(deletedIds: Set<string>): void {
@@ -528,7 +632,7 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
    * Inject custom CSS into the epub.js renderer
    */
   private injectCustomStyles(): void {
-    const css = `
+    const baseCss = `
       /* Force readable colors - white background, black text */
       html, body {
         background-color: #ffffff !important;
@@ -544,8 +648,13 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
         color: #0066cc !important;
       }
 
+      /* Disable text selection highlighting - we use block selection */
       ::selection {
-        background-color: rgba(100, 149, 237, 0.4);
+        background-color: transparent;
+      }
+
+      ::-moz-selection {
+        background-color: transparent;
       }
 
       .epub-highlight {
@@ -568,13 +677,18 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
       .epub-styled-highlight {
         border-radius: 2px;
         transition: background-color 0.2s ease;
+        cursor: pointer;
       }
 
       .epub-styled-highlight:hover {
-        filter: brightness(0.9);
+        filter: brightness(0.85);
+        outline: 2px solid rgba(0, 0, 0, 0.3);
+        outline-offset: 1px;
       }
     `;
 
-    this.epubjs.injectStyles(css);
+    // Combine base CSS with block styles
+    const fullCss = baseCss + this.epubjs.getBlockStyles();
+    this.epubjs.injectStyles(fullCss);
   }
 }

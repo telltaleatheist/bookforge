@@ -85,6 +85,7 @@ export interface BookMetadata {
   language?: string;
   publisher?: string;
   description?: string;
+  coverImage?: string;  // Base64 data URL for cover image
 }
 
 interface BookForgeProject {
@@ -447,6 +448,7 @@ interface AlertModal {
             (renameChapter)="renameChapter($event)"
             (finalizeChapters)="finalizeChapters()"
             (metadataChange)="onMetadataChange($event)"
+            (saveMetadata)="onSaveMetadata()"
           />
         } @else {
           <app-categories-panel
@@ -2391,7 +2393,7 @@ export class PdfPickerComponent {
     { id: 'crop', icon: '✂️', label: 'Crop', tooltip: 'Draw rectangle to crop (C)' },
     { id: 'split', icon: '📖', label: 'Split', tooltip: 'Split scanned pages (P)' },
     { id: 'ocr', icon: '👁️', label: 'OCR', tooltip: 'OCR scanned pages (O)' },
-    { id: 'chapters', icon: '📚', label: 'Chapters', tooltip: 'Mark chapter starts (H)' }
+    { id: 'chapters', icon: '📚', label: 'Chapters & Metadata', tooltip: 'Chapters and book metadata (H)' }
   ];
 
   // Crop mode state (derived from currentMode)
@@ -4330,6 +4332,7 @@ export class PdfPickerComponent {
       this.editorState.textCorrections(),
       this.deletedPages(),
       deletedHighlights,
+      this.metadata(),  // Pass metadata for title, author, cover, etc.
       true // Navigate to audiobook producer after
     );
 
@@ -6364,6 +6367,10 @@ export class PdfPickerComponent {
   onMetadataChange(newMetadata: BookMetadata): void {
     this.metadata.set(newMetadata);
     this.hasUnsavedChanges.set(true);
+  }
+
+  async onSaveMetadata(): Promise<void> {
+    await this.saveProject();
   }
 
   selectChapter(chapterId: string): void {

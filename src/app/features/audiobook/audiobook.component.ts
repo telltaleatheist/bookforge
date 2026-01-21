@@ -412,7 +412,7 @@ export class AudiobookComponent implements OnInit {
 
   // Toolbar
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
-    return [
+    const items: ToolbarItem[] = [
       {
         id: 'add',
         type: 'button',
@@ -429,6 +429,22 @@ export class AudiobookComponent implements OnInit {
         tooltip: 'Refresh queue'
       }
     ];
+
+    // Add export button when an item is selected
+    if (this.selectedItem()) {
+      items.push(
+        { id: 'sep2', type: 'divider' },
+        {
+          id: 'export-epub',
+          type: 'button',
+          icon: '\u2B07',
+          label: 'Export EPUB',
+          tooltip: 'Export as EPUB file'
+        }
+      );
+    }
+
+    return items;
   });
 
   ngOnInit(): void {
@@ -446,6 +462,9 @@ export class AudiobookComponent implements OnInit {
         if (this.workflowState() === 'diff' && this.diffViewRef) {
           this.diffViewRef.refresh();
         }
+        break;
+      case 'export-epub':
+        this.exportEpub();
         break;
     }
   }
@@ -486,6 +505,18 @@ export class AudiobookComponent implements OnInit {
             const savedResult = await this.electron.library.loadMetadata(file.path);
             if (savedResult.success && savedResult.metadata) {
               metadata = { ...metadata, ...savedResult.metadata };
+
+              // If coverPath exists but no coverData, load the cover image
+              if (savedResult.metadata.coverPath && !savedResult.metadata.coverData && file.projectId) {
+                try {
+                  const coverResult = await this.electron.library.loadCoverImage(file.projectId, savedResult.metadata.coverPath);
+                  if (coverResult.success && coverResult.coverData) {
+                    metadata.coverData = coverResult.coverData;
+                  }
+                } catch {
+                  // Cover image not found, continue without it
+                }
+              }
             }
           } catch {
             // No saved metadata, use EPUB defaults
@@ -622,12 +653,25 @@ export class AudiobookComponent implements OnInit {
     this.savingMetadata.set(true);
 
     try {
+      // Save to project file (for persistence between sessions)
       const result = await this.electron.library.saveMetadata(item.path, metadata);
       if (result.success) {
         // Update local state
         this.onMetadataChange(metadata);
       } else {
-        console.error('Failed to save metadata:', result.error);
+        console.error('Failed to save metadata to project:', result.error);
+      }
+
+      // Also save metadata to the EPUB file itself (for ebook2audiobook to read)
+      // This ensures the TTS conversion gets the correct metadata
+      const epubMetaSaved = await this.epubService.setMetadata({
+        title: metadata.title,
+        author: metadata.author,
+        year: metadata.year,
+        language: metadata.language
+      });
+      if (!epubMetaSaved) {
+        console.warn('[Audiobook] Failed to save metadata to EPUB - will be missing during TTS conversion');
       }
     } catch (err) {
       console.error('Failed to save metadata:', err);
@@ -690,6 +734,42 @@ export class AudiobookComponent implements OnInit {
       }
     } catch (err) {
       console.error('Error opening audiobooks folder:', err);
+    }
+  }
+
+  async exportEpub(): Promise<void> {
+    const item = this.selectedItem();
+    if (!item) return;
+
+    // Determine which EPUB to export (cleaned if available, otherwise original)
+    const epubPath = this.currentEpubPath();
+    if (!epubPath) return;
+
+    // Generate default filename from metadata
+    const meta = this.selectedMetadata();
+    let defaultName = 'book.epub';
+    if (meta?.title) {
+      defaultName = meta.title;
+      if (meta.author) {
+        defaultName += ` - ${meta.author}`;
+      }
+      defaultName += '.epub';
+      // Clean filename of invalid characters
+      defaultName = defaultName.replace(/[<>:"/\\|?*]/g, '');
+    }
+
+    // Show save dialog
+    const dialogResult = await this.electronService.showSaveEpubDialog(defaultName);
+    if (!dialogResult.success || dialogResult.canceled || !dialogResult.filePath) {
+      return;
+    }
+
+    // Copy the EPUB to the selected location
+    const copyResult = await this.electronService.copyFile(epubPath, dialogResult.filePath);
+    if (copyResult.success) {
+      console.log('EPUB exported to:', dialogResult.filePath);
+    } else {
+      console.error('Failed to export EPUB:', copyResult.error);
     }
   }
 

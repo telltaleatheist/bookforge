@@ -1,4 +1,4 @@
-import { Component, output, input, signal, computed, ChangeDetectionStrategy } from '@angular/core';
+import { Component, output, input, signal, computed, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
@@ -39,55 +39,63 @@ export interface ExportResult {
           <div class="settings-section">
             <!-- Format selection -->
             <div class="format-selector">
-              <button
-                class="format-btn"
-                [class.active]="format() === 'pdf'"
-                (click)="format.set('pdf')"
-              >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                  <path d="M9 15v-2h2a1 1 0 0 1 0 2H9zm0 0v2"/>
-                  <path d="M13 13h1.5a1.5 1.5 0 0 1 0 3H13v-3z"/>
-                </svg>
-                <span>PDF</span>
-              </button>
-              <button
-                class="format-btn"
-                [class.active]="format() === 'epub'"
-                (click)="format.set('epub')"
-              >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
-                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
-                </svg>
-                <span>EPUB</span>
-              </button>
-              <button
-                class="format-btn"
-                [class.active]="format() === 'txt'"
-                (click)="format.set('txt')"
-              >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                  <line x1="8" y1="13" x2="16" y2="13"/>
-                  <line x1="8" y1="17" x2="12" y2="17"/>
-                </svg>
-                <span>TXT</span>
-              </button>
-              <button
-                class="format-btn"
-                [class.active]="format() === 'audiobook'"
-                (click)="format.set('audiobook')"
-              >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <circle cx="12" cy="12" r="10"/>
-                  <circle cx="12" cy="12" r="4"/>
-                  <path d="M12 8v4l3 3"/>
-                </svg>
-                <span>Audiobook Producer</span>
-              </button>
+              @if (isFormatAvailable('pdf')) {
+                <button
+                  class="format-btn"
+                  [class.active]="format() === 'pdf'"
+                  (click)="format.set('pdf')"
+                >
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <path d="M9 15v-2h2a1 1 0 0 1 0 2H9zm0 0v2"/>
+                    <path d="M13 13h1.5a1.5 1.5 0 0 1 0 3H13v-3z"/>
+                  </svg>
+                  <span>PDF</span>
+                </button>
+              }
+              @if (isFormatAvailable('epub')) {
+                <button
+                  class="format-btn"
+                  [class.active]="format() === 'epub'"
+                  (click)="format.set('epub')"
+                >
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                  </svg>
+                  <span>EPUB</span>
+                </button>
+              }
+              @if (isFormatAvailable('txt')) {
+                <button
+                  class="format-btn"
+                  [class.active]="format() === 'txt'"
+                  (click)="format.set('txt')"
+                >
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="8" y1="13" x2="16" y2="13"/>
+                    <line x1="8" y1="17" x2="12" y2="17"/>
+                  </svg>
+                  <span>TXT</span>
+                </button>
+              }
+              @if (isFormatAvailable('audiobook')) {
+                <button
+                  class="format-btn"
+                  [class.active]="format() === 'audiobook'"
+                  (click)="format.set('audiobook')"
+                >
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="12" cy="12" r="10"/>
+                    <circle cx="12" cy="12" r="4"/>
+                    <path d="M12 8v4l3 3"/>
+                  </svg>
+                  <span>Audiobook Producer</span>
+                </button>
+              }
             </div>
 
             <!-- Audiobook info -->
@@ -412,15 +420,29 @@ export interface ExportResult {
     }
   `]
 })
-export class ExportSettingsModalComponent {
+export class ExportSettingsModalComponent implements OnInit {
   pdfName = input.required<string>();
   totalPages = input.required<number>();
   removeBackgrounds = input<boolean>(false);
+  availableFormats = input<ExportFormat[]>(['pdf', 'epub', 'txt', 'audiobook']);
 
   result = output<ExportResult>();
 
   readonly format = signal<ExportFormat>('pdf');
   readonly quality = signal<'low' | 'medium' | 'high' | 'maximum'>('high');
+
+  // Computed to check if format is available
+  isFormatAvailable(format: ExportFormat): boolean {
+    return this.availableFormats().includes(format);
+  }
+
+  // Set initial format to first available
+  ngOnInit(): void {
+    const available = this.availableFormats();
+    if (available.length > 0 && !available.includes(this.format())) {
+      this.format.set(available[0]);
+    }
+  }
 
   getOutputFilename(): string {
     const baseName = this.pdfName().replace(/\.[^.]+$/, '');

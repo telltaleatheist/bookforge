@@ -1,7 +1,7 @@
-import { Component, inject, input, output } from '@angular/core';
+import { Component, inject, output, input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { EpubEditorStateService } from '../../services/epub-editor-state.service';
-import { EpubCategory, getEpubHighlightId } from '../../../../core/models/epub-highlight.types';
+import { EpubBlock } from '../../services/epubjs.service';
 
 /**
  * EpubCategoriesPanelComponent - Displays and manages EPUB highlight categories
@@ -19,94 +19,40 @@ import { EpubCategory, getEpubHighlightId } from '../../../../core/models/epub-h
   template: `
     <div class="categories-panel">
       <div class="panel-header">
-        <h3>Categories</h3>
+        <h3>Deleted Blocks</h3>
         <div class="header-stats">
-          <span class="stat included">{{ editorState.includedChars() | number }} included</span>
-          <span class="stat excluded">{{ editorState.excludedChars() | number }} excluded</span>
+          <span class="stat">{{ blocks().length }} total blocks</span>
+          <span class="stat excluded">{{ editorState.deletedBlockIds().size }} deleted</span>
         </div>
       </div>
 
-      @if (editorState.categoriesArray().length === 0) {
+      @if (editorState.deletedBlockIds().size === 0) {
         <div class="empty-state">
-          <span class="empty-icon">\u{1F3F7}</span>
-          <p>No categories yet</p>
-          <p class="hint">Use Search mode to find patterns and create categories.</p>
+          <span class="empty-icon">✓</span>
+          <p>No blocks deleted</p>
+          <p class="hint">Click any text block or image in the viewer to mark it for deletion.</p>
         </div>
       } @else {
-        <div class="category-list">
-          @for (category of editorState.categoriesArray(); track category.id) {
-            <div
-              class="category-card"
-              [style.--category-color]="category.color"
-              [class.all-deleted]="isAllDeleted(category.id)"
-            >
-              <div class="category-header">
-                <div class="category-color" [style.background]="category.color"></div>
-                <div class="category-info">
-                  <span class="category-name">{{ category.name }}</span>
-                  <span class="category-stats">
-                    {{ category.highlightCount }} matches \u2022 {{ category.charCount | number }} chars
-                  </span>
-                </div>
-                <div class="category-toggle">
-                  <button
-                    class="toggle-btn"
-                    [class.deleted]="isAllDeleted(category.id)"
-                    (click)="toggleCategory(category.id)"
-                    [title]="isAllDeleted(category.id) ? 'Restore all' : 'Delete all'"
-                  >
-                    @if (isAllDeleted(category.id)) {
-                      <span class="icon">\u21A9</span>
-                    } @else {
-                      <span class="icon">\u{1F5D1}</span>
-                    }
-                  </button>
-                </div>
+        <div class="deleted-list">
+          <div class="list-header">
+            <span>{{ editorState.deletedBlockIds().size }} block(s) will be removed on export</span>
+            <button class="restore-all-btn" (click)="restoreAll()">
+              Restore All
+            </button>
+          </div>
+          @for (blockId of deletedBlocksArray(); track blockId) {
+            <div class="deleted-item">
+              <div class="deleted-info">
+                <span class="deleted-type">{{ getBlockType(blockId) }}</span>
+                <span class="deleted-preview">{{ getBlockPreview(blockId) }}</span>
               </div>
-
-              @if (category.description) {
-                <div class="category-description">{{ category.description }}</div>
-              }
-
-              @if (category.pattern) {
-                <div class="category-pattern">
-                  <code>{{ category.pattern }}</code>
-                </div>
-              }
-
-              <div class="category-actions">
-                <button
-                  class="action-btn"
-                  (click)="selectAll(category.id)"
-                  title="Select all highlights in this category"
-                >
-                  Select All
-                </button>
-                <button
-                  class="action-btn"
-                  (click)="jumpToFirst(category.id)"
-                  title="Jump to first highlight"
-                >
-                  Jump to First
-                </button>
-                @if (category.type === 'custom') {
-                  <button
-                    class="action-btn danger"
-                    (click)="removeCategory(category.id)"
-                    title="Remove this category"
-                  >
-                    Remove
-                  </button>
-                }
-              </div>
-
-              <!-- Deletion progress bar -->
-              <div class="deletion-progress">
-                <div
-                  class="progress-bar"
-                  [style.width.%]="getDeletedPercentage(category.id)"
-                ></div>
-              </div>
+              <button
+                class="restore-btn"
+                (click)="restoreBlock(blockId)"
+                title="Restore this block"
+              >
+                ↩
+              </button>
             </div>
           }
         </div>
@@ -140,9 +86,8 @@ import { EpubCategory, getEpubHighlightId } from '../../../../core/models/epub-h
     }
 
     .stat {
-      &.included {
-        color: var(--accent-success);
-      }
+      color: var(--text-secondary);
+
       &.excluded {
         color: var(--accent-danger);
       }
@@ -161,6 +106,7 @@ import { EpubCategory, getEpubHighlightId } from '../../../../core/models/epub-h
         font-size: 2rem;
         margin-bottom: 0.5rem;
         opacity: 0.5;
+        color: var(--accent-success);
       }
 
       p {
@@ -175,7 +121,7 @@ import { EpubCategory, getEpubHighlightId } from '../../../../core/models/epub-h
       }
     }
 
-    .category-list {
+    .deleted-list {
       display: flex;
       flex-direction: column;
       gap: 0.5rem;
@@ -183,260 +129,144 @@ import { EpubCategory, getEpubHighlightId } from '../../../../core/models/epub-h
       flex: 1;
     }
 
-    .category-card {
-      background: var(--bg-surface);
-      border-radius: 6px;
-      border-left: 3px solid var(--category-color, var(--accent-primary));
-      padding: 0.75rem;
-      position: relative;
-      overflow: hidden;
+    .list-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.5rem;
+    }
 
-      &.all-deleted {
-        opacity: 0.6;
+    .restore-all-btn {
+      padding: 0.25rem 0.5rem;
+      border-radius: 3px;
+      border: 1px solid var(--accent-success);
+      background: transparent;
+      color: var(--accent-success);
+      font-size: 0.6875rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
 
-        .category-name {
-          text-decoration: line-through;
-        }
+      &:hover {
+        background: var(--accent-success);
+        color: white;
       }
     }
 
-    .category-header {
+    .deleted-item {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       gap: 0.5rem;
+      padding: 0.5rem;
+      background: var(--bg-surface);
+      border-radius: 4px;
+      border-left: 3px solid var(--accent-danger);
     }
 
-    .category-color {
-      width: 12px;
-      height: 12px;
-      border-radius: 2px;
-      flex-shrink: 0;
-      margin-top: 2px;
-    }
-
-    .category-info {
+    .deleted-info {
       flex: 1;
       min-width: 0;
     }
 
-    .category-name {
+    .deleted-type {
       display: block;
-      font-weight: 500;
-      font-size: 0.8125rem;
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
+      margin-bottom: 0.125rem;
+    }
+
+    .deleted-preview {
+      display: block;
+      font-size: 0.75rem;
       color: var(--text-primary);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
-    .category-stats {
-      display: block;
-      font-size: 0.6875rem;
-      color: var(--text-tertiary);
-      margin-top: 0.125rem;
-    }
-
-    .category-toggle {
-      flex-shrink: 0;
-    }
-
-    .toggle-btn {
-      width: 28px;
-      height: 28px;
+    .restore-btn {
+      width: 24px;
+      height: 24px;
       border-radius: 4px;
       border: none;
       background: transparent;
-      color: var(--text-secondary);
+      color: var(--accent-success);
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
+      font-size: 0.875rem;
       transition: all 0.15s ease;
+      flex-shrink: 0;
 
       &:hover {
-        background: var(--bg-hover);
-        color: var(--text-primary);
+        background: color-mix(in srgb, var(--accent-success) 15%, transparent);
       }
-
-      &.deleted {
-        color: var(--accent-success);
-
-        &:hover {
-          background: color-mix(in srgb, var(--accent-success) 15%, transparent);
-        }
-      }
-
-      .icon {
-        font-size: 0.875rem;
-      }
-    }
-
-    .category-description {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      margin-top: 0.5rem;
-      line-height: 1.4;
-    }
-
-    .category-pattern {
-      margin-top: 0.5rem;
-
-      code {
-        display: inline-block;
-        background: var(--bg-elevated);
-        padding: 0.125rem 0.375rem;
-        border-radius: 3px;
-        font-size: 0.6875rem;
-        color: var(--text-secondary);
-        max-width: 100%;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-    }
-
-    .category-actions {
-      display: flex;
-      gap: 0.375rem;
-      margin-top: 0.75rem;
-      flex-wrap: wrap;
-    }
-
-    .action-btn {
-      padding: 0.25rem 0.5rem;
-      border-radius: 3px;
-      border: 1px solid var(--border-default);
-      background: transparent;
-      color: var(--text-secondary);
-      font-size: 0.6875rem;
-      cursor: pointer;
-      transition: all 0.15s ease;
-
-      &:hover {
-        background: var(--bg-hover);
-        color: var(--text-primary);
-      }
-
-      &.danger {
-        color: var(--accent-danger);
-
-        &:hover {
-          background: color-mix(in srgb, var(--accent-danger) 10%, transparent);
-        }
-      }
-    }
-
-    .deletion-progress {
-      position: absolute;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      height: 2px;
-      background: var(--bg-elevated);
-    }
-
-    .progress-bar {
-      height: 100%;
-      background: var(--accent-danger);
-      transition: width 0.2s ease;
     }
   `]
 })
 export class EpubCategoriesPanelComponent {
   readonly editorState = inject(EpubEditorStateService);
 
+  // Input: blocks from the viewer
+  readonly blocks = input<EpubBlock[]>([]);
+
   // Events
   readonly categorySelected = output<string>();
   readonly jumpToHighlight = output<string>();
+  readonly switchToSearch = output<void>();
 
   /**
-   * Check if all highlights in a category are deleted
+   * Get deleted block IDs as array
    */
-  isAllDeleted(categoryId: string): boolean {
-    const chapterMap = this.editorState.categoryHighlights().get(categoryId);
-    if (!chapterMap) return true;
-
-    const deleted = this.editorState.deletedHighlightIds();
-    let allDeleted = true;
-
-    chapterMap.forEach((highlights, chapterId) => {
-      for (const highlight of highlights) {
-        const id = getEpubHighlightId(categoryId, chapterId, highlight.cfi);
-        if (!deleted.has(id)) {
-          allDeleted = false;
-          return;
-        }
-      }
-    });
-
-    return allDeleted;
+  deletedBlocksArray(): string[] {
+    return Array.from(this.editorState.deletedBlockIds());
   }
 
   /**
-   * Get percentage of deleted highlights in a category
+   * Get block type from ID
    */
-  getDeletedPercentage(categoryId: string): number {
-    const chapterMap = this.editorState.categoryHighlights().get(categoryId);
-    if (!chapterMap) return 0;
+  getBlockType(blockId: string): string {
+    const block = this.blocks().find(b => b.id === blockId);
+    if (!block) return 'Block';
 
-    const deleted = this.editorState.deletedHighlightIds();
-    let total = 0;
-    let deletedCount = 0;
-
-    chapterMap.forEach((highlights, chapterId) => {
-      for (const highlight of highlights) {
-        total++;
-        const id = getEpubHighlightId(categoryId, chapterId, highlight.cfi);
-        if (deleted.has(id)) {
-          deletedCount++;
-        }
-      }
-    });
-
-    if (total === 0) return 0;
-    return (deletedCount / total) * 100;
-  }
-
-  /**
-   * Toggle deletion of all highlights in category
-   */
-  toggleCategory(categoryId: string): void {
-    if (this.isAllDeleted(categoryId)) {
-      this.editorState.restoreCategory(categoryId);
-    } else {
-      this.editorState.deleteCategory(categoryId);
+    switch (block.type) {
+      case 'image': return '🖼️ Image';
+      case 'heading': return '📝 Heading';
+      case 'paragraph': return '¶ Paragraph';
+      case 'blockquote': return '💬 Quote';
+      case 'list': return '📋 List';
+      default: return '📄 Block';
     }
   }
 
   /**
-   * Select all highlights in category
+   * Get preview text for a block
    */
-  selectAll(categoryId: string): void {
-    this.editorState.selectAllInCategory(categoryId);
-    this.categorySelected.emit(categoryId);
-  }
+  getBlockPreview(blockId: string): string {
+    const block = this.blocks().find(b => b.id === blockId);
+    if (!block) return blockId;
 
-  /**
-   * Jump to first highlight in category
-   */
-  jumpToFirst(categoryId: string): void {
-    const chapterMap = this.editorState.categoryHighlights().get(categoryId);
-    if (!chapterMap) return;
-
-    // Find the first highlight
-    for (const [chapterId, highlights] of chapterMap) {
-      if (highlights.length > 0) {
-        const firstHighlight = highlights[0];
-        this.jumpToHighlight.emit(firstHighlight.cfi);
-        return;
-      }
+    const text = block.text;
+    if (text.length > 50) {
+      return text.substring(0, 50) + '...';
     }
+    return text;
   }
 
   /**
-   * Remove a custom category
+   * Restore a single block
    */
-  removeCategory(categoryId: string): void {
-    this.editorState.removeCategory(categoryId);
+  restoreBlock(blockId: string): void {
+    this.editorState.restoreBlocks([blockId]);
+  }
+
+  /**
+   * Restore all deleted blocks
+   */
+  restoreAll(): void {
+    const allDeleted = Array.from(this.editorState.deletedBlockIds());
+    this.editorState.restoreBlocks(allDeleted);
   }
 }

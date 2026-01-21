@@ -533,6 +533,16 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('fs:write-text', async (_event, filePath: string, content: string) => {
+    const fs = await import('fs/promises');
+    try {
+      await fs.writeFile(filePath, content, 'utf-8');
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Project file handlers
   ipcMain.handle('project:save', async (_event, projectData: unknown, suggestedName?: string) => {
     if (!mainWindow) return { success: false, error: 'No window' };
@@ -628,6 +638,42 @@ function setupIpcHandlers(): void {
     }
 
     return { success: true, folderPath: result.filePaths[0] };
+  });
+
+  ipcMain.handle('dialog:save-epub', async (_event, defaultName?: string) => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export EPUB',
+      defaultPath: defaultName || 'book.epub',
+      filters: [
+        { name: 'EPUB', extensions: ['epub'] }
+      ]
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { success: false, canceled: true };
+    }
+
+    return { success: true, filePath: result.filePath };
+  });
+
+  ipcMain.handle('dialog:save-text', async (_event, defaultName?: string) => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export Text',
+      defaultPath: defaultName || 'export.txt',
+      filters: [
+        { name: 'Text', extensions: ['txt'] }
+      ]
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { success: false, canceled: true };
+    }
+
+    return { success: true, filePath: result.filePath };
   });
 
   // Projects folder management
@@ -1242,6 +1288,26 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('epub:set-metadata', async (_event, metadata: Partial<{
+    title: string;
+    subtitle?: string;
+    author: string;
+    authorFileAs?: string;
+    year?: string;
+    language: string;
+    identifier?: string;
+    publisher?: string;
+    description?: string;
+  }>) => {
+    try {
+      const { setMetadata } = await import('./epub-processor.js');
+      setMetadata(metadata);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('epub:get-chapters', async () => {
     try {
       const { getChapters } = await import('./epub-processor.js');
@@ -1376,7 +1442,12 @@ function setupIpcHandlers(): void {
   ipcMain.handle('diff:load-comparison', async (_event, originalPath: string, cleanedPath: string) => {
     try {
       const { compareEpubs } = await import('./epub-processor.js');
-      const result = await compareEpubs(originalPath, cleanedPath);
+      const result = await compareEpubs(originalPath, cleanedPath, (progress) => {
+        // Send progress to renderer
+        if (mainWindow) {
+          mainWindow.webContents.send('diff:load-progress', progress);
+        }
+      });
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -1574,6 +1645,61 @@ function setupIpcHandlers(): void {
       const { ttsBridge } = await import('./tts-bridge.js');
       const filename = ttsBridge.generateOutputFilename(title, subtitle, author, authorFileAs, year);
       return { success: true, data: filename };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Parallel TTS handlers (multi-worker audiobook conversion)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('parallel-tts:detect-worker-count', async () => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      const result = parallelTtsBridge.detectRecommendedWorkerCount();
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('parallel-tts:start-conversion', async (_event, jobId: string, config: any) => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      parallelTtsBridge.setMainWindow(mainWindow);
+      const result = await parallelTtsBridge.startParallelConversion(jobId, config);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('parallel-tts:stop-conversion', async (_event, jobId: string) => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      const result = parallelTtsBridge.stopParallelConversion(jobId);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('parallel-tts:get-progress', async (_event, jobId: string) => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      const progress = parallelTtsBridge.getConversionProgress(jobId);
+      return { success: true, data: progress };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('parallel-tts:is-active', async (_event, jobId: string) => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      const isActive = parallelTtsBridge.isConversionActive(jobId);
+      return { success: true, data: isActive };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1912,7 +2038,7 @@ function setupIpcHandlers(): void {
     _event,
     data: ArrayBuffer | string,
     filename: string,
-    metadata?: { title?: string; author?: string; language?: string }
+    metadata?: { title?: string; author?: string; language?: string; coverImage?: string }
   ) => {
     try {
       const basePath = getAudiobooksBasePath();
@@ -1944,6 +2070,18 @@ function setupIpcHandlers(): void {
         return { success: false, error: 'Invalid data format' };
       }
 
+      // Save cover image if provided
+      let coverPath: string | undefined;
+      if (metadata?.coverImage?.startsWith('data:image/')) {
+        const coverMatches = metadata.coverImage.match(/^data:image\/(\w+);base64,(.+)$/);
+        if (coverMatches && coverMatches[2]) {
+          const ext = coverMatches[1] === 'jpeg' ? 'jpg' : coverMatches[1];
+          coverPath = path.join(folderPath, `cover.${ext}`);
+          const coverBuffer = Buffer.from(coverMatches[2], 'base64');
+          await fs.writeFile(coverPath, coverBuffer);
+        }
+      }
+
       const now = new Date().toISOString();
       const projectData = {
         version: 1,
@@ -1951,7 +2089,8 @@ function setupIpcHandlers(): void {
         metadata: {
           title: metadata?.title || '',
           author: metadata?.author || '',
-          language: metadata?.language || 'en'
+          language: metadata?.language || 'en',
+          coverPath: coverPath ? path.basename(coverPath) : undefined
         },
         state: { cleanupStatus: 'none', ttsStatus: 'none' },
         createdAt: now,
@@ -2047,6 +2186,32 @@ function setupIpcHandlers(): void {
       return { success: true, metadata: null };
     } catch {
       return { success: true, metadata: null };
+    }
+  });
+
+  // Load cover image from project folder
+  ipcMain.handle('library:load-cover-image', async (_event, projectId: string, coverFilename: string) => {
+    try {
+      const basePath = getAudiobooksBasePath();
+      const coverPath = path.join(basePath, projectId, coverFilename);
+
+      // Check if file exists
+      try {
+        await fs.access(coverPath);
+      } catch {
+        return { success: false, error: 'Cover file not found' };
+      }
+
+      // Read file and convert to base64 data URL
+      const buffer = await fs.readFile(coverPath);
+      const ext = path.extname(coverFilename).toLowerCase().slice(1);
+      const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`;
+      const base64 = buffer.toString('base64');
+      const coverData = `data:${mimeType};base64,${base64}`;
+
+      return { success: true, coverData };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
     }
   });
 

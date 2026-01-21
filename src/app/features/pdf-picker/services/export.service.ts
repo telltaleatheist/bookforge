@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { Router } from '@angular/router';
 import { PdfService, TextBlock } from './pdf.service';
 import { Chapter } from '../../../core/services/electron.service';
+import { BookMetadata } from '../pdf-picker.component';
 
 export interface ExportableBlock {
   id: string;
@@ -546,6 +547,7 @@ export class ExportService {
     textCorrections?: Map<string, string>,
     deletedPages?: Set<number>,
     deletedHighlights?: DeletedHighlight[],
+    metadata?: BookMetadata,
     navigateAfter: boolean = true
   ): Promise<ExportResult> {
     if (!this.electron) {
@@ -563,7 +565,8 @@ export class ExportService {
       pdfName,
       textCorrections,
       deletedPages,
-      deletedHighlights
+      deletedHighlights,
+      metadata
     );
 
     if (!epubResult.success || !epubResult.blob) {
@@ -585,11 +588,13 @@ export class ExportService {
         };
       }
 
-      const bookTitle = pdfName.replace(/\.(pdf|epub)$/i, '');
+      // Use metadata if provided, otherwise fall back to filename-derived title
+      const bookTitle = metadata?.title || pdfName.replace(/\.(pdf|epub)$/i, '');
       const copyResult = await this.electron.library.copyToQueue(arrayBuffer, filename, {
         title: bookTitle,
-        author: '',
-        language: 'en'
+        author: metadata?.author || '',
+        language: metadata?.language || 'en',
+        coverImage: metadata?.coverImage
       });
 
       if (!copyResult.success) {
@@ -634,7 +639,8 @@ export class ExportService {
     pdfName: string,
     textCorrections?: Map<string, string>,
     deletedPages?: Set<number>,
-    deletedHighlights?: DeletedHighlight[]
+    deletedHighlights?: DeletedHighlight[],
+    metadata?: BookMetadata
   ): { success: boolean; blob?: Blob; message?: string; chapterCount?: number; blockCount?: number } {
     const exportBlocks = blocks
       .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
@@ -646,7 +652,7 @@ export class ExportService {
       return { success: false, message: 'No text to export. All blocks have been deleted.' };
     }
 
-    const bookTitle = pdfName.replace(/\.(pdf|epub)$/i, '');
+    const bookTitle = metadata?.title || pdfName.replace(/\.(pdf|epub)$/i, '');
 
     const sortedChapters = [...exportChapters].sort((a, b) => {
       if (a.page !== b.page) return a.page - b.page;
@@ -703,7 +709,7 @@ export class ExportService {
       return { success: false, message: 'No content to export after organizing by chapters.' };
     }
 
-    const blob = this.generateEpubBlobWithChapters(bookTitle, chapterSections);
+    const blob = this.generateEpubBlobWithChapters(bookTitle, chapterSections, metadata);
     return {
       success: true,
       blob,
@@ -1025,9 +1031,14 @@ ${s.content}
   /**
    * Generate EPUB with chapter structure (for better ebook reader compatibility)
    */
-  private generateEpubBlobWithChapters(title: string, chapters: { title: string; level: number; content: string[] }[]): Blob {
+  private generateEpubBlobWithChapters(
+    title: string,
+    chapters: { title: string; level: number; content: string[] }[],
+    metadata?: BookMetadata
+  ): Blob {
     const uuid = 'urn:uuid:' + this.generateUuid();
     const date = new Date().toISOString().split('T')[0];
+    const hasCover = metadata?.coverImage?.startsWith('data:image/');
 
     const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -1044,16 +1055,38 @@ ${s.content}
       `    <itemref idref="chapter${i + 1}"/>`
     ).join('\n');
 
+    // Build metadata elements
+    const authorMeta = metadata?.author
+      ? `    <dc:creator>${this.escapeHtml(metadata.author)}</dc:creator>`
+      : '';
+    const publisherMeta = metadata?.publisher
+      ? `    <dc:publisher>${this.escapeHtml(metadata.publisher)}</dc:publisher>`
+      : '';
+    const descriptionMeta = metadata?.description
+      ? `    <dc:description>${this.escapeHtml(metadata.description)}</dc:description>`
+      : '';
+    const dateMeta = metadata?.year
+      ? `    <dc:date>${this.escapeHtml(metadata.year)}</dc:date>`
+      : '';
+    const coverManifest = hasCover
+      ? `    <item id="cover-image" href="cover.jpg" media-type="image/jpeg" properties="cover-image"/>`
+      : '';
+
     const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="uid">${uuid}</dc:identifier>
     <dc:title>${this.escapeHtml(title)}</dc:title>
-    <dc:language>en</dc:language>
+${authorMeta}
+${publisherMeta}
+${descriptionMeta}
+${dateMeta}
+    <dc:language>${metadata?.language || 'en'}</dc:language>
     <meta property="dcterms:modified">${date}T00:00:00Z</meta>
   </metadata>
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+${coverManifest}
 ${chapterManifest}
   </manifest>
   <spine>

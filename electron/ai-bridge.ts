@@ -102,6 +102,13 @@ PUNCTUATION FOR NATURAL PACING:
 - Add commas around parenthetical phrases
 - Replace em dashes (—) with commas when they mark asides
 
+SEPARATE CONCATENATED METADATA:
+Title pages and headers often extract as one long unpunctuated line. When distinct elements (title, subtitle, author, publisher, edition) appear concatenated without punctuation, add appropriate separators:
+- Title + subtitle: use colon or dash
+- Author, publisher, edition info: separate with periods
+- Multiple proper nouns in sequence without verbs: likely concatenated names needing periods
+Only apply this to clearly concatenated metadata—NOT to normal prose sentences.
+
 FIX OCR ERRORS (broken words, character misreads: rn→m, cl→d).
 REMOVE: footnote numbers in sentences, page numbers, stray artifacts.
 PRESERVE: author's meaning, proper nouns, dialogue.
@@ -797,11 +804,15 @@ export interface EpubCleanupProgress {
   phase: 'loading' | 'processing' | 'saving' | 'complete' | 'error';
   currentChapter: number;
   totalChapters: number;
-  currentChunk: number;
-  totalChunks: number;
+  currentChunk: number;      // Current chunk number (1-indexed, job-wide)
+  totalChunks: number;       // Total chunks in entire job
   percentage: number;
   message?: string;
   outputPath?: string;  // Path to _cleaned.epub (available during processing for diff view)
+  // Timing data for dynamic ETA calculation
+  chunksCompletedInJob?: number;  // Cumulative chunks completed across all chapters
+  totalChunksInJob?: number;      // Total chunks in entire job (same as totalChunks)
+  chunkCompletedAt?: number;      // Timestamp when last chunk completed
 }
 
 export interface EpubCleanupResult {
@@ -865,6 +876,10 @@ export async function cleanupEpub(
   }
 
   const sendProgress = (progress: EpubCleanupProgress) => {
+    // Console log for visibility in terminal
+    const chunkInfo = progress.chunkCompletedAt ? ` [completed @ ${new Date(progress.chunkCompletedAt).toLocaleTimeString()}]` : '';
+    console.log(`[AI-CLEANUP] [${jobId.substring(0, 8)}] ${progress.phase.toUpperCase()} - Chunk ${progress.currentChunk}/${progress.totalChunks} (${progress.percentage}%) - ${progress.message || ''}${chunkInfo}`);
+
     if (onProgress) onProgress(progress);
     if (mainWindow) {
       mainWindow.webContents.send('queue:progress', {
@@ -874,7 +889,14 @@ export async function cleanupEpub(
         progress: progress.percentage,
         message: progress.message,
         currentChunk: progress.currentChunk,
-        totalChunks: progress.totalChunks
+        totalChunks: progress.totalChunks,
+        currentChapter: progress.currentChapter,
+        totalChapters: progress.totalChapters,
+        outputPath: progress.outputPath,
+        // Timing data for dynamic ETA
+        chunksCompletedInJob: progress.chunksCompletedInJob,
+        totalChunksInJob: progress.totalChunksInJob,
+        chunkCompletedAt: progress.chunkCompletedAt
       });
     }
   };
@@ -913,9 +935,9 @@ export async function cleanupEpub(
 
     const systemPrompt = getOcrCleanupSystemPrompt();
     let chaptersProcessed = 0;
+    let chunksCompletedInJob = 0;  // Cumulative chunk counter across all chapters
 
     // Generate output path - save as cleaned.epub in the same folder as the original
-    // This supports the project-based structure where original.epub and cleaned.epub live together
     const epubDir = path.dirname(epubPath);
     const outputPath = path.join(epubDir, 'cleaned.epub');
 
@@ -926,23 +948,14 @@ export async function cleanupEpub(
       // File doesn't exist, that's fine
     }
 
-    // Process each chapter
-    for (let i = 0; i < chapters.length; i++) {
-      const chapter = chapters[i];
+    // ─────────────────────────────────────────────────────────────────────────
+    // PHASE 1: Pre-scan all chapters to calculate total chunks in job
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('[AI-CLEANUP] Pre-scanning chapters to calculate total chunks...');
+    const chapterChunks: { chapter: typeof chapters[0]; chunks: string[] }[] = [];
+    let totalChunksInJob = 0;
 
-      sendProgress({
-        jobId,
-        phase: 'processing',
-        currentChapter: i + 1,
-        totalChapters,
-        currentChunk: 0,
-        totalChunks: 1,
-        percentage: Math.round((i / totalChapters) * 90), // 90% for processing
-        message: `Processing: ${chapter.title}`,
-        outputPath  // Include output path so UI can show diff during processing
-      });
-
-      // Get chapter text using our dedicated processor
+    for (const chapter of chapters) {
       const text = await processor.getChapterText(chapter.id);
       if (!text || text.trim().length === 0) {
         continue; // Skip empty chapters
@@ -969,28 +982,76 @@ export async function cleanupEpub(
         index === 0 || chunk !== chunks[index - 1]
       );
 
+      if (uniqueChunks.length > 0) {
+        chapterChunks.push({ chapter, chunks: uniqueChunks });
+        totalChunksInJob += uniqueChunks.length;
+      }
+    }
+
+    console.log(`[AI-CLEANUP] Total chunks in job: ${totalChunksInJob} across ${chapterChunks.length} non-empty chapters`);
+
+    if (totalChunksInJob === 0) {
+      processor.close();
+      return { success: false, error: 'No text content found in EPUB' };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PHASE 2: Process all chunks
+    // ─────────────────────────────────────────────────────────────────────────
+    for (let i = 0; i < chapterChunks.length; i++) {
+      const { chapter, chunks: uniqueChunks } = chapterChunks[i];
+
       // Process chunks
       const cleanedChunks: string[] = [];
       for (let c = 0; c < uniqueChunks.length; c++) {
+        const chunkStartTime = Date.now();
+        const currentChunkInJob = chunksCompletedInJob + 1;  // 1-indexed for display
+
+        // Send progress before starting chunk
         sendProgress({
           jobId,
           phase: 'processing',
           currentChapter: i + 1,
-          totalChapters,
-          currentChunk: c + 1,
-          totalChunks: uniqueChunks.length,
-          percentage: Math.round(((i + (c / uniqueChunks.length)) / totalChapters) * 90),
-          message: `Processing: ${chapter.title} (chunk ${c + 1}/${uniqueChunks.length})`,
-          outputPath
+          totalChapters: chapterChunks.length,
+          currentChunk: currentChunkInJob,
+          totalChunks: totalChunksInJob,
+          percentage: Math.round((chunksCompletedInJob / totalChunksInJob) * 90),
+          message: `Processing chunk ${currentChunkInJob}/${totalChunksInJob}: ${chapter.title}`,
+          outputPath,
+          chunksCompletedInJob,
+          totalChunksInJob
         });
 
         try {
+          console.log(`[AI-CLEANUP] Starting chunk ${currentChunkInJob}/${totalChunksInJob} - "${chapter.title}" (${uniqueChunks[c].length} chars)`);
           const cleaned = await cleanChunkWithProvider(uniqueChunks[c], systemPrompt, config);
+          const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
+          console.log(`[AI-CLEANUP] Completed chunk ${currentChunkInJob}/${totalChunksInJob} in ${chunkDuration}s (${cleaned.length} chars output)`);
           cleanedChunks.push(cleaned);
+
+          // Increment counter and send completion update with timestamp
+          chunksCompletedInJob++;
+          sendProgress({
+            jobId,
+            phase: 'processing',
+            currentChapter: i + 1,
+            totalChapters: chapterChunks.length,
+            currentChunk: chunksCompletedInJob,
+            totalChunks: totalChunksInJob,
+            percentage: Math.round((chunksCompletedInJob / totalChunksInJob) * 90),
+            message: `Completed chunk ${chunksCompletedInJob}/${totalChunksInJob}: ${chapter.title}`,
+            outputPath,
+            chunksCompletedInJob,
+            totalChunksInJob,
+            chunkCompletedAt: Date.now()  // Timestamp for ETA calculation
+          });
         } catch (error) {
           // If chunk fails, keep original text
-          console.error(`Chunk ${c + 1} failed:`, error);
+          const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
+          console.error(`[AI-CLEANUP] Chunk ${currentChunkInJob} failed after ${chunkDuration}s:`, error);
           cleanedChunks.push(uniqueChunks[c]);
+          // Still increment counter even on failure
+          chunksCompletedInJob++;
         }
       }
 

@@ -83,7 +83,21 @@
       "Bash(/Users/telltale/Projects/ebook2audiobook/python_env/bin/pip show:*)",
       "Bash(/Users/telltale/Projects/ebook2audiobook/python_env/bin/python:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(npx ts-node:*)"
+      "Bash(npx ts-node:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd parallel worker mode support for BookForgeApp integration\n\n- Add --sentence_start and --sentence_end CLI arguments for parallel workers\n- Add --worker_mode flag to skip final assembly \\(only generate sentence audio\\)\n- Add --prep_only flag to output JSON with sentence counts without conversion\n- Add prep_ebook_info\\(\\) function to extract chapter/sentence metadata\n- Modify convert_chapters2audio\\(\\) to respect sentence range bounds\n- Workers write sentence audio files to shared session directory\n\nThis enables BookForgeApp to coordinate multiple e2a workers processing\ndifferent sentence ranges simultaneously, then assemble the final audiobook.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(source:*)",
+      "Bash(conda activate:*)",
+      "Bash(git commit:*)",
+      "Bash(export PATH=\"/Applications/calibre.app/Contents/MacOS:$PATH\")",
+      "Bash(PATH=\"/Applications/calibre.app/Contents/MacOS:$PATH\" /Users/telltale/Projects/ebook2audiobook/python_env/bin/python:*)",
+      "Bash(sort:*)",
+      "Bash(PATH=\"/opt/homebrew/bin:/Applications/calibre.app/Contents/MacOS:$PATH\" /Users/telltale/Projects/ebook2audiobook/python_env/bin/python:*)",
+      "Bash(git remote add:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(git push:*)",
+      "Bash(git fetch:*)",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/ebook2audiobook/bin/python:*)",
+      "Bash(git rebase:*)"
     ]
   }
 }

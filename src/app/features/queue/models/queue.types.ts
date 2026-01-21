@@ -29,6 +29,15 @@ export interface QueueJob {
   };
   // Job-specific configuration
   config?: JobConfig;
+  // Progress tracking for ETA calculation
+  currentChunk?: number;          // Current chunk (1-indexed, job-wide)
+  totalChunks?: number;           // Total chunks in entire job
+  currentChapter?: number;
+  totalChapters?: number;
+  chunksCompletedInJob?: number;  // Chunks completed so far
+  totalChunksInJob?: number;      // Total chunks in entire job
+  chunkCompletedAt?: number;      // Timestamp of last chunk completion
+  progressMessage?: string;       // Current progress message
 }
 
 // Job configuration union type
@@ -61,6 +70,10 @@ export interface TtsConversionConfig {
   enableTextSplitting: boolean;
   outputFilename?: string;
   outputDir?: string;       // Custom output directory (empty = default)
+  // Parallel processing options
+  parallelWorkers?: number; // undefined = auto, 1 = sequential, 2-4 = parallel workers
+  useParallel?: boolean;    // Enable parallel processing (default: false for backwards compat)
+  parallelMode?: 'sentences' | 'chapters'; // Division strategy (default: sentences for fine-grained)
 }
 
 // Queue state
@@ -77,9 +90,15 @@ export interface QueueProgress {
   phase: string;
   progress: number;           // 0-100
   message?: string;
-  currentChunk?: number;
-  totalChunks?: number;
+  currentChunk?: number;      // Current chunk (1-indexed, job-wide)
+  totalChunks?: number;       // Total chunks in entire job
+  currentChapter?: number;
+  totalChapters?: number;
   outputPath?: string;        // Path to output file (available during processing for diff view)
+  // Timing data for dynamic ETA calculation
+  chunksCompletedInJob?: number;  // Chunks completed so far (0-indexed)
+  totalChunksInJob?: number;      // Total chunks in entire job
+  chunkCompletedAt?: number;      // Timestamp when last chunk completed
 }
 
 // Job result from IPC

@@ -12,7 +12,7 @@ import { BookMetadata } from '../../pdf-picker.component';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="panel-header">
-      <h3 class="panel-title">Chapters</h3>
+      <h3 class="panel-title">Chapters & Metadata</h3>
       <desktop-button variant="ghost" size="xs" (click)="cancel.emit()">Done</desktop-button>
     </div>
 
@@ -88,6 +88,40 @@ import { BookMetadata } from '../../pdf-picker.component';
               placeholder="Book description or synopsis"
               rows="3"
             ></textarea>
+          </div>
+          <div class="metadata-field">
+            <label>Cover Image</label>
+            <div
+              class="cover-paste-box"
+              [class.has-image]="localMetadata().coverImage"
+              tabindex="0"
+              (paste)="onCoverPaste($event)"
+              (click)="coverPasteBox?.focus()"
+              #coverPasteBox
+            >
+              @if (localMetadata().coverImage) {
+                <img [src]="localMetadata().coverImage" alt="Cover" />
+                <button class="remove-cover" (click)="removeCover($event)" title="Remove cover">×</button>
+              } @else {
+                <div class="paste-hint">
+                  <span class="paste-icon">📋</span>
+                  <span>Click here and press ⌘V to paste cover image</span>
+                </div>
+              }
+            </div>
+          </div>
+          <div class="save-row">
+            <desktop-button
+              variant="primary"
+              size="sm"
+              [fullWidth]="true"
+              (click)="onSaveClick()"
+            >
+              Save Metadata
+            </desktop-button>
+            @if (showSavedIndicator()) {
+              <span class="saved-indicator">✓ Saved</span>
+            }
           </div>
         </div>
       }
@@ -371,6 +405,102 @@ import { BookMetadata } from '../../pdf-picker.component';
       }
     }
 
+    .cover-paste-box {
+      width: 100%;
+      min-height: 120px;
+      border: 2px dashed var(--border-default);
+      border-radius: $radius-md;
+      background: var(--bg-elevated);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+      position: relative;
+      overflow: hidden;
+
+      &:hover, &:focus {
+        border-color: var(--accent);
+        background: rgba(255, 107, 53, 0.05);
+        outline: none;
+      }
+
+      &.has-image {
+        border-style: solid;
+        padding: var(--ui-spacing-sm);
+
+        img {
+          max-width: 100%;
+          max-height: 200px;
+          object-fit: contain;
+          border-radius: $radius-sm;
+        }
+      }
+
+      .paste-hint {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--ui-spacing-sm);
+        color: var(--text-tertiary);
+        font-size: var(--ui-font-sm);
+        text-align: center;
+        padding: var(--ui-spacing-md);
+
+        .paste-icon {
+          font-size: 1.5rem;
+        }
+      }
+
+      .remove-cover {
+        position: absolute;
+        top: var(--ui-spacing-sm);
+        right: var(--ui-spacing-sm);
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        border: none;
+        background: rgba(0, 0, 0, 0.6);
+        color: white;
+        font-size: 1rem;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+
+        &:hover {
+          background: rgba(255, 0, 0, 0.8);
+        }
+      }
+
+      &:hover .remove-cover {
+        opacity: 1;
+      }
+    }
+
+    .save-row {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      margin-top: var(--ui-spacing-sm);
+    }
+
+    .saved-indicator {
+      font-size: var(--ui-font-sm);
+      color: #4CAF50;
+      font-weight: $font-weight-medium;
+      animation: fadeInOut 2s ease-in-out;
+    }
+
+    @keyframes fadeInOut {
+      0% { opacity: 0; transform: translateX(-4px); }
+      15% { opacity: 1; transform: translateX(0); }
+      85% { opacity: 1; transform: translateX(0); }
+      100% { opacity: 0; transform: translateX(0); }
+    }
+
     .source-info {
       .info-box {
         padding: var(--ui-spacing-sm) var(--ui-spacing-md);
@@ -575,6 +705,7 @@ import { BookMetadata } from '../../pdf-picker.component';
 })
 export class ChaptersPanelComponent {
   @ViewChild('editInput') editInput?: ElementRef<HTMLInputElement>;
+  @ViewChild('coverPasteBox') coverPasteBox?: ElementRef<HTMLDivElement>;
 
   chapters = input.required<Chapter[]>();
   chaptersSource = input.required<'toc' | 'heuristic' | 'manual' | 'mixed'>();
@@ -592,6 +723,7 @@ export class ChaptersPanelComponent {
   finalizeChapters = output<void>();
   renameChapter = output<{ chapterId: string; newTitle: string }>();
   metadataChange = output<BookMetadata>();
+  saveMetadata = output<void>();
 
   // Section expansion state
   readonly metadataExpanded = signal(true);
@@ -599,6 +731,10 @@ export class ChaptersPanelComponent {
 
   // Local metadata for editing (synced from input)
   readonly localMetadata = signal<BookMetadata>({});
+
+  // Save indicator state
+  readonly showSavedIndicator = signal(false);
+  private savedTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Editing state
   readonly editingChapterId = signal<string | null>(null);
@@ -634,6 +770,52 @@ export class ChaptersPanelComponent {
     const value = (event.target as HTMLInputElement | HTMLTextAreaElement).value;
     this.localMetadata.update(m => ({ ...m, [field]: value }));
     this.metadataChange.emit({ ...this.localMetadata() });
+  }
+
+  onCoverPaste(event: ClipboardEvent): void {
+    event.preventDefault();
+    const items = event.clipboardData?.items;
+    if (!items) return;
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const dataUrl = e.target?.result as string;
+            if (dataUrl) {
+              this.localMetadata.update(m => ({ ...m, coverImage: dataUrl }));
+              this.metadataChange.emit({ ...this.localMetadata() });
+            }
+          };
+          reader.readAsDataURL(file);
+        }
+        break;
+      }
+    }
+  }
+
+  removeCover(event: Event): void {
+    event.stopPropagation();
+    this.localMetadata.update(m => {
+      const { coverImage, ...rest } = m;
+      return rest;
+    });
+    this.metadataChange.emit({ ...this.localMetadata() });
+  }
+
+  onSaveClick(): void {
+    this.saveMetadata.emit();
+    // Show saved indicator
+    if (this.savedTimeout) {
+      clearTimeout(this.savedTimeout);
+    }
+    this.showSavedIndicator.set(true);
+    this.savedTimeout = setTimeout(() => {
+      this.showSavedIndicator.set(false);
+    }, 2000);
   }
 
   onChapterClick(event: Event, chapterId: string): void {

@@ -27,6 +27,29 @@ interface AIProviderConfig {
   openai?: { apiKey: string; model: string };
 }
 
+// Parallel TTS progress type
+interface ParallelWorkerState {
+  id: number;
+  sentenceStart: number;
+  sentenceEnd: number;
+  currentSentence: number;
+  completedSentences: number;
+  status: 'pending' | 'running' | 'complete' | 'error';
+  error?: string;
+}
+
+interface ParallelAggregatedProgress {
+  phase: 'preparing' | 'converting' | 'assembling' | 'complete' | 'error';
+  totalSentences: number;
+  completedSentences: number;
+  percentage: number;
+  activeWorkers: number;
+  workers: ParallelWorkerState[];
+  estimatedRemaining: number;
+  message?: string;
+  error?: string;
+}
+
 // Access window.electron directly
 declare global {
   interface Window {
@@ -39,6 +62,15 @@ declare global {
         loadState: () => Promise<{ success: boolean; data?: any; error?: string }>;
         onProgress: (callback: (progress: QueueProgress) => void) => () => void;
         onComplete: (callback: (result: JobResult) => void) => () => void;
+      };
+      parallelTts?: {
+        detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: { count: number; reason: string }; error?: string }>;
+        startConversion: (jobId: string, config: any) => Promise<{ success: boolean; data?: any; error?: string }>;
+        stopConversion: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
+        getProgress: (jobId: string) => Promise<{ success: boolean; data?: ParallelAggregatedProgress | null; error?: string }>;
+        isActive: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
+        onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
+        onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number }) => void) => () => void;
       };
       shell?: {
         openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
@@ -69,6 +101,8 @@ export class QueueService {
   // Progress listener cleanup
   private unsubscribeProgress: (() => void) | null = null;
   private unsubscribeComplete: (() => void) | null = null;
+  private unsubscribeParallelProgress: (() => void) | null = null;
+  private unsubscribeParallelComplete: (() => void) | null = null;
 
   // State signals
   private readonly _jobs = signal<QueueJob[]>([]);
@@ -117,6 +151,12 @@ export class QueueService {
       }
       if (this.unsubscribeComplete) {
         this.unsubscribeComplete();
+      }
+      if (this.unsubscribeParallelProgress) {
+        this.unsubscribeParallelProgress();
+      }
+      if (this.unsubscribeParallelComplete) {
+        this.unsubscribeParallelComplete();
       }
       // Save state before destroy
       this.saveStateNow();
@@ -209,6 +249,26 @@ export class QueueService {
         this.handleJobComplete(result);
       });
     });
+
+    // Listen for parallel TTS progress updates
+    if (electron.parallelTts) {
+      this.unsubscribeParallelProgress = electron.parallelTts.onProgress((data) => {
+        this.ngZone.run(() => {
+          this.handleParallelProgressUpdate(data.jobId, data.progress);
+        });
+      });
+
+      this.unsubscribeParallelComplete = electron.parallelTts.onComplete((data) => {
+        this.ngZone.run(() => {
+          this.handleJobComplete({
+            jobId: data.jobId,
+            success: data.success,
+            outputPath: data.outputPath,
+            error: data.error
+          });
+        });
+      });
+    }
   }
 
   private handleProgressUpdate(progress: QueueProgress): void {
@@ -220,7 +280,35 @@ export class QueueService {
           progress: progress.progress,
           status: 'processing' as JobStatus,
           // Track outputPath from progress for diff view during processing
-          outputPath: progress.outputPath || job.outputPath
+          outputPath: progress.outputPath || job.outputPath,
+          // Progress tracking for ETA calculation
+          currentChunk: progress.currentChunk,
+          totalChunks: progress.totalChunks,
+          currentChapter: progress.currentChapter,
+          totalChapters: progress.totalChapters,
+          chunksCompletedInJob: progress.chunksCompletedInJob,
+          totalChunksInJob: progress.totalChunksInJob,
+          chunkCompletedAt: progress.chunkCompletedAt,
+          progressMessage: progress.message
+        };
+      })
+    );
+    // Don't save on every progress update - too frequent
+  }
+
+  private handleParallelProgressUpdate(jobId: string, progress: ParallelAggregatedProgress): void {
+    this._jobs.update(jobs =>
+      jobs.map(job => {
+        if (job.id !== jobId) return job;
+        return {
+          ...job,
+          progress: progress.percentage,
+          status: 'processing' as JobStatus,
+          progressMessage: progress.message || `${progress.activeWorkers} workers active (${progress.completedSentences}/${progress.totalSentences} sentences)`,
+          // Map parallel progress to ETA calculation fields
+          chunksCompletedInJob: progress.completedSentences,
+          totalChunksInJob: progress.totalSentences,
+          chunkCompletedAt: progress.completedSentences > (job.chunksCompletedInJob || 0) ? Date.now() : job.chunkCompletedAt
         };
       })
     );
@@ -577,7 +665,45 @@ export class QueueService {
         if (!config) {
           throw new Error('TTS configuration required');
         }
-        await electron.queue.runTtsConversion(job.id, job.epubPath, config);
+
+        // Check if parallel processing is enabled
+        if (config.useParallel && electron.parallelTts) {
+          // Determine worker count - auto-detect or use configured value
+          let workerCount = config.parallelWorkers;
+          if (!workerCount || workerCount <= 0) {
+            try {
+              const result = await electron.parallelTts.detectRecommendedWorkerCount();
+              workerCount = result.data?.count || 2;
+              console.log(`[QUEUE] Auto-detected ${workerCount} workers: ${result.data?.reason}`);
+            } catch {
+              workerCount = 2; // Default fallback
+            }
+          }
+
+          const parallelMode = config.parallelMode || 'sentences';
+          console.log(`[QUEUE] Starting parallel TTS conversion with ${workerCount} workers in ${parallelMode} mode`);
+          await electron.parallelTts.startConversion(job.id, {
+            workerCount,
+            epubPath: job.epubPath,
+            outputDir: config.outputDir || '',
+            parallelMode,
+            settings: {
+              device: config.device,
+              language: config.language,
+              ttsEngine: config.ttsEngine,
+              fineTuned: config.fineTuned,
+              temperature: config.temperature,
+              topP: config.topP,
+              topK: config.topK,
+              repetitionPenalty: config.repetitionPenalty,
+              speed: config.speed,
+              enableTextSplitting: config.enableTextSplitting
+            }
+          });
+        } else {
+          // Use sequential TTS conversion
+          await electron.queue.runTtsConversion(job.id, job.epubPath, config);
+        }
       }
     } catch (err) {
       // Error starting job
@@ -632,7 +758,11 @@ export class QueueService {
         speed: config.speed ?? 1.0,
         enableTextSplitting: config.enableTextSplitting ?? false,
         outputFilename: config.outputFilename,
-        outputDir: config.outputDir
+        outputDir: config.outputDir,
+        // Parallel processing options
+        parallelWorkers: config.parallelWorkers,
+        useParallel: config.useParallel ?? false,
+        parallelMode: config.parallelMode
       };
     }
     return undefined;
