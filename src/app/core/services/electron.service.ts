@@ -1045,6 +1045,22 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  // EPUB export with block deletions (for EPUB editor block-based deletion)
+  async exportEpubWithDeletedBlocks(
+    inputPath: string,
+    deletedBlockIds: string[],
+    outputPath?: string
+  ): Promise<{
+    success: boolean;
+    outputPath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.epub.exportWithDeletedBlocks(inputPath, deletedBlockIds, outputPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async showSaveEpubDialog(defaultName?: string): Promise<{
     success: boolean;
     canceled?: boolean;

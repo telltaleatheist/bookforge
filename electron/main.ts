@@ -1380,6 +1380,21 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // EPUB export with block deletions (for EPUB editor block-based deletion)
+  ipcMain.handle('epub:export-with-deleted-blocks', async (_event, inputPath: string, deletedBlockIds: string[], outputPath?: string) => {
+    try {
+      const { exportEpubWithDeletedBlocks } = await import('./epub-processor.js');
+
+      // Determine output path
+      const finalOutputPath = outputPath || inputPath.replace(/\.epub$/i, '_edited.epub');
+
+      const result = await exportEpubWithDeletedBlocks(inputPath, deletedBlockIds, finalOutputPath);
+      return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Ebook Convert handlers (Calibre CLI integration for format conversion)
   // ─────────────────────────────────────────────────────────────────────────────

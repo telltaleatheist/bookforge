@@ -16,6 +16,7 @@ import { EpubjsService } from './services/epubjs.service';
 import { EpubEditorStateService } from './services/epub-editor-state.service';
 import { EpubSearchService, EpubSearchMatch } from './services/epub-search.service';
 import { EpubExportService } from './services/epub-export.service';
+import { EpubProjectService } from './services/epub-project.service';
 import { EpubViewerComponent, EpubSelectionEvent, EpubHighlightClickEvent } from './components/epub-viewer/epub-viewer.component';
 import { EpubBlock, ChapterMarkerEvent, ChapterMarkerDragEvent } from './services/epubjs.service';
 import { EpubCategoriesPanelComponent } from './components/epub-categories-panel/epub-categories-panel.component';
@@ -795,6 +796,7 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
   readonly editorState = inject(EpubEditorStateService);
   private readonly searchService = inject(EpubSearchService);
   private readonly exportService = inject(EpubExportService);
+  private readonly projectService = inject(EpubProjectService);
   private readonly electron = inject(ElectronService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
@@ -815,6 +817,7 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
   readonly currentMode = signal<EditorMode>('select');
   readonly epubSource = signal<string | ArrayBuffer | null>(null);
   readonly splitSize = signal(Math.max(400, window.innerWidth - this.CATEGORIES_WIDTH));
+  readonly isConverting = signal(false);
 
   // Selection state
   readonly selectedText = signal<string | null>(null);
@@ -920,6 +923,7 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
     window.removeEventListener('resize', this.onWindowResize);
     this.epubjs.destroy();
     this.editorState.reset();
+    this.projectService.reset();
   }
 
   /**
@@ -1011,26 +1015,67 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
 
   /**
    * Load EPUB from file path
+   * If the file is not an EPUB (e.g., AZW3, MOBI), converts it first using Calibre's ebook-convert
    */
   async loadEpubFromPath(filePath: string): Promise<void> {
     try {
-      this.epubSource.set(filePath);
-      const filename = filePath.split('/').pop() || 'Untitled.epub';
-      this.editorState.epubPath.set(filePath);
+      let effectivePath = filePath;
+      const originalFilename = filePath.split('/').pop() || 'Untitled';
+
+      // Check if file needs conversion (AZW3, MOBI, KFX, etc.)
+      const ext = filePath.toLowerCase().split('.').pop() || '';
+      if (ext !== 'epub') {
+        console.log('[EpubEditor] File needs conversion:', filePath);
+
+        // Check if ebook-convert is available
+        const isAvailable = await this.electron.isEbookConvertAvailable();
+        if (!isAvailable) {
+          console.error('[EpubEditor] ebook-convert not available, cannot open non-EPUB file');
+          alert('Cannot open this file format. Install Calibre to enable format conversion.');
+          return;
+        }
+
+        // Convert to EPUB (saved to ~/Documents/BookForge/converted/)
+        console.log('[EpubEditor] Converting to EPUB...');
+        this.isConverting.set(true);
+        const convertResult = await this.electron.convertEbookToLibrary(filePath);
+        this.isConverting.set(false);
+
+        if (!convertResult.success || !convertResult.outputPath) {
+          console.error('[EpubEditor] Conversion failed:', convertResult.error);
+          alert(convertResult.error || 'Failed to convert file to EPUB');
+          return;
+        }
+
+        effectivePath = convertResult.outputPath;
+        console.log('[EpubEditor] Converted to:', effectivePath);
+      }
+
+      // Load the EPUB
+      this.epubSource.set(effectivePath);
+      const filename = originalFilename.replace(/\.[^.]+$/, '.epub');
+      this.editorState.epubPath.set(effectivePath);
       this.editorState.epubName.set(filename);
     } catch (error) {
       console.error('Failed to load EPUB:', error);
+      this.isConverting.set(false);
+      alert(error instanceof Error ? error.message : 'Failed to load file');
     }
   }
 
   /**
    * Open file picker
+   * Accepts EPUB and other ebook formats (AZW3, MOBI, etc.) - non-EPUB will be converted
    */
   async openFilePicker(): Promise<void> {
     try {
       const result = await this.electron.openPdfDialog();
-      if (result.success && result.filePath && result.filePath.endsWith('.epub')) {
-        await this.loadEpubFromPath(result.filePath);
+      if (result.success && result.filePath) {
+        const ext = result.filePath.toLowerCase().split('.').pop() || '';
+        const ebookFormats = ['epub', 'azw3', 'azw', 'mobi', 'kfx', 'prc', 'fb2'];
+        if (ebookFormats.includes(ext)) {
+          await this.loadEpubFromPath(result.filePath);
+        }
       }
     } catch (error) {
       console.error('Failed to open file picker:', error);
@@ -1061,18 +1106,31 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
   /**
    * Handle EPUB loaded
    */
-  onEpubLoaded(): void {
+  async onEpubLoaded(): Promise<void> {
+    const epubPath = this.editorState.epubPath();
+    const epubName = this.editorState.epubName();
+
+    // Auto-create or load project BEFORE loading document state
+    // This will restore deleted blocks from saved project
+    await this.projectService.autoCreateProject(epubPath, epubName);
+
     this.editorState.loadDocument({
-      epubPath: this.editorState.epubPath(),
-      epubName: this.editorState.epubName(),
+      epubPath,
+      epubName,
       title: this.epubjs.title(),
       author: this.epubjs.author(),
       coverUrl: this.epubjs.coverUrl(),
       totalChapters: this.epubjs.totalChapters(),
+      // Don't override chapters/deletions if already loaded from project
+      deletedBlockIds: this.editorState.deletedBlockIds(),
+      chapters: this.editorState.chapters().length > 0 ? this.editorState.chapters() : undefined,
+      chaptersSource: this.editorState.chaptersSource(),
     });
 
-    // Auto-load chapters from EPUB's TOC
-    this.loadChaptersFromToc();
+    // Auto-load chapters from EPUB's TOC only if not already loaded from project
+    if (this.editorState.chapters().length === 0) {
+      this.loadChaptersFromToc();
+    }
 
     // Sync initial deleted blocks state to viewer
     setTimeout(() => {

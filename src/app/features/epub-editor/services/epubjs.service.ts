@@ -626,16 +626,24 @@ export class EpubjsService {
     this.chapterMarkerElements.forEach(el => el.remove());
     this.chapterMarkerElements.clear();
 
+    // Remove container if not in chapters mode
+    const existingContainer = this.currentIframeDoc.getElementById('epub-chapter-markers');
+    if (!this.chaptersMode) {
+      if (existingContainer) {
+        existingContainer.remove();
+      }
+      return;
+    }
+
     // Get current section href
     const currentHref = this.currentSectionHref;
     if (!currentHref) return;
 
     // Find chapters for current section
     const chaptersInSection = this.chapterMarkers.filter(ch => ch.sectionHref === currentHref);
-    if (chaptersInSection.length === 0) return;
 
-    // Create container for markers
-    let markerContainer = this.currentIframeDoc.getElementById('epub-chapter-markers');
+    // Create container for markers (only in chapters mode)
+    let markerContainer = existingContainer;
     if (!markerContainer) {
       markerContainer = this.currentIframeDoc.createElement('div');
       markerContainer.id = 'epub-chapter-markers';
@@ -963,7 +971,7 @@ export class EpubjsService {
         border: 2px solid #06b6d4;
         background-color: rgba(6, 182, 212, 0.12);
         pointer-events: none;
-        z-index: 10000;
+        z-index: 2147483647;
       }
     `;
   }
@@ -1192,11 +1200,17 @@ export class EpubjsService {
       return [...filtered, ...newBlocks];
     });
 
+    // Re-apply deleted/selected styles after blocks are added
+    // This ensures styles are applied even if project was loaded before blocks rendered
+    this.updateBlockStyles();
+
     // Set up mouse event handlers in the iframe document
     this.setupIframeMouseHandlers(doc);
 
     // Render chapter markers if in chapters mode
-    this.renderChapterMarkers();
+    if (this.chaptersMode) {
+      this.renderChapterMarkers();
+    }
   }
 
   /**
@@ -1277,7 +1291,7 @@ export class EpubjsService {
           border: 2px solid #06b6d4;
           background-color: rgba(6, 182, 212, 0.12);
           pointer-events: none;
-          z-index: 10000;
+          z-index: 2147483647;
         `;
         this.currentIframeDoc.body.appendChild(this.marqueeElement);
       }
@@ -1323,14 +1337,39 @@ export class EpubjsService {
           this.marqueeSelectCallback(selectedBlockIds, additive);
         }
       } else if (this.clickedBlockId) {
-        // Regular click on a block
+        // Click on a block
         const block = this.blocks().find(b => b.id === this.clickedBlockId);
-        if (block && this.blockClickCallback) {
+        if (this.chaptersMode && this.chapterPlacementCallback && block) {
+          // In chapters mode, place a chapter marker at this block
+          const rect = block.element.getBoundingClientRect();
+          const y = rect.top + (this.currentIframeDoc?.defaultView?.scrollY || 0);
+          const sectionIndex = this.chapters().findIndex(ch => ch.href === block.sectionHref);
+          this.chapterPlacementCallback({
+            chapterId: '', // New chapter, no ID yet
+            y,
+            sectionHref: block.sectionHref,
+            sectionIndex: sectionIndex >= 0 ? sectionIndex : 0,
+            blockId: block.id,
+            blockText: block.text?.substring(0, 100),
+          });
+        } else if (block && this.blockClickCallback) {
+          // Regular click on a block in normal mode
           this.blockClickCallback(block, additive);
         }
       } else {
-        // Click on empty space - clear selection
-        if (this.clearSelectionCallback) {
+        // Click on empty space
+        if (this.chaptersMode && this.chapterPlacementCallback) {
+          // In chapters mode, place a chapter marker at click position
+          const y = event.clientY + (this.currentIframeDoc?.defaultView?.scrollY || 0);
+          const sectionIndex = this.chapters().findIndex(ch => ch.href === this.currentSectionHref);
+          this.chapterPlacementCallback({
+            chapterId: '', // New chapter, no ID yet
+            y,
+            sectionHref: this.currentSectionHref || '',
+            sectionIndex: sectionIndex >= 0 ? sectionIndex : 0,
+          });
+        } else if (this.clearSelectionCallback) {
+          // Clear selection in normal mode
           this.clearSelectionCallback();
         }
       }

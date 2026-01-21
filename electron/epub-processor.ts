@@ -1431,5 +1431,215 @@ export async function copyEpubFile(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Block-based Export (for EPUB editor)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Export EPUB with deleted blocks removed.
+ * Blocks are identified by ID format: "sectionHref:index"
+ * where sectionHref is the relative path (e.g., "OEBPS/chapter1.xhtml")
+ * and index is the 0-based position of the block element in document order.
+ */
+export async function exportEpubWithDeletedBlocks(
+  inputPath: string,
+  deletedBlockIds: string[],
+  outputPath: string
+): Promise<{ success: boolean; outputPath?: string; error?: string }> {
+  const processor = new EpubProcessor();
+
+  try {
+    const structure = await processor.open(inputPath);
+    const zipWriter = new ZipWriter();
+    const entries = (processor as any).zipReader?.getEntries() || [];
+
+    // Group deleted blocks by section href
+    const deletedBySection = new Map<string, number[]>();
+    for (const blockId of deletedBlockIds) {
+      const colonIndex = blockId.lastIndexOf(':');
+      if (colonIndex > 0) {
+        const sectionHref = blockId.substring(0, colonIndex);
+        const index = parseInt(blockId.substring(colonIndex + 1), 10);
+        if (!isNaN(index)) {
+          const existing = deletedBySection.get(sectionHref) || [];
+          existing.push(index);
+          deletedBySection.set(sectionHref, existing);
+        }
+      }
+    }
+
+    console.log(`[EPUB Export] Processing ${deletedBlockIds.length} block deletions across ${deletedBySection.size} sections`);
+
+    for (const entryName of entries) {
+      // Check if this entry has blocks to delete
+      // The sectionHref from blocks may or may not include the rootPath prefix
+      let sectionDeletions: number[] | undefined;
+
+      // Try with the entry name as-is
+      sectionDeletions = deletedBySection.get(entryName);
+
+      // Also try without the root path prefix
+      if (!sectionDeletions && structure.rootPath && entryName.startsWith(structure.rootPath + '/')) {
+        const relativeHref = entryName.substring(structure.rootPath.length + 1);
+        sectionDeletions = deletedBySection.get(relativeHref);
+      }
+
+      // Also try with root path added if not present
+      if (!sectionDeletions && structure.rootPath) {
+        const withRoot = `${structure.rootPath}/${entryName}`;
+        sectionDeletions = deletedBySection.get(withRoot);
+      }
+
+      if (sectionDeletions && sectionDeletions.length > 0) {
+        console.log(`[EPUB Export] Removing ${sectionDeletions.length} blocks from: ${entryName}`);
+
+        // Read and process the XHTML
+        const originalXhtml = await processor.readFile(entryName);
+        const modifiedXhtml = removeBlocksFromXhtml(originalXhtml, sectionDeletions);
+        zipWriter.addFile(entryName, Buffer.from(modifiedXhtml, 'utf8'));
+      } else {
+        // Copy file as-is
+        const data = await processor.readBinaryFile(entryName);
+        const compress = entryName !== 'mimetype';
+        zipWriter.addFile(entryName, data, compress);
+      }
+    }
+
+    await zipWriter.write(outputPath);
+
+    return {
+      success: true,
+      outputPath
+    };
+  } catch (error) {
+    console.error('[EPUB Export] Error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  } finally {
+    processor.close();
+  }
+}
+
+/**
+ * Remove specific block elements from XHTML by their indices.
+ * Blocks are identified using the same selectors as the EPUB editor:
+ * 'p, h1, h2, h3, h4, h5, h6, img, blockquote, ul, ol, figure, div.image, div.figure'
+ */
+function removeBlocksFromXhtml(xhtml: string, indicesToRemove: number[]): string {
+  if (indicesToRemove.length === 0) return xhtml;
+
+  const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+
+  // Parse as XHTML
+  const doc = parser.parseFromString(xhtml, 'application/xhtml+xml');
+
+  if (!doc || !doc.documentElement) {
+    console.error('[EPUB Export] Failed to parse XHTML');
+    return xhtml;
+  }
+
+  // Find the body element
+  const body = doc.getElementsByTagName('body')[0];
+  if (!body) {
+    console.error('[EPUB Export] No body element found');
+    return xhtml;
+  }
+
+  // Same block selectors as epub editor
+  const blockTags = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'img', 'blockquote', 'ul', 'ol', 'figure']);
+
+  // Collect all block elements in document order
+  const allElements: Element[] = [];
+
+  function collectElements(node: any): void {
+    if (node.nodeType === 1) { // ELEMENT_NODE
+      const tagName = node.tagName?.toLowerCase() || '';
+
+      // Check if it's a block element
+      const isBlockTag = blockTags.has(tagName);
+      const isImageDiv = tagName === 'div' &&
+        (node.getAttribute('class')?.includes('image') || node.getAttribute('class')?.includes('figure'));
+
+      if (isBlockTag || isImageDiv) {
+        // Skip if this element is a descendant of another collected block
+        let isNested = false;
+        for (const collected of allElements) {
+          if (isDescendantOf(node, collected)) {
+            isNested = true;
+            break;
+          }
+        }
+
+        if (!isNested) {
+          // Check minimum content (same logic as editor)
+          const text = getTextContent(node).trim();
+          const isImage = tagName === 'img' || node.getElementsByTagName('img').length > 0;
+
+          if (isImage || text.length >= 2) {
+            allElements.push(node);
+          }
+        }
+      }
+
+      // Recurse into children
+      for (let i = 0; i < node.childNodes.length; i++) {
+        collectElements(node.childNodes[i]);
+      }
+    }
+  }
+
+  collectElements(body);
+
+  console.log(`[EPUB Export] Found ${allElements.length} blocks, removing indices: ${indicesToRemove.join(', ')}`);
+
+  // Create a set for faster lookup
+  const removeSet = new Set(indicesToRemove);
+
+  // Remove elements (in reverse order to preserve indices)
+  const sortedIndices = [...indicesToRemove].sort((a, b) => b - a);
+  for (const index of sortedIndices) {
+    if (index >= 0 && index < allElements.length) {
+      const element = allElements[index];
+      if (element.parentNode) {
+        element.parentNode.removeChild(element);
+        console.log(`[EPUB Export] Removed block ${index}`);
+      }
+    }
+  }
+
+  // Serialize back to string
+  return serializer.serializeToString(doc);
+}
+
+/**
+ * Check if a node is a descendant of another node
+ */
+function isDescendantOf(node: any, ancestor: any): boolean {
+  let parent = node.parentNode;
+  while (parent) {
+    if (parent === ancestor) return true;
+    parent = parent.parentNode;
+  }
+  return false;
+}
+
+/**
+ * Get text content of an element (works with xmldom)
+ */
+function getTextContent(node: any): string {
+  if (node.nodeType === 3) { // TEXT_NODE
+    return node.nodeValue || '';
+  }
+  let text = '';
+  for (let i = 0; i < node.childNodes.length; i++) {
+    text += getTextContent(node.childNodes[i]);
+  }
+  return text;
+}
+
 // Export the processor and ZipWriter for direct use if needed
 export { EpubProcessor, ZipWriter };

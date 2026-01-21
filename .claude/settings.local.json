@@ -97,7 +97,8 @@
       "Bash(git push:*)",
       "Bash(git fetch:*)",
       "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/ebook2audiobook/bin/python:*)",
-      "Bash(git rebase:*)"
+      "Bash(git rebase:*)",
+      "Bash(git ls-tree:*)"
     ]
   }
 }

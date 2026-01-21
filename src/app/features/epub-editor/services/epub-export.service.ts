@@ -40,7 +40,8 @@ export class EpubExportService {
   private readonly electron = inject(ElectronService);
 
   /**
-   * Export EPUB with deleted highlights removed
+   * Export EPUB with deleted content removed
+   * Supports both block-based deletions (from EPUB editor) and highlight-based deletions
    */
   async exportWithDeletions(outputPath?: string): Promise<EpubExportResult> {
     const epubPath = this.editorState.effectivePath();
@@ -51,10 +52,34 @@ export class EpubExportService {
       return { success: false, error: 'No EPUB loaded' };
     }
 
-    // Collect deleted highlights
+    // Check for block-based deletions first (primary deletion mode for EPUB editor)
+    const deletedBlockIds = Array.from(this.editorState.deletedBlockIds());
+    console.log('[EPUB Export] Deleted block IDs count:', deletedBlockIds.length);
+
+    if (deletedBlockIds.length > 0) {
+      console.log('[EPUB Export] Using block-based deletion export');
+      console.log('[EPUB Export] Deleted blocks:', deletedBlockIds);
+
+      try {
+        const result = await this.electron.exportEpubWithDeletedBlocks(
+          epubPath,
+          deletedBlockIds,
+          outputPath
+        );
+        console.log('[EPUB Export] Result:', result);
+        return result;
+      } catch (error) {
+        console.error('[EPUB Export] Error:', error);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Export failed'
+        };
+      }
+    }
+
+    // Fall back to highlight-based deletions (for search/custom category deletions)
     const deletedHighlights = this.searchService.getDeletedHighlightsForExport();
     console.log('[EPUB Export] Deleted highlights count:', deletedHighlights.length);
-    console.log('[EPUB Export] Deleted highlights:', deletedHighlights);
 
     if (deletedHighlights.length === 0) {
       console.log('[EPUB Export] No deletions, copying file');
@@ -106,14 +131,30 @@ export class EpubExportService {
 
   /**
    * Get export preview (what will be removed)
+   * Includes both block-based and highlight-based deletions
    */
   getExportPreview(): {
     deletedCount: number;
     deletedChars: number;
+    blockCount: number;
     byChapter: Map<string, { count: number; chars: number }>;
   } {
-    const deletedHighlights = this.searchService.getDeletedHighlightsForExport();
+    // Count block-based deletions
+    const deletedBlockIds = this.editorState.deletedBlockIds();
+    const blockCount = deletedBlockIds.size;
 
+    // Group blocks by section for stats
+    const bySection = new Map<string, number>();
+    deletedBlockIds.forEach(blockId => {
+      const colonIndex = blockId.lastIndexOf(':');
+      if (colonIndex > 0) {
+        const sectionHref = blockId.substring(0, colonIndex);
+        bySection.set(sectionHref, (bySection.get(sectionHref) || 0) + 1);
+      }
+    });
+
+    // Also get highlight-based deletions
+    const deletedHighlights = this.searchService.getDeletedHighlightsForExport();
     const byChapter = new Map<string, { count: number; chars: number }>();
 
     for (const highlight of deletedHighlights) {
@@ -127,6 +168,7 @@ export class EpubExportService {
     return {
       deletedCount: deletedHighlights.length,
       deletedChars: deletedHighlights.reduce((sum, h) => sum + h.text.length, 0),
+      blockCount,
       byChapter
     };
   }

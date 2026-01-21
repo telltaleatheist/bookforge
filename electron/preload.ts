@@ -759,6 +759,7 @@ export interface ElectronAPI {
     editText: (epubPath: string, chapterId: string, oldText: string, newText: string) => Promise<{ success: boolean; error?: string }>;
     exportWithRemovals: (inputPath: string, removals: Record<string, Array<{ chapterId: string; text: string; cfi: string }>>, outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
     copyFile: (inputPath: string, outputPath: string) => Promise<{ success: boolean; error?: string }>;
+    exportWithDeletedBlocks: (inputPath: string, deletedBlockIds: string[], outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
   };
   ai: {
     checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: OllamaModel[]; error?: string }; error?: string }>;
@@ -1063,6 +1064,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:export-with-removals', inputPath, removals, outputPath),
     copyFile: (inputPath: string, outputPath: string) =>
       ipcRenderer.invoke('epub:copy-file', inputPath, outputPath),
+    exportWithDeletedBlocks: (inputPath: string, deletedBlockIds: string[], outputPath?: string) =>
+      ipcRenderer.invoke('epub:export-with-deleted-blocks', inputPath, deletedBlockIds, outputPath),
   },
   ai: {
     checkConnection: () =>
