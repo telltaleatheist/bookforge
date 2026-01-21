@@ -8,6 +8,8 @@
 import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
+import * as crypto from 'crypto';
 import { app } from 'electron';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -247,19 +249,111 @@ export async function convertToEpub(
 }
 
 /**
+ * Compute SHA256 hash of a file
+ */
+async function computeFileHash(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fsSync.createReadStream(filePath);
+    stream.on('data', data => hash.update(data));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
+}
+
+/**
+ * Find existing file in library by hash
+ */
+async function findFileByHash(filesFolder: string, targetHash: string): Promise<string | null> {
+  try {
+    const entries = await fs.readdir(filesFolder, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.epub')) {
+        const filePath = path.join(filesFolder, entry.name);
+        try {
+          const hash = await computeFileHash(filePath);
+          if (hash === targetHash) {
+            return filePath;
+          }
+        } catch {
+          // Skip files we can't read
+        }
+      }
+    }
+  } catch {
+    // Folder doesn't exist yet
+  }
+  return null;
+}
+
+/**
  * Convert an ebook to EPUB and save in the BookForge library
+ * Follows the same pattern as PDF import - saves to ~/Documents/BookForge/files/
+ * with hash-based deduplication
  *
  * @param inputPath - Path to the source ebook
  * @returns Conversion result with output path in library
  */
 export async function convertToLibrary(inputPath: string): Promise<ConversionResult> {
   const documentsPath = app.getPath('documents');
-  const libraryDir = path.join(documentsPath, 'BookForge', 'converted');
+  const filesFolder = path.join(documentsPath, 'BookForge', 'files');
+  const tempDir = app.getPath('temp');
 
-  // Ensure converted directory exists
-  await fs.mkdir(libraryDir, { recursive: true });
+  // Ensure directories exist
+  await fs.mkdir(filesFolder, { recursive: true });
 
-  return convertToEpub(inputPath, libraryDir);
+  // First convert to a temp location
+  const inputBasename = path.basename(inputPath, path.extname(inputPath));
+  const tempOutputPath = path.join(tempDir, `${inputBasename}_converting.epub`);
+
+  // Run the conversion
+  const convertResult = await convertToEpub(inputPath, tempDir);
+  if (!convertResult.success || !convertResult.outputPath) {
+    return convertResult;
+  }
+
+  try {
+    // Compute hash of converted file
+    const fileHash = await computeFileHash(convertResult.outputPath);
+    console.log('[EbookConvert] Converted file hash:', fileHash);
+
+    // Check if file with same hash already exists in library
+    const existingPath = await findFileByHash(filesFolder, fileHash);
+    if (existingPath) {
+      console.log('[EbookConvert] File already in library:', existingPath);
+      // Clean up temp file
+      try {
+        await fs.unlink(convertResult.outputPath);
+      } catch { /* ignore */ }
+      return { success: true, outputPath: existingPath };
+    }
+
+    // Copy to library with appropriate naming
+    const epubName = `${inputBasename}.epub`;
+    let destPath = path.join(filesFolder, epubName);
+
+    // If same name exists but different content, add hash suffix
+    try {
+      await fs.access(destPath);
+      // File with same name exists but different hash - add short hash to name
+      const shortHash = fileHash.substring(0, 8);
+      destPath = path.join(filesFolder, `${inputBasename}_${shortHash}.epub`);
+    } catch {
+      // File doesn't exist, use original name
+    }
+
+    // Move from temp to library
+    await fs.rename(convertResult.outputPath, destPath);
+    console.log('[EbookConvert] Saved to library:', destPath);
+
+    return { success: true, outputPath: destPath };
+  } catch (err) {
+    // Clean up temp file on error
+    try {
+      await fs.unlink(convertResult.outputPath);
+    } catch { /* ignore */ }
+    return { success: false, error: (err as Error).message };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
