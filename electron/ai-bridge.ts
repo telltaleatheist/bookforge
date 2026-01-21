@@ -808,6 +808,7 @@ export interface EpubCleanupProgress {
   totalChunks: number;       // Total chunks in entire job
   percentage: number;
   message?: string;
+  error?: string;            // Error message when phase is 'error'
   outputPath?: string;  // Path to _cleaned.epub (available during processing for diff view)
   // Timing data for dynamic ETA calculation
   chunksCompletedInJob?: number;  // Cumulative chunks completed across all chapters
@@ -1046,9 +1047,45 @@ export async function cleanupEpub(
             chunkCompletedAt: Date.now()  // Timestamp for ETA calculation
           });
         } catch (error) {
-          // If chunk fails, keep original text
           const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
+          const errorMessage = error instanceof Error ? error.message : String(error);
           console.error(`[AI-CLEANUP] Chunk ${currentChunkInJob} failed after ${chunkDuration}s:`, error);
+
+          // Check for unrecoverable errors that should stop the entire process
+          const isUnrecoverableError =
+            errorMessage.includes('credit balance') ||
+            errorMessage.includes('insufficient_quota') ||
+            errorMessage.includes('rate_limit') ||
+            errorMessage.includes('invalid_api_key') ||
+            errorMessage.includes('authentication') ||
+            errorMessage.includes('unauthorized') ||
+            errorMessage.includes('403') ||
+            errorMessage.includes('401') ||
+            errorMessage.includes('billing') ||
+            errorMessage.includes('quota exceeded') ||
+            errorMessage.includes('model not found') ||
+            errorMessage.includes('does not exist');
+
+          if (isUnrecoverableError) {
+            // Send error progress to UI
+            sendProgress({
+              jobId,
+              phase: 'error',
+              currentChapter: i + 1,
+              totalChapters: chapterChunks.length,
+              currentChunk: currentChunkInJob,
+              totalChunks: totalChunksInJob,
+              percentage: Math.round((chunksCompletedInJob / totalChunksInJob) * 90),
+              message: `AI cleanup stopped: ${errorMessage}`,
+              error: errorMessage,
+              outputPath
+            });
+
+            // Throw to stop the entire process
+            throw new Error(`AI cleanup stopped: ${errorMessage}`);
+          }
+
+          // For recoverable errors, keep original text and continue
           cleanedChunks.push(uniqueChunks[c]);
           // Still increment counter even on failure
           chunksCompletedInJob++;
