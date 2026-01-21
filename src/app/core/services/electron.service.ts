@@ -917,6 +917,7 @@ export class ElectronService {
   }
 
   // Diff comparison operations (for AI cleanup diff view)
+  // Legacy method - loads all chapters at once (can cause OOM on large EPUBs)
   async loadDiffComparison(originalPath: string, cleanedPath: string): Promise<{
     success: boolean;
     chapters?: Array<{
@@ -933,6 +934,54 @@ export class ElectronService {
         return { success: true, chapters: result.data.chapters };
       }
       return { success: false, error: result.error || 'Failed to load comparison' };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Memory-efficient: Get only chapter metadata (no text content)
+   * Use this instead of loadDiffComparison to avoid OOM on large EPUBs
+   */
+  async getDiffMetadata(originalPath: string, cleanedPath: string): Promise<{
+    success: boolean;
+    chapters?: Array<{
+      id: string;
+      title: string;
+      hasOriginal: boolean;
+      hasCleaned: boolean;
+    }>;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.diff.getMetadata(originalPath, cleanedPath);
+      if (result.success && result.data) {
+        return { success: true, chapters: result.data.chapters };
+      }
+      return { success: false, error: result.error || 'Failed to load diff metadata' };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Memory-efficient: Load a single chapter's text on demand
+   * Call this when user selects a chapter to view
+   */
+  async getDiffChapter(originalPath: string, cleanedPath: string, chapterId: string): Promise<{
+    success: boolean;
+    originalText?: string;
+    cleanedText?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.diff.getChapter(originalPath, cleanedPath, chapterId);
+      if (result.success && result.data) {
+        return {
+          success: true,
+          originalText: result.data.originalText,
+          cleanedText: result.data.cleanedText
+        };
+      }
+      return { success: false, error: result.error || 'Failed to load chapter' };
     }
     return { success: false, error: 'Not running in Electron' };
   }

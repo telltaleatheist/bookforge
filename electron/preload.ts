@@ -856,6 +856,28 @@ export interface ElectronAPI {
       data?: DiffComparisonResult;
       error?: string;
     }>;
+    // Memory-efficient: get only chapter metadata (no text)
+    getMetadata: (originalPath: string, cleanedPath: string) => Promise<{
+      success: boolean;
+      data?: {
+        chapters: Array<{
+          id: string;
+          title: string;
+          hasOriginal: boolean;
+          hasCleaned: boolean;
+        }>;
+      };
+      error?: string;
+    }>;
+    // Memory-efficient: load a single chapter's text on demand
+    getChapter: (originalPath: string, cleanedPath: string, chapterId: string) => Promise<{
+      success: boolean;
+      data?: {
+        originalText: string;
+        cleanedText: string;
+      };
+      error?: string;
+    }>;
     onLoadProgress: (callback: (progress: DiffLoadProgress) => void) => () => void;
   };
   ebookConvert: {
@@ -1258,8 +1280,15 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('ebook-convert:convert-to-library', inputPath),
   },
   diff: {
+    // Legacy: loads all chapters at once (can cause OOM on large EPUBs)
     loadComparison: (originalPath: string, cleanedPath: string) =>
       ipcRenderer.invoke('diff:load-comparison', originalPath, cleanedPath),
+    // Memory-efficient: get only chapter metadata (no text)
+    getMetadata: (originalPath: string, cleanedPath: string) =>
+      ipcRenderer.invoke('diff:get-metadata', originalPath, cleanedPath),
+    // Memory-efficient: load a single chapter's text on demand
+    getChapter: (originalPath: string, cleanedPath: string, chapterId: string) =>
+      ipcRenderer.invoke('diff:get-chapter', originalPath, cleanedPath, chapterId),
     onLoadProgress: (callback: (progress: DiffLoadProgress) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, progress: DiffLoadProgress) => callback(progress);
       ipcRenderer.on('diff:load-progress', handler);

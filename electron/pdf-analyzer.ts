@@ -300,22 +300,58 @@ export class PDFAnalyzer {
     sendProgress('loading', 'Reading document file...');
     const data = await fsPromises.readFile(pdfPath);
     const mimeType = getMimeType(pdfPath);
-    this.doc = mupdfLib.Document.openDocument(data, mimeType);
 
-    const totalPages = this.doc.countPages();
+    // Open document with error handling for WebAssembly memory issues
+    try {
+      this.doc = mupdfLib.Document.openDocument(data, mimeType);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {
+        throw new Error(`Document is too large to load. Try closing other documents first, or restart the app to free memory.`);
+      }
+      throw err;
+    }
+
+    let totalPages: number;
+    try {
+      totalPages = this.doc.countPages();
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
+        throw new Error(`Document is too large to process. The file may be corrupted or exceed memory limits.`);
+      }
+      throw err;
+    }
+
     const pageCount = maxPages ? Math.min(totalPages, maxPages) : totalPages;
     sendProgress('loading', `Document has ${pageCount} pages, getting dimensions...`);
 
     // Get page dimensions (including origin for coordinate transformation)
     for (let pageNum = 0; pageNum < pageCount; pageNum++) {
-      const page = this.doc.loadPage(pageNum);
-      const bounds = page.getBounds();
-      this.pageDimensions.push({
-        width: bounds[2] - bounds[0],
-        height: bounds[3] - bounds[1],
-        originX: bounds[0],  // Store origin for coordinate transformation
-        originY: bounds[1],
-      });
+      try {
+        const page = this.doc.loadPage(pageNum);
+        const bounds = page.getBounds();
+        this.pageDimensions.push({
+          width: bounds[2] - bounds[0],
+          height: bounds[3] - bounds[1],
+          originX: bounds[0],  // Store origin for coordinate transformation
+          originY: bounds[1],
+        });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
+          console.error(`[PDF Analyzer] Memory error loading page ${pageNum}, using default dimensions`);
+          // Use default dimensions for pages that can't be loaded
+          this.pageDimensions.push({
+            width: 612,  // Letter size default
+            height: 792,
+            originX: 0,
+            originY: 0,
+          });
+        } else {
+          throw err;
+        }
+      }
     }
 
     // Determine if this is a PDF (mutool only works with PDFs, not EPUBs)
@@ -1298,28 +1334,37 @@ export class PDFAnalyzer {
 
     // Render the page
     let doc = this.doc;
+    let tempDoc: typeof doc | null = null;
     if (pdfPath && pdfPath !== this.pdfPath) {
       const data = fs.readFileSync(pdfPath);
       const mimeType = getMimeType(pdfPath);
-      doc = mupdfLib.Document.openDocument(data, mimeType);
+      tempDoc = mupdfLib.Document.openDocument(data, mimeType);
+      doc = tempDoc;
     }
 
     if (!doc) {
       throw new Error('No document loaded');
     }
 
-    const page = doc.loadPage(pageNum);
-    const matrix = mupdfLib.Matrix.scale(scale, scale);
-    const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-    const pngData = pixmap.asPNG();
+    try {
+      const page = doc.loadPage(pageNum);
+      const matrix = mupdfLib.Matrix.scale(scale, scale);
+      const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+      const pngData = pixmap.asPNG();
 
-    // Write to cache
-    const qualityDir = this.getQualityCacheDir(fileHash, quality);
-    const filePath = path.join(qualityDir, `page-${pageNum}.png`);
-    fs.writeFileSync(filePath, Buffer.from(pngData));
+      // Write to cache
+      const qualityDir = this.getQualityCacheDir(fileHash, quality);
+      const filePath = path.join(qualityDir, `page-${pageNum}.png`);
+      fs.writeFileSync(filePath, Buffer.from(pngData));
 
-    this.renderedPagePaths.set(pageNum, filePath);
-    return filePath;
+      this.renderedPagePaths.set(pageNum, filePath);
+      return filePath;
+    } finally {
+      // Clean up temp document if we created one
+      if (tempDoc) {
+        tempDoc.destroy();
+      }
+    }
   }
 
   /**
@@ -1339,11 +1384,30 @@ export class PDFAnalyzer {
     const fileHash = this.computeFileHash(pdfPath);
     this.currentFileHash = fileHash;
 
-    // Open document
+    // Open document with error handling for memory issues
     const data = fs.readFileSync(pdfPath);
     const mimeType = getMimeType(pdfPath);
-    const doc = mupdfLib.Document.openDocument(data, mimeType);
-    const totalPages = doc.countPages();
+    let doc;
+    try {
+      doc = mupdfLib.Document.openDocument(data, mimeType);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {
+        throw new Error(`Document is too large to render. Try closing other documents first, or restart the app.`);
+      }
+      throw err;
+    }
+
+    let totalPages;
+    try {
+      totalPages = doc.countPages();
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
+        throw new Error(`Could not read document pages. The file may be too large or corrupted.`);
+      }
+      throw err;
+    }
 
     const previewPaths: string[] = new Array(totalPages);
     const previewDir = this.getQualityCacheDir(fileHash, 'preview');
@@ -1454,14 +1518,24 @@ export class PDFAnalyzer {
     // Use lower concurrency for large documents to reduce memory pressure
     const effectiveConcurrency = totalPages > 200 ? 1 : totalPages > 100 ? 2 : concurrency;
     (async () => {
-      for (let i = 0; i < totalPages; i += effectiveConcurrency) {
-        const batch = [];
-        for (let j = i; j < Math.min(i + effectiveConcurrency, totalPages); j++) {
-          batch.push(renderFull(j));
+      try {
+        for (let i = 0; i < totalPages; i += effectiveConcurrency) {
+          const batch = [];
+          for (let j = i; j < Math.min(i + effectiveConcurrency, totalPages); j++) {
+            batch.push(renderFull(j));
+          }
+          await Promise.all(batch);
+          // Yield to event loop between batches to allow GC
+          await new Promise(resolve => setImmediate(resolve));
         }
-        await Promise.all(batch);
-        // Yield to event loop between batches to allow GC
-        await new Promise(resolve => setImmediate(resolve));
+      } finally {
+        // Destroy document after all rendering is complete to free WebAssembly memory
+        try {
+          doc.destroy();
+          console.log('[PDF Render] Background render complete, document destroyed');
+        } catch (err) {
+          console.warn('[PDF Render] Error destroying document after render:', err);
+        }
       }
     })();
 
@@ -1515,15 +1589,24 @@ export class PDFAnalyzer {
     };
 
     // Process in batches
-    for (let i = 0; i < totalPages; i += concurrency) {
-      const batch = [];
-      for (let j = i; j < Math.min(i + concurrency, totalPages); j++) {
-        batch.push(renderPage(j));
+    try {
+      for (let i = 0; i < totalPages; i += concurrency) {
+        const batch = [];
+        for (let j = i; j < Math.min(i + concurrency, totalPages); j++) {
+          batch.push(renderPage(j));
+        }
+        await Promise.all(batch);
       }
-      await Promise.all(batch);
-    }
 
-    return paths;
+      return paths;
+    } finally {
+      // Destroy document to free WebAssembly memory
+      try {
+        doc.destroy();
+      } catch (err) {
+        console.warn('[PDF Render] Error destroying document:', err);
+      }
+    }
   }
 
   /**
@@ -1825,6 +1908,8 @@ export class PDFAnalyzer {
       }
 
       const pngData = pixmap.asPNG();
+      // Destroy temp document to free WebAssembly memory
+      try { tempDoc.destroy(); } catch { /* ignore */ }
       return Buffer.from(pngData).toString('base64');
     }
 
@@ -1869,6 +1954,8 @@ export class PDFAnalyzer {
       }
 
       const pngData = pixmap.asPNG();
+      // Destroy temp document to free WebAssembly memory
+      try { tempDoc.destroy(); } catch { /* ignore */ }
       return Buffer.from(pngData).toString('base64');
     }
 
@@ -2799,14 +2886,24 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Close the document
+   * Close the document and free WebAssembly memory
    */
   close(): void {
+    // IMPORTANT: Must call destroy() to free WebAssembly memory
+    if (this.doc) {
+      try {
+        this.doc.destroy();
+        console.log('[PDF Analyzer] Document destroyed, WebAssembly memory freed');
+      } catch (err) {
+        console.warn('[PDF Analyzer] Error destroying document:', err);
+      }
+    }
     this.doc = null;
     this.blocks = [];
     this.spans = [];
     this.categories = {};
     this.pageDimensions = [];
+    this.pdfPath = '';
   }
 
   /**

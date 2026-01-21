@@ -971,7 +971,7 @@ export async function loadEpubForComparison(epubPath: string): Promise<{
  * Progress callback for comparison loading
  */
 export interface CompareEpubsProgress {
-  phase: 'loading-original' | 'loading-cleaned' | 'complete';
+  phase: 'loading-original' | 'loading-cleaned' | 'loading-metadata' | 'complete';
   currentChapter: number;
   totalChapters: number;
   chapterTitle?: string;
@@ -1077,6 +1077,96 @@ export async function compareEpubs(
   }
 
   return { chapters };
+}
+
+/**
+ * Get chapter metadata for comparison without loading full text.
+ * This is memory-efficient for large EPUBs - text is loaded on demand.
+ */
+export async function getComparisonMetadata(
+  originalPath: string,
+  cleanedPath: string,
+  onProgress?: (progress: CompareEpubsProgress) => void
+): Promise<{
+  chapters: Array<{
+    id: string;
+    title: string;
+    hasOriginal: boolean;
+    hasCleaned: boolean;
+  }>;
+}> {
+  const originalProcessor = new EpubProcessor();
+  const cleanedProcessor = new EpubProcessor();
+
+  try {
+    if (onProgress) {
+      onProgress({ phase: 'loading-metadata', currentChapter: 0, totalChapters: 0 });
+    }
+
+    const originalStructure = await originalProcessor.open(originalPath);
+    const cleanedStructure = await cleanedProcessor.open(cleanedPath);
+
+    // Create sets of chapter IDs
+    const cleanedIds = new Set(cleanedStructure.chapters.map(c => c.id));
+
+    // Map chapters with metadata only (no text)
+    const chapters = originalStructure.chapters.map(chapter => ({
+      id: chapter.id,
+      title: chapter.title,
+      hasOriginal: true,
+      hasCleaned: cleanedIds.has(chapter.id)
+    }));
+
+    if (onProgress) {
+      onProgress({ phase: 'complete', currentChapter: chapters.length, totalChapters: chapters.length });
+    }
+
+    return { chapters };
+  } finally {
+    originalProcessor.close();
+    cleanedProcessor.close();
+  }
+}
+
+/**
+ * Load a single chapter's text for comparison (lazy loading).
+ * This loads text on-demand to avoid memory issues with large EPUBs.
+ */
+export async function getChapterComparison(
+  originalPath: string,
+  cleanedPath: string,
+  chapterId: string
+): Promise<{
+  originalText: string;
+  cleanedText: string;
+}> {
+  const originalProcessor = new EpubProcessor();
+  const cleanedProcessor = new EpubProcessor();
+
+  try {
+    await originalProcessor.open(originalPath);
+    await cleanedProcessor.open(cleanedPath);
+
+    let originalText = '';
+    let cleanedText = '';
+
+    try {
+      originalText = await originalProcessor.getChapterText(chapterId);
+    } catch {
+      // Chapter not found in original
+    }
+
+    try {
+      cleanedText = await cleanedProcessor.getChapterText(chapterId);
+    } catch {
+      // Chapter not found in cleaned
+    }
+
+    return { originalText, cleanedText };
+  } finally {
+    originalProcessor.close();
+    cleanedProcessor.close();
+  }
 }
 
 /**

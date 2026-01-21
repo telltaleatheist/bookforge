@@ -1032,6 +1032,30 @@ export async function cleanupEpub(
 
           // Increment counter and send completion update with timestamp
           chunksCompletedInJob++;
+
+          // Save incrementally every 5 chunks (or on last chunk of chapter)
+          // Saving every chunk causes memory issues from zip file creation overhead
+          const isLastChunkOfChapter = c === uniqueChunks.length - 1;
+          const shouldSave = isLastChunkOfChapter || chunksCompletedInJob % 5 === 0;
+
+          if (shouldSave) {
+            // Combine cleaned chunks with remaining original chunks for partial chapter
+            const partialChapterText = [
+              ...cleanedChunks,
+              ...uniqueChunks.slice(c + 1)  // Remaining unprocessed chunks
+            ].join('');
+            modifiedChapters.set(chapter.id, partialChapterText);
+
+            try {
+              await saveModifiedEpubLocal(processor, modifiedChapters, outputPath);
+              // Force garbage collection hint by clearing references
+              if (global.gc) global.gc();
+            } catch (saveError) {
+              console.error(`Failed to save after chunk ${currentChunkInJob}:`, saveError);
+              // Continue processing even if incremental save fails
+            }
+          }
+
           sendProgress({
             jobId,
             phase: 'processing',
@@ -1092,17 +1116,16 @@ export async function cleanupEpub(
         }
       }
 
-      // Update chapter with cleaned text (stored in our local map)
+      // Update chapter with final cleaned text (all chunks processed)
       const cleanedText = cleanedChunks.join('');
       modifiedChapters.set(chapter.id, cleanedText);
       chaptersProcessed++;
 
-      // Save incrementally after each chapter so diff view can work during processing
+      // Final save for this chapter (already saved incrementally per-chunk above)
       try {
         await saveModifiedEpubLocal(processor, modifiedChapters, outputPath);
       } catch (saveError) {
         console.error(`Failed to save after chapter ${i + 1}:`, saveError);
-        // Continue processing even if incremental save fails
       }
     }
 

@@ -1504,6 +1504,7 @@ function setupIpcHandlers(): void {
   // Diff Comparison handlers (for AI cleanup diff view)
   // ─────────────────────────────────────────────────────────────────────────────
 
+  // Legacy full comparison - loads all chapters (can cause OOM on large EPUBs)
   ipcMain.handle('diff:load-comparison', async (_event, originalPath: string, cleanedPath: string) => {
     try {
       const { compareEpubs } = await import('./epub-processor.js');
@@ -1513,6 +1514,32 @@ function setupIpcHandlers(): void {
           mainWindow.webContents.send('diff:load-progress', progress);
         }
       });
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Memory-efficient: Get only chapter metadata (no text)
+  ipcMain.handle('diff:get-metadata', async (_event, originalPath: string, cleanedPath: string) => {
+    try {
+      const { getComparisonMetadata } = await import('./epub-processor.js');
+      const result = await getComparisonMetadata(originalPath, cleanedPath, (progress) => {
+        if (mainWindow) {
+          mainWindow.webContents.send('diff:load-progress', progress);
+        }
+      });
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Memory-efficient: Load a single chapter's text on demand
+  ipcMain.handle('diff:get-chapter', async (_event, originalPath: string, cleanedPath: string, chapterId: string) => {
+    try {
+      const { getChapterComparison } = await import('./epub-processor.js');
+      const result = await getChapterComparison(originalPath, cleanedPath, chapterId);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };

@@ -2,7 +2,7 @@ import { Component, input, signal, computed, OnInit, OnDestroy, inject, ElementR
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { DiffService, DiffLoadingProgress } from '../../services/diff.service';
-import { DiffChapter, DiffWord } from '../../../../core/models/diff.types';
+import { DiffChapter, DiffChapterMeta, DiffWord, DIFF_HARD_LIMIT, DIFF_PAGE_SIZE } from '../../../../core/models/diff.types';
 import { Subscription } from 'rxjs';
 
 /**
@@ -26,20 +26,13 @@ interface EditState {
   editedValue: string;
 }
 
-interface ChapterWithSegments {
-  id: string;
-  title: string;
-  segments: DiffSegment[];
-  changeCount: number;
-}
-
 @Component({
   selector: 'app-diff-view',
   standalone: true,
   imports: [CommonModule, DesktopButtonComponent],
   template: `
     <div class="diff-view" [class.loading]="loading()">
-      <!-- Header -->
+      <!-- Header with chapter selector -->
       <div class="diff-header">
         <div class="header-left">
           <h4>Review Changes</h4>
@@ -47,25 +40,42 @@ interface ChapterWithSegments {
             <span class="change-badge">{{ totalChanges() }} changes</span>
           }
         </div>
-        @if (totalChanges() > 0) {
-          <div class="change-nav">
-            <span class="change-position">{{ currentChangeIndex() + 1 }} of {{ totalChanges() }}</span>
-            <desktop-button
-              variant="ghost"
-              size="xs"
-              [disabled]="currentChangeIndex() <= 0"
-              (click)="goToPrevChange()"
+
+        <!-- Chapter selector -->
+        @if (chaptersMeta().length > 1) {
+          <div class="chapter-selector">
+            <select
+              class="chapter-dropdown"
+              [value]="currentChapterId()"
+              (change)="onChapterChange($event)"
             >
-              ← Prev
-            </desktop-button>
-            <desktop-button
-              variant="ghost"
-              size="xs"
-              [disabled]="currentChangeIndex() >= totalChanges() - 1"
-              (click)="goToNextChange()"
-            >
-              Next →
-            </desktop-button>
+              @for (chapter of chaptersMeta(); track chapter.id) {
+                <option [value]="chapter.id">
+                  {{ chapter.title }}
+                  @if (chapter.changeCount !== undefined) {
+                    ({{ chapter.changeCount }} changes)
+                  }
+                </option>
+              }
+            </select>
+            <div class="chapter-nav-buttons">
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [disabled]="!canGoPrev()"
+                (click)="goToPrevChapter()"
+              >
+                ← Prev
+              </desktop-button>
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [disabled]="!canGoNext()"
+                (click)="goToNextChapter()"
+              >
+                Next →
+              </desktop-button>
+            </div>
           </div>
         }
       </div>
@@ -81,21 +91,15 @@ interface ChapterWithSegments {
               <div class="progress-info">
                 <span class="progress-phase">
                   @switch (progress.phase) {
-                    @case ('loading-original') { Loading original... }
-                    @case ('loading-cleaned') { Loading cleaned... }
+                    @case ('loading-metadata') { Loading chapters... }
+                    @case ('loading-chapter') { Loading chapter... }
                     @case ('computing-diff') { Computing differences... }
                     @default { Loading... }
                   }
                 </span>
-                <span class="progress-detail">
-                  @if (progress.chapterTitle) {
-                    {{ progress.chapterTitle }}
-                  }
-                  @if (progress.totalChapters > 0) {
-                    ({{ progress.currentChapter }}/{{ progress.totalChapters }})
-                  }
-                </span>
-                <span class="progress-percent">{{ progress.percentage }}%</span>
+                @if (progress.chapterTitle) {
+                  <span class="progress-detail">{{ progress.chapterTitle }}</span>
+                }
               </div>
             </div>
           } @else {
@@ -110,76 +114,134 @@ interface ChapterWithSegments {
             Retry
           </desktop-button>
         </div>
-      } @else if (chaptersWithSegments().length > 0) {
-        <!-- Full book content -->
-        <div class="book-content" #bookContent>
-          @for (chapter of chaptersWithSegments(); track chapter.id) {
-            <div class="chapter">
-              <h3 class="chapter-title">
-                {{ chapter.title }}
-                @if (chapter.changeCount > 0) {
-                  <span class="chapter-changes">({{ chapter.changeCount }} changes)</span>
-                }
-              </h3>
-              <div class="chapter-text">
-                @for (segment of chapter.segments; track segment.id) {
-                  @if (isEditing(segment.id)) {
-                    <!-- Editing any segment -->
-                    <span class="text-editing">
-                      <input
-                        type="text"
-                        class="edit-input"
-                        [value]="editState()?.editedValue"
-                        (input)="onEditInput($event)"
-                        (keydown.enter)="saveEdit()"
-                        (keydown.escape)="cancelEdit()"
-                        (blur)="onEditBlur()"
-                        #editInput
-                      />
-                      <span class="edit-hint">Enter to save, Esc to cancel</span>
-                    </span>
-                  } @else if (segment.type === 'unchanged') {
-                    <!-- Unchanged text - editable on double-click -->
-                    <span
-                      class="text-editable"
-                      (dblclick)="startEdit(chapter.id, segment)"
-                    >{{ segment.text }}</span>
-                  } @else {
-                    <!-- Changed text - show only new text, hover for original -->
-                    <span
-                      class="text-change"
-                      [class.focused]="segment.changeIndex === currentChangeIndex()"
-                      [class.is-deletion]="segment.text === '(deleted)'"
-                      [attr.data-change-index]="segment.changeIndex"
-                      (click)="focusChange(segment.changeIndex!)"
-                      (dblclick)="startEdit(chapter.id, segment)"
-                      (mouseenter)="showTooltip($event, segment)"
-                      (mouseleave)="hideTooltip()"
-                    >@if (segment.text === '(deleted)') {<span class="deletion-marker">⌫</span>} @else {{{ segment.text }}}</span>
-                  }
-                }
-              </div>
+      } @else if (chaptersMeta().length > 0) {
+        <!-- Chapter content -->
+        @if (chapterLoading()) {
+          <div class="state-message loading-state">
+            <span class="spinner">&#8635;</span>
+            <span>Loading chapter...</span>
+          </div>
+        } @else if (currentChapterSegments().length > 0) {
+          <!-- Oversized chapter warning -->
+          @if (isOversizedChapter()) {
+            <div class="oversized-warning">
+              <span class="warning-icon">&#9888;</span>
+              <span>This chapter is very large ({{ formatSize(currentChapterSize()) }}). Showing partial diff.</span>
+              @if (currentPage() < totalPages() - 1) {
+                <span class="page-info">Page {{ currentPage() + 1 }} of {{ totalPages() }}</span>
+              }
             </div>
           }
-        </div>
 
-        <!-- Tooltip showing original text -->
-        @if (tooltipVisible() && tooltipSegment()) {
-          <div
-            class="change-tooltip"
-            [style.left.px]="tooltipX()"
-            [style.top.px]="tooltipY()"
-          >
-            <div class="tooltip-row">
-              <span class="tooltip-label">Was:</span>
-              <span class="tooltip-original">"{{ tooltipSegment()!.originalText }}"</span>
+          <!-- Change navigation within chapter -->
+          @if (currentChapterChangeCount() > 0) {
+            <div class="change-nav">
+              <span class="change-position">Change {{ currentChangeIndex() + 1 }} of {{ currentChapterChangeCount() }}</span>
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [disabled]="currentChangeIndex() <= 0"
+                (click)="goToPrevChange()"
+              >
+                ← Prev
+              </desktop-button>
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [disabled]="currentChangeIndex() >= currentChapterChangeCount() - 1"
+                (click)="goToNextChange()"
+              >
+                Next →
+              </desktop-button>
             </div>
-            @if (tooltipSegment()!.text !== '(deleted)') {
+          }
+
+          <div class="chapter-content" #chapterContent>
+            <div class="chapter-text">
+              @for (segment of currentChapterSegments(); track segment.id) {
+                @if (isEditing(segment.id)) {
+                  <!-- Editing any segment -->
+                  <span class="text-editing">
+                    <input
+                      type="text"
+                      class="edit-input"
+                      [value]="editState()?.editedValue"
+                      (input)="onEditInput($event)"
+                      (keydown.enter)="saveEdit()"
+                      (keydown.escape)="cancelEdit()"
+                      (blur)="onEditBlur()"
+                      #editInput
+                    />
+                    <span class="edit-hint">Enter to save, Esc to cancel</span>
+                  </span>
+                } @else if (segment.type === 'unchanged') {
+                  <!-- Unchanged text - editable on double-click -->
+                  <span
+                    class="text-editable"
+                    (dblclick)="startEdit(segment)"
+                  >{{ segment.text }}</span>
+                } @else {
+                  <!-- Changed text - show only new text, hover for original -->
+                  <span
+                    class="text-change"
+                    [class.focused]="segment.changeIndex === currentChangeIndex()"
+                    [class.is-deletion]="segment.text === '(deleted)'"
+                    [attr.data-change-index]="segment.changeIndex"
+                    (click)="focusChange(segment.changeIndex!)"
+                    (dblclick)="startEdit(segment)"
+                    (mouseenter)="showTooltip($event, segment)"
+                    (mouseleave)="hideTooltip()"
+                  >@if (segment.text === '(deleted)') {<span class="deletion-marker">&#9003;</span>} @else {{{ segment.text }}}</span>
+                }
+              }
+            </div>
+          </div>
+
+          <!-- Pagination for oversized chapters -->
+          @if (totalPages() > 1) {
+            <div class="pagination">
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [disabled]="currentPage() === 0"
+                (click)="goToPage(currentPage() - 1)"
+              >
+                ← Previous Page
+              </desktop-button>
+              <span class="page-indicator">{{ currentPage() + 1 }} / {{ totalPages() }}</span>
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [disabled]="currentPage() >= totalPages() - 1"
+                (click)="goToPage(currentPage() + 1)"
+              >
+                Next Page →
+              </desktop-button>
+            </div>
+          }
+
+          <!-- Tooltip showing original text -->
+          @if (tooltipVisible() && tooltipSegment()) {
+            <div
+              class="change-tooltip"
+              [style.left.px]="tooltipX()"
+              [style.top.px]="tooltipY()"
+            >
               <div class="tooltip-row">
-                <span class="tooltip-label">Now:</span>
-                <span class="tooltip-new">"{{ tooltipSegment()!.text }}"</span>
+                <span class="tooltip-label">Was:</span>
+                <span class="tooltip-original">"{{ tooltipSegment()!.originalText }}"</span>
               </div>
-            }
+              @if (tooltipSegment()!.text !== '(deleted)') {
+                <div class="tooltip-row">
+                  <span class="tooltip-label">Now:</span>
+                  <span class="tooltip-new">"{{ tooltipSegment()!.text }}"</span>
+                </div>
+              }
+            </div>
+          }
+        } @else {
+          <div class="state-message">
+            <p>No changes in this chapter.</p>
           </div>
         }
 
@@ -189,7 +251,7 @@ interface ChapterWithSegments {
         </div>
       } @else {
         <div class="state-message">
-          <p>No changes to review.</p>
+          <p>No chapters to compare.</p>
         </div>
       }
     </div>
@@ -223,6 +285,8 @@ interface ChapterWithSegments {
       background: var(--bg-subtle);
       border-bottom: 1px solid var(--border-default);
       flex-shrink: 0;
+      flex-wrap: wrap;
+      gap: 0.5rem;
 
       h4 {
         margin: 0;
@@ -247,16 +311,48 @@ interface ChapterWithSegments {
       font-weight: 500;
     }
 
-    .change-nav {
+    .chapter-selector {
       display: flex;
       align-items: center;
       gap: 0.5rem;
     }
 
+    .chapter-dropdown {
+      padding: 0.25rem 0.5rem;
+      border: 1px solid var(--border-default);
+      border-radius: 4px;
+      background: var(--bg-default);
+      color: var(--text-primary);
+      font-size: 0.75rem;
+      max-width: 250px;
+      cursor: pointer;
+
+      &:focus {
+        outline: none;
+        border-color: var(--accent-primary);
+      }
+    }
+
+    .chapter-nav-buttons {
+      display: flex;
+      gap: 0.25rem;
+    }
+
+    .change-nav {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.25rem 0.75rem;
+      background: var(--bg-subtle);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+
     .change-position {
       font-size: 0.75rem;
       color: var(--text-secondary);
-      min-width: 60px;
+      min-width: 100px;
       text-align: center;
     }
 
@@ -323,12 +419,6 @@ interface ChapterWithSegments {
       white-space: nowrap;
     }
 
-    .progress-percent {
-      font-size: 0.6875rem;
-      color: var(--text-tertiary);
-      font-variant-numeric: tabular-nums;
-    }
-
     .spinner {
       display: inline-block;
       animation: spin 1s linear infinite;
@@ -340,34 +430,31 @@ interface ChapterWithSegments {
       to { transform: rotate(360deg); }
     }
 
-    .book-content {
+    .oversized-warning {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      background: rgba(255, 193, 7, 0.15);
+      border-bottom: 1px solid rgba(255, 193, 7, 0.3);
+      color: #ffc107;
+      font-size: 0.75rem;
+      flex-shrink: 0;
+    }
+
+    .warning-icon {
+      font-size: 1rem;
+    }
+
+    .page-info {
+      margin-left: auto;
+      font-weight: 500;
+    }
+
+    .chapter-content {
       flex: 1;
       overflow: auto;
       padding: 1rem 1.5rem;
-    }
-
-    .chapter {
-      margin-bottom: 2rem;
-
-      &:last-child {
-        margin-bottom: 0;
-      }
-    }
-
-    .chapter-title {
-      font-size: 1rem;
-      font-weight: 600;
-      color: var(--text-primary);
-      margin: 0 0 0.75rem 0;
-      padding-bottom: 0.5rem;
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .chapter-changes {
-      font-size: 0.75rem;
-      font-weight: 400;
-      color: #ff6b35;
-      margin-left: 0.5rem;
     }
 
     .chapter-text {
@@ -513,6 +600,23 @@ interface ChapterWithSegments {
       word-break: break-word;
     }
 
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg-subtle);
+      border-top: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .page-indicator {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      font-variant-numeric: tabular-nums;
+    }
+
     .diff-footer {
       padding: 0.5rem 0.75rem;
       background: var(--bg-subtle);
@@ -527,7 +631,7 @@ interface ChapterWithSegments {
   `]
 })
 export class DiffViewComponent implements OnInit, OnDestroy {
-  @ViewChild('bookContent') bookContentRef!: ElementRef<HTMLDivElement>;
+  @ViewChild('chapterContent') chapterContentRef!: ElementRef<HTMLDivElement>;
 
   private readonly diffService = inject(DiffService);
   private subscriptions: Subscription[] = [];
@@ -541,6 +645,8 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   readonly error = signal<string | null>(null);
   readonly currentChangeIndex = signal(0);
   readonly loadingProgress = signal<DiffLoadingProgress | null>(null);
+  readonly chapterLoading = signal(false);
+  readonly currentPage = signal(0);
 
   // Tooltip state
   readonly tooltipVisible = signal(false);
@@ -554,37 +660,91 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   // Output for text edits
   readonly textEdited = output<{ chapterId: string; oldText: string; newText: string }>();
 
-  // From service
-  readonly chapters = signal<DiffChapter[]>([]);
+  // Session data
+  readonly chaptersMeta = signal<DiffChapterMeta[]>([]);
+  readonly currentChapterId = signal<string>('');
+  readonly currentChapter = signal<DiffChapter | null>(null);
 
-  // Computed: total changes across all chapters (only those with originalText)
-  readonly totalChanges = computed(() => {
-    let count = 0;
-    for (const chapter of this.chaptersWithSegments()) {
-      for (const segment of chapter.segments) {
-        if (segment.type === 'change' && segment.originalText) {
-          count++;
-        }
-      }
-    }
-    return count;
+  // Computed: current chapter size
+  readonly currentChapterSize = computed(() => {
+    const chapter = this.currentChapter();
+    if (!chapter) return 0;
+    return chapter.originalText.length + chapter.cleanedText.length;
   });
 
-  // Computed: all chapters with their segments pre-built
-  readonly chaptersWithSegments = computed((): ChapterWithSegments[] => {
-    let changeIndex = 0;
-    return this.chapters().map(chapter => {
-      const segments = this.buildSegments(chapter.diffWords, changeIndex, chapter.id);
-      // Count how many changes had originalText
-      const changesInChapter = segments.filter(s => s.type === 'change' && s.originalText).length;
-      changeIndex += changesInChapter;
-      return {
-        id: chapter.id,
-        title: chapter.title,
-        segments,
-        changeCount: changesInChapter
-      };
-    });
+  // Computed: is oversized
+  readonly isOversizedChapter = computed(() => {
+    return this.currentChapterSize() > DIFF_HARD_LIMIT;
+  });
+
+  // Computed: total pages for oversized chapters
+  readonly totalPages = computed(() => {
+    const chapter = this.currentChapter();
+    if (!chapter) return 1;
+    const size = chapter.cleanedText.length;
+    if (size <= DIFF_PAGE_SIZE) return 1;
+    return Math.ceil(size / DIFF_PAGE_SIZE);
+  });
+
+  // Computed: segments for current chapter (with pagination for oversized)
+  readonly currentChapterSegments = computed((): DiffSegment[] => {
+    const chapter = this.currentChapter();
+    if (!chapter) return [];
+
+    // For oversized chapters, paginate the diff
+    if (this.isOversizedChapter()) {
+      const page = this.currentPage();
+      const startIdx = page * DIFF_PAGE_SIZE;
+      const endIdx = startIdx + DIFF_PAGE_SIZE;
+
+      // Slice the diff words for the current page
+      let charCount = 0;
+      let startWordIdx = 0;
+      let endWordIdx = chapter.diffWords.length;
+
+      for (let i = 0; i < chapter.diffWords.length; i++) {
+        const word = chapter.diffWords[i];
+        if (charCount < startIdx) {
+          startWordIdx = i;
+        }
+        charCount += word.text.length;
+        if (charCount >= endIdx) {
+          endWordIdx = i + 1;
+          break;
+        }
+      }
+
+      const pageWords = chapter.diffWords.slice(startWordIdx, endWordIdx);
+      return this.buildSegments(pageWords, 0, chapter.id);
+    }
+
+    return this.buildSegments(chapter.diffWords, 0, chapter.id);
+  });
+
+  // Computed: change count for current chapter
+  readonly currentChapterChangeCount = computed(() => {
+    const chapter = this.currentChapter();
+    return chapter?.changeCount ?? 0;
+  });
+
+  // Computed: total changes across all loaded chapters
+  readonly totalChanges = computed(() => {
+    return this.chaptersMeta().reduce((sum, m) => sum + (m.changeCount || 0), 0);
+  });
+
+  // Computed: can navigate to previous/next chapter
+  readonly canGoPrev = computed(() => {
+    const meta = this.chaptersMeta();
+    const currentId = this.currentChapterId();
+    const idx = meta.findIndex(m => m.id === currentId);
+    return idx > 0;
+  });
+
+  readonly canGoNext = computed(() => {
+    const meta = this.chaptersMeta();
+    const currentId = this.currentChapterId();
+    const idx = meta.findIndex(m => m.id === currentId);
+    return idx < meta.length - 1;
   });
 
   ngOnInit(): void {
@@ -593,12 +753,21 @@ export class DiffViewComponent implements OnInit, OnDestroy {
       this.diffService.loading$.subscribe(loading => this.loading.set(loading)),
       this.diffService.error$.subscribe(error => this.error.set(error)),
       this.diffService.loadingProgress$.subscribe(progress => this.loadingProgress.set(progress)),
+      this.diffService.chapterLoading$.subscribe(loading => this.chapterLoading.set(loading)),
       this.diffService.session$.subscribe(session => {
         if (session) {
-          this.chapters.set(session.chapters);
+          this.chaptersMeta.set(session.chaptersMeta);
+          this.currentChapterId.set(session.currentChapterId);
+
+          // Get current chapter if loaded
+          const current = session.chapters.find(c => c.id === session.currentChapterId);
+          this.currentChapter.set(current || null);
           this.currentChangeIndex.set(0);
+          this.currentPage.set(0);
         } else {
-          this.chapters.set([]);
+          this.chaptersMeta.set([]);
+          this.currentChapterId.set('');
+          this.currentChapter.set(null);
         }
       })
     );
@@ -623,8 +792,47 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   }
 
   /**
+   * Handle chapter selection change
+   */
+  async onChapterChange(event: Event): Promise<void> {
+    const select = event.target as HTMLSelectElement;
+    const chapterId = select.value;
+    this.currentChangeIndex.set(0);
+    this.currentPage.set(0);
+    await this.diffService.setCurrentChapter(chapterId);
+  }
+
+  /**
+   * Navigate to previous chapter
+   */
+  async goToPrevChapter(): Promise<void> {
+    this.currentChangeIndex.set(0);
+    this.currentPage.set(0);
+    await this.diffService.previousChapter();
+  }
+
+  /**
+   * Navigate to next chapter
+   */
+  async goToNextChapter(): Promise<void> {
+    this.currentChangeIndex.set(0);
+    this.currentPage.set(0);
+    await this.diffService.nextChapter();
+  }
+
+  /**
+   * Go to a specific page (for oversized chapters)
+   */
+  goToPage(page: number): void {
+    if (page >= 0 && page < this.totalPages()) {
+      this.currentPage.set(page);
+      this.currentChangeIndex.set(0);
+    }
+  }
+
+  /**
    * Convert diffWords array into display segments.
-   * Groups changes (removed/added words) into change regions, handling interleaved patterns.
+   * Groups changes (removed/added words) into change regions.
    */
   private buildSegments(diffWords: DiffWord[], startingChangeIndex: number, chapterId: string): DiffSegment[] {
     const segments: DiffSegment[] = [];
@@ -651,11 +859,9 @@ export class DiffViewComponent implements OnInit, OnDestroy {
         segmentIndex++;
       } else {
         // We have a change region - collect ALL removed and added words until we hit unchanged
-        // This handles interleaved patterns like: removed, added, removed, added
         let removedText = '';
         let addedText = '';
 
-        // Collect all change words (both removed and added) until we hit unchanged
         while (i < diffWords.length && diffWords[i].type !== 'unchanged') {
           if (diffWords[i].type === 'removed') {
             removedText += diffWords[i].text;
@@ -665,31 +871,16 @@ export class DiffViewComponent implements OnInit, OnDestroy {
           i++;
         }
 
-        // Create the change segment - show EXACTLY what changed without any normalization
+        // Create the change segment
         if (addedText || removedText) {
-          // Always show the change, even if only whitespace differs
           segments.push({
             id: `${chapterId}-${segmentIndex}`,
             type: 'change',
-            text: addedText || '(deleted)',  // Show what it became
-            originalText: removedText || '(added)',  // Show what it was
+            text: addedText || '(deleted)',
+            originalText: removedText || '(added)',
             changeIndex: changeIndex++
           });
           segmentIndex++;
-        }
-      }
-    }
-
-    // Add context to change segments - get 2-3 surrounding words for context
-    for (let j = 0; j < segments.length; j++) {
-      if (segments[j].type === 'change' && segments[j].originalText) {
-        // Get 2-3 words before the change for context
-        if (j > 0 && segments[j - 1].type === 'unchanged') {
-          segments[j].contextBefore = this.getLastWords(segments[j - 1].text, 3);
-        }
-        // Get 2-3 words after the change for context
-        if (j < segments.length - 1 && segments[j + 1].type === 'unchanged') {
-          segments[j].contextAfter = this.getFirstWords(segments[j + 1].text, 3);
         }
       }
     }
@@ -698,7 +889,7 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   }
 
   goToNextChange(): void {
-    const total = this.totalChanges();
+    const total = this.currentChapterChangeCount();
     const current = this.currentChangeIndex();
     if (current < total - 1) {
       this.focusChange(current + 1);
@@ -718,31 +909,24 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   }
 
   private scrollToChange(index: number): void {
-    // Use setTimeout to let Angular update the DOM first
     setTimeout(() => {
-      const container = this.bookContentRef?.nativeElement;
+      const container = this.chapterContentRef?.nativeElement;
       if (!container) return;
 
       const changeEl = container.querySelector(`[data-change-index="${index}"]`) as HTMLElement;
       if (changeEl) {
-        // Scroll the change into view, centered vertically
         changeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     }, 0);
   }
 
-  /** Extract the last N words from a text string */
-  private getLastWords(text: string, count: number): string {
-    const words = text.trim().split(/\s+/);
-    if (words.length <= count) return text.trim();
-    return words.slice(-count).join(' ');
-  }
-
-  /** Extract the first N words from a text string */
-  private getFirstWords(text: string, count: number): string {
-    const words = text.trim().split(/\s+/);
-    if (words.length <= count) return text.trim();
-    return words.slice(0, count).join(' ');
+  /**
+   * Format byte size for display
+   */
+  formatSize(chars: number): string {
+    if (chars < 1000) return `${chars} chars`;
+    if (chars < 1_000_000) return `${(chars / 1000).toFixed(1)}K chars`;
+    return `${(chars / 1_000_000).toFixed(1)}M chars`;
   }
 
   showTooltip(event: MouseEvent, segment: DiffSegment): void {
@@ -751,7 +935,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
     const target = event.target as HTMLElement;
     const rect = target.getBoundingClientRect();
 
-    // Position tooltip below the element
     this.tooltipX.set(rect.left);
     this.tooltipY.set(rect.bottom + 8);
     this.tooltipSegment.set(segment);
@@ -779,8 +962,9 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   }
 
   /** Start editing a segment */
-  startEdit(chapterId: string, segment: DiffSegment): void {
+  startEdit(segment: DiffSegment): void {
     this.hideTooltip();
+    const chapterId = this.currentChapterId();
     this.editState.set({
       segmentId: segment.id,
       chapterId,
@@ -788,7 +972,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
       editedValue: segment.text
     });
 
-    // Focus the input after Angular updates the DOM
     setTimeout(() => {
       const input = document.querySelector('.edit-input') as HTMLInputElement;
       if (input) {
@@ -815,19 +998,7 @@ export class DiffViewComponent implements OnInit, OnDestroy {
     const state = this.editState();
     if (!state) return;
 
-    // Only emit if the value actually changed
     if (state.editedValue !== state.originalValue) {
-      // Update the segment in our local state
-      const chapters = this.chaptersWithSegments();
-      const chapter = chapters.find(c => c.id === state.chapterId);
-      if (chapter) {
-        const segment = chapter.segments.find(s => s.id === state.segmentId);
-        if (segment) {
-          segment.text = state.editedValue;
-        }
-      }
-
-      // Emit the change
       this.textEdited.emit({
         chapterId: state.chapterId,
         oldText: state.originalValue,
@@ -845,7 +1016,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
 
   /** Handle blur - save on blur unless cancelled */
   onEditBlur(): void {
-    // Small delay to allow click on other elements
     setTimeout(() => {
       if (this.editState()) {
         this.saveEdit();
