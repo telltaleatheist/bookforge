@@ -294,10 +294,14 @@ export async function startConversion(
           progress = parseProgressLine(line, progress);
           progress.estimatedRemaining = estimateRemaining(progress);
 
-          // Look for output file path
-          const outputMatch = line.match(/output[:\s]+(.+\.m4b)/i);
+          // Look for output file path - must be an actual file path, not part of ffmpeg command
+          // Match patterns like "Output: /path/to/file.m4b" or "Saved to /path/to/file.m4b"
+          // The path must start with / (absolute) or a drive letter
+          const outputMatch = line.match(/(?:output|saved to|created|wrote)[:\s]+(['"]?)([\/~][\w\s\-\/.,'()]+\.m4b)\1/i) ||
+                              line.match(/(?:output|saved to|created|wrote)[:\s]+(['"]?)([A-Z]:[\\\/][\w\s\-\\.,'()]+\.m4b)\1/i);
           if (outputMatch) {
-            outputFile = outputMatch[1];
+            outputFile = outputMatch[2].trim();
+            console.log('[TTS] Detected output file from log:', outputFile);
           }
 
           // Send progress update
@@ -351,15 +355,39 @@ export async function startConversion(
           });
         }
 
-        // Find the actual output file if not detected from stdout
-        let finalOutputPath = outputFile;
+        // Find the actual output file
+        // First verify if detected path exists, otherwise search the output directory
+        let finalOutputPath = '';
+
+        // Check if detected output file actually exists
+        if (outputFile) {
+          try {
+            await fs.access(outputFile);
+            finalOutputPath = outputFile;
+            console.log('[TTS] Verified detected output file exists:', finalOutputPath);
+          } catch {
+            console.log('[TTS] Detected output path does not exist, will search directory');
+          }
+        }
+
+        // If no valid path found, search the output directory for the most recent .m4b file
         if (!finalOutputPath) {
           try {
             const files = await fs.readdir(outputDir);
-            const m4bFile = files.find(f => f.endsWith('.m4b'));
-            if (m4bFile) {
-              finalOutputPath = path.join(outputDir, m4bFile);
-              console.log('[TTS] Found output file:', finalOutputPath);
+            const m4bFiles = files.filter(f => f.endsWith('.m4b'));
+
+            if (m4bFiles.length > 0) {
+              // If multiple files, find the most recently modified one
+              let mostRecent = { file: m4bFiles[0], mtime: 0 };
+              for (const file of m4bFiles) {
+                const filePath = path.join(outputDir, file);
+                const stat = await fs.stat(filePath);
+                if (stat.mtimeMs > mostRecent.mtime) {
+                  mostRecent = { file, mtime: stat.mtimeMs };
+                }
+              }
+              finalOutputPath = path.join(outputDir, mostRecent.file);
+              console.log('[TTS] Found most recent output file:', finalOutputPath);
             }
           } catch (err) {
             console.error('[TTS] Error finding output file:', err);
@@ -371,12 +399,16 @@ export async function startConversion(
           try {
             const desiredPath = path.join(outputDir, desiredFilename);
             if (finalOutputPath !== desiredPath) {
+              // Verify source file exists before renaming
+              await fs.access(finalOutputPath);
               await fs.rename(finalOutputPath, desiredPath);
               console.log('[TTS] Renamed output file to:', desiredPath);
               finalOutputPath = desiredPath;
             }
           } catch (err) {
             console.error('[TTS] Error renaming output file:', err);
+            console.error('[TTS] Source path was:', finalOutputPath);
+            console.error('[TTS] Desired path was:', path.join(outputDir, desiredFilename));
             // Continue with original filename if rename fails
           }
         }

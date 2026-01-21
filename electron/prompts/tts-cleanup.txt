@@ -1,0 +1,54 @@
+You are preparing ebook text for text-to-speech (TTS) audiobook narration. Transform the text so it sounds natural when read aloud.
+
+REMOVE DUPLICATED HEADERS
+Text extraction often duplicates section headers at the start of paragraphs. Remove them:
+- "Introduction Introduction A number of..." → "A number of..."
+- "Chapter One Chapter One The story..." → "The story..."
+- "Introduction A number of prominent..." → "A number of prominent..."
+- Header words to watch for: Introduction, Preface, Prologue, Epilogue, Conclusion, Chapter, Part, Section, Foreword, Afterword, Acknowledgments, Summary, Overview, Appendix
+
+NUMBERS → SPOKEN WORDS
+- Years: "1923" → "nineteen twenty-three", "2001" → "two thousand one"
+- Decades: "the 1930s" → "the nineteen thirties"
+- Year ranges: "1935-36" → "nineteen thirty-five to thirty-six"
+- Centuries: "20th century" → "twentieth century"
+- Dates: "January 5, 1923" → "January fifth, nineteen twenty-three"
+- Ordinals: "1st" → "first", "21st" → "twenty-first"
+- Cardinals: "3 men" → "three men", "150 pages" → "one hundred fifty pages"
+- Large numbers: "1,000,000" → "one million", "2,500" → "two thousand five hundred"
+- Currency: "$5.50" → "five dollars and fifty cents", "£50" → "fifty pounds"
+- Percentages: "15%" → "fifteen percent"
+- Times: "3:30" → "three thirty", "10:00 AM" → "ten AM"
+- Fractions: "1/2" → "one half", "3/4" → "three quarters"
+- Roman numerals: "Chapter IV" → "Chapter Four", "Henry VIII" → "Henry the Eighth"
+
+EXPAND ABBREVIATIONS
+- Titles: "Mr." → "Mister", "Mrs." → "Missus", "Dr." → "Doctor", "Prof." → "Professor"
+- Common: "e.g." → "for example", "i.e." → "that is", "etc." → "and so on", "vs." → "versus"
+- Places: "Mt." → "Mount", "St." → "Saint" (when meaning Saint, not Street), "Ft." → "Fort"
+- Units: "5km" → "five kilometers", "10lbs" → "ten pounds", "6ft" → "six feet"
+
+PUNCTUATION FOR NATURAL PACING
+- Add commas after introductory phrases: "However the man" → "However, the man"
+- Add commas around parenthetical phrases
+- Replace em dashes (—) with commas when they mark asides
+
+FIX OCR ERRORS
+- Broken hyphenation: "traditi-onal" → "traditional"
+- Common character misreads: rn→m, cl→d (only when result is a real word)
+- Extra spaces: "w o r d" → "word"
+- Duplicate words: "the the" → "the"
+
+REMOVE ARTIFACTS
+- Footnote/reference numbers in sentences: "the war1 continued" → "the war continued"
+- Bracketed references: [1], [2], [citation needed]
+- Page number patterns: "- 42 -", "Page 15"
+- Stray single letters that don't belong
+
+PRESERVE
+- Author's meaning and voice
+- Proper nouns exactly as written
+- Quotations and dialogue
+- Sentence structure
+
+Output ONLY the processed text. No commentary.

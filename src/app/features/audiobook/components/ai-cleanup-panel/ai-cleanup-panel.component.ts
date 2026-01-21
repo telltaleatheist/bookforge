@@ -9,6 +9,7 @@ import { Router } from '@angular/router';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { QueueService } from '../../../queue/services/queue.service';
 import { SettingsService } from '../../../../core/services/settings.service';
+import { ElectronService } from '../../../../core/services/electron.service';
 import { AIProvider } from '../../../../core/models/ai-config.types';
 import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success-modal.component';
 
@@ -81,11 +82,15 @@ import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success
             class="model-select"
             [value]="selectedModel()"
             (change)="selectModel($any($event.target).value)"
+            [disabled]="loadingClaudeModels()"
           >
             @for (model of availableModels(); track model.value) {
               <option [value]="model.value" [selected]="model.value === selectedModel()">{{ model.label }}</option>
             }
           </select>
+          @if (loadingClaudeModels()) {
+            <div class="loading-indicator">Fetching available models...</div>
+          }
         } @else {
           <div class="no-models">
             @if (selectedProvider() === 'ollama') {
@@ -97,6 +102,8 @@ import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success
               } @else {
                 No models found. Run <code>ollama pull llama3.2</code>
               }
+            } @else if (selectedProvider() === 'claude' && loadingClaudeModels()) {
+              Fetching available models...
             } @else {
               Configure API key in Settings
             }
@@ -104,15 +111,29 @@ import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success
         }
       </div>
 
-      <!-- What it does -->
-      <div class="info-section">
-        <h5>What AI cleanup does:</h5>
-        <ul>
-          <li>Fixes broken hyphenation (tradi-tional → traditional)</li>
-          <li>Corrects OCR mistakes (rn→m, cl→d, li→h)</li>
-          <li>Fixes number/letter confusion (0/O, 1/l/I)</li>
-          <li>Expands era abbreviations for TTS (BCE → B C E)</li>
-        </ul>
+      <!-- Prompt Section -->
+      <div class="prompt-section">
+        <label class="field-label">AI Prompt</label>
+        @if (loadingPrompt()) {
+          <div class="prompt-loading">Loading prompt...</div>
+        } @else {
+          <textarea
+            class="prompt-textarea"
+            [value]="promptText()"
+            (input)="onPromptChange($event)"
+            placeholder="Enter the AI cleanup prompt..."
+          ></textarea>
+          <div class="prompt-footer">
+            <desktop-button
+              variant="secondary"
+              size="sm"
+              [disabled]="!promptModified() || savingPrompt()"
+              (click)="savePrompt()"
+            >
+              {{ savingPrompt() ? 'Saving...' : 'Save Prompt' }}
+            </desktop-button>
+          </div>
+        }
       </div>
 
       <!-- Actions -->
@@ -293,44 +314,69 @@ import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success
       }
     }
 
-    .info-section {
-      background: var(--bg-subtle);
-      padding: 0.75rem 1rem;
-      border-radius: 6px;
-      border: 1px solid var(--border-subtle);
-
-      h5 {
-        margin: 0 0 0.5rem 0;
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-      }
-
-      ul {
-        margin: 0;
-        padding-left: 1.25rem;
-
-        li {
-          font-size: 0.75rem;
-          color: var(--text-secondary);
-          margin-bottom: 0.25rem;
-
-          &:last-child {
-            margin-bottom: 0;
-          }
-        }
-      }
+    .loading-indicator {
+      margin-top: 0.375rem;
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
     }
 
     .actions {
       display: flex;
       gap: 0.75rem;
     }
+
+    .prompt-section {
+      margin-top: 0.25rem;
+    }
+
+    .prompt-loading {
+      color: var(--text-secondary);
+      font-size: 0.8125rem;
+      padding: 1rem;
+      text-align: center;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      height: 200px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .prompt-textarea {
+      width: 100%;
+      height: 200px;
+      padding: 0.75rem;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+      font-size: 0.6875rem;
+      line-height: 1.5;
+      resize: none;
+
+      &:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+
+      &::placeholder {
+        color: var(--text-muted);
+      }
+    }
+
+    .prompt-footer {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 0.5rem;
+    }
   `]
 })
 export class AiCleanupPanelComponent implements OnInit {
   private readonly queueService = inject(QueueService);
   private readonly settingsService = inject(SettingsService);
+  private readonly electronService = inject(ElectronService);
   private readonly router = inject(Router);
 
   // Inputs
@@ -346,10 +392,19 @@ export class AiCleanupPanelComponent implements OnInit {
   readonly addingToQueue = signal(false);
   readonly showSuccessModal = signal(false);
 
+  // Prompt editor state
+  readonly loadingPrompt = signal(false);
+  readonly savingPrompt = signal(false);
+  readonly promptText = signal('');
+  readonly originalPromptText = signal('');
+  readonly promptModified = computed(() => this.promptText() !== this.originalPromptText());
+
   // AI Provider state
   readonly selectedProvider = signal<AIProvider>('ollama');
   readonly selectedModel = signal<string>('');
   readonly ollamaModels = signal<{ value: string; label: string }[]>([]);
+  readonly claudeModels = signal<{ value: string; label: string }[]>([]);
+  readonly loadingClaudeModels = signal(false);
 
   // Computed: check if API keys are configured
   readonly hasClaudeKey = computed(() => {
@@ -377,10 +432,14 @@ export class AiCleanupPanelComponent implements OnInit {
     if (provider === 'ollama') {
       return this.ollamaModels();
     } else if (provider === 'claude' && this.hasClaudeKey()) {
+      const models = this.claudeModels();
+      // Return fetched models, or fallback while loading
+      if (models.length > 0) {
+        return models;
+      }
+      // Fallback models shown while loading
       return [
-        { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-        { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
-        { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' }
+        { value: 'claude-sonnet-4-20250514', label: 'Loading models...' }
       ];
     } else if (provider === 'openai' && this.hasOpenAIKey()) {
       return [
@@ -405,6 +464,7 @@ export class AiCleanupPanelComponent implements OnInit {
   ngOnInit(): void {
     this.checkConnection();
     this.initializeFromSettings();
+    this.loadPrompt();
   }
 
   private initializeFromSettings(): void {
@@ -416,6 +476,10 @@ export class AiCleanupPanelComponent implements OnInit {
       this.selectedModel.set(config.ollama.model);
     } else if (config.provider === 'claude') {
       this.selectedModel.set(config.claude.model);
+      // Fetch available Claude models for this API key
+      if (config.claude.apiKey) {
+        this.fetchClaudeModels(config.claude.apiKey);
+      }
     } else if (config.provider === 'openai') {
       this.selectedModel.set(config.openai.model);
     }
@@ -465,9 +529,42 @@ export class AiCleanupPanelComponent implements OnInit {
       const models = this.ollamaModels();
       this.selectedModel.set(models.length > 0 ? models[0].value : config.ollama.model);
     } else if (provider === 'claude') {
-      this.selectedModel.set(config.claude.model || 'claude-sonnet-4-20250514');
+      // Fetch available Claude models for this API key
+      this.fetchClaudeModels(config.claude.apiKey);
+      // Set initial model while loading
+      const currentModels = this.claudeModels();
+      if (currentModels.length > 0) {
+        this.selectedModel.set(currentModels[0].value);
+      } else {
+        this.selectedModel.set(config.claude.model || 'claude-sonnet-4-20250514');
+      }
     } else if (provider === 'openai') {
       this.selectedModel.set(config.openai.model || 'gpt-4o');
+    }
+  }
+
+  async fetchClaudeModels(apiKey: string): Promise<void> {
+    if (!apiKey) return;
+
+    this.loadingClaudeModels.set(true);
+    try {
+      const result = await this.electronService.getClaudeModels(apiKey);
+      if (result.success && result.models) {
+        this.claudeModels.set(result.models);
+        // Update selected model to first in list if current selection isn't valid
+        const currentModel = this.selectedModel();
+        const modelExists = result.models.some(m => m.value === currentModel);
+        if (!modelExists && result.models.length > 0) {
+          this.selectedModel.set(result.models[0].value);
+        }
+      } else {
+        console.error('Failed to fetch Claude models:', result.error);
+        // Keep fallback models on error
+      }
+    } catch (err) {
+      console.error('Failed to fetch Claude models:', err);
+    } finally {
+      this.loadingClaudeModels.set(false);
     }
   }
 
@@ -520,5 +617,40 @@ export class AiCleanupPanelComponent implements OnInit {
   goToQueue(): void {
     this.closeSuccessModal();
     this.router.navigate(['/queue']);
+  }
+
+  // Prompt editor methods
+  async loadPrompt(): Promise<void> {
+    this.loadingPrompt.set(true);
+    try {
+      const result = await this.electronService.getAIPrompt();
+      if (result) {
+        this.promptText.set(result.prompt);
+        this.originalPromptText.set(result.prompt);
+      }
+    } catch (err) {
+      console.error('Failed to load prompt:', err);
+    } finally {
+      this.loadingPrompt.set(false);
+    }
+  }
+
+  onPromptChange(event: Event): void {
+    const textarea = event.target as HTMLTextAreaElement;
+    this.promptText.set(textarea.value);
+  }
+
+  async savePrompt(): Promise<void> {
+    this.savingPrompt.set(true);
+    try {
+      const success = await this.electronService.saveAIPrompt(this.promptText());
+      if (success) {
+        this.originalPromptText.set(this.promptText());
+      }
+    } catch (err) {
+      console.error('Failed to save prompt:', err);
+    } finally {
+      this.savingPrompt.set(false);
+    }
   }
 }

@@ -6,6 +6,7 @@ import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { QueueService } from '../../../queue/services/queue.service';
 import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success-modal.component';
 import { SettingsService } from '../../../../core/services/settings.service';
+import { EpubService } from '../../services/epub.service';
 
 export interface TTSSettings {
   device: 'gpu' | 'mps' | 'cpu';
@@ -434,6 +435,7 @@ export class TtsSettingsComponent implements OnInit {
   private readonly queueService = inject(QueueService);
   private readonly router = inject(Router);
   private readonly settingsService = inject(SettingsService);
+  private readonly epubService = inject(EpubService);
 
   // Inputs
   readonly settings = input<TTSSettings>({
@@ -491,18 +493,32 @@ export class TtsSettingsComponent implements OnInit {
   }
 
   async addToQueue(): Promise<void> {
-    const path = this.epubPath();
-    if (!path) return;
+    let epubPathToUse = this.epubPath();
+    if (!epubPathToUse) return;
 
     this.addingToQueue.set(true);
 
     try {
+      // If there are modifications (e.g., new cover), save the EPUB first
+      if (this.epubService.hasModifications()) {
+        // Generate a modified epub path (add _modified before .epub)
+        const modifiedPath = epubPathToUse.replace(/\.epub$/i, '_modified.epub');
+        console.log('[TTS] Saving modified EPUB with new cover to:', modifiedPath);
+        const savedPath = await this.epubService.saveModified(modifiedPath);
+        if (savedPath) {
+          epubPathToUse = savedPath;
+          console.log('[TTS] Using modified EPUB for conversion:', epubPathToUse);
+        } else {
+          console.warn('[TTS] Failed to save modified EPUB, using original');
+        }
+      }
+
       const currentSettings = this.settings();
       const meta = this.metadata();
       const outputDir = this.settingsService.get<string>('audiobookOutputDir') || '';
       await this.queueService.addJob({
         type: 'tts-conversion',
-        epubPath: path,
+        epubPath: epubPathToUse,
         metadata: meta,
         config: {
           type: 'tts-conversion',

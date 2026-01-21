@@ -36,8 +36,30 @@ export class DiffService {
 
       // Compute diffs for each chapter
       const chapters: DiffChapter[] = result.chapters.map(chapter => {
+        // Log the raw text being compared for debugging
+        console.log(`[DIFF] Chapter "${chapter.title}"`);
+        console.log(`[DIFF] Original length: ${chapter.originalText.length}`);
+        console.log(`[DIFF] Cleaned length: ${chapter.cleanedText.length}`);
+        console.log(`[DIFF] Texts identical: ${chapter.originalText === chapter.cleanedText}`);
+
+        // If texts are identical, log a sample
+        if (chapter.originalText === chapter.cleanedText) {
+          console.warn(`[DIFF] WARNING: Original and cleaned text are IDENTICAL for chapter "${chapter.title}"`);
+        } else {
+          // Log first difference
+          for (let i = 0; i < Math.max(chapter.originalText.length, chapter.cleanedText.length); i++) {
+            if (chapter.originalText[i] !== chapter.cleanedText[i]) {
+              console.log(`[DIFF] First difference at position ${i}:`);
+              console.log(`[DIFF]   Original: "${chapter.originalText.substring(Math.max(0, i - 20), i + 20)}"`);
+              console.log(`[DIFF]   Cleaned:  "${chapter.cleanedText.substring(Math.max(0, i - 20), i + 20)}"`);
+              break;
+            }
+          }
+        }
+
         const diffWords = computeWordDiff(chapter.originalText, chapter.cleanedText);
         const changeCount = countChanges(diffWords);
+        console.log(`[DIFF] Changes detected: ${changeCount}`);
 
         return {
           id: chapter.id,

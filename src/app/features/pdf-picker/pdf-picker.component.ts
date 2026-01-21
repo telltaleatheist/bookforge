@@ -40,6 +40,7 @@ interface OpenDocument {
   pageDimensions: PageDimension[];
   totalPages: number;
   deletedBlockIds: Set<string>;
+  deletedPages: Set<number>;  // Pages excluded from export
   selectedBlockIds: string[];
   pageOrder: number[]; // Custom page order for organize mode
   pageImages: Map<number, string>;
@@ -75,6 +76,17 @@ interface BlockEditData {
   height?: number;
 }
 
+// Metadata for EPUB export
+export interface BookMetadata {
+  title?: string;
+  author?: string;
+  authorFileAs?: string;  // "Last, First" format for sorting
+  year?: string;
+  language?: string;
+  publisher?: string;
+  description?: string;
+}
+
 interface BookForgeProject {
   version: number;
   source_path: string;    // Original path
@@ -95,6 +107,7 @@ interface BookForgeProject {
   chapters?: Chapter[];  // Chapter markers for export
   chapters_source?: 'toc' | 'heuristic' | 'manual' | 'mixed';  // How chapters were determined
   deleted_pages?: number[];  // Pages to exclude from export (0-indexed)
+  metadata?: BookMetadata;  // Book metadata for EPUB export
   created_at: string;
   modified_at: string;
 }
@@ -321,6 +334,9 @@ interface AlertModal {
               [organizeMode]="organizeMode()"
               (blockClick)="onBlockClick($event)"
               (chapterClick)="onChapterClick($event)"
+              (chapterPlacement)="onChapterPlacement($event)"
+              (chapterDrag)="onChapterDrag($event)"
+              (chapterDelete)="removeChapter($event)"
               (pageDeleteToggle)="togglePageDeleted($event)"
               (pageSelect)="onPageSelect($event)"
               (deleteSelectedPages)="onDeleteSelectedPages($event)"
@@ -421,6 +437,8 @@ interface AlertModal {
             [detecting]="detectingChapters()"
             [finalizing]="finalizingChapters()"
             [selectedChapterId]="selectedChapterId()"
+            [metadata]="metadata()"
+            [sourceName]="pdfName()"
             (cancel)="exitChaptersMode()"
             (autoDetect)="autoDetectChapters()"
             (clearChapters)="clearAllChapters()"
@@ -428,6 +446,7 @@ interface AlertModal {
             (removeChapter)="removeChapter($event)"
             (renameChapter)="renameChapter($event)"
             (finalizeChapters)="finalizeChapters()"
+            (metadataChange)="onMetadataChange($event)"
           />
         } @else {
           <app-categories-panel
@@ -2404,6 +2423,9 @@ export class PdfPickerComponent {
   readonly finalizingChapters = signal(false);
   readonly selectedChapterId = signal<string | null>(null);
 
+  // Book metadata for EPUB export
+  readonly metadata = signal<BookMetadata>({});
+
   // Page deletion - delegate to editor state (has undo/redo support)
   get deletedPages() { return this.editorState.deletedPages; }
 
@@ -3135,7 +3157,15 @@ export class PdfPickerComponent {
   async loadPdf(path: string): Promise<void> {
     this.showFilePicker.set(false);
 
-    // Check if file needs conversion (AZW3, MOBI, etc.)
+    const lowerPath = path.toLowerCase();
+
+    // Route EPUBs directly to the epub-editor
+    if (lowerPath.endsWith('.epub')) {
+      this.router.navigate(['/epub-editor'], { queryParams: { path } });
+      return;
+    }
+
+    // Check if file needs conversion (AZW3, MOBI, KFX, PRC, FB2, etc.)
     const formatInfo = await this.electronService.isEbookConvertible(path);
     if (formatInfo.convertible && !formatInfo.native) {
       // Check if ebook-convert is available
@@ -3147,7 +3177,10 @@ export class PdfPickerComponent {
         const convResult = await this.electronService.convertEbookToLibrary(path);
         if (convResult.success && convResult.outputPath) {
           console.log('[PdfPicker] Conversion successful:', convResult.outputPath);
-          path = convResult.outputPath; // Use converted EPUB
+          // Route converted EPUB to epub-editor
+          this.loading.set(false);
+          this.router.navigate(['/epub-editor'], { queryParams: { path: convResult.outputPath } });
+          return;
         } else {
           console.error('[PdfPicker] Conversion failed:', convResult.error);
           this.loading.set(false);
@@ -3159,6 +3192,8 @@ export class PdfPickerComponent {
         return; // Silently ignore unsupported format
       }
     }
+
+    // At this point, only PDFs should reach here
 
     // Check if this PDF is already open (by original path or library path)
     const existingDoc = this.openDocuments().find(d => d.path === path || d.libraryPath === path);
@@ -3210,6 +3245,7 @@ export class PdfPickerComponent {
         pageDimensions: result.page_dimensions,
         totalPages: result.page_count,
         deletedBlockIds: new Set(),
+        deletedPages: new Set(),
         selectedBlockIds: [],
         pageOrder: [],
         pageImages: new Map(),
@@ -3237,6 +3273,7 @@ export class PdfPickerComponent {
       this.pageRenderService.clear();
       this.projectService.reset();
       this.blankedPages.set(new Set());  // Clear blanked pages for new document
+      this.metadata.set({});  // Clear metadata for new document
 
       this.saveRecentFile(path, result.pdf_name);
 
@@ -4564,6 +4601,8 @@ export class PdfPickerComponent {
       const history = this.editorState.getHistory();
       const customCategories = this.getCustomCategoriesData();
       const ocrBlocks = this.blocks().filter(b => b.is_ocr);
+      const chapters = this.chapters();
+      const chaptersSource = this.chaptersSource();
       const projectData: BookForgeProject = {
         version: 1,
         source_path: this.pdfPath(),
@@ -4577,6 +4616,10 @@ export class PdfPickerComponent {
         undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
         redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
         ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
+        chapters: chapters.length > 0 ? chapters : undefined,
+        chapters_source: chapters.length > 0 ? chaptersSource : undefined,
+        deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
+        metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
         created_at: new Date().toISOString(),
         modified_at: new Date().toISOString()
       };
@@ -4605,6 +4648,8 @@ export class PdfPickerComponent {
       const history = this.editorState.getHistory();
       const customCategories = this.getCustomCategoriesData();
       const ocrBlocks = this.blocks().filter(b => b.is_ocr);
+      const chapters = this.chapters();
+      const chaptersSource = this.chaptersSource();
       const projectData: BookForgeProject = {
         version: 1,
         source_path: this.pdfPath(),
@@ -4618,6 +4663,10 @@ export class PdfPickerComponent {
         undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
         redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
         ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
+        chapters: chapters.length > 0 ? chapters : undefined,
+        chapters_source: chapters.length > 0 ? chaptersSource : undefined,
+        deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
+        metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
         created_at: new Date().toISOString(),
         modified_at: new Date().toISOString()
       };
@@ -4644,6 +4693,9 @@ export class PdfPickerComponent {
     const order = this.pageOrder();
     const history = this.editorState.getHistory();
     const customCategories = this.getCustomCategoriesData();
+    const ocrBlocks = this.blocks().filter(b => b.is_ocr);
+    const chapters = this.chapters();
+    const chaptersSource = this.chaptersSource();
     const projectData: BookForgeProject = {
       version: 1,
       source_path: this.pdfPath(),
@@ -4651,10 +4703,16 @@ export class PdfPickerComponent {
       library_path: this.libraryPath(),
       file_hash: this.fileHash(),
       deleted_block_ids: [...this.deletedBlockIds()],
+      deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : undefined,
       page_order: order.length > 0 ? order : undefined,
       custom_categories: customCategories.length > 0 ? customCategories : undefined,
       undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
       redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
+      ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
+      chapters: chapters.length > 0 ? chapters : undefined,
+      chapters_source: chapters.length > 0 ? chaptersSource : undefined,
+      deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
+      metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
       created_at: this.projectPath() ? new Date().toISOString() : new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -4777,6 +4835,7 @@ export class PdfPickerComponent {
       chapters: chapters.length > 0 ? chapters : undefined,
       chapters_source: chapters.length > 0 ? chaptersSource : undefined,
       deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
+      metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
       created_at: new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -4904,6 +4963,11 @@ export class PdfPickerComponent {
         this.deletedPages.set(new Set(project.deleted_pages));
       }
 
+      // Restore metadata
+      if (project.metadata) {
+        this.metadata.set(project.metadata);
+      }
+
       this.pageRenderService.clear();
       this.projectService.projectPath.set(result.filePath || null);
 
@@ -4961,6 +5025,14 @@ export class PdfPickerComponent {
       return;
     }
 
+    // If the project's source is an EPUB, route to epub-editor instead
+    // (PDF projects with EPUB sources should open in epub-editor)
+    const sourcePath = project.library_path || project.source_path;
+    if (sourcePath.toLowerCase().endsWith('.epub')) {
+      this.router.navigate(['/epub-editor'], { queryParams: { path: sourcePath } });
+      return;
+    }
+
     // Save current document state before loading new one
     this.saveCurrentDocumentState();
 
@@ -5006,6 +5078,7 @@ export class PdfPickerComponent {
         pageDimensions: pdfResult.page_dimensions,
         totalPages: pdfResult.page_count,
         deletedBlockIds: deletedBlockIds,
+        deletedPages: new Set(project.deleted_pages || []),
         selectedBlockIds: [],
         pageOrder: pageOrder,
         pageImages: new Map(),
@@ -5075,12 +5148,32 @@ export class PdfPickerComponent {
         this.deletedPages.set(new Set(project.deleted_pages));
       }
 
+      // Restore metadata
+      if (project.metadata) {
+        this.metadata.set(project.metadata);
+      }
+
       // Restore OCR blocks and categories - these replace PDF-analyzed blocks on their pages
       if (project.ocr_blocks && project.ocr_blocks.length > 0) {
         // Get the pages that have OCR blocks
         const ocrPages = [...new Set(project.ocr_blocks.map(b => b.page))];
         // Replace PDF blocks with OCR blocks on those pages
         this.editorState.replaceTextBlocksOnPages(ocrPages, project.ocr_blocks);
+
+        // Update spans for OCR pages so custom category matching searches OCR text
+        for (const pageNum of ocrPages) {
+          const pageBlocks = project.ocr_blocks.filter(b => b.page === pageNum);
+          const ocrBlocksForSpans = pageBlocks.map(b => ({
+            x: b.x,
+            y: b.y,
+            width: b.width,
+            height: b.height,
+            text: b.text,
+            font_size: b.font_size,
+            id: b.id
+          }));
+          this.electronService.updateSpansForOcr(pageNum, ocrBlocksForSpans);
+        }
 
         // Restore OCR categories if saved (these match the OCR block categorization)
         if (project.ocr_categories) {
@@ -6268,6 +6361,11 @@ export class PdfPickerComponent {
     this.hasUnsavedChanges.set(true);
   }
 
+  onMetadataChange(newMetadata: BookMetadata): void {
+    this.metadata.set(newMetadata);
+    this.hasUnsavedChanges.set(true);
+  }
+
   selectChapter(chapterId: string): void {
     this.selectedChapterId.set(chapterId);
     const chapter = this.chapters().find(c => c.id === chapterId);
@@ -6460,6 +6558,74 @@ export class PdfPickerComponent {
       // Add new chapter
       this.addChapterFromBlock(event.block, event.level);
     }
+  }
+
+  /**
+   * Handle chapter placement on empty space (no block to snap to).
+   * Creates a chapter at the specified Y position on the page.
+   */
+  onChapterPlacement(event: { pageNum: number; y: number; level: number }): void {
+    // Check if there's already a chapter near this Y position on this page
+    const existingNearby = this.chapters().find(c =>
+      c.page === event.pageNum && Math.abs((c.y || 0) - event.y) < 20
+    );
+
+    if (existingNearby) {
+      // Remove existing nearby chapter (toggle behavior)
+      this.removeChapter(existingNearby.id);
+      return;
+    }
+
+    // Create a new chapter at this position
+    const chapterId = 'chapter_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    const chapterNum = this.chapters().filter(c => c.level === event.level).length + 1;
+    const title = event.level === 1 ? `Chapter ${chapterNum}` : `Section ${chapterNum}`;
+
+    const newChapter: Chapter = {
+      id: chapterId,
+      title,
+      page: event.pageNum,
+      y: event.y,
+      level: event.level,
+      source: 'manual',
+      blockId: undefined // No block associated
+    };
+
+    this.chapters.update(chapters => [...chapters, newChapter].sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return (a.y || 0) - (b.y || 0);
+    }));
+
+    this.chaptersSource.set('manual');
+    this.hasUnsavedChanges.set(true);
+  }
+
+  /**
+   * Handle chapter marker drag - update chapter position
+   */
+  onChapterDrag(event: { chapterId: string; pageNum: number; y: number; snapToBlock?: TextBlock }): void {
+    this.chapters.update(chapters =>
+      chapters.map(ch => {
+        if (ch.id === event.chapterId) {
+          return {
+            ...ch,
+            page: event.pageNum,
+            y: event.y,
+            blockId: event.snapToBlock?.id,
+            // Update title if snapped to a new block with text
+            title: event.snapToBlock
+              ? (event.snapToBlock.text.trim().substring(0, 50) || ch.title)
+              : ch.title
+          };
+        }
+        return ch;
+      }).sort((a, b) => {
+        if (a.page !== b.page) return a.page - b.page;
+        return (a.y || 0) - (b.y || 0);
+      })
+    );
+
+    this.hasUnsavedChanges.set(true);
   }
 
   // OCR methods
@@ -6674,6 +6840,21 @@ export class PdfPickerComponent {
       // Replace blocks with processed OCR blocks
       this.editorState.replaceTextBlocksOnPages(pagesWithOcrResults, processedBlocks);
 
+      // Update spans for OCR pages so custom category matching searches OCR text
+      for (const pageNum of pagesWithOcrResults) {
+        const pageBlocks = processedBlocks.filter(b => b.page === pageNum);
+        const ocrBlocksForSpans = pageBlocks.map(b => ({
+          x: b.x,
+          y: b.y,
+          width: b.width,
+          height: b.height,
+          text: b.text,
+          font_size: b.font_size,
+          id: b.id
+        }));
+        this.electronService.updateSpansForOcr(pageNum, ocrBlocksForSpans);
+      }
+
       // Clear selection since old block IDs no longer exist
       this.selectedBlockIds.set([]);
 
@@ -6794,6 +6975,7 @@ export class PdfPickerComponent {
             pageDimensions: this.pageDimensions(),
             totalPages: this.totalPages(),
             deletedBlockIds: this.deletedBlockIds(),
+            deletedPages: this.deletedPages(),
             selectedBlockIds: this.selectedBlockIds(),
             pageOrder: this.pageOrder(),
             pageImages: this.pageRenderService.getPageImagesMap(),
@@ -6832,6 +7014,7 @@ export class PdfPickerComponent {
     // Restore additional state
     this.editorState.selectedBlockIds.set(doc.selectedBlockIds);
     this.editorState.hasUnsavedChanges.set(doc.hasUnsavedChanges);
+    this.deletedPages.set(doc.deletedPages);
     this.editorState.setHistory({
       undoStack: doc.undoStack,
       redoStack: doc.redoStack

@@ -11,12 +11,13 @@ import { MetadataEditorComponent, EpubMetadata } from './components/metadata-edi
 import { AiCleanupPanelComponent } from './components/ai-cleanup-panel/ai-cleanup-panel.component';
 import { TtsSettingsComponent, TTSSettings } from './components/tts-settings/tts-settings.component';
 import { DiffViewComponent } from './components/diff-view/diff-view.component';
+import { PlayViewComponent } from './components/play-view/play-view.component';
 import { EpubService } from './services/epub.service';
 import { AudiobookService } from './services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
 
 // Workflow states for the audiobook producer
-type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'complete';
+type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'play' | 'diff' | 'complete';
 
 @Component({
   selector: 'app-audiobook',
@@ -30,7 +31,8 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'co
     MetadataEditorComponent,
     AiCleanupPanelComponent,
     TtsSettingsComponent,
-    DiffViewComponent
+    DiffViewComponent,
+    PlayViewComponent
   ],
   template: `
     <!-- Toolbar -->
@@ -85,6 +87,13 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'co
               >
                 Convert
               </button>
+              <button
+                class="tab"
+                [class.active]="workflowState() === 'play'"
+                (click)="setWorkflowState('play')"
+              >
+                Play
+              </button>
               @if (selectedItem()?.hasCleaned) {
                 <button
                   class="tab"
@@ -98,7 +107,7 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'co
 
 
             <!-- Tab content -->
-            <div class="tab-content" [class.diff-tab]="workflowState() === 'diff'">
+            <div class="tab-content" [class.diff-tab]="workflowState() === 'diff'" [class.play-tab]="workflowState() === 'play'">
               @switch (workflowState()) {
                 @case ('metadata') {
                   <app-metadata-editor
@@ -123,6 +132,11 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'co
                     [epubPath]="currentEpubPath()"
                     [metadata]="{ title: selectedMetadata()?.title, author: selectedMetadata()?.author, outputFilename: selectedMetadata()?.outputFilename || generatedFilename() }"
                     (settingsChange)="onTtsSettingsChange($event)"
+                  />
+                }
+                @case ('play') {
+                  <app-play-view
+                    [epubPath]="currentEpubPath()"
                   />
                 }
                 @case ('diff') {
@@ -234,6 +248,22 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'diff' | 'co
 
         app-diff-view {
           flex: 1;
+        }
+      }
+
+      &.play-tab {
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        height: 100%;
+
+        app-play-view {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+          min-height: 0;
         }
       }
     }

@@ -9,6 +9,8 @@ import {
   output,
   signal,
   effect,
+  computed,
+  HostListener,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { EpubjsService } from '../../services/epubjs.service';
@@ -41,21 +43,22 @@ export interface EpubSelectionEvent {
   imports: [CommonModule],
   template: `
     <div class="epub-viewer-wrapper">
-      <!-- Width controls -->
+      <!-- Zoom controls -->
       <div class="zoom-toolbar">
-        <span class="toolbar-label">Width:</span>
-        <button class="zoom-btn" (click)="narrower()" title="Narrower">−</button>
+        <span class="toolbar-label">Zoom:</span>
+        <button class="zoom-btn" (click)="zoomOut()" title="Zoom Out (Cmd+Scroll Down)">−</button>
         <input
           type="range"
-          min="300"
-          max="1200"
-          step="50"
-          [value]="contentWidth()"
-          (input)="setWidth(+$any($event.target).value)"
+          min="50"
+          max="200"
+          step="10"
+          [value]="zoomPercent()"
+          (input)="setZoom(+$any($event.target).value)"
           class="zoom-slider"
         />
-        <button class="zoom-btn" (click)="wider()" title="Wider">+</button>
-        <span class="zoom-label">{{ contentWidth() }}px</span>
+        <button class="zoom-btn" (click)="zoomIn()" title="Zoom In (Cmd+Scroll Up)">+</button>
+        <span class="zoom-label">{{ zoomPercent() }}%</span>
+        <button class="zoom-btn reset-btn" (click)="resetZoom()" title="Reset to 100%">↺</button>
       </div>
 
       <!-- Loading overlay -->
@@ -74,12 +77,14 @@ export interface EpubSelectionEvent {
         </div>
       }
 
-      <!-- Scrollable content area -->
-      <div class="epub-scroll-wrapper" [class.hidden]="loading() || error()">
+      <!-- Fixed viewport - no scrollbars on this container -->
+      <div class="epub-viewport" [class.hidden]="loading() || error()">
         <div
           #viewerContainer
-          class="epub-scroll-container"
-          [style.maxWidth.px]="contentWidth()"
+          class="epub-container"
+          [style.transform]="'scale(' + zoomLevel() + ')'"
+          [style.width.%]="100 / zoomLevel()"
+          [style.height.%]="100 / zoomLevel()"
         ></div>
       </div>
     </div>
@@ -158,13 +163,18 @@ export interface EpubSelectionEvent {
     .zoom-label {
       font-size: 0.75rem;
       color: var(--text-secondary);
-      min-width: 50px;
+      min-width: 40px;
+      text-align: center;
     }
 
-    .epub-scroll-wrapper {
+    .reset-btn {
+      font-size: 0.875rem;
+      margin-left: 0.25rem;
+    }
+
+    .epub-viewport {
       flex: 1;
-      overflow-y: auto;
-      overflow-x: hidden;
+      overflow: hidden;
       background: var(--bg-sunken, #e0e0e0);
       display: flex;
       justify-content: center;
@@ -174,22 +184,19 @@ export interface EpubSelectionEvent {
       }
     }
 
-    .epub-scroll-container {
-      width: 100%;
+    .epub-container {
+      max-width: 800px;
       background: #ffffff;
       box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
-      min-height: 100%;
+      transform-origin: top center;
     }
 
-    /* Ensure epub.js iframe fills container and allows scrolling */
-    :host ::ng-deep .epub-scroll-container {
+    /* Ensure epub.js iframe fills container */
+    :host ::ng-deep .epub-container {
       iframe {
         border: none !important;
-      }
-
-      .epub-container {
-        overflow-y: visible !important;
-        overflow-x: hidden !important;
+        width: 100% !important;
+        height: 100% !important;
       }
     }
 
@@ -288,21 +295,41 @@ export class EpubViewerComponent implements AfterViewInit, OnDestroy {
   // Local state
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
-  readonly contentWidth = signal(700);
+  readonly zoomPercent = signal(100); // 50-200%
+  readonly zoomLevel = computed(() => this.zoomPercent() / 100);
 
   private highlightClasses = new Map<string, string>();
 
-  // Width control methods
-  wider(): void {
-    this.setWidth(Math.min(1200, this.contentWidth() + 50));
+  // Zoom control methods
+  zoomIn(): void {
+    this.setZoom(Math.min(200, this.zoomPercent() + 10));
   }
 
-  narrower(): void {
-    this.setWidth(Math.max(300, this.contentWidth() - 50));
+  zoomOut(): void {
+    this.setZoom(Math.max(50, this.zoomPercent() - 10));
   }
 
-  setWidth(width: number): void {
-    this.contentWidth.set(width);
+  setZoom(percent: number): void {
+    this.zoomPercent.set(Math.max(50, Math.min(200, percent)));
+  }
+
+  resetZoom(): void {
+    this.zoomPercent.set(100);
+  }
+
+  /**
+   * Handle Cmd+scroll (Mac) or Ctrl+scroll (Windows) for zoom
+   */
+  @HostListener('wheel', ['$event'])
+  onWheel(event: WheelEvent): void {
+    if (event.metaKey || event.ctrlKey) {
+      event.preventDefault();
+      if (event.deltaY < 0) {
+        this.zoomIn();
+      } else {
+        this.zoomOut();
+      }
+    }
   }
 
   constructor() {

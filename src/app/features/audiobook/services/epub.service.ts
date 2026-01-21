@@ -120,6 +120,7 @@ export class EpubService {
     this._structure.set(null);
     this._cover.set(null);
     this._error.set(null);
+    this._hasModifications = false;
   }
 
   /**
@@ -171,12 +172,58 @@ export class EpubService {
 
   /**
    * Update cover image
+   * This sets the cover in memory and marks it for embedding when the EPUB is saved
    */
   async setCover(coverDataUrl: string): Promise<void> {
-    // For now, just update the local signal
-    // TODO: Implement actual cover modification in EPUB
+    // Update local signal immediately for UI feedback
     this._cover.set(coverDataUrl);
+    this._hasModifications = true;
+
+    // Send to backend to mark for embedding when EPUB is saved
+    if (this.electron) {
+      try {
+        const result = await this.electron.epub.setCover(coverDataUrl);
+        if (!result.success) {
+          console.error('[EpubService] Failed to set cover:', result.error);
+          this._error.set(result.error || 'Failed to set cover');
+        }
+      } catch (err) {
+        console.error('[EpubService] Error setting cover:', err);
+      }
+    }
   }
+
+  /**
+   * Save the EPUB with any modifications (cover, text edits) to a new file
+   * Returns the path to the saved file
+   */
+  async saveModified(outputPath: string): Promise<string | null> {
+    if (!this.electron) {
+      return null;
+    }
+
+    try {
+      const result = await this.electron.epub.saveModified(outputPath);
+      if (result.success && result.data?.outputPath) {
+        return result.data.outputPath;
+      }
+      console.error('[EpubService] Failed to save modified EPUB:', result.error);
+      return null;
+    } catch (err) {
+      console.error('[EpubService] Error saving modified EPUB:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Check if there are pending modifications
+   */
+  hasModifications(): boolean {
+    return this._hasModifications;
+  }
+
+  // Track whether there are unsaved modifications
+  private _hasModifications = false;
 
   /**
    * Clear error state

@@ -246,7 +246,8 @@ export class ChapterNavComponent {
    */
   async selectChapter(chapter: EpubChapterInfo, index: number): Promise<void> {
     this.isOpen.set(false);
-    await this.epubjs.goToChapter(index);
+    // Use href instead of index - TOC and spine can have different structures
+    await this.epubjs.goToHref(chapter.href);
     this.chapterChanged.emit(chapter);
   }
 
@@ -281,7 +282,7 @@ export class ChapterNavComponent {
     const index = this.getCurrentIndex();
     if (index > 0) {
       const chapter = this.epubjs.chapters()[index - 1];
-      await this.epubjs.goToChapter(index - 1);
+      await this.epubjs.goToHref(chapter.href);
       this.chapterChanged.emit(chapter);
     }
   }
@@ -294,7 +295,7 @@ export class ChapterNavComponent {
     const chapters = this.epubjs.chapters();
     if (index >= 0 && index < chapters.length - 1) {
       const chapter = chapters[index + 1];
-      await this.epubjs.goToChapter(index + 1);
+      await this.epubjs.goToHref(chapter.href);
       this.chapterChanged.emit(chapter);
     }
   }

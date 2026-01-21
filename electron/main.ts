@@ -416,6 +416,16 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Update spans for OCR pages (so custom categories can match OCR text)
+  ipcMain.handle('pdf:update-spans-for-ocr', async (_event, pageNum: number, ocrBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; id?: string }>) => {
+    try {
+      pdfAnalyzer.updateSpansForOcrPage(pageNum, ocrBlocks);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Chapter detection handlers
   ipcMain.handle('pdf:extract-outline', async () => {
     try {
@@ -1202,6 +1212,16 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('epub:set-cover', async (_event, coverDataUrl: string) => {
+    try {
+      const { setCover } = await import('./epub-processor.js');
+      setCover(coverDataUrl);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('epub:get-chapter-text', async (_event, chapterId: string) => {
     try {
       const { getChapterText } = await import('./epub-processor.js');
@@ -1237,6 +1257,16 @@ function setupIpcHandlers(): void {
       const { closeEpub } = await import('./epub-processor.js');
       closeEpub();
       return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('epub:save-modified', async (_event, outputPath: string) => {
+    try {
+      const { saveModifiedEpub } = await import('./epub-processor.js');
+      await saveModifiedEpub(outputPath);
+      return { success: true, data: { outputPath } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1407,6 +1437,36 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('ai:get-prompt', async () => {
+    try {
+      const { aiBridge } = await import('./ai-bridge.js');
+      const prompt = await aiBridge.loadPrompt();
+      const filePath = aiBridge.getPromptFilePath();
+      return { success: true, data: { prompt, filePath } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ai:save-prompt', async (_event, prompt: string) => {
+    try {
+      const { aiBridge } = await import('./ai-bridge.js');
+      await aiBridge.savePrompt(prompt);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ai:get-claude-models', async (_event, apiKey: string) => {
+    try {
+      const { getClaudeModels } = await import('./ai-bridge.js');
+      return await getClaudeModels(apiKey);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Shell handlers
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1514,6 +1574,96 @@ function setupIpcHandlers(): void {
       const { ttsBridge } = await import('./tts-bridge.js');
       const filename = ttsBridge.generateOutputFilename(title, subtitle, author, authorFileAs, year);
       return { success: true, data: filename };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // XTTS Worker Pool handlers (for Play tab real-time TTS with parallel generation)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('play:start-session', async () => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      xttsWorkerPool.setMainWindow(mainWindow);
+      const result = await xttsWorkerPool.startSession();
+      return { success: result.success, data: { voices: result.voices }, error: result.error };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('play:load-voice', async (_event, voice: string) => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      const result = await xttsWorkerPool.loadVoice(voice);
+      return { success: result.success, error: result.error };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('play:generate-sentence', async (
+    _event,
+    text: string,
+    sentenceIndex: number,
+    settings: {
+      voice: string;
+      speed: number;
+      temperature?: number;
+      topP?: number;
+      repetitionPenalty?: number;
+    }
+  ) => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      const result = await xttsWorkerPool.generateSentence(text, sentenceIndex, settings);
+      return {
+        success: result.success,
+        data: result.audio,
+        error: result.error
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('play:stop', async () => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      xttsWorkerPool.stop();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('play:end-session', async () => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      await xttsWorkerPool.endSession();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('play:is-session-active', async () => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      const active = xttsWorkerPool.isSessionActive();
+      return { success: true, data: { active } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('play:get-voices', async () => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      const voices = xttsWorkerPool.getAvailableVoices();
+      return { success: true, data: { voices } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1911,7 +2061,7 @@ function setupIpcHandlers(): void {
     _event,
     jobId: string,
     epubPath: string,
-    model?: string,
+    _model?: string, // Deprecated - use aiConfig instead
     aiConfig?: {
       provider: 'ollama' | 'claude' | 'openai';
       ollama?: { baseUrl: string; model: string };
@@ -1921,14 +2071,37 @@ function setupIpcHandlers(): void {
   ) => {
     console.log('[IPC] queue:run-ocr-cleanup received:', {
       jobId,
-      model,
       aiConfig: aiConfig ? {
         provider: aiConfig.provider,
         ollamaModel: aiConfig.ollama?.model,
         claudeModel: aiConfig.claude?.model,
         openaiModel: aiConfig.openai?.model
-      } : 'undefined'
+      } : 'MISSING - THIS IS A BUG'
     });
+
+    // aiConfig is required - no fallbacks
+    if (!aiConfig) {
+      const error = 'aiConfig is required for OCR cleanup';
+      console.error('[IPC] queue:run-ocr-cleanup ERROR:', error);
+      if (mainWindow) {
+        mainWindow.webContents.send('queue:job-complete', {
+          jobId,
+          success: false,
+          error
+        });
+      }
+      return { success: false, error };
+    }
+
+    // Get model from the correct provider config
+    let modelForCancellation: string | undefined;
+    if (aiConfig.provider === 'ollama') {
+      modelForCancellation = aiConfig.ollama?.model;
+    } else if (aiConfig.provider === 'claude') {
+      modelForCancellation = aiConfig.claude?.model;
+    } else if (aiConfig.provider === 'openai') {
+      modelForCancellation = aiConfig.openai?.model;
+    }
 
     try {
       const { aiBridge } = await import('./ai-bridge.js');
@@ -1936,14 +2109,12 @@ function setupIpcHandlers(): void {
       // Create cancellation token
       let cancelled = false;
       const cancelFn = () => { cancelled = true; };
-      const modelToUse = aiConfig?.ollama?.model || model || 'llama3.2';
-      runningJobs.set(jobId, { cancel: cancelFn, model: modelToUse });
+      runningJobs.set(jobId, { cancel: cancelFn, model: modelForCancellation });
 
-      // Run OCR cleanup with provider config
+      // Run OCR cleanup with provider config - aiConfig is required, no model fallback
       const result = await aiBridge.cleanupEpub(
         epubPath,
         jobId,
-        model || 'llama3.2',
         mainWindow,
         (progress) => {
           if (cancelled) return;
@@ -2071,16 +2242,18 @@ function setupIpcHandlers(): void {
       job.cancel();
       runningJobs.delete(jobId);
 
-      // Also unload any running Ollama model to free memory
-      try {
-        await fetch('http://localhost:11434/api/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: job.model || 'llama3.2', keep_alive: 0 })
-        });
-        console.log('[IPC] Ollama model unloaded after cancel');
-      } catch {
-        // Ollama might not be running, ignore
+      // If this was an Ollama job, unload the model to free memory
+      if (job.model) {
+        try {
+          await fetch('http://localhost:11434/api/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: job.model, keep_alive: 0 })
+          });
+          console.log('[IPC] Ollama model unloaded after cancel:', job.model);
+        } catch {
+          // Ollama might not be running, or this wasn't an Ollama job - ignore
+        }
       }
 
       return { success: true };

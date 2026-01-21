@@ -500,6 +500,29 @@ export interface DiffComparisonResult {
   chapters: DiffComparisonChapter[];
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Play Tab Types (XTTS Streaming)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PlaySettings {
+  voice: string;
+  speed: number;
+  temperature?: number;
+  topP?: number;
+  repetitionPenalty?: number;
+}
+
+export interface PlayAudioChunk {
+  data: string;  // Base64 WAV
+  duration: number;
+  sampleRate: number;
+}
+
+export interface PlayAudioGeneratedEvent {
+  sentenceIndex: number;
+  audio: PlayAudioChunk;
+}
+
 export interface TtsJobConfig {
   device: 'gpu' | 'mps' | 'cpu';
   language: string;
@@ -540,6 +563,7 @@ export interface ElectronAPI {
     findMatchingSpans: (pattern: SamplePattern) => Promise<{ success: boolean; data?: MatchingSpansResult; error?: string }>;
     findSpansByRegex: (pattern: string, minFontSize: number, maxFontSize: number, minBaseline?: number | null, maxBaseline?: number | null, caseSensitive?: boolean) => Promise<{ success: boolean; data?: MatchingSpansResult; error?: string }>;
     getSpans: () => Promise<{ success: boolean; data?: TextSpan[]; error?: string }>;
+    updateSpansForOcr: (pageNum: number, ocrBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; id?: string }>) => Promise<{ success: boolean; error?: string }>;
     // Chapter detection
     extractOutline: () => Promise<{ success: boolean; data?: OutlineItem[]; error?: string }>;
     outlineToChapters: (outline: OutlineItem[]) => Promise<{ success: boolean; data?: Chapter[]; error?: string }>;
@@ -648,10 +672,12 @@ export interface ElectronAPI {
   epub: {
     parse: (epubPath: string) => Promise<{ success: boolean; data?: EpubStructure; error?: string }>;
     getCover: (epubPath?: string) => Promise<{ success: boolean; data?: string | null; error?: string }>;
+    setCover: (coverDataUrl: string) => Promise<{ success: boolean; error?: string }>;
     getChapterText: (chapterId: string) => Promise<{ success: boolean; data?: string; error?: string }>;
     getMetadata: () => Promise<{ success: boolean; data?: EpubMetadata | null; error?: string }>;
     getChapters: () => Promise<{ success: boolean; data?: EpubChapter[]; error?: string }>;
     close: () => Promise<{ success: boolean; error?: string }>;
+    saveModified: (outputPath: string) => Promise<{ success: boolean; data?: { outputPath: string }; error?: string }>;
     editText: (epubPath: string, chapterId: string, oldText: string, newText: string) => Promise<{ success: boolean; error?: string }>;
     exportWithRemovals: (inputPath: string, removals: Record<string, Array<{ chapterId: string; text: string; cfi: string }>>, outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
     copyFile: (inputPath: string, outputPath: string) => Promise<{ success: boolean; error?: string }>;
@@ -660,6 +686,7 @@ export interface ElectronAPI {
     checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: OllamaModel[]; error?: string }; error?: string }>;
     checkProviderConnection: (provider: 'ollama' | 'claude' | 'openai') => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
     getModels: () => Promise<{ success: boolean; data?: OllamaModel[]; error?: string }>;
+    getClaudeModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
     cleanupChapter: (
       text: string,
       options: AICleanupOptions,
@@ -668,6 +695,8 @@ export interface ElectronAPI {
       model?: string
     ) => Promise<{ success: boolean; data?: CleanupResult; error?: string }>;
     onCleanupProgress: (callback: (progress: CleanupProgress) => void) => () => void;
+    getPrompt: () => Promise<{ success: boolean; data?: { prompt: string; filePath: string }; error?: string }>;
+    savePrompt: (prompt: string) => Promise<{ success: boolean; error?: string }>;
   };
   shell: {
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
@@ -732,6 +761,22 @@ export interface ElectronAPI {
     isConvertible: (filePath: string) => Promise<{ success: boolean; data?: { convertible: boolean; native: boolean }; error?: string }>;
     convert: (inputPath: string, outputDir?: string) => Promise<{ success: boolean; data?: { outputPath: string }; error?: string }>;
     convertToLibrary: (inputPath: string) => Promise<{ success: boolean; data?: { outputPath: string }; error?: string }>;
+  };
+  play: {
+    startSession: () => Promise<{ success: boolean; data?: { voices: string[] }; error?: string }>;
+    loadVoice: (voice: string) => Promise<{ success: boolean; error?: string }>;
+    generateSentence: (
+      text: string,
+      sentenceIndex: number,
+      settings: PlaySettings
+    ) => Promise<{ success: boolean; data?: PlayAudioChunk; error?: string }>;
+    stop: () => Promise<{ success: boolean; error?: string }>;
+    endSession: () => Promise<{ success: boolean; error?: string }>;
+    isSessionActive: () => Promise<{ success: boolean; data?: { active: boolean }; error?: string }>;
+    getVoices: () => Promise<{ success: boolean; data?: { voices: string[] }; error?: string }>;
+    onAudioGenerated: (callback: (event: PlayAudioGeneratedEvent) => void) => () => void;
+    onStatus: (callback: (status: { message: string }) => void) => () => void;
+    onSessionEnded: (callback: (data: { code: number }) => void) => () => void;
   };
   platform: string;
 }
@@ -805,6 +850,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:find-spans-by-regex', pattern, minFontSize, maxFontSize, minBaseline, maxBaseline, caseSensitive),
     getSpans: () =>
       ipcRenderer.invoke('pdf:get-spans'),
+    updateSpansForOcr: (pageNum: number, ocrBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; id?: string }>) =>
+      ipcRenderer.invoke('pdf:update-spans-for-ocr', pageNum, ocrBlocks),
     // Chapter detection
     extractOutline: () =>
       ipcRenderer.invoke('pdf:extract-outline'),
@@ -890,6 +937,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:parse', epubPath),
     getCover: (epubPath?: string) =>
       ipcRenderer.invoke('epub:get-cover', epubPath),
+    setCover: (coverDataUrl: string) =>
+      ipcRenderer.invoke('epub:set-cover', coverDataUrl),
     getChapterText: (chapterId: string) =>
       ipcRenderer.invoke('epub:get-chapter-text', chapterId),
     getMetadata: () =>
@@ -898,6 +947,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:get-chapters'),
     close: () =>
       ipcRenderer.invoke('epub:close'),
+    saveModified: (outputPath: string) =>
+      ipcRenderer.invoke('epub:save-modified', outputPath),
     editText: (epubPath: string, chapterId: string, oldText: string, newText: string) =>
       ipcRenderer.invoke('epub:edit-text', epubPath, chapterId, oldText, newText),
     exportWithRemovals: (inputPath: string, removals: Record<string, Array<{ chapterId: string; text: string; cfi: string }>>, outputPath?: string) =>
@@ -912,6 +963,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('ai:check-provider-connection', provider),
     getModels: () =>
       ipcRenderer.invoke('ai:get-models'),
+    getClaudeModels: (apiKey: string) =>
+      ipcRenderer.invoke('ai:get-claude-models', apiKey),
     cleanupChapter: (
       text: string,
       options: AICleanupOptions,
@@ -929,6 +982,10 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('ai:cleanup-progress', listener);
       };
     },
+    getPrompt: () =>
+      ipcRenderer.invoke('ai:get-prompt'),
+    savePrompt: (prompt: string) =>
+      ipcRenderer.invoke('ai:save-prompt', prompt),
   },
   shell: {
     openExternal: (url: string) =>
@@ -1052,6 +1109,53 @@ const electronAPI: ElectronAPI = {
   diff: {
     loadComparison: (originalPath: string, cleanedPath: string) =>
       ipcRenderer.invoke('diff:load-comparison', originalPath, cleanedPath),
+  },
+  play: {
+    startSession: () =>
+      ipcRenderer.invoke('play:start-session'),
+    loadVoice: (voice: string) =>
+      ipcRenderer.invoke('play:load-voice', voice),
+    generateSentence: (
+      text: string,
+      sentenceIndex: number,
+      settings: PlaySettings
+    ) =>
+      ipcRenderer.invoke('play:generate-sentence', text, sentenceIndex, settings),
+    stop: () =>
+      ipcRenderer.invoke('play:stop'),
+    endSession: () =>
+      ipcRenderer.invoke('play:end-session'),
+    isSessionActive: () =>
+      ipcRenderer.invoke('play:is-session-active'),
+    getVoices: () =>
+      ipcRenderer.invoke('play:get-voices'),
+    onAudioGenerated: (callback: (event: PlayAudioGeneratedEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: PlayAudioGeneratedEvent) => {
+        callback(data);
+      };
+      ipcRenderer.on('play:audio-generated', listener);
+      return () => {
+        ipcRenderer.removeListener('play:audio-generated', listener);
+      };
+    },
+    onStatus: (callback: (status: { message: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, status: { message: string }) => {
+        callback(status);
+      };
+      ipcRenderer.on('play:status', listener);
+      return () => {
+        ipcRenderer.removeListener('play:status', listener);
+      };
+    },
+    onSessionEnded: (callback: (data: { code: number }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { code: number }) => {
+        callback(data);
+      };
+      ipcRenderer.on('play:session-ended', listener);
+      return () => {
+        ipcRenderer.removeListener('play:session-ended', listener);
+      };
+    },
   },
   platform: process.platform,
 };

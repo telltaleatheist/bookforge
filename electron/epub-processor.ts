@@ -595,6 +595,8 @@ class ZipWriter {
 let currentProcessor: EpubProcessor | null = null;
 // Track modified chapter content for saving
 const modifiedChapters: Map<string, string> = new Map();
+// Track modified cover image (buffer and media type)
+let modifiedCover: { data: Buffer; mediaType: string } | null = null;
 
 export async function parseEpub(epubPath: string): Promise<EpubStructure> {
   if (currentProcessor) {
@@ -648,6 +650,7 @@ export function closeEpub(): void {
     currentProcessor = null;
   }
   modifiedChapters.clear();
+  modifiedCover = null;
 }
 
 /**
@@ -673,7 +676,60 @@ export async function updateChapterText(chapterId: string, newText: string): Pro
 }
 
 /**
- * Save the EPUB with modified chapter content
+ * Set a new cover image for the EPUB
+ * @param coverDataUrl Base64 data URL (e.g., "data:image/jpeg;base64,...")
+ */
+export function setCover(coverDataUrl: string): void {
+  if (!currentProcessor) {
+    throw new Error('No EPUB open');
+  }
+
+  // Parse the data URL
+  const match = coverDataUrl.match(/^data:image\/(jpeg|jpg|png|gif|webp);base64,(.+)$/i);
+  if (!match) {
+    throw new Error('Invalid cover data URL format. Expected data:image/[type];base64,...');
+  }
+
+  const imageType = match[1].toLowerCase();
+  const base64Data = match[2];
+
+  // Determine media type
+  let mediaType: string;
+  switch (imageType) {
+    case 'jpg':
+    case 'jpeg':
+      mediaType = 'image/jpeg';
+      break;
+    case 'png':
+      mediaType = 'image/png';
+      break;
+    case 'gif':
+      mediaType = 'image/gif';
+      break;
+    case 'webp':
+      mediaType = 'image/webp';
+      break;
+    default:
+      mediaType = `image/${imageType}`;
+  }
+
+  // Decode base64 to buffer
+  const data = Buffer.from(base64Data, 'base64');
+
+  // Store for saving
+  modifiedCover = { data, mediaType };
+  console.log(`[EPUB] Cover set: ${data.length} bytes, type: ${mediaType}`);
+}
+
+/**
+ * Clear the modified cover
+ */
+export function clearCover(): void {
+  modifiedCover = null;
+}
+
+/**
+ * Save the EPUB with modified chapter content and/or cover
  */
 export async function saveModifiedEpub(outputPath: string): Promise<void> {
   if (!currentProcessor) {
@@ -687,10 +743,26 @@ export async function saveModifiedEpub(outputPath: string): Promise<void> {
 
   const zipWriter = new ZipWriter();
 
+  // Determine cover file path (if we have a modified cover)
+  let coverFilePath: string | null = null;
+  if (modifiedCover && structure.metadata.coverPath) {
+    coverFilePath = structure.rootPath
+      ? `${structure.rootPath}/${structure.metadata.coverPath}`
+      : structure.metadata.coverPath;
+    console.log(`[EPUB] Will replace cover at: ${coverFilePath}`);
+  }
+
   // Get all entries from the original EPUB
   const entries = (currentProcessor as any).zipReader?.getEntries() || [];
 
   for (const entryName of entries) {
+    // Check if this is the cover image that needs to be replaced
+    if (modifiedCover && coverFilePath && entryName === coverFilePath) {
+      console.log(`[EPUB] Replacing cover file: ${entryName}`);
+      zipWriter.addFile(entryName, modifiedCover.data, true);
+      continue;
+    }
+
     // Check if this is a chapter file that was modified
     let isModified = false;
     let modifiedContent: string | null = null;

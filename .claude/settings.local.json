@@ -81,7 +81,9 @@
       "Bash(ebook-convert:*)",
       "Bash(conda run:*)",
       "Bash(/Users/telltale/Projects/ebook2audiobook/python_env/bin/pip show:*)",
-      "Bash(/Users/telltale/Projects/ebook2audiobook/python_env/bin/python:*)"
+      "Bash(/Users/telltale/Projects/ebook2audiobook/python_env/bin/python:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npx ts-node:*)"
     ]
   }
 }

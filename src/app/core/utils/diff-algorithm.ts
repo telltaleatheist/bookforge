@@ -6,12 +6,37 @@
 import { DiffWord } from '../models/diff.types';
 
 /**
+ * Normalize text by removing only truly INVISIBLE characters.
+ * Visible punctuation changes (quotes, dashes) should still show in diff.
+ */
+function normalizeForComparison(text: string): string {
+  return text
+    // Remove soft hyphens (invisible hyphenation hints)
+    .replace(/\u00AD/g, '')
+    // Remove zero-width characters (invisible)
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    // Remove other invisible/control characters (except normal whitespace)
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
+    // Remove byte order marks
+    .replace(/\uFFFE|\uFFFF/g, '');
+    // NOTE: We intentionally do NOT normalize quotes or dashes here
+    // because those are visible changes the user should see
+}
+
+/**
  * Tokenize text into words, preserving whitespace information
  */
 function tokenize(text: string): string[] {
   // Split on whitespace but keep words intact
   // Also handles punctuation attached to words
   return text.split(/(\s+)/).filter(token => token.length > 0);
+}
+
+/**
+ * Compare two tokens, using normalized comparison to ignore invisible char differences
+ */
+function tokensMatch(a: string, b: string): boolean {
+  return normalizeForComparison(a) === normalizeForComparison(b);
 }
 
 /**
@@ -26,7 +51,8 @@ function computeLCSTable(original: string[], cleaned: string[]): number[][] {
 
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      if (original[i - 1] === cleaned[j - 1]) {
+      // Use normalized comparison to ignore invisible character differences
+      if (tokensMatch(original[i - 1], cleaned[j - 1])) {
         dp[i][j] = dp[i - 1][j - 1] + 1;
       } else {
         dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
@@ -45,7 +71,6 @@ function backtrackDiff(
   cleaned: string[],
   dp: number[][]
 ): DiffWord[] {
-  const result: DiffWord[] = [];
   let i = original.length;
   let j = cleaned.length;
 
@@ -53,9 +78,10 @@ function backtrackDiff(
   const operations: DiffWord[] = [];
 
   while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && original[i - 1] === cleaned[j - 1]) {
-      // Match - unchanged
-      operations.push({ text: original[i - 1], type: 'unchanged' });
+    // Use normalized comparison for matching
+    if (i > 0 && j > 0 && tokensMatch(original[i - 1], cleaned[j - 1])) {
+      // Match - unchanged (use cleaned text which has normalized chars)
+      operations.push({ text: cleaned[j - 1], type: 'unchanged' });
       i--;
       j--;
     } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {

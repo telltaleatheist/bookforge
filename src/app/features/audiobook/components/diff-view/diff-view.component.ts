@@ -10,19 +10,18 @@ import { Subscription } from 'rxjs';
  * Can be unchanged text, or a change region with original/new text.
  */
 interface DiffSegment {
+  id: string;             // Unique ID for this segment (chapterId-index)
   type: 'unchanged' | 'change';
   text: string;           // The displayed text (new/cleaned version for changes)
   originalText?: string;  // Original text that was replaced (for changes)
   changeIndex?: number;   // Index for navigation (only for changes with originalText)
   contextBefore?: string; // Words before the change for tooltip context
   contextAfter?: string;  // Words after the change for tooltip context
-  chapterId?: string;     // Chapter this segment belongs to (for editing)
-  segmentIndex?: number;  // Index within chapter segments (for editing)
 }
 
 interface EditState {
-  chapterId: string;
-  segmentIndex: number;
+  segmentId: string;      // Unique segment ID
+  chapterId: string;      // Chapter for saving
   originalValue: string;
   editedValue: string;
 }
@@ -96,38 +95,40 @@ interface ChapterWithSegments {
                 }
               </h3>
               <div class="chapter-text">
-                @for (segment of chapter.segments; track $index) {
-                  @if (segment.type === 'unchanged') {
-                    <span>{{ segment.text }}</span>
-                  } @else if (segment.originalText) {
-                    @if (isEditing(chapter.id, $index)) {
-                      <span class="text-editing">
-                        <input
-                          type="text"
-                          class="edit-input"
-                          [value]="editState()?.editedValue"
-                          (input)="onEditInput($event)"
-                          (keydown.enter)="saveEdit()"
-                          (keydown.escape)="cancelEdit()"
-                          (blur)="onEditBlur()"
-                          #editInput
-                        />
-                        <span class="edit-hint">Enter to save, Esc to cancel</span>
-                      </span>
-                    } @else {
-                      <span
-                        class="text-changed"
-                        [class.focused]="segment.changeIndex === currentChangeIndex()"
-                        [attr.data-change-index]="segment.changeIndex"
-                        (mouseenter)="showTooltip($event, segment)"
-                        (mouseleave)="hideTooltip()"
-                        (click)="focusChange(segment.changeIndex!)"
-                        (dblclick)="startEdit(chapter.id, $index, segment)"
-                      >{{ segment.text }}</span>
-                    }
+                @for (segment of chapter.segments; track segment.id) {
+                  @if (isEditing(segment.id)) {
+                    <!-- Editing any segment -->
+                    <span class="text-editing">
+                      <input
+                        type="text"
+                        class="edit-input"
+                        [value]="editState()?.editedValue"
+                        (input)="onEditInput($event)"
+                        (keydown.enter)="saveEdit()"
+                        (keydown.escape)="cancelEdit()"
+                        (blur)="onEditBlur()"
+                        #editInput
+                      />
+                      <span class="edit-hint">Enter to save, Esc to cancel</span>
+                    </span>
+                  } @else if (segment.type === 'unchanged') {
+                    <!-- Unchanged text - editable on double-click -->
+                    <span
+                      class="text-editable"
+                      (dblclick)="startEdit(chapter.id, segment)"
+                    >{{ segment.text }}</span>
                   } @else {
-                    <!-- Added text with no original - just show it without highlight -->
-                    <span>{{ segment.text }}</span>
+                    <!-- Changed text - show only new text, hover for original -->
+                    <span
+                      class="text-change"
+                      [class.focused]="segment.changeIndex === currentChangeIndex()"
+                      [class.is-deletion]="segment.text === '(deleted)'"
+                      [attr.data-change-index]="segment.changeIndex"
+                      (click)="focusChange(segment.changeIndex!)"
+                      (dblclick)="startEdit(chapter.id, segment)"
+                      (mouseenter)="showTooltip($event, segment)"
+                      (mouseleave)="hideTooltip()"
+                    >@if (segment.text === '(deleted)') {<span class="deletion-marker">⌫</span>} @else {{{ segment.text }}}</span>
                   }
                 }
               </div>
@@ -135,39 +136,29 @@ interface ChapterWithSegments {
           }
         </div>
 
-        <!-- Tooltip -->
-        @if (tooltipVisible() && tooltipSegment()?.originalText) {
+        <!-- Tooltip showing original text -->
+        @if (tooltipVisible() && tooltipSegment()) {
           <div
             class="change-tooltip"
             [style.left.px]="tooltipX()"
             [style.top.px]="tooltipY()"
           >
-            <div class="tooltip-label">Original:</div>
-            <div class="tooltip-original">
-              @if (tooltipSegment()!.contextBefore) {
-                <span class="context">"...{{ tooltipSegment()!.contextBefore }} </span>
-              }
-              <span class="original-text">{{ tooltipSegment()!.originalText }}</span>
-              @if (tooltipSegment()!.contextAfter) {
-                <span class="context"> {{ tooltipSegment()!.contextAfter }}..."</span>
-              }
+            <div class="tooltip-row">
+              <span class="tooltip-label">Was:</span>
+              <span class="tooltip-original">"{{ tooltipSegment()!.originalText }}"</span>
             </div>
-            <div class="tooltip-label" style="margin-top: 6px;">Changed to:</div>
-            <div class="tooltip-new">
-              @if (tooltipSegment()!.contextBefore) {
-                <span class="context">"...{{ tooltipSegment()!.contextBefore }} </span>
-              }
-              <span class="new-text">{{ tooltipSegment()!.text }}</span>
-              @if (tooltipSegment()!.contextAfter) {
-                <span class="context"> {{ tooltipSegment()!.contextAfter }}..."</span>
-              }
-            </div>
+            @if (tooltipSegment()!.text !== '(deleted)') {
+              <div class="tooltip-row">
+                <span class="tooltip-label">Now:</span>
+                <span class="tooltip-new">"{{ tooltipSegment()!.text }}"</span>
+              </div>
+            }
           </div>
         }
 
         <!-- Footer -->
         <div class="diff-footer">
-          <span class="hint">Click on highlighted text or use arrow buttons to navigate changes</span>
+          <span class="hint">Hover over highlighted text to see original. Double-click to edit.</span>
         </div>
       } @else {
         <div class="state-message">
@@ -298,23 +289,48 @@ interface ChapterWithSegments {
       word-wrap: break-word;
     }
 
-    .text-changed {
-      background: rgba(255, 107, 53, 0.25);
+    .text-editable {
+      cursor: text;
       border-radius: 2px;
-      padding: 1px 3px;
-      margin: 0 -1px;
-      cursor: pointer;
-      transition: all 0.15s ease;
+      transition: background 0.15s;
 
       &:hover {
-        background: rgba(255, 107, 53, 0.4);
+        background: rgba(255, 255, 255, 0.05);
+      }
+    }
+
+    .text-change {
+      cursor: pointer;
+      background: rgba(255, 183, 77, 0.2);
+      border-bottom: 1px dashed rgba(255, 183, 77, 0.6);
+      border-radius: 2px;
+      padding: 1px 2px;
+      transition: background 0.15s, border-color 0.15s;
+
+      &:hover {
+        background: rgba(255, 183, 77, 0.35);
+        border-bottom-color: rgba(255, 183, 77, 0.9);
       }
 
       &.focused {
-        background: rgba(255, 107, 53, 0.5);
         outline: 2px solid #ff6b35;
-        outline-offset: 1px;
+        outline-offset: 2px;
       }
+
+      &.is-deletion {
+        background: rgba(244, 67, 54, 0.2);
+        border-bottom-color: rgba(244, 67, 54, 0.6);
+
+        &:hover {
+          background: rgba(244, 67, 54, 0.35);
+        }
+      }
+    }
+
+    .deletion-marker {
+      color: #f44336;
+      font-size: 0.75em;
+      vertical-align: middle;
     }
 
     .text-editing {
@@ -355,11 +371,11 @@ interface ChapterWithSegments {
     .change-tooltip {
       position: fixed;
       z-index: 1000;
-      max-width: 400px;
+      max-width: 350px;
       background: var(--bg-elevated);
       border: 1px solid var(--border-default);
       border-radius: 6px;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
       padding: 0.5rem 0.75rem;
       pointer-events: none;
       animation: tooltipFadeIn 0.1s ease;
@@ -376,39 +392,36 @@ interface ChapterWithSegments {
       }
     }
 
-    .tooltip-label {
-      font-size: 0.625rem;
-      font-weight: 600;
-      color: var(--text-tertiary);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+    .tooltip-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: baseline;
       margin-bottom: 0.25rem;
-    }
 
-    .tooltip-original,
-    .tooltip-new {
-      font-size: 0.8125rem;
-      line-height: 1.4;
-
-      .context {
-        color: var(--text-secondary);
+      &:last-child {
+        margin-bottom: 0;
       }
     }
 
-    .tooltip-original .original-text {
-      color: var(--text-primary);
-      text-decoration: line-through;
-      background: rgba(255, 107, 53, 0.25);
-      padding: 1px 3px;
-      border-radius: 2px;
+    .tooltip-label {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      min-width: 32px;
     }
 
-    .tooltip-new .new-text {
-      color: var(--text-primary);
+    .tooltip-original {
+      font-size: 0.8125rem;
+      color: #f44336;
+      text-decoration: line-through;
+      word-break: break-word;
+    }
+
+    .tooltip-new {
+      font-size: 0.8125rem;
+      color: #4caf50;
       font-weight: 500;
-      background: rgba(255, 107, 53, 0.25);
-      padding: 1px 3px;
-      border-radius: 2px;
+      word-break: break-word;
     }
 
     .diff-footer {
@@ -522,7 +535,7 @@ export class DiffViewComponent implements OnInit, OnDestroy {
    * Convert diffWords array into display segments.
    * Groups changes (removed/added words) into change regions, handling interleaved patterns.
    */
-  private buildSegments(diffWords: DiffWord[], startingChangeIndex: number, chapterId?: string): DiffSegment[] {
+  private buildSegments(diffWords: DiffWord[], startingChangeIndex: number, chapterId: string): DiffSegment[] {
     const segments: DiffSegment[] = [];
     let i = 0;
     let changeIndex = startingChangeIndex;
@@ -539,7 +552,12 @@ export class DiffViewComponent implements OnInit, OnDestroy {
           text += diffWords[i].text;
           i++;
         }
-        segments.push({ type: 'unchanged', text, chapterId, segmentIndex: segmentIndex++ });
+        segments.push({
+          id: `${chapterId}-${segmentIndex}`,
+          type: 'unchanged',
+          text
+        });
+        segmentIndex++;
       } else {
         // We have a change region - collect ALL removed and added words until we hit unchanged
         // This handles interleaved patterns like: removed, added, removed, added
@@ -556,25 +574,18 @@ export class DiffViewComponent implements OnInit, OnDestroy {
           i++;
         }
 
-        // Create the change segment
-        if (addedText) {
-          // Trim the original text to see if there's meaningful content
-          const trimmedOriginal = removedText.trim();
-          if (trimmedOriginal) {
-            segments.push({
-              type: 'change',
-              text: addedText,
-              originalText: trimmedOriginal,
-              changeIndex: changeIndex++,
-              chapterId,
-              segmentIndex: segmentIndex++
-            });
-          } else {
-            // No meaningful original - show as regular text
-            segments.push({ type: 'unchanged', text: addedText, chapterId, segmentIndex: segmentIndex++ });
-          }
+        // Create the change segment - show EXACTLY what changed without any normalization
+        if (addedText || removedText) {
+          // Always show the change, even if only whitespace differs
+          segments.push({
+            id: `${chapterId}-${segmentIndex}`,
+            type: 'change',
+            text: addedText || '(deleted)',  // Show what it became
+            originalText: removedText || '(added)',  // Show what it was
+            changeIndex: changeIndex++
+          });
+          segmentIndex++;
         }
-        // Pure deletions (no added text) are not shown - the cleaned view shows the result
       }
     }
 
@@ -671,17 +682,17 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   }
 
   /** Check if a specific segment is being edited */
-  isEditing(chapterId: string, segmentIndex: number): boolean {
+  isEditing(segmentId: string): boolean {
     const state = this.editState();
-    return state !== null && state.chapterId === chapterId && state.segmentIndex === segmentIndex;
+    return state !== null && state.segmentId === segmentId;
   }
 
   /** Start editing a segment */
-  startEdit(chapterId: string, segmentIndex: number, segment: DiffSegment): void {
+  startEdit(chapterId: string, segment: DiffSegment): void {
     this.hideTooltip();
     this.editState.set({
+      segmentId: segment.id,
       chapterId,
-      segmentIndex,
       originalValue: segment.text,
       editedValue: segment.text
     });
@@ -718,8 +729,11 @@ export class DiffViewComponent implements OnInit, OnDestroy {
       // Update the segment in our local state
       const chapters = this.chaptersWithSegments();
       const chapter = chapters.find(c => c.id === state.chapterId);
-      if (chapter && chapter.segments[state.segmentIndex]) {
-        chapter.segments[state.segmentIndex].text = state.editedValue;
+      if (chapter) {
+        const segment = chapter.segments.find(s => s.id === state.segmentId);
+        if (segment) {
+          segment.text = state.editedValue;
+        }
       }
 
       // Emit the change

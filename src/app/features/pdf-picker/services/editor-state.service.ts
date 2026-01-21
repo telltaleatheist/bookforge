@@ -178,6 +178,8 @@ export class PdfEditorStateService {
     this.fileHash.set(data.fileHash || '');
     this.deletedBlockIds.set(data.deletedBlockIds || new Set());
     this.pageOrder.set(data.pageOrder || []);
+    this.deletedPages.set(new Set());  // Always reset deleted pages for new document
+    this.removeBackgrounds.set(false);  // Always reset background removal for new document
 
     // Load block edits - prefer blockEdits, fall back to converting textCorrections
     if (data.blockEdits) {

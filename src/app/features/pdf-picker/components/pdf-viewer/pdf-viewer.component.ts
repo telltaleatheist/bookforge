@@ -1,4 +1,4 @@
-import { Component, input, output, ViewChild, ElementRef, effect, signal, computed, HostListener, ChangeDetectionStrategy, AfterViewInit, ChangeDetectorRef, inject } from '@angular/core';
+import { Component, input, output, ViewChild, ElementRef, effect, signal, computed, HostListener, ChangeDetectionStrategy, AfterViewInit, OnDestroy, ChangeDetectorRef, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { TextBlock, Category, PageDimension } from '../../services/pdf.service';
@@ -206,7 +206,23 @@ export interface CropRect {
                   <!-- Chapter markers -->
                   @if (chapters().length > 0 || chaptersMode()) {
                     @for (chapter of getChaptersForPage(pageNum); track chapter.id) {
-                      <g class="chapter-marker">
+                      <g
+                        class="chapter-marker"
+                        [class.draggable]="chaptersMode()"
+                        [class.selected]="selectedChapterId() === chapter.id"
+                        [style.cursor]="chaptersMode() ? 'grab' : 'default'"
+                        (mousedown)="onChapterMarkerMouseDown($event, chapter, pageNum)"
+                        (click)="onChapterMarkerClick($event, chapter)"
+                      >
+                        <!-- Invisible hit area for easier dragging -->
+                        <rect
+                          class="chapter-hit-area"
+                          x="0"
+                          [attr.y]="(chapter.y || 20) - 10"
+                          [attr.width]="getPageDimensions(pageNum)?.width || 600"
+                          height="20"
+                          fill="transparent"
+                        />
                         <!-- Chapter line -->
                         <line
                           class="chapter-line"
@@ -214,8 +230,8 @@ export interface CropRect {
                           [attr.y1]="chapter.y || 20"
                           [attr.x2]="getPageDimensions(pageNum)?.width || 600"
                           [attr.y2]="chapter.y || 20"
-                          stroke="#4caf50"
-                          stroke-width="2"
+                          [attr.stroke]="selectedChapterId() === chapter.id ? '#1565c0' : '#4caf50'"
+                          [attr.stroke-width]="selectedChapterId() === chapter.id ? 3 : 2"
                           stroke-dasharray="8,4"
                         />
                         <!-- Chapter label background -->
@@ -226,7 +242,7 @@ export interface CropRect {
                           [attr.width]="getChapterLabelWidth(chapter.title)"
                           height="16"
                           rx="3"
-                          fill="#4caf50"
+                          [attr.fill]="selectedChapterId() === chapter.id ? '#1565c0' : '#4caf50'"
                         />
                         <!-- Chapter label text -->
                         <text
@@ -608,15 +624,31 @@ export interface CropRect {
                     <!-- Chapter markers (grid mode) -->
                     @if (chapters().length > 0 || chaptersMode()) {
                       @for (chapter of getChaptersForPage(pageNum); track chapter.id) {
-                        <g class="chapter-marker">
+                        <g
+                          class="chapter-marker"
+                          [class.draggable]="chaptersMode()"
+                          [class.selected]="selectedChapterId() === chapter.id"
+                          [style.cursor]="chaptersMode() ? 'grab' : 'default'"
+                          (mousedown)="onChapterMarkerMouseDown($event, chapter, pageNum)"
+                          (click)="onChapterMarkerClick($event, chapter)"
+                        >
+                          <!-- Invisible hit area for easier dragging -->
+                          <rect
+                            class="chapter-hit-area"
+                            x="0"
+                            [attr.y]="(chapter.y || 20) - 10"
+                            [attr.width]="getPageDimensions(pageNum)?.width || 600"
+                            height="20"
+                            fill="transparent"
+                          />
                           <line
                             class="chapter-line"
                             x1="0"
                             [attr.y1]="chapter.y || 20"
                             [attr.x2]="getPageDimensions(pageNum)?.width || 600"
                             [attr.y2]="chapter.y || 20"
-                            stroke="#4caf50"
-                            stroke-width="2"
+                            [attr.stroke]="selectedChapterId() === chapter.id ? '#1565c0' : '#4caf50'"
+                            [attr.stroke-width]="selectedChapterId() === chapter.id ? 3 : 2"
                             stroke-dasharray="8,4"
                           />
                           <rect
@@ -626,7 +658,7 @@ export interface CropRect {
                             [attr.width]="getChapterLabelWidth(chapter.title)"
                             height="16"
                             rx="3"
-                            fill="#4caf50"
+                            [attr.fill]="selectedChapterId() === chapter.id ? '#1565c0' : '#4caf50'"
                           />
                           <text
                             class="chapter-label-text"
@@ -1268,6 +1300,49 @@ export interface CropRect {
       opacity: 0.8;
     }
 
+    /* Chapter markers */
+    .chapter-marker {
+      pointer-events: none;  // By default, let clicks pass through
+
+      &.draggable {
+        pointer-events: all;  // In chapters mode, make interactive
+        cursor: grab;
+
+        &:hover {
+          .chapter-line {
+            stroke-width: 3;
+            stroke: #2e7d32;
+          }
+          .chapter-label-bg {
+            fill: #2e7d32;
+          }
+        }
+
+        &:active {
+          cursor: grabbing;
+        }
+      }
+    }
+
+    .chapter-hit-area {
+      pointer-events: all;  // Make the invisible hit area clickable
+    }
+
+    .chapter-line {
+      pointer-events: none;
+      transition: stroke-width 0.15s ease, stroke 0.15s ease;
+    }
+
+    .chapter-label-bg {
+      pointer-events: none;
+      transition: fill 0.15s ease;
+    }
+
+    .chapter-label-text {
+      pointer-events: none;
+      user-select: none;
+    }
+
     /* Text overlay for corrected/moved blocks */
     .text-overlay {
       pointer-events: none;
@@ -1416,10 +1491,24 @@ export interface CropRect {
     }
   `],
 })
-export class PdfViewerComponent implements AfterViewInit {
+export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   @HostListener('document:keydown.escape')
   onEscapeKey(): void {
     this.closeAllContextMenus();
+    // Also deselect chapter marker
+    if (this.chaptersMode() && this.selectedChapterId()) {
+      this.selectedChapterId.set(null);
+    }
+  }
+
+  @HostListener('document:keydown', ['$event'])
+  onKeyDown(event: KeyboardEvent): void {
+    // Delete selected chapter marker
+    if ((event.key === 'Delete' || event.key === 'Backspace') && this.chaptersMode() && this.selectedChapterId()) {
+      event.preventDefault();
+      this.chapterDelete.emit(this.selectedChapterId()!);
+      this.selectedChapterId.set(null);
+    }
   }
 
   blocks = input.required<TextBlock[]>();
@@ -1521,6 +1610,15 @@ export class PdfViewerComponent implements AfterViewInit {
 
   // Chapter click output (for chapters mode)
   chapterClick = output<{ block: TextBlock; level: number }>();
+
+  // Chapter placement output (for clicking on empty space in chapters mode)
+  chapterPlacement = output<{ pageNum: number; y: number; level: number }>();
+
+  // Chapter drag output (for dragging chapter markers)
+  chapterDrag = output<{ chapterId: string; pageNum: number; y: number; snapToBlock?: TextBlock }>();
+
+  // Chapter delete output (for deleting selected chapter marker)
+  chapterDelete = output<string>();
 
   // Page delete output (for chapters mode)
   pageDeleteToggle = output<number>();
@@ -1685,6 +1783,14 @@ export class PdfViewerComponent implements AfterViewInit {
   private dragStartBlockY: number = 0;
   readonly isDraggingBlock = signal(false);
 
+  // Chapter drag state
+  private draggingChapter: Chapter | null = null;
+  private draggingChapterPageNum: number = 0;
+  readonly isDraggingChapter = signal(false);
+
+  // Selected chapter marker (for deletion)
+  readonly selectedChapterId = signal<string | null>(null);
+
   // Crop drawing state
   readonly isDrawingCrop = signal(false);
   readonly cropStartPoint = signal<{ x: number; y: number; pageNum: number } | null>(null);
@@ -1731,7 +1837,9 @@ export class PdfViewerComponent implements AfterViewInit {
   readonly blocksWithTextOverlay = computed(() => {
     const result = new Set<string>();
     const deleted = this.deletedBlockIds();
-    const blankedPages = this.pagesWithAllImagesDeleted();
+    // Use explicit blankedPages input, NOT pagesWithAllImagesDeleted
+    // because rerenderPageWithEdits preserves native PDF text
+    const explicitBlankedPages = this.blankedPages();
     const removeBackgrounds = this.removeBackgrounds();
     const corrections = this.textCorrections();
     const offsets = this.blockOffsets();
@@ -1739,7 +1847,7 @@ export class PdfViewerComponent implements AfterViewInit {
 
     for (const block of this.blocks()) {
       const isDeleted = deleted.has(block.id);
-      const pageIsBlanked = blankedPages.has(block.page);
+      const pageIsBlanked = explicitBlankedPages.has(block.page);
 
       if (!isDeleted) {
         // Normal case: show overlay based on various conditions
@@ -1813,6 +1921,14 @@ export class PdfViewerComponent implements AfterViewInit {
   readonly marqueeStartPoint = signal<{ x: number; y: number; pageNum: number } | null>(null);
   readonly currentMarqueeRect = signal<CropRect | null>(null);
 
+  // Auto-scroll during marquee selection
+  private autoScrollInterval: ReturnType<typeof setInterval> | null = null;
+  private readonly AUTO_SCROLL_SPEED = 8;  // Pixels per frame
+  private readonly AUTO_SCROLL_EDGE_THRESHOLD = 50;  // Pixels from edge to trigger scroll
+  private boundDocumentMouseMove: ((e: MouseEvent) => void) | null = null;
+  private boundDocumentMouseUp: ((e: MouseEvent) => void) | null = null;
+  private lastMouseClientY = 0;  // Track mouse Y for auto-scroll direction
+
   // Output for marquee selection
   marqueeSelect = output<{ blockIds: string[]; additive: boolean }>();
 
@@ -1869,6 +1985,11 @@ export class PdfViewerComponent implements AfterViewInit {
   ngAfterViewInit(): void {
     // Initialize viewport tracking after view is ready
     setTimeout(() => this.initViewport(), 0);
+  }
+
+  ngOnDestroy(): void {
+    // Clean up marquee auto-scroll listeners and interval
+    this.stopMarqueeAutoScroll();
   }
 
   // Block context menu state (signals for proper change detection)
@@ -1955,16 +2076,14 @@ export class PdfViewerComponent implements AfterViewInit {
 
   /**
    * Check if page image should be hidden and replaced with white background.
-   * This happens when all image blocks on the page are deleted OR the page
-   * has been explicitly blanked (via blankedPages input from parent).
+   * This happens when:
+   * 1. The page has been explicitly blanked (via blankedPages input from parent)
+   * 2. Remove Backgrounds mode is on (shows only text overlays on white)
    */
   shouldHidePageImage(pageNum: number): boolean {
-    // Check explicit blankedPages input first (set by parent when rendering blank)
-    if (this.blankedPages().has(pageNum)) {
-      return true;
-    }
-    // Fall back to computed check
-    return this.pagesWithAllImagesDeleted().has(pageNum);
+    // Hide page image if explicitly blanked OR if removeBackgrounds is on
+    // When removeBackgrounds is on, we show text overlays on white background
+    return this.blankedPages().has(pageNum) || this.removeBackgrounds();
   }
 
   getPageWidth(pageNum: number): number {
@@ -2034,9 +2153,8 @@ export class PdfViewerComponent implements AfterViewInit {
    * This ensures Angular re-renders blocks when their page becomes blanked.
    */
   trackBlock(block: TextBlock): string {
-    const isBlanked = this.blankedPages().has(block.page) ||
-                      this.pagesWithAllImagesDeleted().has(block.page) ||
-                      this.removeBackgrounds();
+    // Only use explicit blankedPages, not pagesWithAllImagesDeleted
+    const isBlanked = this.blankedPages().has(block.page) || this.removeBackgrounds();
     return `${block.id}_${isBlanked}`;
   }
 
@@ -2215,13 +2333,12 @@ export class PdfViewerComponent implements AfterViewInit {
 
     const deleted = this.isDeleted(block.id);
 
-    // Page is blanked if: explicitly in blankedPages input OR all images deleted
-    const inBlankedPages = this.blankedPages().has(block.page);
-    const inPagesWithAllImagesDeleted = this.pagesWithAllImagesDeleted().has(block.page);
-    const pageIsBlanked = inBlankedPages || inPagesWithAllImagesDeleted;
+    // Page is blanked ONLY if explicitly in blankedPages input (set by parent)
+    // Note: pagesWithAllImagesDeleted is NOT used here because rerenderPageWithEdits
+    // now preserves native PDF text (paints white over images only), so we don't need overlays
+    const pageIsBlanked = this.blankedPages().has(block.page);
 
-    // When removeBackgrounds is on OR page is blanked, show overlays for ALL blocks with text
-    // This treats blankedPages exactly like removeBackgrounds for those specific pages
+    // When removeBackgrounds is on OR page is explicitly blanked, show overlays for ALL blocks with text
     if (this.removeBackgrounds() || pageIsBlanked) {
       // Always show text (including deleted blocks - they'll appear faded)
       return true;
@@ -2542,6 +2659,145 @@ export class PdfViewerComponent implements AfterViewInit {
     });
 
     return containingBlocks;
+  }
+
+  /**
+   * Handle click on a chapter marker for selection
+   */
+  onChapterMarkerClick(event: MouseEvent, chapter: Chapter): void {
+    // Only handle in chapters mode
+    if (!this.chaptersMode()) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    // Toggle selection
+    if (this.selectedChapterId() === chapter.id) {
+      this.selectedChapterId.set(null);
+    } else {
+      this.selectedChapterId.set(chapter.id);
+    }
+  }
+
+  /**
+   * Handle mousedown on a chapter marker for dragging
+   */
+  onChapterMarkerMouseDown(event: MouseEvent, chapter: Chapter, pageNum: number): void {
+    // Only handle in chapters mode
+    if (!this.chaptersMode()) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    // Select this chapter
+    this.selectedChapterId.set(chapter.id);
+
+    this.draggingChapter = chapter;
+    this.draggingChapterPageNum = pageNum;
+
+    // Track if we actually moved (for distinguishing click from drag)
+    let hasMoved = false;
+    const startX = event.clientX;
+    const startY = event.clientY;
+
+    // Add document-level listeners for drag
+    const onMouseMove = (e: MouseEvent) => {
+      // Only start dragging if moved more than 5 pixels
+      if (!hasMoved && (Math.abs(e.clientX - startX) > 5 || Math.abs(e.clientY - startY) > 5)) {
+        hasMoved = true;
+        this.isDraggingChapter.set(true);
+      }
+      if (hasMoved) {
+        this.onChapterMarkerDrag(e);
+      }
+    };
+    const onMouseUp = (e: MouseEvent) => {
+      if (hasMoved) {
+        this.onChapterMarkerDragEnd(e);
+      }
+      this.isDraggingChapter.set(false);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }
+
+
+  /**
+   * Handle chapter marker drag
+   */
+  private onChapterMarkerDrag(event: MouseEvent): void {
+    if (!this.isDraggingChapter() || !this.draggingChapter) return;
+
+    // Get SVG coordinates from page
+    const pageNum = this.draggingChapterPageNum;
+    const pageWrapper = document.querySelector(`[data-page="${pageNum}"]`);
+    if (!pageWrapper) return;
+
+    const svg = pageWrapper.querySelector('.block-overlay') as SVGSVGElement;
+    if (!svg) return;
+
+    const pt = svg.createSVGPoint();
+    pt.x = event.clientX;
+    pt.y = event.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+    const svgP = pt.matrixTransform(ctm.inverse());
+
+    // Find nearest block for preview/snap
+    const nearestBlock = this.findNearestBlock(pageNum, svgP.x, svgP.y);
+    const snapY = nearestBlock ? nearestBlock.y : svgP.y;
+
+    // Emit drag event for live preview
+    this.chapterDrag.emit({
+      chapterId: this.draggingChapter.id,
+      pageNum,
+      y: snapY,
+      snapToBlock: nearestBlock || undefined
+    });
+  }
+
+  /**
+   * Handle chapter marker drag end
+   */
+  private onChapterMarkerDragEnd(event: MouseEvent): void {
+    if (!this.isDraggingChapter() || !this.draggingChapter) {
+      this.isDraggingChapter.set(false);
+      return;
+    }
+
+    // Get final position
+    const pageNum = this.draggingChapterPageNum;
+    const pageWrapper = document.querySelector(`[data-page="${pageNum}"]`);
+    if (pageWrapper) {
+      const svg = pageWrapper.querySelector('.block-overlay') as SVGSVGElement;
+      if (svg) {
+        const pt = svg.createSVGPoint();
+        pt.x = event.clientX;
+        pt.y = event.clientY;
+        const ctm = svg.getScreenCTM();
+        if (ctm) {
+          const svgP = pt.matrixTransform(ctm.inverse());
+
+          // Find nearest block for final snap
+          const nearestBlock = this.findNearestBlock(pageNum, svgP.x, svgP.y);
+          const snapY = nearestBlock ? nearestBlock.y : svgP.y;
+
+          // Emit final position
+          this.chapterDrag.emit({
+            chapterId: this.draggingChapter.id,
+            pageNum,
+            y: snapY,
+            snapToBlock: nearestBlock || undefined
+          });
+        }
+      }
+    }
+
+    this.draggingChapter = null;
+    this.isDraggingChapter.set(false);
   }
 
   /**
@@ -3107,6 +3363,28 @@ export class PdfViewerComponent implements AfterViewInit {
       return; // Let block handler take over
     }
 
+    // In chapters mode, clicking on empty space places a chapter marker
+    if (this.chaptersMode()) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const coords = this.getSvgCoordinates(event, pageNum);
+      if (!coords) return;
+
+      // Find the nearest block to snap to
+      const nearestBlock = this.findNearestBlock(pageNum, coords.x, coords.y);
+      const level = event.shiftKey ? 2 : 1;
+
+      if (nearestBlock) {
+        // Snap to the nearest block
+        this.chapterClick.emit({ block: nearestBlock, level });
+      } else {
+        // No blocks on page - emit with a synthetic block at click position
+        this.chapterPlacement.emit({ pageNum, y: coords.y, level });
+      }
+      return;
+    }
+
     event.preventDefault();
 
     const coords = this.getSvgCoordinates(event, pageNum);
@@ -3137,6 +3415,9 @@ export class PdfViewerComponent implements AfterViewInit {
         height: 0,
         pageNum
       });
+
+      // Add document-level listeners for auto-scroll when mouse goes outside viewport
+      this.startMarqueeAutoScroll(event.clientY);
     }
   }
 
@@ -3172,6 +3453,9 @@ export class PdfViewerComponent implements AfterViewInit {
     } else {
       // Marquee selection mode
       if (!this.isMarqueeSelecting()) return;
+
+      // Track mouse position for auto-scroll
+      this.lastMouseClientY = event.clientY;
 
       const start = this.marqueeStartPoint();
       if (!start || start.pageNum !== pageNum) return;
@@ -3212,6 +3496,9 @@ export class PdfViewerComponent implements AfterViewInit {
       // Marquee selection mode
       if (!this.isMarqueeSelecting()) return;
 
+      // Stop auto-scroll
+      this.stopMarqueeAutoScroll();
+
       const marqueeRect = this.currentMarqueeRect();
       if (marqueeRect && marqueeRect.width > 5 && marqueeRect.height > 5) {
         // Find all blocks that intersect with the marquee
@@ -3229,6 +3516,150 @@ export class PdfViewerComponent implements AfterViewInit {
 
   onOverlayMouseLeave(): void {
     // Don't cancel if actively drawing - user might come back
+  }
+
+  // Auto-scroll methods for marquee selection
+  private startMarqueeAutoScroll(initialClientY: number): void {
+    this.lastMouseClientY = initialClientY;
+
+    // Create bound event handlers so we can remove them later
+    this.boundDocumentMouseMove = (e: MouseEvent) => this.onDocumentMouseMoveForMarquee(e);
+    this.boundDocumentMouseUp = (e: MouseEvent) => this.onDocumentMouseUpForMarquee(e);
+
+    document.addEventListener('mousemove', this.boundDocumentMouseMove);
+    document.addEventListener('mouseup', this.boundDocumentMouseUp);
+
+    // Start the auto-scroll interval
+    this.autoScrollInterval = setInterval(() => this.performAutoScroll(), 16); // ~60fps
+  }
+
+  private stopMarqueeAutoScroll(): void {
+    // Remove document listeners
+    if (this.boundDocumentMouseMove) {
+      document.removeEventListener('mousemove', this.boundDocumentMouseMove);
+      this.boundDocumentMouseMove = null;
+    }
+    if (this.boundDocumentMouseUp) {
+      document.removeEventListener('mouseup', this.boundDocumentMouseUp);
+      this.boundDocumentMouseUp = null;
+    }
+
+    // Stop auto-scroll interval
+    if (this.autoScrollInterval) {
+      clearInterval(this.autoScrollInterval);
+      this.autoScrollInterval = null;
+    }
+  }
+
+  private onDocumentMouseMoveForMarquee(event: MouseEvent): void {
+    this.lastMouseClientY = event.clientY;
+
+    // Also update the marquee rect if we have a valid start point
+    // This handles the case where mouse is outside any page SVG
+    if (!this.isMarqueeSelecting()) return;
+
+    const start = this.marqueeStartPoint();
+    if (!start) return;
+
+    // Find the page wrapper for the marquee's page to get coordinates
+    const scrollContainer = this.getScrollContainer();
+    if (!scrollContainer) return;
+
+    const pageWrapper = scrollContainer.querySelector(`.page-wrapper[data-page="${start.pageNum}"]`);
+    if (!pageWrapper) return;
+
+    const svg = pageWrapper.querySelector('svg.block-overlay');
+    if (!svg) return;
+
+    const rect = svg.getBoundingClientRect();
+    const dims = this.pageDimensions()[start.pageNum];
+    if (!dims) return;
+
+    // Convert screen coordinates to SVG viewBox coordinates
+    const scaleX = dims.width / rect.width;
+    const scaleY = dims.height / rect.height;
+
+    // Calculate coords even if outside the SVG bounds
+    const x = (event.clientX - rect.left) * scaleX;
+    const y = (event.clientY - rect.top) * scaleY;
+
+    // Clamp to page bounds (0 to page dimensions)
+    const clampedX = Math.max(0, Math.min(dims.width, x));
+    const clampedY = Math.max(0, Math.min(dims.height, y));
+
+    const marqueeX = Math.min(start.x, clampedX);
+    const marqueeY = Math.min(start.y, clampedY);
+    const width = Math.abs(clampedX - start.x);
+    const height = Math.abs(clampedY - start.y);
+
+    this.currentMarqueeRect.set({ x: marqueeX, y: marqueeY, width, height, pageNum: start.pageNum });
+  }
+
+  private onDocumentMouseUpForMarquee(event: MouseEvent): void {
+    // Stop auto-scroll
+    this.stopMarqueeAutoScroll();
+
+    // Complete the marquee selection if we have a valid rect
+    if (!this.isMarqueeSelecting()) return;
+
+    const marqueeRect = this.currentMarqueeRect();
+    if (marqueeRect && marqueeRect.width > 5 && marqueeRect.height > 5) {
+      const selectedIds = this.findBlocksInRect(marqueeRect);
+      if (selectedIds.length > 0) {
+        const additive = event.shiftKey || event.metaKey || event.ctrlKey;
+        this.marqueeSelect.emit({ blockIds: selectedIds, additive });
+      }
+    }
+
+    this.isMarqueeSelecting.set(false);
+    this.currentMarqueeRect.set(null);
+  }
+
+  private performAutoScroll(): void {
+    if (!this.isMarqueeSelecting()) return;
+
+    const scrollContainer = this.getScrollContainer();
+    if (!scrollContainer) return;
+
+    const containerRect = scrollContainer.getBoundingClientRect();
+    const mouseY = this.lastMouseClientY;
+
+    // Check if mouse is near top or bottom edge
+    const distanceFromTop = mouseY - containerRect.top;
+    const distanceFromBottom = containerRect.bottom - mouseY;
+
+    let scrollDelta = 0;
+
+    if (distanceFromTop < this.AUTO_SCROLL_EDGE_THRESHOLD && distanceFromTop < distanceFromBottom) {
+      // Near top edge - scroll up
+      // Scroll faster the closer to the edge
+      const intensity = 1 - (distanceFromTop / this.AUTO_SCROLL_EDGE_THRESHOLD);
+      scrollDelta = -this.AUTO_SCROLL_SPEED * intensity;
+    } else if (distanceFromBottom < this.AUTO_SCROLL_EDGE_THRESHOLD && distanceFromBottom < distanceFromTop) {
+      // Near bottom edge - scroll down
+      const intensity = 1 - (distanceFromBottom / this.AUTO_SCROLL_EDGE_THRESHOLD);
+      scrollDelta = this.AUTO_SCROLL_SPEED * intensity;
+    }
+
+    if (scrollDelta !== 0) {
+      scrollContainer.scrollTop += scrollDelta;
+
+      // After scrolling, update the marquee rect to reflect new visible area
+      // This is already handled by onDocumentMouseMoveForMarquee on the next mouse event
+    }
+  }
+
+  private getScrollContainer(): HTMLElement | null {
+    // Try to get the viewport element (regular scroll container)
+    if (this.viewport?.nativeElement) {
+      return this.viewport.nativeElement;
+    }
+    // Try CDK virtual scroll viewport
+    if (this.cdkViewport?.elementRef?.nativeElement) {
+      return this.cdkViewport.elementRef.nativeElement;
+    }
+    // Fallback: find .pdf-viewport in the component
+    return this.elementRef.nativeElement.querySelector('.pdf-viewport');
   }
 
   // Find all blocks that intersect with a rectangle
@@ -3253,6 +3684,50 @@ export class PdfViewerComponent implements AfterViewInit {
         return xOverlap && yOverlap;
       })
       .map(block => block.id);
+  }
+
+  /**
+   * Find the nearest text block to a click position.
+   * Returns the block whose top edge is closest to the click Y position,
+   * or null if there are no blocks on the page.
+   */
+  private findNearestBlock(pageNum: number, clickX: number, clickY: number): TextBlock | null {
+    const pageBlocks = this.getPageBlocks(pageNum);
+    const deleted = this.deletedBlockIds();
+
+    // Filter out deleted blocks and image blocks
+    const textBlocks = pageBlocks.filter(b => !deleted.has(b.id) && !b.is_image);
+
+    if (textBlocks.length === 0) return null;
+
+    // Find block with closest Y position to click
+    // Prefer blocks that contain the click point, then blocks closest vertically
+    let bestBlock: TextBlock | null = null;
+    let bestDistance = Infinity;
+
+    for (const block of textBlocks) {
+      // Check if click is inside this block
+      const isInside = clickX >= block.x && clickX <= block.x + block.width &&
+                       clickY >= block.y && clickY <= block.y + block.height;
+
+      if (isInside) {
+        // Click is inside this block - this is the best match
+        return block;
+      }
+
+      // Calculate vertical distance from click to block top
+      const distToTop = Math.abs(clickY - block.y);
+      // Also consider distance to block bottom for clicks below the block
+      const distToBottom = Math.abs(clickY - (block.y + block.height));
+      const verticalDist = Math.min(distToTop, distToBottom);
+
+      if (verticalDist < bestDistance) {
+        bestDistance = verticalDist;
+        bestBlock = block;
+      }
+    }
+
+    return bestBlock;
   }
 
   private getSvgCoordinates(event: MouseEvent, pageNum: number): { x: number; y: number } | null {
@@ -3646,10 +4121,10 @@ export class PdfViewerComponent implements AfterViewInit {
     canvas.height = canvasHeight;
     const ctx = canvas.getContext('2d')!;
 
-    // Determine if this page should show white background (all images deleted)
-    const pageIsBlanked = this.blankedPages().has(pageNum) ||
-                          this.pagesWithAllImagesDeleted().has(pageNum) ||
-                          this.removeBackgrounds();
+    // Determine if this page should show white background
+    // Only use explicit blankedPages or removeBackgrounds, not pagesWithAllImagesDeleted
+    // because re-rendered pages already have images whited out with native text preserved
+    const pageIsBlanked = this.blankedPages().has(pageNum) || this.removeBackgrounds();
 
     // Get page blocks once for use throughout this function
     const pageBlocks = this.getPageBlocks(pageNum);

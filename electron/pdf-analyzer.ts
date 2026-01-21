@@ -2756,6 +2756,47 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Update spans for a page that has been OCR'd.
+   * This replaces the original PDF-extracted spans with OCR-derived spans,
+   * so custom category matching will search the OCR text with correct coordinates.
+   *
+   * @param pageNum - 0-indexed page number
+   * @param ocrBlocks - OCR text blocks with coordinates from Tesseract
+   */
+  updateSpansForOcrPage(
+    pageNum: number,
+    ocrBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; id?: string }>
+  ): void {
+    console.log(`[updateSpansForOcrPage] Updating spans for page ${pageNum} with ${ocrBlocks.length} OCR blocks`);
+
+    // Remove existing spans for this page
+    this.spans = this.spans.filter(s => s.page !== pageNum);
+
+    // Convert OCR blocks to TextSpan format
+    // Each OCR block becomes one span (we don't have word-level granularity from Tesseract blocks)
+    const newSpans: TextSpan[] = ocrBlocks.map((block, idx) => ({
+      id: block.id || `ocr_${pageNum}_${idx}`,
+      page: pageNum,
+      x: block.x,
+      y: block.y,
+      width: block.width,
+      height: block.height,
+      text: block.text,
+      font_size: block.font_size,
+      font_name: 'OCR-Tesseract',  // Placeholder font name for OCR text
+      is_bold: false,
+      is_italic: false,
+      baseline_offset: 0,
+      block_id: block.id || `ocr_block_${pageNum}_${idx}`
+    }));
+
+    // Add new OCR spans
+    this.spans.push(...newSpans);
+
+    console.log(`[updateSpansForOcrPage] Page ${pageNum} now has ${newSpans.length} OCR spans, total spans: ${this.spans.length}`);
+  }
+
+  /**
    * Assemble PDF from canvas-rendered images (WYSIWYG export)
    *
    * This takes screenshots from the viewer canvas and assembles them into a PDF.

@@ -78,42 +78,114 @@ const TIMEOUT_MS = 180000; // 3 minutes per chunk (Ollama can be slow)
 // OCR Cleanup Prompt
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Path to the editable prompt file
+const PROMPT_FILE_PATH = path.join(__dirname, 'prompts', 'tts-cleanup.txt');
+
+// Default prompt (used if file doesn't exist)
+const DEFAULT_PROMPT = `You are preparing ebook text for text-to-speech (TTS) audiobook narration. Transform the text so it sounds natural when read aloud.
+
+NUMBERS → SPOKEN WORDS:
+- Years: "1923" → "nineteen twenty-three", "2001" → "two thousand one"
+- Decades: "the 1930s" → "the nineteen thirties"
+- Dates: "January 5, 1923" → "January fifth, nineteen twenty-three"
+- Ordinals: "1st" → "first", "21st" → "twenty-first"
+- Cardinals: "3 men" → "three men"
+- Currency: "$5.50" → "five dollars and fifty cents"
+- Roman numerals: "Chapter IV" → "Chapter Four", "Henry VIII" → "Henry the Eighth"
+
+EXPAND ABBREVIATIONS:
+- Titles: "Mr." → "Mister", "Dr." → "Doctor"
+- Common: "e.g." → "for example", "i.e." → "that is", "etc." → "and so on"
+
+PUNCTUATION FOR NATURAL PACING:
+- Add commas after introductory phrases
+- Add commas around parenthetical phrases
+- Replace em dashes (—) with commas when they mark asides
+
+FIX OCR ERRORS (broken words, character misreads: rn→m, cl→d).
+REMOVE: footnote numbers in sentences, page numbers, stray artifacts.
+PRESERVE: author's meaning, proper nouns, dialogue.
+
+Output ONLY the processed text. No commentary.`;
+
 /**
- * Build the OCR cleanup prompt for text correction.
- * This prompt focuses on fixing OCR errors while preserving content.
+ * Load the TTS cleanup prompt from file
  */
-function buildCleanupPrompt(_options: AICleanupOptions): string {
-  // The options parameter is kept for API compatibility but the prompt is now unified
-  return `You are an OCR error correction tool. Your ONLY job is to fix character-level scanning errors.
-
-FIX ONLY THESE CHARACTER ERRORS:
-- Broken hyphenation: "traditi- onal" → "traditional"
-- Character misreads: rn→m, cl→d, li→h, vv→w where the result is a real word
-- Number/letter swaps: 0↔O, 1↔l↔I, 5↔S only when obviously wrong
-- Scrambled punctuation: fix clearly wrong punctuation
-- Extra spaces within words: "w o r d" → "word"
-
-NEVER DO ANY OF THESE:
-- NEVER add words, numbers, dates, or any content not present in the input
-- NEVER remove words or content
-- NEVER combine or split sentences
-- NEVER rewrite or rephrase anything
-- NEVER fix grammar or improve style
-- NEVER fill in blanks, gaps, or missing information
-- NEVER use your knowledge to "correct" factual content
-
-If you see "–" or "..." or a gap, LEAVE IT EXACTLY AS IS. Do not fill it in.
-If text seems incomplete or wrong, LEAVE IT EXACTLY AS IS.
-
-Output ONLY the text with character-level fixes. Nothing else.`;
+export async function loadPrompt(): Promise<string> {
+  try {
+    const content = await fsPromises.readFile(PROMPT_FILE_PATH, 'utf-8');
+    return content.trim();
+  } catch {
+    // File doesn't exist, return default
+    return DEFAULT_PROMPT;
+  }
 }
+
+/**
+ * Save the TTS cleanup prompt to file.
+ * Also updates the cached prompt so changes take effect immediately.
+ */
+export async function savePrompt(prompt: string): Promise<void> {
+  // Ensure directory exists
+  const dir = path.dirname(PROMPT_FILE_PATH);
+  await fsPromises.mkdir(dir, { recursive: true });
+  await fsPromises.writeFile(PROMPT_FILE_PATH, prompt, 'utf-8');
+  // Update the cache so changes take effect immediately without restart
+  cachedPrompt = prompt;
+}
+
+/**
+ * Get the prompt file path (for reference)
+ */
+export function getPromptFilePath(): string {
+  return PROMPT_FILE_PATH;
+}
+
+/**
+ * Force reload the prompt from file.
+ * Useful if the file was modified externally.
+ */
+export async function reloadPrompt(): Promise<string> {
+  cachedPrompt = await loadPrompt();
+  console.log('[AI-BRIDGE] Prompt reloaded from file, length:', cachedPrompt.length);
+  return cachedPrompt;
+}
+
+/**
+ * Build the TTS optimization prompt.
+ * Loads from file if available, otherwise uses default.
+ */
+async function buildCleanupPromptAsync(): Promise<string> {
+  return await loadPrompt();
+}
+
+/**
+ * Synchronous version for backwards compatibility
+ * Uses cached prompt or default
+ */
+let cachedPrompt: string | null = null;
+
+function buildCleanupPrompt(_options: AICleanupOptions): string {
+  // Return cached prompt if available, otherwise default
+  return cachedPrompt || DEFAULT_PROMPT;
+}
+
+// Load prompt on module init
+loadPrompt().then(prompt => {
+  cachedPrompt = prompt;
+}).catch(() => {
+  cachedPrompt = DEFAULT_PROMPT;
+});
 
 /**
  * Build a simple OCR cleanup prompt for queue processing (entire EPUB).
  * Same as buildCleanupPrompt but exposed for queue use.
  */
 export function getOcrCleanupSystemPrompt(): string {
-  return buildCleanupPrompt({ fixHyphenation: true, fixOcrArtifacts: true, expandAbbreviations: true });
+  const prompt = buildCleanupPrompt({ fixHyphenation: true, fixOcrArtifacts: true, expandAbbreviations: true });
+  // Debug: log first 200 chars of prompt to verify it's the correct version
+  console.log('[AI-BRIDGE] Using system prompt (first 200 chars):', prompt.substring(0, 200).replace(/\n/g, ' '));
+  return prompt;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,6 +285,124 @@ async function checkClaudeConnection(): Promise<ProviderConnectionResult> {
     available: false,
     error: 'API key validation requires settings configuration'
   };
+}
+
+/**
+ * Get available Claude models by querying the Anthropic API
+ * Uses the /v1/models endpoint to fetch the actual list of available models
+ */
+export async function getClaudeModels(apiKey: string): Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }> {
+  if (!apiKey) {
+    return { success: false, error: 'No API key provided' };
+  }
+
+  // Verify the key format
+  if (!apiKey.startsWith('sk-ant-')) {
+    return { success: false, error: 'Invalid API key format (should start with sk-ant-)' };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch('https://api.anthropic.com/v1/models', {
+      method: 'GET',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMessage = errorData.error?.message || response.statusText;
+
+      if (response.status === 401) {
+        return { success: false, error: 'Invalid API key' };
+      }
+      if (response.status === 403) {
+        return { success: false, error: 'API key does not have access' };
+      }
+
+      return { success: false, error: `API error: ${errorMessage}` };
+    }
+
+    const data = await response.json();
+
+    // Filter to only include chat models (claude-*) and format them nicely
+    const models: { value: string; label: string }[] = [];
+
+    if (data.data && Array.isArray(data.data)) {
+      for (const model of data.data) {
+        const id = model.id;
+        // Skip non-Claude models and embedding models
+        if (!id.startsWith('claude-') || id.includes('embedding')) {
+          continue;
+        }
+
+        // Create a friendly label
+        // Check for 4.5 versions first (they contain 'opus-4-5' or 'sonnet-4-5')
+        let label = id;
+        if (id.includes('opus-4-5')) {
+          label = 'Claude Opus 4.5';
+        } else if (id.includes('sonnet-4-5')) {
+          label = 'Claude Sonnet 4.5';
+        } else if (id.includes('opus-4')) {
+          label = 'Claude Opus 4';
+        } else if (id.includes('sonnet-4')) {
+          label = 'Claude Sonnet 4';
+        } else if (id.includes('3-5-sonnet')) {
+          label = 'Claude 3.5 Sonnet';
+        } else if (id.includes('3-5-haiku')) {
+          label = 'Claude 3.5 Haiku';
+        } else if (id.includes('3-opus')) {
+          label = 'Claude 3 Opus';
+        } else if (id.includes('3-sonnet')) {
+          label = 'Claude 3 Sonnet';
+        } else if (id.includes('3-haiku')) {
+          label = 'Claude 3 Haiku';
+        }
+
+        models.push({ value: id, label });
+      }
+    }
+
+    // Sort models: Sonnet 4.5 first (recommended), then Opus 4.5, then older models
+    models.sort((a, b) => {
+      // Put sonnet-4-5 first as recommended (best balance of speed/quality)
+      if (a.value.includes('sonnet-4-5') && !b.value.includes('sonnet-4-5')) return -1;
+      if (!a.value.includes('sonnet-4-5') && b.value.includes('sonnet-4-5')) return 1;
+      // Then opus-4-5
+      if (a.value.includes('opus-4-5') && !b.value.includes('opus-4-5')) return -1;
+      if (!a.value.includes('opus-4-5') && b.value.includes('opus-4-5')) return 1;
+      // Then sonnet-4 (non-4.5)
+      if (a.value.includes('sonnet-4') && !b.value.includes('sonnet-4')) return -1;
+      if (!a.value.includes('sonnet-4') && b.value.includes('sonnet-4')) return 1;
+      // Then opus-4 (non-4.5)
+      if (a.value.includes('opus-4') && !b.value.includes('opus-4')) return -1;
+      if (!a.value.includes('opus-4') && b.value.includes('opus-4')) return 1;
+      // Then 3.5 models
+      if (a.value.includes('3-5') && !b.value.includes('3-5')) return -1;
+      if (!a.value.includes('3-5') && b.value.includes('3-5')) return 1;
+      return a.label.localeCompare(b.label);
+    });
+
+    // Mark the first one as recommended
+    if (models.length > 0 && !models[0].label.includes('Recommended')) {
+      models[0].label += ' (Recommended)';
+    }
+
+    return { success: true, models };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    if (message.includes('abort')) {
+      return { success: false, error: 'Request timed out' };
+    }
+    return { success: false, error: message };
+  }
 }
 
 /**
@@ -358,15 +548,24 @@ async function cleanChunkWithProvider(
     try {
       switch (config.provider) {
         case 'ollama':
-          return await cleanChunk(text, systemPrompt, config.ollama?.model || DEFAULT_MODEL);
+          if (!config.ollama?.model) {
+            throw new Error('Ollama model not configured');
+          }
+          return await cleanChunk(text, systemPrompt, config.ollama.model);
         case 'claude':
           if (!config.claude?.apiKey) {
             throw new Error('Claude API key not configured');
+          }
+          if (!config.claude?.model) {
+            throw new Error('Claude model not configured');
           }
           return await cleanChunkWithClaude(text, systemPrompt, config.claude.apiKey, config.claude.model);
         case 'openai':
           if (!config.openai?.apiKey) {
             throw new Error('OpenAI API key not configured');
+          }
+          if (!config.openai?.model) {
+            throw new Error('OpenAI model not configured');
           }
           return await cleanChunkWithOpenAI(text, systemPrompt, config.openai.apiKey, config.openai.model);
         default:
@@ -615,51 +814,54 @@ export interface EpubCleanupResult {
 /**
  * Process an entire EPUB through OCR cleanup.
  * Cleans all chapters and saves a modified EPUB.
- * Supports multiple AI providers via optional config.
+ * Requires explicit AI provider configuration - no fallbacks.
  */
 export async function cleanupEpub(
   epubPath: string,
   jobId: string,
-  model: string = DEFAULT_MODEL,
-  mainWindow?: BrowserWindow | null,
-  onProgress?: (progress: EpubCleanupProgress) => void,
-  providerConfig?: AIProviderConfig
+  mainWindow: BrowserWindow | null | undefined,
+  onProgress: ((progress: EpubCleanupProgress) => void) | undefined,
+  providerConfig: AIProviderConfig
 ): Promise<EpubCleanupResult> {
-  // Debug logging to trace model selection
+  // Debug logging to trace provider selection
   console.log('[AI-BRIDGE] cleanupEpub called with:', {
-    model,
-    providerConfig: providerConfig ? {
-      provider: providerConfig.provider,
-      ollamaModel: providerConfig.ollama?.model,
-      claudeModel: providerConfig.claude?.model,
-      openaiModel: providerConfig.openai?.model
-    } : 'undefined'
+    provider: providerConfig.provider,
+    ollamaModel: providerConfig.ollama?.model,
+    claudeModel: providerConfig.claude?.model,
+    openaiModel: providerConfig.openai?.model
   });
 
-  // Use provided config or default to Ollama
-  const config: AIProviderConfig = providerConfig || {
-    provider: 'ollama',
-    ollama: { baseUrl: OLLAMA_BASE_URL, model }
-  };
+  // providerConfig is required - no fallbacks
+  const config = providerConfig;
 
   // Validate provider configuration
   if (config.provider === 'ollama') {
+    if (!config.ollama?.model) {
+      return { success: false, error: 'Ollama model not specified in config' };
+    }
     const connection = await checkConnection();
     if (!connection.connected) {
       return { success: false, error: `Ollama not available: ${connection.error}` };
     }
-    const modelToUse = config.ollama?.model || model;
-    if (!(await hasModel(modelToUse))) {
-      return { success: false, error: `Model '${modelToUse}' not found. Run: ollama pull ${modelToUse}` };
+    if (!(await hasModel(config.ollama.model))) {
+      return { success: false, error: `Model '${config.ollama.model}' not found. Run: ollama pull ${config.ollama.model}` };
     }
   } else if (config.provider === 'claude') {
     if (!config.claude?.apiKey) {
       return { success: false, error: 'Claude API key not configured. Go to Settings > AI to configure.' };
     }
+    if (!config.claude?.model) {
+      return { success: false, error: 'Claude model not specified in config' };
+    }
   } else if (config.provider === 'openai') {
     if (!config.openai?.apiKey) {
       return { success: false, error: 'OpenAI API key not configured. Go to Settings > AI to configure.' };
     }
+    if (!config.openai?.model) {
+      return { success: false, error: 'OpenAI model not specified in config' };
+    }
+  } else {
+    return { success: false, error: `Unknown AI provider: ${config.provider}` };
   }
 
   const sendProgress = (progress: EpubCleanupProgress) => {
@@ -963,5 +1165,9 @@ export const aiBridge = {
   cleanupText,
   cleanupChapterStreaming,
   cleanupEpub,
-  getOcrCleanupSystemPrompt
+  getOcrCleanupSystemPrompt,
+  loadPrompt,
+  savePrompt,
+  reloadPrompt,
+  getPromptFilePath
 };

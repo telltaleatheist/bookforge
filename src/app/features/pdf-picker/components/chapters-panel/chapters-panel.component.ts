@@ -1,8 +1,9 @@
-import { Component, input, output, signal, ChangeDetectionStrategy, ElementRef, ViewChild } from '@angular/core';
+import { Component, input, output, signal, ChangeDetectionStrategy, ElementRef, ViewChild, effect, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { Chapter } from '../../../../core/services/electron.service';
+import { BookMetadata } from '../../pdf-picker.component';
 
 @Component({
   selector: 'app-chapters-panel',
@@ -16,34 +17,117 @@ import { Chapter } from '../../../../core/services/electron.service';
     </div>
 
     <div class="panel-content">
-      <!-- Source Info -->
-      <div class="source-info">
-        @switch (chaptersSource()) {
-          @case ('toc') {
-            <div class="info-box toc">
-              Loaded from document outline
+      <!-- Metadata Section -->
+      <div class="section-header" (click)="metadataExpanded.set(!metadataExpanded())">
+        <span class="section-toggle">{{ metadataExpanded() ? '▼' : '▶' }}</span>
+        <span class="section-title">Book Metadata</span>
+      </div>
+      @if (metadataExpanded()) {
+        <div class="metadata-section">
+          <div class="metadata-field">
+            <label>Title</label>
+            <input
+              type="text"
+              [value]="localMetadata().title || ''"
+              (input)="updateMetadataField('title', $event)"
+              placeholder="Book title"
+            />
+          </div>
+          <div class="metadata-field">
+            <label>Author</label>
+            <input
+              type="text"
+              [value]="localMetadata().author || ''"
+              (input)="updateMetadataField('author', $event)"
+              placeholder="Author name"
+            />
+          </div>
+          <div class="metadata-field">
+            <label>Author (Sort)</label>
+            <input
+              type="text"
+              [value]="localMetadata().authorFileAs || ''"
+              (input)="updateMetadataField('authorFileAs', $event)"
+              placeholder="Last, First"
+            />
+          </div>
+          <div class="metadata-row">
+            <div class="metadata-field">
+              <label>Year</label>
+              <input
+                type="text"
+                [value]="localMetadata().year || ''"
+                (input)="updateMetadataField('year', $event)"
+                placeholder="2024"
+              />
             </div>
-          }
-          @case ('heuristic') {
-            <div class="info-box heuristic">
-              Auto-detected from content
+            <div class="metadata-field">
+              <label>Language</label>
+              <input
+                type="text"
+                [value]="localMetadata().language || ''"
+                (input)="updateMetadataField('language', $event)"
+                placeholder="en"
+              />
             </div>
-          }
-          @case ('manual') {
-            <div class="info-box manual">
-              Click blocks to mark chapters
-            </div>
-          }
-          @case ('mixed') {
-            <div class="info-box mixed">
-              Combined from multiple sources
-            </div>
-          }
-        }
+          </div>
+          <div class="metadata-field">
+            <label>Publisher</label>
+            <input
+              type="text"
+              [value]="localMetadata().publisher || ''"
+              (input)="updateMetadataField('publisher', $event)"
+              placeholder="Publisher name"
+            />
+          </div>
+          <div class="metadata-field">
+            <label>Description</label>
+            <textarea
+              [value]="localMetadata().description || ''"
+              (input)="updateMetadataField('description', $event)"
+              placeholder="Book description or synopsis"
+              rows="3"
+            ></textarea>
+          </div>
+        </div>
+      }
+
+      <!-- Chapters Section -->
+      <div class="section-header" (click)="chaptersExpanded.set(!chaptersExpanded())">
+        <span class="section-toggle">{{ chaptersExpanded() ? '▼' : '▶' }}</span>
+        <span class="section-title">Chapters</span>
+        <span class="section-count">{{ chapters().length }}</span>
       </div>
 
-      <!-- Actions -->
-      <div class="action-buttons">
+      @if (chaptersExpanded()) {
+        <!-- Source Info -->
+        <div class="source-info">
+          @switch (chaptersSource()) {
+            @case ('toc') {
+              <div class="info-box toc">
+                Loaded from document outline
+              </div>
+            }
+            @case ('heuristic') {
+              <div class="info-box heuristic">
+                Auto-detected from content
+              </div>
+            }
+            @case ('manual') {
+              <div class="info-box manual">
+                Click anywhere to add chapters
+              </div>
+            }
+            @case ('mixed') {
+              <div class="info-box mixed">
+                Combined from multiple sources
+              </div>
+            }
+          }
+        </div>
+
+        <!-- Actions -->
+        <div class="action-buttons">
         <desktop-button
           variant="secondary"
           size="sm"
@@ -73,8 +157,9 @@ import { Chapter } from '../../../../core/services/electron.service';
         @if (chapters().length === 0) {
           <div class="empty-state">
             <p>No chapters defined yet.</p>
-            <p class="hint">Click "Auto-Detect" or click on text blocks in chapters mode to mark chapter headings.</p>
-            <p class="hint">Hold Shift while clicking to add as a section (level 2) instead of chapter (level 1).</p>
+            <p class="hint">Click "Auto-Detect" or click anywhere on a page to add a chapter marker.</p>
+            <p class="hint">Markers snap to the nearest text block. Drag markers to reposition.</p>
+            <p class="hint">Hold Shift while clicking to add as a section (level 2).</p>
           </div>
         } @else {
           @for (chapter of chapters(); track chapter.id) {
@@ -128,6 +213,7 @@ import { Chapter } from '../../../../core/services/electron.service';
           }
         }
       </div>
+      }
     </div>
 
     <div class="panel-footer">
@@ -190,6 +276,99 @@ import { Chapter } from '../../../../core/services/electron.service';
       display: flex;
       flex-direction: column;
       gap: var(--ui-spacing-md);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-sm) 0;
+      cursor: pointer;
+      user-select: none;
+
+      &:hover {
+        .section-title {
+          color: var(--accent);
+        }
+      }
+    }
+
+    .section-toggle {
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      width: 12px;
+    }
+
+    .section-title {
+      font-size: var(--ui-font-sm);
+      font-weight: $font-weight-semibold;
+      color: var(--text-primary);
+      transition: color 0.15s ease;
+    }
+
+    .section-count {
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      background: var(--bg-elevated);
+      padding: 2px 6px;
+      border-radius: 10px;
+      margin-left: auto;
+    }
+
+    .metadata-section {
+      display: flex;
+      flex-direction: column;
+      gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-sm) 0;
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: var(--ui-spacing-sm);
+    }
+
+    .metadata-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+
+      label {
+        font-size: var(--ui-font-xs);
+        color: var(--text-secondary);
+        font-weight: $font-weight-medium;
+      }
+
+      input, textarea {
+        width: 100%;
+        padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+        font-size: var(--ui-font-sm);
+        color: var(--text-primary);
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-default);
+        border-radius: $radius-sm;
+        outline: none;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+
+        &:focus {
+          border-color: var(--accent);
+          box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.15);
+        }
+
+        &::placeholder {
+          color: var(--text-tertiary);
+        }
+      }
+
+      textarea {
+        resize: vertical;
+        min-height: 60px;
+      }
+    }
+
+    .metadata-row {
+      display: flex;
+      gap: var(--ui-spacing-sm);
+
+      .metadata-field {
+        flex: 1;
+      }
     }
 
     .source-info {
@@ -379,6 +558,7 @@ import { Chapter } from '../../../../core/services/electron.service';
       background: var(--bg-elevated);
       display: flex;
       flex-direction: column;
+      align-items: center;
       gap: var(--ui-spacing-sm);
     }
 
@@ -401,6 +581,8 @@ export class ChaptersPanelComponent {
   detecting = input<boolean>(false);
   finalizing = input<boolean>(false);
   selectedChapterId = input<string | null>(null);
+  metadata = input<BookMetadata>({});
+  sourceName = input<string>('');
 
   cancel = output<void>();
   autoDetect = output<void>();
@@ -409,11 +591,50 @@ export class ChaptersPanelComponent {
   removeChapter = output<string>();
   finalizeChapters = output<void>();
   renameChapter = output<{ chapterId: string; newTitle: string }>();
+  metadataChange = output<BookMetadata>();
+
+  // Section expansion state
+  readonly metadataExpanded = signal(true);
+  readonly chaptersExpanded = signal(true);
+
+  // Local metadata for editing (synced from input)
+  readonly localMetadata = signal<BookMetadata>({});
 
   // Editing state
   readonly editingChapterId = signal<string | null>(null);
   readonly editingTitle = signal<string>('');
   private saveOnBlur = true;
+
+  constructor() {
+    // Sync metadata input to local state (only when input changes)
+    effect(() => {
+      const meta = this.metadata();
+      // Use untracked to avoid dependency on localMetadata - prevents infinite loop
+      const local = untracked(() => this.localMetadata());
+      if (JSON.stringify(meta) !== JSON.stringify(local)) {
+        this.localMetadata.set({ ...meta });
+      }
+    }, { allowSignalWrites: true });
+
+    // Initialize title from source name if not set (only when sourceName changes)
+    effect(() => {
+      const name = this.sourceName();
+      // Use untracked to avoid dependency on localMetadata - prevents infinite loop
+      const meta = untracked(() => this.localMetadata());
+      if (name && !meta.title) {
+        // Extract title from filename (remove extension)
+        const title = name.replace(/\.[^/.]+$/, '');
+        this.localMetadata.update(m => ({ ...m, title }));
+        this.metadataChange.emit({ ...this.localMetadata() });
+      }
+    }, { allowSignalWrites: true });
+  }
+
+  updateMetadataField(field: keyof BookMetadata, event: Event): void {
+    const value = (event.target as HTMLInputElement | HTMLTextAreaElement).value;
+    this.localMetadata.update(m => ({ ...m, [field]: value }));
+    this.metadataChange.emit({ ...this.localMetadata() });
+  }
 
   onChapterClick(event: Event, chapterId: string): void {
     // Don't select if we're editing

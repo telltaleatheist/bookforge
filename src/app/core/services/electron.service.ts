@@ -573,6 +573,21 @@ export class ElectronService {
     return null;
   }
 
+  /**
+   * Update spans for a page that has been OCR'd.
+   * This allows custom category matching to search OCR text with correct coordinates.
+   */
+  async updateSpansForOcr(
+    pageNum: number,
+    ocrBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; id?: string }>
+  ): Promise<boolean> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.updateSpansForOcr(pageNum, ocrBlocks);
+      return result.success;
+    }
+    return false;
+  }
+
   // Chapter detection operations
   async extractOutline(): Promise<OutlineItem[]> {
     if (this.isElectron) {
@@ -861,6 +876,35 @@ export class ElectronService {
     return { available: false, error: 'Not running in Electron' };
   }
 
+  async getAIPrompt(): Promise<{ prompt: string; filePath: string } | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ai.getPrompt();
+      if (result.success && result.data) {
+        return result.data;
+      }
+    }
+    return null;
+  }
+
+  async saveAIPrompt(prompt: string): Promise<boolean> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ai.savePrompt(prompt);
+      return result.success;
+    }
+    return false;
+  }
+
+  async getClaudeModels(apiKey: string): Promise<{
+    success: boolean;
+    models?: { value: string; label: string }[];
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return await (window as any).electron.ai.getClaudeModels(apiKey);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   // Diff comparison operations (for AI cleanup diff view)
   async loadDiffComparison(originalPath: string, cleanedPath: string): Promise<{
     success: boolean;
@@ -999,5 +1043,117 @@ export class ElectronService {
       return (window as any).electron.shell.openPath(filePath);
     }
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Play Tab operations (XTTS Streaming)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async playStartSession(): Promise<{
+    success: boolean;
+    voices?: string[];
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.play.startSession();
+      if (result.success && result.data) {
+        return { success: true, voices: result.data.voices };
+      }
+      return { success: false, error: result.error };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async playLoadVoice(voice: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.play.loadVoice(voice);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async playGenerateSentence(
+    text: string,
+    sentenceIndex: number,
+    settings: {
+      voice: string;
+      speed: number;
+      temperature?: number;
+      topP?: number;
+      repetitionPenalty?: number;
+    }
+  ): Promise<{
+    success: boolean;
+    audio?: {
+      data: string;
+      duration: number;
+      sampleRate: number;
+    };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.play.generateSentence(text, sentenceIndex, settings);
+      if (result.success && result.data) {
+        return { success: true, audio: result.data };
+      }
+      return { success: false, error: result.error };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async playStop(): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.play.stop();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async playEndSession(): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.play.endSession();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async playIsSessionActive(): Promise<{ success: boolean; active?: boolean; error?: string }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.play.isSessionActive();
+      if (result.success && result.data) {
+        return { success: true, active: result.data.active };
+      }
+      return { success: false, error: result.error };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async playGetVoices(): Promise<{ success: boolean; voices?: string[]; error?: string }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.play.getVoices();
+      if (result.success && result.data) {
+        return { success: true, voices: result.data.voices };
+      }
+      return { success: false, error: result.error };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  onPlayAudioGenerated(callback: (event: { sentenceIndex: number; audio: { data: string; duration: number; sampleRate: number } }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.play.onAudioGenerated(callback);
+    }
+    return () => {};
+  }
+
+  onPlayStatus(callback: (status: { message: string }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.play.onStatus(callback);
+    }
+    return () => {};
+  }
+
+  onPlaySessionEnded(callback: (data: { code: number }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.play.onSessionEnded(callback);
+    }
+    return () => {};
   }
 }
