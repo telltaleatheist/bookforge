@@ -118,6 +118,7 @@ export interface Chapter {
 export interface OutlineItem {
   title: string;
   page: number;              // 0-indexed
+  y?: number;                // Y position on the page (from resolved links)
   down?: OutlineItem[];      // Nested children
 }
 
@@ -3680,9 +3681,35 @@ export class PDFAnalyzer {
     const convertOutline = (items: any[]): OutlineItem[] => {
       const result: OutlineItem[] = [];
       for (const item of items) {
+        let pageNum = 0;
+        let yPos: number | undefined;
+
+        // Try to get page number directly
+        if (typeof item.page === 'number' && !isNaN(item.page)) {
+          pageNum = item.page;
+        }
+        // For EPUBs, mupdf may provide a URI instead - try to resolve it
+        else if (item.uri && this.doc) {
+          try {
+            // resolveLink converts a URI to a location (page number + coordinates)
+            const location = this.doc.resolveLink(item.uri);
+            if (location && typeof location.page === 'number' && !isNaN(location.page)) {
+              pageNum = location.page;
+              // Capture y-coordinate if available
+              if (typeof location.y === 'number' && !isNaN(location.y)) {
+                yPos = location.y;
+              }
+            }
+          } catch (e) {
+            // resolveLink may fail for some URIs, default to 0
+            console.warn(`[extractOutline] Could not resolve URI: ${item.uri}`, e);
+          }
+        }
+
         const outlineItem: OutlineItem = {
           title: item.title || '',
-          page: typeof item.page === 'number' ? item.page : 0,
+          page: pageNum,
+          y: yPos,
         };
         if (item.down && Array.isArray(item.down) && item.down.length > 0) {
           outlineItem.down = convertOutline(item.down);
@@ -3708,6 +3735,7 @@ export class PDFAnalyzer {
           id: `toc-${idCounter++}`,
           title: item.title,
           page: item.page,
+          y: item.y,  // Pass through y-coordinate for proper positioning
           level,
           source: 'toc',
         });

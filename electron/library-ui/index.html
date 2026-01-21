@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>BookForge Library</title>
+  <link rel="stylesheet" href="library.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-title">
+      <span class="logo">📚</span>
+      <h1>BookForge Library</h1>
+    </div>
+    <div class="nav-controls">
+      <span class="load-status" id="load-status"></span>
+      <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
+        <span class="sun-icon">☀️</span>
+        <span class="moon-icon">🌙</span>
+      </button>
+    </div>
+  </nav>
+
+  <div class="stats-bar">
+    <div class="stat">
+      <span class="stat-value" id="total-books">0</span>
+      <span class="stat-label">Books</span>
+    </div>
+    <div class="stat">
+      <span class="stat-value" id="total-sections">0</span>
+      <span class="stat-label">Sections</span>
+    </div>
+  </div>
+
+  <div class="search-container">
+    <input type="text" class="search-box" id="search-box" placeholder="Search books...">
+    <button class="clear-search" id="clear-search" style="display: none;">✕</button>
+  </div>
+
+  <main class="content">
+    <div id="loading-indicator" class="loading-indicator">
+      <div class="spinner"></div>
+      <span>Loading library...</span>
+    </div>
+
+    <div id="sections-container" class="sections-container"></div>
+
+    <div id="empty-state" class="empty-state" style="display: none;">
+      <span class="empty-icon">📭</span>
+      <p>No books found</p>
+    </div>
+  </main>
+
+  <script src="library.js"></script>
+</body>
+</html>

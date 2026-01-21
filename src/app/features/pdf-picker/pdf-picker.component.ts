@@ -514,8 +514,6 @@ interface AlertModal {
           (projectsDeleted)="onProjectsDeleted($event)"
           (error)="onLibraryError($event)"
           (transferToAudiobook)="onTransferToAudiobook($event)"
-          (openInEpubEditor)="onOpenInEpubEditor($event)"
-          (openEpubEditor)="onOpenEpubEditorPicker()"
         />
 
       </div>
@@ -3106,39 +3104,6 @@ export class PdfPickerComponent {
     }
   }
 
-  /**
-   * Open an EPUB file in the dedicated EPUB editor with CFI-based highlight tracking
-   */
-  onOpenInEpubEditor(sourcePath: string): void {
-    // Navigate to epub-editor with the source path as a query parameter
-    this.router.navigate(['/epub-editor'], {
-      queryParams: { path: sourcePath }
-    });
-  }
-
-  /**
-   * Open file picker to select an EPUB and open it in the EPUB editor
-   */
-  async onOpenEpubEditorPicker(): Promise<void> {
-    // Reuse the PDF dialog which also accepts EPUB files
-    const result = await this.electronService.openPdfDialog();
-    if (result.success && result.filePath) {
-      // Only navigate if it's an EPUB file
-      if (result.filePath.toLowerCase().endsWith('.epub')) {
-        this.router.navigate(['/epub-editor'], {
-          queryParams: { path: result.filePath }
-        });
-      } else {
-        // Show error for non-EPUB files
-        this.showAlert({
-          title: 'Invalid File Type',
-          message: 'Please select an EPUB file for the EPUB Editor.',
-          type: 'error'
-        });
-      }
-    }
-  }
-
   private closePdf(): void {
     // Reset all state to show library view
     this.pdfLoaded.set(false);
@@ -3160,45 +3125,41 @@ export class PdfPickerComponent {
     this.showFilePicker.set(false);
 
     const lowerPath = path.toLowerCase();
-
-    // Route EPUBs directly to the epub-editor
-    if (lowerPath.endsWith('.epub')) {
-      this.router.navigate(['/epub-editor'], { queryParams: { path } });
-      return;
-    }
+    let effectivePath = path;
 
     // Check if file needs conversion (AZW3, MOBI, KFX, PRC, FB2, etc.)
-    const formatInfo = await this.electronService.isEbookConvertible(path);
-    if (formatInfo.convertible && !formatInfo.native) {
-      // Check if ebook-convert is available
-      const available = await this.electronService.isEbookConvertAvailable();
-      if (available) {
-        this.loading.set(true);
-        this.loadingText.set('Converting to EPUB...');
-        console.log('[PdfPicker] Converting', path, 'to EPUB...');
-        const convResult = await this.electronService.convertEbookToLibrary(path);
-        if (convResult.success && convResult.outputPath) {
-          console.log('[PdfPicker] Conversion successful:', convResult.outputPath);
-          // Route converted EPUB to epub-editor
-          this.loading.set(false);
-          this.router.navigate(['/epub-editor'], { queryParams: { path: convResult.outputPath } });
-          return;
+    // EPUBs and PDFs are native formats - no conversion needed
+    if (!lowerPath.endsWith('.epub') && !lowerPath.endsWith('.pdf')) {
+      const formatInfo = await this.electronService.isEbookConvertible(path);
+      if (formatInfo.convertible && !formatInfo.native) {
+        // Check if ebook-convert is available
+        const available = await this.electronService.isEbookConvertAvailable();
+        if (available) {
+          this.loading.set(true);
+          this.loadingText.set('Converting to EPUB...');
+          console.log('[PdfPicker] Converting', path, 'to EPUB...');
+          const convResult = await this.electronService.convertEbookToLibrary(path);
+          if (convResult.success && convResult.outputPath) {
+            console.log('[PdfPicker] Conversion successful:', convResult.outputPath);
+            effectivePath = convResult.outputPath;
+            this.loading.set(false);
+          } else {
+            console.error('[PdfPicker] Conversion failed:', convResult.error);
+            this.loading.set(false);
+            return; // Can't proceed without conversion
+          }
         } else {
-          console.error('[PdfPicker] Conversion failed:', convResult.error);
+          console.log('[PdfPicker] ebook-convert not available, cannot open', path);
           this.loading.set(false);
-          return; // Can't proceed without conversion
+          return; // Silently ignore unsupported format
         }
-      } else {
-        console.log('[PdfPicker] ebook-convert not available, cannot open', path);
-        this.loading.set(false);
-        return; // Silently ignore unsupported format
       }
     }
 
-    // At this point, only PDFs should reach here
+    // At this point, we have a PDF or EPUB (native or converted)
 
-    // Check if this PDF is already open (by original path or library path)
-    const existingDoc = this.openDocuments().find(d => d.path === path || d.libraryPath === path);
+    // Check if this document is already open (by original path or library path)
+    const existingDoc = this.openDocuments().find(d => d.path === effectivePath || d.libraryPath === effectivePath);
     if (existingDoc) {
       // Switch to existing tab
       this.saveCurrentDocumentState();
@@ -3214,7 +3175,7 @@ export class PdfPickerComponent {
 
     try {
       // Import file to library (copies file and deduplicates by hash)
-      const importResult = await this.electronService.libraryImportFile(path);
+      const importResult = await this.electronService.libraryImportFile(effectivePath);
       if (!importResult.success || !importResult.libraryPath) {
         throw new Error(importResult.error || 'Failed to import file to library');
       }
@@ -5028,13 +4989,8 @@ export class PdfPickerComponent {
       return;
     }
 
-    // If the project's source is an EPUB, route to epub-editor instead
-    // (PDF projects with EPUB sources should open in epub-editor)
-    const sourcePath = project.library_path || project.source_path;
-    if (sourcePath.toLowerCase().endsWith('.epub')) {
-      this.router.navigate(['/epub-editor'], { queryParams: { path: sourcePath } });
-      return;
-    }
+    // EPUBs are now handled by the PDF picker via mupdf (renders them as pages)
+    // No special routing needed - both PDFs and EPUBs load the same way
 
     // Save current document state before loading new one
     this.saveCurrentDocumentState();

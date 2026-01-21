@@ -185,7 +185,7 @@ export interface EpubHighlightClickEvent {
 
     .epub-viewport {
       flex: 1;
-      overflow: hidden;
+      overflow: auto;
       background: var(--bg-sunken, #e0e0e0);
       display: flex;
       justify-content: center;
@@ -197,6 +197,7 @@ export interface EpubHighlightClickEvent {
 
     .epub-container {
       max-width: 800px;
+      min-height: 100%;
       background: #ffffff;
       box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
       transform-origin: top center;

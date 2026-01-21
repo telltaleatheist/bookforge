@@ -268,10 +268,11 @@ export interface Chapter {
   confidence?: number;       // 0-1 for heuristic detection
 }
 
-// Outline item from PDF TOC
+// Outline item from PDF/EPUB TOC
 export interface OutlineItem {
   title: string;
   page: number;              // 0-indexed
+  y?: number;                // Y position on the page (from resolved links)
   down?: OutlineItem[];      // Nested children
 }
 
@@ -607,6 +608,22 @@ export interface HardwareRecommendation {
   reason: string;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Library Server Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface LibraryServerStatus {
+  running: boolean;
+  port: number;
+  addresses: string[];
+  booksPath: string;
+}
+
+export interface LibraryServerConfig {
+  booksPath: string;
+  port: number;
+}
+
 export interface ElectronAPI {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
@@ -781,6 +798,11 @@ export interface ElectronAPI {
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
     showItemInFolder: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+  };
+  libraryServer: {
+    start: (config: LibraryServerConfig) => Promise<{ success: boolean; data?: LibraryServerStatus; error?: string }>;
+    stop: () => Promise<{ success: boolean; error?: string }>;
+    getStatus: () => Promise<{ success: boolean; data?: LibraryServerStatus; error?: string }>;
   };
   tts: {
     checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; version?: string; error?: string }; error?: string }>;
@@ -1105,6 +1127,14 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('shell:show-item-in-folder', filePath),
     openPath: (filePath: string) =>
       ipcRenderer.invoke('shell:open-path', filePath),
+  },
+  libraryServer: {
+    start: (config: LibraryServerConfig) =>
+      ipcRenderer.invoke('library-server:start', config),
+    stop: () =>
+      ipcRenderer.invoke('library-server:stop'),
+    getStatus: () =>
+      ipcRenderer.invoke('library-server:status'),
   },
   tts: {
     checkAvailable: () =>

@@ -333,6 +333,115 @@ import {
                   }
                 </div>
               </div>
+            } @else if (section.id === 'libraryServer') {
+              <!-- Library Server Section -->
+              <div class="library-server-section">
+                <!-- Server Status -->
+                <div class="server-status-card" [class.running]="libraryServerStatus()?.running">
+                  <div class="status-indicator">
+                    <span class="status-dot"></span>
+                    <span class="status-text">
+                      {{ libraryServerStatus()?.running ? 'Running' : 'Stopped' }}
+                    </span>
+                  </div>
+                  @if (libraryServerStatus()?.running) {
+                    <div class="server-addresses">
+                      <h4>Access URLs</h4>
+                      @for (address of libraryServerStatus()?.addresses || []; track address) {
+                        <a class="server-address" [href]="address" target="_blank">{{ address }}</a>
+                      }
+                    </div>
+                  }
+                </div>
+
+                <!-- Configuration -->
+                <div class="settings-group">
+                  <h4>Configuration</h4>
+
+                  <!-- Books Folder -->
+                  <div class="field-row">
+                    <div class="field-info">
+                      <label class="field-label">Books Folder</label>
+                      <p class="field-description">Location of your book library</p>
+                    </div>
+                    <div class="field-control">
+                      <div class="path-input-group">
+                        <input
+                          type="text"
+                          class="text-input path-input"
+                          [value]="libraryServerConfig().booksPath"
+                          placeholder="Select a folder..."
+                          readonly
+                        />
+                        <desktop-button
+                          variant="ghost"
+                          size="sm"
+                          (click)="browseForBooksFolder()"
+                          [disabled]="libraryServerStatus()?.running ?? false"
+                        >
+                          Browse...
+                        </desktop-button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Port -->
+                  <div class="field-row">
+                    <div class="field-info">
+                      <label class="field-label">Port</label>
+                      <p class="field-description">Server port (default: 8765)</p>
+                    </div>
+                    <div class="field-control">
+                      <input
+                        type="number"
+                        class="number-input"
+                        [value]="libraryServerConfig().port"
+                        min="1"
+                        max="65535"
+                        (change)="updateLibraryServerPort(+$any($event.target).value)"
+                        [disabled]="libraryServerStatus()?.running ?? false"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Control Buttons -->
+                <div class="server-controls">
+                  @if (libraryServerStatus()?.running) {
+                    <desktop-button
+                      variant="danger"
+                      size="md"
+                      (click)="stopLibraryServer()"
+                      [disabled]="libraryServerLoading()"
+                    >
+                      {{ libraryServerLoading() ? 'Stopping...' : 'Stop Server' }}
+                    </desktop-button>
+                  } @else {
+                    <desktop-button
+                      variant="primary"
+                      size="md"
+                      (click)="startLibraryServer()"
+                      [disabled]="libraryServerLoading() || !libraryServerConfig().booksPath"
+                    >
+                      {{ libraryServerLoading() ? 'Starting...' : 'Start Server' }}
+                    </desktop-button>
+                  }
+                </div>
+
+                @if (libraryServerError(); as error) {
+                  <div class="status-message error">
+                    {{ error }}
+                  </div>
+                }
+
+                <!-- Help text -->
+                <div class="help-text">
+                  <p>
+                    Start the server to browse your book library from any device on your network.
+                    Access the library from your phone or tablet using the URLs shown above.
+                  </p>
+                </div>
+              </div>
             } @else {
               <div class="fields-list">
                 @for (field of section.fields; track field.key) {
@@ -929,6 +1038,100 @@ import {
         margin-left: var(--ui-spacing-xs);
       }
     }
+
+    // Library Server Section Styles
+    .library-server-section {
+      display: flex;
+      flex-direction: column;
+      gap: var(--ui-spacing-xl);
+    }
+
+    .server-status-card {
+      background: var(--bg-surface);
+      border-radius: $radius-md;
+      padding: var(--ui-spacing-lg);
+      border: 2px solid var(--border-subtle);
+      transition: border-color $duration-fast $ease-out;
+
+      &.running {
+        border-color: var(--success);
+      }
+    }
+
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      margin-bottom: var(--ui-spacing-md);
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--error);
+
+      .server-status-card.running & {
+        background: var(--success);
+        animation: pulse 2s infinite;
+      }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .status-text {
+      font-size: var(--ui-font-base);
+      font-weight: $font-weight-semibold;
+      color: var(--text-primary);
+    }
+
+    .server-addresses {
+      h4 {
+        margin: 0 0 var(--ui-spacing-sm) 0;
+        font-size: var(--ui-font-sm);
+        font-weight: $font-weight-medium;
+        color: var(--text-secondary);
+      }
+    }
+
+    .server-address {
+      display: block;
+      padding: var(--ui-spacing-xs) var(--ui-spacing-sm);
+      margin-bottom: var(--ui-spacing-xs);
+      background: var(--bg-elevated);
+      border-radius: $radius-sm;
+      color: var(--accent);
+      font-family: monospace;
+      font-size: var(--ui-font-sm);
+      text-decoration: none;
+      transition: background $duration-fast $ease-out;
+
+      &:hover {
+        background: var(--bg-hover);
+        text-decoration: underline;
+      }
+    }
+
+    .server-controls {
+      display: flex;
+      gap: var(--ui-spacing-md);
+    }
+
+    .help-text {
+      padding: var(--ui-spacing-md);
+      background: var(--bg-surface);
+      border-radius: $radius-md;
+      font-size: var(--ui-font-sm);
+      color: var(--text-tertiary);
+
+      p {
+        margin: 0;
+        line-height: 1.5;
+      }
+    }
   `]
 })
 export class SettingsComponent implements OnInit {
@@ -981,6 +1184,12 @@ export class SettingsComponent implements OnInit {
     return fetched.length > 0 ? fetched : this.defaultOpenaiModels;
   });
 
+  // Library Server section state
+  readonly libraryServerConfig = computed(() => this.settingsService.getLibraryServerConfig());
+  readonly libraryServerStatus = signal<{ running: boolean; port: number; addresses: string[]; booksPath: string } | null>(null);
+  readonly libraryServerLoading = signal(false);
+  readonly libraryServerError = signal<string | null>(null);
+
   // Combine built-in and plugin sections
   readonly allSections = computed(() => {
     return this.settingsService.sections();
@@ -994,6 +1203,8 @@ export class SettingsComponent implements OnInit {
   ngOnInit(): void {
     // Load cache size on init
     this.refreshCacheSize();
+    // Check library server status
+    this.refreshLibraryServerStatus();
   }
 
   goBack(): void {
@@ -1258,6 +1469,124 @@ export class SettingsComponent implements OnInit {
       window.electron.shell.openExternal(url);
     } else {
       window.open(url, '_blank');
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Library Server Methods
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async refreshLibraryServerStatus(): Promise<void> {
+    try {
+      const result = await this.electronService.libraryServerGetStatus();
+      if (result.success && result.data) {
+        this.libraryServerStatus.set(result.data);
+      }
+    } catch (err) {
+      console.error('Failed to get library server status:', err);
+    }
+  }
+
+  async startLibraryServer(): Promise<void> {
+    const config = this.libraryServerConfig();
+    if (!config.booksPath) {
+      this.libraryServerError.set('Please select a books folder first');
+      return;
+    }
+
+    this.libraryServerLoading.set(true);
+    this.libraryServerError.set(null);
+
+    try {
+      const result = await this.electronService.libraryServerStart({
+        booksPath: config.booksPath,
+        port: config.port
+      });
+
+      if (result.success && result.data) {
+        this.libraryServerStatus.set(result.data);
+        // Update config to mark as enabled
+        this.settingsService.updateLibraryServerConfig({ enabled: true });
+      } else {
+        this.libraryServerError.set(result.error || 'Failed to start server');
+      }
+    } catch (err) {
+      this.libraryServerError.set(err instanceof Error ? err.message : 'Failed to start server');
+    } finally {
+      this.libraryServerLoading.set(false);
+    }
+  }
+
+  async stopLibraryServer(): Promise<void> {
+    this.libraryServerLoading.set(true);
+    this.libraryServerError.set(null);
+
+    try {
+      const result = await this.electronService.libraryServerStop();
+      if (result.success) {
+        this.libraryServerStatus.set({ running: false, port: 0, addresses: [], booksPath: '' });
+        // Update config to mark as disabled
+        this.settingsService.updateLibraryServerConfig({ enabled: false });
+      } else {
+        this.libraryServerError.set(result.error || 'Failed to stop server');
+      }
+    } catch (err) {
+      this.libraryServerError.set(err instanceof Error ? err.message : 'Failed to stop server');
+    } finally {
+      this.libraryServerLoading.set(false);
+    }
+  }
+
+  async browseForBooksFolder(): Promise<void> {
+    const result = await this.electronService.openFolderDialog();
+    if (result.success && result.folderPath) {
+      this.settingsService.updateLibraryServerConfig({ booksPath: result.folderPath });
+      // Auto-start or restart server with new path
+      await this.restartLibraryServer();
+    }
+  }
+
+  async updateLibraryServerPort(port: number): Promise<void> {
+    if (port >= 1 && port <= 65535) {
+      this.settingsService.updateLibraryServerConfig({ port });
+      // Restart server if running with new port
+      if (this.libraryServerStatus()?.running) {
+        await this.restartLibraryServer();
+      }
+    }
+  }
+
+  private async restartLibraryServer(): Promise<void> {
+    const config = this.libraryServerConfig();
+    if (!config.booksPath) {
+      return;
+    }
+
+    this.libraryServerLoading.set(true);
+    this.libraryServerError.set(null);
+
+    try {
+      // Stop if running
+      if (this.libraryServerStatus()?.running) {
+        await this.electronService.libraryServerStop();
+      }
+
+      // Start with current config
+      const result = await this.electronService.libraryServerStart({
+        booksPath: config.booksPath,
+        port: config.port
+      });
+
+      if (result.success && result.data) {
+        this.libraryServerStatus.set(result.data);
+        this.settingsService.updateLibraryServerConfig({ enabled: true });
+      } else {
+        this.libraryServerError.set(result.error || 'Failed to start server');
+      }
+    } catch (err) {
+      this.libraryServerError.set(err instanceof Error ? err.message : 'Failed to start server');
+    } finally {
+      this.libraryServerLoading.set(false);
     }
   }
 }

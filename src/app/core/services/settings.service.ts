@@ -120,6 +120,13 @@ export class SettingsService {
           },
         ],
       },
+      {
+        id: 'libraryServer',
+        name: 'Library Server',
+        description: 'Share your book library on the network',
+        icon: '🌐',
+        fields: [], // Library Server section has custom UI
+      },
     ];
 
     this.sections.set(builtinSections);
@@ -260,6 +267,13 @@ export class SettingsService {
     // Initialize AI config with defaults
     defaults['aiConfig'] = { ...DEFAULT_AI_CONFIG };
 
+    // Initialize library server config with defaults
+    defaults['libraryServerConfig'] = {
+      enabled: false,
+      booksPath: '',
+      port: 8765
+    };
+
     this.values.set(defaults);
   }
 
@@ -299,5 +313,33 @@ export class SettingsService {
   updateAIConfig(updates: Partial<AIConfig>): void {
     const current = this.getAIConfig();
     this.setAIConfig({ ...current, ...updates });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Library Server Configuration
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Library server configuration interface
+   */
+  getLibraryServerConfig(): { enabled: boolean; booksPath: string; port: number } {
+    const config = this.values()['libraryServerConfig'] as { enabled: boolean; booksPath: string; port: number } | undefined;
+    return config || { enabled: false, booksPath: '', port: 8765 };
+  }
+
+  /**
+   * Set library server configuration
+   */
+  setLibraryServerConfig(config: { enabled: boolean; booksPath: string; port: number }): void {
+    this.values.update(v => ({ ...v, libraryServerConfig: config }));
+    this.saveSettings();
+  }
+
+  /**
+   * Update library server configuration
+   */
+  updateLibraryServerConfig(updates: Partial<{ enabled: boolean; booksPath: string; port: number }>): void {
+    const current = this.getLibraryServerConfig();
+    this.setLibraryServerConfig({ ...current, ...updates });
   }
 }

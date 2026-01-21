@@ -46,10 +46,7 @@ export interface ProjectFile {
             Import
           </desktop-button>
           <desktop-button variant="primary" size="md" icon="📂" (click)="openFile.emit()">
-            Open PDF
-          </desktop-button>
-          <desktop-button variant="ghost" size="md" icon="📖" (click)="openEpubEditor.emit()">
-            EPUB Editor
+            Open File
           </desktop-button>
         </div>
       </div>
@@ -151,12 +148,6 @@ export interface ProjectFile {
             <span class="context-icon">🎧</span>
             Transfer to Audiobook Producer
           </button>
-          @if (isSelectedEpub()) {
-            <button class="context-menu-item" (click)="onContextMenuOpenInEpubEditor()">
-              <span class="context-icon">📖</span>
-              Open in EPUB Editor
-            </button>
-          }
           <div class="context-divider"></div>
           <button class="context-menu-item" (click)="onContextMenuClearCache()">
             <span class="context-icon">🧹</span>
@@ -607,10 +598,6 @@ export class LibraryViewComponent implements OnInit {
   error = output<string>();
   // Output for transferring to audiobook
   transferToAudiobook = output<ProjectFile[]>();
-  // Output for opening EPUB in dedicated EPUB editor
-  openInEpubEditor = output<string>(); // Emits source path
-  // Output for opening EPUB editor file picker
-  openEpubEditor = output<void>();
 
   readonly projects = signal<ProjectFile[]>([]);
   readonly loading = signal(true);  // Start with loading = true
@@ -867,24 +854,6 @@ export class LibraryViewComponent implements OnInit {
     const selected = this.selectedProjects();
     if (selected.length > 0) {
       this.transferToAudiobook.emit(selected);
-    }
-  }
-
-  /**
-   * Check if exactly one project is selected and it's an EPUB file
-   */
-  isSelectedEpub(): boolean {
-    const selected = this.selectedProjects();
-    if (selected.length !== 1) return false;
-    const sourceName = selected[0].sourceName.toLowerCase();
-    return sourceName.endsWith('.epub');
-  }
-
-  onContextMenuOpenInEpubEditor(): void {
-    this.contextMenuVisible.set(false);
-    const selected = this.selectedProjects();
-    if (selected.length === 1) {
-      this.openInEpubEditor.emit(selected[0].sourcePath);
     }
   }
 

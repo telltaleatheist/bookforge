@@ -81,7 +81,7 @@ export class EpubProjectService {
       return;
     }
 
-    // Create new project
+    // Create new project - save directly to projects folder (no dialog)
     const projectData: EpubProject = {
       version: 1,
       source_path: epubPath,
@@ -93,7 +93,7 @@ export class EpubProjectService {
       modified_at: new Date().toISOString()
     };
 
-    const result = await this.electronService.saveProject(projectData, projectName + '.bfp');
+    const result = await this.electronService.projectsSave(projectData, projectName + '.bfp');
     if (result.success && result.filePath) {
       this.projectPath.set(result.filePath);
     }

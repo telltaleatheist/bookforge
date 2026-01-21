@@ -1221,4 +1221,29 @@ export class ElectronService {
     }
     return () => {};
   }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Library Server
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async libraryServerStart(config: { booksPath: string; port: number }): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[]; booksPath: string }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.libraryServer.start(config);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async libraryServerStop(): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.libraryServer.stop();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async libraryServerGetStatus(): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[]; booksPath: string }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.libraryServer.getStatus();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
 }

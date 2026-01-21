@@ -8,8 +8,51 @@ import { pdfAnalyzer } from './pdf-analyzer';
 import { getOcrService } from './ocr-service';
 import { getPluginRegistry } from './plugins/plugin-registry';
 import { loadBuiltinPlugins } from './plugins/plugin-loader';
+import { libraryServer } from './library-server';
 
 let mainWindow: BrowserWindow | null = null;
+
+// Library server config file path
+function getLibraryServerConfigPath(): string {
+  return path.join(os.homedir(), 'Documents', 'BookForge', 'library-server.json');
+}
+
+// Load library server config from file
+async function loadLibraryServerConfig(): Promise<{ enabled: boolean; booksPath: string; port: number } | null> {
+  try {
+    const configPath = getLibraryServerConfigPath();
+    if (!fsSync.existsSync(configPath)) {
+      return null;
+    }
+    const content = await fs.readFile(configPath, 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+// Save library server config to file
+async function saveLibraryServerConfig(config: { enabled: boolean; booksPath: string; port: number }): Promise<void> {
+  const configPath = getLibraryServerConfigPath();
+  const dir = path.dirname(configPath);
+  if (!fsSync.existsSync(dir)) {
+    await fs.mkdir(dir, { recursive: true });
+  }
+  await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+}
+
+// Auto-start library server if enabled
+async function autoStartLibraryServer(): Promise<void> {
+  const config = await loadLibraryServerConfig();
+  if (config && config.enabled && config.booksPath) {
+    try {
+      console.log('[LibraryServer] Auto-starting with config:', config);
+      await libraryServer.start({ booksPath: config.booksPath, port: config.port });
+    } catch (err) {
+      console.error('[LibraryServer] Auto-start failed:', err);
+    }
+  }
+}
 
 // Register custom protocol for serving page images from temp files
 // This avoids file:// security restrictions
@@ -1588,6 +1631,47 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // Library Server handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('library-server:start', async (_event, config: { booksPath: string; port: number }) => {
+    try {
+      // Stop existing server if running
+      if (libraryServer.isRunning()) {
+        await libraryServer.stop();
+      }
+      await libraryServer.start(config);
+      // Save config with enabled=true for auto-start on next launch
+      await saveLibraryServerConfig({ ...config, enabled: true });
+      return { success: true, data: libraryServer.getStatus() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('library-server:stop', async () => {
+    try {
+      await libraryServer.stop();
+      // Save config with enabled=false
+      const currentConfig = await loadLibraryServerConfig();
+      if (currentConfig) {
+        await saveLibraryServerConfig({ ...currentConfig, enabled: false });
+      }
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('library-server:status', async () => {
+    try {
+      return { success: true, data: libraryServer.getStatus() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // TTS Bridge handlers (ebook2audiobook)
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2498,6 +2582,9 @@ app.whenReady().then(async () => {
   }
   await loadBuiltinPlugins(registry);
 
+  // Auto-start library server if configured
+  await autoStartLibraryServer();
+
   // Set up application menu with Quit shortcut (Cmd+Q / Ctrl+Q)
   const isMac = process.platform === 'darwin';
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -2563,6 +2650,11 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async () => {
+  // Stop library server if running
+  if (libraryServer.isRunning()) {
+    await libraryServer.stop();
+  }
+
   // Dispose all plugins
   const registry = getPluginRegistry();
   await registry.disposeAll();

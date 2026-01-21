@@ -913,6 +913,21 @@ export class EpubjsService {
         cursor: default;
       }
 
+      /* Override EPUB page breaks for continuous scroll mode */
+      * {
+        page-break-before: auto !important;
+        page-break-after: auto !important;
+        page-break-inside: auto !important;
+        break-before: auto !important;
+        break-after: auto !important;
+        break-inside: auto !important;
+      }
+
+      /* Remove fixed heights that create gaps between sections */
+      html, body, section, article, div {
+        min-height: auto !important;
+      }
+
       .epub-block-wrapper {
         position: relative;
         cursor: pointer;
