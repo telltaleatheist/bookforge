@@ -259,7 +259,14 @@ export class PDFAnalyzer {
    * Analyze a document (PDF, EPUB, etc.) and extract blocks with categories
    * Uses cached analysis if available for the same file
    */
-  async analyze(pdfPath: string, maxPages?: number): Promise<AnalyzeResult> {
+  async analyze(
+    pdfPath: string,
+    maxPages?: number,
+    onProgress?: (phase: string, message: string) => void
+  ): Promise<AnalyzeResult> {
+    const sendProgress = onProgress || (() => {});
+    sendProgress('loading', 'Loading document...');
+
     const mupdfLib = await getMupdf();
     const fileHash = await this.computeAnalysisHash(pdfPath);
 
@@ -290,12 +297,14 @@ export class PDFAnalyzer {
     this.pageDimensions = [];
 
     // Read document file asynchronously to avoid blocking the main thread
+    sendProgress('loading', 'Reading document file...');
     const data = await fsPromises.readFile(pdfPath);
     const mimeType = getMimeType(pdfPath);
     this.doc = mupdfLib.Document.openDocument(data, mimeType);
 
     const totalPages = this.doc.countPages();
     const pageCount = maxPages ? Math.min(totalPages, maxPages) : totalPages;
+    sendProgress('loading', `Document has ${pageCount} pages, getting dimensions...`);
 
     // Get page dimensions (including origin for coordinate transformation)
     for (let pageNum = 0; pageNum < pageCount; pageNum++) {
@@ -318,12 +327,17 @@ export class PDFAnalyzer {
       try {
         const mutoolAvailable = await this.mutoolBridge.isAvailable();
         if (mutoolAvailable) {
+          // This is the slow part - extracting text from all pages
+          sendProgress('extracting', `Extracting text from ${pageCount} pages (this may take a few minutes for large documents)...`);
+
           // Extract both blocks and spans in one pass (more efficient)
           const { blocks: mutoolBlocks, spans: mutoolSpans } = await this.mutoolBridge.extractAll(
             pdfPath,
             pageCount,
             this.pageDimensions
           );
+
+          sendProgress('processing', `Processing ${mutoolBlocks.length} text blocks...`);
 
           // Convert MutoolTextBlock to TextBlock (compatible interfaces)
           this.blocks = mutoolBlocks.map(mb => ({
@@ -1341,14 +1355,22 @@ export class PDFAnalyzer {
       const filePath = path.join(previewDir, `page-${pageNum}.png`);
 
       if (!fs.existsSync(filePath)) {
-        const page = doc.loadPage(pageNum);
-        const matrix = mupdfLib.Matrix.scale(this.PREVIEW_SCALE, this.PREVIEW_SCALE);
-        const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-        const pngData = pixmap.asPNG();
-        fs.writeFileSync(filePath, Buffer.from(pngData));
+        try {
+          const page = doc.loadPage(pageNum);
+          const matrix = mupdfLib.Matrix.scale(this.PREVIEW_SCALE, this.PREVIEW_SCALE);
+          const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+          const pngData = pixmap.asPNG();
+          fs.writeFileSync(filePath, Buffer.from(pngData));
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          console.error(`[PDF Render] Error rendering preview for page ${pageNum}:`, errorMsg);
+          // Continue with other pages even if one fails
+        }
       }
 
-      previewPaths[pageNum] = filePath;
+      if (fs.existsSync(filePath)) {
+        previewPaths[pageNum] = filePath;
+      }
       previewCompleted++;
 
       if (previewCallback) {
@@ -1378,22 +1400,49 @@ export class PDFAnalyzer {
     }
 
     // Phase 2: Render full quality in background (don't await)
+    // For large documents, use reduced scale to avoid memory issues
+    const effectiveScale = totalPages > 200 ? 1.5 : totalPages > 100 ? 2.0 : this.FULL_SCALE;
+    if (effectiveScale !== this.FULL_SCALE) {
+      console.log(`[PDF Render] Large document (${totalPages} pages), using reduced scale: ${effectiveScale}`);
+    }
+
     let fullCompleted = 0;
+    let memoryErrorLogged = false;
     const renderFull = async (pageNum: number): Promise<void> => {
       const filePath = path.join(fullDir, `page-${pageNum}.png`);
 
       if (!fs.existsSync(filePath)) {
-        const page = doc.loadPage(pageNum);
-        const matrix = mupdfLib.Matrix.scale(this.FULL_SCALE, this.FULL_SCALE);
-        const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-        const pngData = pixmap.asPNG();
-        fs.writeFileSync(filePath, Buffer.from(pngData));
+        try {
+          const page = doc.loadPage(pageNum);
+          const matrix = mupdfLib.Matrix.scale(effectiveScale, effectiveScale);
+          const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+          const pngData = pixmap.asPNG();
+          fs.writeFileSync(filePath, Buffer.from(pngData));
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          // Handle memory allocation errors gracefully - use preview instead
+          if (errorMsg.includes('malloc') || errorMsg.includes('memory')) {
+            if (!memoryErrorLogged) {
+              console.warn(`[PDF Render] Memory allocation failed for page ${pageNum}, using preview quality for remaining pages`);
+              memoryErrorLogged = true;
+            }
+            // Copy preview to full if it exists, otherwise skip
+            const previewPath = path.join(previewDir, `page-${pageNum}.png`);
+            if (fs.existsSync(previewPath)) {
+              fs.copyFileSync(previewPath, filePath);
+            }
+          } else {
+            console.error(`[PDF Render] Error rendering page ${pageNum}:`, errorMsg);
+          }
+        }
       }
 
-      this.renderedPagePaths.set(pageNum, filePath);
+      if (fs.existsSync(filePath)) {
+        this.renderedPagePaths.set(pageNum, filePath);
+      }
       fullCompleted++;
 
-      if (fullCallback) {
+      if (fullCallback && fs.existsSync(filePath)) {
         fullCallback(pageNum, filePath);
       }
       if (progressCallback) {
@@ -1402,13 +1451,17 @@ export class PDFAnalyzer {
     };
 
     // Start full rendering in background (don't block)
+    // Use lower concurrency for large documents to reduce memory pressure
+    const effectiveConcurrency = totalPages > 200 ? 1 : totalPages > 100 ? 2 : concurrency;
     (async () => {
-      for (let i = 0; i < totalPages; i += concurrency) {
+      for (let i = 0; i < totalPages; i += effectiveConcurrency) {
         const batch = [];
-        for (let j = i; j < Math.min(i + concurrency, totalPages); j++) {
+        for (let j = i; j < Math.min(i + effectiveConcurrency, totalPages); j++) {
           batch.push(renderFull(j));
         }
         await Promise.all(batch);
+        // Yield to event loop between batches to allow GC
+        await new Promise(resolve => setImmediate(resolve));
       }
     })();
 

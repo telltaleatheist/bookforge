@@ -174,7 +174,14 @@ function setupIpcHandlers(): void {
   // PDF Analyzer handlers (pure TypeScript - no Python!)
   ipcMain.handle('pdf:analyze', async (_event, pdfPath: string, maxPages?: number) => {
     try {
-      const result = await pdfAnalyzer.analyze(pdfPath, maxPages);
+      // Send progress updates during analysis
+      const sendProgress = (phase: string, message: string) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('pdf:analyze-progress', { phase, message });
+        }
+      };
+
+      const result = await pdfAnalyzer.analyze(pdfPath, maxPages, sendProgress);
       console.log('[pdf:analyze] Returning result with', result.blocks.length, 'blocks');
       return { success: true, data: result };
     } catch (err) {

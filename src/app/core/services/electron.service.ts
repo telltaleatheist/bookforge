@@ -338,6 +338,17 @@ export class ElectronService {
   }
 
   /**
+   * Subscribe to PDF analysis progress updates.
+   * Returns unsubscribe function.
+   */
+  onAnalyzeProgress(callback: (progress: { phase: string; message: string }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.pdf.onAnalyzeProgress(callback);
+    }
+    return () => {};
+  }
+
+  /**
    * Subscribe to page upgrade notifications (when high-res replaces preview).
    * Returns unsubscribe function.
    */

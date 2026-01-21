@@ -632,6 +632,7 @@ export interface ElectronAPI {
     renderAllPages: (pdfPath: string, scale?: number, concurrency?: number) => Promise<{ success: boolean; data?: { paths: string[] }; error?: string }>;
     renderWithPreviews: (pdfPath: string, concurrency?: number) => Promise<{ success: boolean; data?: RenderWithPreviewsResult; error?: string }>;
     onRenderProgress: (callback: RenderProgressCallback) => () => void;
+    onAnalyzeProgress: (callback: (progress: { phase: string; message: string }) => void) => () => void;
     onPageUpgraded: (callback: (data: { pageNum: number; path: string }) => void) => () => void;
     onExportProgress: (callback: (progress: { current: number; total: number }) => void) => () => void;
     cleanupTempFiles: () => Promise<{ success: boolean; error?: string }>;
@@ -911,6 +912,15 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('pdf:render-progress', listener);
       return () => {
         ipcRenderer.removeListener('pdf:render-progress', listener);
+      };
+    },
+    onAnalyzeProgress: (callback: (progress: { phase: string; message: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: { phase: string; message: string }) => {
+        callback(progress);
+      };
+      ipcRenderer.on('pdf:analyze-progress', listener);
+      return () => {
+        ipcRenderer.removeListener('pdf:analyze-progress', listener);
       };
     },
     onPageUpgraded: (callback: (data: { pageNum: number; path: string }) => void) => {

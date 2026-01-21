@@ -289,9 +289,10 @@ export class MutoolBridge {
     const tmpFile = path.join(os.tmpdir(), `bookforge-stext-${Date.now()}.xml`);
 
     try {
+      // 10 minute timeout for large documents (648 pages can take 5+ minutes)
       await execAsync(`"${binPath}" draw -F stext -o "${tmpFile}" "${pdfPath}"`, {
-        maxBuffer: 100 * 1024 * 1024, // 100MB buffer
-        timeout: 120000 // 2 minute timeout
+        maxBuffer: 200 * 1024 * 1024, // 200MB buffer for large docs
+        timeout: 600000 // 10 minute timeout
       });
 
       const result = await fsPromises.readFile(tmpFile, 'utf-8');
