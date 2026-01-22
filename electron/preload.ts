@@ -879,6 +879,27 @@ export interface ElectronAPI {
       error?: string;
     }>;
     onLoadProgress: (callback: (progress: DiffLoadProgress) => void) => () => void;
+    // Cache operations
+    saveCache: (originalPath: string, cleanedPath: string, chapterId: string, cacheData: unknown) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    loadCache: (originalPath: string, cleanedPath: string, chapterId: string) => Promise<{
+      success: boolean;
+      data?: unknown;
+      notFound?: boolean;
+      error?: string;
+    }>;
+    clearCache: (originalPath: string, cleanedPath: string) => Promise<{
+      success: boolean;
+      deleted?: number;
+      error?: string;
+    }>;
+    getCacheKey: (originalPath: string, cleanedPath: string) => Promise<{
+      success: boolean;
+      cacheKey?: string;
+      error?: string;
+    }>;
   };
   ebookConvert: {
     isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
@@ -1294,6 +1315,15 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('diff:load-progress', handler);
       return () => ipcRenderer.removeListener('diff:load-progress', handler);
     },
+    // Cache operations
+    saveCache: (originalPath: string, cleanedPath: string, chapterId: string, cacheData: unknown) =>
+      ipcRenderer.invoke('diff:save-cache', originalPath, cleanedPath, chapterId, cacheData),
+    loadCache: (originalPath: string, cleanedPath: string, chapterId: string) =>
+      ipcRenderer.invoke('diff:load-cache', originalPath, cleanedPath, chapterId),
+    clearCache: (originalPath: string, cleanedPath: string) =>
+      ipcRenderer.invoke('diff:clear-cache', originalPath, cleanedPath),
+    getCacheKey: (originalPath: string, cleanedPath: string) =>
+      ipcRenderer.invoke('diff:get-cache-key', originalPath, cleanedPath),
   },
   play: {
     startSession: () =>

@@ -47,12 +47,15 @@ export class ProjectService {
   private readonly AUTO_SAVE_DELAY = 1000; // 1 second debounce
   private autoSaveTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  // Auto-save effect
-  private readonly autoSaveEffect = effect(() => {
-    if (this.editorState.hasUnsavedChanges() && this.projectPath()) {
-      this.scheduleAutoSave();
-    }
-  });
+  // Auto-save effect - DISABLED
+  // The pdf-picker.component.ts has its own complete auto-save that includes
+  // chapters, metadata, and other fields that this service doesn't track.
+  // Keeping this enabled would overwrite complete saves with partial data.
+  // private readonly autoSaveEffect = effect(() => {
+  //   if (this.editorState.hasUnsavedChanges() && this.projectPath()) {
+  //     this.scheduleAutoSave();
+  //   }
+  // });
 
   constructor() {
     // Clean up auto-save timeout on destroy

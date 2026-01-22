@@ -1001,6 +1001,53 @@ export class ElectronService {
     return () => {}; // No-op for non-Electron
   }
 
+  /**
+   * Save diff cache to disk
+   */
+  async saveDiffCache(originalPath: string, cleanedPath: string, chapterId: string, cacheData: unknown): Promise<boolean> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.diff.saveCache(originalPath, cleanedPath, chapterId, cacheData);
+      return result.success;
+    }
+    return false;
+  }
+
+  /**
+   * Load diff cache from disk
+   */
+  async loadDiffCache(originalPath: string, cleanedPath: string, chapterId: string): Promise<{
+    success: boolean;
+    data?: unknown;
+    notFound?: boolean;
+  }> {
+    if (this.isElectron) {
+      return await (window as any).electron.diff.loadCache(originalPath, cleanedPath, chapterId);
+    }
+    return { success: false, notFound: true };
+  }
+
+  /**
+   * Clear diff cache for a book pair
+   */
+  async clearDiffCache(originalPath: string, cleanedPath: string): Promise<boolean> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.diff.clearCache(originalPath, cleanedPath);
+      return result.success;
+    }
+    return false;
+  }
+
+  /**
+   * Get cache key for a book pair (to check if cache is valid)
+   */
+  async getDiffCacheKey(originalPath: string, cleanedPath: string): Promise<string | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.diff.getCacheKey(originalPath, cleanedPath);
+      return result.success ? result.cacheKey : null;
+    }
+    return null;
+  }
+
   // Ebook conversion operations (Calibre CLI integration)
   async isEbookConvertAvailable(): Promise<boolean> {
     if (this.isElectron) {

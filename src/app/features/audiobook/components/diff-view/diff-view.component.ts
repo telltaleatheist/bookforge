@@ -2,7 +2,7 @@ import { Component, input, signal, computed, OnInit, OnDestroy, inject, ElementR
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { DiffService, DiffLoadingProgress } from '../../services/diff.service';
-import { DiffChapter, DiffChapterMeta, DiffWord, DIFF_HARD_LIMIT, DIFF_PAGE_SIZE } from '../../../../core/models/diff.types';
+import { DiffChapter, DiffChapterMeta, DiffWord } from '../../../../core/models/diff.types';
 import { Subscription } from 'rxjs';
 
 /**
@@ -38,6 +38,11 @@ interface EditState {
           <h4>Review Changes</h4>
           @if (totalChanges() > 0) {
             <span class="change-badge">{{ totalChanges() }} changes</span>
+          }
+          @if (backgroundLoading()) {
+            <span class="background-loading-indicator" title="Loading remaining content in background">
+              <span class="spinner-small">&#8635;</span>
+            </span>
           }
         </div>
 
@@ -122,14 +127,14 @@ interface EditState {
             <span>Loading chapter...</span>
           </div>
         } @else if (currentChapterSegments().length > 0) {
-          <!-- Oversized chapter warning -->
-          @if (isOversizedChapter()) {
-            <div class="oversized-warning">
-              <span class="warning-icon">&#9888;</span>
-              <span>This chapter is very large ({{ formatSize(currentChapterSize()) }}). Showing partial diff.</span>
-              @if (currentPage() < totalPages() - 1) {
-                <span class="page-info">Page {{ currentPage() + 1 }} of {{ totalPages() }}</span>
-              }
+          <!-- Large chapter info with load progress -->
+          @if (hasMoreContent()) {
+            <div class="load-progress-banner">
+              <span class="info-icon">&#8987;</span>
+              <span>Showing {{ loadedCharsDisplay() }} ({{ contentLoadProgress() }}%)</span>
+              <div class="mini-progress">
+                <div class="mini-progress-fill" [style.width.%]="contentLoadProgress()"></div>
+              </div>
             </div>
           }
 
@@ -197,25 +202,20 @@ interface EditState {
             </div>
           </div>
 
-          <!-- Pagination for oversized chapters -->
-          @if (totalPages() > 1) {
-            <div class="pagination">
+          <!-- Load More button for large chapters -->
+          @if (hasMoreContent()) {
+            <div class="load-more-section">
               <desktop-button
-                variant="ghost"
-                size="xs"
-                [disabled]="currentPage() === 0"
-                (click)="goToPage(currentPage() - 1)"
+                variant="secondary"
+                size="sm"
+                [disabled]="chapterLoading()"
+                (click)="loadMore()"
               >
-                ← Previous Page
-              </desktop-button>
-              <span class="page-indicator">{{ currentPage() + 1 }} / {{ totalPages() }}</span>
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                [disabled]="currentPage() >= totalPages() - 1"
-                (click)="goToPage(currentPage() + 1)"
-              >
-                Next Page →
+                @if (chapterLoading()) {
+                  Loading...
+                } @else {
+                  Load More ({{ contentLoadProgress() }}% loaded)
+                }
               </desktop-button>
             </div>
           }
@@ -309,6 +309,20 @@ interface EditState {
       color: #ff6b35;
       border-radius: 10px;
       font-weight: 500;
+    }
+
+    .background-loading-indicator {
+      display: inline-flex;
+      align-items: center;
+      margin-left: 0.5rem;
+      color: var(--text-tertiary);
+    }
+
+    .spinner-small {
+      display: inline-block;
+      animation: spin 1s linear infinite;
+      font-size: 0.875rem;
+      opacity: 0.6;
     }
 
     .chapter-selector {
@@ -430,25 +444,45 @@ interface EditState {
       to { transform: rotate(360deg); }
     }
 
-    .oversized-warning {
+    .load-progress-banner {
       display: flex;
       align-items: center;
       gap: 0.5rem;
       padding: 0.5rem 0.75rem;
-      background: rgba(255, 193, 7, 0.15);
-      border-bottom: 1px solid rgba(255, 193, 7, 0.3);
-      color: #ffc107;
+      background: rgba(100, 181, 246, 0.15);
+      border-bottom: 1px solid rgba(100, 181, 246, 0.3);
+      color: #64b5f6;
       font-size: 0.75rem;
       flex-shrink: 0;
     }
 
-    .warning-icon {
-      font-size: 1rem;
+    .info-icon {
+      font-size: 0.875rem;
     }
 
-    .page-info {
+    .mini-progress {
       margin-left: auto;
-      font-weight: 500;
+      width: 80px;
+      height: 4px;
+      background: rgba(100, 181, 246, 0.2);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .mini-progress-fill {
+      height: 100%;
+      background: #64b5f6;
+      border-radius: 2px;
+      transition: width 0.3s ease;
+    }
+
+    .load-more-section {
+      display: flex;
+      justify-content: center;
+      padding: 1rem;
+      border-top: 1px solid var(--border-subtle);
+      background: var(--bg-subtle);
+      flex-shrink: 0;
     }
 
     .chapter-content {
@@ -600,22 +634,6 @@ interface EditState {
       word-break: break-word;
     }
 
-    .pagination {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 1rem;
-      padding: 0.5rem 0.75rem;
-      background: var(--bg-subtle);
-      border-top: 1px solid var(--border-default);
-      flex-shrink: 0;
-    }
-
-    .page-indicator {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      font-variant-numeric: tabular-nums;
-    }
 
     .diff-footer {
       padding: 0.5rem 0.75rem;
@@ -646,7 +664,7 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   readonly currentChangeIndex = signal(0);
   readonly loadingProgress = signal<DiffLoadingProgress | null>(null);
   readonly chapterLoading = signal(false);
-  readonly currentPage = signal(0);
+  readonly backgroundLoading = signal(false);
 
   // Tooltip state
   readonly tooltipVisible = signal(false);
@@ -674,68 +692,27 @@ export class DiffViewComponent implements OnInit, OnDestroy {
       const original = this.originalPath();
       const cleaned = this.cleanedPath();
 
+      console.log('[DiffView] effect: paths=', { original: original?.slice(-30), cleaned: cleaned?.slice(-30) });
+
       // Only reload if paths changed and both are provided
       if (original && cleaned &&
           (original !== this.previousPaths.original || cleaned !== this.previousPaths.cleaned)) {
+        console.log('[DiffView] effect: paths changed, will load');
         this.previousPaths = { original, cleaned };
         // Use setTimeout to avoid issues with effect running during change detection
         setTimeout(() => this.loadComparison(), 0);
+      } else if (!original || !cleaned) {
+        console.log('[DiffView] effect: missing paths');
+      } else {
+        console.log('[DiffView] effect: paths unchanged');
       }
     });
   }
 
-  // Computed: current chapter size
-  readonly currentChapterSize = computed(() => {
-    const chapter = this.currentChapter();
-    if (!chapter) return 0;
-    return chapter.originalText.length + chapter.cleanedText.length;
-  });
-
-  // Computed: is oversized
-  readonly isOversizedChapter = computed(() => {
-    return this.currentChapterSize() > DIFF_HARD_LIMIT;
-  });
-
-  // Computed: total pages for oversized chapters
-  readonly totalPages = computed(() => {
-    const chapter = this.currentChapter();
-    if (!chapter) return 1;
-    const size = chapter.cleanedText.length;
-    if (size <= DIFF_PAGE_SIZE) return 1;
-    return Math.ceil(size / DIFF_PAGE_SIZE);
-  });
-
-  // Computed: segments for current chapter (with pagination for oversized)
+  // Computed: segments for current chapter (shows all loaded content)
   readonly currentChapterSegments = computed((): DiffSegment[] => {
     const chapter = this.currentChapter();
     if (!chapter) return [];
-
-    // For oversized chapters, paginate the diff
-    if (this.isOversizedChapter()) {
-      const page = this.currentPage();
-      const startIdx = page * DIFF_PAGE_SIZE;
-      const endIdx = startIdx + DIFF_PAGE_SIZE;
-
-      // Slice the diff words for the current page
-      let charCount = 0;
-      let startWordIdx = 0;
-      let endWordIdx = chapter.diffWords.length;
-
-      for (let i = 0; i < chapter.diffWords.length; i++) {
-        const word = chapter.diffWords[i];
-        if (charCount < startIdx) {
-          startWordIdx = i;
-        }
-        charCount += word.text.length;
-        if (charCount >= endIdx) {
-          endWordIdx = i + 1;
-          break;
-        }
-      }
-
-      const pageWords = chapter.diffWords.slice(startWordIdx, endWordIdx);
-      return this.buildSegments(pageWords, 0, chapter.id);
-    }
 
     return this.buildSegments(chapter.diffWords, 0, chapter.id);
   });
@@ -766,6 +743,27 @@ export class DiffViewComponent implements OnInit, OnDestroy {
     return idx < meta.length - 1;
   });
 
+  // Computed: has more content to load
+  readonly hasMoreContent = computed(() => {
+    const chapter = this.currentChapter();
+    if (!chapter) return false;
+    return chapter.loadedChars < chapter.totalChars;
+  });
+
+  // Computed: content loading progress percentage
+  readonly contentLoadProgress = computed(() => {
+    const chapter = this.currentChapter();
+    if (!chapter || chapter.totalChars === 0) return 100;
+    return Math.round((chapter.loadedChars / chapter.totalChars) * 100);
+  });
+
+  // Computed: formatted loaded/total chars
+  readonly loadedCharsDisplay = computed(() => {
+    const chapter = this.currentChapter();
+    if (!chapter) return '';
+    return `${this.formatSize(chapter.loadedChars)} of ${this.formatSize(chapter.totalChars)}`;
+  });
+
   ngOnInit(): void {
     // Subscribe to service state
     this.subscriptions.push(
@@ -773,6 +771,7 @@ export class DiffViewComponent implements OnInit, OnDestroy {
       this.diffService.error$.subscribe(error => this.error.set(error)),
       this.diffService.loadingProgress$.subscribe(progress => this.loadingProgress.set(progress)),
       this.diffService.chapterLoading$.subscribe(loading => this.chapterLoading.set(loading)),
+      this.diffService.backgroundLoading$.subscribe(loading => this.backgroundLoading.set(loading)),
       this.diffService.session$.subscribe(session => {
         if (session) {
           this.chaptersMeta.set(session.chaptersMeta);
@@ -782,7 +781,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
           const current = session.chapters.find(c => c.id === session.currentChapterId);
           this.currentChapter.set(current || null);
           this.currentChangeIndex.set(0);
-          this.currentPage.set(0);
         } else {
           this.chaptersMeta.set([]);
           this.currentChapterId.set('');
@@ -823,7 +821,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
     const select = event.target as HTMLSelectElement;
     const chapterId = select.value;
     this.currentChangeIndex.set(0);
-    this.currentPage.set(0);
     await this.diffService.setCurrentChapter(chapterId);
   }
 
@@ -832,7 +829,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
    */
   async goToPrevChapter(): Promise<void> {
     this.currentChangeIndex.set(0);
-    this.currentPage.set(0);
     await this.diffService.previousChapter();
   }
 
@@ -841,18 +837,7 @@ export class DiffViewComponent implements OnInit, OnDestroy {
    */
   async goToNextChapter(): Promise<void> {
     this.currentChangeIndex.set(0);
-    this.currentPage.set(0);
     await this.diffService.nextChapter();
-  }
-
-  /**
-   * Go to a specific page (for oversized chapters)
-   */
-  goToPage(page: number): void {
-    if (page >= 0 && page < this.totalPages()) {
-      this.currentPage.set(page);
-      this.currentChangeIndex.set(0);
-    }
   }
 
   /**
@@ -973,6 +958,11 @@ export class DiffViewComponent implements OnInit, OnDestroy {
 
   retry(): void {
     this.loadComparison();
+  }
+
+  /** Load more content for the current chapter */
+  async loadMore(): Promise<void> {
+    await this.diffService.loadMore();
   }
 
   /** Public method to refresh the diff comparison */

@@ -45,6 +45,8 @@ export interface EpubStructure {
   manifest: Record<string, ManifestItem>;
   opfPath: string;
   rootPath: string;
+  navPath?: string;  // EPUB 3 nav.xhtml path
+  ncxPath?: string;  // EPUB 2 toc.ncx path
 }
 
 interface ManifestItem {
@@ -263,7 +265,117 @@ class EpubProcessor {
     const rootPath = path.dirname(opfPath);
 
     this.structure = this.parseOpf(opfXml, opfPath, rootPath);
+
+    // Try to extract chapter titles from navigation document
+    await this.loadChapterTitlesFromNav();
+
     return this.structure;
+  }
+
+  /**
+   * Load chapter titles from nav.xhtml (EPUB 3) or toc.ncx (EPUB 2)
+   */
+  private async loadChapterTitlesFromNav(): Promise<void> {
+    if (!this.structure) return;
+
+    // Map of href -> title from navigation
+    const navTitles = new Map<string, string>();
+
+    // Try EPUB 3 nav.xhtml first
+    if (this.structure.navPath) {
+      try {
+        const navXml = await this.readFile(this.structure.navPath);
+        this.parseNavXhtml(navXml, navTitles);
+        console.log('[EPUB] Extracted', navTitles.size, 'titles from nav.xhtml');
+      } catch (err) {
+        console.warn('[EPUB] Failed to read nav.xhtml:', err);
+      }
+    }
+
+    // Fall back to EPUB 2 toc.ncx if no titles found
+    if (navTitles.size === 0 && this.structure.ncxPath) {
+      try {
+        const ncxXml = await this.readFile(this.structure.ncxPath);
+        this.parseNcx(ncxXml, navTitles);
+        console.log('[EPUB] Extracted', navTitles.size, 'titles from toc.ncx');
+      } catch (err) {
+        console.warn('[EPUB] Failed to read toc.ncx:', err);
+      }
+    }
+
+    // Update chapter titles from navigation
+    if (navTitles.size > 0) {
+      for (const chapter of this.structure.chapters) {
+        // Try exact match first
+        let title = navTitles.get(chapter.href);
+
+        // Try without fragment
+        if (!title) {
+          title = navTitles.get(chapter.href.split('#')[0]);
+        }
+
+        // Try matching just the filename
+        if (!title) {
+          const filename = chapter.href.split('/').pop() || '';
+          for (const [href, navTitle] of navTitles) {
+            if (href.endsWith(filename) || href.endsWith(filename.split('#')[0])) {
+              title = navTitle;
+              break;
+            }
+          }
+        }
+
+        if (title) {
+          console.log('[EPUB] Chapter', chapter.id, ':', chapter.href, '->', title);
+          chapter.title = title;
+        }
+      }
+    }
+  }
+
+  /**
+   * Parse EPUB 3 nav.xhtml to extract chapter titles
+   */
+  private parseNavXhtml(xml: string, titles: Map<string, string>): void {
+    // Find all <a> tags within the nav element
+    // Pattern: <a href="...">Title</a>
+    const anchorRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/gi;
+    let match;
+
+    while ((match = anchorRegex.exec(xml)) !== null) {
+      const href = match[1];
+      const title = match[2].trim();
+      if (href && title) {
+        titles.set(href, title);
+      }
+    }
+  }
+
+  /**
+   * Parse EPUB 2 toc.ncx to extract chapter titles
+   */
+  private parseNcx(xml: string, titles: Map<string, string>): void {
+    // Find navPoint elements with content src and navLabel text
+    // Pattern: <navPoint>...<navLabel><text>Title</text></navLabel>...<content src="..."/>...</navPoint>
+    const navPointRegex = /<navPoint[^>]*>([\s\S]*?)<\/navPoint>/gi;
+    let match;
+
+    while ((match = navPointRegex.exec(xml)) !== null) {
+      const navPoint = match[1];
+
+      // Extract text from navLabel
+      const textMatch = navPoint.match(/<text>([^<]+)<\/text>/i);
+      // Extract src from content
+      const srcMatch = navPoint.match(/<content[^>]+src=["']([^"']+)["']/i);
+
+      if (textMatch && srcMatch) {
+        const title = textMatch[1].trim();
+        const href = srcMatch[1];
+        if (href && title) {
+          titles.set(href, title);
+        }
+      }
+    }
   }
 
   close(): void {
@@ -392,6 +504,17 @@ class EpubProcessor {
       spine.push(itemref.attributes.idref);
     }
 
+    // Find navigation document for chapter titles (EPUB 3: nav, EPUB 2: ncx)
+    let navItem = getAllTags(xml, 'item').find(i =>
+      i.attributes.properties?.includes('nav')
+    );
+    const ncxItem = getAllTags(xml, 'item').find(i =>
+      i.attributes['media-type'] === 'application/x-dtbncx+xml'
+    );
+
+    const navPath = navItem?.attributes.href || null;
+    const ncxPath = ncxItem?.attributes.href || null;
+
     // Build chapters from spine
     const chapters: EpubChapter[] = [];
     // Accept multiple content types that EPUBs might use
@@ -403,6 +526,8 @@ class EpubProcessor {
     ]);
 
     console.log('[EPUB] Spine has', spine.length, 'items');
+    console.log('[EPUB] Nav path:', navPath, 'NCX path:', ncxPath);
+
     for (let i = 0; i < spine.length; i++) {
       const id = spine[i];
       const item = manifest[id];
@@ -411,7 +536,7 @@ class EpubProcessor {
         if (validMediaTypes.has(item.mediaType)) {
           chapters.push({
             id,
-            title: `Chapter ${i + 1}`,
+            title: `Chapter ${i + 1}`,  // Default title, will be updated from nav
             href: item.href,
             order: i,
             wordCount: 0
@@ -429,7 +554,9 @@ class EpubProcessor {
       spine,
       manifest,
       opfPath,
-      rootPath
+      rootPath,
+      navPath: navPath ? (rootPath ? `${rootPath}/${navPath}` : navPath) : undefined,
+      ncxPath: ncxPath ? (rootPath ? `${rootPath}/${ncxPath}` : ncxPath) : undefined
     };
   }
 
@@ -444,11 +571,18 @@ class EpubProcessor {
   }
 
   private extractTextFromXhtml(xhtml: string): string {
-    // Remove script and style tags
-    let text = xhtml.replace(/<script[\s\S]*?<\/script>/gi, '');
+    // Remove the entire <head> section (contains <title> which we don't want as text)
+    let text = xhtml.replace(/<head[\s\S]*?<\/head>/gi, '');
+
+    // Remove script and style tags (in case any are in body)
+    text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
     text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
 
-    // Remove all tags
+    // Add period after headings for natural TTS pause, but only if not already punctuated
+    // This handles: <h1>Title</h1> → <h1>Title. </h1> but <h1>Title?</h1> stays as-is
+    text = text.replace(/([^.!?])<\/h[1-6]>/gi, '$1. ');
+
+    // Remove all remaining tags
     text = text.replace(/<[^>]+>/g, ' ');
 
     // Decode HTML entities

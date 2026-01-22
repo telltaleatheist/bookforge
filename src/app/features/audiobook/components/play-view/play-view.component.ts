@@ -85,7 +85,7 @@ import {
             <select
               [ngModel]="selectedChapterId()"
               (ngModelChange)="onChapterChange($event)"
-              [disabled]="!isReady()"
+              [disabled]="chaptersLoading() || chapters().length === 0"
             >
               @for (chapter of chapters(); track chapter.id) {
                 <option [value]="chapter.id">{{ chapter.title }}</option>
@@ -122,32 +122,31 @@ import {
 
         <!-- Playback controls -->
         <div class="controls">
-          @if (!isReady()) {
-            <!-- Not ready - show Start TTS button prominently -->
-            <div class="start-prompt">
+          <div class="control-group">
+            <!-- Prev chapter - always visible -->
+            <desktop-button
+              variant="ghost"
+              size="sm"
+              [disabled]="!canGoPrevChapter()"
+              (click)="prevChapter()"
+              title="Previous Chapter"
+            >
+              &#9198;
+            </desktop-button>
+
+            @if (!isReady()) {
+              <!-- Not ready - show Start TTS button -->
               <desktop-button
                 variant="primary"
                 size="lg"
                 (click)="startSession()"
                 [disabled]="chaptersLoading()"
+                class="play-btn"
               >
                 Start TTS Engine
               </desktop-button>
-              <span class="start-hint">Click to initialize the TTS engine</span>
-            </div>
-          } @else {
-            <!-- Ready - show playback controls -->
-            <div class="control-group">
-              <desktop-button
-                variant="ghost"
-                size="sm"
-                [disabled]="!canGoPrevChapter()"
-                (click)="prevChapter()"
-                title="Previous Chapter"
-              >
-                &#9198;
-              </desktop-button>
-
+            } @else {
+              <!-- Ready - show playback controls -->
               @if (isPlaying()) {
                 <desktop-button
                   variant="primary"
@@ -179,32 +178,37 @@ import {
               >
                 &#9209;
               </desktop-button>
+            }
 
-              <desktop-button
-                variant="ghost"
-                size="sm"
-                [disabled]="!canGoNextChapter()"
-                (click)="nextChapter()"
-                title="Next Chapter"
-              >
-                &#9197;
-              </desktop-button>
-            </div>
+            <!-- Next chapter - always visible -->
+            <desktop-button
+              variant="ghost"
+              size="sm"
+              [disabled]="!canGoNextChapter()"
+              (click)="nextChapter()"
+              title="Next Chapter"
+            >
+              &#9197;
+            </desktop-button>
+          </div>
 
-            <div class="playback-info">
-              @if (currentChapter()) {
-                <span class="chapter-indicator">
-                  Ch {{ currentChapterIndex() + 1 }}/{{ chapters().length }}
-                </span>
+          <div class="playback-info">
+            @if (currentChapter()) {
+              <span class="chapter-indicator">
+                Ch {{ currentChapterIndex() + 1 }}/{{ chapters().length }}
+              </span>
+              @if (isReady()) {
                 <span class="sentence-indicator">
                   {{ currentSentenceIndex() + 1 }}/{{ currentChapter()!.sentences.length }}
                 </span>
               }
-              @if (isGenerating()) {
-                <span class="generating-indicator">Generating...</span>
-              }
-            </div>
+            }
+            @if (isGenerating()) {
+              <span class="generating-indicator">Generating...</span>
+            }
+          </div>
 
+          @if (isReady()) {
             <desktop-button variant="ghost" size="sm" (click)="endSession()">
               End Session
             </desktop-button>

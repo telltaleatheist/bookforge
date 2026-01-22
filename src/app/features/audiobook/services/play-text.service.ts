@@ -54,6 +54,10 @@ export class PlayTextService {
    * Parse chapter text into sentences
    */
   parseChapter(chapterId: string, title: string, text: string): PlayableChapter {
+    // The EPUB's h1 heading is already extracted as part of the text content.
+    // Do NOT prepend the title again - it would cause duplication, especially
+    // after AI cleanup converts numbers (e.g., "Chapter 2" → "Chapter Two").
+    // The text already starts with the chapter title from the h1 tag.
     const sentences = this.splitIntoSentences(text);
 
     return {

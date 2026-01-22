@@ -15,6 +15,8 @@ export interface DiffChapter {
   cleanedText: string;
   diffWords: DiffWord[];
   changeCount: number;
+  loadedChars: number;   // How many chars have been diffed
+  totalChars: number;    // Total chars in chapter
 }
 
 // Lightweight chapter metadata - no text content (for lazy loading)
@@ -48,7 +50,8 @@ export interface DiffComparisonResult {
   }>;
 }
 
-// Constants for memory protection
-export const DIFF_SAFE_CHAR_LIMIT = 100_000;  // 100k chars per chapter before warning
-export const DIFF_HARD_LIMIT = 500_000;  // 500k chars - show paginated view
-export const DIFF_PAGE_SIZE = 50_000;  // 50k chars per page in paginated view
+// Constants for memory protection and performance
+export const DIFF_INITIAL_LOAD = 20_000;  // 20k chars initially - fast load
+export const DIFF_LOAD_MORE_SIZE = 20_000;  // 20k chars per "Load More" click
+export const DIFF_SAFE_CHAR_LIMIT = 50_000;  // 50k chars before showing warning
+export const DIFF_HARD_LIMIT = 100_000;  // 100k chars - definitely use pagination

@@ -99,7 +99,8 @@
       "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/ebook2audiobook/bin/python:*)",
       "Bash(git rebase:*)",
       "Bash(git ls-tree:*)",
-      "Bash(ffprobe:*)"
+      "Bash(ffprobe:*)",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/bin/conda run:*)"
     ]
   }
 }

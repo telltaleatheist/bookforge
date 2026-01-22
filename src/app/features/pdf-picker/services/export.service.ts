@@ -187,8 +187,10 @@ export class ExportService {
         );
       }
 
-      if (blockText.trim()) {
-        pageMap.get(block.page)!.push(`<p>${this.escapeHtml(blockText)}</p>`);
+      // Sanitize text to remove garbage characters (image placeholders, etc.)
+      const sanitizedText = this.sanitizeText(blockText);
+      if (sanitizedText) {
+        pageMap.get(block.page)!.push(`<p>${this.escapeHtml(sanitizedText)}</p>`);
       }
     }
 
@@ -663,6 +665,9 @@ export class ExportService {
     let currentChapterIndex = 0;
     let currentContent: string[] = [];
     let currentTitle = 'Introduction';
+    let normalizedTitle = 'introduction';
+    let blocksInChapter = 0; // Track how many blocks processed in current chapter
+    const SKIP_TITLE_WITHIN_FIRST_N_BLOCKS = 5; // Skip title matches within first N blocks
 
     for (const block of exportBlocks) {
       while (
@@ -679,8 +684,10 @@ export class ExportService {
           });
         }
         currentTitle = sortedChapters[currentChapterIndex].title;
+        normalizedTitle = currentTitle.toLowerCase().replace(/\s+/g, ' ').trim();
         currentContent = [];
         currentChapterIndex++;
+        blocksInChapter = 0; // Reset counter for new chapter
       }
 
       let blockText = textCorrections?.get(block.id) ?? block.text;
@@ -692,8 +699,16 @@ export class ExportService {
         );
       }
 
-      if (blockText.trim()) {
-        currentContent.push(`<p>${this.escapeHtml(blockText)}</p>`);
+      // Sanitize text first to remove garbage characters (image placeholders, etc.)
+      const sanitizedText = this.sanitizeText(blockText);
+      if (sanitizedText) {
+        blocksInChapter++;
+        // Skip blocks that match the chapter title near the start of a chapter
+        const normalizedBlock = sanitizedText.toLowerCase().replace(/\s+/g, ' ').trim();
+        if (blocksInChapter <= SKIP_TITLE_WITHIN_FIRST_N_BLOCKS && normalizedBlock === normalizedTitle) {
+          continue; // Skip this title block
+        }
+        currentContent.push(`<p>${this.escapeHtml(sanitizedText)}</p>`);
       }
     }
 
@@ -830,6 +845,30 @@ export class ExportService {
     result = result.replace(/  +/g, ' ');
 
     return result;
+  }
+
+  /**
+   * Sanitize text by removing problematic characters:
+   * - Object Replacement Character (U+FFFC) - placeholder for images/objects
+   * - Replacement Character (U+FFFD) - encoding errors
+   * - Control characters (except newlines/tabs)
+   * - Zero-width characters
+   * - Private Use Area characters
+   */
+  private sanitizeText(text: string): string {
+    return text
+      // Remove object replacement and replacement characters
+      .replace(/[\uFFFC\uFFFD]/g, '')
+      // Remove control characters except \n \r \t
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+      // Remove zero-width characters
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      // Remove Private Use Area characters
+      .replace(/[\uE000-\uF8FF]/g, '')
+      // Collapse multiple spaces into one
+      .replace(/  +/g, ' ')
+      // Trim
+      .trim();
   }
 
   private escapeHtml(text: string): string {

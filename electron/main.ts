@@ -735,6 +735,7 @@ function setupIpcHandlers(): void {
 
   const getProjectsFolder = () => path.join(getLibraryRoot(), 'projects');
   const getFilesFolder = () => path.join(getLibraryRoot(), 'files');
+  const getDiffCacheFolder = () => path.join(getLibraryRoot(), 'cache', 'diff');
 
   // Compute file hash for duplicate detection
   const computeFileHash = async (filePath: string): Promise<string> => {
@@ -1541,6 +1542,83 @@ function setupIpcHandlers(): void {
       const { getChapterComparison } = await import('./epub-processor.js');
       const result = await getChapterComparison(originalPath, cleanedPath, chapterId);
       return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Generate a cache key based on file paths and modification times
+  const getDiffCacheKey = async (originalPath: string, cleanedPath: string): Promise<string> => {
+    try {
+      const [origStat, cleanStat] = await Promise.all([
+        fs.stat(originalPath),
+        fs.stat(cleanedPath)
+      ]);
+      const keySource = `${originalPath}|${origStat.mtimeMs}|${cleanedPath}|${cleanStat.mtimeMs}`;
+      return crypto.createHash('sha256').update(keySource).digest('hex').substring(0, 16);
+    } catch {
+      // Fallback to path-based key if stat fails
+      return crypto.createHash('sha256').update(`${originalPath}|${cleanedPath}`).digest('hex').substring(0, 16);
+    }
+  };
+
+  // Save diff cache to disk
+  ipcMain.handle('diff:save-cache', async (_event, originalPath: string, cleanedPath: string, chapterId: string, cacheData: unknown) => {
+    try {
+      const cacheFolder = getDiffCacheFolder();
+      await fs.mkdir(cacheFolder, { recursive: true });
+
+      const cacheKey = await getDiffCacheKey(originalPath, cleanedPath);
+      const cacheFile = path.join(cacheFolder, `${cacheKey}_${chapterId}.json`);
+
+      await fs.writeFile(cacheFile, JSON.stringify(cacheData), 'utf-8');
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Load diff cache from disk
+  ipcMain.handle('diff:load-cache', async (_event, originalPath: string, cleanedPath: string, chapterId: string) => {
+    try {
+      const cacheFolder = getDiffCacheFolder();
+      const cacheKey = await getDiffCacheKey(originalPath, cleanedPath);
+      const cacheFile = path.join(cacheFolder, `${cacheKey}_${chapterId}.json`);
+
+      const data = await fs.readFile(cacheFile, 'utf-8');
+      return { success: true, data: JSON.parse(data) };
+    } catch {
+      // Cache miss is not an error
+      return { success: false, notFound: true };
+    }
+  });
+
+  // Clear diff cache for a specific book pair
+  ipcMain.handle('diff:clear-cache', async (_event, originalPath: string, cleanedPath: string) => {
+    try {
+      const cacheFolder = getDiffCacheFolder();
+      const cacheKey = await getDiffCacheKey(originalPath, cleanedPath);
+
+      // Delete all cache files matching this key
+      const entries = await fs.readdir(cacheFolder).catch(() => []);
+      let deleted = 0;
+      for (const entry of entries) {
+        if (entry.startsWith(cacheKey)) {
+          await fs.unlink(path.join(cacheFolder, entry)).catch(() => {});
+          deleted++;
+        }
+      }
+      return { success: true, deleted };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Get cache key for a book pair (used by renderer to check if cache is valid)
+  ipcMain.handle('diff:get-cache-key', async (_event, originalPath: string, cleanedPath: string) => {
+    try {
+      const cacheKey = await getDiffCacheKey(originalPath, cleanedPath);
+      return { success: true, cacheKey };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

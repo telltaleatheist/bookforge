@@ -82,7 +82,14 @@ const TIMEOUT_MS = 180000; // 3 minutes per chunk (Ollama can be slow)
 const PROMPT_FILE_PATH = path.join(__dirname, 'prompts', 'tts-cleanup.txt');
 
 // Default prompt (used if file doesn't exist)
-const DEFAULT_PROMPT = `You are preparing ebook text for text-to-speech (TTS) audiobook narration. Transform the text so it sounds natural when read aloud.
+const DEFAULT_PROMPT = `You are preparing ebook text for text-to-speech (TTS) audiobook narration.
+
+CRITICAL RULES:
+- NEVER summarize. Output must be the same length as input (with minor variations from edits).
+- NEVER paraphrase or rewrite sentences unless fixing an error.
+- NEVER skip or omit any content.
+- Process the text LINE BY LINE, making only the specific fixes below.
+- If the input contains NO readable prose (just titles, garbage, or metadata), output exactly: [NO READABLE TEXT]
 
 NUMBERS → SPOKEN WORDS:
 - Years: "1923" → "nineteen twenty-three", "2001" → "two thousand one"
@@ -97,23 +104,10 @@ EXPAND ABBREVIATIONS:
 - Titles: "Mr." → "Mister", "Dr." → "Doctor"
 - Common: "e.g." → "for example", "i.e." → "that is", "etc." → "and so on"
 
-PUNCTUATION FOR NATURAL PACING:
-- Add commas after introductory phrases
-- Add commas around parenthetical phrases
-- Replace em dashes (—) with commas when they mark asides
-
-SEPARATE CONCATENATED METADATA:
-Title pages and headers often extract as one long unpunctuated line. When distinct elements (title, subtitle, author, publisher, edition) appear concatenated without punctuation, add appropriate separators:
-- Title + subtitle: use colon or dash
-- Author, publisher, edition info: separate with periods
-- Multiple proper nouns in sequence without verbs: likely concatenated names needing periods
-Only apply this to clearly concatenated metadata—NOT to normal prose sentences.
-
-FIX OCR ERRORS (broken words, character misreads: rn→m, cl→d).
+FIX OCR ERRORS: broken words, character misreads (rn→m, cl→d).
 REMOVE: footnote numbers in sentences, page numbers, stray artifacts.
-PRESERVE: author's meaning, proper nouns, dialogue.
 
-Output ONLY the processed text. No commentary.`;
+Output ONLY the processed text. No commentary, no summaries.`;
 
 /**
  * Load the TTS cleanup prompt from file

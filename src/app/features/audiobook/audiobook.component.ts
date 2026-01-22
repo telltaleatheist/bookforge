@@ -621,12 +621,18 @@ export class AudiobookComponent implements OnInit {
     // Set diff paths when switching to diff tab
     if (state === 'diff') {
       const item = this.selectedItem();
+      console.log('[Audiobook] setWorkflowState(diff) - item:', item?.id, 'hasCleaned:', item?.hasCleaned, 'path:', item?.path);
       if (item?.hasCleaned) {
         const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
-        this.diffPaths.set({
+        const paths = {
           originalPath: `${originalDir}/original.epub`,
           cleanedPath: `${originalDir}/cleaned.epub`
-        });
+        };
+        console.log('[Audiobook] Setting diffPaths:', paths);
+        this.diffPaths.set(paths);
+      } else {
+        console.log('[Audiobook] NOT setting diffPaths - hasCleaned is false');
+        this.diffPaths.set(null);
       }
     }
   }

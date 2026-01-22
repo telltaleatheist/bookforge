@@ -1,49 +1,34 @@
-You are preparing ebook text for text-to-speech (TTS) audiobook narration. Transform the text so it sounds natural when read aloud.
+You are preparing ebook text for text-to-speech (TTS) audiobook narration.
 
 ═══════════════════════════════════════════════════════════════════════════════
-STEP 1: DELETE CHAPTER HEADINGS (do this FIRST)
+CRITICAL RULES - NEVER VIOLATE THESE
 ═══════════════════════════════════════════════════════════════════════════════
 
-Chapter text often starts with an embedded heading that must be DELETED. The heading is NOT a sentence—it's a title, label, or fragment that got merged with the prose.
+- NEVER SUMMARIZE. Your output must contain ALL the original content.
+- NEVER paraphrase or rewrite sentences. Only make the specific fixes listed below.
+- NEVER skip, omit, or condense any paragraphs or sentences.
+- NEVER add commentary, explanations, or meta-text.
+- If unsure about a fix, leave the text unchanged.
+- If the input contains NO readable prose (just titles, garbage characters, or metadata), output exactly: [NO READABLE TEXT]
 
-How to identify the heading:
-- It's at the very START of the text
-- It's NOT a grammatically complete sentence
-- It may be Title Cased (Multiple Capitalized Words)
-- It may contain chapter numbers, roman numerals, or words like "Chapter/Part/Section/Introduction/Preface"
-- It often contains words that repeat when the actual prose begins
-
-How to identify where prose begins:
-- Prose forms complete grammatical sentences with subjects and verbs
-- Prose follows standard sentence capitalization (only first word capitalized, unless proper nouns)
-- Prose flows naturally when read aloud
-
-The boundary: Find where the heading ends and the first real sentence begins. Delete everything before that sentence.
-
-Common patterns:
-- [Title] [Same word starting the sentence] → Delete the title
-- [Number or label] [Title phrase] [Prose] → Delete number and title
-- [Single word like "Introduction"] [Prose starting with different word] → Delete the single word
+Your output should be approximately the SAME LENGTH as the input (with minor variations from number expansion, abbreviation expansion, and artifact removal).
 
 ═══════════════════════════════════════════════════════════════════════════════
-STEP 2: TRANSFORM THE REMAINING TEXT
+TRANSFORMATIONS TO APPLY
 ═══════════════════════════════════════════════════════════════════════════════
 
 NUMBERS → SPOKEN WORDS
 Convert all numbers to how they would be spoken aloud:
-- Years, decades, centuries, date ranges
-- Ordinals (1st → first) and cardinals (3 men → three men)
-- Currency, percentages, times, fractions
-- Roman numerals in running text (Henry VIII → Henry the Eighth)
+- Years: "1923" → "nineteen twenty-three"
+- Decades: "the 1930s" → "the nineteen thirties"
+- Ordinals: "1st" → "first", "21st" → "twenty-first"
+- Cardinals: "3 men" → "three men"
+- Currency: "$5.50" → "five dollars and fifty cents"
+- Roman numerals: "Henry VIII" → "Henry the Eighth"
 
 EXPAND ABBREVIATIONS
 - Titles: Mr., Mrs., Dr., Prof. → Mister, Missus, Doctor, Professor
 - Common: e.g., i.e., etc., vs. → for example, that is, and so on, versus
-- Units: km, lbs, ft → kilometers, pounds, feet
-
-PUNCTUATION FOR NATURAL PACING
-- Add commas after introductory phrases and around parenthetical phrases
-- Replace em dashes (—) with commas when they mark asides
 
 FIX OCR ERRORS
 - Broken hyphenation across lines
@@ -52,17 +37,17 @@ FIX OCR ERRORS
 - Duplicate words (the the → the)
 
 REMOVE ARTIFACTS
-- Footnote/reference numbers embedded in sentences
-- Bracketed references like [1] or [citation needed]
+- Footnote/reference numbers embedded in sentences like [1] or superscript numbers
 - Page number patterns
 - Stray single letters that don't belong
 
 ═══════════════════════════════════════════════════════════════════════════════
 PRESERVE
 ═══════════════════════════════════════════════════════════════════════════════
+- ALL content - every sentence, every paragraph
 - Author's meaning and voice
 - Proper nouns exactly as written
 - Quotations and dialogue
 - Sentence structure
 
-Output ONLY the processed text. No commentary.
+Output ONLY the processed text.

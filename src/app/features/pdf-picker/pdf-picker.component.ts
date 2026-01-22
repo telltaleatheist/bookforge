@@ -4516,8 +4516,8 @@ export class PdfPickerComponent {
       }
 
       if (existing) {
-        // Use existing project
-        this.projectPath.set(existing.path);
+        // Load existing project data (including chapters, deleted blocks, etc.)
+        await this.restoreProjectState(existing.path);
         return;
       }
     }
@@ -4538,6 +4538,70 @@ export class PdfPickerComponent {
     if (result.success && result.filePath) {
       this.projectPath.set(result.filePath);
     }
+  }
+
+  /**
+   * Restore project state from a saved project file.
+   * Called when an existing project is found for the currently loaded PDF/EPUB.
+   * Does NOT reload the document - only restores the project data (chapters, deletions, etc.)
+   */
+  private async restoreProjectState(projectFilePath: string): Promise<void> {
+    const result = await this.electronService.projectsLoadFromPath(projectFilePath);
+    if (!result.success || !result.data) {
+      console.warn('[restoreProjectState] Failed to load project:', projectFilePath);
+      this.projectPath.set(projectFilePath); // Still set path for future saves
+      return;
+    }
+
+    const project = result.data as BookForgeProject;
+    this.projectPath.set(projectFilePath);
+
+    // Restore deleted block IDs
+    if (project.deleted_block_ids && project.deleted_block_ids.length > 0) {
+      this.editorState.deletedBlockIds.set(new Set(project.deleted_block_ids));
+    }
+
+    // Restore page order
+    if (project.page_order && project.page_order.length > 0) {
+      this.editorState.pageOrder.set(project.page_order);
+    }
+
+    // Restore undo/redo history
+    if (project.undo_stack || project.redo_stack) {
+      this.editorState.setHistory({
+        undoStack: project.undo_stack || [],
+        redoStack: project.redo_stack || []
+      });
+    }
+
+    // Restore custom categories
+    if (project.custom_categories && project.custom_categories.length > 0) {
+      this.restoreCustomCategories(project.custom_categories);
+    }
+
+    // Restore deleted highlight IDs
+    if (project.deleted_highlight_ids && project.deleted_highlight_ids.length > 0) {
+      this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
+    }
+
+    // Restore chapters
+    if (project.chapters && project.chapters.length > 0) {
+      this.chapters.set(project.chapters);
+      this.chaptersSource.set(project.chapters_source || 'manual');
+    }
+
+    // Restore deleted pages
+    if (project.deleted_pages && project.deleted_pages.length > 0) {
+      this.deletedPages.set(new Set(project.deleted_pages));
+    }
+
+    // Restore metadata
+    if (project.metadata) {
+      this.metadata.set(project.metadata);
+    }
+
+    console.log('[restoreProjectState] Restored project from:', projectFilePath,
+      'chapters:', project.chapters?.length || 0);
   }
 
   // Schedule auto-save (debounced)
