@@ -1077,7 +1077,9 @@ ${s.content}
   ): Blob {
     const uuid = 'urn:uuid:' + this.generateUuid();
     const date = new Date().toISOString().split('T')[0];
-    const hasCover = metadata?.coverImage?.startsWith('data:image/');
+    // Note: Cover images are not currently added to the EPUB (createZipBlob only handles strings).
+    // Don't add cover manifest entry to avoid referencing a non-existent file.
+    const hasCover = false; // TODO: Implement binary file support for covers
 
     const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">

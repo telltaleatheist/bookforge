@@ -34,6 +34,7 @@ export interface WorkerState {
   status: WorkerStatus;
   error?: string;
   pid?: number;
+  retryCount: number;  // Track number of retry attempts
   // Chapter mode
   chapterStart?: number;  // 1-indexed (for chapter mode)
   chapterEnd?: number;    // 1-indexed (for chapter mode)
@@ -492,26 +493,43 @@ function startWorker(
   return workerProcess;
 }
 
+const MAX_WORKER_RETRIES = 2;  // Maximum retry attempts per worker
+
 /**
  * Check if all workers are complete and trigger assembly
  */
 async function checkAllWorkersComplete(session: ConversionSession): Promise<void> {
-  const allComplete = session.workers.every(w => w.status === 'complete');
-  const anyError = session.workers.some(w => w.status === 'error');
+  if (session.cancelled) return;
 
-  if (anyError && !allComplete) {
-    // Some workers failed - emit error
-    const errors = session.workers
-      .filter(w => w.status === 'error')
-      .map(w => `Worker ${w.id}: ${w.error}`)
+  const allComplete = session.workers.every(w => w.status === 'complete');
+  const failedWorkers = session.workers.filter(w => w.status === 'error');
+
+  // Handle failed workers - retry if under max attempts
+  for (const worker of failedWorkers) {
+    if (worker.retryCount < MAX_WORKER_RETRIES) {
+      console.log(`[PARALLEL-TTS] Worker ${worker.id} failed (attempt ${worker.retryCount + 1}/${MAX_WORKER_RETRIES}), retrying...`);
+      retryWorker(session, worker);
+    }
+  }
+
+  // Check if any workers have exceeded retry limit
+  const permanentlyFailed = failedWorkers.filter(w => w.retryCount >= MAX_WORKER_RETRIES);
+  if (permanentlyFailed.length > 0) {
+    const errors = permanentlyFailed
+      .map(w => `Worker ${w.id} (sentences ${w.sentenceStart}-${w.sentenceEnd}): ${w.error}`)
       .join('; ');
 
-    emitComplete(session, false, undefined, errors);
+    console.error(`[PARALLEL-TTS] Workers permanently failed after ${MAX_WORKER_RETRIES} retries:`, errors);
+    emitComplete(session, false, undefined, `Workers failed after retries: ${errors}`);
     activeSessions.delete(session.jobId);
     return;
   }
 
-  if (allComplete) {
+  // Check if all workers are complete (including any that just started retrying)
+  const stillRunning = session.workers.some(w => w.status === 'running' || w.status === 'pending');
+  const retriesInProgress = failedWorkers.some(w => w.retryCount < MAX_WORKER_RETRIES);
+
+  if (!stillRunning && !retriesInProgress && allComplete) {
     // All workers done - run assembly
     console.log('[PARALLEL-TTS] All workers complete, starting assembly');
     try {
@@ -522,6 +540,34 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
     }
     activeSessions.delete(session.jobId);
   }
+}
+
+/**
+ * Retry a failed worker with the same sentence range
+ */
+function retryWorker(session: ConversionSession, worker: WorkerState): void {
+  const { config } = session;
+  const isChapterMode = config.parallelMode === 'chapters';
+
+  // Reset worker state for retry
+  worker.retryCount++;
+  worker.status = 'pending';
+  worker.error = undefined;
+  worker.completedSentences = 0;
+  worker.currentSentence = worker.sentenceStart;
+
+  console.log(`[PARALLEL-TTS] Retrying worker ${worker.id} (attempt ${worker.retryCount}): ${
+    isChapterMode
+      ? `chapters ${worker.chapterStart}-${worker.chapterEnd}`
+      : `sentences ${worker.sentenceStart}-${worker.sentenceEnd}`
+  }`);
+
+  // Start the worker with the same range
+  const range: WorkerRange = isChapterMode
+    ? { chapterStart: worker.chapterStart, chapterEnd: worker.chapterEnd }
+    : { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
+
+  startWorker(session, worker.id, range);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -647,6 +693,7 @@ function serializeWorkers(workers: WorkerState[]): Omit<WorkerState, 'process'>[
     status: w.status,
     error: w.error,
     pid: w.pid,
+    retryCount: w.retryCount,
     chapterStart: w.chapterStart,
     chapterEnd: w.chapterEnd
   }));
@@ -760,6 +807,7 @@ export async function startParallelConversion(
         currentSentence: sentenceStart,
         completedSentences: 0,
         status: 'pending' as WorkerStatus,
+        retryCount: 0,
         chapterStart: range.chapterStart,
         chapterEnd: range.chapterEnd
       };
@@ -775,7 +823,8 @@ export async function startParallelConversion(
       sentenceEnd: range.end,
       currentSentence: range.start,
       completedSentences: 0,
-      status: 'pending' as WorkerStatus
+      status: 'pending' as WorkerStatus,
+      retryCount: 0
     }));
   }
 
