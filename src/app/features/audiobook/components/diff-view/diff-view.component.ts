@@ -1,4 +1,4 @@
-import { Component, input, signal, computed, OnInit, OnDestroy, inject, ElementRef, ViewChild, output } from '@angular/core';
+import { Component, input, signal, computed, OnInit, OnDestroy, inject, ElementRef, ViewChild, output, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { DiffService, DiffLoadingProgress } from '../../services/diff.service';
@@ -665,6 +665,25 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   readonly currentChapterId = signal<string>('');
   readonly currentChapter = signal<DiffChapter | null>(null);
 
+  // Track previous paths to detect changes
+  private previousPaths = { original: '', cleaned: '' };
+
+  constructor() {
+    // Effect to watch for path changes and reload comparison
+    effect(() => {
+      const original = this.originalPath();
+      const cleaned = this.cleanedPath();
+
+      // Only reload if paths changed and both are provided
+      if (original && cleaned &&
+          (original !== this.previousPaths.original || cleaned !== this.previousPaths.cleaned)) {
+        this.previousPaths = { original, cleaned };
+        // Use setTimeout to avoid issues with effect running during change detection
+        setTimeout(() => this.loadComparison(), 0);
+      }
+    });
+  }
+
   // Computed: current chapter size
   readonly currentChapterSize = computed(() => {
     const chapter = this.currentChapter();
@@ -772,8 +791,14 @@ export class DiffViewComponent implements OnInit, OnDestroy {
       })
     );
 
-    // Load comparison if paths provided
-    this.loadComparison();
+    // Fallback: also try loading after a short delay in case effect doesn't fire
+    setTimeout(() => {
+      const original = this.originalPath();
+      const cleaned = this.cleanedPath();
+      if (original && cleaned && this.chaptersMeta().length === 0 && !this.loading()) {
+        this.loadComparison();
+      }
+    }, 100);
   }
 
   ngOnDestroy(): void {
