@@ -968,6 +968,7 @@ export async function startParallelConversion(
   onProgress?: (progress: AggregatedProgress) => void
 ): Promise<ParallelConversionResult> {
   console.log(`[PARALLEL-TTS] Starting conversion for job ${jobId} with ${config.workerCount} workers`);
+  console.log(`[PARALLEL-TTS] Metadata received:`, JSON.stringify(config.metadata, null, 2));
 
   // Prepare the session first
   let prepInfo: PrepInfo;

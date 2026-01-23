@@ -373,7 +373,9 @@ export class QueueService {
     console.log('[QUEUE] Job added:', {
       jobId: job.id,
       type: job.type,
-      config: job.config
+      config: job.config,
+      metadata: job.metadata,
+      'metadata.outputFilename': job.metadata?.outputFilename
     });
 
     this._jobs.update(jobs => [...jobs, job]);
@@ -690,7 +692,11 @@ export class QueueService {
           }
 
           const parallelMode = config.parallelMode || 'sentences';
+          const resolvedOutputFilename = job.metadata?.outputFilename || config.outputFilename;
           console.log(`[QUEUE] Starting parallel TTS conversion with ${workerCount} workers in ${parallelMode} mode`);
+          console.log(`[QUEUE] Output filename: ${resolvedOutputFilename}`);
+          console.log(`[QUEUE] job.metadata:`, job.metadata);
+          console.log(`[QUEUE] config.outputFilename:`, config.outputFilename);
           await electron.parallelTts.startConversion(job.id, {
             workerCount,
             epubPath: job.epubPath,

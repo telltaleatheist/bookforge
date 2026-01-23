@@ -150,7 +150,14 @@
       "Bash(__NEW_LINE__ if [ -f \"$dir/output.m4b\" ])",
       "Bash(__NEW_LINE__ else echo \"No output.m4b\")",
       "Bash(__NEW_LINE__ echo)",
-      "Bash(__NEW_LINE__ done)"
+      "Bash(__NEW_LINE__ done)",
+      "Bash(awk:*)",
+      "Bash(ffmpeg:*)",
+      "Read(//Users/telltale/Projects/ebook2audiobook/**)",
+      "Read(//Volumes/Callisto/books/audiobooks/**)",
+      "Read(//private/tmp/**)",
+      "Bash(lsof:*)",
+      "Bash(pstree:*)"
     ]
   }
 }

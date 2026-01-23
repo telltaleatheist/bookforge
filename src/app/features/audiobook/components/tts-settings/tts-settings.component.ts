@@ -828,6 +828,8 @@ export class TtsSettingsComponent implements OnInit {
 
       const currentSettings = this.settings();
       const meta = this.metadata();
+      console.log('[TTS-SETTINGS] Adding to queue with metadata:', JSON.stringify(meta, null, 2));
+      console.log('[TTS-SETTINGS] outputFilename from metadata:', meta?.outputFilename);
       // Use configured output dir, or fall back to library's audiobooks folder
       const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
       const outputDir = configuredDir || this.libraryService.audiobooksPath() || '';

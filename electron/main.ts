@@ -2807,6 +2807,71 @@ function setupIpcHandlers(): void {
       return { success: false, error: message };
     }
   });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Logger IPC Handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('logger:initialize', async () => {
+    try {
+      const logger = await import('./audiobook-logger.js');
+      const libraryPath = path.join(os.homedir(), 'Documents', 'BookForge');
+      await logger.initializeLogger(libraryPath);
+
+      // Also initialize the TTS bridge logger
+      const { ttsBridge } = await import('./tts-bridge.js');
+      await ttsBridge.initializeLogger(libraryPath);
+
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: message };
+    }
+  });
+
+  ipcMain.handle('logger:get-todays-summary', async () => {
+    try {
+      const logger = await import('./audiobook-logger.js');
+      const summary = await logger.getTodaysSummary();
+      return { success: true, data: summary };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: message };
+    }
+  });
+
+  ipcMain.handle('logger:get-recent-errors', async (_event, days: number = 7) => {
+    try {
+      const logger = await import('./audiobook-logger.js');
+      const errors = await logger.getRecentErrors(days);
+      return { success: true, data: errors };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: message };
+    }
+  });
+
+  ipcMain.handle('logger:search-logs', async (_event, searchTerm: string, days: number = 7) => {
+    try {
+      const logger = await import('./audiobook-logger.js');
+      const results = await logger.searchLogs(searchTerm, days);
+      return { success: true, data: results };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: message };
+    }
+  });
+
+  ipcMain.handle('logger:generate-daily-report', async () => {
+    try {
+      const logger = await import('./audiobook-logger.js');
+      const report = await logger.generateDailySummaryReport();
+      return { success: true, data: report };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: message };
+    }
+  });
 }
 
 // Register custom protocol as privileged (must be done before app ready)

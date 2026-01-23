@@ -9,6 +9,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as logger from './audiobook-logger';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -219,6 +220,13 @@ function estimateRemaining(progress: TTSProgress): number {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Initialize the logger when setting library path
+ */
+export async function initializeLogger(libraryPath: string): Promise<void> {
+  await logger.initializeLogger(libraryPath);
+}
+
+/**
  * Start TTS conversion
  */
 export async function startConversion(
@@ -257,6 +265,18 @@ export async function startConversion(
   }
 
   startTime = Date.now();
+
+  // Generate a unique job ID
+  const jobId = `e2a-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+  // Extract book metadata from EPUB filename or path
+  const bookName = path.basename(epubPath, '.epub').replace(/_/g, ' ');
+  const [title, author] = bookName.includes(' - ')
+    ? bookName.split(' - ').map(s => s.trim())
+    : [bookName, 'Unknown Author'];
+
+  // Log job start
+  await logger.startJob(jobId, title, author, settings);
 
   return new Promise((resolve) => {
     let progress: TTSProgress = {
@@ -342,6 +362,12 @@ export async function startConversion(
       currentProcess = null;
       const duration = Math.round((Date.now() - startTime) / 1000);
 
+      // Log progress updates
+      await logger.updateJobProgress(jobId, {
+        totalChapters: progress.totalChapters,
+        totalSentences: progress.currentChapter // Approximation
+      });
+
       if (code === 0) {
         // Send completion progress
         if (mainWindow) {
@@ -413,12 +439,19 @@ export async function startConversion(
           }
         }
 
+        // Log successful completion
+        await logger.completeJob(jobId, finalOutputPath || path.join(outputDir, 'audiobook.m4b'));
+
         resolve({
           success: true,
           outputPath: finalOutputPath || path.join(outputDir, 'audiobook.m4b'),
           duration
         });
       } else {
+        // Log failure
+        const errorMessage = stderr || `Process exited with code ${code}`;
+        await logger.failJob(jobId, errorMessage);
+
         // Send error progress
         if (mainWindow) {
           mainWindow.webContents.send('tts:progress', {
@@ -427,20 +460,23 @@ export async function startConversion(
             totalChapters: progress.totalChapters,
             percentage: progress.percentage,
             estimatedRemaining: 0,
-            error: stderr || `Process exited with code ${code}`
+            error: errorMessage
           });
         }
 
         resolve({
           success: false,
-          error: stderr || `Process exited with code ${code}`,
+          error: errorMessage,
           duration
         });
       }
     });
 
-    currentProcess.on('error', (error) => {
+    currentProcess.on('error', async (error) => {
       currentProcess = null;
+
+      // Log error
+      await logger.logError(jobId, 'Process spawn error', error);
 
       if (mainWindow) {
         mainWindow.webContents.send('tts:progress', {
@@ -545,5 +581,6 @@ export const ttsBridge = {
   startConversion,
   stopConversion,
   isConverting,
-  generateOutputFilename
+  generateOutputFilename,
+  initializeLogger
 };
