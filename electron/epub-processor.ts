@@ -1865,5 +1865,139 @@ function getTextContent(node: any): string {
   return text;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// System Diff - Uses native diff command for efficient text comparison
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { execSync, exec } from 'child_process';
+import * as os from 'os';
+
+export interface DiffSegment {
+  text: string;
+  type: 'unchanged' | 'added' | 'removed';
+}
+
+/**
+ * Compute word-level diff using git diff --word-diff or wdiff
+ * This is much more efficient than doing LCS in JavaScript
+ */
+export async function computeSystemDiff(
+  originalText: string,
+  cleanedText: string
+): Promise<DiffSegment[]> {
+  const tmpDir = os.tmpdir();
+  const timestamp = Date.now();
+  const origFile = path.join(tmpDir, `diff_orig_${timestamp}.txt`);
+  const cleanFile = path.join(tmpDir, `diff_clean_${timestamp}.txt`);
+
+  try {
+    // Write texts to temp files
+    await fs.writeFile(origFile, originalText, 'utf-8');
+    await fs.writeFile(cleanFile, cleanedText, 'utf-8');
+
+    // Try git diff --word-diff first (better output)
+    let diffOutput: string;
+    try {
+      diffOutput = execSync(
+        `git diff --no-index --word-diff=porcelain --no-color "${origFile}" "${cleanFile}"`,
+        { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }
+      );
+    } catch (err: any) {
+      // git diff returns exit code 1 when files differ, which throws
+      if (err.stdout) {
+        diffOutput = err.stdout;
+      } else if (err.status === 1 && err.output) {
+        diffOutput = err.output.filter(Boolean).join('');
+      } else {
+        // Fall back to regular diff
+        try {
+          diffOutput = execSync(
+            `diff "${origFile}" "${cleanFile}"`,
+            { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }
+          );
+        } catch (diffErr: any) {
+          diffOutput = diffErr.stdout || '';
+        }
+      }
+    }
+
+    // Parse git diff --word-diff=porcelain output
+    return parseWordDiffPorcelain(diffOutput, cleanedText);
+  } finally {
+    // Clean up temp files
+    try { await fs.unlink(origFile); } catch {}
+    try { await fs.unlink(cleanFile); } catch {}
+  }
+}
+
+/**
+ * Parse git diff --word-diff=porcelain output into segments
+ */
+function parseWordDiffPorcelain(diffOutput: string, cleanedText: string): DiffSegment[] {
+  const segments: DiffSegment[] = [];
+  const lines = diffOutput.split('\n');
+
+  let inDiff = false;
+  let currentText = '';
+  let currentType: 'unchanged' | 'added' | 'removed' = 'unchanged';
+
+  for (const line of lines) {
+    // Skip header lines
+    if (line.startsWith('diff --git') || line.startsWith('index ') ||
+        line.startsWith('---') || line.startsWith('+++') ||
+        line.startsWith('@@')) {
+      inDiff = true;
+      continue;
+    }
+
+    if (!inDiff) continue;
+
+    if (line.startsWith('~')) {
+      // End of hunk, flush current segment
+      if (currentText) {
+        segments.push({ text: currentText, type: currentType });
+        currentText = '';
+      }
+      currentType = 'unchanged';
+    } else if (line.startsWith(' ')) {
+      // Unchanged word
+      if (currentType !== 'unchanged' && currentText) {
+        segments.push({ text: currentText, type: currentType });
+        currentText = '';
+      }
+      currentType = 'unchanged';
+      currentText += line.slice(1);
+    } else if (line.startsWith('-')) {
+      // Removed word
+      if (currentType !== 'removed' && currentText) {
+        segments.push({ text: currentText, type: currentType });
+        currentText = '';
+      }
+      currentType = 'removed';
+      currentText += line.slice(1);
+    } else if (line.startsWith('+')) {
+      // Added word
+      if (currentType !== 'added' && currentText) {
+        segments.push({ text: currentText, type: currentType });
+        currentText = '';
+      }
+      currentType = 'added';
+      currentText += line.slice(1);
+    }
+  }
+
+  // Flush final segment
+  if (currentText) {
+    segments.push({ text: currentText, type: currentType });
+  }
+
+  // If parsing failed or produced no output, return cleaned text as unchanged
+  if (segments.length === 0) {
+    return [{ text: cleanedText, type: 'unchanged' }];
+  }
+
+  return segments;
+}
+
 // Export the processor and ZipWriter for direct use if needed
 export { EpubProcessor, ZipWriter };

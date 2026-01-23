@@ -125,7 +125,32 @@
       "Bash(sysctl:*)",
       "Bash(brew list:*)",
       "Bash(/opt/homebrew/bin/m4b-tool meta:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Read(//opt/homebrew/bin/**)",
+      "Read(//Volumes/Callisto/books/new/**)",
+      "Bash(pdfinfo:*)",
+      "Read(//Users/telltale/Documents/BookForge/audiobooks/completed/**)",
+      "Read(//Users/telltale/Documents/BookForge/audiobooks/**)",
+      "Bash(for dir in ~/Documents/BookForge/audiobooks/*/)",
+      "Bash(do echo \"=== $dir ===\")",
+      "Bash(if [ -f \"$dir/metadata.json\" ])",
+      "Bash(fi)",
+      "Bash(do)",
+      "Bash(if [ -d \"$dir\" ])",
+      "Bash([ \"$dir\" != \"~/Documents/BookForge/audiobooks/completed/\" ])",
+      "Bash(then)",
+      "Bash(if ls \"$dir\"/*.m4b 2)",
+      "Bash(/dev/null)",
+      "Bash(else)",
+      "Bash(if [ -f \"$dir/output.m4b\" ])",
+      "Read(//Users/telltale/Projects/ebook2audiobook/tmp/**)",
+      "Bash(__NEW_LINE__ if [ -f \"$dir/metadata.json\" ])",
+      "Bash(__NEW_LINE__ else echo \"No metadata.json\")",
+      "Bash(__NEW_LINE__ fi)",
+      "Bash(__NEW_LINE__ if [ -f \"$dir/output.m4b\" ])",
+      "Bash(__NEW_LINE__ else echo \"No output.m4b\")",
+      "Bash(__NEW_LINE__ echo)",
+      "Bash(__NEW_LINE__ done)"
     ]
   }
 }

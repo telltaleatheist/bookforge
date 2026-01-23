@@ -458,6 +458,13 @@ export class ElectronService {
     return null;
   }
 
+  async exportTextOnlyEpub(pdfPath: string, metadata?: { title?: string; author?: string }): Promise<{ success: boolean; data?: string; error?: string }> {
+    if (this.isElectron) {
+      return await (window as any).electron.pdf.exportTextOnlyEpub(pdfPath, metadata);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async exportCleanPdf(
     pdfPath: string,
     deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>,
@@ -858,6 +865,44 @@ export class ElectronService {
     return null;
   }
 
+  /**
+   * Process a PDF for OCR in headless mode (without rendering to UI)
+   * Processes one page at a time to minimize memory usage
+   */
+  async ocrProcessPdfHeadless(
+    pdfPath: string,
+    options: {
+      engine: 'tesseract' | 'surya';
+      language?: string;
+      pages?: number[];
+    }
+  ): Promise<Array<{
+    page: number;
+    text: string;
+    confidence: number;
+    textLines?: OcrTextLine[];
+    layoutBlocks?: any[];
+  }> | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ocr.processPdfHeadless(pdfPath, options);
+      if (result.success && result.results) {
+        return result.results;
+      }
+      console.error('Headless OCR failed:', result.error);
+    }
+    return null;
+  }
+
+  /**
+   * Subscribe to headless OCR progress updates
+   */
+  onHeadlessOcrProgress(callback: (data: { current: number; total: number }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.ocr.onHeadlessProgress(callback);
+    }
+    return () => {};
+  }
+
   // Window control operations
   async windowHide(): Promise<void> {
     if (this.isElectron) {
@@ -982,6 +1027,25 @@ export class ElectronService {
         };
       }
       return { success: false, error: result.error || 'Failed to load chapter' };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Compute word-level diff using system diff command (much more efficient)
+   * This runs in the main process using native diff, avoiding JS memory issues
+   */
+  async computeSystemDiff(originalText: string, cleanedText: string): Promise<{
+    success: boolean;
+    segments?: Array<{ text: string; type: 'unchanged' | 'added' | 'removed' }>;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.diff.computeSystemDiff(originalText, cleanedText);
+      if (result.success) {
+        return { success: true, segments: result.data };
+      }
+      return { success: false, error: result.error || 'Failed to compute diff' };
     }
     return { success: false, error: 'Not running in Electron' };
   }

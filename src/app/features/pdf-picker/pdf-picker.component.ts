@@ -48,6 +48,7 @@ interface OpenDocument {
   projectPath: string | null;
   undoStack: HistoryAction[];
   redoStack: HistoryAction[];
+  lightweightMode?: boolean;  // Process without rendering pages
 }
 
 
@@ -254,7 +255,9 @@ interface AlertModal {
                 <button
                   class="menu-item"
                   [class.active]="currentMode() === mode.id"
-                  [title]="mode.tooltip"
+                  [class.disabled]="lightweightMode() && mode.id !== 'ocr'"
+                  [title]="lightweightMode() && mode.id !== 'ocr' ? 'Not available in lightweight mode' : mode.tooltip"
+                  [disabled]="lightweightMode() && mode.id !== 'ocr'"
                   (click)="setMode(mode.id)"
                 >
                   <span class="menu-icon">{{ mode.icon }}</span>
@@ -278,7 +281,9 @@ interface AlertModal {
               </button>
               <button
                 class="menu-item"
-                title="Re-render all pages"
+                [class.disabled]="lightweightMode()"
+                [disabled]="lightweightMode()"
+                [title]="lightweightMode() ? 'Not available in lightweight mode' : 'Re-render all pages'"
                 (click)="reRenderPages()"
               >
                 <span class="menu-icon">🔄</span>
@@ -297,9 +302,24 @@ interface AlertModal {
           <div class="viewer-timeline-wrapper">
             <!-- Viewer -->
             <div class="viewer-pane">
-              <app-pdf-viewer
-              [blocks]="blocks()"
-              [categories]="categoriesWithPreview()"
+              @if (lightweightMode()) {
+                <div class="lightweight-placeholder">
+                  <div class="placeholder-content">
+                    <span class="placeholder-icon">⚡</span>
+                    <h2>Processing Without Rendering</h2>
+                    <p>Pages are not rendered to save memory for large files.</p>
+                    <p>Available actions:</p>
+                    <ul>
+                      <li>• OCR text extraction</li>
+                      <li>• Remove backgrounds</li>
+                      <li>• Export to various formats</li>
+                    </ul>
+                  </div>
+                </div>
+              } @else {
+                <app-pdf-viewer
+                [blocks]="blocks()"
+                [categories]="categoriesWithPreview()"
               [categoryHighlights]="combinedHighlights()"
               [deletedHighlightIds]="deletedHighlightIds()"
               [correctedBlockIds]="correctedBlockIds()"
@@ -363,6 +383,7 @@ interface AlertModal {
               (blockDragEnd)="onBlockDragEnd($event)"
               [getPageImageUrl]="getPageImageUrl.bind(this)"
             />
+              }
             </div>
 
             <!-- Page Timeline (bottom of viewer) -->
@@ -514,6 +535,7 @@ interface AlertModal {
           (projectsDeleted)="onProjectsDeleted($event)"
           (error)="onLibraryError($event)"
           (transferToAudiobook)="onTransferToAudiobook($event)"
+          (processWithoutRendering)="onProcessWithoutRendering($event)"
         />
 
       </div>
@@ -660,6 +682,8 @@ interface AlertModal {
         [getPageImage]="getPageImageForOcr.bind(this)"
         [documentId]="activeDocumentId() || 'unknown'"
         [documentName]="pdfName()"
+        [lightweightMode]="lightweightMode()"
+        [pdfPath]="effectivePath()"
         (close)="showOcrSettings.set(false)"
         (ocrCompleted)="onOcrCompleted($event)"
         (backgroundJobStarted)="onBackgroundOcrStarted($event)"
@@ -1753,6 +1777,60 @@ interface AlertModal {
       gap: var(--ui-spacing-sm);
     }
 
+    .menu-item.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    .lightweight-placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      width: 100%;
+      background: var(--bg-sunken);
+      color: var(--text-secondary);
+
+      .placeholder-content {
+        text-align: center;
+        max-width: 400px;
+        padding: var(--ui-spacing-xl);
+
+        .placeholder-icon {
+          font-size: 48px;
+          margin-bottom: var(--ui-spacing-lg);
+          display: block;
+          opacity: 0.6;
+        }
+
+        h2 {
+          margin: 0 0 var(--ui-spacing-md) 0;
+          font-size: var(--ui-font-xl);
+          font-weight: $font-weight-semibold;
+          color: var(--text-primary);
+        }
+
+        p {
+          margin: 0 0 var(--ui-spacing-md) 0;
+          font-size: var(--ui-font-base);
+        }
+
+        ul {
+          list-style: none;
+          padding: 0;
+          margin: 0;
+          text-align: left;
+
+          li {
+            padding: var(--ui-spacing-xs) 0;
+            font-size: var(--ui-font-base);
+          }
+        }
+      }
+    }
+
   `],
 })
 export class PdfPickerComponent {
@@ -2147,6 +2225,7 @@ export class PdfPickerComponent {
   readonly showExportSettings = signal(false);
   readonly loading = signal(false);
   readonly loadingText = signal('Loading...');
+  readonly lightweightMode = signal(false);  // Process without rendering pages
 
   // Search state
   readonly showSearch = signal(false);
@@ -2460,6 +2539,7 @@ export class PdfPickerComponent {
   // Toolbar items (computed based on state)
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
     const pdfIsOpen = this.pdfLoaded();
+    const lightweight = this.lightweightMode();
 
     // Base items always shown
     const baseItems: ToolbarItem[] = [
@@ -2482,11 +2562,12 @@ export class PdfPickerComponent {
           type: 'button',
           icon: '🔍',
           label: 'Search',
-          tooltip: 'Search text (Ctrl+F)'
+          tooltip: lightweight ? 'Not available in lightweight mode' : 'Search text (Ctrl+F)',
+          disabled: lightweight
         },
         { id: 'divider1', type: 'divider' },
-        { id: 'undo', type: 'button', icon: '↩', tooltip: 'Undo (Ctrl+Z)', disabled: !this.canUndo() },
-        { id: 'redo', type: 'button', icon: '↪', tooltip: 'Redo (Ctrl+Shift+Z)', disabled: !this.canRedo() },
+        { id: 'undo', type: 'button', icon: '↩', tooltip: lightweight ? 'Not available in lightweight mode' : 'Undo (Ctrl+Z)', disabled: lightweight || !this.canUndo() },
+        { id: 'redo', type: 'button', icon: '↪', tooltip: lightweight ? 'Not available in lightweight mode' : 'Redo (Ctrl+Shift+Z)', disabled: lightweight || !this.canRedo() },
         { id: 'spacer', type: 'spacer' },
         { id: 'divider2', type: 'divider' },
         {
@@ -2494,13 +2575,14 @@ export class PdfPickerComponent {
           type: 'toggle',
           icon: this.layout() === 'grid' ? '☰' : '⊞',
           label: this.layout() === 'grid' ? 'List' : 'Grid',
-          tooltip: 'Toggle layout',
-          active: this.layout() === 'grid'
+          tooltip: lightweight ? 'Not available in lightweight mode' : 'Toggle layout',
+          active: this.layout() === 'grid',
+          disabled: lightweight
         },
-        { id: 'zoom-out', type: 'button', icon: '−', tooltip: 'Zoom out' },
+        { id: 'zoom-out', type: 'button', icon: '−', tooltip: lightweight ? 'Not available in lightweight mode' : 'Zoom out', disabled: lightweight },
         { id: 'zoom-level', type: 'button', label: `${this.zoom()}%`, disabled: true },
-        { id: 'zoom-in', type: 'button', icon: '+', tooltip: 'Zoom in' },
-        { id: 'zoom-reset', type: 'button', label: 'Reset', tooltip: 'Reset zoom' }
+        { id: 'zoom-in', type: 'button', icon: '+', tooltip: lightweight ? 'Not available in lightweight mode' : 'Zoom in', disabled: lightweight },
+        { id: 'zoom-reset', type: 'button', label: 'Reset', tooltip: lightweight ? 'Not available in lightweight mode' : 'Reset zoom', disabled: lightweight }
       ];
     }
 
@@ -3104,6 +3186,20 @@ export class PdfPickerComponent {
     }
   }
 
+  /**
+   * Handle "Process without rendering" from library view.
+   * Opens the file in lightweight mode without rendering pages.
+   */
+  async onProcessWithoutRendering(projects: ProjectFile[]): Promise<void> {
+    if (projects.length === 0) return;
+
+    // For now, just handle the first project
+    const project = projects[0];
+
+    // Load the project in lightweight mode
+    await this.loadProjectFromPath(project.path, true);
+  }
+
   private closePdf(): void {
     // Reset all state to show library view
     this.pdfLoaded.set(false);
@@ -3121,7 +3217,7 @@ export class PdfPickerComponent {
     this.currentCropRect.set(null);
   }
 
-  async loadPdf(path: string): Promise<void> {
+  async loadPdf(path: string, lightweight: boolean = false): Promise<void> {
     this.showFilePicker.set(false);
 
     const lowerPath = path.toLowerCase();
@@ -3215,7 +3311,8 @@ export class PdfPickerComponent {
         hasUnsavedChanges: false,
         projectPath: null,
         undoStack: [],
-        redoStack: []
+        redoStack: [],
+        lightweightMode: lightweight
       };
 
       // Add to open documents
@@ -3240,7 +3337,11 @@ export class PdfPickerComponent {
 
       this.saveRecentFile(path, result.pdf_name);
 
-      // Initialize page rendering - starts in background, doesn't block
+      // Set lightweight mode
+      this.lightweightMode.set(lightweight);
+
+      // Always initialize page rendering (so OCR can work)
+      // But only load pages if NOT in lightweight mode
       this.pageRenderService.initialize(this.effectivePath(), result.page_count);
 
       // Show document immediately - pages will load progressively
@@ -3248,17 +3349,23 @@ export class PdfPickerComponent {
 
       // Reset zoom tracking for new document and auto-zoom for grid
       this.userAdjustedZoom = false;
-      this.autoZoomForGrid();
+      if (!lightweight) {
+        this.autoZoomForGrid();
+      }
 
       // Reset grid pagination for efficient initial render
-      this.pdfViewer?.resetGridPagination();
+      if (!lightweight) {
+        this.pdfViewer?.resetGridPagination();
+      }
 
       // Auto-create project file for this document
       await this.autoCreateProject(path, result.pdf_name);
 
       // Start page rendering in background (non-blocking)
       // Pages will appear as they complete via the pageRenderService signals
-      this.pageRenderService.loadAllPageImages(result.page_count);
+      if (!lightweight) {
+        this.pageRenderService.loadAllPageImages(result.page_count);
+      }
     } catch (err) {
       console.error('Failed to load PDF:', err);
       this.showAlert({
@@ -4195,10 +4302,10 @@ export class PdfPickerComponent {
           await this.exportAsTxt();
           break;
         case 'epub':
-          await this.exportAsEpub();
+          await this.exportAsEpub(settings.textOnlyEpub);
           break;
         case 'audiobook':
-          await this.exportToAudiobook();
+          await this.exportToAudiobook(settings.textOnlyEpub);
           break;
         case 'pdf':
         default:
@@ -4242,7 +4349,59 @@ export class PdfPickerComponent {
   /**
    * Export as EPUB format
    */
-  private async exportAsEpub(): Promise<void> {
+  private async exportAsEpub(textOnlyMode?: boolean): Promise<void> {
+    // Use text-only export if requested
+    if (textOnlyMode) {
+      this.loadingText.set('Extracting text and generating EPUB...');
+
+      // Generate output filename
+      const baseName = this.pdfName().replace(/\.[^.]+$/, '');
+      const outputFilename = `${baseName}_text-only.epub`;
+
+      // Get metadata
+      const metadata = {
+        title: baseName,
+        author: 'Unknown'  // Could enhance this to extract from PDF metadata
+      };
+
+      // Use the text-only export via pdftotext + ebook-convert
+      const result = await this.electronService.exportTextOnlyEpub(
+        this.effectivePath(),  // Source PDF path
+        metadata
+      );
+
+      if (result.success && result.data) {
+        // Convert base64 to blob and download
+        const binaryString = atob(result.data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: 'application/epub+zip' });
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = outputFilename;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        this.showAlert({
+          title: 'Export Successful',
+          message: `Text-only EPUB exported successfully`,
+          type: 'success'
+        });
+      } else {
+        this.showAlert({
+          title: 'Export Failed',
+          message: result.error || 'Failed to export text-only EPUB',
+          type: 'error'
+        });
+      }
+      return;
+    }
+
+    // Regular EPUB export (existing code)
     this.loadingText.set('Generating EPUB...');
 
     // Use chapter-aware export if chapters are defined
@@ -4279,7 +4438,78 @@ export class PdfPickerComponent {
   /**
    * Export to Audiobook Producer
    */
-  private async exportToAudiobook(): Promise<void> {
+  private async exportToAudiobook(textOnlyMode?: boolean): Promise<void> {
+    // Use text-only export if requested
+    if (textOnlyMode) {
+      this.loadingText.set('Extracting text and preparing audiobook...');
+
+      // Generate filename
+      const baseName = this.pdfName().replace(/\.[^.]+$/, '');
+      const epubFilename = `${baseName}_text-only.epub`;
+
+      // Get metadata
+      const metadata = {
+        title: this.metadata()?.title || baseName,
+        author: this.metadata()?.author || 'Unknown'
+      };
+
+      // First, create text-only EPUB using pdftotext + ebook-convert
+      const epubResult = await this.electronService.exportTextOnlyEpub(
+        this.effectivePath(),  // Source PDF path
+        metadata
+      );
+
+      if (!epubResult.success || !epubResult.data) {
+        this.showAlert({
+          title: 'Export Failed',
+          message: epubResult.error || 'Failed to create text-only EPUB for audiobook',
+          type: 'error'
+        });
+        return;
+      }
+
+      // Convert base64 to ArrayBuffer for the queue
+      const binaryString = atob(epubResult.data);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      // Use the electron API directly (like export service does) which accepts ArrayBuffer
+      if (typeof window !== 'undefined' && (window as any).electron) {
+        const queueResult = await (window as any).electron.library.copyToQueue(
+          bytes.buffer,  // ArrayBuffer
+          epubFilename,
+          this.metadata()  // metadata
+        );
+
+        if (queueResult.success) {
+          // Navigate to audiobook producer
+          await this.router.navigate(['/audiobook']);
+
+          this.showAlert({
+            title: 'Export Successful',
+            message: 'Text-only EPUB added to Audiobook Producer queue',
+            type: 'success'
+          });
+        } else {
+          this.showAlert({
+            title: 'Export Failed',
+            message: queueResult.error || 'Failed to add to audiobook queue',
+            type: 'error'
+          });
+        }
+      } else {
+        this.showAlert({
+          title: 'Export Failed',
+          message: 'Audiobook export is only available in Electron',
+          type: 'error'
+        });
+      }
+      return;
+    }
+
+    // Regular audiobook export (existing code)
     this.loadingText.set('Preparing audiobook export...');
 
     const chapters = this.chapters();
@@ -5016,7 +5246,7 @@ export class PdfPickerComponent {
     }
   }
 
-  async loadProjectFromPath(filePath: string): Promise<void> {
+  async loadProjectFromPath(filePath: string, lightweight: boolean = false): Promise<void> {
     // Check if this project is already open
     const existingDoc = this.openDocuments().find(d => d.projectPath === filePath);
     if (existingDoc) {
@@ -5108,7 +5338,8 @@ export class PdfPickerComponent {
         hasUnsavedChanges: false,
         projectPath: actualProjectPath,
         undoStack: project.undo_stack || [],
-        redoStack: project.redo_stack || []
+        redoStack: project.redo_stack || [],
+        lightweightMode: lightweight
       };
 
       // Add to open documents
@@ -5212,20 +5443,26 @@ export class PdfPickerComponent {
       this.pageRenderService.clear();
       this.projectService.projectPath.set(actualProjectPath);
 
-      // Initialize page rendering - starts in background, doesn't block
+      // Set lightweight mode
+      this.lightweightMode.set(lightweight);
+
+      // Always initialize page rendering (so OCR can work)
+      // But only load pages if NOT in lightweight mode
       this.pageRenderService.initialize(this.effectivePath(), pdfResult.page_count);
 
       // Show document immediately
       this.pdfLoaded.set(true);
 
-      // Start page rendering in background
-      // If background removal is enabled, apply it after pages load
-      if (project.remove_backgrounds) {
-        this.pageRenderService.loadAllPageImages(pdfResult.page_count).then(() => {
-          this.applyRemoveBackgrounds(true);
-        });
-      } else {
-        this.pageRenderService.loadAllPageImages(pdfResult.page_count);
+      // Start page rendering in background (skip if lightweight mode)
+      if (!lightweight) {
+        // If background removal is enabled, apply it after pages load
+        if (project.remove_backgrounds) {
+          this.pageRenderService.loadAllPageImages(pdfResult.page_count).then(() => {
+            this.applyRemoveBackgrounds(true);
+          });
+        } else {
+          this.pageRenderService.loadAllPageImages(pdfResult.page_count);
+        }
       }
     } catch (err) {
       console.error('Failed to load project source file:', err);
@@ -6053,6 +6290,12 @@ export class PdfPickerComponent {
 
     // If entering OCR mode, open OCR settings
     if (mode === 'ocr') {
+      // In lightweight mode, pre-render pages for OCR
+      if (this.lightweightMode()) {
+        // Pre-render all pages (or a reasonable subset)
+        // For now, we'll just show the modal and let the user select which pages
+        // Then we'll pre-render those specific pages when they click "Start OCR"
+      }
       this.showOcrSettings.set(true);
       // Don't change currentMode - OCR is a modal, not a persistent mode
       return;
@@ -6659,6 +6902,12 @@ export class PdfPickerComponent {
   getPageImageForOcr(pageNum: number): string | null {
     const allImages = this.pageImages();
     const image = allImages.get(pageNum);
+
+    // In lightweight mode, we don't have page images - OCR will use headless processing
+    if (!image && this.lightweightMode()) {
+      return null; // OCR modal will handle this gracefully
+    }
+
     if (!image) {
       console.warn(`getPageImageForOcr(${pageNum}): No image found. Map size: ${allImages.size}, keys: ${Array.from(allImages.keys()).slice(0, 5).join(',')}...`);
     }
@@ -6910,7 +7159,98 @@ export class PdfPickerComponent {
   /**
    * Called when an OCR job starts in the background
    */
-  onBackgroundOcrStarted(jobId: string): void {
+  async onBackgroundOcrStarted(jobId: string): Promise<void> {
+    // Check if this is a headless OCR job (lightweight mode)
+    if (jobId.startsWith('headless_')) {
+      console.log(`[OCR] Starting headless OCR job: ${jobId}`);
+
+      // Parse parameters from the special job ID
+      // Format: headless_timestamp_engine_language_page1,page2,page3
+      const parts = jobId.split('_');
+      const engine = parts[2] as 'tesseract' | 'surya';
+      const language = parts[3];
+      const pagesStr = parts[4] || '';
+      const pages = pagesStr ? pagesStr.split(',').map(p => parseInt(p, 10)) : [];
+
+      if (pages.length === 0) {
+        // No pages specified, process all
+        const totalPages = this.totalPages();
+        for (let i = 0; i < totalPages; i++) {
+          pages.push(i);
+        }
+      }
+
+      // Show loading indicator
+      this.loading.set(true);
+      this.loadingText.set(`Initializing OCR for ${pages.length} pages...`);
+
+      // Subscribe to progress updates
+      const unsubscribe = this.electronService.onHeadlessOcrProgress((data) => {
+        this.loadingText.set(`Processing OCR: ${data.current}/${data.total} pages`);
+
+        // Also update background job progress for UI consistency
+        const progress = Math.round((data.current / data.total) * 100);
+        console.log(`[OCR] Headless progress: ${data.current}/${data.total} (${progress}%)`);
+      });
+
+      try {
+        // Run headless OCR directly on the PDF
+        const results = await this.electronService.ocrProcessPdfHeadless(
+          this.effectivePath(),
+          {
+            engine,
+            language,
+            pages
+          }
+        );
+
+        if (results && results.length > 0) {
+          console.log(`[OCR] Headless OCR completed with ${results.length} pages`);
+
+          // Convert results to the expected format
+          const ocrPageResults = results.map(r => ({
+            page: r.page,
+            text: r.text,
+            confidence: r.confidence,
+            textLines: r.textLines,
+            layoutBlocks: r.layoutBlocks
+          }));
+
+          // Process the OCR results - this will apply them to the document
+          this.onOcrCompleted({
+            results: ocrPageResults,
+            useSuryaCategories: engine === 'surya'
+          });
+
+          // Show success message
+          this.showAlert({
+            title: 'OCR Complete',
+            message: `Successfully processed ${results.length} pages with ${engine}`,
+            type: 'success'
+          });
+        } else {
+          this.showAlert({
+            title: 'OCR Failed',
+            message: 'No text was detected in the document',
+            type: 'error'
+          });
+        }
+      } catch (err) {
+        console.error(`[OCR] Headless OCR failed:`, err);
+        this.showAlert({
+          title: 'OCR Failed',
+          message: err instanceof Error ? err.message : 'Unknown error during OCR processing',
+          type: 'error'
+        });
+      } finally {
+        unsubscribe();
+        this.loading.set(false);
+      }
+
+      return; // Don't continue with regular job processing
+    }
+
+    // Regular OCR job (non-lightweight mode)
     // The job will continue running and call onOcrCompleted when done
     // via the completion callback registered in the OcrJobService
   }

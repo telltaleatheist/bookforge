@@ -9,6 +9,7 @@ export interface ExportSettings {
   format: ExportFormat;
   quality: 'low' | 'medium' | 'high' | 'maximum';
   removeBackgrounds: boolean;
+  textOnlyEpub?: boolean;  // New option for text-only EPUB export
 }
 
 export interface ExportResult {
@@ -97,6 +98,24 @@ export interface ExportResult {
                 </button>
               }
             </div>
+
+            <!-- Text-only option (for EPUB and Audiobook) -->
+            @if (format() === 'epub' || format() === 'audiobook') {
+              <div class="setting-row">
+                <div class="setting-info">
+                  <label>Text-only Export</label>
+                  <p>Extract only text content, no images or backgrounds (best for TTS and e-readers)</p>
+                </div>
+                <label class="toggle-switch">
+                  <input
+                    type="checkbox"
+                    [checked]="textOnlyEpub()"
+                    (change)="textOnlyEpub.set($any($event.target).checked)"
+                  >
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            }
 
             <!-- Audiobook info -->
             @if (format() === 'audiobook') {
@@ -418,6 +437,55 @@ export interface ExportResult {
       display: flex;
       gap: 8px;
     }
+
+    /* Toggle switch styles */
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 40px;
+      height: 22px;
+
+      input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .toggle-slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: var(--bg-elevated);
+        transition: all 0.2s;
+        border-radius: 11px;
+        border: 1px solid var(--border);
+
+        &:before {
+          position: absolute;
+          content: "";
+          height: 14px;
+          width: 14px;
+          left: 3px;
+          bottom: 3px;
+          background-color: var(--text-tertiary);
+          transition: all 0.2s;
+          border-radius: 50%;
+        }
+      }
+
+      input:checked + .toggle-slider {
+        background-color: var(--accent);
+        border-color: var(--accent);
+
+        &:before {
+          transform: translateX(18px);
+          background-color: white;
+        }
+      }
+    }
   `]
 })
 export class ExportSettingsModalComponent implements OnInit {
@@ -430,6 +498,7 @@ export class ExportSettingsModalComponent implements OnInit {
 
   readonly format = signal<ExportFormat>('pdf');
   readonly quality = signal<'low' | 'medium' | 'high' | 'maximum'>('high');
+  readonly textOnlyEpub = signal<boolean>(false);  // New signal for text-only EPUB
 
   // Computed to check if format is available
   isFormatAvailable(format: ExportFormat): boolean {
@@ -450,8 +519,12 @@ export class ExportSettingsModalComponent implements OnInit {
     if (ext === 'pdf' && this.removeBackgrounds()) {
       return `${baseName}_clean.pdf`;
     }
+    if (ext === 'epub' && this.textOnlyEpub()) {
+      return `${baseName}_text-only.epub`;
+    }
     if (ext === 'audiobook') {
-      return `${baseName}.epub → Audiobook Queue`;
+      const suffix = this.textOnlyEpub() ? ' (text-only)' : '';
+      return `${baseName}${suffix}.epub → Audiobook Queue`;
     }
     return `${baseName}_exported.${ext}`;
   }
@@ -466,7 +539,8 @@ export class ExportSettingsModalComponent implements OnInit {
       settings: {
         format: this.format(),
         quality: this.quality(),
-        removeBackgrounds: this.removeBackgrounds()
+        removeBackgrounds: this.removeBackgrounds(),
+        textOnlyEpub: this.textOnlyEpub()
       }
     });
   }

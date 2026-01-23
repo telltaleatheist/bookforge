@@ -40,7 +40,7 @@ function tokensMatch(a: string, b: string): boolean {
 }
 
 /**
- * Compute the LCS table for two sequences
+ * Compute the LCS table for two sequences (sync version for small inputs)
  */
 function computeLCSTable(original: string[], cleaned: string[]): number[][] {
   const m = original.length;
@@ -57,6 +57,40 @@ function computeLCSTable(original: string[], cleaned: string[]): number[][] {
       } else {
         dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
       }
+    }
+  }
+
+  return dp;
+}
+
+/**
+ * Compute the LCS table async, yielding to UI thread periodically
+ */
+async function computeLCSTableAsync(original: string[], cleaned: string[]): Promise<number[][]> {
+  const m = original.length;
+  const n = cleaned.length;
+
+  // Create 2D array for dynamic programming
+  const dp: number[][] = Array(m + 1).fill(null).map(() => Array(n + 1).fill(0));
+
+  // Process in chunks to avoid freezing UI
+  const CHUNK_SIZE = 5000; // Yield every ~5000 row operations
+  let operationCount = 0;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (tokensMatch(original[i - 1], cleaned[j - 1])) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+
+    operationCount += n;
+    if (operationCount >= CHUNK_SIZE) {
+      // Yield to UI thread
+      await new Promise(resolve => setTimeout(resolve, 0));
+      operationCount = 0;
     }
   }
 
@@ -125,8 +159,9 @@ function mergeDiffOperations(diff: DiffWord[]): DiffWord[] {
 }
 
 /**
- * Compute word-level diff between original and cleaned text
+ * Compute word-level diff between original and cleaned text (sync version)
  * Returns array of DiffWord objects with type annotations
+ * WARNING: Can freeze UI for large texts - use computeWordDiffAsync instead
  */
 export function computeWordDiff(originalText: string, cleanedText: string): DiffWord[] {
   const originalTokens = tokenize(originalText);
@@ -148,6 +183,133 @@ export function computeWordDiff(originalText: string, cleanedText: string): Diff
   const diff = backtrackDiff(originalTokens, cleanedTokens, dp);
 
   return mergeDiffOperations(diff);
+}
+
+// Maximum tokens before falling back to line-based diff
+const MAX_WORD_DIFF_TOKENS = 3000;
+// Maximum tokens for line-based diff before giving up on highlighting
+const MAX_LINE_DIFF_TOKENS = 10000;
+
+/**
+ * Simple line-based diff with word-level diffing within changed lines
+ * Much more memory efficient for large texts
+ */
+function computeLineDiff(originalText: string, cleanedText: string): DiffWord[] {
+  const originalLines = originalText.split('\n');
+  const cleanedLines = cleanedText.split('\n');
+  const result: DiffWord[] = [];
+
+  // Simple line matching - find common prefix and suffix
+  let start = 0;
+  let origEnd = originalLines.length;
+  let cleanEnd = cleanedLines.length;
+
+  // Match common prefix
+  while (start < origEnd && start < cleanEnd &&
+         normalizeForComparison(originalLines[start]) === normalizeForComparison(cleanedLines[start])) {
+    if (start > 0) result.push({ text: '\n', type: 'unchanged' });
+    result.push({ text: cleanedLines[start], type: 'unchanged' });
+    start++;
+  }
+
+  // Match common suffix
+  while (origEnd > start && cleanEnd > start &&
+         normalizeForComparison(originalLines[origEnd - 1]) === normalizeForComparison(cleanedLines[cleanEnd - 1])) {
+    origEnd--;
+    cleanEnd--;
+  }
+
+  // Middle section has changes
+  const changedOriginal = originalLines.slice(start, origEnd);
+  const changedCleaned = cleanedLines.slice(start, cleanEnd);
+
+  if (changedOriginal.length > 0 || changedCleaned.length > 0) {
+    if (result.length > 0) result.push({ text: '\n', type: 'unchanged' });
+
+    // For small changed sections, do word-level diff
+    const origTokens = changedOriginal.join('\n').split(/(\s+)/).filter(t => t.length > 0);
+    const cleanTokens = changedCleaned.join('\n').split(/(\s+)/).filter(t => t.length > 0);
+
+    if (origTokens.length * cleanTokens.length < 1000000) {
+      // Small enough for word-level diff
+      const dp = computeLCSTable(origTokens, cleanTokens);
+      const diff = backtrackDiff(origTokens, cleanTokens, dp);
+      result.push(...mergeDiffOperations(diff));
+    } else {
+      // Too large - just mark entire sections as removed/added
+      if (changedOriginal.length > 0) {
+        result.push({ text: changedOriginal.join('\n'), type: 'removed' });
+      }
+      if (changedCleaned.length > 0) {
+        if (changedOriginal.length > 0) result.push({ text: '\n', type: 'unchanged' });
+        result.push({ text: changedCleaned.join('\n'), type: 'added' });
+      }
+    }
+  }
+
+  // Add suffix lines
+  for (let i = origEnd; i < originalLines.length; i++) {
+    result.push({ text: '\n', type: 'unchanged' });
+    result.push({ text: cleanedLines[cleanEnd + (i - origEnd)], type: 'unchanged' });
+  }
+
+  return result;
+}
+
+/**
+ * Compute word-level diff asynchronously, yielding to UI thread periodically
+ * Use this for large texts to avoid freezing the browser
+ *
+ * Uses tiered approach based on text size:
+ * - Small (< 3K tokens): Full word-level LCS diff
+ * - Medium (< 10K tokens): Line-based diff with word-level for changed sections
+ * - Large (> 10K tokens): No highlighting, just show texts
+ */
+export async function computeWordDiffAsync(originalText: string, cleanedText: string): Promise<DiffWord[]> {
+  const originalTokens = tokenize(originalText);
+  const cleanedTokens = tokenize(cleanedText);
+
+  // Handle empty cases
+  if (originalTokens.length === 0 && cleanedTokens.length === 0) {
+    return [];
+  }
+  if (originalTokens.length === 0) {
+    return cleanedTokens.map(text => ({ text, type: 'added' as const }));
+  }
+  if (cleanedTokens.length === 0) {
+    return originalTokens.map(text => ({ text, type: 'removed' as const }));
+  }
+
+  const maxTokens = Math.max(originalTokens.length, cleanedTokens.length);
+  const totalOps = originalTokens.length * cleanedTokens.length;
+
+  // Small texts: full word-level diff (< 9M ops, ~70MB memory)
+  if (maxTokens <= MAX_WORD_DIFF_TOKENS) {
+    console.log(`[DiffAlgorithm] Word-level diff: ${originalTokens.length}x${cleanedTokens.length}`);
+
+    if (totalOps < 100000) {
+      const dp = computeLCSTable(originalTokens, cleanedTokens);
+      const diff = backtrackDiff(originalTokens, cleanedTokens, dp);
+      return mergeDiffOperations(diff);
+    }
+
+    // Async with yielding
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const dp = await computeLCSTableAsync(originalTokens, cleanedTokens);
+    const diff = backtrackDiff(originalTokens, cleanedTokens, dp);
+    return mergeDiffOperations(diff);
+  }
+
+  // Medium texts: line-based diff
+  if (maxTokens <= MAX_LINE_DIFF_TOKENS) {
+    console.log(`[DiffAlgorithm] Line-based diff: ${maxTokens} tokens (too large for word-level)`);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    return computeLineDiff(originalText, cleanedText);
+  }
+
+  // Very large texts: just show as unchanged (no highlighting)
+  console.warn(`[DiffAlgorithm] Text too large for diff (${maxTokens} tokens), showing without highlights`);
+  return [{ text: cleanedText, type: 'unchanged' }];
 }
 
 /**

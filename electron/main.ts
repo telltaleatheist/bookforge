@@ -9,6 +9,7 @@ import { getOcrService } from './ocr-service';
 import { getPluginRegistry } from './plugins/plugin-registry';
 import { loadBuiltinPlugins } from './plugins/plugin-loader';
 import { libraryServer } from './library-server';
+import { getHeadlessOcrService } from './headless-ocr';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -337,6 +338,72 @@ function setupIpcHandlers(): void {
       const result = pdfAnalyzer.exportText(enabledCategories);
       return { success: true, data: result };
     } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Text-only EPUB export (uses pdftotext + ebook-convert)
+  ipcMain.handle('pdf:export-text-only-epub', async (_event, pdfPath: string, metadata?: { title?: string; author?: string }) => {
+    try {
+      const { exec } = require('child_process');
+      const { promisify } = require('util');
+      const fs = require('fs').promises;
+      const path = require('path');
+      const os = require('os');
+      const execAsync = promisify(exec);
+
+      // Create temp directory for intermediate files
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bookforge-epub-'));
+      const tempTextFile = path.join(tempDir, 'extracted.txt');
+      const tempEpubFile = path.join(tempDir, 'output.epub');
+
+      try {
+        // Step 1: Extract text using pdftotext
+        console.log('[Text-only EPUB] Extracting text from PDF...');
+        await execAsync(`/opt/homebrew/bin/pdftotext -layout "${pdfPath}" "${tempTextFile}"`);
+
+        // Check if text was extracted
+        const stats = await fs.stat(tempTextFile);
+        if (stats.size === 0) {
+          throw new Error('No text extracted from PDF');
+        }
+
+        // Step 2: Convert text to EPUB using ebook-convert
+        console.log('[Text-only EPUB] Converting to EPUB...');
+        let convertCmd = `/Applications/calibre.app/Contents/MacOS/ebook-convert "${tempTextFile}" "${tempEpubFile}"`;
+
+        // Add metadata if provided
+        if (metadata?.title) {
+          convertCmd += ` --title "${metadata.title.replace(/"/g, '\\"')}"`;
+        }
+        if (metadata?.author) {
+          convertCmd += ` --authors "${metadata.author.replace(/"/g, '\\"')}"`;
+        }
+
+        // Add formatting options
+        convertCmd += ' --formatting-type=markdown --paragraph-type=auto --page-breaks-before="/"';
+
+        await execAsync(convertCmd);
+
+        // Step 3: Read the EPUB file and return as base64
+        const epubBuffer = await fs.readFile(tempEpubFile);
+        const epubBase64 = epubBuffer.toString('base64');
+
+        // Clean up temp files
+        await fs.unlink(tempTextFile).catch(() => {});
+        await fs.unlink(tempEpubFile).catch(() => {});
+        await fs.rmdir(tempDir).catch(() => {});
+
+        return { success: true, data: epubBase64 };
+      } catch (error) {
+        // Clean up on error
+        await fs.unlink(tempTextFile).catch(() => {});
+        await fs.unlink(tempEpubFile).catch(() => {});
+        await fs.rmdir(tempDir).catch(() => {});
+        throw error;
+      }
+    } catch (err) {
+      console.error('[Text-only EPUB] Export failed:', err);
       return { success: false, error: (err as Error).message };
     }
   });
@@ -1211,6 +1278,33 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Headless OCR - processes PDF directly without rendering to UI
+  ipcMain.handle('ocr:process-pdf-headless', async (_event, pdfPath: string, options: {
+    engine: 'tesseract' | 'surya';
+    language?: string;
+    pages?: number[];
+  }) => {
+    try {
+      const headlessOcr = getHeadlessOcrService();
+
+      // Create progress callback that sends updates to renderer
+      const onProgress = (current: number, total: number) => {
+        if (mainWindow) {
+          mainWindow.webContents.send('ocr:headless-progress', { current, total });
+        }
+      };
+
+      const results = await headlessOcr.processPdf(pdfPath, {
+        ...options,
+        onProgress
+      });
+
+      return { success: true, results };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Window control handlers
   ipcMain.handle('window:hide', () => {
     if (mainWindow) {
@@ -1542,6 +1636,17 @@ function setupIpcHandlers(): void {
       const { getChapterComparison } = await import('./epub-processor.js');
       const result = await getChapterComparison(originalPath, cleanedPath, chapterId);
       return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Compute word-level diff using system diff command (much more efficient than JS LCS)
+  ipcMain.handle('diff:compute-system-diff', async (_event, originalText: string, cleanedText: string) => {
+    try {
+      const { computeSystemDiff } = await import('./epub-processor.js');
+      const segments = await computeSystemDiff(originalText, cleanedText);
+      return { success: true, data: segments };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

@@ -754,6 +754,8 @@ export class OcrSettingsModalComponent implements OnDestroy {
   getPageImage = input.required<(page: number) => string | null>();
   documentId = input<string>('');
   documentName = input<string>('Document');
+  lightweightMode = input<boolean>(false);
+  pdfPath = input<string>('');
 
   // Outputs
   close = output<void>();
@@ -1104,8 +1106,19 @@ export class OcrSettingsModalComponent implements OnDestroy {
     const pages = this.getPageList();
     if (pages.length === 0) return;
 
-    const getImage = this.getPageImage();
     const engine = this.settings().engine;
+
+    // In lightweight mode, emit a special signal to trigger headless OCR
+    if (this.lightweightMode()) {
+      // Create a special job ID that indicates headless OCR
+      const headlessJobId = `headless_${Date.now()}_${engine}_${this.settings().language}_${pages.join(',')}`;
+      this.backgroundJobStarted.emit(headlessJobId);
+      this.close.emit();
+      return;
+    }
+
+    // Normal mode: start regular background OCR job
+    const getImage = this.getPageImage();
     // Auto-set category detection based on engine: Surya uses its own, Tesseract uses heuristics
     const useSuryaCategoriesForEngine = engine === 'surya';
 

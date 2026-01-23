@@ -649,6 +649,7 @@ export interface ElectronAPI {
     getCacheSize: (fileHash: string) => Promise<{ success: boolean; data?: { size: number }; error?: string }>;
     getTotalCacheSize: () => Promise<{ success: boolean; data?: { size: number }; error?: string }>;
     exportText: (enabledCategories: string[]) => Promise<{ success: boolean; data?: { text: string; char_count: number }; error?: string }>;
+    exportTextOnlyEpub: (pdfPath: string, metadata?: { title?: string; author?: string }) => Promise<{ success: boolean; data?: string; error?: string }>;
     exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
     exportPdfNoBackgrounds: (scale?: number, deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
     exportPdfWysiwyg: (deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, deletedPages?: number[], scale?: number, ocrPages?: Array<{page: number; blocks: Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>}>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
@@ -841,6 +842,18 @@ export interface ElectronAPI {
     getLanguages: () => Promise<{ success: boolean; languages?: string[]; error?: string }>;
     recognize: (imageData: string) => Promise<{ success: boolean; data?: OcrResult; error?: string }>;
     detectSkew: (imageData: string) => Promise<{ success: boolean; data?: DeskewResult; error?: string }>;
+    processPdfHeadless: (pdfPath: string, options: {
+      engine: 'tesseract' | 'surya';
+      language?: string;
+      pages?: number[];
+    }) => Promise<{ success: boolean; results?: Array<{
+      page: number;
+      text: string;
+      confidence: number;
+      textLines?: OcrTextLine[];
+      layoutBlocks?: any[];
+    }>; error?: string }>;
+    onHeadlessProgress: (callback: (data: { current: number; total: number }) => void) => () => void;
   };
   window: {
     hide: () => Promise<{ success: boolean }>;
@@ -889,6 +902,12 @@ export interface ElectronAPI {
         originalText: string;
         cleanedText: string;
       };
+      error?: string;
+    }>;
+    // Compute diff using system diff command (efficient, runs in main process)
+    computeSystemDiff: (originalText: string, cleanedText: string) => Promise<{
+      success: boolean;
+      data?: Array<{ text: string; type: 'unchanged' | 'added' | 'removed' }>;
       error?: string;
     }>;
     onLoadProgress: (callback: (progress: DiffLoadProgress) => void) => () => void;
@@ -1009,6 +1028,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:get-total-cache-size'),
     exportText: (enabledCategories: string[]) =>
       ipcRenderer.invoke('pdf:export-text', enabledCategories),
+    exportTextOnlyEpub: (pdfPath: string, metadata?: { title?: string; author?: string }) =>
+      ipcRenderer.invoke('pdf:export-text-only-epub', pdfPath, metadata),
     exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[], chapters?: Array<{ title: string; page: number; level: number }>) =>
       ipcRenderer.invoke('pdf:export-pdf', pdfPath, deletedRegions, ocrBlocks, deletedPages, chapters),
     exportPdfNoBackgrounds: (scale: number = 2.0, deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) =>
@@ -1244,6 +1265,21 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('ocr:recognize', imageData),
     detectSkew: (imageData: string) =>
       ipcRenderer.invoke('ocr:detect-skew', imageData),
+    processPdfHeadless: (pdfPath: string, options: {
+      engine: 'tesseract' | 'surya';
+      language?: string;
+      pages?: number[];
+    }) =>
+      ipcRenderer.invoke('ocr:process-pdf-headless', pdfPath, options),
+    onHeadlessProgress: (callback: (data: { current: number; total: number }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { current: number; total: number }) => {
+        callback(data);
+      };
+      ipcRenderer.on('ocr:headless-progress', listener);
+      return () => {
+        ipcRenderer.removeListener('ocr:headless-progress', listener);
+      };
+    },
   },
   window: {
     hide: () =>
@@ -1325,6 +1361,9 @@ const electronAPI: ElectronAPI = {
     // Memory-efficient: load a single chapter's text on demand
     getChapter: (originalPath: string, cleanedPath: string, chapterId: string) =>
       ipcRenderer.invoke('diff:get-chapter', originalPath, cleanedPath, chapterId),
+    // Compute diff using system diff command (efficient, runs in main process)
+    computeSystemDiff: (originalText: string, cleanedText: string) =>
+      ipcRenderer.invoke('diff:compute-system-diff', originalText, cleanedText),
     onLoadProgress: (callback: (progress: DiffLoadProgress) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, progress: DiffLoadProgress) => callback(progress);
       ipcRenderer.on('diff:load-progress', handler);

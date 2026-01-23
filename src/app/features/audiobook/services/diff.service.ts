@@ -9,7 +9,7 @@ import {
   DIFF_INITIAL_LOAD,
   DIFF_LOAD_MORE_SIZE
 } from '../../../core/models/diff.types';
-import { computeWordDiff, countChanges, summarizeChanges } from '../../../core/utils/diff-algorithm';
+import { computeWordDiffAsync, countChanges, summarizeChanges } from '../../../core/utils/diff-algorithm';
 
 export interface DiffLoadingProgress {
   phase: 'loading-metadata' | 'loading-chapter' | 'computing-diff' | 'complete';
@@ -57,6 +57,31 @@ export class DiffService {
   private backgroundLoadingPromise: Promise<void> | null = null;
 
   constructor(private electronService: ElectronService) {}
+
+  /**
+   * Compute diff using system diff command (efficient) with JS fallback.
+   * System diff runs in the main process using native diff command,
+   * avoiding the massive O(n²) memory allocation of LCS in JavaScript.
+   */
+  private async computeDiff(originalText: string, cleanedText: string): Promise<DiffWord[]> {
+    // Try system diff first (much more memory efficient)
+    try {
+      const result = await this.electronService.computeSystemDiff(originalText, cleanedText);
+      if (result.success && result.segments) {
+        // Convert segments to DiffWord format
+        return result.segments.map(seg => ({
+          text: seg.text,
+          type: seg.type
+        }));
+      }
+    } catch (err) {
+      console.warn('[DiffService] System diff failed, falling back to JS:', err);
+    }
+
+    // Fallback to JavaScript algorithm (may cause OOM on very large texts)
+    console.log('[DiffService] Using JS diff algorithm as fallback');
+    return computeWordDiffAsync(originalText, cleanedText);
+  }
 
   /**
    * Load comparison metadata only (no text content).
@@ -263,7 +288,7 @@ export class DiffService {
       // Recompute diff for the extended range
       const truncatedOriginal = chapter.originalText.slice(0, newLoadedChars);
       const truncatedCleaned = chapter.cleanedText.slice(0, newLoadedChars);
-      const diffWords = computeWordDiff(truncatedOriginal, truncatedCleaned);
+      const diffWords = await this.computeDiff(truncatedOriginal, truncatedCleaned);
       const changeCount = countChanges(diffWords);
 
       // Update chapter
@@ -385,7 +410,7 @@ export class DiffService {
 
       const truncatedOriginal = originalText.slice(0, loadChars);
       const truncatedCleaned = cleanedText.slice(0, loadChars);
-      const diffWords = computeWordDiff(truncatedOriginal, truncatedCleaned);
+      const diffWords = await this.computeDiff(truncatedOriginal, truncatedCleaned);
       const changeCount = countChanges(diffWords);
 
       console.log('[DiffService] Diff complete:', diffWords.length, 'words,', changeCount, 'changes in', Date.now() - diffStartTime, 'ms');
@@ -710,7 +735,7 @@ export class DiffService {
       // Recompute diff for the extended range
       const truncatedOriginal = chapter.originalText.slice(0, newLoadedChars);
       const truncatedCleaned = chapter.cleanedText.slice(0, newLoadedChars);
-      const diffWords = computeWordDiff(truncatedOriginal, truncatedCleaned);
+      const diffWords = await this.computeDiff(truncatedOriginal, truncatedCleaned);
       const changeCount = countChanges(diffWords);
 
       console.log('[DiffService] loadMore complete:', diffWords.length, 'words,', changeCount, 'changes in', Date.now() - diffStartTime, 'ms');

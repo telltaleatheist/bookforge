@@ -143,6 +143,10 @@ export interface ProjectFile {
             <span class="context-icon">📂</span>
             Open
           </button>
+          <button class="context-menu-item" (click)="onContextMenuProcessLightweight()">
+            <span class="context-icon">⚡</span>
+            Process without rendering...
+          </button>
           <div class="context-divider"></div>
           <button class="context-menu-item" (click)="onContextMenuTransferToAudiobook()">
             <span class="context-icon">🎧</span>
@@ -598,6 +602,8 @@ export class LibraryViewComponent implements OnInit {
   error = output<string>();
   // Output for transferring to audiobook
   transferToAudiobook = output<ProjectFile[]>();
+  // Output for lightweight processing (without rendering)
+  processWithoutRendering = output<ProjectFile[]>();
 
   readonly projects = signal<ProjectFile[]>([]);
   readonly loading = signal(true);  // Start with loading = true
@@ -854,6 +860,14 @@ export class LibraryViewComponent implements OnInit {
     const selected = this.selectedProjects();
     if (selected.length > 0) {
       this.transferToAudiobook.emit(selected);
+    }
+  }
+
+  onContextMenuProcessLightweight(): void {
+    this.contextMenuVisible.set(false);
+    const selected = this.selectedProjects();
+    if (selected.length > 0) {
+      this.processWithoutRendering.emit(selected);
     }
   }
 
