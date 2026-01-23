@@ -6,7 +6,7 @@ import {
   ToolbarItem,
   DesktopButtonComponent
 } from '../../creamsicle-desktop';
-import { AudiobookQueueComponent, QueueItem } from './components/audiobook-queue/audiobook-queue.component';
+import { AudiobookQueueComponent, QueueItem, CompletedAudiobook } from './components/audiobook-queue/audiobook-queue.component';
 import { MetadataEditorComponent, EpubMetadata } from './components/metadata-editor/metadata-editor.component';
 import { AiCleanupPanelComponent } from './components/ai-cleanup-panel/ai-cleanup-panel.component';
 import { TtsSettingsComponent, TTSSettings } from './components/tts-settings/tts-settings.component';
@@ -15,6 +15,7 @@ import { PlayViewComponent } from './components/play-view/play-view.component';
 import { EpubService } from './services/epub.service';
 import { AudiobookService } from './services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
+import { SettingsService } from '../../core/services/settings.service';
 
 // Workflow states for the audiobook producer
 type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'play' | 'diff' | 'complete';
@@ -55,9 +56,12 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'play' | 'di
           <app-audiobook-queue
             [items]="queueItems()"
             [selectedId]="selectedItemId()"
+            [completedAudiobooks]="completedAudiobooks()"
             (select)="selectItem($event)"
             (remove)="removeFromQueue($event)"
             (filesDropped)="onFilesDropped($event)"
+            (openCompletedFolder)="onOpenCompletedFolder()"
+            (playAudiobook)="onPlayAudiobook($event)"
           />
         </div>
 
@@ -130,7 +134,13 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'play' | 'di
                   <app-tts-settings
                     [settings]="ttsSettings()"
                     [epubPath]="currentEpubPath()"
-                    [metadata]="{ title: selectedMetadata()?.title, author: selectedMetadata()?.author, outputFilename: selectedMetadata()?.outputFilename || generatedFilename() }"
+                    [metadata]="{
+                      title: selectedMetadata()?.title,
+                      author: selectedMetadata()?.author,
+                      year: selectedMetadata()?.year,
+                      coverPath: getSelectedCoverPath(),
+                      outputFilename: selectedMetadata()?.outputFilename || generatedFilename()
+                    }"
                     (settingsChange)="onTtsSettingsChange($event)"
                   />
                 }
@@ -302,6 +312,7 @@ export class AudiobookComponent implements OnInit {
   private readonly epubService = inject(EpubService);
   private readonly audiobookService = inject(AudiobookService);
   private readonly electronService = inject(ElectronService);
+  private readonly settingsService = inject(SettingsService);
 
   // State
   readonly queueItems = signal<QueueItem[]>([]);
@@ -311,7 +322,7 @@ export class AudiobookComponent implements OnInit {
     device: 'mps',
     language: 'en',
     ttsEngine: 'xtts',
-    fineTuned: 'ScarlettJohansson',
+    fineTuned: 'ScarlettJohansson',  // Default to Scarlett Johansson voice
     temperature: 0.7,
     topP: 0.9,
     topK: 40,
@@ -320,6 +331,7 @@ export class AudiobookComponent implements OnInit {
     enableTextSplitting: false
   });
   readonly savingMetadata = signal(false);
+  readonly completedAudiobooks = signal<CompletedAudiobook[]>([]);
 
   // Diff view state
   readonly diffPaths = signal<{ originalPath: string; cleanedPath: string } | null>(null);
@@ -449,6 +461,7 @@ export class AudiobookComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadQueue();
+    this.loadCompletedAudiobooks();
   }
 
   onToolbarAction(item: ToolbarItem): void {
@@ -458,6 +471,7 @@ export class AudiobookComponent implements OnInit {
         break;
       case 'refresh':
         this.loadQueue();
+        this.loadCompletedAudiobooks();
         // Also refresh diff view if on the diff tab
         if (this.workflowState() === 'diff' && this.diffViewRef) {
           this.diffViewRef.refresh();
@@ -549,6 +563,59 @@ export class AudiobookComponent implements OnInit {
     // If there's no selection but we have items, select the first one
     if (!this.selectedItemId() && items.length > 0) {
       this.selectItem(items[0].id);
+    }
+  }
+
+  async loadCompletedAudiobooks(): Promise<void> {
+    if (!this.electron) return;
+
+    try {
+      // Get the output folder from settings
+      const outputDir = this.settingsService.get<string>('audiobookOutputDir');
+      const result = await this.electron.library.listCompleted(outputDir || undefined);
+
+      if (result.success && result.files) {
+        this.completedAudiobooks.set(
+          result.files.map((f: any) => ({
+            path: f.path,
+            filename: f.filename,
+            size: f.size,
+            modifiedAt: new Date(f.modifiedAt)
+          }))
+        );
+      }
+    } catch (err) {
+      console.error('Failed to load completed audiobooks:', err);
+    }
+  }
+
+  async onOpenCompletedFolder(): Promise<void> {
+    if (!this.electron) return;
+
+    try {
+      const outputDir = this.settingsService.get<string>('audiobookOutputDir');
+      if (outputDir) {
+        await this.electron.shell.openPath(outputDir);
+      } else {
+        // Fall back to default audiobooks folder
+        const pathsResult = await this.electron.library.getAudiobooksPath();
+        if (pathsResult.success && pathsResult.queuePath) {
+          await this.electron.shell.openPath(pathsResult.queuePath);
+        }
+      }
+    } catch (err) {
+      console.error('Error opening audiobooks folder:', err);
+    }
+  }
+
+  async onPlayAudiobook(path: string): Promise<void> {
+    if (!this.electron) return;
+
+    try {
+      // Open the file with the default system player
+      await this.electron.shell.openPath(path);
+    } catch (err) {
+      console.error('Error opening audiobook:', err);
     }
   }
 
@@ -779,4 +846,31 @@ export class AudiobookComponent implements OnInit {
     }
   }
 
+  /**
+   * Get the cover path for the currently selected item
+   */
+  getSelectedCoverPath(): string | undefined {
+    const item = this.selectedItem();
+    if (!item?.projectId) return undefined;
+    return this.getProjectCoverPath(item.projectId);
+  }
+
+  /**
+   * Get the path to the cover image for a project
+   * The cover is stored in the project folder as cover.png or cover.jpg
+   */
+  getProjectCoverPath(projectId: string): string | undefined {
+    if (!this.electron || !projectId) return undefined;
+
+    // Get the audiobooks base path and construct cover path
+    // Projects are in ~/Documents/BookForge/audiobooks/{projectId}/
+    // Cover is typically saved as cover.png or project metadata references it
+    const item = this.selectedItem();
+    if (!item?.metadata?.coverPath) return undefined;
+
+    // The coverPath in metadata might be relative (e.g., "cover.png")
+    // We need to construct the full path based on the project folder
+    const projectPath = item.path.substring(0, item.path.lastIndexOf('/'));
+    return `${projectPath}/${item.metadata.coverPath}`;
+  }
 }

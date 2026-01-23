@@ -416,6 +416,14 @@ export interface QueueFileInfo {
   hasCleaned?: boolean;
 }
 
+export interface CompletedAudiobookInfo {
+  path: string;
+  filename: string;
+  size: number;
+  modifiedAt: string;
+  createdAt: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Audiobook Project Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -712,6 +720,11 @@ export interface ElectronAPI {
       success: boolean;
       queuePath?: string;
       completedPath?: string;
+      error?: string;
+    }>;
+    listCompleted: (folderPath?: string) => Promise<{
+      success: boolean;
+      files?: CompletedAudiobookInfo[];
       error?: string;
     }>;
     saveMetadata: (epubPath: string, metadata: EpubMetadata) => Promise<{
@@ -1083,6 +1096,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('library:list-queue'),
     getAudiobooksPath: () =>
       ipcRenderer.invoke('library:get-audiobooks-path'),
+    listCompleted: (folderPath?: string) =>
+      ipcRenderer.invoke('library:list-completed', folderPath),
     saveMetadata: (epubPath: string, metadata: EpubMetadata) =>
       ipcRenderer.invoke('library:save-metadata', epubPath, metadata),
     loadMetadata: (epubPath: string) =>

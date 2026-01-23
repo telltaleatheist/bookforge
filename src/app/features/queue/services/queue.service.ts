@@ -698,7 +698,15 @@ export class QueueService {
               repetitionPenalty: config.repetitionPenalty,
               speed: config.speed,
               enableTextSplitting: config.enableTextSplitting
-            }
+            },
+            // Pass metadata for final audiobook (applied after assembly via m4b-tool)
+            metadata: job.metadata ? {
+              title: job.metadata.title,
+              author: job.metadata.author,
+              year: job.metadata.year,
+              coverPath: job.metadata.coverPath,
+              outputFilename: job.metadata.outputFilename || config.outputFilename
+            } : undefined
           });
         } else {
           // Use sequential TTS conversion

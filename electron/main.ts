@@ -2353,8 +2353,45 @@ function setupIpcHandlers(): void {
     return {
       success: true,
       queuePath: basePath,
-      completedPath: basePath
+      completedPath: path.join(basePath, 'completed')
     };
+  });
+
+  // List completed audiobooks (m4b files) from a specified folder
+  ipcMain.handle('library:list-completed', async (_event, folderPath?: string) => {
+    try {
+      // Use provided path or fall back to default audiobooks folder
+      const audiobooksPath = folderPath || getAudiobooksBasePath();
+
+      // Check if folder exists
+      try {
+        await fs.access(audiobooksPath);
+      } catch {
+        return { success: true, files: [] }; // Folder doesn't exist yet
+      }
+
+      const entries = await fs.readdir(audiobooksPath, { withFileTypes: true });
+      const m4bFiles = entries.filter(e => e.isFile() && e.name.toLowerCase().endsWith('.m4b'));
+
+      const files = await Promise.all(m4bFiles.map(async (file) => {
+        const filePath = path.join(audiobooksPath, file.name);
+        const stats = await fs.stat(filePath);
+        return {
+          path: filePath,
+          filename: file.name,
+          size: stats.size,
+          modifiedAt: stats.mtime.toISOString(),
+          createdAt: stats.birthtime.toISOString()
+        };
+      }));
+
+      // Sort by modification date, newest first
+      files.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
+
+      return { success: true, files };
+    } catch (err) {
+      return { success: false, error: (err as Error).message, files: [] };
+    }
   });
 
   ipcMain.handle('library:save-metadata', async (_event, epubPath: string, metadata: unknown) => {

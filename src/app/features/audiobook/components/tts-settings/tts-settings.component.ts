@@ -6,6 +6,7 @@ import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { QueueService } from '../../../queue/services/queue.service';
 import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success-modal.component';
 import { SettingsService } from '../../../../core/services/settings.service';
+import { LibraryService } from '../../../../core/services/library.service';
 import { EpubService } from '../../services/epub.service';
 
 export interface TTSSettings {
@@ -708,6 +709,7 @@ export class TtsSettingsComponent implements OnInit {
   private readonly queueService = inject(QueueService);
   private readonly router = inject(Router);
   private readonly settingsService = inject(SettingsService);
+  private readonly libraryService = inject(LibraryService);
   private readonly epubService = inject(EpubService);
 
   // Inputs
@@ -724,7 +726,13 @@ export class TtsSettingsComponent implements OnInit {
     enableTextSplitting: false
   });
   readonly epubPath = input<string>('');
-  readonly metadata = input<{ title?: string; author?: string; outputFilename?: string } | undefined>(undefined);
+  readonly metadata = input<{
+    title?: string;
+    author?: string;
+    year?: string;
+    coverPath?: string;      // Path to cover image file
+    outputFilename?: string; // Custom output filename (e.g., "My Book.m4b")
+  } | undefined>(undefined);
 
   // Outputs
   readonly settingsChange = output<TTSSettings>();
@@ -738,7 +746,9 @@ export class TtsSettingsComponent implements OnInit {
   readonly availableVoices = signal<VoiceOption[]>([
     { id: 'ScarlettJohansson', name: 'Scarlett Johansson', language: 'en', description: 'Natural, warm female voice' },
     { id: 'DavidAttenborough', name: 'David Attenborough', language: 'en', description: 'Documentary-style narration' },
-    { id: 'default', name: 'Default XTTS', language: 'en', description: 'Standard XTTS voice' }
+    { id: 'BobRoss', name: 'Bob Ross', language: 'en', description: 'Calm, soothing male voice' },
+    { id: 'MorganFreeman', name: 'Morgan Freeman', language: 'en', description: 'Deep, authoritative male voice' },
+    { id: 'internal', name: 'Default XTTS', language: 'en', description: 'Built-in XTTS voice' }
   ]);
 
   // Parallel processing state
@@ -818,7 +828,9 @@ export class TtsSettingsComponent implements OnInit {
 
       const currentSettings = this.settings();
       const meta = this.metadata();
-      const outputDir = this.settingsService.get<string>('audiobookOutputDir') || '';
+      // Use configured output dir, or fall back to library's audiobooks folder
+      const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
+      const outputDir = configuredDir || this.libraryService.audiobooksPath() || '';
       await this.queueService.addJob({
         type: 'tts-conversion',
         epubPath: epubPathToUse,

@@ -69,6 +69,14 @@ export interface ParallelConversionConfig {
   outputDir: string;
   settings: ParallelTtsSettings;
   parallelMode: ParallelMode; // 'sentences' = fine-grained, 'chapters' = natural boundaries
+  // Metadata for final audiobook (applied after assembly via m4b-tool)
+  metadata?: {
+    title?: string;
+    author?: string;
+    year?: string;
+    coverPath?: string;  // Path to cover image file
+    outputFilename?: string;  // Custom filename (without path)
+  };
 }
 
 export interface ParallelTtsSettings {
@@ -182,19 +190,21 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
     availableMemGB = os.freemem() / (1024 * 1024 * 1024);
   }
 
-  // Each TTS worker needs roughly 8-12GB for the model
-  const memPerWorker = 10; // Conservative estimate in GB
+  // Each TTS worker needs roughly 14-18GB for the model + audio buffers + overhead
+  // This is conservative to prevent memory pressure crashes
+  const memPerWorker = 16; // Conservative estimate in GB
   const maxByMemory = Math.floor(availableMemGB / memPerWorker);
 
-  // Apple Silicon with unified memory can run more workers
+  // Apple Silicon with unified memory - still be conservative as TTS is memory-intensive
   if (platform === 'darwin') {
     try {
       const cpuInfo = execSync('sysctl -n machdep.cpu.brand_string', { encoding: 'utf-8' });
       const isAppleSilicon = cpuInfo.toLowerCase().includes('apple');
 
       if (isAppleSilicon) {
-        // Cap at 4 workers max, but limit by available memory
-        const recommendedByTotal = totalMemGB >= 64 ? 4 : totalMemGB >= 32 ? 3 : totalMemGB >= 16 ? 2 : 1;
+        // Conservative recommendations - 4 workers was causing crashes even on 64GB
+        // Each XTTS worker loads full model + generates audio, causing memory pressure
+        const recommendedByTotal = totalMemGB >= 128 ? 4 : totalMemGB >= 64 ? 2 : totalMemGB >= 32 ? 2 : 1;
         const count = Math.min(recommendedByTotal, Math.max(1, maxByMemory));
         return {
           count,
@@ -207,7 +217,7 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
   }
 
   // Generic detection based on available RAM
-  const count = Math.min(3, Math.max(1, maxByMemory));
+  const count = Math.min(2, Math.max(1, maxByMemory));
   return { count, reason: `${Math.round(availableMemGB)}GB RAM available` };
 }
 
@@ -421,6 +431,7 @@ function startWorker(
     ? `chapters ${range.chapterStart}-${range.chapterEnd}`
     : `sentences ${range.sentenceStart}-${range.sentenceEnd}`;
   console.log(`[PARALLEL-TTS] Worker ${workerId} starting: ${rangeDesc}`);
+  console.log(`[PARALLEL-TTS] Worker ${workerId} settings: engine=${settings.ttsEngine}, voice=${settings.fineTuned}, device=${settings.device}`);
 
   const workerProcess = spawn('conda', args, {
     cwd: e2aPath,
@@ -667,13 +678,162 @@ async function runAssembly(session: ConversionSession): Promise<string> {
           }
         }
 
-        resolve(outputPath || path.join(config.outputDir, 'audiobook.m4b'));
+        const finalPath = outputPath || path.join(config.outputDir, 'audiobook.m4b');
+
+        // Apply metadata and rename using m4b-tool if metadata was provided
+        if (config.metadata && finalPath) {
+          try {
+            const processedPath = await applyMetadataWithM4bTool(finalPath, config.metadata, config.outputDir);
+            resolve(processedPath);
+          } catch (metaErr) {
+            console.error('[PARALLEL-TTS] Metadata processing failed, using original file:', metaErr);
+            resolve(finalPath);
+          }
+        } else {
+          resolve(finalPath);
+        }
       } else {
         reject(new Error(`Assembly failed with code ${code}: ${stderr}`));
       }
     });
 
     session.assemblyProcess.on('error', reject);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Metadata Post-Processing with m4b-tool
+// ─────────────────────────────────────────────────────────────────────────────
+
+const M4B_TOOL_PATH = '/opt/homebrew/bin/m4b-tool';
+
+interface MetadataConfig {
+  title?: string;
+  author?: string;
+  year?: string;
+  coverPath?: string;
+  outputFilename?: string;
+}
+
+/**
+ * Apply metadata to m4b file using m4b-tool and optionally rename
+ */
+async function applyMetadataWithM4bTool(
+  inputPath: string,
+  metadata: MetadataConfig,
+  outputDir: string
+): Promise<string> {
+  const hasMetadataChanges = metadata.title || metadata.author || metadata.year || metadata.coverPath;
+  const hasRename = metadata.outputFilename;
+
+  if (!hasMetadataChanges && !hasRename) {
+    return inputPath;
+  }
+
+  console.log('[PARALLEL-TTS] Applying metadata with m4b-tool:', metadata);
+
+  // If we have a cover to apply, first remove the existing cover
+  if (metadata.coverPath) {
+    console.log('[PARALLEL-TTS] Removing existing cover...');
+    await runM4bToolCommand(inputPath, ['--skip-cover', '-f']);
+  }
+
+  // Build m4b-tool meta command arguments
+  const args: string[] = [];
+
+  if (metadata.title) {
+    args.push('--name', metadata.title);
+  }
+  if (metadata.author) {
+    args.push('--artist', metadata.author);
+  }
+  if (metadata.year) {
+    args.push('--year', metadata.year);
+  }
+  if (metadata.coverPath) {
+    args.push('--cover', metadata.coverPath);
+  }
+
+  // Apply metadata if we have any changes
+  if (args.length > 0) {
+    args.push('-f'); // Force overwrite
+    console.log('[PARALLEL-TTS] Applying metadata:', args.join(' '));
+    await runM4bToolCommand(inputPath, args);
+  }
+
+  // Rename if custom filename specified
+  if (metadata.outputFilename) {
+    let newPath = path.join(outputDir, metadata.outputFilename);
+
+    // Check if file already exists - if so, add a number suffix
+    if (newPath !== inputPath) {
+      newPath = await getUniqueFilePath(newPath);
+      console.log(`[PARALLEL-TTS] Renaming to: ${newPath}`);
+      await fs.rename(inputPath, newPath);
+      return newPath;
+    }
+  }
+
+  return inputPath;
+}
+
+/**
+ * Get a unique file path by adding a number suffix if the file already exists
+ * e.g., "My Book.m4b" -> "My Book 2.m4b" -> "My Book 3.m4b"
+ */
+async function getUniqueFilePath(filePath: string): Promise<string> {
+  const dir = path.dirname(filePath);
+  const ext = path.extname(filePath);
+  const baseName = path.basename(filePath, ext);
+
+  let counter = 1;
+  let uniquePath = filePath;
+
+  while (true) {
+    try {
+      await fs.access(uniquePath);
+      // File exists, try next number
+      counter++;
+      uniquePath = path.join(dir, `${baseName} ${counter}${ext}`);
+    } catch {
+      // File doesn't exist, we can use this path
+      return uniquePath;
+    }
+  }
+}
+
+/**
+ * Run m4b-tool meta command
+ */
+function runM4bToolCommand(filePath: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const fullArgs = ['meta', ...args, filePath];
+    console.log(`[M4B-TOOL] ${M4B_TOOL_PATH} ${fullArgs.join(' ')}`);
+
+    const proc = spawn(M4B_TOOL_PATH, fullArgs, {
+      shell: false
+    });
+
+    let stderr = '';
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      console.log('[M4B-TOOL]', data.toString().trim());
+    });
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+      console.log('[M4B-TOOL STDERR]', data.toString().trim());
+    });
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`m4b-tool failed with code ${code}: ${stderr}`));
+      }
+    });
+
+    proc.on('error', reject);
   });
 }
 

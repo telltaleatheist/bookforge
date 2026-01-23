@@ -23,10 +23,7 @@ export interface QueueJob {
   addedAt: Date;
   startedAt?: Date;
   completedAt?: Date;
-  metadata?: {
-    title?: string;
-    author?: string;
-  };
+  metadata?: AudiobookMetadata;
   // Job-specific configuration
   config?: JobConfig;
   // Progress tracking for ETA calculation
@@ -109,13 +106,19 @@ export interface JobResult {
   error?: string;
 }
 
+// Audiobook metadata for TTS jobs
+export interface AudiobookMetadata {
+  title?: string;
+  author?: string;
+  year?: string;
+  coverPath?: string;      // Path to cover image file
+  outputFilename?: string; // Custom output filename (e.g., "My Book.m4b")
+}
+
 // Create job request
 export interface CreateJobRequest {
   type: JobType;
   epubPath: string;
   config?: Partial<OcrCleanupConfig | TtsConversionConfig>;
-  metadata?: {
-    title?: string;
-    author?: string;
-  };
+  metadata?: AudiobookMetadata;
 }

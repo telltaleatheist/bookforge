@@ -117,7 +117,15 @@
       "Bash(ipconfig getifaddr:*)",
       "Bash(sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate)",
       "Bash(scutil:*)",
-      "Bash(ssh:*)"
+      "Bash(ssh:*)",
+      "Bash(for dir in ~/Projects/ebook2audiobook/tmp/ebook-*/)",
+      "Bash(do echo '=== $dir ===' if [ -f $dir/metadata.json ])",
+      "Bash(then cat $dir/metadata.json)",
+      "Bash(log show --predicate 'eventMessage contains \"\"\"\"memory\"\"\"\" or eventMessage contains \"\"\"\"panic\"\"\"\" or eventMessage contains \"\"\"\"jetsam\"\"\"\"' --last 2d)",
+      "Bash(sysctl:*)",
+      "Bash(brew list:*)",
+      "Bash(/opt/homebrew/bin/m4b-tool meta:*)",
+      "Bash(cat:*)"
     ]
   }
 }
