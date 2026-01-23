@@ -308,7 +308,16 @@ export class QueueService {
           // Map parallel progress to ETA calculation fields
           chunksCompletedInJob: progress.completedSentences,
           totalChunksInJob: progress.totalSentences,
-          chunkCompletedAt: progress.completedSentences > (job.chunksCompletedInJob || 0) ? Date.now() : job.chunkCompletedAt
+          chunkCompletedAt: progress.completedSentences > (job.chunksCompletedInJob || 0) ? Date.now() : job.chunkCompletedAt,
+          // Store per-worker progress for UI display
+          parallelWorkers: progress.workers.map(w => ({
+            id: w.id,
+            sentenceStart: w.sentenceStart,
+            sentenceEnd: w.sentenceEnd,
+            completedSentences: w.completedSentences,
+            status: w.status,
+            error: w.error
+          }))
         };
       })
     );

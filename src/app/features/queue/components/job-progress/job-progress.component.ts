@@ -11,7 +11,7 @@
 import { Component, input, output, computed, signal, effect, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { QueueJob } from '../../models/queue.types';
+import { QueueJob, ParallelWorkerProgress } from '../../models/queue.types';
 
 // ETA calculation state
 interface ETAState {
@@ -86,6 +86,27 @@ interface ETAState {
             </div>
           }
         </div>
+
+        <!-- Per-Worker Progress (for parallel TTS) -->
+        @if (hasWorkers()) {
+          <div class="workers-section">
+            <div class="workers-header">Workers</div>
+            <div class="workers-grid">
+              @for (worker of currentJob.parallelWorkers; track worker.id) {
+                <div class="worker-row" [class.complete]="worker.status === 'complete'" [class.error]="worker.status === 'error'">
+                  <span class="worker-label">W{{ worker.id }}</span>
+                  <div class="worker-progress-bar">
+                    <div
+                      class="worker-progress-fill"
+                      [style.width.%]="getWorkerPercentage(worker)"
+                    ></div>
+                  </div>
+                  <span class="worker-pct">{{ getWorkerPercentage(worker) | number:'1.0-0' }}%</span>
+                </div>
+              }
+            </div>
+          </div>
+        }
       </div>
     } @else {
       <div class="no-job">
@@ -228,6 +249,70 @@ interface ETAState {
     .no-job p {
       margin: 0;
       font-size: 0.875rem;
+    }
+
+    .workers-section {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .workers-header {
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      margin-bottom: 0.5rem;
+    }
+
+    .workers-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+    }
+
+    .worker-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .worker-label {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      width: 1.75rem;
+      flex-shrink: 0;
+    }
+
+    .worker-progress-bar {
+      flex: 1;
+      height: 6px;
+      background: var(--bg-elevated);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .worker-progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 3px;
+      transition: width 0.3s ease;
+
+      .complete & {
+        background: var(--accent-success, #10b981);
+      }
+
+      .error & {
+        background: var(--accent-danger, #ef4444);
+      }
+    }
+
+    .worker-pct {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      width: 2.5rem;
+      text-align: right;
+      flex-shrink: 0;
     }
   `]
 })
@@ -421,5 +506,18 @@ export class JobProgressComponent implements OnDestroy {
       hour: '2-digit',
       minute: '2-digit'
     });
+  }
+
+  // Check if job has parallel workers to display
+  readonly hasWorkers = computed(() => {
+    const j = this.job();
+    return j?.parallelWorkers && j.parallelWorkers.length > 1;
+  });
+
+  // Calculate percentage for a worker
+  getWorkerPercentage(worker: ParallelWorkerProgress): number {
+    const totalSentences = worker.sentenceEnd - worker.sentenceStart + 1;
+    if (totalSentences <= 0) return 0;
+    return Math.min(100, (worker.completedSentences / totalSentences) * 100);
   }
 }

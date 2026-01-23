@@ -466,8 +466,16 @@ function startWorker(
   workerProcess.stderr?.on('data', (data: Buffer) => {
     const lines = data.toString().split('\n');
     for (const line of lines) {
-      if (line.trim()) {
-        console.log(`[WORKER ${workerId} STDERR]`, line.trim());
+      if (!line.trim()) continue;
+      console.log(`[WORKER ${workerId} STDERR]`, line.trim());
+
+      // Parse progress from stderr too - e2a often outputs progress to stderr
+      const progressMatch = line.match(/Converting\s+([\d.]+)%.*?(\d+)\/(\d+)/i);
+      if (progressMatch) {
+        const current = parseInt(progressMatch[2]);
+        worker.currentSentence = worker.sentenceStart + current;
+        worker.completedSentences = current;
+        emitProgress(session);
       }
     }
   });

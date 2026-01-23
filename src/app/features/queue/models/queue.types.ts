@@ -10,6 +10,18 @@ export type JobType = 'ocr-cleanup' | 'tts-conversion';
 // Job status
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
 
+// Parallel worker progress tracking
+export type ParallelWorkerStatus = 'pending' | 'running' | 'complete' | 'error';
+
+export interface ParallelWorkerProgress {
+  id: number;
+  sentenceStart: number;
+  sentenceEnd: number;
+  completedSentences: number;
+  status: ParallelWorkerStatus;
+  error?: string;
+}
+
 // Base job interface
 export interface QueueJob {
   id: string;
@@ -35,6 +47,8 @@ export interface QueueJob {
   totalChunksInJob?: number;      // Total chunks in entire job
   chunkCompletedAt?: number;      // Timestamp of last chunk completion
   progressMessage?: string;       // Current progress message
+  // Parallel TTS worker progress
+  parallelWorkers?: ParallelWorkerProgress[];
 }
 
 // Job configuration union type
