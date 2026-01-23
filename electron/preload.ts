@@ -707,7 +707,13 @@ export interface ElectronAPI {
       alreadyExists?: boolean;
       error?: string;
     }>;
-    copyToQueue: (data: ArrayBuffer | string, filename: string, metadata?: { title?: string; author?: string; language?: string }) => Promise<{
+    copyToQueue: (data: ArrayBuffer | string, filename: string, metadata?: {
+      title?: string;
+      author?: string;
+      language?: string;
+      coverImage?: string;
+      deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
+    }) => Promise<{
       success: boolean;
       destinationPath?: string;
       error?: string;
@@ -740,6 +746,11 @@ export interface ElectronAPI {
     loadCoverImage: (projectId: string, coverFilename: string) => Promise<{
       success: boolean;
       coverData?: string;
+      error?: string;
+    }>;
+    loadDeletedExamplesFromBfp: (epubPath: string) => Promise<{
+      success: boolean;
+      examples?: Array<{ text: string; category: string; page?: number }>;
       error?: string;
     }>;
   };
@@ -868,7 +879,10 @@ export interface ElectronAPI {
     onProgress: (callback: (progress: PluginProgress) => void) => () => void;
   };
   queue: {
-    runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
+    runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig & {
+      useDetailedCleanup?: boolean;
+      deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
+    }) => Promise<{ success: boolean; data?: any; error?: string }>;
     runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
     cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     saveState: (queueState: string) => Promise<{ success: boolean; error?: string }>;
@@ -1125,6 +1139,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('library:load-metadata', epubPath),
     loadCoverImage: (projectId: string, coverFilename: string) =>
       ipcRenderer.invoke('library:load-cover-image', projectId, coverFilename),
+    loadDeletedExamplesFromBfp: (epubPath: string) =>
+      ipcRenderer.invoke('library:load-deleted-examples-from-bfp', epubPath),
   },
   audiobook: {
     createProject: (sourcePath: string, originalFilename: string) =>
@@ -1310,7 +1326,10 @@ const electronAPI: ElectronAPI = {
     },
   },
   queue: {
-    runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig) =>
+    runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig & {
+      useDetailedCleanup?: boolean;
+      deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
+    }) =>
       ipcRenderer.invoke('queue:run-ocr-cleanup', jobId, epubPath, model, aiConfig),
     runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) =>
       ipcRenderer.invoke('queue:run-tts-conversion', jobId, epubPath, config),

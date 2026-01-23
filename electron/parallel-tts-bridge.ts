@@ -689,15 +689,22 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         const finalPath = outputPath || path.join(config.outputDir, 'audiobook.m4b');
 
         // Apply metadata and rename using m4b-tool if metadata was provided
+        console.log('[PARALLEL-TTS] Assembly complete. Checking metadata for rename...');
+        console.log('[PARALLEL-TTS] config.metadata:', JSON.stringify(config.metadata, null, 2));
+        console.log('[PARALLEL-TTS] finalPath:', finalPath);
+
         if (config.metadata && finalPath) {
           try {
+            console.log('[PARALLEL-TTS] Calling applyMetadataWithM4bTool...');
             const processedPath = await applyMetadataWithM4bTool(finalPath, config.metadata, config.outputDir);
+            console.log('[PARALLEL-TTS] Final processed path:', processedPath);
             resolve(processedPath);
           } catch (metaErr) {
             console.error('[PARALLEL-TTS] Metadata processing failed, using original file:', metaErr);
             resolve(finalPath);
           }
         } else {
+          console.log('[PARALLEL-TTS] Skipping metadata - config.metadata is:', config.metadata);
           resolve(finalPath);
         }
       } else {

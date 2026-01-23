@@ -2,12 +2,13 @@
  * AI Cleanup Panel - Simplified component for adding EPUBs to the OCR cleanup queue
  */
 
-import { Component, input, output, signal, computed, OnInit, inject } from '@angular/core';
+import { Component, input, output, signal, computed, OnInit, inject, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { QueueService } from '../../../queue/services/queue.service';
+import { DeletedBlockExample } from '../../../queue/models/queue.types';
 import { SettingsService } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { AIProvider } from '../../../../core/models/ai-config.types';
@@ -135,6 +136,25 @@ import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success
           </div>
         }
       </div>
+
+      <!-- Detailed Cleanup Option -->
+      @if (hasDeletedExamples()) {
+        <div class="detailed-cleanup-section">
+          <label class="checkbox-option">
+            <input
+              type="checkbox"
+              [checked]="useDetailedCleanup()"
+              (change)="toggleDetailedCleanup($event)"
+            >
+            <span class="checkbox-label">
+              Use detailed cleanup ({{ exampleCount() }} deletion examples)
+            </span>
+          </label>
+          <p class="option-hint">
+            The AI will learn from your deleted blocks and remove similar patterns throughout the document.
+          </p>
+        </div>
+      }
 
       <!-- Actions -->
       <div class="actions">
@@ -325,6 +345,39 @@ import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success
       gap: 0.75rem;
     }
 
+    .detailed-cleanup-section {
+      padding: 0.75rem;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+    }
+
+    .checkbox-option {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+
+      input[type="checkbox"] {
+        width: 1rem;
+        height: 1rem;
+        accent-color: var(--accent);
+        cursor: pointer;
+      }
+
+      .checkbox-label {
+        font-size: 0.875rem;
+        color: var(--text-primary);
+      }
+    }
+
+    .option-hint {
+      margin: 0.5rem 0 0 1.5rem;
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+      line-height: 1.4;
+    }
+
     .prompt-section {
       margin-top: 0.25rem;
     }
@@ -391,6 +444,12 @@ export class AiCleanupPanelComponent implements OnInit {
   readonly checkingConnection = signal(true);
   readonly addingToQueue = signal(false);
   readonly showSuccessModal = signal(false);
+
+  // Detailed cleanup state (deleted block examples)
+  readonly hasDeletedExamples = signal(false);
+  readonly exampleCount = signal(0);
+  readonly useDetailedCleanup = signal(false);
+  readonly deletedBlockExamples = signal<DeletedBlockExample[]>([]);
 
   // Prompt editor state
   readonly loadingPrompt = signal(false);
@@ -459,6 +518,14 @@ export class AiCleanupPanelComponent implements OnInit {
     if (!model || !path) return false;
     if (provider === 'ollama') return this.ollamaConnected();
     return this.hasApiKeyForProvider();
+  });
+
+  // Effect to load deleted examples when epubPath changes
+  private readonly epubPathEffect = effect(() => {
+    const path = this.epubPath();
+    if (path) {
+      this.loadDeletedExamples();
+    }
   });
 
   ngOnInit(): void {
@@ -589,6 +656,10 @@ export class AiCleanupPanelComponent implements OnInit {
     try {
       const config = this.settingsService.getAIConfig();
 
+      // Include detailed cleanup options if enabled
+      const useDetailed = this.useDetailedCleanup() && this.hasDeletedExamples();
+      const examples = useDetailed ? this.deletedBlockExamples() : undefined;
+
       await this.queueService.addJob({
         type: 'ocr-cleanup',
         epubPath: path,
@@ -599,7 +670,9 @@ export class AiCleanupPanelComponent implements OnInit {
           aiModel: model,
           ollamaBaseUrl: provider === 'ollama' ? config.ollama.baseUrl : undefined,
           claudeApiKey: provider === 'claude' ? config.claude.apiKey : undefined,
-          openaiApiKey: provider === 'openai' ? config.openai.apiKey : undefined
+          openaiApiKey: provider === 'openai' ? config.openai.apiKey : undefined,
+          useDetailedCleanup: useDetailed,
+          deletedBlockExamples: examples
         }
       });
       this.showSuccessModal.set(true);
@@ -651,6 +724,57 @@ export class AiCleanupPanelComponent implements OnInit {
       console.error('Failed to save prompt:', err);
     } finally {
       this.savingPrompt.set(false);
+    }
+  }
+
+  toggleDetailedCleanup(event: Event): void {
+    const checkbox = event.target as HTMLInputElement;
+    this.useDetailedCleanup.set(checkbox.checked);
+  }
+
+  /**
+   * Load deleted block examples from project metadata or linked BFP project.
+   * First checks for examples stored directly in audiobook project,
+   * then falls back to loading from the source BFP project file.
+   */
+  async loadDeletedExamples(): Promise<void> {
+    const path = this.epubPath();
+    if (!path) return;
+
+    try {
+      // First try: load examples directly from audiobook project metadata
+      const result = await this.electronService.loadProjectMetadata(path);
+      if (result?.deletedBlockExamples && result.deletedBlockExamples.length > 0) {
+        const typedExamples: DeletedBlockExample[] = result.deletedBlockExamples.map(ex => ({
+          text: ex.text,
+          category: (ex.category as DeletedBlockExample['category']) || 'block',
+          page: ex.page
+        }));
+        this.deletedBlockExamples.set(typedExamples);
+        this.exampleCount.set(typedExamples.length);
+        this.hasDeletedExamples.set(true);
+        // Don't auto-check - let user decide if they want detailed cleanup
+        console.log(`[AI-CLEANUP] Loaded ${typedExamples.length} deleted block examples from project metadata`);
+        return;
+      }
+
+      // Second try: load from linked BFP project file
+      const bfpExamples = await this.electronService.loadDeletedExamplesFromBfp(path);
+      if (bfpExamples && bfpExamples.length > 0) {
+        const typedExamples: DeletedBlockExample[] = bfpExamples.map(ex => ({
+          text: ex.text,
+          category: (ex.category as DeletedBlockExample['category']) || 'block',
+          page: ex.page
+        }));
+        this.deletedBlockExamples.set(typedExamples);
+        this.exampleCount.set(typedExamples.length);
+        this.hasDeletedExamples.set(true);
+        // Don't auto-check - let user decide if they want detailed cleanup
+        console.log(`[AI-CLEANUP] Loaded ${typedExamples.length} deleted block examples from BFP project`);
+      }
+    } catch (err) {
+      console.warn('Failed to load deleted block examples:', err);
+      // Not an error - examples are optional
     }
   }
 }

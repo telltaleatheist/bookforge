@@ -54,6 +54,13 @@ export interface QueueJob {
 // Job configuration union type
 export type JobConfig = OcrCleanupConfig | TtsConversionConfig;
 
+// Deleted block example for detailed cleanup mode
+export interface DeletedBlockExample {
+  text: string;
+  category: 'header' | 'footer' | 'page_number' | 'custom' | 'block';
+  page?: number;
+}
+
 // OCR Cleanup job configuration
 export interface OcrCleanupConfig {
   type: 'ocr-cleanup';
@@ -64,6 +71,9 @@ export interface OcrCleanupConfig {
   ollamaBaseUrl?: string;
   claudeApiKey?: string;
   openaiApiKey?: string;
+  // Detailed cleanup mode - uses deleted blocks as few-shot examples
+  deletedBlockExamples?: DeletedBlockExample[];
+  useDetailedCleanup?: boolean;
 }
 
 // TTS Conversion job configuration

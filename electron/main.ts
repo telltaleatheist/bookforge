@@ -1086,21 +1086,29 @@ function setupIpcHandlers(): void {
 
       // Delete library files and cache for deleted projects
       for (const { hash, libraryPath } of libraryFilesToDelete) {
+        console.log(`[projects:delete] Clearing cache for hash: ${hash}`);
+
         // Delete the source file from library
         if (libraryPath.startsWith(filesFolder)) {
           try {
             await fs.unlink(libraryPath);
-          } catch {
-            // Library file may not exist or be locked - not critical
+            console.log(`[projects:delete] Deleted library file: ${libraryPath}`);
+          } catch (e) {
+            console.log(`[projects:delete] Could not delete library file: ${(e as Error).message}`);
           }
         }
 
         // Clear all cache (render + analysis) for this file
         try {
           pdfAnalyzer.clearCache(hash);
-        } catch {
-          // Cache may not exist - not critical
+          console.log(`[projects:delete] Cache cleared for hash: ${hash}`);
+        } catch (e) {
+          console.log(`[projects:delete] Could not clear cache: ${(e as Error).message}`);
         }
+      }
+
+      if (libraryFilesToDelete.length === 0) {
+        console.log(`[projects:delete] WARNING: No library files to delete - projects may not have file_hash set`);
       }
 
       return { success: true, deleted, failed };
@@ -2354,7 +2362,13 @@ function setupIpcHandlers(): void {
     _event,
     data: ArrayBuffer | string,
     filename: string,
-    metadata?: { title?: string; author?: string; language?: string; coverImage?: string }
+    metadata?: {
+      title?: string;
+      author?: string;
+      language?: string;
+      coverImage?: string;
+      deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
+    }
   ) => {
     try {
       const basePath = getAudiobooksBasePath();
@@ -2409,10 +2423,16 @@ function setupIpcHandlers(): void {
           coverPath: coverPath ? path.basename(coverPath) : undefined
         },
         state: { cleanupStatus: 'none', ttsStatus: 'none' },
+        // Store deleted block examples for detailed AI cleanup
+        deletedBlockExamples: metadata?.deletedBlockExamples,
         createdAt: now,
         modifiedAt: now
       };
       await saveProjectFile(folderPath, projectData);
+
+      if (metadata?.deletedBlockExamples?.length) {
+        console.log(`[library:copy-to-queue] Saved ${metadata.deletedBlockExamples.length} deleted block examples for detailed cleanup`);
+      }
 
       return { success: true, destinationPath: originalPath };
     } catch (err) {
@@ -2533,7 +2553,14 @@ function setupIpcHandlers(): void {
         const folderPath = path.join(basePath, projectId);
         const projectData = await loadProjectFile(folderPath);
         if (projectData) {
-          return { success: true, metadata: projectData.metadata };
+          // Include deletedBlockExamples in the returned metadata for detailed cleanup
+          return {
+            success: true,
+            metadata: {
+              ...projectData.metadata,
+              deletedBlockExamples: projectData.deletedBlockExamples
+            }
+          };
         }
       }
       return { success: true, metadata: null };
@@ -2568,6 +2595,139 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Load deleted block examples from a linked BFP project file
+  // This allows using deletion examples from existing projects without re-exporting
+  ipcMain.handle('library:load-deleted-examples-from-bfp', async (_event, epubPath: string) => {
+    try {
+      const audiobooksBase = getAudiobooksBasePath();
+      const relativePath = path.relative(audiobooksBase, epubPath);
+      const projectId = relativePath.split(path.sep)[0];
+
+      if (!projectId) {
+        return { success: true, examples: [] };
+      }
+
+      // Load audiobook project to get original filename
+      const folderPath = path.join(audiobooksBase, projectId);
+      const projectData = await loadProjectFile(folderPath);
+      if (!projectData?.originalFilename) {
+        return { success: true, examples: [] };
+      }
+
+      // Search for BFP projects with matching source name
+      const projectsFolder = path.join(os.homedir(), 'Documents', 'BookForge', 'projects');
+      try {
+        await fs.access(projectsFolder);
+      } catch {
+        return { success: true, examples: [] };
+      }
+
+      const entries = await fs.readdir(projectsFolder, { withFileTypes: true });
+      const bfpFiles = entries.filter(e => e.isFile() && e.name.endsWith('.bfp'));
+
+      // Find BFP projects that might match
+      for (const bfpFile of bfpFiles) {
+        try {
+          const bfpPath = path.join(projectsFolder, bfpFile.name);
+          const bfpContent = await fs.readFile(bfpPath, 'utf-8');
+          const bfpProject = JSON.parse(bfpContent);
+
+          // Check if source name matches - try multiple matching strategies
+          const bfpSourceBase = bfpProject.source_name?.replace(/\.(pdf|epub)$/i, '');
+          const audiobookBase = projectData.originalFilename?.replace(/\.(pdf|epub)$/i, '');
+          const audiobookTitle = projectData.metadata?.title;
+
+          // Normalize strings for comparison (remove underscores, clean dates, lowercase)
+          const normalize = (s: string) => s
+            ?.toLowerCase()
+            .replace(/_cleaned_\d{4}-\d{2}-\d{2}/g, '') // Remove _cleaned_YYYY-MM-DD suffix
+            .replace(/[_\-]+/g, ' ')  // Underscores/dashes to spaces
+            .replace(/\s+/g, ' ')     // Collapse multiple spaces
+            .replace(/[()]/g, '')     // Remove parentheses
+            .trim();
+
+          const normalizedBfp = normalize(bfpSourceBase || '');
+          const normalizedAudiobook = normalize(audiobookBase || '');
+          const normalizedTitle = normalize(audiobookTitle || '');
+
+          // Match if normalized names are similar or title contains the BFP source name
+          const isMatch = (normalizedBfp && normalizedAudiobook && normalizedBfp === normalizedAudiobook) ||
+                          (normalizedBfp && normalizedTitle && normalizedTitle.includes(normalizedBfp)) ||
+                          (normalizedBfp && normalizedAudiobook && normalizedAudiobook.includes(normalizedBfp));
+
+          if (isMatch) {
+            console.log(`[BFP] Found matching project: ${bfpFile.name} for audiobook "${audiobookTitle || audiobookBase}"`);
+            // Found matching BFP project - need to extract deleted block text
+            const deletedBlockIds = new Set<string>(bfpProject.deleted_block_ids || []);
+            const deletedHighlightIds = new Set<string>(bfpProject.deleted_highlight_ids || []);
+
+            if (deletedBlockIds.size === 0 && deletedHighlightIds.size === 0) {
+              continue; // No deletions in this project
+            }
+
+            // Try to analyze the source document to get block text
+            const sourcePath = bfpProject.library_path || bfpProject.source_path;
+            if (!sourcePath) continue;
+
+            try {
+              await fs.access(sourcePath);
+            } catch {
+              console.log(`[BFP] Source file not found: ${sourcePath}`);
+              continue;
+            }
+
+            // Analyze document to get blocks
+            const analysisResult = await pdfAnalyzer.analyze(sourcePath, undefined, () => {});
+            if (!analysisResult?.blocks) continue;
+
+            // Collect deleted block examples
+            const examples: Array<{ text: string; category: string; page?: number }> = [];
+            const seenTexts = new Set<string>();
+            const MAX_EXAMPLES = 30;
+            const MIN_TEXT_LENGTH = 3;
+            const MAX_TEXT_LENGTH = 200;
+
+            for (const block of analysisResult.blocks) {
+              if (!deletedBlockIds.has(block.id)) continue;
+              if (block.is_image) continue;
+
+              const text = block.text.trim();
+              if (text.length < MIN_TEXT_LENGTH || text.length > MAX_TEXT_LENGTH) continue;
+              if (seenTexts.has(text.toLowerCase())) continue;
+              seenTexts.add(text.toLowerCase());
+
+              // Categorize based on position
+              let category: string = 'block';
+              if (/^[\d\-—–\s]+$/.test(text) && text.length < 10) {
+                category = 'page_number';
+              } else if (block.y < 80) {
+                category = 'header';
+              } else if (block.y > 700) {
+                category = 'footer';
+              }
+
+              examples.push({ text, category, page: block.page });
+              if (examples.length >= MAX_EXAMPLES) break;
+            }
+
+            if (examples.length > 0) {
+              console.log(`[BFP] Loaded ${examples.length} deleted block examples from ${bfpFile.name}`);
+              return { success: true, examples };
+            }
+          }
+        } catch (err) {
+          // Skip invalid BFP files
+          continue;
+        }
+      }
+
+      return { success: true, examples: [] };
+    } catch (err) {
+      console.error('Failed to load deleted examples from BFP:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Processing Queue handlers
   // ─────────────────────────────────────────────────────────────────────────────
@@ -2585,10 +2745,15 @@ function setupIpcHandlers(): void {
       ollama?: { baseUrl: string; model: string };
       claude?: { apiKey: string; model: string };
       openai?: { apiKey: string; model: string };
+      // Detailed cleanup mode options
+      useDetailedCleanup?: boolean;
+      deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
     }
   ) => {
     console.log('[IPC] queue:run-ocr-cleanup received:', {
       jobId,
+      useDetailedCleanup: aiConfig?.useDetailedCleanup,
+      exampleCount: aiConfig?.deletedBlockExamples?.length || 0,
       aiConfig: aiConfig ? {
         provider: aiConfig.provider,
         ollamaModel: aiConfig.ollama?.model,
@@ -2630,6 +2795,16 @@ function setupIpcHandlers(): void {
       runningJobs.set(jobId, { cancel: cancelFn, model: modelForCancellation });
 
       // Run OCR cleanup with provider config - aiConfig is required, no model fallback
+      // Cast deletedBlockExamples - category strings are validated at export time
+      const detailedOptions = aiConfig.useDetailedCleanup ? {
+        useDetailedCleanup: aiConfig.useDetailedCleanup,
+        deletedBlockExamples: aiConfig.deletedBlockExamples?.map(ex => ({
+          text: ex.text,
+          category: ex.category as 'header' | 'footer' | 'page_number' | 'custom' | 'block',
+          page: ex.page
+        }))
+      } : undefined;
+
       const result = await aiBridge.cleanupEpub(
         epubPath,
         jobId,
@@ -2638,7 +2813,8 @@ function setupIpcHandlers(): void {
           if (cancelled) return;
           // Progress is sent via mainWindow.webContents.send in cleanupEpub
         },
-        aiConfig
+        aiConfig,
+        detailedOptions
       );
 
       // Remove from running jobs

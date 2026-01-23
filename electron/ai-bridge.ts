@@ -190,6 +190,97 @@ export function getOcrCleanupSystemPrompt(): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Detailed Cleanup - User-Marked Deletions as Few-Shot Examples
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface DeletedBlockExample {
+  text: string;
+  category: 'header' | 'footer' | 'page_number' | 'custom' | 'block';
+  page?: number;
+}
+
+/**
+ * Build the examples section for detailed cleanup mode.
+ * Groups examples by category and formats them for the AI prompt.
+ */
+function buildExamplesSection(examples: DeletedBlockExample[]): string {
+  if (!examples || examples.length === 0) return '';
+
+  // Group examples by category
+  const groups: Record<string, string[]> = {
+    header: [],
+    footer: [],
+    page_number: [],
+    custom: [],
+    block: []
+  };
+
+  for (const example of examples) {
+    const category = example.category || 'block';
+    if (groups[category]) {
+      groups[category].push(example.text);
+    }
+  }
+
+  // Build the formatted section
+  const lines: string[] = [
+    '',
+    '═══════════════════════════════════════════════════════════════════════════════',
+    'USER-MARKED DELETIONS (DETAILED CLEANUP MODE)',
+    '═══════════════════════════════════════════════════════════════════════════════',
+    '',
+    'The user has marked the following text patterns for removal. Find and remove',
+    'ALL similar occurrences throughout the text:',
+    ''
+  ];
+
+  if (groups.header.length > 0) {
+    lines.push('HEADERS/RUNNING HEADERS:');
+    for (const text of groups.header.slice(0, 10)) {
+      lines.push(`- "${text}"`);
+    }
+    lines.push('');
+  }
+
+  if (groups.footer.length > 0) {
+    lines.push('FOOTERS:');
+    for (const text of groups.footer.slice(0, 10)) {
+      lines.push(`- "${text}"`);
+    }
+    lines.push('');
+  }
+
+  if (groups.page_number.length > 0) {
+    lines.push('PAGE NUMBERS:');
+    for (const text of groups.page_number.slice(0, 10)) {
+      lines.push(`- "${text}"`);
+    }
+    lines.push('');
+  }
+
+  if (groups.custom.length > 0) {
+    lines.push('CUSTOM PATTERNS:');
+    for (const text of groups.custom.slice(0, 10)) {
+      lines.push(`- "${text}"`);
+    }
+    lines.push('');
+  }
+
+  if (groups.block.length > 0) {
+    lines.push('OTHER MARKED DELETIONS:');
+    for (const text of groups.block.slice(0, 10)) {
+      lines.push(`- "${text}"`);
+    }
+    lines.push('');
+  }
+
+  lines.push('Remove these patterns and similar ones. Preserve actual narrative content.');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // API Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -821,20 +912,30 @@ export interface EpubCleanupResult {
  * Process an entire EPUB through OCR cleanup.
  * Cleans all chapters and saves a modified EPUB.
  * Requires explicit AI provider configuration - no fallbacks.
+ *
+ * @param options Optional detailed cleanup settings
+ * @param options.deletedBlockExamples User-marked deletions to use as few-shot examples
+ * @param options.useDetailedCleanup Whether to enable detailed cleanup mode
  */
 export async function cleanupEpub(
   epubPath: string,
   jobId: string,
   mainWindow: BrowserWindow | null | undefined,
   onProgress: ((progress: EpubCleanupProgress) => void) | undefined,
-  providerConfig: AIProviderConfig
+  providerConfig: AIProviderConfig,
+  options?: {
+    deletedBlockExamples?: DeletedBlockExample[];
+    useDetailedCleanup?: boolean;
+  }
 ): Promise<EpubCleanupResult> {
   // Debug logging to trace provider selection
   console.log('[AI-BRIDGE] cleanupEpub called with:', {
     provider: providerConfig.provider,
     ollamaModel: providerConfig.ollama?.model,
     claudeModel: providerConfig.claude?.model,
-    openaiModel: providerConfig.openai?.model
+    openaiModel: providerConfig.openai?.model,
+    useDetailedCleanup: options?.useDetailedCleanup,
+    exampleCount: options?.deletedBlockExamples?.length || 0
   });
 
   // providerConfig is required - no fallbacks
@@ -928,7 +1029,14 @@ export async function cleanupEpub(
       return { success: false, error: 'No chapters found in EPUB' };
     }
 
-    const systemPrompt = getOcrCleanupSystemPrompt();
+    // Build system prompt with optional detailed cleanup examples
+    let systemPrompt = getOcrCleanupSystemPrompt();
+    if (options?.useDetailedCleanup && options.deletedBlockExamples && options.deletedBlockExamples.length > 0) {
+      const examplesSection = buildExamplesSection(options.deletedBlockExamples);
+      systemPrompt = systemPrompt + examplesSection;
+      console.log(`[AI-BRIDGE] Added ${options.deletedBlockExamples.length} deletion examples to system prompt`);
+    }
+
     let chaptersProcessed = 0;
     let chunksCompletedInJob = 0;  // Cumulative chunk counter across all chapters
 

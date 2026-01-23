@@ -2,10 +2,15 @@
  * Job List Component - Displays queue jobs with status and actions
  */
 
-import { Component, input, output, computed } from '@angular/core';
+import { Component, input, output, computed, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
+
+interface DragState {
+  draggedIndex: number;
+  dragOverIndex: number;
+}
 
 @Component({
   selector: 'app-job-list',
@@ -13,14 +18,22 @@ import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
   imports: [CommonModule, DesktopButtonComponent],
   template: `
     <div class="job-list">
-      @for (job of jobs(); track job.id) {
+      @for (job of jobs(); track job.id; let i = $index) {
         <div
           class="job-item"
           [class.processing]="job.status === 'processing'"
           [class.complete]="job.status === 'complete'"
           [class.error]="job.status === 'error'"
           [class.selected]="job.id === selectedJobId()"
+          [class.dragging]="dragState()?.draggedIndex === i"
+          [class.drag-over]="dragState()?.dragOverIndex === i && dragState()?.draggedIndex !== i"
+          [attr.draggable]="job.status === 'pending'"
           (click)="select.emit(job.id)"
+          (dragstart)="onDragStart($event, i, job)"
+          (dragover)="onDragOver($event, i, job)"
+          (dragleave)="onDragLeave($event)"
+          (drop)="onDrop($event, i)"
+          (dragend)="onDragEnd()"
         >
           <!-- Status indicator -->
           <div class="status-indicator" [class]="job.status">
@@ -156,6 +169,14 @@ import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
       transition: all 0.15s ease;
       cursor: pointer;
 
+      &[draggable="true"] {
+        cursor: grab;
+
+        &:active {
+          cursor: grabbing;
+        }
+      }
+
       &:hover {
         background: var(--bg-hover);
       }
@@ -186,6 +207,17 @@ import { QueueJob, JobType, JobStatus } from '../../models/queue.types';
         &.selected {
           border-color: var(--accent);
         }
+      }
+
+      &.dragging {
+        opacity: 0.5;
+        border-style: dashed;
+      }
+
+      &.drag-over {
+        border-color: var(--accent);
+        border-width: 2px;
+        background: color-mix(in srgb, var(--accent) 10%, var(--bg-subtle));
       }
     }
 
@@ -373,6 +405,54 @@ export class JobListComponent {
   readonly moveUp = output<string>();
   readonly moveDown = output<string>();
   readonly select = output<string>();
+  readonly reorder = output<{ fromIndex: number; toIndex: number }>();
+
+  // Drag state
+  readonly dragState = signal<DragState | null>(null);
+
+  onDragStart(event: DragEvent, index: number, job: QueueJob): void {
+    if (job.status !== 'pending') {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer?.setData('text/plain', index.toString());
+    this.dragState.set({ draggedIndex: index, dragOverIndex: -1 });
+  }
+
+  onDragOver(event: DragEvent, index: number, job: QueueJob): void {
+    // Only allow dropping on pending jobs
+    if (job.status !== 'pending') return;
+
+    event.preventDefault();
+    const state = this.dragState();
+    if (state && state.dragOverIndex !== index) {
+      this.dragState.set({ ...state, dragOverIndex: index });
+    }
+  }
+
+  onDragLeave(event: DragEvent): void {
+    // Only clear if leaving the list entirely
+    const relatedTarget = event.relatedTarget as HTMLElement;
+    if (!relatedTarget?.closest('.job-item')) {
+      const state = this.dragState();
+      if (state) {
+        this.dragState.set({ ...state, dragOverIndex: -1 });
+      }
+    }
+  }
+
+  onDrop(event: DragEvent, toIndex: number): void {
+    event.preventDefault();
+    const state = this.dragState();
+    if (state && state.draggedIndex !== toIndex) {
+      this.reorder.emit({ fromIndex: state.draggedIndex, toIndex });
+    }
+    this.dragState.set(null);
+  }
+
+  onDragEnd(): void {
+    this.dragState.set(null);
+  }
 
   getJobTypeLabel(type: JobType): string {
     switch (type) {

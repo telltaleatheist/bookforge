@@ -85,12 +85,6 @@ declare global {
   }
 }
 
-// Serializable queue state for persistence
-interface PersistedQueueState {
-  jobs: QueueJob[];
-  version: number;
-}
-
 @Injectable({
   providedIn: 'root'
 })
@@ -137,13 +131,10 @@ export class QueueService {
     this._jobs().filter(j => j.status === 'pending' || j.status === 'processing').length
   );
 
-  // Debounce timer for saving
-  private saveTimeout: ReturnType<typeof setTimeout> | null = null;
-  private readonly SAVE_DEBOUNCE_MS = 500;
-
   constructor() {
     this.setupIpcListeners();
-    this.loadPersistedState();
+    // Queue is intentionally NOT persisted - clears on app restart
+    // State is maintained in-memory during navigation
 
     this.destroyRef.onDestroy(() => {
       if (this.unsubscribeProgress) {
@@ -158,78 +149,7 @@ export class QueueService {
       if (this.unsubscribeParallelComplete) {
         this.unsubscribeParallelComplete();
       }
-      // Save state before destroy
-      this.saveStateNow();
     });
-  }
-
-  /**
-   * Load persisted queue state from disk
-   * Auto-resumes processing if there were pending jobs
-   */
-  private async loadPersistedState(): Promise<void> {
-    const electron = window.electron;
-    if (!electron?.queue?.loadState) return;
-
-    try {
-      const result = await electron.queue.loadState();
-      if (result.success && result.data) {
-        const state = result.data as PersistedQueueState;
-        console.log('[QUEUE] Loading persisted state with', state.jobs?.length || 0, 'jobs');
-        if (state.jobs && Array.isArray(state.jobs)) {
-          state.jobs.forEach((job, i) => {
-            console.log(`[QUEUE] Loaded job ${i}:`, job.id, job.type, (job.config as any)?.aiModel || 'no model');
-          });
-          // Reset any "processing" jobs to "pending" (they were interrupted)
-          const recoveredJobs = state.jobs.map(job => {
-            if (job.status === 'processing') {
-              return {
-                ...job,
-                status: 'pending' as JobStatus,
-                progress: undefined,
-                startedAt: undefined
-              };
-            }
-            return job;
-          });
-          this._jobs.set(recoveredJobs);
-
-          // Don't auto-resume - user must manually start the queue
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load queue state:', err);
-    }
-  }
-
-  /**
-   * Save queue state to disk (debounced)
-   */
-  private saveState(): void {
-    if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
-    }
-    this.saveTimeout = setTimeout(() => {
-      this.saveStateNow();
-    }, this.SAVE_DEBOUNCE_MS);
-  }
-
-  /**
-   * Save queue state immediately
-   */
-  private async saveStateNow(): Promise<void> {
-    const electron = window.electron;
-    if (!electron?.queue?.saveState) return;
-
-    try {
-      const state: PersistedQueueState = {
-        jobs: this._jobs(),
-        version: 1
-      };
-      await electron.queue.saveState(JSON.stringify(state, null, 2));
-    } catch (err) {
-      console.error('Failed to save queue state:', err);
-    }
   }
 
   private setupIpcListeners(): void {
@@ -343,9 +263,6 @@ export class QueueService {
     // Clear current job
     this._currentJobId.set(null);
 
-    // Save state after job completes
-    this.saveState();
-
     // Process next job if queue is running
     if (this._isRunning()) {
       this.processNext();
@@ -380,9 +297,6 @@ export class QueueService {
 
     this._jobs.update(jobs => [...jobs, job]);
 
-    // Save state after adding job
-    this.saveState();
-
     // Don't auto-start - user must manually start the queue
 
     return job;
@@ -406,7 +320,6 @@ export class QueueService {
     }
 
     this._jobs.update(jobs => jobs.filter(j => j.id !== jobId));
-    this.saveState();
     return true;
   }
 
@@ -417,7 +330,6 @@ export class QueueService {
     this._jobs.update(jobs =>
       jobs.filter(j => j.status === 'pending' || j.status === 'processing')
     );
-    this.saveState();
   }
 
   /**
@@ -441,8 +353,6 @@ export class QueueService {
         };
       })
     );
-
-    this.saveState();
 
     // Try to process if queue is running
     if (this._isRunning() && !this._currentJobId()) {
@@ -499,7 +409,6 @@ export class QueueService {
     );
 
     this._currentJobId.set(null);
-    this.saveState();
   }
 
   /**
@@ -525,8 +434,6 @@ export class QueueService {
         })
       );
       this._currentJobId.set(null);
-
-      this.saveState();
 
       // Process next if running
       if (this._isRunning()) {
@@ -562,7 +469,6 @@ export class QueueService {
     newJobs.splice(index, 1);
     newJobs.splice(targetIndex, 0, job);
     this._jobs.set(newJobs);
-    this.saveState();
     return true;
   }
 
@@ -591,7 +497,26 @@ export class QueueService {
     newJobs.splice(index, 1);
     newJobs.splice(targetIndex, 0, job);
     this._jobs.set(newJobs);
-    this.saveState();
+    return true;
+  }
+
+  /**
+   * Reorder jobs via drag-and-drop
+   * Only pending jobs can be reordered
+   */
+  reorderJobs(fromIndex: number, toIndex: number): boolean {
+    const jobs = this._jobs();
+    if (fromIndex < 0 || fromIndex >= jobs.length) return false;
+    if (toIndex < 0 || toIndex >= jobs.length) return false;
+    if (fromIndex === toIndex) return false;
+
+    const job = jobs[fromIndex];
+    if (job.status !== 'pending') return false;
+
+    const newJobs = [...jobs];
+    newJobs.splice(fromIndex, 1);
+    newJobs.splice(toIndex, 0, job);
+    this._jobs.set(newJobs);
     return true;
   }
 
@@ -645,7 +570,10 @@ export class QueueService {
           throw new Error('OCR cleanup configuration required');
         }
         // Build AI config from per-job settings
-        const aiConfig: AIProviderConfig = {
+        const aiConfig: AIProviderConfig & {
+          useDetailedCleanup?: boolean;
+          deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
+        } = {
           provider: config.aiProvider,
           ollama: config.aiProvider === 'ollama' ? {
             baseUrl: config.ollamaBaseUrl || 'http://localhost:11434',
@@ -658,11 +586,16 @@ export class QueueService {
           openai: config.aiProvider === 'openai' ? {
             apiKey: config.openaiApiKey || '',
             model: config.aiModel
-          } : undefined
+          } : undefined,
+          // Detailed cleanup options
+          useDetailedCleanup: config.useDetailedCleanup,
+          deletedBlockExamples: config.deletedBlockExamples
         };
         console.log('[QUEUE] Calling runOcrCleanup with:', {
           jobId: job.id,
           model: config.aiModel,
+          useDetailedCleanup: config.useDetailedCleanup,
+          exampleCount: config.deletedBlockExamples?.length || 0,
           aiConfig: {
             provider: aiConfig.provider,
             ollamaModel: aiConfig.ollama?.model,
@@ -715,13 +648,14 @@ export class QueueService {
               enableTextSplitting: config.enableTextSplitting
             },
             // Pass metadata for final audiobook (applied after assembly via m4b-tool)
-            metadata: job.metadata ? {
-              title: job.metadata.title,
-              author: job.metadata.author,
-              year: job.metadata.year,
-              coverPath: job.metadata.coverPath,
-              outputFilename: job.metadata.outputFilename || config.outputFilename
-            } : undefined
+            // Always pass metadata with at least the outputFilename for proper file naming
+            metadata: {
+              title: job.metadata?.title,
+              author: job.metadata?.author,
+              year: job.metadata?.year,
+              coverPath: job.metadata?.coverPath,
+              outputFilename: job.metadata?.outputFilename || config.outputFilename
+            }
           });
         } else {
           // Use sequential TTS conversion
@@ -742,8 +676,6 @@ export class QueueService {
       );
       this._currentJobId.set(null);
 
-      this.saveState();
-
       // Try next job
       if (this._isRunning()) {
         await this.processNext();
@@ -763,7 +695,10 @@ export class QueueService {
         aiModel: config.aiModel,
         ollamaBaseUrl: config.ollamaBaseUrl,
         claudeApiKey: config.claudeApiKey,
-        openaiApiKey: config.openaiApiKey
+        openaiApiKey: config.openaiApiKey,
+        // Detailed cleanup mode settings
+        useDetailedCleanup: config.useDetailedCleanup,
+        deletedBlockExamples: config.deletedBlockExamples
       };
     } else if (request.type === 'tts-conversion') {
       const config = request.config as TtsConversionConfig;

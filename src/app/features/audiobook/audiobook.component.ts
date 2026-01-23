@@ -16,6 +16,7 @@ import { EpubService } from './services/epub.service';
 import { AudiobookService } from './services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { SettingsService } from '../../core/services/settings.service';
+import { LibraryService } from '../../core/services/library.service';
 
 // Workflow states for the audiobook producer
 type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'play' | 'diff' | 'complete';
@@ -313,6 +314,7 @@ export class AudiobookComponent implements OnInit {
   private readonly audiobookService = inject(AudiobookService);
   private readonly electronService = inject(ElectronService);
   private readonly settingsService = inject(SettingsService);
+  private readonly libraryService = inject(LibraryService);
 
   // State
   readonly queueItems = signal<QueueItem[]>([]);
@@ -459,9 +461,9 @@ export class AudiobookComponent implements OnInit {
     return items;
   });
 
-  ngOnInit(): void {
-    this.loadQueue();
-    this.loadCompletedAudiobooks();
+  async ngOnInit(): Promise<void> {
+    await this.loadQueue();
+    await this.loadCompletedAudiobooks();
   }
 
   onToolbarAction(item: ToolbarItem): void {
@@ -470,8 +472,7 @@ export class AudiobookComponent implements OnInit {
         this.addToQueue();
         break;
       case 'refresh':
-        this.loadQueue();
-        this.loadCompletedAudiobooks();
+        this.loadQueue().then(() => this.loadCompletedAudiobooks());
         // Also refresh diff view if on the diff tab
         if (this.workflowState() === 'diff' && this.diffViewRef) {
           this.diffViewRef.refresh();
@@ -570,38 +571,116 @@ export class AudiobookComponent implements OnInit {
     if (!this.electron) return;
 
     try {
-      // Get the output folder from settings
-      const outputDir = this.settingsService.get<string>('audiobookOutputDir');
+      // Use configured output dir, or fall back to library's audiobooks folder
+      const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
+      const outputDir = configuredDir || this.libraryService.audiobooksPath() || '';
+      console.log('[Audiobook] Output dir setting:', configuredDir);
+      console.log('[Audiobook] Library audiobooks path:', this.libraryService.audiobooksPath());
+      console.log('[Audiobook] Using folder:', outputDir);
       const result = await this.electron.library.listCompleted(outputDir || undefined);
+      console.log('[Audiobook] listCompleted result:', result.success, 'files:', result.files?.length);
 
       if (result.success && result.files) {
-        this.completedAudiobooks.set(
-          result.files.map((f: any) => ({
-            path: f.path,
-            filename: f.filename,
-            size: f.size,
-            modifiedAt: new Date(f.modifiedAt)
-          }))
-        );
+        const completed = result.files.map((f: any) => ({
+          path: f.path,
+          filename: f.filename,
+          size: f.size,
+          modifiedAt: new Date(f.modifiedAt)
+        }));
+        this.completedAudiobooks.set(completed);
+
+        // Mark queue items that have completed audiobooks
+        this.markItemsWithAudiobooks(completed);
       }
     } catch (err) {
       console.error('Failed to load completed audiobooks:', err);
     }
   }
 
+  /**
+   * Mark queue items that have a completed audiobook
+   */
+  private markItemsWithAudiobooks(completed: CompletedAudiobook[]): void {
+    // Build a set of completed filenames (lowercase for case-insensitive matching)
+    const completedFilenames = new Set(
+      completed.map(a => a.filename.toLowerCase())
+    );
+
+    console.log('[Audiobook] Completed filenames:', Array.from(completedFilenames));
+
+    // Update queue items
+    this.queueItems.update(items =>
+      items.map(item => {
+        const expectedFilename = this.generateFilenameForItem(item.metadata);
+        const hasAudiobook = completedFilenames.has(expectedFilename.toLowerCase());
+        console.log('[Audiobook] Checking item:', item.metadata.title);
+        console.log('[Audiobook]   Expected:', expectedFilename);
+        console.log('[Audiobook]   Match:', hasAudiobook);
+        return { ...item, hasAudiobook };
+      })
+    );
+  }
+
+  /**
+   * Generate the expected audiobook filename from metadata
+   */
+  private generateFilenameForItem(meta: EpubMetadata): string {
+    if (!meta) return 'audiobook.m4b';
+
+    // Use custom output filename if set
+    if (meta.outputFilename) {
+      return meta.outputFilename.endsWith('.m4b')
+        ? meta.outputFilename
+        : meta.outputFilename + '.m4b';
+    }
+
+    let filename = meta.title || 'Untitled';
+
+    if (meta.subtitle) {
+      filename += ` - ${meta.subtitle}`;
+    }
+
+    filename += '.';
+
+    // Use Last, First format
+    if (meta.authorLast) {
+      filename += ` ${meta.authorLast}`;
+      if (meta.authorFirst) {
+        filename += `, ${meta.authorFirst}`;
+      }
+      filename += '.';
+    } else if (meta.authorFirst) {
+      filename += ` ${meta.authorFirst}.`;
+    } else if (meta.author) {
+      // Parse author into Last, First
+      const parts = meta.author.trim().split(' ');
+      if (parts.length >= 2) {
+        const last = parts.pop();
+        filename += ` ${last}, ${parts.join(' ')}.`;
+      } else {
+        filename += ` ${meta.author}.`;
+      }
+    }
+
+    if (meta.year) {
+      filename += ` (${meta.year})`;
+    }
+
+    filename += '.m4b';
+
+    // Clean up the filename
+    return filename.replace(/\s+/g, ' ').replace(/\.\s*\./g, '.');
+  }
+
   async onOpenCompletedFolder(): Promise<void> {
     if (!this.electron) return;
 
     try {
-      const outputDir = this.settingsService.get<string>('audiobookOutputDir');
+      // Use configured output dir, or fall back to library's audiobooks folder
+      const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
+      const outputDir = configuredDir || this.libraryService.audiobooksPath();
       if (outputDir) {
         await this.electron.shell.openPath(outputDir);
-      } else {
-        // Fall back to default audiobooks folder
-        const pathsResult = await this.electron.library.getAudiobooksPath();
-        if (pathsResult.success && pathsResult.queuePath) {
-          await this.electron.shell.openPath(pathsResult.queuePath);
-        }
       }
     } catch (err) {
       console.error('Error opening audiobooks folder:', err);
@@ -708,9 +787,16 @@ export class AudiobookComponent implements OnInit {
     const id = this.selectedItemId();
     if (!id) return;
 
+    // Check if this item has a completed audiobook (filename may have changed)
+    const completedFilenames = new Set(
+      this.completedAudiobooks().map(a => a.filename.toLowerCase())
+    );
+    const expectedFilename = this.generateFilenameForItem(metadata);
+    const hasAudiobook = completedFilenames.has(expectedFilename.toLowerCase());
+
     this.queueItems.update(items =>
       items.map(item =>
-        item.id === id ? { ...item, metadata } : item
+        item.id === id ? { ...item, metadata, hasAudiobook } : item
       )
     );
   }

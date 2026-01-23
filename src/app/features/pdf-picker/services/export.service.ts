@@ -1,8 +1,9 @@
 import { Injectable, inject } from '@angular/core';
 import { Router } from '@angular/router';
-import { PdfService, TextBlock } from './pdf.service';
+import { PdfService, TextBlock, Category } from './pdf.service';
 import { Chapter } from '../../../core/services/electron.service';
 import { BookMetadata } from '../pdf-picker.component';
+import { DeletedBlockExample } from '../../queue/models/queue.types';
 
 export interface ExportableBlock {
   id: string;
@@ -540,6 +541,7 @@ export class ExportService {
   /**
    * Export content to EPUB and save to audiobook producer queue.
    * Uses generateEpubBlobInternal to create the EPUB, then saves to queue folder.
+   * Optionally collects deleted block examples for detailed AI cleanup.
    */
   async exportToAudiobook(
     blocks: ExportableBlock[],
@@ -550,7 +552,8 @@ export class ExportService {
     deletedPages?: Set<number>,
     deletedHighlights?: DeletedHighlight[],
     metadata?: BookMetadata,
-    navigateAfter: boolean = true
+    navigateAfter: boolean = true,
+    categories?: Map<string, Category>
   ): Promise<ExportResult> {
     if (!this.electron) {
       return {
@@ -581,6 +584,14 @@ export class ExportService {
     const filename = this.generateFilename(pdfName, 'epub');
     const arrayBuffer = await epubResult.blob.arrayBuffer();
 
+    // Collect deleted block examples for detailed cleanup mode
+    const deletedBlockExamples = this.collectDeletedExamples(
+      blocks,
+      deletedIds,
+      deletedHighlights,
+      categories
+    );
+
     try {
       const pathResult = await this.electron.library.getAudiobooksPath();
       if (!pathResult.success || !pathResult.queuePath) {
@@ -596,7 +607,8 @@ export class ExportService {
         title: bookTitle,
         author: metadata?.author || '',
         language: metadata?.language || 'en',
-        coverImage: metadata?.coverImage
+        coverImage: metadata?.coverImage,
+        deletedBlockExamples: deletedBlockExamples.length > 0 ? deletedBlockExamples : undefined
       });
 
       if (!copyResult.success) {
@@ -612,7 +624,7 @@ export class ExportService {
 
       return {
         success: true,
-        message: `Exported EPUB with ${epubResult.chapterCount} chapters to Audiobook Producer.`,
+        message: `Exported EPUB with ${epubResult.chapterCount} chapters to Audiobook Producer.${deletedBlockExamples.length > 0 ? ` (${deletedBlockExamples.length} deletion examples)` : ''}`,
         filename,
         chapterCount: epubResult.chapterCount,
         blockCount: epubResult.blockCount
@@ -624,6 +636,107 @@ export class ExportService {
         message: `Failed to export to Audiobook Producer: ${message}`
       };
     }
+  }
+
+  /**
+   * Collect deleted block examples for detailed AI cleanup mode.
+   * Gathers text from deleted blocks and highlights to use as few-shot examples.
+   */
+  private collectDeletedExamples(
+    blocks: ExportableBlock[],
+    deletedIds: Set<string>,
+    deletedHighlights?: DeletedHighlight[],
+    categories?: Map<string, Category>
+  ): DeletedBlockExample[] {
+    const examples: DeletedBlockExample[] = [];
+    const seenTexts = new Set<string>(); // Deduplicate exact matches
+    const MAX_EXAMPLES = 30;
+    const MIN_TEXT_LENGTH = 3; // Skip very short strings
+    const MAX_TEXT_LENGTH = 200; // Skip very long strings (probably full paragraphs)
+
+    // Collect examples from deleted blocks
+    for (const block of blocks) {
+      if (!deletedIds.has(block.id)) continue;
+      if (block.is_image) continue; // Skip images
+
+      const text = block.text.trim();
+      if (text.length < MIN_TEXT_LENGTH || text.length > MAX_TEXT_LENGTH) continue;
+      if (seenTexts.has(text.toLowerCase())) continue;
+      seenTexts.add(text.toLowerCase());
+
+      // Determine category based on block position or category
+      const category = this.categorizeDeletedBlock(block, categories);
+      examples.push({
+        text,
+        category,
+        page: block.page
+      });
+
+      if (examples.length >= MAX_EXAMPLES) break;
+    }
+
+    // Collect examples from deleted highlights
+    if (deletedHighlights && examples.length < MAX_EXAMPLES) {
+      for (const highlight of deletedHighlights) {
+        const text = highlight.text.trim();
+        if (text.length < MIN_TEXT_LENGTH || text.length > MAX_TEXT_LENGTH) continue;
+        if (seenTexts.has(text.toLowerCase())) continue;
+        seenTexts.add(text.toLowerCase());
+
+        examples.push({
+          text,
+          category: 'custom', // Highlights from custom categories
+          page: highlight.page
+        });
+
+        if (examples.length >= MAX_EXAMPLES) break;
+      }
+    }
+
+    return examples;
+  }
+
+  /**
+   * Categorize a deleted block based on its properties.
+   */
+  private categorizeDeletedBlock(
+    block: ExportableBlock,
+    categories?: Map<string, Category>
+  ): 'header' | 'footer' | 'page_number' | 'custom' | 'block' {
+    // Check if it looks like a page number (short numeric text)
+    const text = block.text.trim();
+    if (/^[\d\-—–\s]+$/.test(text) && text.length < 10) {
+      return 'page_number';
+    }
+
+    // Check block position (top 10% = header, bottom 10% = footer)
+    // Assume page height around 792 (standard letter)
+    const relativeY = block.y;
+    if (relativeY < 80) {
+      return 'header';
+    }
+    if (relativeY > 700) {
+      return 'footer';
+    }
+
+    // Check category name if available
+    if (categories) {
+      const category = categories.get((block as any).category_id);
+      if (category) {
+        const nameLower = category.name.toLowerCase();
+        if (nameLower.includes('header') || nameLower.includes('running')) {
+          return 'header';
+        }
+        if (nameLower.includes('footer')) {
+          return 'footer';
+        }
+        if (nameLower.includes('page') && nameLower.includes('number')) {
+          return 'page_number';
+        }
+      }
+    }
+
+    return 'block';
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

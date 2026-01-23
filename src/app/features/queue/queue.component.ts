@@ -88,6 +88,7 @@ import { QueueJob, JobType } from './models/queue.types';
                 (moveUp)="moveJobUp($event)"
                 (moveDown)="moveJobDown($event)"
                 (select)="selectJob($event)"
+                (reorder)="reorderJobs($event)"
               />
             } @else if (finishedJobs().length === 0) {
               <div class="empty-jobs">
@@ -117,6 +118,7 @@ import { QueueJob, JobType } from './models/queue.types';
                       (moveUp)="moveJobUp($event)"
                       (moveDown)="moveJobDown($event)"
                       (select)="selectJob($event)"
+                      (reorder)="reorderJobs($event)"
                     />
                   </div>
                 }
@@ -577,6 +579,10 @@ export class QueueComponent implements OnInit, OnDestroy {
 
   moveJobDown(jobId: string): void {
     this.queueService.moveJobDown(jobId);
+  }
+
+  reorderJobs(event: { fromIndex: number; toIndex: number }): void {
+    this.queueService.reorderJobs(event.fromIndex, event.toIndex);
   }
 
   clearCompleted(): void {

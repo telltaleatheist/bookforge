@@ -28,6 +28,7 @@ export interface QueueItem {
   // Project-based fields
   projectId?: string;
   hasCleaned?: boolean;
+  hasAudiobook?: boolean;  // True if completed audiobook exists for this book
 }
 
 export interface CompletedAudiobook {
@@ -74,7 +75,12 @@ export interface CompletedAudiobook {
                   }
                 </div>
                 <div class="item-info">
-                  <div class="item-title">{{ item.metadata.title || item.filename }}</div>
+                  <div class="item-title">
+                    @if (item.hasAudiobook) {
+                      <span class="audiobook-check" title="Audiobook exists">✓</span>
+                    }
+                    {{ item.metadata.title || item.filename }}
+                  </div>
                   <div class="item-author">{{ item.metadata.author || 'Unknown Author' }}</div>
                   <div class="item-status" [attr.data-status]="item.status">
                     @switch (item.status) {
@@ -232,6 +238,15 @@ export interface CompletedAudiobook {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+    }
+
+    .audiobook-check {
+      color: var(--accent-success);
+      font-size: 0.75rem;
+      flex-shrink: 0;
     }
 
     .item-author {

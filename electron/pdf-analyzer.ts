@@ -15,7 +15,7 @@ import { MutoolBridge } from './mutool-bridge';
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 6;  // v6: fixed image deduplication across pages
+const ANALYSIS_CACHE_VERSION = 7;  // v7: improved header detection for single-line top blocks
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -727,16 +727,10 @@ export class PDFAnalyzer {
                                    /[.!?]["']?\s+[A-Z]/.test(trimmedText) ||  // Multiple sentences
                                    (trimmedText.endsWith('.') && textLen > 60);  // Ends with period and substantial
 
-        // Very top (< 4%) with page number pattern or very short = definitely header
-        if (yPct < 0.04 && (hasPageNumPattern || textLen < 80) && lineCount <= 2) {
-          region = 'header';
-        }
-        // Top 6% with clear header signals (not body text)
-        else if (yPct < 0.06 && !looksLikeBodyText && lineCount <= 2 && textLen < 120) {
-          region = 'header';
-        }
-        // Top 8% with page number pattern = header
-        else if (yPct < 0.08 && hasPageNumPattern && !looksLikeBodyText) {
+        // Text blocks entirely within top 15% with 1-2 lines = header
+        // (headers often have title + page number on separate lines)
+        const bottomPct = (y + height) / pageHeight;
+        if (lineCount <= 2 && bottomPct < 0.15 && !looksLikeBodyText) {
           region = 'header';
         }
         // Footer detection
@@ -1106,20 +1100,10 @@ export class PDFAnalyzer {
                               /[.!?]["']?\s+[A-Z]/.test(text) ||  // Multiple sentences
                               (text.endsWith('.') && block.char_count > 60);
 
-    if (!looksLikeBodyText && yPct < 0.08 && block.line_count <= 2) {
-      // Page number patterns like "8 Introduction"
-      const hasPageNumPattern = /^\d{1,4}\s+\S/.test(text) || /\S\s+\d{1,4}$/.test(text);
-      if (hasPageNumPattern) {
-        return 'header';
-      }
-      // Very short text at very top
-      if (yPct < 0.05 && block.char_count < 80) {
-        return 'header';
-      }
-      // Italic + short + top = running header
-      if (block.is_italic && block.char_count < 80) {
-        return 'header';
-      }
+    // Text blocks entirely within top 15% with 1-2 lines = header
+    const bottomPct = (block.y + block.height) / pageHeight;
+    if (block.line_count <= 2 && bottomPct < 0.15 && !looksLikeBodyText) {
+      return 'header';
     }
 
     // Footnotes: lower region with smaller font
@@ -1218,7 +1202,23 @@ export class PDFAnalyzer {
    * Clean up cache for a specific file hash (includes render cache and analysis cache)
    */
   clearCache(fileHash: string): void {
-    const cacheDir = path.join(this.getCacheBaseDir(), fileHash);
+    // Analysis cache uses truncated 16-char hash, so clear both full and truncated
+    const truncatedHash = fileHash.substring(0, 16);
+    const baseCacheDir = this.getCacheBaseDir();
+
+    // Clear truncated hash directory (analysis cache)
+    const truncatedCacheDir = path.join(baseCacheDir, truncatedHash);
+    if (fs.existsSync(truncatedCacheDir)) {
+      try {
+        fs.rmSync(truncatedCacheDir, { recursive: true, force: true });
+        console.log(`[clearCache] Cleared truncated hash cache: ${truncatedHash}`);
+      } catch (err) {
+        console.error('Failed to clear truncated cache:', err);
+      }
+    }
+
+    // Also clear full hash directory (render cache) if different
+    const cacheDir = path.join(baseCacheDir, fileHash);
     if (fs.existsSync(cacheDir)) {
       try {
         fs.rmSync(cacheDir, { recursive: true, force: true });

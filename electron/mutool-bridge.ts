@@ -445,29 +445,23 @@ export class MutoolBridge {
       const dominantSize = [...sizeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 10;
 
       // Determine region (use adjusted Y for percentage calculation)
-      const yPct = adjustedStartY / pageDim.height;
+      const blockHeight = adjustedEndY - adjustedStartY;
+      const bottomPct = (adjustedStartY + blockHeight) / pageDim.height;
       let region = 'body';
       const trimmedText = text.trim();
       const textLen = trimmedText.length;
-
-      const looksLikePageNum = textLen <= 5 && /^\d+$/.test(trimmedText);
-      const startsWithPageNum = /^\d{1,4}\s+\S/.test(trimmedText);
-      const endsWithPageNum = /\S\s+\d{1,4}$/.test(trimmedText);
-      const hasPageNumPattern = looksLikePageNum || startsWithPageNum || endsWithPageNum;
 
       const looksLikeBodyText = textLen > 100 ||
         /[.!?]["']?\s+[A-Z]/.test(trimmedText) ||
         (trimmedText.endsWith('.') && textLen > 60);
 
-      if (yPct < 0.04 && (hasPageNumPattern || textLen < 80) && currentBlockLines.length <= 2) {
+      // Text blocks entirely within top 15% with 1-2 lines = header
+      // (headers often have title + page number on separate lines)
+      if (currentBlockLines.length <= 2 && bottomPct < 0.15 && !looksLikeBodyText) {
         region = 'header';
-      } else if (yPct < 0.06 && !looksLikeBodyText && currentBlockLines.length <= 2 && textLen < 120) {
-        region = 'header';
-      } else if (yPct < 0.08 && hasPageNumPattern && !looksLikeBodyText) {
-        region = 'header';
-      } else if (yPct > 0.92 || (yPct > 0.88 && textLen < 50)) {
+      } else if (bottomPct > 0.92 || (bottomPct > 0.88 && textLen < 50)) {
         region = 'footer';
-      } else if (yPct > 0.70) {
+      } else if (bottomPct > 0.70) {
         region = 'lower';
       }
 

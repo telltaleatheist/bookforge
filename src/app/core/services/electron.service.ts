@@ -822,6 +822,40 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Load project metadata from the audiobook project folder.
+   * Returns deleted block examples if they exist (for detailed AI cleanup).
+   */
+  async loadProjectMetadata(epubPath: string): Promise<{
+    title?: string;
+    author?: string;
+    language?: string;
+    coverPath?: string;
+    deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
+  } | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.library.loadMetadata(epubPath);
+      if (result.success && result.metadata) {
+        return result.metadata;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Load deleted block examples from the source BFP project file.
+   * This allows using deletion examples from existing projects without re-exporting.
+   */
+  async loadDeletedExamplesFromBfp(epubPath: string): Promise<Array<{ text: string; category: string; page?: number }> | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.library.loadDeletedExamplesFromBfp(epubPath);
+      if (result.success && result.examples) {
+        return result.examples;
+      }
+    }
+    return null;
+  }
+
   // OCR operations (Tesseract)
   async ocrIsAvailable(): Promise<{ available: boolean; version: string | null }> {
     if (this.isElectron) {
