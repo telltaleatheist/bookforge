@@ -596,8 +596,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
   }
 
-  // Run e2a again without worker_mode to trigger assembly
-  // It will detect existing sentence audio files and skip TTS, going straight to assembly
+  // Run e2a with --assemble_only to combine sentence audio files into final audiobook
   const appPath = path.join(e2aPath, 'app.py');
   const settings = config.settings;
 
@@ -610,8 +609,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--session', prepInfo.sessionId,
     '--device', settings.device === 'gpu' ? 'cuda' : settings.device,
     '--language', settings.language,
-    '--tts_engine', settings.ttsEngine,
-    '--fine_tuned', settings.fineTuned
+    '--tts_engine', settings.ttsEngine,  // Required for session setup even in assembly mode
+    '--assemble_only'  // Skip TTS, just combine existing sentence audio files
   ];
 
   console.log('[PARALLEL-TTS] Running assembly:', args.join(' '));
@@ -699,30 +698,55 @@ function serializeWorkers(workers: WorkerState[]): Omit<WorkerState, 'process'>[
   }));
 }
 
+// Track last progress for smoothing estimates
+const progressHistory: Map<string, { completedSentences: number; timestamp: number }[]> = new Map();
+const ETA_SAMPLE_WINDOW = 30000; // Use last 30 seconds of data for ETA calculation
+const MIN_SAMPLES_FOR_ETA = 3; // Need at least 3 data points before showing ETA
+
 function emitProgress(session: ConversionSession): void {
   if (!mainWindow || !session.prepInfo) return;
 
   const totalCompleted = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
   const activeWorkers = session.workers.filter(w => w.status === 'running').length;
-  const percentage = Math.round((totalCompleted / session.prepInfo.totalSentences) * 100);
+  const percentage = (totalCompleted / session.prepInfo.totalSentences) * 100;
 
-  // Calculate ETA based on progress rate
-  const elapsed = (Date.now() - session.startTime) / 1000;
+  // Track progress history for this session
+  const now = Date.now();
+  if (!progressHistory.has(session.jobId)) {
+    progressHistory.set(session.jobId, []);
+  }
+  const history = progressHistory.get(session.jobId)!;
+  history.push({ completedSentences: totalCompleted, timestamp: now });
+
+  // Remove old samples outside the window
+  const windowStart = now - ETA_SAMPLE_WINDOW;
+  while (history.length > 0 && history[0].timestamp < windowStart) {
+    history.shift();
+  }
+
+  // Calculate ETA using sentence completion rate over the sample window
   let estimatedRemaining = 0;
-  if (percentage > 0) {
-    const rate = percentage / elapsed;
-    estimatedRemaining = Math.round((100 - percentage) / rate);
+  if (history.length >= MIN_SAMPLES_FOR_ETA && totalCompleted > 0) {
+    const oldestSample = history[0];
+    const sentencesInWindow = totalCompleted - oldestSample.completedSentences;
+    const timeInWindow = (now - oldestSample.timestamp) / 1000; // seconds
+
+    if (sentencesInWindow > 0 && timeInWindow > 0) {
+      const sentencesPerSecond = sentencesInWindow / timeInWindow;
+      const remainingSentences = session.prepInfo.totalSentences - totalCompleted;
+      estimatedRemaining = Math.round(remainingSentences / sentencesPerSecond);
+    }
   }
 
   const progress: AggregatedProgress = {
     phase: 'converting',
     totalSentences: session.prepInfo.totalSentences,
     completedSentences: totalCompleted,
-    percentage,
+    percentage: Math.round(percentage),
     activeWorkers,
     workers: serializeWorkers(session.workers) as WorkerState[],
     estimatedRemaining,
-    message: `Processing with ${activeWorkers} workers (${percentage}%)`
+    message: `Processing with ${activeWorkers} workers (${percentage.toFixed(1)}%)`
   };
 
   mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
@@ -735,6 +759,9 @@ function emitComplete(
   error?: string
 ): void {
   if (!mainWindow || !session.prepInfo) return;
+
+  // Clean up progress history for this session
+  progressHistory.delete(session.jobId);
 
   const duration = Math.round((Date.now() - session.startTime) / 1000);
 
@@ -902,6 +929,9 @@ export function stopParallelConversion(jobId: string): boolean {
   if (session.assemblyProcess) {
     session.assemblyProcess.kill('SIGTERM');
   }
+
+  // Clean up progress history
+  progressHistory.delete(jobId);
 
   activeSessions.delete(jobId);
   return true;

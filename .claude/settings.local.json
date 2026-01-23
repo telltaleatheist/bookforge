@@ -100,7 +100,24 @@
       "Bash(git rebase:*)",
       "Bash(git ls-tree:*)",
       "Bash(ffprobe:*)",
-      "Bash(/opt/homebrew/Caskroom/miniconda/base/bin/conda run:*)"
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/bin/conda run:*)",
+      "Bash(sudo systemsetup:*)",
+      "Bash(sudo launchctl list:*)",
+      "Bash(defaults read:*)",
+      "Bash(sudo defaults read:*)",
+      "Bash(sudo defaults write:*)",
+      "Bash(sudo launchctl unload:*)",
+      "Bash(sudo launchctl load:*)",
+      "Bash(sudo pmset:*)",
+      "Bash(sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -allUsers -privs -all)",
+      "WebFetch(domain:discussions.apple.com)",
+      "Bash(sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -clientopts -setvnclegacy -vnclegacy yes)",
+      "Bash(sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -clientopts -setvncpw -vncpw q251xr913)",
+      "Bash(sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent -console)",
+      "Bash(ipconfig getifaddr:*)",
+      "Bash(sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate)",
+      "Bash(scutil:*)",
+      "Bash(ssh:*)"
     ]
   }
 }
