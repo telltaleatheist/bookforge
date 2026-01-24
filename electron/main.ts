@@ -2129,11 +2129,36 @@ function setupIpcHandlers(): void {
     return path.join(documentsPath, 'BookForge', 'audiobooks');
   };
 
-  // Helper to generate a unique project folder name
+  // Helper to generate a unique project folder name (with timestamp for uniqueness)
   const generateProjectId = (filename: string): string => {
     const baseName = filename.replace(/\.epub$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
     const timestamp = Date.now().toString(36);
     return `${baseName}_${timestamp}`;
+  };
+
+  // Helper to generate a stable project ID (without timestamp, for deduplication)
+  const generateStableProjectId = (filename: string): string => {
+    return filename.replace(/\.epub$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+  };
+
+  // Helper to find existing project folder by stable ID prefix
+  const findExistingProject = async (basePath: string, stableId: string): Promise<string | null> => {
+    try {
+      const entries = await fs.readdir(basePath, { withFileTypes: true });
+      // Look for folders that start with the stable ID
+      // This handles both old timestamped IDs and new stable IDs
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          // Match exact stable ID or stable ID followed by underscore and timestamp
+          if (entry.name === stableId || entry.name.startsWith(stableId + '_')) {
+            return path.join(basePath, entry.name);
+          }
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
   };
 
   // Helper to load project.json from a folder
@@ -2358,6 +2383,7 @@ function setupIpcHandlers(): void {
   });
 
   // Copy EPUB to audiobook queue (accepts ArrayBuffer directly or file path)
+  // If a project with the same filename already exists, it will be replaced
   ipcMain.handle('library:copy-to-queue', async (
     _event,
     data: ArrayBuffer | string,
@@ -2374,9 +2400,51 @@ function setupIpcHandlers(): void {
       const basePath = getAudiobooksBasePath();
       await fs.mkdir(basePath, { recursive: true });
 
-      const projectId = generateProjectId(filename);
-      const folderPath = path.join(basePath, projectId);
-      await fs.mkdir(folderPath, { recursive: true });
+      // Check if a project with this filename already exists
+      const stableId = generateStableProjectId(filename);
+      let folderPath = await findExistingProject(basePath, stableId);
+      let isReplacing = false;
+
+      // Track original createdAt for replacements
+      let existingCreatedAt: string | null = null;
+
+      if (folderPath) {
+        // Project exists - load existing data before clearing
+        console.log(`[library:copy-to-queue] Replacing existing project: ${folderPath}`);
+        isReplacing = true;
+
+        // Load existing project to preserve createdAt
+        const existingProject = await loadProjectFile(folderPath);
+        if (existingProject?.createdAt) {
+          existingCreatedAt = existingProject.createdAt;
+        }
+
+        // Remove old files (original.epub, cleaned.epub, project.json)
+        const filesToRemove = ['original.epub', 'cleaned.epub', 'project.json'];
+        for (const file of filesToRemove) {
+          try {
+            await fs.unlink(path.join(folderPath, file));
+          } catch {
+            // File may not exist, that's fine
+          }
+        }
+        // Remove old cover files (cover.png, cover.jpg, etc.)
+        try {
+          const entries = await fs.readdir(folderPath);
+          for (const entry of entries) {
+            if (entry.startsWith('cover.')) {
+              await fs.unlink(path.join(folderPath, entry));
+            }
+          }
+        } catch {
+          // Ignore errors
+        }
+      } else {
+        // Create new project folder with stable ID (no timestamp for easier deduplication)
+        folderPath = path.join(basePath, stableId);
+        await fs.mkdir(folderPath, { recursive: true });
+        console.log(`[library:copy-to-queue] Creating new project: ${folderPath}`);
+      }
 
       const originalPath = path.join(folderPath, 'original.epub');
 
@@ -2413,6 +2481,8 @@ function setupIpcHandlers(): void {
       }
 
       const now = new Date().toISOString();
+      // Use preserved createdAt if replacing, otherwise use now
+      const createdAt = existingCreatedAt || now;
       const projectData = {
         version: 1,
         originalFilename: filename,
@@ -2425,7 +2495,7 @@ function setupIpcHandlers(): void {
         state: { cleanupStatus: 'none', ttsStatus: 'none' },
         // Store deleted block examples for detailed AI cleanup
         deletedBlockExamples: metadata?.deletedBlockExamples,
-        createdAt: now,
+        createdAt: createdAt,
         modifiedAt: now
       };
       await saveProjectFile(folderPath, projectData);
@@ -2434,7 +2504,8 @@ function setupIpcHandlers(): void {
         console.log(`[library:copy-to-queue] Saved ${metadata.deletedBlockExamples.length} deleted block examples for detailed cleanup`);
       }
 
-      return { success: true, destinationPath: originalPath };
+      console.log(`[library:copy-to-queue] ${isReplacing ? 'Replaced' : 'Created'} project at: ${folderPath}`);
+      return { success: true, destinationPath: originalPath, replaced: isReplacing };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

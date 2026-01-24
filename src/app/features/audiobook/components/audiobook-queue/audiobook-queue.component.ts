@@ -139,10 +139,19 @@ export interface CompletedAudiobook {
     </div>
   `,
   styles: [`
+    :host {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
     .queue-container {
       flex: 1;
       overflow-y: auto;
       padding: 0.5rem;
+      min-height: 0;
       transition: background 0.2s;
 
       &.drag-over {

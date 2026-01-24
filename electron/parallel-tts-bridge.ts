@@ -648,8 +648,11 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       const output = data.toString();
       console.log('[ASSEMBLY]', output.trim());
 
-      // Look for output file path
-      const outputMatch = output.match(/(?:output|saved to|created|wrote)[:\s]+(['"]?)([\/~][\w\s\-\/.,'()]+\.m4b)\1/i);
+      // Look for output file path in various formats
+      // Format 1: "Output #0, ipod, to '/path/file.m4b':"
+      // Format 2: "saved to /path/file.m4b"
+      // Format 3: "created: /path/file.m4b"
+      const outputMatch = output.match(/(?:output[^']*to|saved to|created|wrote)[:\s]+(['"]?)([\/~][^'":\n]+\.m4b)\1/i);
       if (outputMatch) {
         outputPath = outputMatch[2].trim();
       }
@@ -662,6 +665,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
 
     session.assemblyProcess.on('close', async (code) => {
       session.assemblyProcess = null;
+      console.log('[PARALLEL-TTS] Assembly process exited with code:', code);
 
       if (code === 0) {
         // Find the output file if not detected from logs
@@ -686,14 +690,24 @@ async function runAssembly(session: ConversionSession): Promise<string> {
           }
         }
 
-        const finalPath = outputPath || path.join(config.outputDir, 'audiobook.m4b');
+        const finalPath = outputPath || path.join(config.outputDir || '.', 'audiobook.m4b');
 
         // Apply metadata and rename using m4b-tool if metadata was provided
         console.log('[PARALLEL-TTS] Assembly complete. Checking metadata for rename...');
+        console.log('[PARALLEL-TTS] config.outputDir:', config.outputDir);
         console.log('[PARALLEL-TTS] config.metadata:', JSON.stringify(config.metadata, null, 2));
         console.log('[PARALLEL-TTS] finalPath:', finalPath);
 
-        if (config.metadata && finalPath) {
+        // Verify the output file exists
+        try {
+          await fs.access(finalPath);
+        } catch {
+          console.error('[PARALLEL-TTS] Output file not found at:', finalPath);
+          reject(new Error(`Output file not found: ${finalPath}`));
+          return;
+        }
+
+        if (config.metadata && finalPath && config.outputDir) {
           try {
             console.log('[PARALLEL-TTS] Calling applyMetadataWithM4bTool...');
             const processedPath = await applyMetadataWithM4bTool(finalPath, config.metadata, config.outputDir);
@@ -704,10 +718,52 @@ async function runAssembly(session: ConversionSession): Promise<string> {
             resolve(finalPath);
           }
         } else {
+          if (!config.outputDir) {
+            console.error('[PARALLEL-TTS] Cannot apply metadata/rename - outputDir is empty');
+          }
           console.log('[PARALLEL-TTS] Skipping metadata - config.metadata is:', config.metadata);
           resolve(finalPath);
         }
       } else {
+        // Even if e2a exited with error, the m4b file might have been created
+        // Try to find and post-process it anyway
+        console.log('[PARALLEL-TTS] Assembly exited with non-zero code, checking for output file anyway...');
+        try {
+          const files = await fs.readdir(config.outputDir);
+          const m4bFiles = files.filter(f => f.endsWith('.m4b'));
+          if (m4bFiles.length > 0) {
+            // Get most recent
+            let mostRecent = { file: m4bFiles[0], mtime: 0 };
+            for (const file of m4bFiles) {
+              const filePath = path.join(config.outputDir, file);
+              const stat = await fs.stat(filePath);
+              if (stat.mtimeMs > mostRecent.mtime) {
+                mostRecent = { file, mtime: stat.mtimeMs };
+              }
+            }
+            const foundPath = path.join(config.outputDir, mostRecent.file);
+            console.log('[PARALLEL-TTS] Found output file despite error:', foundPath);
+
+            // Try to apply metadata anyway
+            if (config.metadata && config.outputDir) {
+              try {
+                console.log('[PARALLEL-TTS] Attempting post-processing despite assembly error...');
+                const processedPath = await applyMetadataWithM4bTool(foundPath, config.metadata, config.outputDir);
+                console.log('[PARALLEL-TTS] Post-processing succeeded:', processedPath);
+                resolve(processedPath);
+                return;
+              } catch (metaErr) {
+                console.error('[PARALLEL-TTS] Post-processing failed:', metaErr);
+                resolve(foundPath);
+                return;
+              }
+            }
+            resolve(foundPath);
+            return;
+          }
+        } catch (findErr) {
+          console.error('[PARALLEL-TTS] Could not find output file after error:', findErr);
+        }
         reject(new Error(`Assembly failed with code ${code}: ${stderr}`));
       }
     });
@@ -741,16 +797,32 @@ async function applyMetadataWithM4bTool(
   const hasMetadataChanges = metadata.title || metadata.author || metadata.year || metadata.coverPath;
   const hasRename = metadata.outputFilename;
 
+  console.log('[PARALLEL-TTS] applyMetadataWithM4bTool called with:');
+  console.log('[PARALLEL-TTS]   inputPath:', inputPath);
+  console.log('[PARALLEL-TTS]   outputDir:', outputDir);
+  console.log('[PARALLEL-TTS]   metadata:', JSON.stringify(metadata, null, 2));
+  console.log('[PARALLEL-TTS]   hasMetadataChanges:', hasMetadataChanges);
+  console.log('[PARALLEL-TTS]   hasRename:', hasRename);
+
   if (!hasMetadataChanges && !hasRename) {
+    console.log('[PARALLEL-TTS] No metadata changes or rename needed, returning input path');
     return inputPath;
+  }
+
+  if (!outputDir) {
+    console.error('[PARALLEL-TTS] outputDir is empty - cannot rename file to destination folder');
+    // Still try to apply metadata in place
   }
 
   console.log('[PARALLEL-TTS] Applying metadata with m4b-tool:', metadata);
 
-  // If we have a cover to apply, first remove the existing cover
-  if (metadata.coverPath) {
-    console.log('[PARALLEL-TTS] Removing existing cover...');
+  // ALWAYS remove e2a's default cover - we don't want auto-extracted covers
+  // Only apply our own cover if coverPath is provided
+  console.log('[PARALLEL-TTS] Removing e2a default cover...');
+  try {
     await runM4bToolCommand(inputPath, ['--skip-cover', '-f']);
+  } catch (err) {
+    console.warn('[PARALLEL-TTS] Failed to remove cover (may not exist):', err);
   }
 
   // Build m4b-tool meta command arguments
@@ -766,7 +838,16 @@ async function applyMetadataWithM4bTool(
     args.push('--year', metadata.year);
   }
   if (metadata.coverPath) {
-    args.push('--cover', metadata.coverPath);
+    console.log('[PARALLEL-TTS] Will apply cover from:', metadata.coverPath);
+    // Verify cover file exists before adding to args
+    try {
+      await fs.access(metadata.coverPath);
+      args.push('--cover', metadata.coverPath);
+    } catch {
+      console.error('[PARALLEL-TTS] Cover file not found:', metadata.coverPath);
+    }
+  } else {
+    console.log('[PARALLEL-TTS] No coverPath provided - leaving cover blank');
   }
 
   // Apply metadata if we have any changes
@@ -776,17 +857,32 @@ async function applyMetadataWithM4bTool(
     await runM4bToolCommand(inputPath, args);
   }
 
-  // Rename if custom filename specified
-  if (metadata.outputFilename) {
+  // Rename and move if custom filename specified and outputDir is valid
+  if (metadata.outputFilename && outputDir) {
     let newPath = path.join(outputDir, metadata.outputFilename);
+
+    // Ensure the filename ends with .m4b
+    if (!newPath.toLowerCase().endsWith('.m4b')) {
+      newPath += '.m4b';
+    }
 
     // Check if file already exists - if so, add a number suffix
     if (newPath !== inputPath) {
       newPath = await getUniqueFilePath(newPath);
-      console.log(`[PARALLEL-TTS] Renaming to: ${newPath}`);
-      await fs.rename(inputPath, newPath);
+      console.log(`[PARALLEL-TTS] Moving and renaming to: ${newPath}`);
+
+      // Ensure output directory exists
+      await fs.mkdir(path.dirname(newPath), { recursive: true });
+
+      // Move the file (works across filesystems unlike rename)
+      await fs.copyFile(inputPath, newPath);
+      await fs.unlink(inputPath);
+
+      console.log(`[PARALLEL-TTS] Successfully moved to: ${newPath}`);
       return newPath;
     }
+  } else if (metadata.outputFilename && !outputDir) {
+    console.error('[PARALLEL-TTS] Cannot rename - outputDir is not set');
   }
 
   return inputPath;
@@ -975,7 +1071,15 @@ export async function startParallelConversion(
   onProgress?: (progress: AggregatedProgress) => void
 ): Promise<ParallelConversionResult> {
   console.log(`[PARALLEL-TTS] Starting conversion for job ${jobId} with ${config.workerCount} workers`);
+  console.log(`[PARALLEL-TTS] Output dir from config:`, config.outputDir);
   console.log(`[PARALLEL-TTS] Metadata received:`, JSON.stringify(config.metadata, null, 2));
+
+  // Ensure we have a valid output directory
+  if (!config.outputDir || config.outputDir.trim() === '') {
+    const error = 'Output directory not configured. Please set the audiobook output folder in Settings.';
+    console.error('[PARALLEL-TTS]', error);
+    return { success: false, error };
+  }
 
   // Prepare the session first
   let prepInfo: PrepInfo;

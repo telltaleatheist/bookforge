@@ -830,9 +830,11 @@ export class TtsSettingsComponent implements OnInit {
       const meta = this.metadata();
       console.log('[TTS-SETTINGS] Adding to queue with metadata:', JSON.stringify(meta, null, 2));
       console.log('[TTS-SETTINGS] outputFilename from metadata:', meta?.outputFilename);
+      console.log('[TTS-SETTINGS] coverPath from metadata:', meta?.coverPath);
       // Use configured output dir, or fall back to library's audiobooks folder
       const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
       const outputDir = configuredDir || this.libraryService.audiobooksPath() || '';
+      console.log('[TTS-SETTINGS] Output dir - configured:', configuredDir, 'library:', this.libraryService.audiobooksPath(), 'using:', outputDir);
       await this.queueService.addJob({
         type: 'tts-conversion',
         epubPath: epubPathToUse,

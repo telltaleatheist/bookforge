@@ -628,6 +628,7 @@ export class QueueService {
           const resolvedOutputFilename = job.metadata?.outputFilename || config.outputFilename;
           console.log(`[QUEUE] Starting parallel TTS conversion with ${workerCount} workers in ${parallelMode} mode`);
           console.log(`[QUEUE] Output filename: ${resolvedOutputFilename}`);
+          console.log(`[QUEUE] Output dir from config: '${config.outputDir}'`);
           console.log(`[QUEUE] job.metadata:`, job.metadata);
           console.log(`[QUEUE] config.outputFilename:`, config.outputFilename);
           await electron.parallelTts.startConversion(job.id, {
