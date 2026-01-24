@@ -157,7 +157,8 @@
       "Read(//Volumes/Callisto/books/audiobooks/**)",
       "Read(//private/tmp/**)",
       "Bash(lsof:*)",
-      "Bash(pstree:*)"
+      "Bash(pstree:*)",
+      "Bash(git reset:*)"
     ]
   }
 }
