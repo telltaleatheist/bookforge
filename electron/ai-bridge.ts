@@ -72,7 +72,125 @@ export interface CleanupResult {
 const OLLAMA_BASE_URL = 'http://localhost:11434';
 const DEFAULT_MODEL = 'llama3.2';
 const CHUNK_SIZE = 8000; // characters per chunk
-const TIMEOUT_MS = 180000; // 3 minutes per chunk (Ollama can be slow)
+const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break point
+const TIMEOUT_MS = 180000; // 3 minutes per chunk
+
+// Markers that indicate the AI couldn't process the text
+const SKIP_MARKERS = ['[SKIP]', '[NO READABLE TEXT]', '[NOTHING TO CLEAN]'];
+
+// Patterns that indicate AI went into conversational mode instead of processing text
+const AI_ASSISTANT_PATTERNS = [
+  /^(here is|here's) (the|your)/i,
+  /^(i'll|i will|i can|i'd be) (help|assist|happy|glad)/i,
+  /^(could you|can you|please provide|please paste)/i,
+  /^(it seems|it appears|it looks like) (there is no|like there's no|you haven't)/i,
+  /^(i don't see|i cannot see|there is no|there's no) (any )?(text|content)/i,
+  /^(let me|allow me) (help|assist|know)/i,
+  /\bplease (provide|share|paste|send)\b/i,
+  /\bi('d| would) be happy to\b/i,
+  /\bno (text|content) (was |has been )?(provided|given|shared)\b/i,
+];
+
+/**
+ * Check if AI output indicates a skip condition or conversational response.
+ * Returns { skip: true, reason: string } if the output should be discarded,
+ * or { skip: false } if the output is valid.
+ */
+function checkAIOutput(output: string, originalText: string): { skip: boolean; reason?: string } {
+  const trimmed = output.trim();
+
+  // Check for explicit skip markers
+  for (const marker of SKIP_MARKERS) {
+    if (trimmed === marker || trimmed.startsWith(marker)) {
+      return { skip: true, reason: `AI returned skip marker: ${marker}` };
+    }
+  }
+
+  // Check for AI assistant conversation patterns (check first 200 chars)
+  const beginning = trimmed.substring(0, 200).toLowerCase();
+  for (const pattern of AI_ASSISTANT_PATTERNS) {
+    if (pattern.test(beginning)) {
+      return { skip: true, reason: `AI went conversational: "${trimmed.substring(0, 50)}..."` };
+    }
+  }
+
+  return { skip: false };
+}
+
+/**
+ * Find the best break point for chunking text.
+ * Priority: paragraph break > sentence end > word boundary
+ * Returns the index where the chunk should end (exclusive).
+ *
+ * Handles cross-platform line endings (\r\n, \n, \r) and various paragraph markers.
+ */
+function findBestBreakPoint(text: string, targetEnd: number, minStart: number): number {
+  if (targetEnd >= text.length) return text.length;
+
+  const searchStart = Math.max(targetEnd - CHUNK_SEARCH_WINDOW, minStart);
+  const searchText = text.substring(searchStart, targetEnd);
+
+  // Priority 1: Paragraph break - look for blank lines (various formats)
+  // Match: \n\n, \r\n\r\n, \n\r\n, or multiple newlines with optional whitespace
+  const paragraphPatterns = [
+    /\r?\n\s*\r?\n/g,  // Blank line (with optional whitespace between)
+    /\r\n\r\n/g,       // Windows double line break
+    /\n\n/g,           // Unix double line break
+  ];
+
+  let lastParagraphEnd = -1;
+  for (const pattern of paragraphPatterns) {
+    let match;
+    pattern.lastIndex = 0; // Reset regex
+    while ((match = pattern.exec(searchText)) !== null) {
+      const matchEnd = match.index + match[0].length;
+      if (matchEnd > lastParagraphEnd) {
+        lastParagraphEnd = matchEnd;
+      }
+    }
+  }
+  if (lastParagraphEnd > 0) {
+    return searchStart + lastParagraphEnd;
+  }
+
+  // Priority 2: Sentence end (. ! ? followed by space, newline, or quote)
+  // Search from end to find the last sentence boundary
+  let lastSentenceEnd = -1;
+  for (let i = searchText.length - 1; i > 0; i--) {
+    const char = searchText[i - 1];
+    const nextChar = searchText[i];
+    if ((char === '.' || char === '!' || char === '?') &&
+        (nextChar === ' ' || nextChar === '\n' || nextChar === '\r' ||
+         nextChar === '"' || nextChar === "'" || nextChar === '\u201C' || nextChar === '\u201D' ||
+         nextChar === '\u2018' || nextChar === '\u2019')) {
+      lastSentenceEnd = i;
+      break;
+    }
+  }
+  if (lastSentenceEnd > 0) {
+    return searchStart + lastSentenceEnd;
+  }
+
+  // Priority 3: Single line break (may indicate paragraph in some formats)
+  const lastCRLF = searchText.lastIndexOf('\r\n');
+  const lastLF = searchText.lastIndexOf('\n');
+  const lastCR = searchText.lastIndexOf('\r');
+  const lastLineBreak = Math.max(lastCRLF, lastLF, lastCR);
+  if (lastLineBreak > 0) {
+    // Move past the line break
+    const breakLen = (lastCRLF === lastLineBreak) ? 2 : 1;
+    return searchStart + lastLineBreak + breakLen;
+  }
+
+  // Priority 4: Word boundary (space)
+  const lastSpace = searchText.lastIndexOf(' ');
+  if (lastSpace > 0) {
+    return searchStart + lastSpace + 1;
+  }
+
+  // Fallback: cut at target (shouldn't happen with reasonable text)
+  return targetEnd;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OCR Cleanup Prompt
@@ -84,17 +202,25 @@ const PROMPT_FILE_PATH = path.join(__dirname, 'prompts', 'tts-cleanup.txt');
 // Default prompt (used if file doesn't exist)
 const DEFAULT_PROMPT = `You are preparing ebook text for text-to-speech (TTS) audiobook narration.
 
+OUTPUT FORMAT: Respond with ONLY the processed book text. Start immediately with the book content.
+FORBIDDEN: Never write "Here is", "I'll help", "Could you", "please provide", or ANY conversational language. You are not having a conversation.
+
 CRITICAL RULES:
 - NEVER summarize. Output must be the same length as input (with minor variations from edits).
 - NEVER paraphrase or rewrite sentences unless fixing an error.
 - NEVER skip or omit any content.
+- NEVER respond as if you are an AI assistant.
 - Process the text LINE BY LINE, making only the specific fixes below.
-- If the input contains NO readable prose (just titles, garbage, or metadata), output exactly: [NO READABLE TEXT]
+
+EDGE CASES:
+- Empty/whitespace input → output: [SKIP]
+- Garbage/unreadable characters → output: [SKIP]
+- Just titles/metadata with no prose → output: [SKIP]
+- Short but readable text → process normally
 
 NUMBERS → SPOKEN WORDS:
 - Years: "1923" → "nineteen twenty-three", "2001" → "two thousand one"
 - Decades: "the 1930s" → "the nineteen thirties"
-- Dates: "January 5, 1923" → "January fifth, nineteen twenty-three"
 - Ordinals: "1st" → "first", "21st" → "twenty-first"
 - Cardinals: "3 men" → "three men"
 - Currency: "$5.50" → "five dollars and fifty cents"
@@ -105,9 +231,10 @@ EXPAND ABBREVIATIONS:
 - Common: "e.g." → "for example", "i.e." → "that is", "etc." → "and so on"
 
 FIX OCR ERRORS: broken words, character misreads (rn→m, cl→d).
+FIX STYLISTIC SPACING: collapse decorative letter/word spacing into normal readable text.
 REMOVE: footnote numbers in sentences, page numbers, stray artifacts.
 
-Output ONLY the processed text. No commentary, no summaries.`;
+Start your response with the first word of the book text. No introduction.`;
 
 /**
  * Load the TTS cleanup prompt from file
@@ -222,59 +349,83 @@ function buildExamplesSection(examples: DeletedBlockExample[]): string {
     }
   }
 
-  // Build the formatted section
+  // Build the formatted section - CONSERVATIVE approach
   const lines: string[] = [
     '',
     '═══════════════════════════════════════════════════════════════════════════════',
-    'USER-MARKED DELETIONS (DETAILED CLEANUP MODE)',
+    'USER-MARKED DELETIONS (REFERENCE EXAMPLES)',
     '═══════════════════════════════════════════════════════════════════════════════',
     '',
-    'The user has marked the following text patterns for removal. Find and remove',
-    'ALL similar occurrences throughout the text:',
+    'The user has marked specific text for removal. Use these as REFERENCE EXAMPLES.',
+    '',
+    'BE VERY CONSERVATIVE. Only remove text that is:',
+    '1. An EXACT or near-exact match to the examples below',
+    '2. CLEARLY the same type of structural element (e.g., standalone page numbers)',
+    '3. Obviously NOT part of narrative content',
+    '',
+    'EXAMPLES OF SAFE REMOVALS:',
+    '- Standalone page numbers: "127" on its own line → also remove "128", "129"',
+    '- Running headers that are IDENTICAL FORMAT: "CHAPTER ONE" → "CHAPTER TWO"',
+    '- Clear structural markers that exactly match the pattern shown',
     ''
   ];
 
   if (groups.header.length > 0) {
-    lines.push('HEADERS/RUNNING HEADERS:');
-    for (const text of groups.header.slice(0, 10)) {
-      lines.push(`- "${text}"`);
+    lines.push('Header examples (remove ONLY exact format matches):');
+    for (const text of groups.header.slice(0, 5)) {
+      lines.push(`  "${text}"`);
     }
     lines.push('');
   }
 
   if (groups.footer.length > 0) {
-    lines.push('FOOTERS:');
-    for (const text of groups.footer.slice(0, 10)) {
-      lines.push(`- "${text}"`);
+    lines.push('Footer examples (remove ONLY exact format matches):');
+    for (const text of groups.footer.slice(0, 5)) {
+      lines.push(`  "${text}"`);
     }
     lines.push('');
   }
 
   if (groups.page_number.length > 0) {
-    lines.push('PAGE NUMBERS:');
-    for (const text of groups.page_number.slice(0, 10)) {
-      lines.push(`- "${text}"`);
+    lines.push('Page number examples (remove standalone numbers matching this format):');
+    for (const text of groups.page_number.slice(0, 5)) {
+      lines.push(`  "${text}"`);
     }
     lines.push('');
   }
 
   if (groups.custom.length > 0) {
-    lines.push('CUSTOM PATTERNS:');
-    for (const text of groups.custom.slice(0, 10)) {
-      lines.push(`- "${text}"`);
+    lines.push('Custom patterns (remove ONLY close matches):');
+    for (const text of groups.custom.slice(0, 5)) {
+      lines.push(`  "${text}"`);
     }
     lines.push('');
   }
 
   if (groups.block.length > 0) {
-    lines.push('OTHER MARKED DELETIONS:');
-    for (const text of groups.block.slice(0, 10)) {
-      lines.push(`- "${text}"`);
+    lines.push('Other examples (be very conservative):');
+    for (const text of groups.block.slice(0, 5)) {
+      lines.push(`  "${text}"`);
     }
     lines.push('');
   }
 
-  lines.push('Remove these patterns and similar ones. Preserve actual narrative content.');
+  lines.push('───────────────────────────────────────────────────────────────────────────────');
+  lines.push('REMOVAL RULES (CONSERVATIVE):');
+  lines.push('');
+  lines.push('ONLY REMOVE text that meets ALL of these criteria:');
+  lines.push('1. Matches an example above in format/structure (not just content type)');
+  lines.push('2. Is clearly NOT part of a sentence or paragraph');
+  lines.push('3. Appears to be a standalone structural element');
+  lines.push('');
+  lines.push('DO NOT REMOVE:');
+  lines.push('- Any text that is part of a sentence');
+  lines.push('- Any text that discusses the subject matter');
+  lines.push('- Footnotes or citations (unless EXACT pattern match to examples)');
+  lines.push('- Anything you are uncertain about');
+  lines.push('');
+  lines.push('WHEN IN DOUBT, KEEP THE TEXT.');
+  lines.push('It is much better to leave unwanted text than to delete wanted content.');
   lines.push('');
 
   return lines.join('\n');
@@ -512,6 +663,36 @@ async function checkOpenAIConnection(): Promise<ProviderConnectionResult> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Job Cancellation Support
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Track active cleanup jobs for cancellation
+const activeCleanupJobs = new Map<string, AbortController>();
+
+/**
+ * Cancel an active cleanup job immediately.
+ * Aborts any in-flight HTTP requests and stops chunk processing.
+ */
+export function cancelCleanupJob(jobId: string): boolean {
+  const controller = activeCleanupJobs.get(jobId);
+  if (controller) {
+    console.log(`[AI-BRIDGE] Cancelling job ${jobId} - aborting all requests`);
+    controller.abort();
+    activeCleanupJobs.delete(jobId);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Check if a job has been cancelled
+ */
+function isJobCancelled(jobId: string): boolean {
+  const controller = activeCleanupJobs.get(jobId);
+  return !controller || controller.signal.aborted;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Multi-Provider Text Cleanup
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -522,10 +703,16 @@ async function cleanChunkWithClaude(
   text: string,
   systemPrompt: string,
   apiKey: string,
-  model: string = 'claude-3-5-sonnet-20241022'
+  model: string = 'claude-3-5-sonnet-20241022',
+  abortSignal?: AbortSignal
 ): Promise<string> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  // Chain abort signals - if parent aborts, abort this request too
+  if (abortSignal) {
+    abortSignal.addEventListener('abort', () => controller.abort());
+  }
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -556,7 +743,14 @@ async function cleanChunkWithClaude(
     const data = await response.json();
     const cleaned = data.content?.[0]?.text || text;
 
-    // Safeguard: if AI returns significantly less text (less than 70%),
+    // Safeguard 1: Check for skip markers or AI assistant responses
+    const outputCheck = checkAIOutput(cleaned, text);
+    if (outputCheck.skip) {
+      console.warn(`[Claude] ${outputCheck.reason} - using original text`);
+      return text;
+    }
+
+    // Safeguard 2: if AI returns significantly less text (less than 70%),
     // it's likely truncating/removing content incorrectly - use original
     if (cleaned.length < text.length * 0.7) {
       console.warn(`Claude returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
@@ -577,10 +771,16 @@ async function cleanChunkWithOpenAI(
   text: string,
   systemPrompt: string,
   apiKey: string,
-  model: string = 'gpt-4o'
+  model: string = 'gpt-4o',
+  abortSignal?: AbortSignal
 ): Promise<string> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  // Chain abort signals - if parent aborts, abort this request too
+  if (abortSignal) {
+    abortSignal.addEventListener('abort', () => controller.abort());
+  }
 
   try {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -611,7 +811,14 @@ async function cleanChunkWithOpenAI(
     const data = await response.json();
     const cleaned = data.choices?.[0]?.message?.content || text;
 
-    // Safeguard: if AI returns significantly less text (less than 70%),
+    // Safeguard 1: Check for skip markers or AI assistant responses
+    const outputCheck = checkAIOutput(cleaned, text);
+    if (outputCheck.skip) {
+      console.warn(`[OpenAI] ${outputCheck.reason} - using original text`);
+      return text;
+    }
+
+    // Safeguard 2: if AI returns significantly less text (less than 70%),
     // it's likely truncating/removing content incorrectly - use original
     if (cleaned.length < text.length * 0.7) {
       console.warn(`OpenAI returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
@@ -632,18 +839,24 @@ async function cleanChunkWithProvider(
   text: string,
   systemPrompt: string,
   config: AIProviderConfig,
-  maxRetries: number = 3
+  maxRetries: number = 3,
+  abortSignal?: AbortSignal
 ): Promise<string> {
   let lastError: Error | null = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    // Check for cancellation before each attempt
+    if (abortSignal?.aborted) {
+      throw new Error('Job cancelled');
+    }
+
     try {
       switch (config.provider) {
         case 'ollama':
           if (!config.ollama?.model) {
             throw new Error('Ollama model not configured');
           }
-          return await cleanChunk(text, systemPrompt, config.ollama.model);
+          return await cleanChunk(text, systemPrompt, config.ollama.model, abortSignal);
         case 'claude':
           if (!config.claude?.apiKey) {
             throw new Error('Claude API key not configured');
@@ -651,7 +864,7 @@ async function cleanChunkWithProvider(
           if (!config.claude?.model) {
             throw new Error('Claude model not configured');
           }
-          return await cleanChunkWithClaude(text, systemPrompt, config.claude.apiKey, config.claude.model);
+          return await cleanChunkWithClaude(text, systemPrompt, config.claude.apiKey, config.claude.model, abortSignal);
         case 'openai':
           if (!config.openai?.apiKey) {
             throw new Error('OpenAI API key not configured');
@@ -659,14 +872,18 @@ async function cleanChunkWithProvider(
           if (!config.openai?.model) {
             throw new Error('OpenAI model not configured');
           }
-          return await cleanChunkWithOpenAI(text, systemPrompt, config.openai.apiKey, config.openai.model);
+          return await cleanChunkWithOpenAI(text, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal);
         default:
           throw new Error(`Unknown provider: ${config.provider}`);
       }
     } catch (error) {
+      // If aborted/cancelled, don't retry - throw immediately
+      if (abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        throw new Error('Job cancelled');
+      }
+
       lastError = error as Error;
       const isRetryableError = error instanceof Error && (
-        error.name === 'AbortError' ||
         error.message.includes('fetch') ||
         error.message.includes('network') ||
         error.message.includes('ECONNREFUSED') ||
@@ -694,13 +911,21 @@ async function cleanChunkWithProvider(
 async function cleanChunk(
   text: string,
   systemPrompt: string,
-  model: string = DEFAULT_MODEL
+  model: string = DEFAULT_MODEL,
+  abortSignal?: AbortSignal
 ): Promise<string> {
   console.log('[AI-BRIDGE] cleanChunk using model:', model);
 
-  // Don't use AbortController - it gets triggered by dev server reloads
-  // Let Ollama handle its own timeouts via keep_alive
+  // Use AbortController for cancellation support
+  const controller = new AbortController();
+
+  // Chain abort signals - if parent aborts, abort this request too
+  if (abortSignal) {
+    abortSignal.addEventListener('abort', () => controller.abort());
+  }
+
   const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+    signal: controller.signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -723,10 +948,17 @@ async function cleanChunk(
   const data = await response.json();
   const cleaned = data.response || text;
 
-  // Safeguard: if AI returns significantly less text (less than 70%),
+  // Safeguard 1: Check for skip markers or AI assistant responses
+  const outputCheck = checkAIOutput(cleaned, text);
+  if (outputCheck.skip) {
+    console.warn(`[Ollama] ${outputCheck.reason} - using original text`);
+    return text;
+  }
+
+  // Safeguard 2: if AI returns significantly less text (less than 70%),
   // it's likely truncating/removing content incorrectly - use original
   if (cleaned.length < text.length * 0.7) {
-    console.warn(`AI returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
+    console.warn(`Ollama returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
     return text;
   }
 
@@ -757,28 +989,23 @@ export async function cleanupText(
 
   const systemPrompt = buildCleanupPrompt(options);
 
-  // Split text into chunks
+  // Split text into chunks at logical break points
   const chunks: string[] = [];
-  for (let i = 0; i < text.length; i += CHUNK_SIZE) {
-    // Try to break at sentence boundary
-    let end = Math.min(i + CHUNK_SIZE, text.length);
-    if (end < text.length) {
-      // Look for sentence end within last 500 chars
-      const searchStart = Math.max(end - 500, i);
-      const searchText = text.substring(searchStart, end);
-      const lastPeriod = searchText.lastIndexOf('. ');
-      if (lastPeriod > 0) {
-        end = searchStart + lastPeriod + 2;
-      }
+
+  // If text fits in one chunk, don't split
+  if (text.length <= CHUNK_SIZE) {
+    chunks.push(text);
+  } else {
+    let pos = 0;
+    while (pos < text.length) {
+      const targetEnd = Math.min(pos + CHUNK_SIZE, text.length);
+      const end = findBestBreakPoint(text, targetEnd, pos);
+      chunks.push(text.substring(pos, end));
+      pos = end;
     }
-    chunks.push(text.substring(i, end));
-    i = end - CHUNK_SIZE; // Adjust loop counter
   }
 
-  // Deduplicate chunks (the loop adjustment can cause issues)
-  const uniqueChunks = chunks.filter((chunk, index) =>
-    index === 0 || chunk !== chunks[index - 1]
-  );
+  const uniqueChunks = chunks;
 
   // Process each chunk
   const cleanedChunks: string[] = [];
@@ -971,6 +1198,11 @@ export async function cleanupEpub(
     return { success: false, error: `Unknown AI provider: ${config.provider}` };
   }
 
+  // Create AbortController for this job - allows immediate cancellation
+  const abortController = new AbortController();
+  activeCleanupJobs.set(jobId, abortController);
+  console.log(`[AI-BRIDGE] Job ${jobId} registered for cancellation support`);
+
   const sendProgress = (progress: EpubCleanupProgress) => {
     // Console log for visibility in terminal
     const chunkInfo = progress.chunkCompletedAt ? ` [completed @ ${new Date(progress.chunkCompletedAt).toLocaleTimeString()}]` : '';
@@ -1064,26 +1296,21 @@ export async function cleanupEpub(
         continue; // Skip empty chapters
       }
 
-      // Split into chunks
-      const chunks: string[] = [];
-      for (let j = 0; j < text.length; j += CHUNK_SIZE) {
-        let end = Math.min(j + CHUNK_SIZE, text.length);
-        if (end < text.length) {
-          const searchStart = Math.max(end - 500, j);
-          const searchText = text.substring(searchStart, end);
-          const lastPeriod = searchText.lastIndexOf('. ');
-          if (lastPeriod > 0) {
-            end = searchStart + lastPeriod + 2;
-          }
-        }
-        chunks.push(text.substring(j, end));
-        j = end - CHUNK_SIZE;
-      }
+      // Split into chunks at logical break points (paragraph > sentence > word)
+      const uniqueChunks: string[] = [];
 
-      // Deduplicate chunks
-      const uniqueChunks = chunks.filter((chunk, index) =>
-        index === 0 || chunk !== chunks[index - 1]
-      );
+      // If chapter fits in one chunk, don't split
+      if (text.length <= CHUNK_SIZE) {
+        uniqueChunks.push(text);
+      } else {
+        let pos = 0;
+        while (pos < text.length) {
+          const targetEnd = Math.min(pos + CHUNK_SIZE, text.length);
+          const end = findBestBreakPoint(text, targetEnd, pos);
+          uniqueChunks.push(text.substring(pos, end));
+          pos = end;
+        }
+      }
 
       if (uniqueChunks.length > 0) {
         chapterChunks.push({ chapter, chunks: uniqueChunks });
@@ -1102,11 +1329,23 @@ export async function cleanupEpub(
     // PHASE 2: Process all chunks
     // ─────────────────────────────────────────────────────────────────────────
     for (let i = 0; i < chapterChunks.length; i++) {
+      // Check for cancellation before each chapter
+      if (abortController.signal.aborted) {
+        console.log(`[AI-CLEANUP] Job ${jobId} cancelled before chapter ${i + 1}`);
+        throw new Error('Job cancelled');
+      }
+
       const { chapter, chunks: uniqueChunks } = chapterChunks[i];
 
       // Process chunks
       const cleanedChunks: string[] = [];
       for (let c = 0; c < uniqueChunks.length; c++) {
+        // Check for cancellation before each chunk
+        if (abortController.signal.aborted) {
+          console.log(`[AI-CLEANUP] Job ${jobId} cancelled before chunk ${c + 1} of chapter ${i + 1}`);
+          throw new Error('Job cancelled');
+        }
+
         const chunkStartTime = Date.now();
         const currentChunkInJob = chunksCompletedInJob + 1;  // 1-indexed for display
 
@@ -1127,7 +1366,7 @@ export async function cleanupEpub(
 
         try {
           console.log(`[AI-CLEANUP] Starting chunk ${currentChunkInJob}/${totalChunksInJob} - "${chapter.title}" (${uniqueChunks[c].length} chars)`);
-          const cleaned = await cleanChunkWithProvider(uniqueChunks[c], systemPrompt, config);
+          const cleaned = await cleanChunkWithProvider(uniqueChunks[c], systemPrompt, config, 3, abortController.signal);
           const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
           console.log(`[AI-CLEANUP] Completed chunk ${currentChunkInJob}/${totalChunksInJob} in ${chunkDuration}s (${cleaned.length} chars output)`);
           cleanedChunks.push(cleaned);
@@ -1248,6 +1487,10 @@ export async function cleanupEpub(
     processor.close();
     processor = null;
 
+    // Clean up abort controller
+    activeCleanupJobs.delete(jobId);
+    console.log(`[AI-BRIDGE] Job ${jobId} completed successfully, cleaned up`);
+
     sendProgress({
       jobId,
       phase: 'complete',
@@ -1265,13 +1508,21 @@ export async function cleanupEpub(
       chaptersProcessed
     };
   } catch (error) {
+    // Clean up abort controller
+    activeCleanupJobs.delete(jobId);
+
     // Clean up processor on error
     if (processor) {
       try {
         processor.close();
       } catch { /* ignore */ }
     }
+
     const message = error instanceof Error ? error.message : 'Unknown error';
+    const isCancelled = message === 'Job cancelled' || abortController.signal.aborted;
+
+    console.log(`[AI-BRIDGE] Job ${jobId} ${isCancelled ? 'cancelled' : 'failed'}: ${message}`);
+
     sendProgress({
       jobId,
       phase: 'error',
@@ -1280,9 +1531,10 @@ export async function cleanupEpub(
       currentChunk: 0,
       totalChunks: 0,
       percentage: 0,
-      message: `Error: ${message}`
+      message: isCancelled ? 'Cancelled' : `Error: ${message}`,
+      error: isCancelled ? 'Cancelled by user' : message
     });
-    return { success: false, error: message };
+    return { success: false, error: isCancelled ? 'Cancelled by user' : message };
   }
 }
 
@@ -1388,6 +1640,7 @@ export const aiBridge = {
   cleanupText,
   cleanupChapterStreaming,
   cleanupEpub,
+  cancelCleanupJob,
   getOcrCleanupSystemPrompt,
   loadPrompt,
   savePrompt,

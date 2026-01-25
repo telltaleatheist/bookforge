@@ -5,7 +5,7 @@
 import { AIProvider } from '../../../core/models/ai-config.types';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion';
+export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation';
 
 // Job status
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
@@ -49,10 +49,16 @@ export interface QueueJob {
   progressMessage?: string;       // Current progress message
   // Parallel TTS worker progress
   parallelWorkers?: ParallelWorkerProgress[];
+  // Resume state for interrupted TTS jobs
+  isResumeJob?: boolean;                     // Is this a resume job?
+  resumeCompletedSentences?: number;         // Sentences already completed before resume
+  resumeMissingSentences?: number;           // Sentences to process in this resume
+  // Session progress tracking (for accurate ETA on resume jobs)
+  chunksDoneInSession?: number;              // Chunks completed in THIS session only
 }
 
 // Job configuration union type
-export type JobConfig = OcrCleanupConfig | TtsConversionConfig;
+export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -95,6 +101,70 @@ export interface TtsConversionConfig {
   parallelWorkers?: number; // undefined = auto, 1 = sequential, 2-4 = parallel workers
   useParallel?: boolean;    // Enable parallel processing (default: false for backwards compat)
   parallelMode?: 'sentences' | 'chapters'; // Division strategy (default: sentences for fine-grained)
+  // Resume info (saved after prep for resume capability)
+  resumeInfo?: TtsResumeInfo;
+}
+
+// Translation job configuration (auto-detects source language)
+export interface TranslationJobConfig {
+  type: 'translation';
+  chunkSize?: number;  // Default 2500 characters
+  // AI Provider settings (per-job)
+  aiProvider: AIProvider;
+  aiModel: string;
+  // Provider-specific settings
+  ollamaBaseUrl?: string;
+  claudeApiKey?: string;
+  openaiApiKey?: string;
+}
+
+// Resume info for TTS jobs - allows resuming interrupted conversions
+export interface TtsResumeInfo {
+  sessionId: string;           // e2a session UUID
+  sessionDir: string;          // Full path to session directory
+  processDir: string;          // Full path to process directory
+  totalSentences: number;      // Total sentences in book
+  totalChapters: number;       // Total chapters
+  chapters: ChapterSentenceRange[]; // Chapter boundaries for assembly
+  language: string;            // Language used
+  voice?: string;              // Voice model used
+  ttsEngine?: string;          // TTS engine used
+  createdAt: string;           // ISO timestamp when session started
+}
+
+// Chapter sentence range for resume
+export interface ChapterSentenceRange {
+  chapter_num: number;         // 1-indexed
+  sentence_start: number;      // 0-indexed
+  sentence_end: number;        // 0-indexed, inclusive
+  sentence_count: number;
+}
+
+// Resume check result from e2a
+export interface ResumeCheckResult {
+  success: boolean;
+  complete?: boolean;          // All sentences already done
+  error?: string;
+  sessionId?: string;
+  sessionDir?: string;
+  processDir?: string;
+  totalSentences?: number;
+  totalChapters?: number;
+  completedSentences?: number;
+  missingSentences?: number;
+  missingIndices?: number[];
+  missingRanges?: MissingSentenceRange[];
+  progressPercent?: number;
+  chapters?: ChapterSentenceRange[];
+  metadata?: { title?: string; creator?: string; language?: string };
+  warnings?: string[];
+}
+
+// Missing sentence range for parallel workers
+export interface MissingSentenceRange {
+  start: number;
+  end: number;
+  count: number;
 }
 
 // Queue state
@@ -143,6 +213,8 @@ export interface AudiobookMetadata {
 export interface CreateJobRequest {
   type: JobType;
   epubPath: string;
-  config?: Partial<OcrCleanupConfig | TtsConversionConfig>;
+  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig>;
   metadata?: AudiobookMetadata;
+  // Resume info for continuing interrupted TTS jobs
+  resumeInfo?: ResumeCheckResult;
 }

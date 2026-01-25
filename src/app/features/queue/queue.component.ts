@@ -526,6 +526,13 @@ export class QueueComponent implements OnInit, OnDestroy {
         label: 'Stop',
         tooltip: 'Stop immediately and reset current job'
       }] : []),
+      {
+        id: 'refresh',
+        type: 'button',
+        icon: '\u21BB',
+        label: 'Refresh',
+        tooltip: 'Re-sync with background jobs (use after app rebuild)'
+      },
       { id: 'sep1', type: 'divider' },
       { id: 'spacer', type: 'spacer' }
     ];
@@ -549,6 +556,9 @@ export class QueueComponent implements OnInit, OnDestroy {
         break;
       case 'stop':
         this.queueService.stopQueue();
+        break;
+      case 'refresh':
+        this.queueService.refreshFromBackend();
         break;
     }
   }
@@ -581,8 +591,8 @@ export class QueueComponent implements OnInit, OnDestroy {
     this.queueService.moveJobDown(jobId);
   }
 
-  reorderJobs(event: { fromIndex: number; toIndex: number }): void {
-    this.queueService.reorderJobs(event.fromIndex, event.toIndex);
+  reorderJobs(event: { fromId: string; toId: string }): void {
+    this.queueService.reorderJobsById(event.fromId, event.toId);
   }
 
   clearCompleted(): void {

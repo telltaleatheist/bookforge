@@ -17,6 +17,8 @@ import { QueueJob, ParallelWorkerProgress } from '../../models/queue.types';
 interface ETAState {
   lastChunksCompleted: number;     // Last known chunks completed count
   estimatedSecondsRemaining: number; // Current ETA countdown value
+  initialChunksCompleted: number;  // Chunks already done when THIS session started (for resume jobs)
+  firstWorkTime: number | null;    // Timestamp when first actual work completed (excludes model load)
 }
 
 @Component({
@@ -42,6 +44,9 @@ interface ETAState {
             @if (currentJob.type === 'ocr-cleanup') {
               <span class="type-icon">&#128221;</span>
               <span>OCR Cleanup</span>
+            } @else if (currentJob.type === 'translation') {
+              <span class="type-icon">&#127760;</span>
+              <span>Translation</span>
             } @else if (currentJob.type === 'tts-conversion') {
               <span class="type-icon">&#127911;</span>
               <span>TTS Conversion</span>
@@ -334,7 +339,9 @@ export class JobProgressComponent implements OnDestroy {
   // ETA calculation state
   private etaState: ETAState = {
     lastChunksCompleted: 0,
-    estimatedSecondsRemaining: 0
+    estimatedSecondsRemaining: 0,
+    initialChunksCompleted: -1,  // -1 means not yet initialized
+    firstWorkTime: null          // Set when first chunk/sentence completes
   };
 
   // Signal to track current ETA countdown (decrements every second)
@@ -363,8 +370,14 @@ export class JobProgressComponent implements OnDestroy {
 
       // Check if a new chunk was completed
       if (chunksCompleted > this.etaState.lastChunksCompleted) {
+        // Record first work time when first chunk completes (excludes model loading)
+        if (this.etaState.firstWorkTime === null && chunksCompleted > 0) {
+          this.etaState.firstWorkTime = Date.now();
+          console.log('[ETA] First work completed - timer started (model load time excluded)');
+        }
+
         this.etaState.lastChunksCompleted = chunksCompleted;
-        // Recalculate ETA based on total elapsed time and chunks completed
+        // Recalculate ETA based on actual processing time (not including model load)
         this.recalculateETA(j);
       }
     });
@@ -377,33 +390,51 @@ export class JobProgressComponent implements OnDestroy {
   private resetETAState(): void {
     this.etaState = {
       lastChunksCompleted: 0,
-      estimatedSecondsRemaining: 0
+      estimatedSecondsRemaining: 0,
+      initialChunksCompleted: -1,  // -1 means not yet initialized
+      firstWorkTime: null          // Reset - will be set on first chunk completion
     };
     this.etaCountdown.set(0);
   }
 
   /**
-   * Recalculate ETA based on total elapsed time and chunks completed.
+   * Recalculate ETA based on chunks completed IN THIS SESSION.
    *
-   * Simple algorithm:
-   * 1. avgTimePerChunk = totalElapsedTime / chunksCompleted
+   * Uses chunksDoneInSession from the backend which correctly tracks:
+   * - For resume jobs: only new conversions since resume started
+   * - For fresh jobs: all chunks completed
+   *
+   * Algorithm:
+   * 1. avgTimePerChunk = totalElapsedTime / chunksDoneInSession
    * 2. remainingChunks = totalChunksInJob - chunksCompleted
    * 3. ETA = remainingChunks × avgTimePerChunk
    */
   private recalculateETA(job: QueueJob): void {
     const chunksCompleted = job.chunksCompletedInJob || 0;
     const totalChunksInJob = job.totalChunksInJob || job.totalChunks || 0;
+    // Use backend-provided session count (accurate for resume jobs)
+    const chunksDoneInSession = job.chunksDoneInSession || chunksCompleted;
 
-    if (chunksCompleted === 0 || totalChunksInJob === 0 || !this.jobStartTime) {
+    // Use firstWorkTime (excludes model loading) instead of jobStartTime
+    if (chunksCompleted === 0 || totalChunksInJob === 0 || !this.etaState.firstWorkTime) {
       return;
     }
 
-    // Total elapsed time since job started
-    const totalElapsedMs = Date.now() - this.jobStartTime;
+    // Total elapsed time since FIRST WORK completed (excludes model load time)
+    const totalElapsedMs = Date.now() - this.etaState.firstWorkTime;
     const totalElapsedSec = totalElapsedMs / 1000;
 
-    // Average time per chunk = total elapsed / chunks completed
-    const avgTimePerChunkSec = totalElapsedSec / chunksCompleted;
+    // Need at least 2 chunks to calculate meaningful average
+    // (first chunk sets firstWorkTime, so we need one more)
+    if (chunksDoneInSession <= 1 || totalElapsedSec < 5) {
+      // Not enough data yet - wait for more progress
+      return;
+    }
+
+    // Average time per chunk = elapsed time / (chunks done - 1)
+    // Subtract 1 because firstWorkTime is set AFTER first chunk completes
+    const chunksForAverage = chunksDoneInSession - 1;
+    const avgTimePerChunkSec = totalElapsedSec / chunksForAverage;
 
     // Remaining chunks
     const remainingChunks = totalChunksInJob - chunksCompleted;
@@ -415,7 +446,7 @@ export class JobProgressComponent implements OnDestroy {
     this.etaState.estimatedSecondsRemaining = remainingSeconds;
     this.etaCountdown.set(remainingSeconds);
 
-    console.log(`[ETA] ${chunksCompleted}/${totalChunksInJob} done in ${totalElapsedSec.toFixed(0)}s → ${avgTimePerChunkSec.toFixed(1)}s/chunk`);
+    console.log(`[ETA] Processing: ${chunksForAverage} chunks in ${totalElapsedSec.toFixed(0)}s → ${avgTimePerChunkSec.toFixed(1)}s/chunk (model load excluded)`);
     console.log(`[ETA] ${remainingChunks} remaining × ${avgTimePerChunkSec.toFixed(1)}s = ${remainingSeconds}s (${this.formatDuration(remainingSeconds)})`);
   }
 
@@ -465,6 +496,11 @@ export class JobProgressComponent implements OnDestroy {
     const progress = j?.progress || 0;
     if (progress >= 100) {
       return 'Complete';
+    }
+
+    // If first work hasn't completed yet, show loading status
+    if (!this.etaState.firstWorkTime) {
+      return 'Loading models...';
     }
 
     // If we have chunk-based ETA, use it

@@ -1,15 +1,26 @@
 You are preparing ebook text for text-to-speech (TTS) audiobook narration.
 
+OUTPUT FORMAT: Start your response IMMEDIATELY with the processed book text. No preamble.
+
 ═══════════════════════════════════════════════════════════════════════════════
 CRITICAL RULES - NEVER VIOLATE THESE
 ═══════════════════════════════════════════════════════════════════════════════
 
+- FORBIDDEN PHRASES: Never write "Here is", "Here's the", "The processed text", "Output:", "Below is", "I'll help", "I can help", "Could you", "please provide", or ANY conversational/assistant language. You are not having a conversation - you are processing text.
 - NEVER SUMMARIZE. Your output must contain ALL the original content.
 - NEVER paraphrase or rewrite sentences. Only make the specific fixes listed below.
 - NEVER skip, omit, or condense any paragraphs or sentences.
-- NEVER add commentary, explanations, or meta-text.
+- NEVER add commentary, explanations, or meta-text before, during, or after the book text.
+- NEVER respond as if you are an AI assistant having a conversation.
 - If unsure about a fix, leave the text unchanged.
-- If the input contains NO readable prose (just titles, garbage characters, or metadata), output exactly: [NO READABLE TEXT]
+
+EDGE CASES - You may receive unusual input:
+- Empty or whitespace-only text → output exactly: [SKIP]
+- Garbage characters, OCR noise, or unreadable text → output exactly: [SKIP]
+- Just titles, headers, or metadata with no prose → output exactly: [SKIP]
+- Very short fragments (single words, partial sentences) → process them normally if readable, otherwise [SKIP]
+
+When in doubt about whether text is readable, process it. Only use [SKIP] for truly unreadable content.
 
 Your output should be approximately the SAME LENGTH as the input (with minor variations from number expansion, abbreviation expansion, and artifact removal).
 
@@ -33,8 +44,13 @@ EXPAND ABBREVIATIONS
 FIX OCR ERRORS
 - Broken hyphenation across lines
 - Character misreads (rn→m, cl→d) only when result is a real word
-- Extra spaces within words
+- Extra spaces within words (wo rd → word)
 - Duplicate words (the the → the)
+
+FIX STYLISTIC SPACING
+- Collapse letters or words separated by decorative spaces into normal text
+- Text with unusual inter-character or inter-word spacing should read naturally
+- This includes spaced-out headers, titles, or emphasized text meant for visual effect
 
 REMOVE ARTIFACTS
 - Footnote/reference numbers embedded in sentences like [1] or superscript numbers
@@ -50,4 +66,4 @@ PRESERVE
 - Quotations and dialogue
 - Sentence structure
 
-Output ONLY the processed text.
+FINAL INSTRUCTION: Begin your response with the first word of the processed book text. No introduction, no "Here is...", just the text.

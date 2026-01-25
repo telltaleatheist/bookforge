@@ -9,6 +9,7 @@ import {
 import { AudiobookQueueComponent, QueueItem, CompletedAudiobook } from './components/audiobook-queue/audiobook-queue.component';
 import { MetadataEditorComponent, EpubMetadata } from './components/metadata-editor/metadata-editor.component';
 import { AiCleanupPanelComponent } from './components/ai-cleanup-panel/ai-cleanup-panel.component';
+import { TranslationPanelComponent } from './components/translation-panel/translation-panel.component';
 import { TtsSettingsComponent, TTSSettings } from './components/tts-settings/tts-settings.component';
 import { DiffViewComponent } from './components/diff-view/diff-view.component';
 import { PlayViewComponent } from './components/play-view/play-view.component';
@@ -19,7 +20,7 @@ import { SettingsService } from '../../core/services/settings.service';
 import { LibraryService } from '../../core/services/library.service';
 
 // Workflow states for the audiobook producer
-type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'play' | 'diff' | 'complete';
+type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'complete';
 
 @Component({
   selector: 'app-audiobook',
@@ -31,6 +32,7 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'play' | 'di
     DesktopButtonComponent,
     AudiobookQueueComponent,
     MetadataEditorComponent,
+    TranslationPanelComponent,
     AiCleanupPanelComponent,
     TtsSettingsComponent,
     DiffViewComponent,
@@ -80,6 +82,13 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'play' | 'di
               </button>
               <button
                 class="tab"
+                [class.active]="workflowState() === 'translate'"
+                (click)="setWorkflowState('translate')"
+              >
+                Translate
+              </button>
+              <button
+                class="tab"
                 [class.active]="workflowState() === 'cleanup'"
                 (click)="setWorkflowState('cleanup')"
               >
@@ -122,6 +131,13 @@ type WorkflowState = 'queue' | 'metadata' | 'cleanup' | 'convert' | 'play' | 'di
                     (coverChange)="onCoverChange($event)"
                     (save)="onSaveMetadata($event)"
                     (showInFinder)="onShowInFinder()"
+                  />
+                }
+                @case ('translate') {
+                  <app-translation-panel
+                    [epubPath]="originalEpubPath()"
+                    [metadata]="{ title: selectedMetadata()?.title, author: selectedMetadata()?.author }"
+                    (translationQueued)="onTranslationQueued()"
                   />
                 }
                 @case ('cleanup') {
@@ -842,6 +858,12 @@ export class AudiobookComponent implements OnInit {
   onCleanupComplete(): void {
     // Move to convert step after cleanup
     this.workflowState.set('convert');
+  }
+
+  onTranslationQueued(): void {
+    // Optionally move to AI Cleanup after translation is queued
+    // User may want to add cleanup job next
+    this.workflowState.set('cleanup');
   }
 
   onTtsSettingsChange(settings: TTSSettings): void {

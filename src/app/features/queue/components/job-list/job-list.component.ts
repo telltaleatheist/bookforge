@@ -65,7 +65,10 @@ interface DragState {
               <div class="job-meta">{{ job.metadata!.author }}</div>
             }
             @if (job.type === 'ocr-cleanup' && getOcrModel(job)) {
-              <div class="job-meta model">🤖 {{ getOcrModel(job) }}</div>
+              <div class="job-meta model">&#129302; {{ getOcrModel(job) }}</div>
+            }
+            @if (job.type === 'translation' && getTranslationInfo(job)) {
+              <div class="job-meta model">&#127760; {{ getTranslationInfo(job) }}</div>
             }
             @if (job.status === 'processing' && job.progress !== undefined) {
               <div class="progress-bar">
@@ -285,6 +288,11 @@ interface DragState {
         color: var(--accent);
       }
 
+      &.translation {
+        background: color-mix(in srgb, var(--info) 15%, transparent);
+        color: var(--info);
+      }
+
       &.tts-conversion {
         background: var(--selected-bg-muted);
         color: var(--accent-hover);
@@ -405,7 +413,7 @@ export class JobListComponent {
   readonly moveUp = output<string>();
   readonly moveDown = output<string>();
   readonly select = output<string>();
-  readonly reorder = output<{ fromIndex: number; toIndex: number }>();
+  readonly reorder = output<{ fromId: string; toId: string }>();
 
   // Drag state
   readonly dragState = signal<DragState | null>(null);
@@ -444,8 +452,11 @@ export class JobListComponent {
   onDrop(event: DragEvent, toIndex: number): void {
     event.preventDefault();
     const state = this.dragState();
-    if (state && state.draggedIndex !== toIndex) {
-      this.reorder.emit({ fromIndex: state.draggedIndex, toIndex });
+    const jobs = this.jobs();
+    if (state && state.draggedIndex !== toIndex && state.draggedIndex < jobs.length && toIndex < jobs.length) {
+      const fromJob = jobs[state.draggedIndex];
+      const toJob = jobs[toIndex];
+      this.reorder.emit({ fromId: fromJob.id, toId: toJob.id });
     }
     this.dragState.set(null);
   }
@@ -458,6 +469,8 @@ export class JobListComponent {
     switch (type) {
       case 'ocr-cleanup':
         return 'OCR';
+      case 'translation':
+        return 'Translate';
       case 'tts-conversion':
         return 'TTS';
       default:
@@ -467,6 +480,12 @@ export class JobListComponent {
 
   getOcrModel(job: QueueJob): string | null {
     if (job.type !== 'ocr-cleanup' || !job.config) return null;
+    const config = job.config as { aiModel?: string };
+    return config.aiModel || null;
+  }
+
+  getTranslationInfo(job: QueueJob): string | null {
+    if (job.type !== 'translation' || !job.config) return null;
     const config = job.config as { aiModel?: string };
     return config.aiModel || null;
   }

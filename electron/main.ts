@@ -112,8 +112,8 @@ function createWindow(): void {
     : path.join(app.getAppPath(), 'bookforge-icon.png');
 
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    width: 2100,
+    height: 1350,
     minWidth: 800,
     minHeight: 600,
     icon: iconPath,
@@ -926,6 +926,7 @@ function setupIpcHandlers(): void {
         createdAt: string;
         modifiedAt: string;
         size: number;
+        coverImage?: string;  // Base64 cover image from metadata
       }> = [];
 
       // Helper to scan a folder for .bfp files
@@ -954,7 +955,8 @@ function setupIpcHandlers(): void {
                 deletedCount: data.deleted_block_ids?.length || 0,
                 createdAt: data.created_at,
                 modifiedAt: stat.mtime.toISOString(),
-                size: stat.size
+                size: stat.size,
+                coverImage: data.metadata?.coverImage  // Include saved cover
               });
             } catch {
               // Skip invalid project files
@@ -1992,6 +1994,9 @@ function setupIpcHandlers(): void {
     try {
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
       parallelTtsBridge.setMainWindow(mainWindow);
+      // Initialize logger with library path (default: ~/Documents/BookForge)
+      const libraryPath = path.join(os.homedir(), 'Documents', 'BookForge');
+      await parallelTtsBridge.initializeLogger(libraryPath);
       const result = await parallelTtsBridge.startParallelConversion(jobId, config);
       return { success: true, data: result };
     } catch (err) {
@@ -2024,6 +2029,49 @@ function setupIpcHandlers(): void {
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
       const isActive = parallelTtsBridge.isConversionActive(jobId);
       return { success: true, data: isActive };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // List all active TTS sessions (for UI refresh after rebuild)
+  ipcMain.handle('parallel-tts:list-active', async () => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      const sessions = parallelTtsBridge.listActiveSessions();
+      return { success: true, data: sessions };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Resume support for parallel TTS
+  ipcMain.handle('parallel-tts:check-resume', async (_event, sessionPath: string) => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      const result = await parallelTtsBridge.checkResumeStatus(sessionPath);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('parallel-tts:resume-conversion', async (_event, jobId: string, config: any, resumeInfo: any) => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      parallelTtsBridge.setMainWindow(mainWindow);
+      const result = await parallelTtsBridge.resumeParallelConversion(jobId, config, resumeInfo);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('parallel-tts:build-resume-info', async (_event, prepInfo: any, settings: any) => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      const resumeInfo = parallelTtsBridge.buildResumeInfo(prepInfo, settings);
+      return { success: true, data: resumeInfo };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -2918,6 +2966,98 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Translation handler
+  ipcMain.handle('queue:run-translation', async (
+    _event,
+    jobId: string,
+    epubPath: string,
+    translationConfig: {
+      chunkSize?: number;
+    },
+    aiConfig?: {
+      provider: 'ollama' | 'claude' | 'openai';
+      ollama?: { baseUrl: string; model: string };
+      claude?: { apiKey: string; model: string };
+      openai?: { apiKey: string; model: string };
+    }
+  ) => {
+    console.log('[IPC] queue:run-translation received:', {
+      jobId,
+      aiConfig: aiConfig ? {
+        provider: aiConfig.provider,
+        ollamaModel: aiConfig.ollama?.model,
+        claudeModel: aiConfig.claude?.model,
+        openaiModel: aiConfig.openai?.model
+      } : 'MISSING - THIS IS A BUG'
+    });
+
+    // aiConfig is required
+    if (!aiConfig) {
+      const error = 'aiConfig is required for translation';
+      console.error('[IPC] queue:run-translation ERROR:', error);
+      if (mainWindow) {
+        mainWindow.webContents.send('queue:job-complete', {
+          jobId,
+          success: false,
+          error
+        });
+      }
+      return { success: false, error };
+    }
+
+    try {
+      const { translationBridge } = await import('./translation-bridge.js');
+
+      // Create cancellation token
+      let cancelled = false;
+      const cancelFn = () => {
+        cancelled = true;
+        translationBridge.cancelTranslationJob(jobId);
+      };
+      runningJobs.set(jobId, { cancel: cancelFn });
+
+      const result = await translationBridge.translateEpub(
+        epubPath,
+        jobId,
+        mainWindow,
+        (progress) => {
+          if (cancelled) return;
+          // Progress is sent via mainWindow.webContents.send in translateEpub
+        },
+        aiConfig,
+        translationConfig
+      );
+
+      // Remove from running jobs
+      runningJobs.delete(jobId);
+
+      // Send completion event
+      if (mainWindow && !cancelled) {
+        mainWindow.webContents.send('queue:job-complete', {
+          jobId,
+          success: result.success,
+          outputPath: result.outputPath,
+          error: result.error
+        });
+      }
+
+      return { success: result.success, data: result };
+    } catch (err) {
+      runningJobs.delete(jobId);
+      const error = (err as Error).message;
+
+      if (mainWindow) {
+        mainWindow.webContents.send('queue:job-complete', {
+          jobId,
+          success: false,
+          error
+        });
+      }
+
+      return { success: false, error };
+    }
+  });
+
   ipcMain.handle('queue:run-tts-conversion', async (
     _event,
     jobId: string,
@@ -3002,10 +3142,39 @@ function setupIpcHandlers(): void {
   });
 
   ipcMain.handle('queue:cancel-job', async (_event, jobId: string) => {
+    console.log('[IPC] queue:cancel-job called for:', jobId);
+
+    let cancelled = false;
+
+    // Try to cancel AI cleanup job (uses abort controller for immediate cancellation)
+    try {
+      const { cancelCleanupJob } = await import('./ai-bridge.js');
+      if (cancelCleanupJob(jobId)) {
+        console.log('[IPC] AI cleanup job cancelled via abort controller:', jobId);
+        cancelled = true;
+      }
+    } catch (err) {
+      console.error('[IPC] Error cancelling AI cleanup job:', err);
+    }
+
+    // Try to cancel parallel TTS job
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      if (parallelTtsBridge.stopParallelConversion(jobId)) {
+        console.log('[IPC] Parallel TTS job cancelled:', jobId);
+        cancelled = true;
+      }
+    } catch (err) {
+      console.error('[IPC] Error cancelling parallel TTS job:', err);
+    }
+
+    // Try the legacy running jobs map
     const job = runningJobs.get(jobId);
     if (job) {
       job.cancel();
       runningJobs.delete(jobId);
+      console.log('[IPC] Legacy job cancelled:', jobId);
+      cancelled = true;
 
       // If this was an Ollama job, unload the model to free memory
       if (job.model) {
@@ -3020,7 +3189,9 @@ function setupIpcHandlers(): void {
           // Ollama might not be running, or this wasn't an Ollama job - ignore
         }
       }
+    }
 
+    if (cancelled) {
       return { success: true };
     }
     return { success: false, error: 'Job not found or not running' };

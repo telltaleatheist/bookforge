@@ -129,6 +129,7 @@ interface ProjectInfo {
   createdAt: string;
   modifiedAt: string;
   size: number;
+  coverImage?: string;  // Base64 cover image from project metadata
 }
 
 interface ProjectListResult {

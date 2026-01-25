@@ -837,6 +837,15 @@ export class ExportService {
       return { success: false, message: 'No content to export after organizing by chapters.' };
     }
 
+    // Warn if chapters were provided but only 1 section was generated
+    // This indicates the chapter positions didn't match any blocks
+    if (chapters.length > 0 && chapterSections.length === 1) {
+      console.warn('[EXPORT] Warning: %d chapters were provided but only 1 section generated.', chapters.length);
+      console.warn('[EXPORT] Chapter pages:', chapters.map(c => c.page).join(', '));
+      console.warn('[EXPORT] Block pages:', [...new Set(exportBlocks.map(b => b.page))].sort((a, b) => a - b).slice(0, 20).join(', '), '...');
+      console.warn('[EXPORT] This usually means chapter page numbers don\'t match block page numbers.');
+    }
+
     const blob = this.generateEpubBlobWithChapters(bookTitle, chapterSections, metadata);
     return {
       success: true,

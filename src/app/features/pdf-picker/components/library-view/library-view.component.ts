@@ -14,7 +14,8 @@ export interface ProjectFile {
   createdAt: string;
   modifiedAt: string;
   size: number;
-  thumbnail?: string;
+  coverImage?: string;   // Saved cover from project metadata
+  thumbnail?: string;    // Rendered thumbnail (fallback)
   selected?: boolean;
 }
 
@@ -95,7 +96,9 @@ export interface ProjectFile {
                 [title]="project.sourceName"
               >
                 <div class="card-thumbnail">
-                  @if (project.thumbnail && project.thumbnail !== 'loading') {
+                  @if (project.coverImage) {
+                    <img [src]="project.coverImage" alt="{{ project.name }}" />
+                  } @else if (project.thumbnail && project.thumbnail !== 'loading') {
                     <img [src]="project.thumbnail" alt="{{ project.name }}" />
                   } @else if (project.thumbnail === 'loading') {
                     <div class="thumbnail-loading">
@@ -899,13 +902,17 @@ export class LibraryViewComponent implements OnInit {
       const projectFiles: ProjectFile[] = result.projects.map(p => ({
         ...p,
         selected: false,
-        thumbnail: 'loading'
+        // Only show loading indicator if no saved cover image
+        thumbnail: p.coverImage ? undefined : 'loading'
       }));
       this.projects.set(projectFiles);
       this.loading.set(false);
 
-      // Load thumbnails for each project's source PDF
+      // Load thumbnails only for projects without a saved cover image
       for (const project of projectFiles) {
+        // Skip if project already has a cover image
+        if (project.coverImage) continue;
+
         try {
           const scale = this.getScaleForSize(this.cardSize());
           const thumbnail = await this.pdfService.renderPage(0, scale, project.sourcePath);
@@ -1004,6 +1011,9 @@ export class LibraryViewComponent implements OnInit {
 
     const projectList = this.projects();
     for (const project of projectList) {
+      // Skip if project has a saved cover image
+      if (project.coverImage) continue;
+
       try {
         const thumbnail = await this.pdfService.renderPage(0, scale, project.sourcePath);
         if (thumbnail) {

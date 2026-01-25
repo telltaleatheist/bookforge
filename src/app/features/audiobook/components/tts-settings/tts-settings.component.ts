@@ -1,13 +1,12 @@
-import { Component, input, output, signal, OnInit, inject } from '@angular/core';
+import { Component, input, output, signal, OnInit, inject, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { QueueService } from '../../../queue/services/queue.service';
-import { QueueSuccessModalComponent } from '../queue-success-modal/queue-success-modal.component';
 import { SettingsService } from '../../../../core/services/settings.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { EpubService } from '../../services/epub.service';
+import { ResumeCheckResult } from '../../../queue/models/queue.types';
 
 export interface TTSSettings {
   device: 'gpu' | 'mps' | 'cpu';
@@ -41,7 +40,7 @@ export interface VoiceOption {
 @Component({
   selector: 'app-tts-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, QueueSuccessModalComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent],
   template: `
     <div class="tts-settings">
       <!-- ebook2audiobook Status -->
@@ -281,36 +280,92 @@ export interface VoiceOption {
           }
         </div>
 
+        <!-- Resume Section -->
+        @if (checkingResume()) {
+          <div class="resume-section checking">
+            <span class="status-icon">&#8635;</span>
+            <span>Checking for previous session...</span>
+          </div>
+        } @else if (hasResumableSession() && resumeInfo()) {
+          <div class="resume-section available">
+            <div class="resume-header">
+              <span class="resume-icon">&#8634;</span>
+              <span class="resume-title">Continue where you left off</span>
+            </div>
+            <div class="resume-details">
+              <div class="progress-row">
+                <div class="progress-bar">
+                  <div class="progress-fill" [style.width.%]="resumeInfo()!.progressPercent"></div>
+                </div>
+                <span class="progress-text">{{ resumeInfo()!.progressPercent?.toFixed(1) }}%</span>
+              </div>
+              <div class="stats-row">
+                <span>{{ resumeInfo()!.completedSentences | number }} of {{ resumeInfo()!.totalSentences | number }} sentences complete</span>
+                <span class="separator">·</span>
+                <span>{{ resumeInfo()!.missingSentences | number }} remaining</span>
+              </div>
+              @if (resumeInfo()!.metadata?.title) {
+                <div class="session-info">
+                  <span class="label">Session:</span>
+                  <span class="value">{{ resumeInfo()!.metadata?.title }}</span>
+                </div>
+              }
+            </div>
+          </div>
+        }
+
         <!-- Actions -->
         <div class="actions">
-          <desktop-button
-            variant="primary"
-            size="lg"
-            [disabled]="!ttsAvailable() || addingToQueue()"
-            (click)="addToQueue()"
-          >
-            @if (addingToQueue()) {
-              Adding to Queue...
-            } @else {
-              Add to Queue
-            }
-          </desktop-button>
+          @if (hasResumableSession() && resumeInfo()) {
+            <desktop-button
+              [variant]="addedToQueue() ? 'ghost' : 'primary'"
+              size="lg"
+              [disabled]="!ttsAvailable() || addingToQueue() || addedToQueue()"
+              (click)="addToQueue(true)"
+            >
+              @if (addingToQueue()) {
+                Adding to Queue...
+              } @else if (addedToQueue()) {
+                ✓ Added to Queue
+              } @else {
+                Continue Conversion
+              }
+            </desktop-button>
+            <desktop-button
+              variant="ghost"
+              size="lg"
+              [disabled]="!ttsAvailable() || addingToQueue() || addedToQueue()"
+              (click)="addToQueue(false)"
+            >
+              Start Fresh
+            </desktop-button>
+          } @else {
+            <desktop-button
+              [variant]="addedToQueue() ? 'ghost' : 'primary'"
+              size="lg"
+              [disabled]="!ttsAvailable() || addingToQueue() || addedToQueue()"
+              (click)="addToQueue(false)"
+            >
+              @if (addingToQueue()) {
+                Adding to Queue...
+              } @else if (addedToQueue()) {
+                ✓ Added to Queue
+              } @else {
+                Add to Queue
+              }
+            </desktop-button>
+          }
         </div>
 
         <div class="queue-info">
-          <p>The conversion will be added to the processing queue. You can start processing from the Queue page.</p>
+          @if (hasResumableSession() && resumeInfo()) {
+            <p>"Continue Conversion" will resume from sentence {{ resumeInfo()!.completedSentences! + 1 | number }}, processing only the {{ resumeInfo()!.missingSentences | number }} remaining sentences.</p>
+          } @else {
+            <p>The conversion will be added to the processing queue. You can start processing from the Queue page.</p>
+          }
         </div>
       }
     </div>
-
-    <!-- Success Modal -->
-    <app-queue-success-modal
-      [show]="showSuccessModal()"
-      title="Added to Queue"
-      message="Your TTS conversion job has been added to the processing queue."
-      (close)="closeSuccessModal()"
-      (viewQueue)="goToQueue()"
-    />
   `,
   styles: [`
     .tts-settings {
@@ -510,12 +565,6 @@ export interface VoiceOption {
       gap: 1rem;
     }
 
-    .actions {
-      display: flex;
-      justify-content: center;
-      margin-top: 1rem;
-    }
-
     .queue-info {
       margin-top: 1rem;
       text-align: center;
@@ -703,11 +752,128 @@ export interface VoiceOption {
       font-size: 0.75rem;
       color: var(--text-secondary);
     }
+
+    .resume-section {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding: 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--border-default);
+
+      &.checking {
+        flex-direction: row;
+        align-items: center;
+        gap: 0.5rem;
+        background: var(--bg-subtle);
+        color: var(--text-secondary);
+        font-size: 0.875rem;
+
+        .status-icon {
+          animation: spin 1s linear infinite;
+        }
+      }
+
+      &.available {
+        background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+        border-color: var(--accent-primary);
+      }
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .resume-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .resume-icon {
+      font-size: 1.25rem;
+      color: var(--accent-primary);
+    }
+
+    .resume-title {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .resume-details {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .progress-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .progress-bar {
+      flex: 1;
+      height: 8px;
+      background: var(--bg-elevated);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--accent-primary);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+
+    .progress-text {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--accent-primary);
+      min-width: 3rem;
+      text-align: right;
+    }
+
+    .stats-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+
+      .separator {
+        color: var(--text-muted);
+      }
+    }
+
+    .session-info {
+      display: flex;
+      gap: 0.375rem;
+      font-size: 0.75rem;
+
+      .label {
+        color: var(--text-muted);
+      }
+
+      .value {
+        color: var(--text-secondary);
+        font-style: italic;
+      }
+    }
+
+    .actions {
+      display: flex;
+      justify-content: center;
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
   `]
 })
 export class TtsSettingsComponent implements OnInit {
   private readonly queueService = inject(QueueService);
-  private readonly router = inject(Router);
   private readonly settingsService = inject(SettingsService);
   private readonly libraryService = inject(LibraryService);
   private readonly epubService = inject(EpubService);
@@ -742,7 +908,7 @@ export class TtsSettingsComponent implements OnInit {
   readonly checkingStatus = signal(true);
   readonly showAdvanced = signal(false);
   readonly addingToQueue = signal(false);
-  readonly showSuccessModal = signal(false);
+  readonly addedToQueue = signal(false);
   readonly availableVoices = signal<VoiceOption[]>([
     { id: 'ScarlettJohansson', name: 'Scarlett Johansson', language: 'en', description: 'Natural, warm female voice' },
     { id: 'DavidAttenborough', name: 'David Attenborough', language: 'en', description: 'Documentary-style narration' },
@@ -754,6 +920,27 @@ export class TtsSettingsComponent implements OnInit {
   // Parallel processing state
   readonly loadingHardwareInfo = signal(false);
   readonly hardwareInfo = signal<HardwareInfo | null>(null);
+
+  // Resume state
+  readonly checkingResume = signal(false);
+  readonly hasResumableSession = signal(false);
+  readonly resumeInfo = signal<ResumeCheckResult | null>(null);
+  readonly showResumeOption = signal(false); // User clicked to see details
+
+  constructor() {
+    // Watch for epubPath changes and check for resumable sessions
+    effect(() => {
+      const path = this.epubPath();
+      if (path) {
+        this.checkForResumableSession(path);
+      } else {
+        // Clear resume state when no epub
+        this.hasResumableSession.set(false);
+        this.resumeInfo.set(null);
+        this.showResumeOption.set(false);
+      }
+    });
+  }
 
   ngOnInit(): void {
     this.checkStatus();
@@ -785,6 +972,39 @@ export class TtsSettingsComponent implements OnInit {
     }
   }
 
+  private async checkForResumableSession(epubPath: string): Promise<void> {
+    console.log('[TTS] Checking for resumable session, epubPath:', epubPath);
+
+    const electron = (window as any).electron;
+    if (!electron?.parallelTts?.checkResume) {
+      console.log('[TTS] parallelTts.checkResume not available');
+      return;
+    }
+
+    this.checkingResume.set(true);
+    this.hasResumableSession.set(false);
+    this.resumeInfo.set(null);
+
+    try {
+      // Check if there's a resumable session for this epub
+      console.log('[TTS] Calling checkResume...');
+      const result = await electron.parallelTts.checkResume(epubPath);
+      console.log('[TTS] Resume check result:', result);
+
+      if (result.success && result.data && !result.data.complete && result.data.progressPercent !== undefined) {
+        // Found an incomplete session
+        this.hasResumableSession.set(true);
+        this.resumeInfo.set(result.data);
+        console.log('[TTS] Found resumable session:', result.data.sessionId,
+          `${result.data.completedSentences}/${result.data.totalSentences} sentences (${result.data.progressPercent?.toFixed(1)}%)`);
+      }
+    } catch (err) {
+      console.error('[TTS] Failed to check for resumable session:', err);
+    } finally {
+      this.checkingResume.set(false);
+    }
+  }
+
   async checkStatus(): Promise<void> {
     this.checkingStatus.set(true);
     try {
@@ -805,7 +1025,7 @@ export class TtsSettingsComponent implements OnInit {
     this.settingsChange.emit(updated);
   }
 
-  async addToQueue(): Promise<void> {
+  async addToQueue(useResume: boolean = false): Promise<void> {
     let epubPathToUse = this.epubPath();
     if (!epubPathToUse) return;
 
@@ -831,11 +1051,15 @@ export class TtsSettingsComponent implements OnInit {
       console.log('[TTS-SETTINGS] Adding to queue with metadata:', JSON.stringify(meta, null, 2));
       console.log('[TTS-SETTINGS] outputFilename from metadata:', meta?.outputFilename);
       console.log('[TTS-SETTINGS] coverPath from metadata:', meta?.coverPath);
+      console.log('[TTS-SETTINGS] useResume:', useResume, 'resumeInfo:', this.resumeInfo());
+
       // Use configured output dir, or fall back to library's audiobooks folder
       const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
       const outputDir = configuredDir || this.libraryService.audiobooksPath() || '';
       console.log('[TTS-SETTINGS] Output dir - configured:', configuredDir, 'library:', this.libraryService.audiobooksPath(), 'using:', outputDir);
-      await this.queueService.addJob({
+
+      // Build job config
+      const jobConfig: any = {
         type: 'tts-conversion',
         epubPath: epubPathToUse,
         metadata: meta,
@@ -857,21 +1081,34 @@ export class TtsSettingsComponent implements OnInit {
           useParallel: currentSettings.useParallel || false,
           parallelWorkers: currentSettings.parallelWorkers
         }
-      });
-      this.showSuccessModal.set(true);
+      };
+
+      // Add resume info if user chose to continue
+      if (useResume && this.resumeInfo()) {
+        const info = this.resumeInfo()!;
+        jobConfig.resumeInfo = {
+          sessionId: info.sessionId,
+          sessionDir: info.sessionDir,
+          processDir: info.processDir,
+          totalSentences: info.totalSentences,
+          totalChapters: info.totalChapters,
+          chapters: info.chapters,
+          completedSentences: info.completedSentences,
+          missingSentences: info.missingSentences,
+          missingRanges: info.missingRanges,
+          progressPercent: info.progressPercent
+        };
+        console.log('[TTS-SETTINGS] Adding job with resume info:', jobConfig.resumeInfo);
+      }
+
+      await this.queueService.addJob(jobConfig);
+      this.addedToQueue.set(true);
+      // Reset after 3 seconds
+      setTimeout(() => this.addedToQueue.set(false), 3000);
     } catch (err) {
       console.error('Failed to add to queue:', err);
     } finally {
       this.addingToQueue.set(false);
     }
-  }
-
-  closeSuccessModal(): void {
-    this.showSuccessModal.set(false);
-  }
-
-  goToQueue(): void {
-    this.closeSuccessModal();
-    this.router.navigate(['/queue']);
   }
 }

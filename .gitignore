@@ -50,3 +50,5 @@ dist/*
 CLAUDE.md
 .editorconfig
 resources/bin/*
+summary-*.json
+*.ttf

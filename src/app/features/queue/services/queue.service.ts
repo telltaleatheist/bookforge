@@ -5,7 +5,7 @@
  * Jobs are processed sequentially and automatically.
  */
 
-import { Injectable, inject, signal, computed, DestroyRef, NgZone } from '@angular/core';
+import { Injectable, inject, signal, computed, DestroyRef, NgZone, effect } from '@angular/core';
 import {
   QueueJob,
   JobType,
@@ -15,7 +15,10 @@ import {
   JobResult,
   CreateJobRequest,
   OcrCleanupConfig,
-  TtsConversionConfig
+  TtsConversionConfig,
+  TranslationJobConfig,
+  ResumeCheckResult,
+  TtsResumeInfo
 } from '../models/queue.types';
 import { AIProvider } from '../../../core/models/ai-config.types';
 
@@ -57,6 +60,7 @@ declare global {
       queue?: {
         runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTtsConversion: (jobId: string, epubPath: string, config: any) => Promise<{ success: boolean; data?: any; error?: string }>;
+        runTranslation: (jobId: string, epubPath: string, translationConfig: any, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
         cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
         saveState: (queueState: string) => Promise<{ success: boolean; error?: string }>;
         loadState: () => Promise<{ success: boolean; data?: any; error?: string }>;
@@ -69,8 +73,13 @@ declare global {
         stopConversion: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
         getProgress: (jobId: string) => Promise<{ success: boolean; data?: ParallelAggregatedProgress | null; error?: string }>;
         isActive: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
+        listActive: () => Promise<{ success: boolean; data?: Array<{ jobId: string; progress: ParallelAggregatedProgress; epubPath: string; startTime: number }>; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
         onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number }) => void) => () => void;
+        // Resume support
+        checkResume: (sessionPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
+        resumeConversion: (jobId: string, config: any, resumeInfo: ResumeCheckResult) => Promise<{ success: boolean; data?: any; error?: string }>;
+        buildResumeInfo: (prepInfo: any, settings: any) => Promise<{ success: boolean; data?: TtsResumeInfo; error?: string }>;
       };
       shell?: {
         openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
@@ -80,6 +89,9 @@ declare global {
       };
       epub?: {
         editText: (epubPath: string, chapterId: string, oldText: string, newText: string) => Promise<{ success: boolean; error?: string }>;
+      };
+      fs?: {
+        exists: (filePath: string) => Promise<boolean>;
       };
     };
   }
@@ -133,8 +145,20 @@ export class QueueService {
 
   constructor() {
     this.setupIpcListeners();
-    // Queue is intentionally NOT persisted - clears on app restart
-    // State is maintained in-memory during navigation
+
+    // Load persisted queue state on startup
+    this.loadQueueState();
+
+    // Auto-save queue state when jobs change (debounced)
+    let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+    effect(() => {
+      const jobs = this._jobs();
+      // Debounce saves to avoid excessive writes
+      if (saveTimeout) clearTimeout(saveTimeout);
+      saveTimeout = setTimeout(() => {
+        this.saveQueueState();
+      }, 500);
+    });
 
     this.destroyRef.onDestroy(() => {
       if (this.unsubscribeProgress) {
@@ -220,15 +244,38 @@ export class QueueService {
     this._jobs.update(jobs =>
       jobs.map(job => {
         if (job.id !== jobId) return job;
+
+        // For resume jobs, ensure progress is capped at 100% and uses correct counts
+        let displayProgress = progress.percentage;
+        let displayCompleted = progress.completedSentences;
+        let displayTotal = progress.totalSentences;
+
+        // Cap percentage at 100% (in case of any calculation issues)
+        if (displayProgress > 100) {
+          displayProgress = Math.min(100, displayProgress);
+        }
+
+        // Build progress message
+        let progressMessage = progress.message;
+        if (!progressMessage) {
+          if (job.isResumeJob) {
+            progressMessage = `Resuming: ${progress.activeWorkers} workers (${displayCompleted}/${displayTotal} sentences)`;
+          } else {
+            progressMessage = `${progress.activeWorkers} workers active (${displayCompleted}/${displayTotal} sentences)`;
+          }
+        }
+
         return {
           ...job,
-          progress: progress.percentage,
+          progress: displayProgress,
           status: 'processing' as JobStatus,
-          progressMessage: progress.message || `${progress.activeWorkers} workers active (${progress.completedSentences}/${progress.totalSentences} sentences)`,
+          progressMessage,
           // Map parallel progress to ETA calculation fields
-          chunksCompletedInJob: progress.completedSentences,
-          totalChunksInJob: progress.totalSentences,
-          chunkCompletedAt: progress.completedSentences > (job.chunksCompletedInJob || 0) ? Date.now() : job.chunkCompletedAt,
+          chunksCompletedInJob: displayCompleted,
+          totalChunksInJob: displayTotal,
+          chunkCompletedAt: displayCompleted > (job.chunksCompletedInJob || 0) ? Date.now() : job.chunkCompletedAt,
+          // Session-specific progress for accurate ETA (especially for resume jobs)
+          chunksDoneInSession: (progress as any).completedInSession || displayCompleted,
           // Store per-worker progress for UI display
           parallelWorkers: progress.workers.map(w => ({
             id: w.id,
@@ -287,12 +334,46 @@ export class QueueService {
       config: this.buildJobConfig(request)
     };
 
+    // Handle resume info if provided
+    if (request.resumeInfo && request.type === 'tts-conversion') {
+      job.isResumeJob = true;
+      job.resumeCompletedSentences = request.resumeInfo.completedSentences;
+      job.resumeMissingSentences = request.resumeInfo.missingSentences;
+
+      // Store resume info in config
+      const config = job.config as TtsConversionConfig;
+      if (config) {
+        config.resumeInfo = {
+          sessionId: request.resumeInfo.sessionId!,
+          sessionDir: request.resumeInfo.sessionDir!,
+          processDir: request.resumeInfo.processDir!,
+          totalSentences: request.resumeInfo.totalSentences!,
+          totalChapters: request.resumeInfo.totalChapters!,
+          chapters: request.resumeInfo.chapters || [],
+          language: config.language,
+          voice: config.fineTuned,
+          ttsEngine: config.ttsEngine,
+          createdAt: new Date().toISOString()
+        };
+        // Also store the missing ranges for the parallel bridge
+        (config as any).missingRanges = request.resumeInfo.missingRanges;
+      }
+
+      console.log('[QUEUE] Resume job added:', {
+        jobId: job.id,
+        completedSentences: job.resumeCompletedSentences,
+        missingSentences: job.resumeMissingSentences,
+        sessionId: request.resumeInfo.sessionId
+      });
+    }
+
     console.log('[QUEUE] Job added:', {
       jobId: job.id,
       type: job.type,
       config: job.config,
       metadata: job.metadata,
-      'metadata.outputFilename': job.metadata?.outputFilename
+      'metadata.outputFilename': job.metadata?.outputFilename,
+      isResume: job.isResumeJob
     });
 
     this._jobs.update(jobs => [...jobs, job]);
@@ -501,8 +582,34 @@ export class QueueService {
   }
 
   /**
-   * Reorder jobs via drag-and-drop
+   * Reorder jobs via drag-and-drop using job IDs
+   * This correctly handles filtered views (activeJobs vs full jobs array)
    * Only pending jobs can be reordered
+   */
+  reorderJobsById(fromId: string, toId: string): boolean {
+    const jobs = this._jobs();
+    const fromIndex = jobs.findIndex(j => j.id === fromId);
+    let toIndex = jobs.findIndex(j => j.id === toId);
+
+    if (fromIndex === -1 || toIndex === -1) return false;
+    if (fromIndex === toIndex) return false;
+
+    const job = jobs[fromIndex];
+    if (job.status !== 'pending') return false;
+
+    const newJobs = [...jobs];
+    newJobs.splice(fromIndex, 1);
+    // After removal, indices shift - recalculate toIndex
+    if (fromIndex < toIndex) {
+      toIndex--;
+    }
+    newJobs.splice(toIndex, 0, job);
+    this._jobs.set(newJobs);
+    return true;
+  }
+
+  /**
+   * @deprecated Use reorderJobsById instead - this has issues with filtered views
    */
   reorderJobs(fromIndex: number, toIndex: number): boolean {
     const jobs = this._jobs();
@@ -604,6 +711,35 @@ export class QueueService {
           }
         });
         await electron.queue.runOcrCleanup(job.id, job.epubPath, config.aiModel, aiConfig);
+      } else if (job.type === 'translation') {
+        const config = job.config as TranslationJobConfig | undefined;
+        if (!config) {
+          throw new Error('Translation configuration required');
+        }
+        // Build AI config from per-job settings
+        const aiConfig: AIProviderConfig = {
+          provider: config.aiProvider,
+          ollama: config.aiProvider === 'ollama' ? {
+            baseUrl: config.ollamaBaseUrl || 'http://localhost:11434',
+            model: config.aiModel
+          } : undefined,
+          claude: config.aiProvider === 'claude' ? {
+            apiKey: config.claudeApiKey || '',
+            model: config.aiModel
+          } : undefined,
+          openai: config.aiProvider === 'openai' ? {
+            apiKey: config.openaiApiKey || '',
+            model: config.aiModel
+          } : undefined
+        };
+        const translationConfig = {
+          chunkSize: config.chunkSize
+        };
+        console.log('[QUEUE] Calling runTranslation with:', {
+          jobId: job.id,
+          model: config.aiModel
+        });
+        await electron.queue.runTranslation(job.id, job.epubPath, translationConfig, aiConfig);
       } else if (job.type === 'tts-conversion') {
         const config = job.config as TtsConversionConfig | undefined;
         if (!config) {
@@ -631,9 +767,44 @@ export class QueueService {
           console.log(`[QUEUE] Output dir from config: '${config.outputDir}'`);
           console.log(`[QUEUE] job.metadata:`, job.metadata);
           console.log(`[QUEUE] config.outputFilename:`, config.outputFilename);
-          await electron.parallelTts.startConversion(job.id, {
+          console.log(`[QUEUE] isResumeJob:`, job.isResumeJob);
+
+          // Prefer processed epubs in order: translated+cleaned > translated > cleaned > original
+          let epubPathForTts = job.epubPath;
+          if (job.outputPath) {
+            // Job has an explicit output path (e.g., from chained workflow)
+            epubPathForTts = job.outputPath;
+            console.log(`[QUEUE] Using job.outputPath for TTS: ${epubPathForTts}`);
+          } else if (electron.fs?.exists) {
+            // Check for processed EPUBs in priority order
+            const basePath = job.epubPath.replace(/\.epub$/i, '');
+            const candidates = [
+              `${basePath}_translated_cleaned.epub`,  // Translated + cleaned (best)
+              `${basePath}_translated.epub`,           // Translated only
+              `${basePath}_cleaned.epub`               // Cleaned only
+            ];
+            let foundPath: string | null = null;
+            for (const candidatePath of candidates) {
+              try {
+                if (await electron.fs.exists(candidatePath)) {
+                  foundPath = candidatePath;
+                  break;
+                }
+              } catch {
+                // Continue checking
+              }
+            }
+            if (foundPath) {
+              epubPathForTts = foundPath;
+              console.log(`[QUEUE] Found processed epub, using: ${epubPathForTts}`);
+            } else {
+              console.log(`[QUEUE] No processed epub found, using original: ${epubPathForTts}`);
+            }
+          }
+
+          const parallelConfig = {
             workerCount,
-            epubPath: job.epubPath,
+            epubPath: epubPathForTts,
             outputDir: config.outputDir || '',
             parallelMode,
             settings: {
@@ -657,10 +828,53 @@ export class QueueService {
               coverPath: job.metadata?.coverPath,
               outputFilename: job.metadata?.outputFilename || config.outputFilename
             }
-          });
+          };
+
+          // Check if this is a resume job
+          if (job.isResumeJob && config.resumeInfo) {
+            // Build resume check result from stored info
+            const resumeCheckResult: ResumeCheckResult = {
+              success: true,
+              sessionId: config.resumeInfo.sessionId,
+              sessionDir: config.resumeInfo.sessionDir,
+              processDir: config.resumeInfo.processDir,
+              totalSentences: config.resumeInfo.totalSentences,
+              totalChapters: config.resumeInfo.totalChapters,
+              completedSentences: job.resumeCompletedSentences,
+              missingSentences: job.resumeMissingSentences,
+              missingRanges: (config as any).missingRanges,
+              chapters: config.resumeInfo.chapters
+            };
+
+            console.log(`[QUEUE] Resuming TTS conversion from ${job.resumeCompletedSentences} sentences`);
+            await electron.parallelTts.resumeConversion(job.id, parallelConfig, resumeCheckResult);
+          } else {
+            // Start fresh conversion
+            await electron.parallelTts.startConversion(job.id, parallelConfig);
+          }
         } else {
-          // Use sequential TTS conversion
-          await electron.queue.runTtsConversion(job.id, job.epubPath, config);
+          // Use sequential TTS conversion (also check for translated/cleaned epub)
+          let seqEpubPath = job.epubPath;
+          if (job.outputPath) {
+            seqEpubPath = job.outputPath;
+          } else if (electron.fs?.exists) {
+            const basePath = job.epubPath.replace(/\.epub$/i, '');
+            const candidates = [
+              `${basePath}_translated_cleaned.epub`,
+              `${basePath}_translated.epub`,
+              `${basePath}_cleaned.epub`
+            ];
+            for (const candidatePath of candidates) {
+              try {
+                if (await electron.fs.exists(candidatePath)) {
+                  seqEpubPath = candidatePath;
+                  console.log(`[QUEUE] Sequential TTS: using processed epub: ${seqEpubPath}`);
+                  break;
+                }
+              } catch { /* continue checking */ }
+            }
+          }
+          await electron.queue.runTtsConversion(job.id, seqEpubPath, config);
         }
       }
     } catch (err) {
@@ -684,7 +898,7 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | undefined {
+  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | undefined {
     if (request.type === 'ocr-cleanup') {
       const config = request.config as Partial<OcrCleanupConfig>;
       if (!config?.aiProvider || !config?.aiModel) {
@@ -700,6 +914,20 @@ export class QueueService {
         // Detailed cleanup mode settings
         useDetailedCleanup: config.useDetailedCleanup,
         deletedBlockExamples: config.deletedBlockExamples
+      };
+    } else if (request.type === 'translation') {
+      const config = request.config as Partial<TranslationJobConfig>;
+      if (!config?.aiProvider || !config?.aiModel) {
+        return undefined; // AI provider and model are required
+      }
+      return {
+        type: 'translation',
+        chunkSize: config.chunkSize,
+        aiProvider: config.aiProvider,
+        aiModel: config.aiModel,
+        ollamaBaseUrl: config.ollamaBaseUrl,
+        claudeApiKey: config.claudeApiKey,
+        openaiApiKey: config.openaiApiKey
       };
     } else if (request.type === 'tts-conversion') {
       const config = request.config as TtsConversionConfig;
@@ -729,5 +957,164 @@ export class QueueService {
 
   private generateId(): string {
     return `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  /**
+   * Refresh queue state by checking for active backend jobs.
+   * Used to re-sync UI after app rebuild when jobs are still running in background.
+   */
+  async refreshFromBackend(): Promise<void> {
+    const electron = window.electron;
+    if (!electron?.parallelTts?.listActive) {
+      console.log('[QUEUE] No parallelTts.listActive available');
+      return;
+    }
+
+    try {
+      const result = await electron.parallelTts.listActive();
+      if (!result.success || !result.data) {
+        console.log('[QUEUE] No active sessions found');
+        return;
+      }
+
+      const activeSessions = result.data;
+      console.log(`[QUEUE] Found ${activeSessions.length} active backend sessions`);
+
+      for (const session of activeSessions) {
+        // Check if we have this job in our queue
+        const existingJob = this._jobs().find(j => j.id === session.jobId);
+
+        if (existingJob) {
+          // Update existing job with current progress
+          this._jobs.update(jobs =>
+            jobs.map(j => {
+              if (j.id !== session.jobId) return j;
+              return {
+                ...j,
+                status: 'processing' as JobStatus,
+                progress: session.progress.percentage,
+                progressMessage: session.progress.message,
+                parallelWorkers: session.progress.workers?.map(w => ({
+                  id: w.id,
+                  sentenceStart: w.sentenceStart,
+                  sentenceEnd: w.sentenceEnd,
+                  completedSentences: w.completedSentences,
+                  status: w.status
+                })),
+                startedAt: new Date(session.startTime)
+              };
+            })
+          );
+          this._currentJobId.set(session.jobId);
+          this._isRunning.set(true);
+          console.log(`[QUEUE] Updated existing job ${session.jobId} with progress ${session.progress.percentage}%`);
+        } else {
+          // Create a placeholder job for the orphaned session
+          const filename = session.epubPath.split('/').pop() || 'Unknown';
+          const newJob: QueueJob = {
+            id: session.jobId,
+            type: 'tts-conversion',
+            epubPath: session.epubPath,
+            epubFilename: filename,
+            status: 'processing',
+            progress: session.progress.percentage,
+            progressMessage: session.progress.message,
+            parallelWorkers: session.progress.workers?.map(w => ({
+              id: w.id,
+              sentenceStart: w.sentenceStart,
+              sentenceEnd: w.sentenceEnd,
+              completedSentences: w.completedSentences,
+              status: w.status
+            })),
+            addedAt: new Date(session.startTime),
+            startedAt: new Date(session.startTime),
+            metadata: {
+              title: filename.replace(/\.epub$/i, '').replace(/_/g, ' ')
+            }
+          };
+          this._jobs.update(jobs => [...jobs, newJob]);
+          this._currentJobId.set(session.jobId);
+          this._isRunning.set(true);
+          console.log(`[QUEUE] Created placeholder job for orphaned session ${session.jobId}`);
+        }
+      }
+
+      if (activeSessions.length > 0) {
+        console.log('[QUEUE] Refresh complete - queue is now synced with backend');
+      }
+    } catch (err) {
+      console.error('[QUEUE] Error refreshing from backend:', err);
+    }
+  }
+
+  /**
+   * Save queue state to disk for persistence across app restarts/rebuilds
+   */
+  private async saveQueueState(): Promise<void> {
+    const electron = window.electron;
+    if (!electron?.queue?.saveState) return;
+
+    try {
+      // Serialize jobs, converting Date objects to ISO strings
+      const jobs = this._jobs().map(job => ({
+        ...job,
+        addedAt: job.addedAt instanceof Date ? job.addedAt.toISOString() : job.addedAt,
+        startedAt: job.startedAt instanceof Date ? job.startedAt.toISOString() : job.startedAt,
+        completedAt: job.completedAt instanceof Date ? job.completedAt.toISOString() : job.completedAt
+      }));
+
+      const state = {
+        jobs,
+        isRunning: this._isRunning(),
+        currentJobId: this._currentJobId(),
+        savedAt: new Date().toISOString()
+      };
+
+      await electron.queue.saveState(JSON.stringify(state, null, 2));
+      console.log(`[QUEUE] Saved ${jobs.length} jobs to disk`);
+    } catch (err) {
+      console.error('[QUEUE] Error saving queue state:', err);
+    }
+  }
+
+  /**
+   * Load queue state from disk on startup
+   */
+  private async loadQueueState(): Promise<void> {
+    const electron = window.electron;
+    if (!electron?.queue?.loadState) return;
+
+    try {
+      const result = await electron.queue.loadState();
+      if (!result.success || !result.data) {
+        console.log('[QUEUE] No saved queue state found');
+        return;
+      }
+
+      const state = result.data;
+      console.log(`[QUEUE] Loading ${state.jobs?.length || 0} jobs from disk`);
+
+      if (state.jobs && Array.isArray(state.jobs)) {
+        // Deserialize jobs, converting ISO strings back to Date objects
+        const jobs: QueueJob[] = state.jobs.map((job: any) => ({
+          ...job,
+          addedAt: new Date(job.addedAt),
+          startedAt: job.startedAt ? new Date(job.startedAt) : undefined,
+          completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
+          // Reset processing jobs to pending (they were interrupted)
+          status: job.status === 'processing' ? 'pending' : job.status
+        }));
+
+        this._jobs.set(jobs);
+
+        // Don't restore isRunning - user should manually restart
+        // this._isRunning.set(state.isRunning || false);
+
+        // Check for active backend jobs and sync
+        await this.refreshFromBackend();
+      }
+    } catch (err) {
+      console.error('[QUEUE] Error loading queue state:', err);
+    }
   }
 }

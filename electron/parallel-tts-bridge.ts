@@ -17,6 +17,7 @@ import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
+import * as logger from './audiobook-logger';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -38,6 +39,12 @@ export interface WorkerState {
   // Chapter mode
   chapterStart?: number;  // 1-indexed (for chapter mode)
   chapterEnd?: number;    // 1-indexed (for chapter mode)
+  // Resume mode - track actual TTS conversions (not skipped sentences)
+  actualConversions?: number;  // Count of actual TTS conversions done
+  // Watchdog tracking
+  startedAt?: number;          // Timestamp when worker started
+  lastProgressAt?: number;     // Timestamp of last progress update
+  hasShownProgress?: boolean;  // Has worker shown any converting progress
 }
 
 export interface PrepInfo {
@@ -96,6 +103,7 @@ export interface AggregatedProgress {
   phase: 'preparing' | 'converting' | 'assembling' | 'complete' | 'error';
   totalSentences: number;
   completedSentences: number;
+  completedInSession: number;  // Sentences completed in THIS session (for ETA calculation)
   percentage: number;
   activeWorkers: number;
   workers: WorkerState[];
@@ -118,6 +126,22 @@ export interface ParallelConversionResult {
 const DEFAULT_E2A_PATH = '/Users/telltale/Projects/ebook2audiobook';
 let e2aPath = DEFAULT_E2A_PATH;
 let mainWindow: BrowserWindow | null = null;
+let loggerInitialized = false;
+
+// Watchdog configuration - detect stuck workers
+const WORKER_STARTUP_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes to start showing progress
+const WORKER_PROGRESS_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes without progress = stuck
+
+/**
+ * Initialize the logger for parallel TTS bridge
+ */
+export async function initializeLogger(libraryPath: string): Promise<void> {
+  if (!loggerInitialized) {
+    await logger.initializeLogger(libraryPath);
+    loggerInitialized = true;
+    await logger.log('INFO', 'system', 'Parallel TTS bridge logger initialized');
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // State
@@ -131,6 +155,12 @@ interface ConversionSession {
   startTime: number;
   cancelled: boolean;
   assemblyProcess: ChildProcess | null;
+  // Resume job tracking
+  isResumeJob?: boolean;
+  baselineCompleted?: number;  // Sentences already done before resume started
+  totalMissing?: number;       // Sentences to process in this resume session
+  // Watchdog
+  watchdogTimer?: NodeJS.Timeout;
 }
 
 const activeSessions: Map<string, ConversionSession> = new Map();
@@ -395,23 +425,19 @@ function startWorker(
   const settings = config.settings;
   const isChapterMode = config.parallelMode === 'chapters';
 
+  // Workers with --worker_mode load all data from session-state.json
+  // They do NOT need --ebook because prep phase already saved everything
+  // This eliminates race conditions when running multiple workers in parallel
   const args = [
     'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
     appPath,
     '--headless',
-    '--ebook', config.epubPath,
-    '--output_dir', config.outputDir,
     '--session', prepInfo.sessionId,
     '--device', settings.device === 'gpu' ? 'cuda' : settings.device,
-    '--language', settings.language,
-    '--tts_engine', settings.ttsEngine,
-    '--fine_tuned', settings.fineTuned,
-    '--temperature', settings.temperature.toString(),
-    '--top_p', settings.topP.toString(),
-    '--top_k', settings.topK.toString(),
-    '--repetition_penalty', settings.repetitionPenalty.toString(),
-    '--speed', settings.speed.toString(),
+    '--output_dir', config.outputDir,
     '--worker_mode'
+    // Note: language, tts_engine, and other settings are loaded from session-state.json
+    // We still pass device to allow per-worker device override if needed
   ];
 
   // Add range args based on mode
@@ -433,17 +459,32 @@ function startWorker(
   console.log(`[PARALLEL-TTS] Worker ${workerId} starting: ${rangeDesc}`);
   console.log(`[PARALLEL-TTS] Worker ${workerId} settings: engine=${settings.ttsEngine}, voice=${settings.fineTuned}, device=${settings.device}`);
 
+  // Log to file
+  logger.log('INFO', session.jobId, `Worker ${workerId} starting`, {
+    range: rangeDesc,
+    engine: settings.ttsEngine,
+    voice: settings.fineTuned,
+    device: settings.device
+  }).catch(() => {}); // Don't fail if logging fails
+
   const workerProcess = spawn('conda', args, {
     cwd: e2aPath,
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
     shell: true
   });
 
-  // Update worker state with PID
+  // Update worker state with PID and timestamps
   const worker = session.workers[workerId];
   worker.process = workerProcess;
   worker.pid = workerProcess.pid;
   worker.status = 'running';
+  worker.startedAt = Date.now();
+  worker.hasShownProgress = false;
+
+  // Initialize actual conversions counter
+  worker.actualConversions = 0;
+
+  logger.log('INFO', session.jobId, `Worker ${workerId} spawned`, { pid: workerProcess.pid }).catch(() => {});
 
   // Parse worker progress from stdout
   workerProcess.stdout?.on('data', (data: Buffer) => {
@@ -452,12 +493,29 @@ function startWorker(
       if (!line.trim()) continue;
       console.log(`[WORKER ${workerId}]`, line.trim());
 
+      // For resume jobs, track actual TTS conversions via "Recovering missing file sentence" lines
+      if (session.isResumeJob && line.includes('**Recovering missing file sentence')) {
+        worker.actualConversions = (worker.actualConversions || 0) + 1;
+        emitProgress(session);
+      }
+
       // Parse progress: "Converting X.XX%: : Y/Z"
       const progressMatch = line.match(/Converting\s+([\d.]+)%.*?(\d+)\/(\d+)/i);
       if (progressMatch) {
         const current = parseInt(progressMatch[2]);
         worker.currentSentence = worker.sentenceStart + current;
-        worker.completedSentences = current;
+        // For non-resume jobs, use the raw count; for resume jobs, we use actualConversions
+        if (!session.isResumeJob) {
+          worker.completedSentences = current;
+        }
+        // Update watchdog tracking
+        worker.lastProgressAt = Date.now();
+        if (!worker.hasShownProgress) {
+          worker.hasShownProgress = true;
+          logger.log('INFO', session.jobId, `Worker ${workerId} started converting`, {
+            startupTime: Math.round((Date.now() - (worker.startedAt || Date.now())) / 1000)
+          }).catch(() => {});
+        }
         emitProgress(session);
       }
     }
@@ -469,36 +527,66 @@ function startWorker(
       if (!line.trim()) continue;
       console.log(`[WORKER ${workerId} STDERR]`, line.trim());
 
+      // For resume jobs, track actual TTS conversions via "Recovering missing file sentence" lines
+      if (session.isResumeJob && line.includes('**Recovering missing file sentence')) {
+        worker.actualConversions = (worker.actualConversions || 0) + 1;
+        emitProgress(session);
+      }
+
       // Parse progress from stderr too - e2a often outputs progress to stderr
       const progressMatch = line.match(/Converting\s+([\d.]+)%.*?(\d+)\/(\d+)/i);
       if (progressMatch) {
         const current = parseInt(progressMatch[2]);
         worker.currentSentence = worker.sentenceStart + current;
-        worker.completedSentences = current;
+        // For non-resume jobs, use the raw count; for resume jobs, we use actualConversions
+        if (!session.isResumeJob) {
+          worker.completedSentences = current;
+        }
+        // Update watchdog tracking
+        worker.lastProgressAt = Date.now();
+        if (!worker.hasShownProgress) {
+          worker.hasShownProgress = true;
+          logger.log('INFO', session.jobId, `Worker ${workerId} started converting`, {
+            startupTime: Math.round((Date.now() - (worker.startedAt || Date.now())) / 1000)
+          }).catch(() => {});
+        }
         emitProgress(session);
       }
     }
   });
 
   workerProcess.on('close', (code) => {
-    console.log(`[PARALLEL-TTS] Worker ${workerId} exited with code ${code}`);
+    const duration = worker.startedAt ? Math.round((Date.now() - worker.startedAt) / 1000) : 0;
+    console.log(`[PARALLEL-TTS] Worker ${workerId} exited with code ${code} after ${duration}s`);
     worker.process = null;
 
     if (session.cancelled) {
       worker.status = 'error';
       worker.error = 'Cancelled';
+      logger.log('INFO', session.jobId, `Worker ${workerId} cancelled`, { duration }).catch(() => {});
       return;
     }
 
     if (code === 0) {
       worker.status = 'complete';
       worker.completedSentences = worker.sentenceEnd - worker.sentenceStart + 1;
+      logger.log('INFO', session.jobId, `Worker ${workerId} completed`, {
+        duration,
+        sentences: worker.completedSentences
+      }).catch(() => {});
       emitProgress(session);
       checkAllWorkersComplete(session);
     } else {
       worker.status = 'error';
       worker.error = `Worker exited with code ${code}`;
+      logger.logError(session.jobId, `Worker ${workerId} failed`, new Error(`Exit code ${code}`), {
+        duration,
+        hadProgress: worker.hasShownProgress,
+        lastSentence: worker.currentSentence
+      }).catch(() => {});
       emitProgress(session);
+      // checkAllWorkersComplete will handle retries
+      checkAllWorkersComplete(session);
     }
   });
 
@@ -551,6 +639,8 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
   if (!stillRunning && !retriesInProgress && allComplete) {
     // All workers done - run assembly
     console.log('[PARALLEL-TTS] All workers complete, starting assembly');
+    await logger.log('INFO', session.jobId, 'All workers complete, starting assembly');
+    stopWatchdog(session);
     try {
       const outputPath = await runAssembly(session);
       emitComplete(session, true, outputPath);
@@ -558,6 +648,84 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       emitComplete(session, false, undefined, `Assembly failed: ${err}`);
     }
     activeSessions.delete(session.jobId);
+  }
+}
+
+/**
+ * Start the watchdog timer for a session
+ * Checks every 30 seconds for stuck workers
+ */
+function startWatchdog(session: ConversionSession): void {
+  if (session.watchdogTimer) return;
+
+  console.log(`[PARALLEL-TTS] Watchdog started for job ${session.jobId} (checking every 30s, timeout: ${WORKER_STARTUP_TIMEOUT_MS / 1000 / 60}min)`);
+
+  session.watchdogTimer = setInterval(() => {
+    const runningWorkers = session.workers.filter(w => w.status === 'running');
+    const elapsed = runningWorkers.map(w => w.startedAt ? Math.round((Date.now() - w.startedAt) / 1000) : 0);
+    console.log(`[WATCHDOG] Checking ${runningWorkers.length} workers, elapsed: ${elapsed.map(e => `${e}s`).join(', ')}`);
+    checkForStuckWorkers(session);
+  }, 30000); // Check every 30 seconds
+}
+
+/**
+ * Stop the watchdog timer
+ */
+function stopWatchdog(session: ConversionSession): void {
+  if (session.watchdogTimer) {
+    clearInterval(session.watchdogTimer);
+    session.watchdogTimer = undefined;
+  }
+}
+
+/**
+ * Check for workers that appear stuck (no progress for too long)
+ */
+async function checkForStuckWorkers(session: ConversionSession): Promise<void> {
+  if (session.cancelled) return;
+
+  const now = Date.now();
+  const stuckWorkers: WorkerState[] = [];
+
+  for (const worker of session.workers) {
+    if (worker.status !== 'running') continue;
+
+    // Check if worker has been running but never showed progress
+    if (!worker.hasShownProgress && worker.startedAt) {
+      const timeSinceStart = now - worker.startedAt;
+      const minutesElapsed = Math.round(timeSinceStart / 1000 / 60);
+      const timeoutMinutes = Math.round(WORKER_STARTUP_TIMEOUT_MS / 1000 / 60);
+      if (timeSinceStart > WORKER_STARTUP_TIMEOUT_MS) {
+        console.error(`[WATCHDOG] Worker ${worker.id} STUCK - ${minutesElapsed}min > ${timeoutMinutes}min timeout, killing...`);
+        await logger.logError(session.jobId, `Worker ${worker.id} stuck - no progress after startup`,
+          new Error(`No progress for ${Math.round(timeSinceStart / 1000 / 60)} minutes`),
+          { workerId: worker.id, pid: worker.pid, sentenceRange: `${worker.sentenceStart}-${worker.sentenceEnd}` });
+        stuckWorkers.push(worker);
+      }
+    }
+    // Check if worker was making progress but stopped
+    else if (worker.hasShownProgress && worker.lastProgressAt) {
+      const timeSinceProgress = now - worker.lastProgressAt;
+      if (timeSinceProgress > WORKER_PROGRESS_TIMEOUT_MS) {
+        console.error(`[PARALLEL-TTS] Worker ${worker.id} stuck - no progress for ${Math.round(timeSinceProgress / 1000 / 60)} minutes`);
+        await logger.logError(session.jobId, `Worker ${worker.id} stuck - stopped making progress`,
+          new Error(`No progress for ${Math.round(timeSinceProgress / 1000 / 60)} minutes`),
+          { workerId: worker.id, pid: worker.pid, lastProgress: worker.completedSentences });
+        stuckWorkers.push(worker);
+      }
+    }
+  }
+
+  // Kill stuck workers so they can be retried
+  for (const worker of stuckWorkers) {
+    if (worker.process) {
+      console.log(`[PARALLEL-TTS] Killing stuck worker ${worker.id} (PID: ${worker.pid})`);
+      await logger.log('WARN', session.jobId, `Killing stuck worker ${worker.id}`, { pid: worker.pid });
+      worker.process.kill('SIGTERM');
+      worker.status = 'error';
+      worker.error = 'Worker stuck - no progress';
+      // The process close handler will trigger retry logic
+    }
   }
 }
 
@@ -606,6 +774,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       phase: 'assembling',
       totalSentences: prepInfo.totalSentences,
       completedSentences: prepInfo.totalSentences,
+      completedInSession: session.isResumeJob ? (session.totalMissing || 0) : prepInfo.totalSentences,
       percentage: 95,
       activeWorkers: 0,
       workers: session.workers,
@@ -629,7 +798,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--device', settings.device === 'gpu' ? 'cuda' : settings.device,
     '--language', settings.language,
     '--tts_engine', settings.ttsEngine,  // Required for session setup even in assembly mode
-    '--assemble_only'  // Skip TTS, just combine existing sentence audio files
+    '--assemble_only',  // Skip TTS, just combine existing sentence audio files
+    '--no_split'        // Don't split into multiple parts - create single file
   ];
 
   console.log('[PARALLEL-TTS] Running assembly:', args.join(' '));
@@ -973,21 +1143,54 @@ function serializeWorkers(workers: WorkerState[]): Omit<WorkerState, 'process'>[
 const progressHistory: Map<string, { completedSentences: number; timestamp: number }[]> = new Map();
 const ETA_SAMPLE_WINDOW = 30000; // Use last 30 seconds of data for ETA calculation
 const MIN_SAMPLES_FOR_ETA = 3; // Need at least 3 data points before showing ETA
+const MIN_SESSION_TIME_FOR_ETA = 10; // Wait at least 10 seconds before showing ETA
 
 function emitProgress(session: ConversionSession): void {
   if (!mainWindow || !session.prepInfo) return;
 
-  const totalCompleted = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
   const activeWorkers = session.workers.filter(w => w.status === 'running').length;
-  const percentage = (totalCompleted / session.prepInfo.totalSentences) * 100;
-
-  // Track progress history for this session
   const now = Date.now();
+  const sessionElapsedSeconds = (now - session.startTime) / 1000;
+
+  let totalCompleted: number;
+  let sentencesDoneInSession: number; // Sentences processed in THIS session only
+  let percentage: number;
+  let remainingSentences: number;
+
+  if (session.isResumeJob && session.baselineCompleted !== undefined) {
+    // For resume jobs, use actualConversions count (from "Recovering missing file" lines)
+    // This gives us the actual number of TTS conversions done, not skipped sentences
+    const actualNewConversions = session.workers.reduce(
+      (sum, w) => sum + (w.actualConversions || 0), 0
+    );
+
+    totalCompleted = session.baselineCompleted + actualNewConversions;
+    sentencesDoneInSession = actualNewConversions; // Only count new work in this session
+    percentage = Math.min(100, (totalCompleted / session.prepInfo.totalSentences) * 100);
+    remainingSentences = session.prepInfo.totalSentences - totalCompleted;
+
+    // Debug logging for resume jobs (every 30 seconds)
+    if (Math.floor(sessionElapsedSeconds) % 30 === 0 && actualNewConversions > 0) {
+      const rate = actualNewConversions / sessionElapsedSeconds;
+      const etaMinutes = remainingSentences / rate / 60;
+      console.log(`[PARALLEL-TTS] Resume: ${actualNewConversions} new in ${Math.round(sessionElapsedSeconds)}s ` +
+        `(${rate.toFixed(3)}/s), ${remainingSentences} remaining, ETA: ${etaMinutes.toFixed(1)} min`);
+    }
+  } else {
+    // Normal (non-resume) job - use direct worker counts
+    totalCompleted = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
+    sentencesDoneInSession = totalCompleted; // For fresh jobs, all work is in this session
+    percentage = (totalCompleted / session.prepInfo.totalSentences) * 100;
+    remainingSentences = session.prepInfo.totalSentences - totalCompleted;
+  }
+
+  // Track progress history for this session (for sliding window ETA calculation)
   if (!progressHistory.has(session.jobId)) {
     progressHistory.set(session.jobId, []);
   }
   const history = progressHistory.get(session.jobId)!;
-  history.push({ completedSentences: totalCompleted, timestamp: now });
+  // Store sentencesDoneInSession (not totalCompleted) so window-based rate is correct
+  history.push({ completedSentences: sentencesDoneInSession, timestamp: now });
 
   // Remove old samples outside the window
   const windowStart = now - ETA_SAMPLE_WINDOW;
@@ -995,17 +1198,43 @@ function emitProgress(session: ConversionSession): void {
     history.shift();
   }
 
-  // Calculate ETA using sentence completion rate over the sample window
+  // Calculate ETA using the better of two methods:
+  // 1. Session-wide rate: sentencesDoneInSession / sessionElapsedSeconds
+  // 2. Window-based rate: sentences in last 30 seconds / 30 seconds
+  // Use session-wide for stability, window-based for responsiveness once we have enough data
   let estimatedRemaining = 0;
-  if (history.length >= MIN_SAMPLES_FOR_ETA && totalCompleted > 0) {
-    const oldestSample = history[0];
-    const sentencesInWindow = totalCompleted - oldestSample.completedSentences;
-    const timeInWindow = (now - oldestSample.timestamp) / 1000; // seconds
 
-    if (sentencesInWindow > 0 && timeInWindow > 0) {
-      const sentencesPerSecond = sentencesInWindow / timeInWindow;
-      const remainingSentences = session.prepInfo.totalSentences - totalCompleted;
-      estimatedRemaining = Math.round(remainingSentences / sentencesPerSecond);
+  if (sentencesDoneInSession > 0 && sessionElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
+    // Primary: Use session-wide rate (most accurate for overall progress)
+    const sessionRate = sentencesDoneInSession / sessionElapsedSeconds;
+    estimatedRemaining = Math.round(remainingSentences / sessionRate);
+
+    // If we have enough window data, blend with window rate for responsiveness
+    if (history.length >= MIN_SAMPLES_FOR_ETA) {
+      const oldestSample = history[0];
+      const sentencesInWindow = sentencesDoneInSession - oldestSample.completedSentences;
+      const timeInWindow = (now - oldestSample.timestamp) / 1000;
+
+      if (sentencesInWindow > 0 && timeInWindow > 5) {
+        const windowRate = sentencesInWindow / timeInWindow;
+        // Blend: 70% session-wide, 30% recent window (prefer stability)
+        const blendedRate = sessionRate * 0.7 + windowRate * 0.3;
+        estimatedRemaining = Math.round(remainingSentences / blendedRate);
+      }
+    }
+  }
+
+  // Calculate rate for display
+  let rateDisplay = '';
+  if (sentencesDoneInSession > 0 && sessionElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
+    const rate = sentencesDoneInSession / sessionElapsedSeconds;
+    if (rate >= 1) {
+      rateDisplay = ` (${rate.toFixed(1)}/s)`;
+    } else if (rate >= 0.1) {
+      rateDisplay = ` (${(rate * 60).toFixed(1)}/min)`;
+    } else {
+      const secsPerSentence = 1 / rate;
+      rateDisplay = ` (${secsPerSentence.toFixed(0)}s each)`;
     }
   }
 
@@ -1013,11 +1242,14 @@ function emitProgress(session: ConversionSession): void {
     phase: 'converting',
     totalSentences: session.prepInfo.totalSentences,
     completedSentences: totalCompleted,
+    completedInSession: sentencesDoneInSession, // For accurate ETA calculation
     percentage: Math.round(percentage),
     activeWorkers,
     workers: serializeWorkers(session.workers) as WorkerState[],
     estimatedRemaining,
-    message: `Processing with ${activeWorkers} workers (${percentage.toFixed(1)}%)`
+    message: session.isResumeJob
+      ? `Resuming: ${sentencesDoneInSession} new${rateDisplay}`
+      : `${activeWorkers} workers${rateDisplay}`
   };
 
   mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
@@ -1031,15 +1263,30 @@ function emitComplete(
 ): void {
   if (!mainWindow || !session.prepInfo) return;
 
-  // Clean up progress history for this session
+  // Clean up
   progressHistory.delete(session.jobId);
+  stopWatchdog(session);
 
   const duration = Math.round((Date.now() - session.startTime) / 1000);
+
+  // Log completion
+  if (success) {
+    logger.completeJob(session.jobId, outputPath).catch(() => {});
+    logger.log('INFO', session.jobId, 'Conversion complete', { duration, outputPath }).catch(() => {});
+  } else {
+    logger.failJob(session.jobId, error || 'Unknown error').catch(() => {});
+  }
+
+  // Calculate total done in this session
+  const sessionDone = session.isResumeJob
+    ? session.workers.reduce((sum, w) => sum + (w.actualConversions || 0), 0)
+    : session.prepInfo.totalSentences;
 
   const progress: AggregatedProgress = {
     phase: success ? 'complete' : 'error',
     totalSentences: session.prepInfo.totalSentences,
     completedSentences: success ? session.prepInfo.totalSentences : 0,
+    completedInSession: success ? sessionDone : 0,
     percentage: success ? 100 : 0,
     activeWorkers: 0,
     workers: serializeWorkers(session.workers) as WorkerState[],
@@ -1074,10 +1321,22 @@ export async function startParallelConversion(
   console.log(`[PARALLEL-TTS] Output dir from config:`, config.outputDir);
   console.log(`[PARALLEL-TTS] Metadata received:`, JSON.stringify(config.metadata, null, 2));
 
+  // Log job start
+  const bookTitle = config.metadata?.title || path.basename(config.epubPath, '.epub');
+  const author = config.metadata?.author || 'Unknown';
+  await logger.startJob(jobId, bookTitle, author, {
+    workerCount: config.workerCount,
+    parallelMode: config.parallelMode,
+    ttsEngine: config.settings.ttsEngine,
+    voice: config.settings.fineTuned,
+    device: config.settings.device
+  });
+
   // Ensure we have a valid output directory
   if (!config.outputDir || config.outputDir.trim() === '') {
     const error = 'Output directory not configured. Please set the audiobook output folder in Settings.';
     console.error('[PARALLEL-TTS]', error);
+    await logger.failJob(jobId, error);
     return { success: false, error };
   }
 
@@ -1085,9 +1344,15 @@ export async function startParallelConversion(
   let prepInfo: PrepInfo;
   try {
     prepInfo = await prepareSession(config.epubPath, config.settings);
+    await logger.log('INFO', jobId, 'Prep complete', {
+      totalSentences: prepInfo.totalSentences,
+      totalChapters: prepInfo.totalChapters,
+      sessionId: prepInfo.sessionId
+    });
   } catch (err) {
     const error = `Preparation failed: ${err}`;
     console.error('[PARALLEL-TTS]', error);
+    await logger.failJob(jobId, error);
     return { success: false, error };
   }
 
@@ -1154,6 +1419,7 @@ export async function startParallelConversion(
       phase: 'preparing',
       totalSentences: prepInfo.totalSentences,
       completedSentences: 0,
+      completedInSession: 0,
       percentage: 0,
       activeWorkers: 0,
       workers,
@@ -1163,7 +1429,12 @@ export async function startParallelConversion(
     mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
   }
 
-  // Start all workers
+  // Start all workers immediately - no staggering needed!
+  // With the new three-phase architecture:
+  //   Phase 1: --prep_only saves all data to session-state.json (including sentence text)
+  //   Phase 2: --worker_mode loads from session-state.json, does TTS only (NO file operations)
+  //   Phase 3: --assemble_only combines audio files
+  // Workers no longer do any preprocessing, so there are no race conditions.
   for (let i = 0; i < workers.length; i++) {
     const worker = workers[i];
     const range: WorkerRange = isChapterMode
@@ -1171,6 +1442,10 @@ export async function startParallelConversion(
       : { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
     startWorker(session, i, range);
   }
+
+  // Start the watchdog to detect stuck workers
+  startWatchdog(session);
+  await logger.log('INFO', jobId, `Started ${workers.length} workers with watchdog`);
 
   // Return immediately - completion is handled via events
   return new Promise((resolve) => {
@@ -1194,7 +1469,10 @@ export function stopParallelConversion(jobId: string): boolean {
   if (!session) return false;
 
   console.log(`[PARALLEL-TTS] Stopping conversion for job ${jobId}`);
+  logger.log('WARN', jobId, 'Conversion stopped by user').catch(() => {});
+
   session.cancelled = true;
+  stopWatchdog(session);
 
   // Kill all worker processes
   for (const worker of session.workers) {
@@ -1235,10 +1513,16 @@ export function getConversionProgress(jobId: string): AggregatedProgress | null 
     estimatedRemaining = Math.round((100 - percentage) / rate);
   }
 
+  // For this on-demand query, estimate session work from workers
+  const sessionCompleted = session.isResumeJob
+    ? session.workers.reduce((sum, w) => sum + (w.actualConversions || 0), 0)
+    : totalCompleted;
+
   return {
     phase: 'converting',
     totalSentences: session.prepInfo.totalSentences,
     completedSentences: totalCompleted,
+    completedInSession: sessionCompleted,
     percentage,
     activeWorkers,
     workers: session.workers,
@@ -1253,6 +1537,650 @@ export function isConversionActive(jobId: string): boolean {
   return activeSessions.has(jobId);
 }
 
+/**
+ * List all active conversion sessions with their current progress.
+ * Used to re-sync UI after app rebuild.
+ */
+export function listActiveSessions(): Array<{
+  jobId: string;
+  progress: AggregatedProgress;
+  epubPath: string;
+  startTime: number;
+}> {
+  const result: Array<{
+    jobId: string;
+    progress: AggregatedProgress;
+    epubPath: string;
+    startTime: number;
+  }> = [];
+
+  for (const [jobId, session] of activeSessions) {
+    const progress = getConversionProgress(jobId);
+    if (progress) {
+      result.push({
+        jobId,
+        progress,
+        epubPath: session.config.epubPath,
+        startTime: session.startTime
+      });
+    }
+  }
+
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resume Support
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ResumeCheckResult {
+  success: boolean;
+  complete?: boolean;          // All sentences already done
+  error?: string;
+  sessionId?: string;
+  sessionDir?: string;
+  processDir?: string;
+  totalSentences?: number;
+  totalChapters?: number;
+  completedSentences?: number;
+  missingSentences?: number;
+  missingIndices?: number[];
+  missingRanges?: Array<{ start: number; end: number; count: number }>;
+  progressPercent?: number;
+  chapters?: Array<{
+    chapter_num: number;
+    sentence_start: number;
+    sentence_end: number;
+    sentence_count: number;
+  }>;
+  metadata?: { title?: string; creator?: string; language?: string };
+  warnings?: string[];
+}
+
+/**
+ * Normalize a book title for fuzzy matching
+ * Removes punctuation, extra spaces, and converts to lowercase
+ */
+function normalizeTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[''"""\-–—:,\.!?]/g, ' ')  // Replace punctuation with spaces
+    .replace(/\s+/g, ' ')                 // Collapse multiple spaces
+    .trim();
+}
+
+/**
+ * Extract likely book title from folder path
+ * e.g., "Hitler_Redux_-_The_Incredible_History..." -> "hitler redux the incredible history"
+ */
+function extractTitleFromPath(folderPath: string): string {
+  const folderName = path.basename(folderPath);
+  // Remove date suffix and random ID (e.g., "_cleaned_2026-01-23_mkrducfg")
+  const withoutSuffix = folderName.replace(/_cleaned_\d{4}-\d{2}-\d{2}_[a-z0-9]+$/i, '');
+  // Replace underscores with spaces and normalize
+  return normalizeTitle(withoutSuffix.replace(/_/g, ' '));
+}
+
+/**
+ * Find session directory for an epub by scanning e2a's tmp folder
+ * Returns the session directory path if found, or null
+ * Matches by: exact path > same directory > title from metadata > title from path
+ */
+async function findSessionForEpub(epubPath: string): Promise<string | null> {
+  const tmpDir = path.join(e2aPath, 'tmp');
+  const epubFilename = path.basename(epubPath);
+  const epubDir = path.dirname(epubPath);
+  const epubTitleFromPath = extractTitleFromPath(epubDir);
+
+  console.log(`[PARALLEL-TTS] Searching for session matching epub: ${epubPath}`);
+  console.log(`[PARALLEL-TTS] Extracted title from path: "${epubTitleFromPath}"`);
+
+  let bestMatch: { sessionPath: string; state: any; matchType: string } | null = null;
+
+  try {
+    // List all session directories (ebook-{UUID})
+    const sessionDirs = await fs.readdir(tmpDir);
+    console.log(`[PARALLEL-TTS] Found ${sessionDirs.length} session directories`);
+
+    for (const sessionDir of sessionDirs) {
+      if (!sessionDir.startsWith('ebook-')) continue;
+
+      const sessionPath = path.join(tmpDir, sessionDir);
+      const sessionStat = await fs.stat(sessionPath);
+      if (!sessionStat.isDirectory()) continue;
+
+      // List process directories (hash folders)
+      const processDirs = await fs.readdir(sessionPath);
+
+      for (const processDir of processDirs) {
+        const processPath = path.join(sessionPath, processDir);
+        const processStat = await fs.stat(processPath);
+        if (!processStat.isDirectory()) continue;
+
+        // Check for session-state.json
+        const statePath = path.join(processPath, 'session-state.json');
+        try {
+          const stateContent = await fs.readFile(statePath, 'utf-8');
+          const state = JSON.parse(stateContent);
+
+          // Check if this session matches the epub path (exact match)
+          if (state.epub_path === epubPath) {
+            console.log(`[PARALLEL-TTS] Found exact path match: ${sessionPath}`);
+            return sessionPath;
+          }
+
+          // Check if same directory
+          const stateEpubDir = path.dirname(state.epub_path || '');
+          if (stateEpubDir === epubDir) {
+            console.log(`[PARALLEL-TTS] Found directory match: ${sessionPath}`);
+            return sessionPath;
+          }
+
+          // Try matching by metadata title
+          const sessionTitle = state.metadata?.title;
+          if (sessionTitle && epubTitleFromPath) {
+            const normalizedSessionTitle = normalizeTitle(sessionTitle);
+            console.log(`[PARALLEL-TTS] Comparing titles: "${epubTitleFromPath}" vs "${normalizedSessionTitle}"`);
+
+            // Check if titles are similar enough (one contains the other or high overlap)
+            if (normalizedSessionTitle.includes(epubTitleFromPath.substring(0, 20)) ||
+                epubTitleFromPath.includes(normalizedSessionTitle.substring(0, 20))) {
+              console.log(`[PARALLEL-TTS] Found title match: ${sessionPath}`);
+              // This is a good match - save it but keep looking for exact matches
+              if (!bestMatch || bestMatch.matchType !== 'title') {
+                bestMatch = { sessionPath, state, matchType: 'title' };
+              }
+            }
+          }
+
+          // Try matching by path-extracted title
+          const sessionTitleFromPath = extractTitleFromPath(path.dirname(state.epub_path || ''));
+          if (sessionTitleFromPath && epubTitleFromPath) {
+            // Check for significant overlap in the title portions
+            const shorter = epubTitleFromPath.length < sessionTitleFromPath.length ? epubTitleFromPath : sessionTitleFromPath;
+            const longer = epubTitleFromPath.length >= sessionTitleFromPath.length ? epubTitleFromPath : sessionTitleFromPath;
+
+            if (shorter.length > 10 && longer.includes(shorter.substring(0, Math.min(30, shorter.length)))) {
+              console.log(`[PARALLEL-TTS] Found path-title match: ${sessionPath}`);
+              console.log(`[PARALLEL-TTS]   Session path title: "${sessionTitleFromPath}"`);
+              if (!bestMatch) {
+                bestMatch = { sessionPath, state, matchType: 'path-title' };
+              }
+            }
+          }
+        } catch {
+          // No session-state.json or invalid JSON - skip
+          continue;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Error scanning for sessions:', err);
+  }
+
+  if (bestMatch) {
+    console.log(`[PARALLEL-TTS] Using best match (${bestMatch.matchType}): ${bestMatch.sessionPath}`);
+    return bestMatch.sessionPath;
+  }
+
+  console.log(`[PARALLEL-TTS] No matching session found for: ${epubPath}`);
+  return null;
+}
+
+/**
+ * Check if a session can be resumed
+ * Accepts either an epub path (will search for matching session) or a session path
+ * Calls e2a's --resume_session to scan for completed sentences
+ */
+export async function checkResumeStatus(sessionOrEpubPath: string): Promise<ResumeCheckResult> {
+  // If the path looks like an epub, find the session first
+  let sessionPath = sessionOrEpubPath;
+  if (sessionOrEpubPath.toLowerCase().endsWith('.epub')) {
+    const foundSession = await findSessionForEpub(sessionOrEpubPath);
+    if (!foundSession) {
+      console.log('[PARALLEL-TTS] No session found for epub:', sessionOrEpubPath);
+      return { success: false, error: 'No session found for this epub' };
+    }
+    sessionPath = foundSession;
+  }
+
+  const appPath = path.join(e2aPath, 'app.py');
+
+  const args = [
+    'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
+    appPath,
+    '--headless',
+    '--resume_session', sessionPath
+  ];
+
+  console.log('[PARALLEL-TTS] Checking resume status:', sessionPath);
+
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+
+    const resumeCheckProcess = spawn('conda', args, {
+      cwd: e2aPath,
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      shell: true
+    });
+
+    resumeCheckProcess.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    resumeCheckProcess.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    resumeCheckProcess.on('close', (code: number | null) => {
+      if (code === 0) {
+        try {
+          // Find the JSON output in stdout
+          const lines = stdout.split('\n').filter(l => l.trim());
+          for (let i = lines.length - 1; i >= 0; i--) {
+            try {
+              const parsed = JSON.parse(lines[i]);
+              if (parsed.success !== undefined) {
+                // Map e2a's snake_case to camelCase
+                const result: ResumeCheckResult = {
+                  success: parsed.success,
+                  complete: parsed.complete,
+                  error: parsed.error,
+                  sessionId: parsed.session_id,
+                  sessionDir: parsed.session_dir,
+                  processDir: parsed.process_dir,
+                  totalSentences: parsed.total_sentences,
+                  totalChapters: parsed.total_chapters,
+                  completedSentences: parsed.completed_sentences,
+                  missingSentences: parsed.missing_sentences,
+                  missingIndices: parsed.missing_indices,
+                  missingRanges: parsed.missing_ranges,
+                  progressPercent: parsed.progress_percent,
+                  chapters: parsed.chapters,
+                  metadata: parsed.metadata,
+                  warnings: parsed.warnings
+                };
+                console.log('[PARALLEL-TTS] Resume check result:',
+                  result.completedSentences, '/', result.totalSentences, 'complete');
+                resolve(result);
+                return;
+              }
+            } catch {
+              continue;
+            }
+          }
+          resolve({ success: false, error: 'Failed to parse resume check output' });
+        } catch (err) {
+          resolve({ success: false, error: `Failed to parse resume check output: ${err}` });
+        }
+      } else {
+        resolve({ success: false, error: `Resume check failed with code ${code}: ${stderr}` });
+      }
+    });
+
+    resumeCheckProcess.on('error', (err: Error) => {
+      resolve({ success: false, error: `Resume check process error: ${err.message}` });
+    });
+  });
+}
+
+/**
+ * List all resumable sessions
+ * Calls e2a's --list_sessions
+ */
+export async function listResumableSessions(): Promise<Array<{
+  sessionId: string;
+  sessionDir: string;
+  title: string;
+  totalSentences: number;
+  completedSentences: number;
+  missingSentences: number;
+  progressPercent: number;
+  createdAt?: string;
+  language?: string;
+  voice?: string;
+}>> {
+  const appPath = path.join(e2aPath, 'app.py');
+
+  const args = [
+    'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
+    appPath,
+    '--headless',
+    '--list_sessions'
+  ];
+
+  console.log('[PARALLEL-TTS] Listing resumable sessions');
+
+  return new Promise((resolve) => {
+    let stdout = '';
+
+    const listProcess = spawn('conda', args, {
+      cwd: e2aPath,
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      shell: true
+    });
+
+    listProcess.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    listProcess.on('close', () => {
+      // Parse the human-readable output (not JSON for --list_sessions)
+      // For now, return empty - this is optional functionality
+      console.log('[PARALLEL-TTS] List sessions output:', stdout);
+      resolve([]);
+    });
+
+    listProcess.on('error', () => {
+      resolve([]);
+    });
+  });
+}
+
+/**
+ * Resume a partially completed conversion
+ * Uses missing ranges from checkResumeStatus to only process incomplete sentences
+ */
+export async function resumeParallelConversion(
+  jobId: string,
+  config: ParallelConversionConfig,
+  resumeInfo: ResumeCheckResult
+): Promise<ParallelConversionResult> {
+  console.log(`[PARALLEL-TTS] Resuming conversion for job ${jobId}`);
+  console.log(`[PARALLEL-TTS] Missing ${resumeInfo.missingSentences} of ${resumeInfo.totalSentences} sentences`);
+
+  if (!resumeInfo.success) {
+    return { success: false, error: resumeInfo.error || 'Resume info invalid' };
+  }
+
+  if (resumeInfo.complete) {
+    console.log('[PARALLEL-TTS] All sentences already complete, proceeding to assembly');
+    // Go directly to assembly
+    return runAssemblyOnly(jobId, config, resumeInfo.sessionId!);
+  }
+
+  // Ensure we have a valid output directory
+  if (!config.outputDir || config.outputDir.trim() === '') {
+    const error = 'Output directory not configured. Please set the audiobook output folder in Settings.';
+    console.error('[PARALLEL-TTS]', error);
+    return { success: false, error };
+  }
+
+  // Create PrepInfo-like structure from resume info
+  const prepInfo: PrepInfo = {
+    sessionId: resumeInfo.sessionId!,
+    sessionDir: resumeInfo.sessionDir!,
+    processDir: resumeInfo.processDir!,
+    chaptersDir: path.join(resumeInfo.processDir!, 'chapters'),
+    chaptersDirSentences: path.join(resumeInfo.processDir!, 'chapters', 'sentences'),
+    totalChapters: resumeInfo.totalChapters!,
+    totalSentences: resumeInfo.totalSentences!,
+    chapters: (resumeInfo.chapters || []).map(c => ({
+      chapterNum: c.chapter_num,
+      sentenceCount: c.sentence_count,
+      sentenceStart: c.sentence_start,
+      sentenceEnd: c.sentence_end
+    })),
+    metadata: resumeInfo.metadata || {}
+  };
+
+  // Calculate workers for missing ranges
+  // If we have explicit missing ranges, use those; otherwise calculate from missing indices
+  let workers: WorkerState[];
+
+  if (resumeInfo.missingRanges && resumeInfo.missingRanges.length > 0) {
+    // Use the missing ranges directly - each range becomes a worker
+    // But limit to config.workerCount workers
+    const ranges = resumeInfo.missingRanges;
+
+    if (ranges.length <= config.workerCount) {
+      // One worker per range
+      workers = ranges.map((range, i) => ({
+        id: i,
+        process: null,
+        sentenceStart: range.start,
+        sentenceEnd: range.end,
+        currentSentence: range.start,
+        completedSentences: 0,
+        status: 'pending' as WorkerStatus,
+        retryCount: 0
+      }));
+    } else {
+      // More ranges than workers - combine ranges into worker assignments
+      // For simplicity, just divide the total missing sentences among workers
+      const totalMissing = resumeInfo.missingSentences || 0;
+      const missingSentencesPerWorker = Math.ceil(totalMissing / config.workerCount);
+
+      workers = [];
+      let rangeIdx = 0;
+      let sentenceCount = 0;
+      let workerStart = ranges[0]?.start ?? 0;
+
+      for (let workerId = 0; workerId < config.workerCount && rangeIdx < ranges.length; workerId++) {
+        let workerSentences = 0;
+        let workerEnd = workerStart;
+
+        // Accumulate ranges until we have enough sentences for this worker
+        while (rangeIdx < ranges.length && workerSentences < missingSentencesPerWorker) {
+          workerSentences += ranges[rangeIdx].count;
+          workerEnd = ranges[rangeIdx].end;
+          rangeIdx++;
+        }
+
+        if (workerSentences > 0) {
+          workers.push({
+            id: workerId,
+            process: null,
+            sentenceStart: workerStart,
+            sentenceEnd: workerEnd,
+            currentSentence: workerStart,
+            completedSentences: 0,
+            status: 'pending' as WorkerStatus,
+            retryCount: 0
+          });
+
+          if (rangeIdx < ranges.length) {
+            workerStart = ranges[rangeIdx].start;
+          }
+        }
+      }
+    }
+  } else {
+    // Fallback: divide all sentences among workers (this shouldn't happen with proper resume info)
+    const sentenceRanges = calculateSentenceRanges(prepInfo.totalSentences, config.workerCount);
+    workers = sentenceRanges.map((range, i) => ({
+      id: i,
+      process: null,
+      sentenceStart: range.start,
+      sentenceEnd: range.end,
+      currentSentence: range.start,
+      completedSentences: 0,
+      status: 'pending' as WorkerStatus,
+      retryCount: 0
+    }));
+  }
+
+  console.log('[PARALLEL-TTS] Resume workers:', workers.map(w => `${w.id}: ${w.sentenceStart}-${w.sentenceEnd}`));
+
+  // Create session with resume tracking info
+  const session: ConversionSession = {
+    jobId,
+    config,
+    prepInfo,
+    workers,
+    startTime: Date.now(),
+    cancelled: false,
+    assemblyProcess: null,
+    // Resume job tracking
+    isResumeJob: true,
+    baselineCompleted: resumeInfo.completedSentences || 0,
+    totalMissing: resumeInfo.missingSentences || 0
+  };
+
+  activeSessions.set(jobId, session);
+
+  console.log(`[PARALLEL-TTS] Resume session created: baseline=${session.baselineCompleted}, missing=${session.totalMissing}`);
+
+  // Emit initial progress (accounting for already completed sentences)
+  if (mainWindow) {
+    const progress: AggregatedProgress = {
+      phase: 'converting',
+      totalSentences: prepInfo.totalSentences,
+      completedSentences: resumeInfo.completedSentences || 0,
+      completedInSession: 0, // Starting resume, 0 new conversions yet
+      percentage: resumeInfo.progressPercent || 0,
+      activeWorkers: 0,
+      workers,
+      estimatedRemaining: 0,
+      message: `Resuming - ${resumeInfo.completedSentences} sentences already complete...`
+    };
+    mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
+  }
+
+  // Start workers for missing ranges
+  for (let i = 0; i < workers.length; i++) {
+    const worker = workers[i];
+    const range: WorkerRange = { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
+    startWorker(session, i, range);
+  }
+
+  // Return immediately - completion is handled via events
+  return new Promise((resolve) => {
+    const checkComplete = setInterval(() => {
+      if (!activeSessions.has(jobId)) {
+        clearInterval(checkComplete);
+        resolve({ success: true });
+      }
+    }, 1000);
+  });
+}
+
+/**
+ * Run assembly only (when all sentences are already complete)
+ */
+async function runAssemblyOnly(
+  jobId: string,
+  config: ParallelConversionConfig,
+  sessionId: string
+): Promise<ParallelConversionResult> {
+  console.log(`[PARALLEL-TTS] Running assembly only for session ${sessionId}`);
+
+  // Create a session with minimal prepInfo (just need sessionId for assembly)
+  const minimalPrepInfo: PrepInfo = {
+    sessionId,
+    sessionDir: '',  // Not needed for assembly
+    processDir: '',
+    chaptersDir: '',
+    chaptersDirSentences: '',
+    totalChapters: 0,
+    totalSentences: 0,
+    chapters: [],
+    metadata: {}
+  };
+
+  const session: ConversionSession = {
+    jobId,
+    config,
+    prepInfo: minimalPrepInfo,
+    workers: [],
+    startTime: Date.now(),
+    cancelled: false,
+    assemblyProcess: null
+  };
+
+  activeSessions.set(jobId, session);
+
+  // Emit assembling progress
+  if (mainWindow) {
+    const progress: AggregatedProgress = {
+      phase: 'assembling',
+      totalSentences: 0,
+      completedSentences: 0,
+      completedInSession: 0, // Assembly only, no TTS work in this session
+      percentage: 100,
+      activeWorkers: 0,
+      workers: [],
+      estimatedRemaining: 0,
+      message: 'All sentences complete, assembling audiobook...'
+    };
+    mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
+  }
+
+  try {
+    // Run assembly - runAssembly uses session.prepInfo.sessionId
+    const outputPath = await runAssembly(session);
+
+    activeSessions.delete(jobId);
+
+    // Emit complete
+    if (mainWindow) {
+      mainWindow.webContents.send('parallel-tts:complete', {
+        jobId,
+        success: true,
+        outputPath,
+        duration: (Date.now() - session.startTime) / 1000
+      });
+    }
+
+    return { success: true, outputPath };
+  } catch (err) {
+    activeSessions.delete(jobId);
+    const error = `Assembly failed: ${err}`;
+    console.error('[PARALLEL-TTS]', error);
+
+    // Emit error
+    if (mainWindow) {
+      mainWindow.webContents.send('parallel-tts:complete', {
+        jobId,
+        success: false,
+        error
+      });
+    }
+
+    return { success: false, error };
+  }
+}
+
+/**
+ * Build TtsResumeInfo from PrepInfo for saving to job
+ */
+export function buildResumeInfo(prepInfo: PrepInfo, settings: ParallelTtsSettings): {
+  sessionId: string;
+  sessionDir: string;
+  processDir: string;
+  totalSentences: number;
+  totalChapters: number;
+  chapters: Array<{
+    chapter_num: number;
+    sentence_start: number;
+    sentence_end: number;
+    sentence_count: number;
+  }>;
+  language: string;
+  voice?: string;
+  ttsEngine?: string;
+  createdAt: string;
+} {
+  return {
+    sessionId: prepInfo.sessionId,
+    sessionDir: prepInfo.sessionDir,
+    processDir: prepInfo.processDir,
+    totalSentences: prepInfo.totalSentences,
+    totalChapters: prepInfo.totalChapters,
+    chapters: prepInfo.chapters.map(c => ({
+      chapter_num: c.chapterNum,
+      sentence_start: c.sentenceStart,
+      sentence_end: c.sentenceEnd,
+      sentence_count: c.sentenceCount
+    })),
+    language: settings.language,
+    voice: settings.fineTuned,
+    ttsEngine: settings.ttsEngine,
+    createdAt: new Date().toISOString()
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Export
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1261,10 +2189,17 @@ export const parallelTtsBridge = {
   setE2aPath,
   getE2aPath,
   setMainWindow,
+  initializeLogger,
   detectRecommendedWorkerCount,
   prepareSession,
   startParallelConversion,
   stopParallelConversion,
   getConversionProgress,
-  isConversionActive
+  isConversionActive,
+  listActiveSessions,
+  // Resume support
+  checkResumeStatus,
+  listResumableSessions,
+  resumeParallelConversion,
+  buildResumeInfo
 };

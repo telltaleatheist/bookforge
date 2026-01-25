@@ -616,6 +616,49 @@ export interface HardwareRecommendation {
   reason: string;
 }
 
+// Resume support types
+export interface ResumeCheckResult {
+  success: boolean;
+  complete?: boolean;          // All sentences already done
+  error?: string;
+  sessionId?: string;
+  sessionDir?: string;
+  processDir?: string;
+  totalSentences?: number;
+  totalChapters?: number;
+  completedSentences?: number;
+  missingSentences?: number;
+  missingIndices?: number[];
+  missingRanges?: Array<{ start: number; end: number; count: number }>;
+  progressPercent?: number;
+  chapters?: Array<{
+    chapter_num: number;
+    sentence_start: number;
+    sentence_end: number;
+    sentence_count: number;
+  }>;
+  metadata?: { title?: string; creator?: string; language?: string };
+  warnings?: string[];
+}
+
+export interface TtsResumeInfo {
+  sessionId: string;
+  sessionDir: string;
+  processDir: string;
+  totalSentences: number;
+  totalChapters: number;
+  chapters: Array<{
+    chapter_num: number;
+    sentence_start: number;
+    sentence_end: number;
+    sentence_count: number;
+  }>;
+  language: string;
+  voice?: string;
+  ttsEngine?: string;
+  createdAt: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Library Server Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -884,6 +927,9 @@ export interface ElectronAPI {
       deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
     }) => Promise<{ success: boolean; data?: any; error?: string }>;
     runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
+    runTranslation: (jobId: string, epubPath: string, translationConfig: {
+      chunkSize?: number;
+    }, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
     cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     saveState: (queueState: string) => Promise<{ success: boolean; error?: string }>;
     loadState: () => Promise<{ success: boolean; data?: any; error?: string }>;
@@ -976,8 +1022,13 @@ export interface ElectronAPI {
     stopConversion: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
     getProgress: (jobId: string) => Promise<{ success: boolean; data?: ParallelAggregatedProgress | null; error?: string }>;
     isActive: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
+    listActive: () => Promise<{ success: boolean; data?: Array<{ jobId: string; progress: ParallelAggregatedProgress; epubPath: string; startTime: number }>; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
     onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number }) => void) => () => void;
+    // Resume support
+    checkResume: (sessionPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
+    resumeConversion: (jobId: string, config: ParallelConversionConfig, resumeInfo: ResumeCheckResult) => Promise<{ success: boolean; data?: ParallelConversionResult; error?: string }>;
+    buildResumeInfo: (prepInfo: any, settings: any) => Promise<{ success: boolean; data?: TtsResumeInfo; error?: string }>;
   };
   platform: string;
 }
@@ -1333,6 +1384,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('queue:run-ocr-cleanup', jobId, epubPath, model, aiConfig),
     runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) =>
       ipcRenderer.invoke('queue:run-tts-conversion', jobId, epubPath, config),
+    runTranslation: (jobId: string, epubPath: string, translationConfig: {
+      chunkSize?: number;
+    }, aiConfig?: AIProviderConfig) =>
+      ipcRenderer.invoke('queue:run-translation', jobId, epubPath, translationConfig, aiConfig),
     cancelJob: (jobId: string) =>
       ipcRenderer.invoke('queue:cancel-job', jobId),
     saveState: (queueState: string) =>
@@ -1456,6 +1511,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('parallel-tts:get-progress', jobId),
     isActive: (jobId: string) =>
       ipcRenderer.invoke('parallel-tts:is-active', jobId),
+    listActive: () =>
+      ipcRenderer.invoke('parallel-tts:list-active'),
     onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: ParallelAggregatedProgress }) => {
         callback(data);
@@ -1474,6 +1531,13 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('parallel-tts:complete', listener);
       };
     },
+    // Resume support
+    checkResume: (sessionPath: string) =>
+      ipcRenderer.invoke('parallel-tts:check-resume', sessionPath),
+    resumeConversion: (jobId: string, config: ParallelConversionConfig, resumeInfo: ResumeCheckResult) =>
+      ipcRenderer.invoke('parallel-tts:resume-conversion', jobId, config, resumeInfo),
+    buildResumeInfo: (prepInfo: any, settings: any) =>
+      ipcRenderer.invoke('parallel-tts:build-resume-info', prepInfo, settings),
   },
   platform: process.platform,
 };
