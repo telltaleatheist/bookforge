@@ -191,6 +191,16 @@ export interface PluginProgress {
   percentage?: number;
 }
 
+export interface SkippedChunk {
+  chapterTitle: string;
+  chunkIndex: number;
+  overallChunkNumber: number;  // 1-based overall chunk number (e.g., "Chunk 5/121")
+  totalChunks: number;         // Total chunks in the job
+  reason: 'copyright' | 'content-skip' | 'ai-refusal';
+  text: string;
+  aiResponse?: string;
+}
+
 export interface TextSpan {
   id: string;
   page: number;
@@ -414,6 +424,7 @@ export interface QueueFileInfo {
   addedAt: string;
   projectId?: string;
   hasCleaned?: boolean;
+  skippedChunksPath?: string;
 }
 
 export interface CompletedAudiobookInfo {
@@ -852,6 +863,9 @@ export interface ElectronAPI {
     checkProviderConnection: (provider: 'ollama' | 'claude' | 'openai') => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
     getModels: () => Promise<{ success: boolean; data?: OllamaModel[]; error?: string }>;
     getClaudeModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
+    loadSkippedChunks: (jsonPath: string) => Promise<{ success: boolean; chunks?: SkippedChunk[]; error?: string }>;
+    replaceTextInEpub: (epubPath: string, oldText: string, newText: string) => Promise<{ success: boolean; chapterFound?: string; error?: string }>;
+    updateSkippedChunk: (jsonPath: string, index: number, newText: string) => Promise<{ success: boolean; error?: string }>;
     cleanupChapter: (
       text: string,
       options: AICleanupOptions,
@@ -925,6 +939,10 @@ export interface ElectronAPI {
     runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig & {
       useDetailedCleanup?: boolean;
       deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
+      useParallel?: boolean;
+      parallelWorkers?: number;
+      cleanupMode?: 'structure' | 'full';
+      testMode?: boolean;
     }) => Promise<{ success: boolean; data?: any; error?: string }>;
     runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
     runTranslation: (jobId: string, epubPath: string, translationConfig: {
@@ -1254,6 +1272,12 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('ai:get-models'),
     getClaudeModels: (apiKey: string) =>
       ipcRenderer.invoke('ai:get-claude-models', apiKey),
+    loadSkippedChunks: (jsonPath: string) =>
+      ipcRenderer.invoke('ai:load-skipped-chunks', jsonPath),
+    replaceTextInEpub: (epubPath: string, oldText: string, newText: string) =>
+      ipcRenderer.invoke('ai:replace-text-in-epub', epubPath, oldText, newText),
+    updateSkippedChunk: (jsonPath: string, index: number, newText: string) =>
+      ipcRenderer.invoke('ai:update-skipped-chunk', jsonPath, index, newText),
     cleanupChapter: (
       text: string,
       options: AICleanupOptions,
@@ -1380,6 +1404,10 @@ const electronAPI: ElectronAPI = {
     runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig & {
       useDetailedCleanup?: boolean;
       deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
+      useParallel?: boolean;
+      parallelWorkers?: number;
+      cleanupMode?: 'structure' | 'full';
+      testMode?: boolean;
     }) =>
       ipcRenderer.invoke('queue:run-ocr-cleanup', jobId, epubPath, model, aiConfig),
     runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) =>

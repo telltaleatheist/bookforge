@@ -270,6 +270,7 @@ export async function prepareSession(
     '--headless',
     '--ebook', epubPath,
     '--language', settings.language,
+    '--tts_engine', settings.ttsEngine,  // Must be saved in session-state.json for workers
     '--device', settings.device === 'gpu' ? 'cuda' : settings.device,
     '--prep_only'
   ];

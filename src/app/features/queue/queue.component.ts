@@ -511,21 +511,53 @@ export class QueueComponent implements OnInit, OnDestroy {
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
     const isRunning = this.queueService.isRunning();
     const hasCurrentJob = !!this.queueService.currentJob();
-    return [
-      {
-        id: isRunning ? 'pause' : 'start',
+    const hasPendingJobs = this.queueService.pendingJobs().length > 0;
+
+    // State: paused while job is still finishing
+    const isPausing = !isRunning && hasCurrentJob;
+
+    const items: ToolbarItem[] = [];
+
+    // Start/Resume button - visible when not running (queue stopped or paused)
+    if (!isRunning) {
+      items.push({
+        id: 'start',
         type: 'button',
-        icon: isRunning ? '\u23F8' : '\u25B6',
-        label: isRunning ? 'Pause' : 'Start',
-        tooltip: isRunning ? 'Pause queue (job will complete)' : 'Start queue processing'
-      },
-      ...(hasCurrentJob ? [{
+        icon: '\u25B6', // ▶
+        label: isPausing ? 'Resume' : 'Start',
+        tooltip: isPausing
+          ? 'Resume queue (process next job after current completes)'
+          : 'Start queue processing',
+        disabled: !hasPendingJobs && !isPausing
+      });
+    }
+
+    // Pause button - visible when running OR when pausing (to show state)
+    if (isRunning || isPausing) {
+      items.push({
+        id: isPausing ? 'pausing' : 'pause',
+        type: 'button',
+        icon: '\u23F8', // ⏸
+        label: isPausing ? 'Pausing...' : 'Pause',
+        tooltip: isPausing
+          ? 'Queue will stop after current job completes'
+          : 'Pause queue (current job will complete, next job won\'t start)',
+        disabled: isPausing
+      });
+    }
+
+    // Stop button - visible when there's a current job
+    if (hasCurrentJob) {
+      items.push({
         id: 'stop',
-        type: 'button' as const,
-        icon: '\u25A0',
+        type: 'button',
+        icon: '\u25A0', // ■
         label: 'Stop',
-        tooltip: 'Stop immediately and reset current job'
-      }] : []),
+        tooltip: 'Stop immediately and reset current job to pending'
+      });
+    }
+
+    items.push(
       {
         id: 'refresh',
         type: 'button',
@@ -535,7 +567,9 @@ export class QueueComponent implements OnInit, OnDestroy {
       },
       { id: 'sep1', type: 'divider' },
       { id: 'spacer', type: 'spacer' }
-    ];
+    );
+
+    return items;
   });
 
   ngOnInit(): void {

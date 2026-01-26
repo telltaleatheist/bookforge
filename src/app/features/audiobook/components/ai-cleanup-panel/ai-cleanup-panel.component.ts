@@ -136,6 +136,63 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
         }
       </div>
 
+      <!-- Cleanup Mode Selection -->
+      <div class="mode-section">
+        <label class="field-label">Cleanup Mode</label>
+        <div class="mode-options">
+          <label class="mode-option" [class.selected]="cleanupMode() === 'structure'">
+            <input
+              type="radio"
+              name="cleanupMode"
+              value="structure"
+              [checked]="cleanupMode() === 'structure'"
+              (change)="setCleanupMode('structure')"
+            />
+            <div class="mode-content">
+              <span class="mode-name">Structure Preserving</span>
+              <span class="mode-desc">Preserves HTML tags, cleans text inside elements</span>
+            </div>
+          </label>
+          <label class="mode-option" [class.selected]="cleanupMode() === 'full'">
+            <input
+              type="radio"
+              name="cleanupMode"
+              value="full"
+              [checked]="cleanupMode() === 'full'"
+              (change)="setCleanupMode('full')"
+            />
+            <div class="mode-content">
+              <span class="mode-name">Full Document</span>
+              <span class="mode-desc">Sends HTML to AI - can fix structural issues but riskier</span>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- Parallel Workers Option (only for Claude/OpenAI) -->
+      @if (supportsParallel()) {
+        <div class="parallel-section">
+          <label class="field-label">Parallel Workers</label>
+          <div class="worker-options">
+            @for (count of workerOptions; track count) {
+              <label class="worker-option" [class.selected]="parallelWorkers() === count">
+                <input
+                  type="radio"
+                  name="aiWorkerCount"
+                  [value]="count"
+                  [checked]="parallelWorkers() === count"
+                  (change)="setParallelWorkers(count)"
+                />
+                <span>{{ count }}</span>
+              </label>
+            }
+          </div>
+          <p class="option-hint">
+            Process multiple chapters simultaneously. More workers = faster, but uses more API quota.
+          </p>
+        </div>
+      }
+
       <!-- Detailed Cleanup Option -->
       @if (hasDeletedExamples()) {
         <div class="detailed-cleanup-section">
@@ -155,6 +212,23 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
         </div>
       }
 
+      <!-- Test Mode Option -->
+      <div class="test-mode-section">
+        <label class="checkbox-option">
+          <input
+            type="checkbox"
+            [checked]="testMode()"
+            (change)="toggleTestMode($event)"
+          >
+          <span class="checkbox-label">
+            Test mode (first 5 chunks only)
+          </span>
+        </label>
+        <p class="option-hint">
+          Process only the first 5 chunks to preview AI cleanup results before running the full job.
+        </p>
+      </div>
+
       <!-- Actions -->
       <div class="actions">
         <desktop-button
@@ -167,6 +241,8 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
             Adding to Queue...
           } @else if (addedToQueue()) {
             ✓ Added to Queue
+          } @else if (testMode()) {
+            Add Test Job to Queue
           } @else {
             Add to Queue
           }
@@ -337,7 +413,8 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
       gap: 0.75rem;
     }
 
-    .detailed-cleanup-section {
+    .detailed-cleanup-section,
+    .test-mode-section {
       padding: 0.75rem;
       background: var(--bg-subtle);
       border: 1px solid var(--border-subtle);
@@ -416,6 +493,106 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
       justify-content: flex-end;
       margin-top: 0.5rem;
     }
+
+    .mode-section {
+      padding: 0.75rem;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+    }
+
+    .mode-options {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .mode-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      padding: 0.625rem 0.75rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+
+      input[type="radio"] {
+        margin-top: 0.125rem;
+        accent-color: var(--accent);
+      }
+
+      .mode-content {
+        display: flex;
+        flex-direction: column;
+        gap: 0.125rem;
+      }
+
+      .mode-name {
+        font-size: 0.8125rem;
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+
+      .mode-desc {
+        font-size: 0.6875rem;
+        color: var(--text-tertiary);
+      }
+
+      &:hover {
+        border-color: var(--border-hover);
+      }
+
+      &.selected {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
+
+        .mode-name {
+          color: var(--accent);
+        }
+      }
+    }
+
+    .parallel-section {
+      padding: 0.75rem;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+    }
+
+    .worker-options {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .worker-option {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.8125rem;
+      color: var(--text-secondary);
+      transition: all 0.15s;
+
+      input[type="radio"] {
+        display: none;
+      }
+
+      &:hover {
+        border-color: var(--border-hover);
+      }
+
+      &.selected {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
+        color: var(--accent);
+      }
+    }
   `]
 })
 export class AiCleanupPanelComponent implements OnInit {
@@ -449,6 +626,22 @@ export class AiCleanupPanelComponent implements OnInit {
   readonly promptText = signal('');
   readonly originalPromptText = signal('');
   readonly promptModified = computed(() => this.promptText() !== this.originalPromptText());
+
+  // Parallel workers state (only for Claude/OpenAI)
+  readonly parallelWorkers = signal(1);
+  readonly workerOptions = [1, 2, 3, 4, 5];
+
+  // Cleanup mode state
+  readonly cleanupMode = signal<'structure' | 'full'>('structure');
+
+  // Test mode state (only process first 5 chunks)
+  readonly testMode = signal(false);
+
+  // Computed: check if provider supports parallel processing
+  readonly supportsParallel = computed(() => {
+    const provider = this.selectedProvider();
+    return provider === 'claude' || provider === 'openai';
+  });
 
   // AI Provider state
   readonly selectedProvider = signal<AIProvider>('ollama');
@@ -652,6 +845,10 @@ export class AiCleanupPanelComponent implements OnInit {
       const useDetailed = this.useDetailedCleanup() && this.hasDeletedExamples();
       const examples = useDetailed ? this.deletedBlockExamples() : undefined;
 
+      // Parallel processing settings (only for Claude/OpenAI)
+      const useParallel = this.supportsParallel() && this.parallelWorkers() > 1;
+      const workers = useParallel ? this.parallelWorkers() : undefined;
+
       await this.queueService.addJob({
         type: 'ocr-cleanup',
         epubPath: path,
@@ -664,7 +861,11 @@ export class AiCleanupPanelComponent implements OnInit {
           claudeApiKey: provider === 'claude' ? config.claude.apiKey : undefined,
           openaiApiKey: provider === 'openai' ? config.openai.apiKey : undefined,
           useDetailedCleanup: useDetailed,
-          deletedBlockExamples: examples
+          deletedBlockExamples: examples,
+          useParallel,
+          parallelWorkers: workers,
+          cleanupMode: this.cleanupMode(),
+          testMode: this.testMode()
         }
       });
       this.addedToQueue.set(true);
@@ -715,6 +916,19 @@ export class AiCleanupPanelComponent implements OnInit {
   toggleDetailedCleanup(event: Event): void {
     const checkbox = event.target as HTMLInputElement;
     this.useDetailedCleanup.set(checkbox.checked);
+  }
+
+  setParallelWorkers(count: number): void {
+    this.parallelWorkers.set(count);
+  }
+
+  setCleanupMode(mode: 'structure' | 'full'): void {
+    this.cleanupMode.set(mode);
+  }
+
+  toggleTestMode(event: Event): void {
+    const checkbox = event.target as HTMLInputElement;
+    this.testMode.set(checkbox.checked);
   }
 
   /**

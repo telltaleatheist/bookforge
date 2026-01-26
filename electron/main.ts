@@ -1823,6 +1823,43 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('ai:load-skipped-chunks', async (_event, jsonPath: string) => {
+    try {
+      const content = await fs.readFile(jsonPath, 'utf-8');
+      const chunks = JSON.parse(content);
+      return { success: true, chunks };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Replace text in EPUB - used for editing skipped chunks
+  ipcMain.handle('ai:replace-text-in-epub', async (_event, epubPath: string, oldText: string, newText: string) => {
+    try {
+      const { replaceTextInEpub } = await import('./epub-processor.js');
+      const result = await replaceTextInEpub(epubPath, oldText, newText);
+      return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Update a skipped chunk's text in the JSON file
+  ipcMain.handle('ai:update-skipped-chunk', async (_event, jsonPath: string, index: number, newText: string) => {
+    try {
+      const content = await fs.readFile(jsonPath, 'utf-8');
+      const chunks = JSON.parse(content);
+      if (index >= 0 && index < chunks.length) {
+        chunks[index].text = newText;
+        await fs.writeFile(jsonPath, JSON.stringify(chunks, null, 2), 'utf-8');
+        return { success: true };
+      }
+      return { success: false, error: 'Invalid chunk index' };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Shell handlers
   // ─────────────────────────────────────────────────────────────────────────────
@@ -2573,13 +2610,16 @@ function setupIpcHandlers(): void {
 
         try {
           const stats = await fs.stat(originalPath);
+          const skippedChunksFile = path.join(folderPath, 'skipped-chunks.json');
+          const hasSkippedChunks = await fs.access(skippedChunksFile).then(() => true).catch(() => false);
           return {
             path: originalPath,
             filename: projectData?.originalFilename || folder.name + '.epub',
             size: stats.size,
             addedAt: projectData?.createdAt || stats.mtime.toISOString(),
             projectId: folder.name,
-            hasCleaned: await fs.access(path.join(folderPath, 'cleaned.epub')).then(() => true).catch(() => false)
+            hasCleaned: await fs.access(path.join(folderPath, 'cleaned.epub')).then(() => true).catch(() => false),
+            skippedChunksPath: hasSkippedChunks ? skippedChunksFile : undefined
           };
         } catch {
           return null;
@@ -2867,12 +2907,23 @@ function setupIpcHandlers(): void {
       // Detailed cleanup mode options
       useDetailedCleanup?: boolean;
       deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
+      // Parallel processing options (Claude/OpenAI only)
+      useParallel?: boolean;
+      parallelWorkers?: number;
+      // Cleanup mode: 'structure' preserves HTML, 'full' sends HTML to AI
+      cleanupMode?: 'structure' | 'full';
+      // Test mode: only process first 5 chunks
+      testMode?: boolean;
     }
   ) => {
     console.log('[IPC] queue:run-ocr-cleanup received:', {
       jobId,
       useDetailedCleanup: aiConfig?.useDetailedCleanup,
       exampleCount: aiConfig?.deletedBlockExamples?.length || 0,
+      useParallel: aiConfig?.useParallel,
+      parallelWorkers: aiConfig?.parallelWorkers,
+      cleanupMode: aiConfig?.cleanupMode,
+      testMode: aiConfig?.testMode,
       aiConfig: aiConfig ? {
         provider: aiConfig.provider,
         ollamaModel: aiConfig.ollama?.model,
@@ -2915,14 +2966,36 @@ function setupIpcHandlers(): void {
 
       // Run OCR cleanup with provider config - aiConfig is required, no model fallback
       // Cast deletedBlockExamples - category strings are validated at export time
-      const detailedOptions = aiConfig.useDetailedCleanup ? {
-        useDetailedCleanup: aiConfig.useDetailedCleanup,
-        deletedBlockExamples: aiConfig.deletedBlockExamples?.map(ex => ({
+      const cleanupOptions: {
+        useDetailedCleanup?: boolean;
+        deletedBlockExamples?: Array<{ text: string; category: 'header' | 'footer' | 'page_number' | 'custom' | 'block'; page?: number }>;
+        useParallel?: boolean;
+        parallelWorkers?: number;
+        cleanupMode?: 'structure' | 'full';
+        testMode?: boolean;
+      } = {};
+
+      // Set cleanup mode (default to 'structure' for backwards compatibility)
+      cleanupOptions.cleanupMode = aiConfig.cleanupMode || 'structure';
+
+      // Set test mode
+      cleanupOptions.testMode = aiConfig.testMode || false;
+      console.log('[IPC] Test mode:', aiConfig.testMode, '-> cleanupOptions.testMode:', cleanupOptions.testMode);
+
+      if (aiConfig.useDetailedCleanup) {
+        cleanupOptions.useDetailedCleanup = true;
+        cleanupOptions.deletedBlockExamples = aiConfig.deletedBlockExamples?.map(ex => ({
           text: ex.text,
           category: ex.category as 'header' | 'footer' | 'page_number' | 'custom' | 'block',
           page: ex.page
-        }))
-      } : undefined;
+        }));
+      }
+
+      // Parallel processing (only for Claude/OpenAI)
+      if (aiConfig.useParallel && aiConfig.provider !== 'ollama') {
+        cleanupOptions.useParallel = true;
+        cleanupOptions.parallelWorkers = aiConfig.parallelWorkers || 3;
+      }
 
       const result = await aiBridge.cleanupEpub(
         epubPath,
@@ -2933,7 +3006,7 @@ function setupIpcHandlers(): void {
           // Progress is sent via mainWindow.webContents.send in cleanupEpub
         },
         aiConfig,
-        detailedOptions
+        cleanupOptions
       );
 
       // Remove from running jobs
@@ -2945,7 +3018,12 @@ function setupIpcHandlers(): void {
           jobId,
           success: result.success,
           outputPath: result.outputPath,
-          error: result.error
+          error: result.error,
+          copyrightIssuesDetected: result.copyrightIssuesDetected,
+          copyrightChunksAffected: result.copyrightChunksAffected,
+          contentSkipsDetected: result.contentSkipsDetected,
+          contentSkipsAffected: result.contentSkipsAffected,
+          skippedChunksPath: result.skippedChunksPath
         });
       }
 

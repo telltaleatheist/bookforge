@@ -10,6 +10,11 @@
 import { BrowserWindow } from 'electron';
 import path from 'path';
 import { promises as fsPromises } from 'fs';
+import {
+  extractBlockTexts,
+  replaceBlockTexts,
+  BLOCK_MARKER
+} from './epub-processor.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -72,6 +77,21 @@ export interface CleanupResult {
 const OLLAMA_BASE_URL = 'http://localhost:11434';
 const DEFAULT_MODEL = 'llama3.2';
 const CHUNK_SIZE = 8000; // characters per chunk
+
+// Skipped chunk tracking (reset at start of each cleanup job)
+export interface SkippedChunk {
+  chapterTitle: string;
+  chunkIndex: number;
+  overallChunkNumber: number;  // 1-based overall chunk number (e.g., "Chunk 5/121")
+  totalChunks: number;         // Total chunks in the job
+  reason: 'copyright' | 'content-skip' | 'ai-refusal';
+  text: string;           // The original text that was skipped
+  aiResponse?: string;    // What the AI actually returned (for debugging)
+}
+
+let copyrightFallbackCount = 0;
+let skipFallbackCount = 0;  // Chunks where AI returned [SKIP] for non-trivial content
+let skippedChunks: SkippedChunk[] = [];  // Detailed tracking of all skipped chunks
 const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break point
 const TIMEOUT_MS = 180000; // 3 minutes per chunk
 
@@ -196,8 +216,9 @@ function findBestBreakPoint(text: string, targetEnd: number, minStart: number): 
 // OCR Cleanup Prompt
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Path to the editable prompt file
+// Path to the editable prompt files
 const PROMPT_FILE_PATH = path.join(__dirname, 'prompts', 'tts-cleanup.txt');
+const PROMPT_FILE_PATH_FULL = path.join(__dirname, 'prompts', 'tts-cleanup-full.txt');
 
 // Default prompt (used if file doesn't exist)
 const DEFAULT_PROMPT = `You are preparing ebook text for text-to-speech (TTS) audiobook narration.
@@ -236,16 +257,25 @@ REMOVE: footnote numbers in sentences, page numbers, stray artifacts.
 
 Start your response with the first word of the book text. No introduction.`;
 
+// Default prompt for full mode (used if file doesn't exist)
+const DEFAULT_PROMPT_FULL = `You are preparing ebook XHTML content for text-to-speech (TTS) audiobook narration.
+The input contains HTML tags like <p>, <h1>, <em>, etc. PRESERVE ALL TAGS.
+OUTPUT: Respond with ONLY the processed XHTML. No preamble.
+NUMBERS → SPOKEN WORDS, EXPAND ABBREVIATIONS, FIX OCR ERRORS.
+Start your response with the first character of the XHTML content.`;
+
 /**
  * Load the TTS cleanup prompt from file
  */
-export async function loadPrompt(): Promise<string> {
+export async function loadPrompt(mode: 'structure' | 'full' = 'structure'): Promise<string> {
+  const filePath = mode === 'full' ? PROMPT_FILE_PATH_FULL : PROMPT_FILE_PATH;
+  const defaultPrompt = mode === 'full' ? DEFAULT_PROMPT_FULL : DEFAULT_PROMPT;
   try {
-    const content = await fsPromises.readFile(PROMPT_FILE_PATH, 'utf-8');
+    const content = await fsPromises.readFile(filePath, 'utf-8');
     return content.trim();
   } catch {
     // File doesn't exist, return default
-    return DEFAULT_PROMPT;
+    return defaultPrompt;
   }
 }
 
@@ -292,27 +322,36 @@ async function buildCleanupPromptAsync(): Promise<string> {
  * Uses cached prompt or default
  */
 let cachedPrompt: string | null = null;
+let cachedPromptFull: string | null = null;
 
-function buildCleanupPrompt(_options: AICleanupOptions): string {
-  // Return cached prompt if available, otherwise default
+function buildCleanupPrompt(_options: AICleanupOptions, mode: 'structure' | 'full' = 'structure'): string {
+  if (mode === 'full') {
+    return cachedPromptFull || DEFAULT_PROMPT_FULL;
+  }
   return cachedPrompt || DEFAULT_PROMPT;
 }
 
-// Load prompt on module init
-loadPrompt().then(prompt => {
+// Load prompts on module init
+loadPrompt('structure').then(prompt => {
   cachedPrompt = prompt;
 }).catch(() => {
   cachedPrompt = DEFAULT_PROMPT;
+});
+
+loadPrompt('full').then(prompt => {
+  cachedPromptFull = prompt;
+}).catch(() => {
+  cachedPromptFull = DEFAULT_PROMPT_FULL;
 });
 
 /**
  * Build a simple OCR cleanup prompt for queue processing (entire EPUB).
  * Same as buildCleanupPrompt but exposed for queue use.
  */
-export function getOcrCleanupSystemPrompt(): string {
-  const prompt = buildCleanupPrompt({ fixHyphenation: true, fixOcrArtifacts: true, expandAbbreviations: true });
+export function getOcrCleanupSystemPrompt(mode: 'structure' | 'full' = 'structure'): string {
+  const prompt = buildCleanupPrompt({ fixHyphenation: true, fixOcrArtifacts: true, expandAbbreviations: true }, mode);
   // Debug: log first 200 chars of prompt to verify it's the correct version
-  console.log('[AI-BRIDGE] Using system prompt (first 200 chars):', prompt.substring(0, 200).replace(/\n/g, ' '));
+  console.log(`[AI-BRIDGE] Using system prompt (mode: ${mode}, first 200 chars):`, prompt.substring(0, 200).replace(/\n/g, ' '));
   return prompt;
 }
 
@@ -696,6 +735,14 @@ function isJobCancelled(jobId: string): boolean {
 // Multi-Provider Text Cleanup
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Metadata for tracking skipped chunks
+interface ChunkMeta {
+  chapterTitle: string;
+  chunkIndex: number;
+  overallChunkNumber: number;  // 1-based overall chunk number across all chapters
+  totalChunks: number;         // Total chunks in the job
+}
+
 /**
  * Clean up a chunk of text using Claude API
  */
@@ -704,7 +751,8 @@ async function cleanChunkWithClaude(
   systemPrompt: string,
   apiKey: string,
   model: string = 'claude-3-5-sonnet-20241022',
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  chunkMeta?: ChunkMeta
 ): Promise<string> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -747,13 +795,69 @@ async function cleanChunkWithClaude(
     const outputCheck = checkAIOutput(cleaned, text);
     if (outputCheck.skip) {
       console.warn(`[Claude] ${outputCheck.reason} - using original text`);
+      // Track if AI returned [SKIP] for non-trivial content (likely content refusal)
+      if (text.length > 1000) {
+        skipFallbackCount++;
+        console.warn(`[Claude] Suspicious skip: ${text.length} chars is too large for legitimate skip`);
+        // Track the skipped chunk with details
+        if (chunkMeta) {
+          skippedChunks.push({
+            chapterTitle: chunkMeta.chapterTitle,
+            chunkIndex: chunkMeta.chunkIndex,
+            overallChunkNumber: chunkMeta.overallChunkNumber,
+            totalChunks: chunkMeta.totalChunks,
+            reason: 'content-skip',
+            text: text,
+            aiResponse: cleaned.substring(0, 500)
+          });
+        }
+      }
       return text;
     }
 
     // Safeguard 2: if AI returns significantly less text (less than 70%),
-    // it's likely truncating/removing content incorrectly - use original
+    // check if it's a copyright refusal - if so, retry with smaller chunks
     if (cleaned.length < text.length * 0.7) {
+      const lowerCleaned = cleaned.toLowerCase();
+      const isCopyrightRefusal =
+        lowerCleaned.includes('copyright') ||
+        lowerCleaned.includes('copyrighted') ||
+        lowerCleaned.includes('cannot reproduce') ||
+        lowerCleaned.includes('cannot process') ||
+        lowerCleaned.includes('lengthy passage') ||
+        lowerCleaned.includes('substantial excerpt');
+
+      if (isCopyrightRefusal && text.length >= 4000) {
+        // Split chunk in half and process each part separately (8k → 4k → 2k, then stop)
+        console.warn(`[Claude] Copyright refusal detected for ${text.length} char chunk - splitting in half and retrying`);
+        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
+        const firstHalf = text.substring(0, midpoint);
+        const secondHalf = text.substring(midpoint);
+
+        const cleanedFirst = await cleanChunkWithClaude(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
+        const cleanedSecond = await cleanChunkWithClaude(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
+
+        return cleanedFirst + cleanedSecond;
+      }
+
       console.warn(`Claude returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
+      console.warn(`[CLAUDE RESPONSE START]\n${cleaned.substring(0, 500)}...\n[CLAUDE RESPONSE END]`);
+      // Track copyright fallbacks
+      if (isCopyrightRefusal) {
+        copyrightFallbackCount++;
+        // Track the skipped chunk with details
+        if (chunkMeta) {
+          skippedChunks.push({
+            chapterTitle: chunkMeta.chapterTitle,
+            chunkIndex: chunkMeta.chunkIndex,
+            overallChunkNumber: chunkMeta.overallChunkNumber,
+            totalChunks: chunkMeta.totalChunks,
+            reason: 'copyright',
+            text: text,
+            aiResponse: cleaned.substring(0, 500)
+          });
+        }
+      }
       return text;
     }
 
@@ -772,7 +876,8 @@ async function cleanChunkWithOpenAI(
   systemPrompt: string,
   apiKey: string,
   model: string = 'gpt-4o',
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  chunkMeta?: ChunkMeta
 ): Promise<string> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -815,13 +920,68 @@ async function cleanChunkWithOpenAI(
     const outputCheck = checkAIOutput(cleaned, text);
     if (outputCheck.skip) {
       console.warn(`[OpenAI] ${outputCheck.reason} - using original text`);
+      // Track if AI returned [SKIP] for non-trivial content (likely content refusal)
+      if (text.length > 1000) {
+        skipFallbackCount++;
+        console.warn(`[OpenAI] Suspicious skip: ${text.length} chars is too large for legitimate skip`);
+        // Track the skipped chunk with details
+        if (chunkMeta) {
+          skippedChunks.push({
+            chapterTitle: chunkMeta.chapterTitle,
+            chunkIndex: chunkMeta.chunkIndex,
+            overallChunkNumber: chunkMeta.overallChunkNumber,
+            totalChunks: chunkMeta.totalChunks,
+            reason: 'content-skip',
+            text: text,
+            aiResponse: cleaned.substring(0, 500)
+          });
+        }
+      }
       return text;
     }
 
     // Safeguard 2: if AI returns significantly less text (less than 70%),
-    // it's likely truncating/removing content incorrectly - use original
+    // check if it's a copyright refusal - if so, retry with smaller chunks
     if (cleaned.length < text.length * 0.7) {
+      const lowerCleaned = cleaned.toLowerCase();
+      const isCopyrightRefusal =
+        lowerCleaned.includes('copyright') ||
+        lowerCleaned.includes('copyrighted') ||
+        lowerCleaned.includes('cannot reproduce') ||
+        lowerCleaned.includes('cannot process') ||
+        lowerCleaned.includes('lengthy passage') ||
+        lowerCleaned.includes('substantial excerpt');
+
+      if (isCopyrightRefusal && text.length >= 4000) {
+        // Split chunk in half and process each part separately (8k → 4k → 2k, then stop)
+        console.warn(`[OpenAI] Copyright refusal detected for ${text.length} char chunk - splitting in half and retrying`);
+        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
+        const firstHalf = text.substring(0, midpoint);
+        const secondHalf = text.substring(midpoint);
+
+        const cleanedFirst = await cleanChunkWithOpenAI(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
+        const cleanedSecond = await cleanChunkWithOpenAI(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
+
+        return cleanedFirst + cleanedSecond;
+      }
+
       console.warn(`OpenAI returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
+      // Track copyright fallbacks
+      if (isCopyrightRefusal) {
+        copyrightFallbackCount++;
+        // Track the skipped chunk with details
+        if (chunkMeta) {
+          skippedChunks.push({
+            chapterTitle: chunkMeta.chapterTitle,
+            chunkIndex: chunkMeta.chunkIndex,
+            overallChunkNumber: chunkMeta.overallChunkNumber,
+            totalChunks: chunkMeta.totalChunks,
+            reason: 'copyright',
+            text: text,
+            aiResponse: cleaned.substring(0, 500)
+          });
+        }
+      }
       return text;
     }
 
@@ -840,7 +1000,8 @@ async function cleanChunkWithProvider(
   systemPrompt: string,
   config: AIProviderConfig,
   maxRetries: number = 3,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  chunkMeta?: ChunkMeta
 ): Promise<string> {
   let lastError: Error | null = null;
 
@@ -864,7 +1025,7 @@ async function cleanChunkWithProvider(
           if (!config.claude?.model) {
             throw new Error('Claude model not configured');
           }
-          return await cleanChunkWithClaude(text, systemPrompt, config.claude.apiKey, config.claude.model, abortSignal);
+          return await cleanChunkWithClaude(text, systemPrompt, config.claude.apiKey, config.claude.model, abortSignal, chunkMeta);
         case 'openai':
           if (!config.openai?.apiKey) {
             throw new Error('OpenAI API key not configured');
@@ -872,7 +1033,7 @@ async function cleanChunkWithProvider(
           if (!config.openai?.model) {
             throw new Error('OpenAI model not configured');
           }
-          return await cleanChunkWithOpenAI(text, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal);
+          return await cleanChunkWithOpenAI(text, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal, chunkMeta);
         default:
           throw new Error(`Unknown provider: ${config.provider}`);
       }
@@ -1133,6 +1294,11 @@ export interface EpubCleanupResult {
   outputPath?: string;
   error?: string;
   chaptersProcessed?: number;
+  copyrightIssuesDetected?: boolean;  // True if any chunks triggered copyright refusal
+  copyrightChunksAffected?: number;   // Number of chunks that fell back to original due to copyright
+  contentSkipsDetected?: boolean;     // True if AI returned [SKIP] for non-trivial content
+  contentSkipsAffected?: number;      // Number of chunks where AI refused via [SKIP]
+  skippedChunksPath?: string;         // Path to JSON file containing skipped chunk details
 }
 
 /**
@@ -1153,17 +1319,33 @@ export async function cleanupEpub(
   options?: {
     deletedBlockExamples?: DeletedBlockExample[];
     useDetailedCleanup?: boolean;
+    useParallel?: boolean;
+    parallelWorkers?: number;
+    cleanupMode?: 'structure' | 'full';
+    testMode?: boolean;
   }
 ): Promise<EpubCleanupResult> {
   // Debug logging to trace provider selection
+  const cleanupMode = options?.cleanupMode || 'structure';
+  const testMode = options?.testMode || false;
+  const TEST_MODE_CHUNK_LIMIT = 5;
   console.log('[AI-BRIDGE] cleanupEpub called with:', {
     provider: providerConfig.provider,
     ollamaModel: providerConfig.ollama?.model,
     claudeModel: providerConfig.claude?.model,
     openaiModel: providerConfig.openai?.model,
     useDetailedCleanup: options?.useDetailedCleanup,
-    exampleCount: options?.deletedBlockExamples?.length || 0
+    exampleCount: options?.deletedBlockExamples?.length || 0,
+    useParallel: options?.useParallel,
+    parallelWorkers: options?.parallelWorkers,
+    cleanupMode,
+    testMode
   });
+
+  // Reset fallback counters and skipped chunks tracking for this job
+  copyrightFallbackCount = 0;
+  skipFallbackCount = 0;
+  skippedChunks = [];
 
   // providerConfig is required - no fallbacks
   const config = providerConfig;
@@ -1200,6 +1382,17 @@ export async function cleanupEpub(
 
   // Create AbortController for this job - allows immediate cancellation
   const abortController = new AbortController();
+  // Increase max listeners to avoid warnings with parallel processing
+  // Each fetch call adds an abort listener, so with 5 workers * many chunks we need more
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { setMaxListeners } = require('events') as { setMaxListeners?: (n: number, target: EventTarget) => void };
+    if (setMaxListeners) {
+      setMaxListeners(200, abortController.signal);
+    }
+  } catch {
+    // Older Node versions may not support this - warning is harmless
+  }
   activeCleanupJobs.set(jobId, abortController);
   console.log(`[AI-BRIDGE] Job ${jobId} registered for cancellation support`);
 
@@ -1256,13 +1449,13 @@ export async function cleanupEpub(
     const chapters = structure?.chapters || [];
     const totalChapters = chapters.length;
 
-    if (totalChapters === 0) {
+    if (totalChapters === 0 || !structure) {
       processor.close();
       return { success: false, error: 'No chapters found in EPUB' };
     }
 
     // Build system prompt with optional detailed cleanup examples
-    let systemPrompt = getOcrCleanupSystemPrompt();
+    let systemPrompt = getOcrCleanupSystemPrompt(cleanupMode);
     if (options?.useDetailedCleanup && options.deletedBlockExamples && options.deletedBlockExamples.length > 0) {
       const examplesSection = buildExamplesSection(options.deletedBlockExamples);
       systemPrompt = systemPrompt + examplesSection;
@@ -1285,30 +1478,102 @@ export async function cleanupEpub(
 
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 1: Pre-scan all chapters to calculate total chunks in job
+    // Mode 'structure': Uses cheerio to extract block elements (preserves HTML)
+    // Mode 'full': Sends entire XHTML body to AI (can fix structural issues)
     // ─────────────────────────────────────────────────────────────────────────
-    console.log('[AI-CLEANUP] Pre-scanning chapters to calculate total chunks...');
+    console.log(`[AI-CLEANUP] Pre-scanning chapters (mode: ${cleanupMode})...`);
+
+    // Store original XHTML for each chapter (needed for replacement later)
+    const chapterXhtmlMap: Map<string, string> = new Map();
+
+    // Each chunk contains either marked text (structure) or XHTML body (full)
     const chapterChunks: { chapter: typeof chapters[0]; chunks: string[] }[] = [];
     let totalChunksInJob = 0;
 
     for (const chapter of chapters) {
-      const text = await processor.getChapterText(chapter.id);
-      if (!text || text.trim().length === 0) {
-        continue; // Skip empty chapters
+      // Read the raw XHTML
+      const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
+      let xhtml: string;
+      try {
+        xhtml = await processor.readFile(href);
+      } catch {
+        continue; // Skip chapters that can't be read
       }
 
-      // Split into chunks at logical break points (paragraph > sentence > word)
+      // Pre-process XHTML: ensure newlines between adjacent block elements
+      // This fixes smashed-together elements like </h2><h3> or </p><p>
+      const normalizedXhtml = xhtml
+        .replace(/(<\/(?:p|h[1-6]|div|li|blockquote|section|article|header|footer|figcaption)>)\s*(<(?:p|h[1-6]|div|li|blockquote|section|article|header|footer|figcaption)[^>]*>)/gi, '$1\n$2');
+
+      // Store normalized XHTML for later replacement
+      chapterXhtmlMap.set(chapter.id, normalizedXhtml);
+
+      let chapterText: string;
+
+      if (cleanupMode === 'full') {
+        // FULL MODE: Extract body content with tags (from normalized XHTML)
+        const bodyMatch = normalizedXhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+        if (!bodyMatch || bodyMatch[1].trim().length === 0) {
+          continue; // Skip empty chapters
+        }
+        chapterText = bodyMatch[1];
+      } else {
+        // STRUCTURE MODE: Extract block texts using cheerio, join with markers
+        const blockTexts = extractBlockTexts(normalizedXhtml);
+        if (blockTexts.length === 0) {
+          continue; // Skip empty chapters
+        }
+        chapterText = blockTexts.join(BLOCK_MARKER);
+      }
+
+      // Split into chunks
       const uniqueChunks: string[] = [];
 
-      // If chapter fits in one chunk, don't split
-      if (text.length <= CHUNK_SIZE) {
-        uniqueChunks.push(text);
+      if (chapterText.length <= CHUNK_SIZE) {
+        // Fits in one chunk
+        uniqueChunks.push(chapterText);
+      } else if (cleanupMode === 'full') {
+        // FULL MODE: Split at tag boundaries (</p>, </h1>, etc.)
+        // This avoids cutting in the middle of tags
+        const tagSplitPattern = /(<\/(?:p|h[1-6]|div|li|blockquote|section|article)>)/gi;
+        const parts = chapterText.split(tagSplitPattern);
+        let currentChunk = '';
+
+        for (let i = 0; i < parts.length; i++) {
+          const part = parts[i];
+          const wouldBe = currentChunk + part;
+
+          if (wouldBe.length > CHUNK_SIZE && currentChunk.length > 0) {
+            uniqueChunks.push(currentChunk);
+            currentChunk = part;
+          } else {
+            currentChunk = wouldBe;
+          }
+        }
+
+        if (currentChunk.length > 0) {
+          uniqueChunks.push(currentChunk);
+        }
       } else {
-        let pos = 0;
-        while (pos < text.length) {
-          const targetEnd = Math.min(pos + CHUNK_SIZE, text.length);
-          const end = findBestBreakPoint(text, targetEnd, pos);
-          uniqueChunks.push(text.substring(pos, end));
-          pos = end;
+        // STRUCTURE MODE: Split at marker boundaries
+        const blocks = chapterText.split(BLOCK_MARKER);
+        let currentChunk = '';
+
+        for (const block of blocks) {
+          const wouldBe = currentChunk
+            ? currentChunk + BLOCK_MARKER + block
+            : block;
+
+          if (wouldBe.length > CHUNK_SIZE && currentChunk.length > 0) {
+            uniqueChunks.push(currentChunk);
+            currentChunk = block;
+          } else {
+            currentChunk = wouldBe;
+          }
+        }
+
+        if (currentChunk.length > 0) {
+          uniqueChunks.push(currentChunk);
         }
       }
 
@@ -1318,16 +1583,205 @@ export async function cleanupEpub(
       }
     }
 
-    console.log(`[AI-CLEANUP] Total chunks in job: ${totalChunksInJob} across ${chapterChunks.length} non-empty chapters`);
+    console.log(`[AI-CLEANUP] Total chunks in job: ${totalChunksInJob} across ${chapterChunks.length} non-empty chapters (mode: ${cleanupMode})`);
 
     if (totalChunksInJob === 0) {
       processor.close();
       return { success: false, error: 'No text content found in EPUB' };
     }
 
+    // TEST MODE: Limit to first N chunks
+    console.log('[AI-CLEANUP] Test mode check:', { testMode, optionsTestMode: options?.testMode, options: JSON.stringify(options) });
+    if (testMode) {
+      console.log(`[AI-CLEANUP] TEST MODE: Limiting to first ${TEST_MODE_CHUNK_LIMIT} chunks`);
+      let chunksRemaining = TEST_MODE_CHUNK_LIMIT;
+      const limitedChapterChunks: typeof chapterChunks = [];
+
+      for (const { chapter, chunks } of chapterChunks) {
+        if (chunksRemaining <= 0) break;
+
+        if (chunks.length <= chunksRemaining) {
+          // Take all chunks from this chapter
+          limitedChapterChunks.push({ chapter, chunks });
+          chunksRemaining -= chunks.length;
+        } else {
+          // Take only the remaining chunks we need
+          limitedChapterChunks.push({ chapter, chunks: chunks.slice(0, chunksRemaining) });
+          chunksRemaining = 0;
+        }
+      }
+
+      // Replace the arrays with limited versions
+      chapterChunks.length = 0;
+      chapterChunks.push(...limitedChapterChunks);
+      totalChunksInJob = Math.min(totalChunksInJob, TEST_MODE_CHUNK_LIMIT);
+      console.log(`[AI-CLEANUP] TEST MODE: Processing ${totalChunksInJob} chunks across ${chapterChunks.length} chapters`);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
-    // PHASE 2: Process all chunks
+    // PHASE 2: Process all chunks (parallel or sequential)
     // ─────────────────────────────────────────────────────────────────────────
+    const useParallel = options?.useParallel && config.provider !== 'ollama';
+    const workerCount = Math.min(options?.parallelWorkers || 3, totalChunksInJob);
+
+    if (useParallel && workerCount > 1) {
+      // ─────────────────────────────────────────────────────────────────────────
+      // PARALLEL PROCESSING: Chunk-level parallelism for optimal load balancing
+      // ─────────────────────────────────────────────────────────────────────────
+      console.log(`[AI-CLEANUP] Using PARALLEL chunk-level processing with ${workerCount} workers`);
+
+      // Flatten all chunks into a single queue with metadata
+      interface ChunkWork {
+        chapterId: string;
+        chapterTitle: string;
+        chapterIndex: number;
+        chunkIndex: number;
+        overallChunkNumber: number;  // 1-based overall position
+        text: string;
+      }
+
+      const chunkQueue: ChunkWork[] = [];
+      let overallNumber = 0;
+      for (let chapterIdx = 0; chapterIdx < chapterChunks.length; chapterIdx++) {
+        const { chapter, chunks } = chapterChunks[chapterIdx];
+        for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+          overallNumber++;
+          chunkQueue.push({
+            chapterId: chapter.id,
+            chapterTitle: chapter.title,
+            chapterIndex: chapterIdx,
+            chunkIndex: chunkIdx,
+            overallChunkNumber: overallNumber,
+            text: chunks[chunkIdx]
+          });
+        }
+      }
+
+      console.log(`[AI-CLEANUP] Created chunk queue with ${chunkQueue.length} items`);
+
+      // Results storage
+      interface ChunkResult {
+        chapterId: string;
+        chunkIndex: number;
+        cleanedText: string;
+      }
+      const results: ChunkResult[] = [];
+      let totalChunksCompleted = 0;
+
+      // Helper to update progress
+      const updateProgress = (chapterTitle: string) => {
+        totalChunksCompleted++;
+        const percentage = Math.round((totalChunksCompleted / totalChunksInJob) * 90);
+        sendProgress({
+          jobId,
+          phase: 'processing',
+          currentChapter: 0, // Not meaningful for chunk-level
+          totalChapters: chapterChunks.length,
+          currentChunk: totalChunksCompleted,
+          totalChunks: totalChunksInJob,
+          percentage,
+          message: `[${workerCount} workers] Chunk ${totalChunksCompleted}/${totalChunksInJob}: ${chapterTitle}`,
+          outputPath,
+          chunksCompletedInJob: totalChunksCompleted,
+          totalChunksInJob,
+          chunkCompletedAt: Date.now()
+        });
+      };
+
+      // Worker function - pulls chunks from shared queue
+      const runWorker = async (workerId: number): Promise<void> => {
+        while (true) {
+          // Get next chunk from queue (atomic via shift)
+          const work = chunkQueue.shift();
+          if (!work) break; // Queue empty
+          if (abortController.signal.aborted) break;
+
+          try {
+            const chunkMeta = {
+              chapterTitle: work.chapterTitle,
+              chunkIndex: work.chunkIndex,
+              overallChunkNumber: work.overallChunkNumber,
+              totalChunks: totalChunksInJob
+            };
+            const cleaned = await cleanChunkWithProvider(work.text, systemPrompt, config, 3, abortController.signal, chunkMeta);
+            results.push({
+              chapterId: work.chapterId,
+              chunkIndex: work.chunkIndex,
+              cleanedText: cleaned
+            });
+            updateProgress(work.chapterTitle);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            // Check for unrecoverable errors
+            if (errorMessage.includes('credit balance') || errorMessage.includes('rate_limit') ||
+                errorMessage.includes('invalid_api_key') || errorMessage.includes('401') ||
+                errorMessage.includes('403') || errorMessage.includes('quota')) {
+              throw error; // Re-throw to stop all workers
+            }
+            // For recoverable errors, keep original text
+            results.push({
+              chapterId: work.chapterId,
+              chunkIndex: work.chunkIndex,
+              cleanedText: work.text
+            });
+            updateProgress(work.chapterTitle);
+          }
+        }
+      };
+
+      // Start workers
+      const workers = Array(workerCount).fill(null).map((_, i) => runWorker(i));
+      await Promise.all(workers);
+
+      // Check if cancelled
+      if (abortController.signal.aborted) {
+        throw new Error('Job cancelled');
+      }
+
+      // Reassemble: group by chapter, sort by chunk index, join
+      const chapterResults = new Map<string, ChunkResult[]>();
+      for (const result of results) {
+        if (!chapterResults.has(result.chapterId)) {
+          chapterResults.set(result.chapterId, []);
+        }
+        chapterResults.get(result.chapterId)!.push(result);
+      }
+
+      // Sort chunks within each chapter and join, then rebuild XHTML
+      for (const [chapterId, chunks] of chapterResults) {
+        chunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+        const cleanedText = chunks.map(c => c.cleanedText).join('');
+
+        const originalXhtml = chapterXhtmlMap.get(chapterId);
+        if (!originalXhtml) {
+          console.warn(`[AI-CLEANUP] No original XHTML for chapter ${chapterId}`);
+          continue;
+        }
+
+        let rebuiltXhtml: string;
+        if (cleanupMode === 'full') {
+          // FULL MODE: Replace body content directly
+          rebuiltXhtml = originalXhtml.replace(
+            /(<body[^>]*>)([\s\S]*)(<\/body>)/i,
+            `$1${cleanedText}$3`
+          );
+        } else {
+          // STRUCTURE MODE: Split on markers and use cheerio to replace block texts
+          const cleanedBlocks = cleanedText.split(BLOCK_MARKER).map(t => t.trim()).filter(t => t.length > 0);
+          rebuiltXhtml = replaceBlockTexts(originalXhtml, cleanedBlocks);
+        }
+        modifiedChapters.set(chapterId, rebuiltXhtml);
+      }
+      chaptersProcessed = chapterResults.size;
+
+      console.log(`[AI-CLEANUP] Reassembled ${chaptersProcessed} chapters from ${results.length} chunks (structure preserved via cheerio)`);
+
+    } else {
+      // ─────────────────────────────────────────────────────────────────────────
+      // SEQUENTIAL PROCESSING: Original single-threaded approach
+      // ─────────────────────────────────────────────────────────────────────────
+      console.log('[AI-CLEANUP] Using SEQUENTIAL processing');
+
     for (let i = 0; i < chapterChunks.length; i++) {
       // Check for cancellation before each chapter
       if (abortController.signal.aborted) {
@@ -1366,7 +1820,13 @@ export async function cleanupEpub(
 
         try {
           console.log(`[AI-CLEANUP] Starting chunk ${currentChunkInJob}/${totalChunksInJob} - "${chapter.title}" (${uniqueChunks[c].length} chars)`);
-          const cleaned = await cleanChunkWithProvider(uniqueChunks[c], systemPrompt, config, 3, abortController.signal);
+          const chunkMeta = {
+            chapterTitle: chapter.title,
+            chunkIndex: c,
+            overallChunkNumber: currentChunkInJob,
+            totalChunks: totalChunksInJob
+          };
+          const cleaned = await cleanChunkWithProvider(uniqueChunks[c], systemPrompt, config, 3, abortController.signal, chunkMeta);
           const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
           console.log(`[AI-CLEANUP] Completed chunk ${currentChunkInJob}/${totalChunksInJob} in ${chunkDuration}s (${cleaned.length} chars output)`);
           cleanedChunks.push(cleaned);
@@ -1381,11 +1841,27 @@ export async function cleanupEpub(
 
           if (shouldSave) {
             // Combine cleaned chunks with remaining original chunks for partial chapter
-            const partialChapterText = [
+            const partialText = [
               ...cleanedChunks,
               ...uniqueChunks.slice(c + 1)  // Remaining unprocessed chunks
             ].join('');
-            modifiedChapters.set(chapter.id, partialChapterText);
+
+            const originalXhtml = chapterXhtmlMap.get(chapter.id);
+            if (originalXhtml) {
+              let rebuiltXhtml: string;
+              if (cleanupMode === 'full') {
+                // FULL MODE: Replace body content directly
+                rebuiltXhtml = originalXhtml.replace(
+                  /(<body[^>]*>)([\s\S]*)(<\/body>)/i,
+                  `$1${partialText}$3`
+                );
+              } else {
+                // STRUCTURE MODE: Split on markers and use cheerio
+                const partialBlocks = partialText.split(BLOCK_MARKER).map(t => t.trim()).filter(t => t.length > 0);
+                rebuiltXhtml = replaceBlockTexts(originalXhtml, partialBlocks);
+              }
+              modifiedChapters.set(chapter.id, rebuiltXhtml);
+            }
 
             try {
               await saveModifiedEpubLocal(processor, modifiedChapters, outputPath);
@@ -1459,7 +1935,22 @@ export async function cleanupEpub(
 
       // Update chapter with final cleaned text (all chunks processed)
       const cleanedText = cleanedChunks.join('');
-      modifiedChapters.set(chapter.id, cleanedText);
+      const originalXhtml = chapterXhtmlMap.get(chapter.id);
+      if (originalXhtml) {
+        let rebuiltXhtml: string;
+        if (cleanupMode === 'full') {
+          // FULL MODE: Replace body content directly
+          rebuiltXhtml = originalXhtml.replace(
+            /(<body[^>]*>)([\s\S]*)(<\/body>)/i,
+            `$1${cleanedText}$3`
+          );
+        } else {
+          // STRUCTURE MODE: Split on markers and use cheerio
+          const cleanedBlocks = cleanedText.split(BLOCK_MARKER).map(t => t.trim()).filter(t => t.length > 0);
+          rebuiltXhtml = replaceBlockTexts(originalXhtml, cleanedBlocks);
+        }
+        modifiedChapters.set(chapter.id, rebuiltXhtml);
+      }
       chaptersProcessed++;
 
       // Final save for this chapter (already saved incrementally per-chunk above)
@@ -1469,6 +1960,7 @@ export async function cleanupEpub(
         console.error(`Failed to save after chapter ${i + 1}:`, saveError);
       }
     }
+    } // End of else (sequential processing)
 
     // Final save
     sendProgress({
@@ -1502,10 +1994,31 @@ export async function cleanupEpub(
       message: 'OCR cleanup complete'
     });
 
+    // Log copyright issues if any
+    if (copyrightFallbackCount > 0) {
+      console.warn(`[AI-CLEANUP] Copyright issues detected: ${copyrightFallbackCount} chunks fell back to original text`);
+    }
+    if (skipFallbackCount > 0) {
+      console.warn(`[AI-CLEANUP] Content skips detected: ${skipFallbackCount} chunks returned [SKIP] for non-trivial content`);
+    }
+
+    // Save skipped chunks to JSON file if any exist
+    let skippedChunksPath: string | undefined;
+    if (skippedChunks.length > 0) {
+      skippedChunksPath = path.join(epubDir, 'skipped-chunks.json');
+      await fsPromises.writeFile(skippedChunksPath, JSON.stringify(skippedChunks, null, 2), 'utf-8');
+      console.log(`[AI-CLEANUP] Saved ${skippedChunks.length} skipped chunks to ${skippedChunksPath}`);
+    }
+
     return {
       success: true,
       outputPath,
-      chaptersProcessed
+      chaptersProcessed,
+      copyrightIssuesDetected: copyrightFallbackCount > 0,
+      copyrightChunksAffected: copyrightFallbackCount,
+      contentSkipsDetected: skipFallbackCount > 0,
+      contentSkipsAffected: skipFallbackCount,
+      skippedChunksPath
     };
   } catch (error) {
     // Clean up abort controller
@@ -1575,11 +2088,8 @@ async function saveModifiedEpubLocal(
     }
 
     if (isModified && modifiedContent !== null) {
-      // Read original XHTML
-      const originalXhtml = await processor.readFile(entryName);
-      // Replace body content with cleaned text
-      const newXhtml = replaceXhtmlBodyLocal(originalXhtml, modifiedContent);
-      zipWriter.addFile(entryName, Buffer.from(newXhtml, 'utf8'));
+      // modifiedContent is now the fully rebuilt XHTML from cheerio's replaceBlockTexts
+      zipWriter.addFile(entryName, Buffer.from(modifiedContent, 'utf8'));
     } else {
       // Copy file as-is
       const data = await processor.readBinaryFile(entryName);
@@ -1594,25 +2104,94 @@ async function saveModifiedEpubLocal(
 }
 
 /**
- * Replace the body content in an XHTML document while preserving the structure.
+ * Replace the body content in an XHTML document while preserving the HTML structure.
+ * Maps cleaned text blocks back to original block-level elements.
  * Local version for use with dedicated processor.
  */
-function replaceXhtmlBodyLocal(xhtml: string, newText: string): string {
+function replaceXhtmlBodyLocal(xhtml: string, cleanedText: string): string {
   // Find the body tag
   const bodyMatch = xhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
   if (!bodyMatch) {
-    // No body tag, return as-is
     return xhtml;
   }
 
-  // Convert plain text to paragraphs
-  const paragraphs = newText.split(/\n\n+/).filter(p => p.trim());
-  const htmlContent = paragraphs.map(p => `<p>${escapeXmlLocal(p.trim())}</p>`).join('\n');
+  const bodyContent = bodyMatch[1];
 
-  // Replace body content
+  // Split cleaned text into blocks (separated by double newlines)
+  const cleanedBlocks = cleanedText.split(/\n\n+/).map(b => b.trim()).filter(b => b.length > 0);
+
+  if (cleanedBlocks.length === 0) {
+    return xhtml;
+  }
+
+  // Find all block-level elements with text content
+  // Use a non-greedy match to get individual elements
+  const blockPattern = /<(p|h[1-6]|li|blockquote|figcaption)([^>]*)>([\s\S]*?)<\/\1>/gi;
+
+  // Collect all matches with their positions
+  interface BlockMatch {
+    full: string;
+    tag: string;
+    attrs: string;
+    content: string;
+    startIndex: number;
+    hasText: boolean;
+  }
+
+  const matches: BlockMatch[] = [];
+  let match;
+
+  while ((match = blockPattern.exec(bodyContent)) !== null) {
+    // Check if this element has actual text content (not just whitespace/nested tags)
+    const textContent = match[3]
+      .replace(/<[^>]+>/g, '')
+      .replace(/&[^;]+;/g, ' ')
+      .trim();
+
+    matches.push({
+      full: match[0],
+      tag: match[1],
+      attrs: match[2],
+      content: match[3],
+      startIndex: match.index,
+      hasText: textContent.length > 0
+    });
+  }
+
+  // Filter to only elements with text
+  const textMatches = matches.filter(m => m.hasText);
+
+  // If counts don't match, fall back to simple paragraph replacement
+  if (textMatches.length !== cleanedBlocks.length) {
+    console.warn(`[AI-BRIDGE] Block count mismatch: ${textMatches.length} HTML blocks vs ${cleanedBlocks.length} cleaned blocks. Using paragraph fallback.`);
+    const paragraphs = cleanedBlocks.map(p => `<p>${escapeXmlLocal(p)}</p>`).join('\n');
+    return xhtml.replace(
+      /<body([^>]*)>[\s\S]*<\/body>/i,
+      `<body$1>\n${paragraphs}\n</body>`
+    );
+  }
+
+  // Replace each block element's content with cleaned text (work backwards to preserve indices)
+  let newBodyContent = bodyContent;
+
+  for (let i = textMatches.length - 1; i >= 0; i--) {
+    const m = textMatches[i];
+    const cleanedBlock = cleanedBlocks[i];
+
+    // Build new element preserving original tag and attributes
+    const newElement = `<${m.tag}${m.attrs}>${escapeXmlLocal(cleanedBlock)}</${m.tag}>`;
+
+    // Replace in the body content
+    newBodyContent =
+      newBodyContent.substring(0, m.startIndex) +
+      newElement +
+      newBodyContent.substring(m.startIndex + m.full.length);
+  }
+
+  // Replace body content in the original XHTML
   return xhtml.replace(
     /<body([^>]*)>[\s\S]*<\/body>/i,
-    `<body$1>\n${htmlContent}\n</body>`
+    `<body$1>${newBodyContent}</body>`
   );
 }
 

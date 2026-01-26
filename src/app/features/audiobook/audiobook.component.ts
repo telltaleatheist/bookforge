@@ -13,6 +13,7 @@ import { TranslationPanelComponent } from './components/translation-panel/transl
 import { TtsSettingsComponent, TTSSettings } from './components/tts-settings/tts-settings.component';
 import { DiffViewComponent } from './components/diff-view/diff-view.component';
 import { PlayViewComponent } from './components/play-view/play-view.component';
+import { SkippedChunksPanelComponent } from './components/skipped-chunks-panel/skipped-chunks-panel.component';
 import { EpubService } from './services/epub.service';
 import { AudiobookService } from './services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
@@ -20,7 +21,7 @@ import { SettingsService } from '../../core/services/settings.service';
 import { LibraryService } from '../../core/services/library.service';
 
 // Workflow states for the audiobook producer
-type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'complete';
+type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'skipped' | 'complete';
 
 @Component({
   selector: 'app-audiobook',
@@ -36,7 +37,8 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
     AiCleanupPanelComponent,
     TtsSettingsComponent,
     DiffViewComponent,
-    PlayViewComponent
+    PlayViewComponent,
+    SkippedChunksPanelComponent
   ],
   template: `
     <!-- Toolbar -->
@@ -117,6 +119,15 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                   Review Changes
                 </button>
               }
+              @if (selectedItem()?.skippedChunksPath) {
+                <button
+                  class="tab warning"
+                  [class.active]="workflowState() === 'skipped'"
+                  (click)="setWorkflowState('skipped')"
+                >
+                  Skipped Chunks
+                </button>
+              }
             </div>
 
 
@@ -174,6 +185,12 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                       (textEdited)="onDiffTextEdited($event)"
                     />
                   }
+                }
+                @case ('skipped') {
+                  <app-skipped-chunks-panel
+                    [skippedChunksPath]="selectedItem()?.skippedChunksPath || null"
+                    [cleanedEpubPath]="currentEpubPath()"
+                  />
                 }
               }
             </div>
@@ -260,6 +277,15 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
       &.active {
         color: var(--accent-primary);
         border-bottom-color: var(--accent-primary);
+      }
+
+      &.warning {
+        color: var(--warning, #f59e0b);
+
+        &.active {
+          color: var(--warning, #f59e0b);
+          border-bottom-color: var(--warning, #f59e0b);
+        }
       }
     }
 
@@ -569,7 +595,8 @@ export class AudiobookComponent implements OnInit {
           status: 'pending',
           addedAt: new Date(file.addedAt),
           projectId: file.projectId,
-          hasCleaned: file.hasCleaned
+          hasCleaned: file.hasCleaned,
+          skippedChunksPath: file.skippedChunksPath
         });
         await this.epubService.close();
       }

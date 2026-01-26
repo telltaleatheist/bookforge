@@ -55,6 +55,14 @@ export interface QueueJob {
   resumeMissingSentences?: number;           // Sentences to process in this resume
   // Session progress tracking (for accurate ETA on resume jobs)
   chunksDoneInSession?: number;              // Chunks completed in THIS session only
+  // Copyright issues detected during AI cleanup
+  copyrightIssuesDetected?: boolean;
+  copyrightChunksAffected?: number;
+  // Content skips detected during AI cleanup (AI refused via [SKIP] marker)
+  contentSkipsDetected?: boolean;
+  contentSkipsAffected?: number;
+  // Path to JSON file containing skipped chunk details
+  skippedChunksPath?: string;
 }
 
 // Job configuration union type
@@ -80,6 +88,13 @@ export interface OcrCleanupConfig {
   // Detailed cleanup mode - uses deleted blocks as few-shot examples
   deletedBlockExamples?: DeletedBlockExample[];
   useDetailedCleanup?: boolean;
+  // Parallel processing (only for non-local APIs: Claude, OpenAI)
+  parallelWorkers?: number;  // 1-5, default 1 (sequential)
+  useParallel?: boolean;     // Enable parallel processing
+  // Cleanup mode: 'structure' preserves HTML, 'full' sends HTML to AI for structural fixes
+  cleanupMode?: 'structure' | 'full';
+  // Test mode: only process first 5 chunks
+  testMode?: boolean;
 }
 
 // TTS Conversion job configuration
@@ -198,6 +213,25 @@ export interface JobResult {
   success: boolean;
   outputPath?: string;
   error?: string;
+  // Copyright detection for AI cleanup
+  copyrightIssuesDetected?: boolean;
+  copyrightChunksAffected?: number;
+  // Content skips detection for AI cleanup
+  contentSkipsDetected?: boolean;
+  contentSkipsAffected?: number;
+  // Path to JSON file containing skipped chunk details
+  skippedChunksPath?: string;
+}
+
+// Skipped chunk data structure (matches ai-bridge.ts)
+export interface SkippedChunk {
+  chapterTitle: string;
+  chunkIndex: number;
+  overallChunkNumber: number;  // 1-based overall chunk number (e.g., "Chunk 5/121")
+  totalChunks: number;         // Total chunks in the job
+  reason: 'copyright' | 'content-skip' | 'ai-refusal';
+  text: string;
+  aiResponse?: string;
 }
 
 // Audiobook metadata for TTS jobs

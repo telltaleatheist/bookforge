@@ -10,6 +10,7 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import { promisify } from 'util';
+import * as cheerio from 'cheerio';
 
 const inflateRaw = promisify(zlib.inflateRaw);
 
@@ -580,7 +581,21 @@ class EpubProcessor {
 
     // Add period after headings for natural TTS pause, but only if not already punctuated
     // This handles: <h1>Title</h1> → <h1>Title. </h1> but <h1>Title?</h1> stays as-is
-    text = text.replace(/([^.!?])<\/h[1-6]>/gi, '$1. ');
+    text = text.replace(/([^.!?\s])<\/h[1-6]>/gi, '$1.');
+
+    // PRESERVE PARAGRAPH STRUCTURE: Convert block-level closing tags to double newlines
+    // Only convert actual text-containing elements, NOT container divs
+    // This must match the elements we look for in replaceXhtmlBodyLocal (ai-bridge.ts)
+    text = text.replace(/<\/p>/gi, '\n\n');
+    text = text.replace(/<\/h[1-6]>/gi, '\n\n');
+    text = text.replace(/<\/li>/gi, '\n\n');
+    text = text.replace(/<\/blockquote>/gi, '\n\n');
+    text = text.replace(/<\/figcaption>/gi, '\n\n');
+    // Don't convert </div> - divs are usually containers, not text blocks
+    text = text.replace(/<br\s*\/?>/gi, '\n');
+
+    // Also add newlines BEFORE opening block tags (in case closing tags are missing or malformed)
+    text = text.replace(/<(p|h[1-6]|li|blockquote|figcaption)([\s>])/gi, '\n\n<$1$2');
 
     // Remove all remaining tags
     text = text.replace(/<[^>]+>/g, ' ');
@@ -595,8 +610,15 @@ class EpubProcessor {
     text = text.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)));
     text = text.replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
 
-    // Clean up whitespace
-    text = text.replace(/\s+/g, ' ').trim();
+    // Clean up whitespace WITHIN paragraphs (preserve paragraph breaks)
+    // First, normalize spaces within lines (but not newlines)
+    text = text.replace(/[^\S\n]+/g, ' ');
+    // Then collapse multiple newlines to exactly two (paragraph break)
+    text = text.replace(/\n\s*\n/g, '\n\n');
+    // Clean up leading/trailing whitespace on each line
+    text = text.replace(/^ +| +$/gm, '');
+    // Final trim
+    text = text.trim();
 
     return text;
   }
@@ -1372,6 +1394,220 @@ export async function editEpubText(
   }
 }
 
+/**
+ * Replace text in an EPUB by searching all chapters.
+ * Used for editing skipped chunks where we don't know the chapter ID.
+ *
+ * This function extracts plain text from each chapter (like AI cleanup does),
+ * finds the text there, replaces it, then rebuilds the chapter XHTML.
+ */
+export async function replaceTextInEpub(
+  epubPath: string,
+  oldText: string,
+  newText: string
+): Promise<{ success: boolean; error?: string; chapterFound?: string }> {
+  const processor = new EpubProcessor();
+
+  // Helper to extract plain text from XHTML (same as EpubProcessor.extractTextFromXhtml)
+  function extractText(xhtml: string): string {
+    let text = xhtml.replace(/<head[\s\S]*?<\/head>/gi, '');
+    text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
+    text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
+    text = text.replace(/([^.!?\s])<\/h[1-6]>/gi, '$1.');
+    text = text.replace(/<\/p>/gi, '\n\n');
+    text = text.replace(/<\/h[1-6]>/gi, '\n\n');
+    text = text.replace(/<\/li>/gi, '\n\n');
+    text = text.replace(/<\/blockquote>/gi, '\n\n');
+    text = text.replace(/<\/figcaption>/gi, '\n\n');
+    text = text.replace(/<br\s*\/?>/gi, '\n');
+    // Add newlines BEFORE opening block tags too
+    text = text.replace(/<(p|h[1-6]|li|blockquote|figcaption)([\s>])/gi, '\n\n<$1$2');
+    text = text.replace(/<[^>]+>/g, ' ');
+    text = text.replace(/&nbsp;/g, ' ');
+    text = text.replace(/&amp;/g, '&');
+    text = text.replace(/&lt;/g, '<');
+    text = text.replace(/&gt;/g, '>');
+    text = text.replace(/&quot;/g, '"');
+    text = text.replace(/&apos;/g, "'");
+    text = text.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)));
+    text = text.replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
+    text = text.replace(/[^\S\n]+/g, ' ');
+    text = text.replace(/\n\s*\n/g, '\n\n');
+    text = text.replace(/^ +| +$/gm, '');
+    return text.trim();
+  }
+
+  // Helper to escape XML special characters
+  function escapeXml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  // Helper to rebuild XHTML body with new text (preserving structure where possible)
+  function rebuildXhtml(originalXhtml: string, newPlainText: string): string {
+    const bodyMatch = originalXhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    if (!bodyMatch) {
+      return originalXhtml;
+    }
+
+    const bodyContent = bodyMatch[1];
+    const newBlocks = newPlainText.split(/\n\n+/).map(b => b.trim()).filter(b => b.length > 0);
+
+    if (newBlocks.length === 0) {
+      return originalXhtml;
+    }
+
+    // Find block-level elements in original
+    const blockPattern = /<(p|h[1-6]|li|blockquote|figcaption)([^>]*)>([\s\S]*?)<\/\1>/gi;
+    interface BlockMatch {
+      full: string;
+      tag: string;
+      attrs: string;
+      content: string;
+      startIndex: number;
+      hasText: boolean;
+    }
+
+    const matches: BlockMatch[] = [];
+    let match;
+
+    while ((match = blockPattern.exec(bodyContent)) !== null) {
+      const textContent = match[3]
+        .replace(/<[^>]+>/g, '')
+        .replace(/&[^;]+;/g, ' ')
+        .trim();
+
+      matches.push({
+        full: match[0],
+        tag: match[1],
+        attrs: match[2],
+        content: match[3],
+        startIndex: match.index,
+        hasText: textContent.length > 0
+      });
+    }
+
+    const textMatches = matches.filter(m => m.hasText);
+
+    // If block counts match, preserve structure
+    if (textMatches.length === newBlocks.length) {
+      let newBodyContent = bodyContent;
+      for (let i = textMatches.length - 1; i >= 0; i--) {
+        const m = textMatches[i];
+        const newElement = `<${m.tag}${m.attrs}>${escapeXml(newBlocks[i])}</${m.tag}>`;
+        newBodyContent =
+          newBodyContent.substring(0, m.startIndex) +
+          newElement +
+          newBodyContent.substring(m.startIndex + m.full.length);
+      }
+      return originalXhtml.replace(
+        /<body([^>]*)>[\s\S]*<\/body>/i,
+        `<body$1>${newBodyContent}</body>`
+      );
+    }
+
+    // Fallback: wrap in paragraphs
+    const paragraphs = newBlocks.map(p => `<p>${escapeXml(p)}</p>`).join('\n');
+    return originalXhtml.replace(
+      /<body([^>]*)>[\s\S]*<\/body>/i,
+      `<body$1>\n${paragraphs}\n</body>`
+    );
+  }
+
+  try {
+    const structure = await processor.open(epubPath);
+
+    // Search through all chapters for the text
+    let foundInChapter: string | null = null;
+    let foundHref: string | null = null;
+    let modifiedXhtml: string | null = null;
+
+    // Normalize whitespace for comparison
+    const normalizedOldText = oldText.replace(/\s+/g, ' ').trim();
+
+    for (const chapter of structure.chapters) {
+      const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
+
+      try {
+        const xhtml = await processor.readFile(href);
+        const extractedText = extractText(xhtml);
+        const normalizedExtracted = extractedText.replace(/\s+/g, ' ').trim();
+
+        // Check if this chapter contains the text (whitespace-normalized comparison)
+        if (normalizedExtracted.includes(normalizedOldText)) {
+          // Found it! Replace in the extracted text and rebuild
+          // Use the original formatting for replacement
+          const modifiedText = extractedText.replace(oldText, newText);
+
+          // If direct replacement didn't work, try normalized
+          if (modifiedText === extractedText) {
+            // Try a more flexible replacement
+            const escapedOld = oldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const flexPattern = escapedOld.replace(/\s+/g, '\\s+');
+            const regex = new RegExp(flexPattern, 's');
+            const flexModified = extractedText.replace(regex, newText);
+            if (flexModified !== extractedText) {
+              modifiedXhtml = rebuildXhtml(xhtml, flexModified);
+            }
+          } else {
+            modifiedXhtml = rebuildXhtml(xhtml, modifiedText);
+          }
+
+          if (modifiedXhtml && modifiedXhtml !== xhtml) {
+            foundInChapter = chapter.title || chapter.id;
+            foundHref = href;
+            break;
+          }
+        }
+      } catch {
+        // Skip chapters that can't be read
+        continue;
+      }
+    }
+
+    if (!foundHref || !modifiedXhtml) {
+      return { success: false, error: 'Text not found in any chapter' };
+    }
+
+    // Create new EPUB with the modified chapter
+    const zipWriter = new ZipWriter();
+    const entries = (processor as any).zipReader?.getEntries() || [];
+
+    for (const entryName of entries) {
+      if (entryName === foundHref) {
+        // Write modified content
+        zipWriter.addFile(entryName, Buffer.from(modifiedXhtml, 'utf8'));
+      } else {
+        // Copy file as-is
+        const data = await processor.readBinaryFile(entryName);
+        const compress = entryName !== 'mimetype';
+        zipWriter.addFile(entryName, data, compress);
+      }
+    }
+
+    // Write to a temp file, then replace the original
+    const tempPath = epubPath + '.tmp';
+    await zipWriter.write(tempPath);
+
+    // Replace original with temp
+    const fs = await import('fs/promises');
+    await fs.rename(tempPath, epubPath);
+
+    return { success: true, chapterFound: foundInChapter || undefined };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  } finally {
+    processor.close();
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Text Removal Functions (for EPUB editor export)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1953,12 +2189,19 @@ function parseWordDiffPorcelain(diffOutput: string, cleanedText: string): DiffSe
     if (!inDiff) continue;
 
     if (line.startsWith('~')) {
-      // End of hunk, flush current segment
+      // End of line marker in porcelain format - represents a newline in the original text
+      // Flush current segment and add a newline as unchanged text
       if (currentText) {
         segments.push({ text: currentText, type: currentType });
         currentText = '';
       }
+      // Add the newline character to preserve paragraph structure
+      segments.push({ text: '\n', type: 'unchanged' });
       currentType = 'unchanged';
+    } else if (line === '') {
+      // Empty line after ~ represents the actual empty line between paragraphs
+      // Skip it since we already added the newline with ~
+      continue;
     } else if (line.startsWith(' ')) {
       // Unchanged word
       if (currentType !== 'unchanged' && currentText) {
@@ -1997,6 +2240,103 @@ function parseWordDiffPorcelain(diffOutput: string, cleanedText: string): DiffSe
   }
 
   return segments;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cheerio-based Text Extraction and Replacement
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Block-level elements that contain text we want to clean
+const BLOCK_SELECTORS = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption';
+
+/**
+ * Extract text from each block element in XHTML using cheerio.
+ * Returns an array of text strings, one per element.
+ * The order is preserved for later replacement.
+ */
+export function extractBlockTexts(xhtml: string): string[] {
+  const $ = cheerio.load(xhtml, { xmlMode: true });
+  const texts: string[] = [];
+
+  $(BLOCK_SELECTORS).each((_, el) => {
+    // Get text content (strips nested tags, decodes entities)
+    const text = $(el).text().trim();
+    // Only include elements that have actual text
+    if (text.length > 0) {
+      texts.push(text);
+    }
+  });
+
+  return texts;
+}
+
+/**
+ * Replace text in each block element in XHTML using cheerio.
+ * Takes cleaned texts in the same order as extractBlockTexts returned them.
+ * Returns the modified XHTML.
+ */
+export function replaceBlockTexts(xhtml: string, cleanedTexts: string[]): string {
+  const $ = cheerio.load(xhtml, { xmlMode: true });
+  let textIndex = 0;
+
+  $(BLOCK_SELECTORS).each((_, el) => {
+    // Only replace elements that had text (matching extractBlockTexts logic)
+    const originalText = $(el).text().trim();
+    if (originalText.length > 0) {
+      if (textIndex < cleanedTexts.length) {
+        // Replace the element's text content
+        $(el).text(cleanedTexts[textIndex]);
+        textIndex++;
+      }
+    }
+  });
+
+  // Get the modified XHTML
+  let result = $.xml();
+
+  // Post-process: ensure newlines between adjacent block elements
+  // This fixes smashed-together text when extracted for TTS/display
+  result = result.replace(
+    /(<\/(?:p|h[1-6]|div|li|blockquote|section|article|header|footer|figcaption)>)(\s*)(<(?:p|h[1-6]|div|li|blockquote|section|article|header|footer|figcaption)[^>]*>)/gi,
+    '$1\n$3'
+  );
+
+  return result;
+}
+
+/**
+ * Extract text from XHTML as a single string with markers between elements.
+ * This allows sending to AI as one chunk while preserving structure info.
+ * Use BLOCK_MARKER to split the AI response back into individual element texts.
+ */
+export const BLOCK_MARKER = '\n\n[[BLOCK]]\n\n';
+
+export function extractBlockTextsWithMarkers(xhtml: string): string {
+  const texts = extractBlockTexts(xhtml);
+  return texts.join(BLOCK_MARKER);
+}
+
+/**
+ * Split text that was joined with BLOCK_MARKER back into individual texts.
+ */
+export function splitBlockTexts(markedText: string): string[] {
+  return markedText.split(BLOCK_MARKER).map(t => t.trim()).filter(t => t.length > 0);
+}
+
+/**
+ * Get the count of text-containing block elements in XHTML.
+ */
+export function countBlockElements(xhtml: string): number {
+  const $ = cheerio.load(xhtml, { xmlMode: true });
+  let count = 0;
+
+  $(BLOCK_SELECTORS).each((_, el) => {
+    if ($(el).text().trim().length > 0) {
+      count++;
+    }
+  });
+
+  return count;
 }
 
 // Export the processor and ZipWriter for direct use if needed

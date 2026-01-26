@@ -996,6 +996,46 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  async loadSkippedChunks(jsonPath: string): Promise<{
+    success: boolean;
+    chunks?: Array<{
+      chapterTitle: string;
+      chunkIndex: number;
+      overallChunkNumber: number;
+      totalChunks: number;
+      reason: 'copyright' | 'content-skip' | 'ai-refusal';
+      text: string;
+      aiResponse?: string;
+    }>;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return await (window as any).electron.ai.loadSkippedChunks(jsonPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async replaceTextInEpub(epubPath: string, oldText: string, newText: string): Promise<{
+    success: boolean;
+    chapterFound?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return await (window as any).electron.ai.replaceTextInEpub(epubPath, oldText, newText);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async updateSkippedChunk(jsonPath: string, index: number, newText: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return await (window as any).electron.ai.updateSkippedChunk(jsonPath, index, newText);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   // Diff comparison operations (for AI cleanup diff view)
   // Legacy method - loads all chapters at once (can cause OOM on large EPUBs)
   async loadDiffComparison(originalPath: string, cleanedPath: string): Promise<{

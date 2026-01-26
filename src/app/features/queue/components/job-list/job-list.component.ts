@@ -78,6 +78,16 @@ interface DragState {
             @if (job.status === 'error' && job.error) {
               <div class="error-message">{{ job.error }}</div>
             }
+            @if (job.status === 'complete' && job.copyrightIssuesDetected) {
+              <div class="copyright-warning">
+                &#9888; Copyright issues: {{ job.copyrightChunksAffected }} chunks used original text. Try Ollama.
+              </div>
+            }
+            @if (job.status === 'complete' && job.contentSkipsDetected) {
+              <div class="content-skip-warning">
+                &#9888; Content skips: {{ job.contentSkipsAffected }} chunks refused by AI. Try Ollama.
+              </div>
+            }
           </div>
 
           <!-- Actions -->
@@ -340,6 +350,13 @@ interface DragState {
     .error-message {
       font-size: 0.75rem;
       color: var(--error);
+      margin-top: 0.25rem;
+    }
+
+    .copyright-warning,
+    .content-skip-warning {
+      font-size: 0.75rem;
+      color: var(--warning, #f59e0b);
       margin-top: 0.25rem;
     }
 

@@ -29,6 +29,7 @@ export interface QueueItem {
   projectId?: string;
   hasCleaned?: boolean;
   hasAudiobook?: boolean;  // True if completed audiobook exists for this book
+  skippedChunksPath?: string;  // Path to JSON file with skipped chunks from AI cleanup
 }
 
 export interface CompletedAudiobook {

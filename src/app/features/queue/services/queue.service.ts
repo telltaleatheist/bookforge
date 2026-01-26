@@ -58,7 +58,14 @@ declare global {
   interface Window {
     electron?: {
       queue?: {
-        runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
+        runOcrCleanup: (jobId: string, epubPath: string, model?: string, aiConfig?: AIProviderConfig & {
+          useDetailedCleanup?: boolean;
+          deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
+          useParallel?: boolean;
+          parallelWorkers?: number;
+          cleanupMode?: 'structure' | 'full';
+          testMode?: boolean;
+        }) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTtsConversion: (jobId: string, epubPath: string, config: any) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTranslation: (jobId: string, epubPath: string, translationConfig: any, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
         cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
@@ -302,7 +309,15 @@ export class QueueService {
           error: result.error,
           progress: result.success ? 100 : job.progress,
           completedAt: new Date(),
-          outputPath: result.outputPath || job.outputPath
+          outputPath: result.outputPath || job.outputPath,
+          // Copyright detection for AI cleanup jobs
+          copyrightIssuesDetected: result.copyrightIssuesDetected,
+          copyrightChunksAffected: result.copyrightChunksAffected,
+          // Content skips detection for AI cleanup jobs
+          contentSkipsDetected: result.contentSkipsDetected,
+          contentSkipsAffected: result.contentSkipsAffected,
+          // Path to skipped chunks JSON
+          skippedChunksPath: result.skippedChunksPath
         };
       })
     );
@@ -680,6 +695,10 @@ export class QueueService {
         const aiConfig: AIProviderConfig & {
           useDetailedCleanup?: boolean;
           deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
+          useParallel?: boolean;
+          parallelWorkers?: number;
+          cleanupMode?: 'structure' | 'full';
+          testMode?: boolean;
         } = {
           provider: config.aiProvider,
           ollama: config.aiProvider === 'ollama' ? {
@@ -696,13 +715,24 @@ export class QueueService {
           } : undefined,
           // Detailed cleanup options
           useDetailedCleanup: config.useDetailedCleanup,
-          deletedBlockExamples: config.deletedBlockExamples
+          deletedBlockExamples: config.deletedBlockExamples,
+          // Parallel processing (Claude/OpenAI only)
+          useParallel: config.useParallel,
+          parallelWorkers: config.parallelWorkers,
+          // Cleanup mode
+          cleanupMode: config.cleanupMode || 'structure',
+          // Test mode
+          testMode: config.testMode
         };
+        console.log('[QUEUE] Job config from storage:', { testMode: config.testMode, cleanupMode: config.cleanupMode, fullConfig: JSON.stringify(config) });
+        console.log('[QUEUE] Built aiConfig:', { testMode: aiConfig.testMode, cleanupMode: aiConfig.cleanupMode });
         console.log('[QUEUE] Calling runOcrCleanup with:', {
           jobId: job.id,
           model: config.aiModel,
           useDetailedCleanup: config.useDetailedCleanup,
           exampleCount: config.deletedBlockExamples?.length || 0,
+          cleanupMode: config.cleanupMode || 'structure',
+          testMode: config.testMode,
           aiConfig: {
             provider: aiConfig.provider,
             ollamaModel: aiConfig.ollama?.model,
@@ -913,7 +943,13 @@ export class QueueService {
         openaiApiKey: config.openaiApiKey,
         // Detailed cleanup mode settings
         useDetailedCleanup: config.useDetailedCleanup,
-        deletedBlockExamples: config.deletedBlockExamples
+        deletedBlockExamples: config.deletedBlockExamples,
+        // Parallel processing (Claude/OpenAI only)
+        useParallel: config.useParallel,
+        parallelWorkers: config.parallelWorkers,
+        // Cleanup mode and test mode
+        cleanupMode: config.cleanupMode,
+        testMode: config.testMode
       };
     } else if (request.type === 'translation') {
       const config = request.config as Partial<TranslationJobConfig>;

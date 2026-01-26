@@ -45,6 +45,7 @@ export interface QueueFileInfo {
   // Project-based fields
   projectId?: string;
   hasCleaned?: boolean;
+  skippedChunksPath?: string;
 }
 
 export type AvailabilityStatus = 'unknown' | 'checking' | 'available' | 'unavailable';
