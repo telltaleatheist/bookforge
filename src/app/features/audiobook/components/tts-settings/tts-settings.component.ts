@@ -314,48 +314,50 @@ export interface VoiceOption {
           </div>
         }
 
-        <!-- Actions -->
-        <div class="actions">
-          @if (hasResumableSession() && resumeInfo()) {
-            <desktop-button
-              [variant]="addedToQueue() ? 'ghost' : 'primary'"
-              size="lg"
-              [disabled]="!ttsAvailable() || addingToQueue() || addedToQueue()"
-              (click)="addToQueue(true)"
-            >
-              @if (addingToQueue()) {
-                Adding to Queue...
-              } @else if (addedToQueue()) {
-                ✓ Added to Queue
-              } @else {
-                Continue Conversion
-              }
-            </desktop-button>
-            <desktop-button
-              variant="ghost"
-              size="lg"
-              [disabled]="!ttsAvailable() || addingToQueue() || addedToQueue()"
-              (click)="addToQueue(false)"
-            >
-              Start Fresh
-            </desktop-button>
-          } @else {
-            <desktop-button
-              [variant]="addedToQueue() ? 'ghost' : 'primary'"
-              size="lg"
-              [disabled]="!ttsAvailable() || addingToQueue() || addedToQueue()"
-              (click)="addToQueue(false)"
-            >
-              @if (addingToQueue()) {
-                Adding to Queue...
-              } @else if (addedToQueue()) {
-                ✓ Added to Queue
-              } @else {
-                Add to Queue
-              }
-            </desktop-button>
-          }
-        </div>
+        <!-- Actions - only show after resume check completes -->
+        @if (!checkingResume()) {
+          <div class="actions">
+            @if (hasResumableSession() && resumeInfo()) {
+              <desktop-button
+                [variant]="addedToQueue() ? 'ghost' : 'primary'"
+                size="lg"
+                [disabled]="!ttsAvailable() || addingToQueue() || addedToQueue()"
+                (click)="addToQueue(true)"
+              >
+                @if (addingToQueue()) {
+                  Adding to Queue...
+                } @else if (addedToQueue()) {
+                  ✓ Added to Queue
+                } @else {
+                  Continue Conversion
+                }
+              </desktop-button>
+              <desktop-button
+                variant="ghost"
+                size="lg"
+                [disabled]="!ttsAvailable() || addingToQueue() || addedToQueue()"
+                (click)="addToQueue(false)"
+              >
+                Start Fresh
+              </desktop-button>
+            } @else {
+              <desktop-button
+                [variant]="addedToQueue() ? 'ghost' : 'primary'"
+                size="lg"
+                [disabled]="!ttsAvailable() || addingToQueue() || addedToQueue()"
+                (click)="addToQueue(false)"
+              >
+                @if (addingToQueue()) {
+                  Adding to Queue...
+                } @else if (addedToQueue()) {
+                  ✓ Added to Queue
+                } @else {
+                  Add to Queue
+                }
+              </desktop-button>
+            }
+          </div>
+        }
 
         <div class="queue-info">
           @if (hasResumableSession() && resumeInfo()) {

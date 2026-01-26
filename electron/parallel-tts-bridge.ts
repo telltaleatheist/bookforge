@@ -275,6 +275,11 @@ export async function prepareSession(
     '--prep_only'
   ];
 
+  // Add voice/fine-tuned model if specified
+  if (settings.fineTuned) {
+    args.push('--fine_tuned', settings.fineTuned);
+  }
+
   console.log('[PARALLEL-TTS] Running prep with:', args.join(' '));
 
   return new Promise((resolve, reject) => {
@@ -1629,102 +1634,76 @@ function extractTitleFromPath(folderPath: string): string {
  */
 async function findSessionForEpub(epubPath: string): Promise<string | null> {
   const tmpDir = path.join(e2aPath, 'tmp');
-  const epubFilename = path.basename(epubPath);
   const epubDir = path.dirname(epubPath);
-  const epubTitleFromPath = extractTitleFromPath(epubDir);
 
-  console.log(`[PARALLEL-TTS] Searching for session matching epub: ${epubPath}`);
-  console.log(`[PARALLEL-TTS] Extracted title from path: "${epubTitleFromPath}"`);
-
-  let bestMatch: { sessionPath: string; state: any; matchType: string } | null = null;
+  console.log(`[PARALLEL-TTS] Quick search for session matching: ${epubPath}`);
 
   try {
+    // Check if tmp dir exists
+    try {
+      await fs.access(tmpDir);
+    } catch {
+      console.log(`[PARALLEL-TTS] No tmp directory - no sessions to check`);
+      return null;
+    }
+
     // List all session directories (ebook-{UUID})
     const sessionDirs = await fs.readdir(tmpDir);
-    console.log(`[PARALLEL-TTS] Found ${sessionDirs.length} session directories`);
+    const ebookDirs = sessionDirs.filter(d => d.startsWith('ebook-'));
 
-    for (const sessionDir of sessionDirs) {
-      if (!sessionDir.startsWith('ebook-')) continue;
+    if (ebookDirs.length === 0) {
+      console.log(`[PARALLEL-TTS] No session directories found`);
+      return null;
+    }
 
+    console.log(`[PARALLEL-TTS] Checking ${ebookDirs.length} session(s) for exact match`);
+
+    // FAST PATH: Only check for exact path or directory matches
+    // Skip expensive fuzzy title matching - user can manually choose to resume if needed
+    for (const sessionDir of ebookDirs) {
       const sessionPath = path.join(tmpDir, sessionDir);
-      const sessionStat = await fs.stat(sessionPath);
-      if (!sessionStat.isDirectory()) continue;
 
-      // List process directories (hash folders)
-      const processDirs = await fs.readdir(sessionPath);
+      try {
+        const sessionStat = await fs.stat(sessionPath);
+        if (!sessionStat.isDirectory()) continue;
 
-      for (const processDir of processDirs) {
-        const processPath = path.join(sessionPath, processDir);
-        const processStat = await fs.stat(processPath);
-        if (!processStat.isDirectory()) continue;
+        // List process directories (hash folders)
+        const processDirs = await fs.readdir(sessionPath);
 
-        // Check for session-state.json
-        const statePath = path.join(processPath, 'session-state.json');
-        try {
-          const stateContent = await fs.readFile(statePath, 'utf-8');
-          const state = JSON.parse(stateContent);
+        for (const processDir of processDirs) {
+          const processPath = path.join(sessionPath, processDir);
+          const statePath = path.join(processPath, 'session-state.json');
 
-          // Check if this session matches the epub path (exact match)
-          if (state.epub_path === epubPath) {
-            console.log(`[PARALLEL-TTS] Found exact path match: ${sessionPath}`);
-            return sessionPath;
-          }
+          try {
+            const stateContent = await fs.readFile(statePath, 'utf-8');
+            const state = JSON.parse(stateContent);
 
-          // Check if same directory
-          const stateEpubDir = path.dirname(state.epub_path || '');
-          if (stateEpubDir === epubDir) {
-            console.log(`[PARALLEL-TTS] Found directory match: ${sessionPath}`);
-            return sessionPath;
-          }
-
-          // Try matching by metadata title
-          const sessionTitle = state.metadata?.title;
-          if (sessionTitle && epubTitleFromPath) {
-            const normalizedSessionTitle = normalizeTitle(sessionTitle);
-            console.log(`[PARALLEL-TTS] Comparing titles: "${epubTitleFromPath}" vs "${normalizedSessionTitle}"`);
-
-            // Check if titles are similar enough (one contains the other or high overlap)
-            if (normalizedSessionTitle.includes(epubTitleFromPath.substring(0, 20)) ||
-                epubTitleFromPath.includes(normalizedSessionTitle.substring(0, 20))) {
-              console.log(`[PARALLEL-TTS] Found title match: ${sessionPath}`);
-              // This is a good match - save it but keep looking for exact matches
-              if (!bestMatch || bestMatch.matchType !== 'title') {
-                bestMatch = { sessionPath, state, matchType: 'title' };
-              }
+            // Check if this session matches the epub path (exact match)
+            if (state.epub_path === epubPath) {
+              console.log(`[PARALLEL-TTS] Found exact path match: ${sessionPath}`);
+              return sessionPath;
             }
-          }
 
-          // Try matching by path-extracted title
-          const sessionTitleFromPath = extractTitleFromPath(path.dirname(state.epub_path || ''));
-          if (sessionTitleFromPath && epubTitleFromPath) {
-            // Check for significant overlap in the title portions
-            const shorter = epubTitleFromPath.length < sessionTitleFromPath.length ? epubTitleFromPath : sessionTitleFromPath;
-            const longer = epubTitleFromPath.length >= sessionTitleFromPath.length ? epubTitleFromPath : sessionTitleFromPath;
-
-            if (shorter.length > 10 && longer.includes(shorter.substring(0, Math.min(30, shorter.length)))) {
-              console.log(`[PARALLEL-TTS] Found path-title match: ${sessionPath}`);
-              console.log(`[PARALLEL-TTS]   Session path title: "${sessionTitleFromPath}"`);
-              if (!bestMatch) {
-                bestMatch = { sessionPath, state, matchType: 'path-title' };
-              }
+            // Check if same directory (handles renamed files in same folder)
+            const stateEpubDir = path.dirname(state.epub_path || '');
+            if (stateEpubDir === epubDir) {
+              console.log(`[PARALLEL-TTS] Found directory match: ${sessionPath}`);
+              return sessionPath;
             }
+          } catch {
+            // No session-state.json or invalid JSON - skip
+            continue;
           }
-        } catch {
-          // No session-state.json or invalid JSON - skip
-          continue;
         }
+      } catch {
+        continue;
       }
     }
   } catch (err) {
     console.error('[PARALLEL-TTS] Error scanning for sessions:', err);
   }
 
-  if (bestMatch) {
-    console.log(`[PARALLEL-TTS] Using best match (${bestMatch.matchType}): ${bestMatch.sessionPath}`);
-    return bestMatch.sessionPath;
-  }
-
-  console.log(`[PARALLEL-TTS] No matching session found for: ${epubPath}`);
+  console.log(`[PARALLEL-TTS] No matching session found`);
   return null;
 }
 

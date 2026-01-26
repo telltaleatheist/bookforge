@@ -176,7 +176,11 @@
       "Bash(/opt/homebrew/bin/mutool merge:*)",
       "Bash(/bin/ls:*)",
       "Bash(pip3 install:*)",
-      "WebFetch(domain:www.deepcogito.com)"
+      "WebFetch(domain:www.deepcogito.com)",
+      "Bash(pip show:*)",
+      "Bash(mdfind:*)",
+      "Bash(sudo ln:*)",
+      "Bash(conda env list:*)"
     ]
   }
 }
