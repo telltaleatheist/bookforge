@@ -13,11 +13,35 @@
  */
 
 import { spawn, ChildProcess, execSync } from 'child_process';
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as logger from './audiobook-logger';
+
+// Power save blocker ID - prevents system sleep during TTS conversion
+let powerBlockerId: number | null = null;
+
+/**
+ * Start preventing system sleep (call when TTS conversion starts)
+ */
+function startPowerBlock(): void {
+  if (powerBlockerId === null) {
+    powerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+    console.log('[PARALLEL-TTS] Power save blocker started (ID:', powerBlockerId, ')');
+  }
+}
+
+/**
+ * Stop preventing system sleep (call when all TTS conversions complete)
+ */
+function stopPowerBlock(): void {
+  if (powerBlockerId !== null) {
+    powerSaveBlocker.stop(powerBlockerId);
+    console.log('[PARALLEL-TTS] Power save blocker stopped');
+    powerBlockerId = null;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -179,6 +203,38 @@ export function getE2aPath(): string {
 
 export function setMainWindow(window: BrowserWindow | null): void {
   mainWindow = window;
+}
+
+/**
+ * Kill all active worker processes (called on app quit)
+ */
+export function killAllWorkers(): void {
+  console.log('[PARALLEL-TTS] Killing all workers on app shutdown...');
+  stopPowerBlock();
+
+  for (const [jobId, session] of activeSessions) {
+    console.log(`[PARALLEL-TTS] Killing workers for job ${jobId}`);
+
+    // Clear watchdog timer
+    if (session.watchdogTimer) {
+      clearInterval(session.watchdogTimer);
+    }
+
+    // Kill all worker processes
+    for (const worker of session.workers) {
+      if (worker.process && !worker.process.killed) {
+        try {
+          worker.process.kill('SIGTERM');
+          console.log(`[PARALLEL-TTS] Killed worker ${worker.id} (PID: ${worker.pid})`);
+        } catch (err) {
+          console.error(`[PARALLEL-TTS] Failed to kill worker ${worker.id}:`, err);
+        }
+      }
+    }
+  }
+
+  activeSessions.clear();
+  console.log('[PARALLEL-TTS] All workers killed');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1327,6 +1383,9 @@ export async function startParallelConversion(
   console.log(`[PARALLEL-TTS] Output dir from config:`, config.outputDir);
   console.log(`[PARALLEL-TTS] Metadata received:`, JSON.stringify(config.metadata, null, 2));
 
+  // Prevent system sleep during conversion
+  startPowerBlock();
+
   // Log job start
   const bookTitle = config.metadata?.title || path.basename(config.epubPath, '.epub');
   const author = config.metadata?.author || 'Unknown';
@@ -1343,6 +1402,7 @@ export async function startParallelConversion(
     const error = 'Output directory not configured. Please set the audiobook output folder in Settings.';
     console.error('[PARALLEL-TTS]', error);
     await logger.failJob(jobId, error);
+    stopPowerBlock();
     return { success: false, error };
   }
 
@@ -1359,6 +1419,7 @@ export async function startParallelConversion(
     const error = `Preparation failed: ${err}`;
     console.error('[PARALLEL-TTS]', error);
     await logger.failJob(jobId, error);
+    stopPowerBlock();
     return { success: false, error };
   }
 
@@ -2103,6 +2164,7 @@ async function runAssemblyOnly(
       });
     }
 
+    stopPowerBlock();
     return { success: true, outputPath };
   } catch (err) {
     activeSessions.delete(jobId);
@@ -2118,6 +2180,7 @@ async function runAssemblyOnly(
       });
     }
 
+    stopPowerBlock();
     return { success: false, error };
   }
 }

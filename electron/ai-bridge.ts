@@ -7,9 +7,33 @@
  * - OpenAI (ChatGPT API)
  */
 
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, powerSaveBlocker } from 'electron';
 import path from 'path';
 import { promises as fsPromises } from 'fs';
+
+// Power save blocker ID - prevents system sleep during AI cleanup
+let aiPowerBlockerId: number | null = null;
+
+/**
+ * Start preventing system sleep (call when AI cleanup starts)
+ */
+function startAIPowerBlock(): void {
+  if (aiPowerBlockerId === null) {
+    aiPowerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+    console.log('[AI-BRIDGE] Power save blocker started (ID:', aiPowerBlockerId, ')');
+  }
+}
+
+/**
+ * Stop preventing system sleep (call when AI cleanup completes)
+ */
+function stopAIPowerBlock(): void {
+  if (aiPowerBlockerId !== null) {
+    powerSaveBlocker.stop(aiPowerBlockerId);
+    console.log('[AI-BRIDGE] Power save blocker stopped');
+    aiPowerBlockerId = null;
+  }
+}
 import {
   extractBlockTexts,
   replaceBlockTexts,
@@ -1342,6 +1366,9 @@ export async function cleanupEpub(
     testMode
   });
 
+  // Prevent system sleep during cleanup
+  startAIPowerBlock();
+
   // Reset fallback counters and skipped chunks tracking for this job
   copyrightFallbackCount = 0;
   skipFallbackCount = 0;
@@ -1353,30 +1380,38 @@ export async function cleanupEpub(
   // Validate provider configuration
   if (config.provider === 'ollama') {
     if (!config.ollama?.model) {
+      stopAIPowerBlock();
       return { success: false, error: 'Ollama model not specified in config' };
     }
     const connection = await checkConnection();
     if (!connection.connected) {
+      stopAIPowerBlock();
       return { success: false, error: `Ollama not available: ${connection.error}` };
     }
     if (!(await hasModel(config.ollama.model))) {
+      stopAIPowerBlock();
       return { success: false, error: `Model '${config.ollama.model}' not found. Run: ollama pull ${config.ollama.model}` };
     }
   } else if (config.provider === 'claude') {
     if (!config.claude?.apiKey) {
+      stopAIPowerBlock();
       return { success: false, error: 'Claude API key not configured. Go to Settings > AI to configure.' };
     }
     if (!config.claude?.model) {
+      stopAIPowerBlock();
       return { success: false, error: 'Claude model not specified in config' };
     }
   } else if (config.provider === 'openai') {
     if (!config.openai?.apiKey) {
+      stopAIPowerBlock();
       return { success: false, error: 'OpenAI API key not configured. Go to Settings > AI to configure.' };
     }
     if (!config.openai?.model) {
+      stopAIPowerBlock();
       return { success: false, error: 'OpenAI model not specified in config' };
     }
   } else {
+    stopAIPowerBlock();
     return { success: false, error: `Unknown AI provider: ${config.provider}` };
   }
 
@@ -1451,6 +1486,7 @@ export async function cleanupEpub(
 
     if (totalChapters === 0 || !structure) {
       processor.close();
+      stopAIPowerBlock();
       return { success: false, error: 'No chapters found in EPUB' };
     }
 
@@ -1587,6 +1623,7 @@ export async function cleanupEpub(
 
     if (totalChunksInJob === 0) {
       processor.close();
+      stopAIPowerBlock();
       return { success: false, error: 'No text content found in EPUB' };
     }
 
@@ -2010,6 +2047,7 @@ export async function cleanupEpub(
       console.log(`[AI-CLEANUP] Saved ${skippedChunks.length} skipped chunks to ${skippedChunksPath}`);
     }
 
+    stopAIPowerBlock();
     return {
       success: true,
       outputPath,
@@ -2047,6 +2085,7 @@ export async function cleanupEpub(
       message: isCancelled ? 'Cancelled' : `Error: ${message}`,
       error: isCancelled ? 'Cancelled by user' : message
     });
+    stopAIPowerBlock();
     return { success: false, error: isCancelled ? 'Cancelled by user' : message };
   }
 }

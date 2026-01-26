@@ -342,8 +342,8 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Text-only EPUB export (uses pdftotext + ebook-convert)
-  ipcMain.handle('pdf:export-text-only-epub', async (_event, pdfPath: string, metadata?: { title?: string; author?: string }) => {
+  // Text-only EPUB export (uses pdftotext for PDFs, ebook-convert for EPUBs)
+  ipcMain.handle('pdf:export-text-only-epub', async (_event, filePath: string, metadata?: { title?: string; author?: string }) => {
     try {
       const { exec } = require('child_process');
       const { promisify } = require('util');
@@ -357,15 +357,26 @@ function setupIpcHandlers(): void {
       const tempTextFile = path.join(tempDir, 'extracted.txt');
       const tempEpubFile = path.join(tempDir, 'output.epub');
 
+      // Detect file type
+      const ext = path.extname(filePath).toLowerCase();
+      const isEpub = ext === '.epub';
+
       try {
-        // Step 1: Extract text using pdftotext
-        console.log('[Text-only EPUB] Extracting text from PDF...');
-        await execAsync(`/opt/homebrew/bin/pdftotext -layout "${pdfPath}" "${tempTextFile}"`);
+        // Step 1: Extract text based on file type
+        if (isEpub) {
+          // For EPUB: use ebook-convert to extract text
+          console.log('[Text-only EPUB] Extracting text from EPUB...');
+          await execAsync(`/Applications/calibre.app/Contents/MacOS/ebook-convert "${filePath}" "${tempTextFile}"`);
+        } else {
+          // For PDF: use pdftotext
+          console.log('[Text-only EPUB] Extracting text from PDF...');
+          await execAsync(`/opt/homebrew/bin/pdftotext -layout "${filePath}" "${tempTextFile}"`);
+        }
 
         // Check if text was extracted
         const stats = await fs.stat(tempTextFile);
         if (stats.size === 0) {
-          throw new Error('No text extracted from PDF');
+          throw new Error(`No text extracted from ${isEpub ? 'EPUB' : 'PDF'}`);
         }
 
         // Step 2: Convert text to EPUB using ebook-convert
@@ -3465,6 +3476,14 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async () => {
+  // Kill any active TTS workers
+  try {
+    const { killAllWorkers } = await import('./parallel-tts-bridge.js');
+    killAllWorkers();
+  } catch (err) {
+    console.error('[MAIN] Failed to kill TTS workers:', err);
+  }
+
   // Stop library server if running
   if (libraryServer.isRunning()) {
     await libraryServer.stop();
