@@ -307,6 +307,11 @@ interface DragState {
         background: var(--selected-bg-muted);
         color: var(--accent-hover);
       }
+
+      &.reassembly {
+        background: var(--selected-bg-muted);
+        color: var(--accent-hover);
+      }
     }
 
     .book-title {
@@ -490,6 +495,8 @@ export class JobListComponent {
         return 'Translate';
       case 'tts-conversion':
         return 'TTS';
+      case 'reassembly':
+        return 'Reassembly';
       default:
         return type;
     }

@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { Router } from '@angular/router';
 import { PdfService, TextBlock, Category } from './pdf.service';
-import { Chapter } from '../../../core/services/electron.service';
+import { Chapter, ElectronService } from '../../../core/services/electron.service';
 import { BookMetadata } from '../pdf-picker.component';
 import { DeletedBlockExample } from '../../queue/models/queue.types';
 
@@ -84,6 +84,7 @@ export interface DeletedHighlight {
 export class ExportService {
   private readonly pdfService = inject(PdfService);
   private readonly router = inject(Router);
+  private readonly electronService = inject(ElectronService);
   private crc32Table: number[] | null = null;
 
   // Check if we're running in Electron
@@ -539,8 +540,8 @@ export class ExportService {
   }
 
   /**
-   * Export content to EPUB and save to audiobook producer queue.
-   * Uses generateEpubBlobInternal to create the EPUB, then saves to queue folder.
+   * Export content to EPUB and save to audiobook folder within the BFP project.
+   * Uses generateEpubBlobInternal to create the EPUB, then saves to project's audiobook folder.
    * Optionally collects deleted block examples for detailed AI cleanup.
    */
   async exportToAudiobook(
@@ -548,6 +549,7 @@ export class ExportService {
     deletedIds: Set<string>,
     chapters: Chapter[],
     pdfName: string,
+    bfpPath: string,  // Path to the BFP project file
     textCorrections?: Map<string, string>,
     deletedPages?: Set<number>,
     deletedHighlights?: DeletedHighlight[],
@@ -559,6 +561,13 @@ export class ExportService {
       return {
         success: false,
         message: 'Audiobook export is only available in Electron'
+      };
+    }
+
+    if (!bfpPath) {
+      return {
+        success: false,
+        message: 'Project must be saved before exporting to Audiobook Producer'
       };
     }
 
@@ -581,7 +590,6 @@ export class ExportService {
       };
     }
 
-    const filename = this.generateFilename(pdfName, 'epub');
     const arrayBuffer = await epubResult.blob.arrayBuffer();
 
     // Collect deleted block examples for detailed cleanup mode
@@ -593,28 +601,17 @@ export class ExportService {
     );
 
     try {
-      const pathResult = await this.electron.library.getAudiobooksPath();
-      if (!pathResult.success || !pathResult.queuePath) {
+      // Use the unified audiobook export - saves to BFP project's audiobook folder
+      const exportResult = await this.electronService.audiobookExportFromProject(
+        bfpPath,
+        arrayBuffer,
+        deletedBlockExamples.length > 0 ? deletedBlockExamples : undefined
+      );
+
+      if (!exportResult.success) {
         return {
           success: false,
-          message: 'Library not configured. Please complete the onboarding setup first.'
-        };
-      }
-
-      // Use metadata if provided, otherwise fall back to filename-derived title
-      const bookTitle = metadata?.title || pdfName.replace(/\.(pdf|epub)$/i, '');
-      const copyResult = await this.electron.library.copyToQueue(arrayBuffer, filename, {
-        title: bookTitle,
-        author: metadata?.author || '',
-        language: metadata?.language || 'en',
-        coverImage: metadata?.coverImage,
-        deletedBlockExamples: deletedBlockExamples.length > 0 ? deletedBlockExamples : undefined
-      });
-
-      if (!copyResult.success) {
-        return {
-          success: false,
-          message: copyResult.error || 'Failed to copy EPUB to Audiobook Producer queue'
+          message: exportResult.error || 'Failed to export EPUB to Audiobook Producer'
         };
       }
 
@@ -625,7 +622,7 @@ export class ExportService {
       return {
         success: true,
         message: `Exported EPUB with ${epubResult.chapterCount} chapters to Audiobook Producer.${deletedBlockExamples.length > 0 ? ` (${deletedBlockExamples.length} deletion examples)` : ''}`,
-        filename,
+        filename: 'exported.epub',
         chapterCount: epubResult.chapterCount,
         blockCount: epubResult.blockCount
       };

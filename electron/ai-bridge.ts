@@ -1313,6 +1313,25 @@ export interface EpubCleanupProgress {
   chunkCompletedAt?: number;      // Timestamp when last chunk completed
 }
 
+export interface CleanupJobAnalytics {
+  jobId: string;
+  startedAt: string;
+  completedAt: string;
+  durationSeconds: number;
+  totalChapters: number;
+  totalChunks: number;
+  totalCharacters: number;
+  chunksPerMinute: number;
+  charactersPerMinute: number;
+  model: string;
+  success: boolean;
+  chaptersProcessed: number;
+  copyrightChunksAffected: number;
+  contentSkipsAffected: number;
+  skippedChunksPath?: string;
+  error?: string;
+}
+
 export interface EpubCleanupResult {
   success: boolean;
   outputPath?: string;
@@ -1323,6 +1342,7 @@ export interface EpubCleanupResult {
   contentSkipsDetected?: boolean;     // True if AI returned [SKIP] for non-trivial content
   contentSkipsAffected?: number;      // Number of chunks where AI refused via [SKIP]
   skippedChunksPath?: string;         // Path to JSON file containing skipped chunk details
+  analytics?: CleanupJobAnalytics;    // Analytics data for the job
 }
 
 /**
@@ -1500,6 +1520,8 @@ export async function cleanupEpub(
 
     let chaptersProcessed = 0;
     let chunksCompletedInJob = 0;  // Cumulative chunk counter across all chapters
+    let totalCharactersProcessed = 0;  // Track total characters for analytics
+    const cleanupStartTime = Date.now();  // Track start time for analytics
 
     // Generate output path - save as cleaned.epub in the same folder as the original
     const epubDir = path.dirname(epubPath);
@@ -1856,7 +1878,9 @@ export async function cleanupEpub(
         });
 
         try {
-          console.log(`[AI-CLEANUP] Starting chunk ${currentChunkInJob}/${totalChunksInJob} - "${chapter.title}" (${uniqueChunks[c].length} chars)`);
+          const chunkCharCount = uniqueChunks[c].length;
+          totalCharactersProcessed += chunkCharCount;
+          console.log(`[AI-CLEANUP] Starting chunk ${currentChunkInJob}/${totalChunksInJob} - "${chapter.title}" (${chunkCharCount} chars)`);
           const chunkMeta = {
             chapterTitle: chapter.title,
             chunkIndex: c,
@@ -2048,6 +2072,46 @@ export async function cleanupEpub(
     }
 
     stopAIPowerBlock();
+
+    // Calculate analytics
+    const cleanupEndTime = Date.now();
+    const durationSeconds = Math.round((cleanupEndTime - cleanupStartTime) / 1000);
+    const durationMinutes = durationSeconds / 60;
+    const chunksPerMinute = durationMinutes > 0
+      ? Math.round((totalChunksInJob / durationMinutes) * 10) / 10
+      : 0;
+    const charactersPerMinute = durationMinutes > 0
+      ? Math.round(totalCharactersProcessed / durationMinutes)
+      : 0;
+
+    // Determine model name for analytics
+    let modelName = 'unknown';
+    if (config.provider === 'ollama' && config.ollama?.model) {
+      modelName = `ollama/${config.ollama.model}`;
+    } else if (config.provider === 'claude' && config.claude?.model) {
+      modelName = `claude/${config.claude.model}`;
+    } else if (config.provider === 'openai' && config.openai?.model) {
+      modelName = `openai/${config.openai.model}`;
+    }
+
+    const analytics = {
+      jobId,
+      startedAt: new Date(cleanupStartTime).toISOString(),
+      completedAt: new Date(cleanupEndTime).toISOString(),
+      durationSeconds,
+      totalChapters: chapters.length,
+      totalChunks: totalChunksInJob,
+      totalCharacters: totalCharactersProcessed,
+      chunksPerMinute,
+      charactersPerMinute,
+      model: modelName,
+      success: true,
+      chaptersProcessed,
+      copyrightChunksAffected: copyrightFallbackCount,
+      contentSkipsAffected: skipFallbackCount,
+      skippedChunksPath
+    };
+
     return {
       success: true,
       outputPath,
@@ -2056,7 +2120,8 @@ export async function cleanupEpub(
       copyrightChunksAffected: copyrightFallbackCount,
       contentSkipsDetected: skipFallbackCount > 0,
       contentSkipsAffected: skipFallbackCount,
-      skippedChunksPath
+      skippedChunksPath,
+      analytics
     };
   } catch (error) {
     // Clean up abort controller

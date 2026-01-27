@@ -27,6 +27,8 @@ export interface QueueItem {
   addedAt: Date;
   // Project-based fields
   projectId?: string;
+  bfpPath?: string;  // Path to the source BFP project (unified system)
+  audiobookFolder?: string;  // Folder containing audiobook files (unified system)
   hasCleaned?: boolean;
   hasAudiobook?: boolean;  // True if completed audiobook exists for this book
   skippedChunksPath?: string;  // Path to JSON file with skipped chunks from AI cleanup
@@ -44,17 +46,12 @@ export interface CompletedAudiobook {
   standalone: true,
   imports: [CommonModule],
   template: `
-    <div
-      class="queue-container"
-      [class.drag-over]="isDragOver()"
-      (dragover)="onDragOver($event)"
-      (dragleave)="onDragLeave($event)"
-      (drop)="onDrop($event)"
-    >
+    <div class="queue-container">
       @if (!hasItems() && !hasCompleted()) {
         <div class="empty-queue">
-          <div class="drop-icon">&#128229;</div>
-          <p>Drop EPUB files here</p>
+          <div class="drop-icon">&#128214;</div>
+          <p>No audiobook projects</p>
+          <p class="hint">Use "Export to Audiobook" from the Library to add books here</p>
         </div>
       } @else {
         <!-- Queue section -->
@@ -168,6 +165,7 @@ export interface CompletedAudiobook {
       justify-content: center;
       color: var(--text-muted);
       text-align: center;
+      padding: 1rem;
 
       .drop-icon {
         font-size: 2.5rem;
@@ -178,6 +176,13 @@ export interface CompletedAudiobook {
       p {
         margin: 0;
         font-size: 0.875rem;
+      }
+
+      .hint {
+        margin-top: 0.5rem;
+        font-size: 0.75rem;
+        opacity: 0.7;
+        max-width: 200px;
       }
     }
 
@@ -421,40 +426,8 @@ export class AudiobookQueueComponent {
   // Outputs
   readonly select = output<string>();
   readonly remove = output<string>();
-  readonly filesDropped = output<File[]>();
   readonly openCompletedFolder = output<void>();
   readonly playAudiobook = output<string>();
-
-  // State
-  readonly isDragOver = signal(false);
-
-  onDragOver(event: DragEvent): void {
-    event.preventDefault();
-    event.stopPropagation();
-    this.isDragOver.set(true);
-  }
-
-  onDragLeave(event: DragEvent): void {
-    event.preventDefault();
-    event.stopPropagation();
-    this.isDragOver.set(false);
-  }
-
-  onDrop(event: DragEvent): void {
-    event.preventDefault();
-    event.stopPropagation();
-    this.isDragOver.set(false);
-
-    const files = event.dataTransfer?.files;
-    if (files && files.length > 0) {
-      const epubFiles = Array.from(files).filter(f =>
-        f.name.toLowerCase().endsWith('.epub')
-      );
-      if (epubFiles.length > 0) {
-        this.filesDropped.emit(epubFiles);
-      }
-    }
-  }
 
   onRemoveClick(event: Event, id: string): void {
     event.stopPropagation();

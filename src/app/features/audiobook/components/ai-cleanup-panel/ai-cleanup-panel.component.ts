@@ -604,6 +604,7 @@ export class AiCleanupPanelComponent implements OnInit {
   // Inputs
   readonly epubPath = input<string>('');
   readonly metadata = input<{ title?: string; author?: string } | undefined>(undefined);
+  readonly bfpPath = input<string | undefined>(undefined);  // BFP project path for analytics saving
 
   // Outputs
   readonly cleanupComplete = output<void>();
@@ -853,6 +854,7 @@ export class AiCleanupPanelComponent implements OnInit {
         type: 'ocr-cleanup',
         epubPath: path,
         metadata: this.metadata(),
+        bfpPath: this.bfpPath(),  // For analytics saving
         config: {
           type: 'ocr-cleanup',
           aiProvider: provider,

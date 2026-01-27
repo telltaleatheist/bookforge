@@ -14,8 +14,10 @@ export interface ProjectFile {
   createdAt: string;
   modifiedAt: string;
   size: number;
-  coverImage?: string;   // Saved cover from project metadata
-  thumbnail?: string;    // Rendered thumbnail (fallback)
+  coverImage?: string;      // @deprecated - Embedded base64 (for old projects)
+  coverImagePath?: string;  // Relative path to cover in media folder
+  loadedCover?: string;     // Loaded cover data URL for display
+  thumbnail?: string;       // Rendered thumbnail (fallback)
   selected?: boolean;
 }
 
@@ -96,8 +98,8 @@ export interface ProjectFile {
                 [title]="project.sourceName"
               >
                 <div class="card-thumbnail">
-                  @if (project.coverImage) {
-                    <img [src]="project.coverImage" alt="{{ project.name }}" />
+                  @if (project.loadedCover || project.coverImage) {
+                    <img [src]="project.loadedCover || project.coverImage" alt="{{ project.name }}" />
                   } @else if (project.thumbnail && project.thumbnail !== 'loading') {
                     <img [src]="project.thumbnail" alt="{{ project.name }}" />
                   } @else if (project.thumbnail === 'loading') {
@@ -902,16 +904,25 @@ export class LibraryViewComponent implements OnInit {
       const projectFiles: ProjectFile[] = result.projects.map(p => ({
         ...p,
         selected: false,
-        // Only show loading indicator if no saved cover image
-        thumbnail: p.coverImage ? undefined : 'loading'
+        // Only show loading indicator if no saved cover image path
+        thumbnail: p.coverImagePath ? undefined : 'loading'
       }));
       this.projects.set(projectFiles);
       this.loading.set(false);
 
-      // Load thumbnails only for projects without a saved cover image
+      // Load cover images from paths and thumbnails for projects without covers
       for (const project of projectFiles) {
-        // Skip if project already has a cover image
-        if (project.coverImage) continue;
+        // Load cover from external path if present
+        if (project.coverImagePath) {
+          this.electronService.mediaLoadImage(project.coverImagePath).then(imgResult => {
+            if (imgResult.success && imgResult.data) {
+              this.projects.update(all =>
+                all.map(p => p.path === project.path ? { ...p, loadedCover: imgResult.data } : p)
+              );
+            }
+          });
+          continue; // Don't load thumbnail - we have a cover
+        }
 
         try {
           const scale = this.getScaleForSize(this.cardSize());

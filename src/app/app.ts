@@ -130,6 +130,12 @@ export class App implements OnInit {
       route: '/queue'
     },
     {
+      id: 'reassembly',
+      icon: '\u{1F527}', // Wrench emoji
+      label: 'Reassembly',
+      route: '/reassembly'
+    },
+    {
       id: 'settings',
       icon: '\u{2699}', // Gear emoji
       label: 'Settings',

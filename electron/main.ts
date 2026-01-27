@@ -671,6 +671,47 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('fs:write-temp-file', async (_event, filename: string, data: Uint8Array | number[] | { [key: string]: number }) => {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const os = await import('os');
+    try {
+      const tempDir = path.join(os.tmpdir(), 'bookforge-covers');
+      await fs.mkdir(tempDir, { recursive: true });
+      const filePath = path.join(tempDir, filename);
+
+      // Handle different data formats from IPC serialization
+      let buffer: Buffer;
+      if (Buffer.isBuffer(data)) {
+        buffer = data;
+      } else if (data instanceof Uint8Array) {
+        buffer = Buffer.from(data);
+      } else if (Array.isArray(data)) {
+        buffer = Buffer.from(data);
+      } else if (typeof data === 'object') {
+        // IPC might serialize Uint8Array as { 0: byte, 1: byte, ... }
+        const values = Object.values(data) as number[];
+        buffer = Buffer.from(values);
+      } else {
+        throw new Error('Invalid data format');
+      }
+
+      console.log('[MAIN] Writing temp file:', filePath, 'size:', buffer.length);
+      await fs.writeFile(filePath, buffer);
+      console.log('[MAIN] Temp file written successfully');
+
+      // Also return base64 data URL for display (renderer can't load file:// URLs)
+      const ext = path.extname(filename).toLowerCase();
+      const mimeType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+      const dataUrl = `data:${mimeType};base64,${buffer.toString('base64')}`;
+
+      return { success: true, path: filePath, dataUrl };
+    } catch (err) {
+      console.error('[MAIN] Error writing temp file:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Project file handlers
   ipcMain.handle('project:save', async (_event, projectData: unknown, suggestedName?: string) => {
     if (!mainWindow) return { success: false, error: 'No window' };
@@ -689,6 +730,9 @@ function setupIpcHandlers(): void {
     }
 
     try {
+      // Extract any embedded images to external files
+      await extractEmbeddedImages(projectData as Record<string, unknown>);
+
       await atomicWriteFile(result.filePath, JSON.stringify(projectData, null, 2));
       return { success: true, filePath: result.filePath };
     } catch (err) {
@@ -724,8 +768,38 @@ function setupIpcHandlers(): void {
   // Save to specific path (for "Save" vs "Save As")
   ipcMain.handle('project:save-to-path', async (_event, filePath: string, projectData: unknown) => {
     try {
+      // Extract any embedded images to external files
+      await extractEmbeddedImages(projectData as Record<string, unknown>);
+
       await atomicWriteFile(filePath, JSON.stringify(projectData, null, 2));
       return { success: true, filePath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Update just the metadata in a BFP file (for audiobook producer)
+  ipcMain.handle('project:update-metadata', async (_event, bfpPath: string, metadata: unknown) => {
+    try {
+      // Read existing project
+      const content = await fs.readFile(bfpPath, 'utf-8');
+      const project = JSON.parse(content);
+
+      // Handle cover image - save to media folder if it's base64 data
+      const meta = metadata as Record<string, unknown>;
+      if (meta.coverData && typeof meta.coverData === 'string' && meta.coverData.startsWith('data:')) {
+        const relativePath = await saveImageToMedia(meta.coverData as string, 'cover');
+        meta.coverImagePath = relativePath;
+        delete meta.coverData;  // Don't store base64 in BFP
+      }
+
+      // Merge metadata
+      project.metadata = { ...project.metadata, ...meta };
+      project.modified_at = new Date().toISOString();
+
+      // Write back
+      await atomicWriteFile(bfpPath, JSON.stringify(project, null, 2));
+      return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -813,7 +887,79 @@ function setupIpcHandlers(): void {
 
   const getProjectsFolder = () => path.join(getLibraryRoot(), 'projects');
   const getFilesFolder = () => path.join(getLibraryRoot(), 'files');
+  const getMediaFolder = () => path.join(getLibraryRoot(), 'media');
   const getDiffCacheFolder = () => path.join(getLibraryRoot(), 'cache', 'diff');
+
+  // Save base64 image to media folder, return relative path
+  const saveImageToMedia = async (base64Data: string, prefix: string = 'cover'): Promise<string> => {
+    const mediaFolder = getMediaFolder();
+    await fs.mkdir(mediaFolder, { recursive: true });
+
+    // Extract actual base64 content and determine extension
+    let data: Buffer;
+    let ext = '.jpg';
+    if (base64Data.startsWith('data:')) {
+      const match = base64Data.match(/^data:image\/(\w+);base64,(.+)$/);
+      if (match) {
+        ext = '.' + (match[1] === 'jpeg' ? 'jpg' : match[1]);
+        data = Buffer.from(match[2], 'base64');
+      } else {
+        // Fallback: strip data URL prefix
+        const base64Content = base64Data.split(',')[1] || base64Data;
+        data = Buffer.from(base64Content, 'base64');
+      }
+    } else {
+      data = Buffer.from(base64Data, 'base64');
+    }
+
+    // Hash the content for deduplication
+    const hash = crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
+    const filename = `${prefix}_${hash}${ext}`;
+    const filePath = path.join(mediaFolder, filename);
+
+    // Only write if file doesn't exist (deduplication)
+    try {
+      await fs.access(filePath);
+    } catch {
+      await fs.writeFile(filePath, data);
+    }
+
+    // Return relative path from library root
+    return `media/${filename}`;
+  };
+
+  // Load image from media folder, return base64 data URL
+  const loadImageFromMedia = async (relativePath: string): Promise<string | null> => {
+    try {
+      const fullPath = path.join(getLibraryRoot(), relativePath);
+      const data = await fs.readFile(fullPath);
+      const ext = path.extname(relativePath).toLowerCase();
+      const mimeType = ext === '.png' ? 'image/png' : ext === '.gif' ? 'image/gif' : 'image/jpeg';
+      return `data:${mimeType};base64,${data.toString('base64')}`;
+    } catch {
+      return null;
+    }
+  };
+
+  // Extract embedded images from project data and save to media folder
+  const extractEmbeddedImages = async (projectData: Record<string, unknown>): Promise<boolean> => {
+    let modified = false;
+    const metadata = projectData.metadata as Record<string, unknown> | undefined;
+
+    if (metadata?.coverImage && typeof metadata.coverImage === 'string') {
+      const coverImage = metadata.coverImage;
+      // Check if it's embedded base64 (starts with data: or is very long)
+      if (coverImage.startsWith('data:') || coverImage.length > 1000) {
+        const relativePath = await saveImageToMedia(coverImage, 'cover');
+        metadata.coverImage = undefined;
+        metadata.coverImagePath = relativePath;
+        modified = true;
+        console.log(`[Project] Extracted embedded cover to: ${relativePath}`);
+      }
+    }
+
+    return modified;
+  };
 
   // Compute file hash for duplicate detection
   const computeFileHash = async (filePath: string): Promise<string> => {
@@ -937,7 +1083,7 @@ function setupIpcHandlers(): void {
         createdAt: string;
         modifiedAt: string;
         size: number;
-        coverImage?: string;  // Base64 cover image from metadata
+        coverImagePath?: string;  // Relative path to cover in media folder
       }> = [];
 
       // Helper to scan a folder for .bfp files
@@ -956,6 +1102,21 @@ function setupIpcHandlers(): void {
               // Determine the actual file path - prefer library_path, fall back to source_path
               const actualSourcePath = data.library_path || data.source_path;
 
+              // Get cover image path - either from new coverImagePath or migrate old embedded coverImage
+              let coverImagePath = data.metadata?.coverImagePath;
+              if (!coverImagePath && data.metadata?.coverImage) {
+                // Old project with embedded image - migrate it now
+                try {
+                  coverImagePath = await saveImageToMedia(data.metadata.coverImage, 'cover');
+                  data.metadata.coverImagePath = coverImagePath;
+                  delete data.metadata.coverImage;
+                  await atomicWriteFile(filePath, JSON.stringify(data, null, 2));
+                  console.log(`[projects:list] Migrated embedded cover for ${entry.name}`);
+                } catch (e) {
+                  console.error(`[projects:list] Failed to migrate cover for ${entry.name}:`, e);
+                }
+              }
+
               projects.push({
                 name: entry.name.replace('.bfp', ''),
                 path: filePath,
@@ -967,7 +1128,7 @@ function setupIpcHandlers(): void {
                 createdAt: data.created_at,
                 modifiedAt: stat.mtime.toISOString(),
                 size: stat.size,
-                coverImage: data.metadata?.coverImage  // Include saved cover
+                coverImagePath  // Return path instead of embedded data
               });
             } catch {
               // Skip invalid project files
@@ -1048,6 +1209,9 @@ function setupIpcHandlers(): void {
         filePath = path.join(folder, `${safeName}.bfp`);
         console.log(`Creating new project: ${filePath}`);
       }
+
+      // Extract any embedded images to external files
+      await extractEmbeddedImages(projectData as Record<string, unknown>);
 
       await atomicWriteFile(filePath, JSON.stringify(projectData, null, 2));
       return { success: true, filePath };
@@ -2093,7 +2257,18 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Resume support for parallel TTS
+  // Fast resume check (no subprocess, just counts files)
+  ipcMain.handle('parallel-tts:check-resume-fast', async (_event, epubPath: string) => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      const result = await parallelTtsBridge.checkResumeStatusFast(epubPath);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Resume support for parallel TTS (detailed check with subprocess)
   ipcMain.handle('parallel-tts:check-resume', async (_event, sessionPath: string) => {
     try {
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
@@ -2285,8 +2460,8 @@ function setupIpcHandlers(): void {
       const folderPath = path.join(basePath, projectId);
       await fs.mkdir(folderPath, { recursive: true });
 
-      // Copy EPUB as original.epub
-      const originalPath = path.join(folderPath, 'original.epub');
+      // Copy EPUB as exported.epub (standard name for source epub in audiobook folder)
+      const originalPath = path.join(folderPath, 'exported.epub');
 
       if (sourcePath.startsWith('data:')) {
         // Handle base64 data URL
@@ -2349,12 +2524,14 @@ function setupIpcHandlers(): void {
             return null; // Not a valid project folder
           }
 
-          // Check which files exist
-          const [hasOriginal, hasCleaned, hasOutput] = await Promise.all([
+          // Check which files exist (exported.epub is new name, original.epub is legacy)
+          const [hasExported, hasOriginalLegacy, hasCleaned, hasOutput] = await Promise.all([
+            fs.access(path.join(folderPath, 'exported.epub')).then(() => true).catch(() => false),
             fs.access(path.join(folderPath, 'original.epub')).then(() => true).catch(() => false),
             fs.access(path.join(folderPath, 'cleaned.epub')).then(() => true).catch(() => false),
             fs.access(path.join(folderPath, 'output.m4b')).then(() => true).catch(() => false)
           ]);
+          const hasOriginal = hasExported || hasOriginalLegacy;
 
           return {
             id: folder.name,
@@ -2396,11 +2573,13 @@ function setupIpcHandlers(): void {
         return { success: false, error: 'Project not found' };
       }
 
-      const [hasOriginal, hasCleaned, hasOutput] = await Promise.all([
+      const [hasExported, hasOriginalLegacy, hasCleaned, hasOutput] = await Promise.all([
+        fs.access(path.join(folderPath, 'exported.epub')).then(() => true).catch(() => false),
         fs.access(path.join(folderPath, 'original.epub')).then(() => true).catch(() => false),
         fs.access(path.join(folderPath, 'cleaned.epub')).then(() => true).catch(() => false),
         fs.access(path.join(folderPath, 'output.m4b')).then(() => true).catch(() => false)
       ]);
+      const hasOriginal = hasExported || hasOriginalLegacy;
 
       return {
         success: true,
@@ -2469,10 +2648,16 @@ function setupIpcHandlers(): void {
     const basePath = getAudiobooksBasePath();
     const folderPath = path.join(basePath, projectId);
 
+    // Check if exported.epub exists, otherwise fall back to original.epub (legacy)
+    const exportedPath = path.join(folderPath, 'exported.epub');
+    const legacyPath = path.join(folderPath, 'original.epub');
+    const hasExported = await fs.access(exportedPath).then(() => true).catch(() => false);
+    const originalPath = hasExported ? exportedPath : legacyPath;
+
     return {
       success: true,
       folderPath,
-      originalPath: path.join(folderPath, 'original.epub'),
+      originalPath,
       cleanedPath: path.join(folderPath, 'cleaned.epub'),
       outputPath: path.join(folderPath, 'output.m4b')
     };
@@ -2515,8 +2700,8 @@ function setupIpcHandlers(): void {
           existingCreatedAt = existingProject.createdAt;
         }
 
-        // Remove old files (original.epub, cleaned.epub, project.json)
-        const filesToRemove = ['original.epub', 'cleaned.epub', 'project.json'];
+        // Remove old files (exported.epub, original.epub (legacy), cleaned.epub, project.json)
+        const filesToRemove = ['exported.epub', 'original.epub', 'cleaned.epub', 'project.json'];
         for (const file of filesToRemove) {
           try {
             await fs.unlink(path.join(folderPath, file));
@@ -2542,7 +2727,7 @@ function setupIpcHandlers(): void {
         console.log(`[library:copy-to-queue] Creating new project: ${folderPath}`);
       }
 
-      const originalPath = path.join(folderPath, 'original.epub');
+      const originalPath = path.join(folderPath, 'exported.epub');
 
       // Handle different input types
       if (data instanceof ArrayBuffer || (data && typeof data === 'object' && 'byteLength' in data)) {
@@ -2617,14 +2802,23 @@ function setupIpcHandlers(): void {
       const files = await Promise.all(folders.map(async (folder) => {
         const folderPath = path.join(basePath, folder.name);
         const projectData = await loadProjectFile(folderPath);
-        const originalPath = path.join(folderPath, 'original.epub');
 
         try {
-          const stats = await fs.stat(originalPath);
+          // Try exported.epub first (new naming), fall back to original.epub (legacy)
+          let epubPath = path.join(folderPath, 'exported.epub');
+          let stats;
+          try {
+            stats = await fs.stat(epubPath);
+          } catch {
+            // Fall back to original.epub for legacy folders
+            epubPath = path.join(folderPath, 'original.epub');
+            stats = await fs.stat(epubPath);
+          }
+
           const skippedChunksFile = path.join(folderPath, 'skipped-chunks.json');
           const hasSkippedChunks = await fs.access(skippedChunksFile).then(() => true).catch(() => false);
           return {
-            path: originalPath,
+            path: epubPath,
             filename: projectData?.originalFilename || folder.name + '.epub',
             size: stats.size,
             addedAt: projectData?.createdAt || stats.mtime.toISOString(),
@@ -2899,6 +3093,198 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // Unified Audiobook Export - saves EPUB and updates BFP project
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Get audiobooks folder path for a project
+  const getAudiobookFolderForProject = (projectName: string) => {
+    return path.join(getLibraryRoot(), 'audiobooks', projectName);
+  };
+
+  // Export EPUB to audiobook folder and update BFP project with audiobook state
+  ipcMain.handle('audiobook:export-from-project', async (
+    _event,
+    bfpPath: string,
+    epubData: ArrayBuffer,
+    deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>
+  ) => {
+    try {
+      // Read the BFP project
+      const bfpContent = await fs.readFile(bfpPath, 'utf-8');
+      const bfpProject = JSON.parse(bfpContent);
+
+      // Create audiobook folder named after the project
+      const projectName = path.basename(bfpPath, '.bfp');
+      const audiobookFolder = getAudiobookFolderForProject(projectName);
+      await fs.mkdir(audiobookFolder, { recursive: true });
+
+      // Save the EPUB
+      const epubPath = path.join(audiobookFolder, 'exported.epub');
+      await fs.writeFile(epubPath, Buffer.from(epubData));
+
+      // Save deleted block examples if provided
+      if (deletedBlockExamples && deletedBlockExamples.length > 0) {
+        const examplesPath = path.join(audiobookFolder, 'deleted-examples.json');
+        await fs.writeFile(examplesPath, JSON.stringify(deletedBlockExamples, null, 2));
+      }
+
+      // Update BFP project with audiobook state
+      bfpProject.audiobook = {
+        status: 'pending',
+        exportedEpubPath: epubPath,
+        exportedAt: new Date().toISOString()
+      };
+      bfpProject.modified_at = new Date().toISOString();
+
+      // Save updated BFP
+      await atomicWriteFile(bfpPath, JSON.stringify(bfpProject, null, 2));
+
+      console.log(`[audiobook:export-from-project] Exported to ${audiobookFolder}`);
+
+      return {
+        success: true,
+        audiobookFolder,
+        epubPath
+      };
+    } catch (err) {
+      console.error('[audiobook:export-from-project] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Update audiobook state in BFP project
+  ipcMain.handle('audiobook:update-state', async (
+    _event,
+    bfpPath: string,
+    audiobookState: Record<string, unknown>
+  ) => {
+    try {
+      const bfpContent = await fs.readFile(bfpPath, 'utf-8');
+      const bfpProject = JSON.parse(bfpContent);
+
+      // Merge audiobook state
+      bfpProject.audiobook = {
+        ...bfpProject.audiobook,
+        ...audiobookState
+      };
+      bfpProject.modified_at = new Date().toISOString();
+
+      await atomicWriteFile(bfpPath, JSON.stringify(bfpProject, null, 2));
+
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Get audiobook folder path for a project
+  ipcMain.handle('audiobook:get-folder', async (_event, bfpPath: string) => {
+    const projectName = path.basename(bfpPath, '.bfp');
+    const audiobookFolder = getAudiobookFolderForProject(projectName);
+    return { success: true, folder: audiobookFolder };
+  });
+
+  // List BFP projects that have audiobook state (for audiobook producer queue)
+  ipcMain.handle('audiobook:list-projects-with-audiobook', async () => {
+    try {
+      const projectsFolder = getProjectsFolder();
+      const entries = await fs.readdir(projectsFolder, { withFileTypes: true });
+      const projects: Array<{
+        name: string;
+        bfpPath: string;
+        audiobookFolder: string;
+        status: string;
+        exportedAt?: string;
+        cleanedAt?: string;
+        completedAt?: string;
+        metadata?: {
+          title?: string;
+          author?: string;
+          year?: string;
+          coverImagePath?: string;
+          outputFilename?: string;
+        };
+        analytics?: {
+          ttsJobs?: any[];
+          cleanupJobs?: any[];
+        };
+      }> = [];
+
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.bfp')) continue;
+
+        const bfpPath = path.join(projectsFolder, entry.name);
+        try {
+          const content = await fs.readFile(bfpPath, 'utf-8');
+          const project = JSON.parse(content);
+
+          // Only include projects with audiobook state
+          if (project.audiobook) {
+            const projectName = entry.name.replace('.bfp', '');
+            projects.push({
+              name: projectName,
+              bfpPath,
+              audiobookFolder: getAudiobookFolderForProject(projectName),
+              status: project.audiobook.status || 'pending',
+              exportedAt: project.audiobook.exportedAt,
+              cleanedAt: project.audiobook.cleanedAt,
+              completedAt: project.audiobook.completedAt,
+              metadata: project.metadata ? {
+                title: project.metadata.title,
+                author: project.metadata.author,
+                year: project.metadata.year,
+                coverImagePath: project.metadata.coverImagePath,
+                outputFilename: project.metadata.outputFilename
+              } : undefined,
+              analytics: project.audiobook.analytics || undefined
+            });
+          }
+        } catch {
+          // Skip invalid files
+        }
+      }
+
+      // Sort by exportedAt, newest first
+      projects.sort((a, b) => {
+        const aTime = a.exportedAt ? new Date(a.exportedAt).getTime() : 0;
+        const bTime = b.exportedAt ? new Date(b.exportedAt).getTime() : 0;
+        return bTime - aTime;
+      });
+
+      return { success: true, projects };
+    } catch (err) {
+      return { success: false, error: (err as Error).message, projects: [] };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Media handlers - for external image storage
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Save base64 image to media folder, return relative path
+  ipcMain.handle('media:save-image', async (_event, base64Data: string, prefix: string = 'cover') => {
+    try {
+      const relativePath = await saveImageToMedia(base64Data, prefix);
+      return { success: true, path: relativePath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Load image from media folder, return base64 data URL
+  ipcMain.handle('media:load-image', async (_event, relativePath: string) => {
+    try {
+      const base64 = await loadImageFromMedia(relativePath);
+      if (base64) {
+        return { success: true, data: base64 };
+      }
+      return { success: false, error: 'Image not found' };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // Processing Queue handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -3034,7 +3420,8 @@ function setupIpcHandlers(): void {
           copyrightChunksAffected: result.copyrightChunksAffected,
           contentSkipsDetected: result.contentSkipsDetected,
           contentSkipsAffected: result.contentSkipsAffected,
-          skippedChunksPath: result.skippedChunksPath
+          skippedChunksPath: result.skippedChunksPath,
+          analytics: result.analytics  // Include cleanup analytics
         });
       }
 
@@ -3377,6 +3764,78 @@ function setupIpcHandlers(): void {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { success: false, error: message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Reassembly handlers - Browse incomplete e2a sessions and reassemble audiobooks
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('reassembly:scan-sessions', async (_event, customTmpPath?: string) => {
+    try {
+      const { scanE2aTmpFolder } = await import('./reassembly-bridge.js');
+      const result = await scanE2aTmpFolder(customTmpPath);
+      console.log('[MAIN] reassembly:scan-sessions returning', result.sessions.length, 'sessions');
+      // Log first session for debugging
+      if (result.sessions.length > 0) {
+        console.log('[MAIN] First session:', JSON.stringify(result.sessions[0], null, 2));
+      }
+      return { success: true, data: result };
+    } catch (err) {
+      console.error('[MAIN] reassembly:scan-sessions error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('reassembly:get-session', async (_event, sessionId: string, customTmpPath?: string) => {
+    try {
+      const { getSession } = await import('./reassembly-bridge.js');
+      const session = await getSession(sessionId, customTmpPath);
+      if (!session) {
+        return { success: false, error: 'Session not found' };
+      }
+      return { success: true, data: session };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('reassembly:start', async (_event, jobId: string, config: any) => {
+    try {
+      const { startReassembly } = await import('./reassembly-bridge.js');
+      const result = await startReassembly(jobId, config, mainWindow);
+      return { success: result.success, data: { outputPath: result.outputPath }, error: result.error };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('reassembly:stop', async (_event, jobId: string) => {
+    try {
+      const { stopReassembly } = await import('./reassembly-bridge.js');
+      const stopped = stopReassembly(jobId);
+      return { success: stopped };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('reassembly:delete-session', async (_event, sessionId: string, customTmpPath?: string) => {
+    try {
+      const { deleteSession } = await import('./reassembly-bridge.js');
+      const deleted = await deleteSession(sessionId, customTmpPath);
+      return { success: deleted };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('reassembly:is-available', async () => {
+    try {
+      const { isE2aAvailable } = await import('./reassembly-bridge.js');
+      return { success: true, data: { available: isE2aAvailable() } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
     }
   });
 }

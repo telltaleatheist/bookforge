@@ -23,6 +23,10 @@ export const routes: Routes = [
     loadComponent: () => import('./features/settings/settings.component').then(m => m.SettingsComponent)
   },
   {
+    path: 'reassembly',
+    loadComponent: () => import('./features/reassembly/reassembly.component').then(m => m.ReassemblyComponent)
+  },
+  {
     path: 'epub-editor',
     loadComponent: () => import('./features/epub-editor/epub-editor.component').then(m => m.EpubEditorComponent)
   },

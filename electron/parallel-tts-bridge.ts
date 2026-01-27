@@ -17,6 +17,7 @@ import { BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
 
 // Power save blocker ID - prevents system sleep during TTS conversion
@@ -65,6 +66,8 @@ export interface WorkerState {
   chapterEnd?: number;    // 1-indexed (for chapter mode)
   // Resume mode - track actual TTS conversions (not skipped sentences)
   actualConversions?: number;  // Count of actual TTS conversions done
+  // Resume mode - specific indices this worker should process
+  assignedIndices?: number[];  // For scattered missing sentences
   // Watchdog tracking
   startedAt?: number;          // Timestamp when worker started
   lastProgressAt?: number;     // Timestamp of last progress update
@@ -134,6 +137,11 @@ export interface AggregatedProgress {
   estimatedRemaining: number;
   message?: string;
   error?: string;
+  // Assembly phase details
+  assemblySubPhase?: 'combining' | 'vtt' | 'encoding' | 'metadata';
+  assemblyProgress?: number;  // 0-100 for current sub-phase
+  assemblyChapter?: number;   // Current chapter being processed
+  assemblyTotalChapters?: number;
 }
 
 export interface ParallelConversionResult {
@@ -147,10 +155,35 @@ export interface ParallelConversionResult {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-const DEFAULT_E2A_PATH = '/Users/telltale/Projects/ebook2audiobook';
-let e2aPath = DEFAULT_E2A_PATH;
+// Default e2a paths - prefer ebook2audiobook-latest for parallel worker support
+// Can be overridden with setE2aPath() or EBOOK2AUDIOBOOK_PATH environment variable
+const DEFAULT_E2A_PATH_LATEST = '/Users/telltale/Projects/ebook2audiobook-latest';
+const DEFAULT_E2A_PATH_LEGACY = '/Users/telltale/Projects/ebook2audiobook';
+
+// Check environment variable first, then prefer latest if available
+function getDefaultE2aPath(): string {
+  if (process.env.EBOOK2AUDIOBOOK_PATH) {
+    return process.env.EBOOK2AUDIOBOOK_PATH;
+  }
+  // Prefer ebook2audiobook-latest for parallel worker support
+  try {
+    const fs = require('fs');
+    if (fs.existsSync(DEFAULT_E2A_PATH_LATEST)) {
+      return DEFAULT_E2A_PATH_LATEST;
+    }
+  } catch {
+    // Fall through to legacy path
+  }
+  return DEFAULT_E2A_PATH_LEGACY;
+}
+
+let e2aPath = getDefaultE2aPath();
 let mainWindow: BrowserWindow | null = null;
 let loggerInitialized = false;
+
+// Use lightweight worker.py for lower memory usage (~8GB vs ~25GB)
+// Set to false to use app.py with --worker_mode (full imports)
+let useLightweightWorker = true;
 
 // Watchdog configuration - detect stuck workers
 const WORKER_STARTUP_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes to start showing progress
@@ -199,6 +232,15 @@ export function setE2aPath(newPath: string): void {
 
 export function getE2aPath(): string {
   return e2aPath;
+}
+
+export function setUseLightweightWorker(useLight: boolean): void {
+  useLightweightWorker = useLight;
+  console.log(`[PARALLEL-TTS] Lightweight worker mode: ${useLightweightWorker ? 'enabled' : 'disabled'}`);
+}
+
+export function getUseLightweightWorker(): boolean {
+  return useLightweightWorker;
 }
 
 export function setMainWindow(window: BrowserWindow | null): void {
@@ -313,33 +355,37 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
 
 /**
  * Run e2a with --prep_only to get total sentence count and session info
+ * We generate our own session ID and read the session-state.json file after completion
+ * (avoids fragile stdout parsing)
  */
 export async function prepareSession(
   epubPath: string,
   settings: ParallelTtsSettings
 ): Promise<PrepInfo> {
   const appPath = path.join(e2aPath, 'app.py');
+  const sessionId = crypto.randomUUID();
+  const sessionDir = path.join(e2aPath, 'tmp', `ebook-${sessionId}`);
 
   const args = [
     'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
     appPath,
     '--headless',
     '--ebook', epubPath,
+    '--session', sessionId,
     '--language', settings.language,
-    '--tts_engine', settings.ttsEngine,  // Must be saved in session-state.json for workers
-    '--device', settings.device === 'gpu' ? 'cuda' : settings.device,
+    '--tts_engine', settings.ttsEngine,
+    '--device', settings.device === 'gpu' ? 'CUDA' : settings.device.toUpperCase(),
     '--prep_only'
   ];
 
-  // Add voice/fine-tuned model if specified
   if (settings.fineTuned) {
     args.push('--fine_tuned', settings.fineTuned);
   }
 
   console.log('[PARALLEL-TTS] Running prep with:', args.join(' '));
 
-  return new Promise((resolve, reject) => {
-    let stdout = '';
+  // Run the prep command
+  await new Promise<void>((resolve, reject) => {
     let stderr = '';
 
     const prepProcess = spawn('conda', args, {
@@ -348,57 +394,29 @@ export async function prepareSession(
       shell: true
     });
 
+    // Log stdout for visibility (but don't parse it)
     prepProcess.stdout?.on('data', (data: Buffer) => {
-      stdout += data.toString();
+      const text = data.toString().trim();
+      if (text) {
+        // Only log non-JSON lines (skip the massive prep info JSON)
+        if (!text.startsWith('{') && !text.startsWith('[') && !text.startsWith('"')) {
+          console.log('[PARALLEL-TTS] Prep:', text.substring(0, 200));
+        }
+      }
     });
 
     prepProcess.stderr?.on('data', (data: Buffer) => {
       stderr += data.toString();
+      // Log stderr for visibility
+      const text = data.toString().trim();
+      if (text && !text.includes('━')) {  // Skip progress bars
+        console.log('[PARALLEL-TTS] Prep stderr:', text.substring(0, 200));
+      }
     });
 
     prepProcess.on('close', (code: number | null) => {
       if (code === 0) {
-        try {
-          // Find the JSON output in stdout (it should be the last valid JSON line)
-          const lines = stdout.split('\n').filter(l => l.trim());
-          let prepInfo: PrepInfo | null = null;
-
-          for (let i = lines.length - 1; i >= 0; i--) {
-            try {
-              const parsed = JSON.parse(lines[i]);
-              if (parsed.session_id && parsed.total_sentences !== undefined) {
-                prepInfo = {
-                  sessionId: parsed.session_id,
-                  sessionDir: parsed.session_dir,
-                  processDir: parsed.process_dir,
-                  chaptersDir: parsed.chapters_dir,
-                  chaptersDirSentences: parsed.chapters_dir_sentences,
-                  totalChapters: parsed.total_chapters,
-                  totalSentences: parsed.total_sentences,
-                  chapters: parsed.chapters.map((c: any) => ({
-                    chapterNum: c.chapter_num,
-                    sentenceCount: c.sentence_count,
-                    sentenceStart: c.sentence_start,
-                    sentenceEnd: c.sentence_end
-                  })),
-                  metadata: parsed.metadata
-                };
-                break;
-              }
-            } catch {
-              continue;
-            }
-          }
-
-          if (prepInfo) {
-            console.log('[PARALLEL-TTS] Prep complete:', prepInfo.totalSentences, 'sentences');
-            resolve(prepInfo);
-          } else {
-            reject(new Error('Failed to parse prep output'));
-          }
-        } catch (err) {
-          reject(new Error(`Failed to parse prep output: ${err}`));
-        }
+        resolve();
       } else {
         reject(new Error(`Prep failed with code ${code}: ${stderr}`));
       }
@@ -406,6 +424,37 @@ export async function prepareSession(
 
     prepProcess.on('error', reject);
   });
+
+  // Read the session-state.json file from the process subdirectory
+  const entries = await fs.readdir(sessionDir, { withFileTypes: true });
+  const processDir = entries.find(e => e.isDirectory());
+  if (!processDir) {
+    throw new Error(`No process directory found in ${sessionDir}`);
+  }
+
+  const statePath = path.join(sessionDir, processDir.name, 'session-state.json');
+  const stateContent = await fs.readFile(statePath, 'utf-8');
+  const state = JSON.parse(stateContent);
+
+  const prepInfo: PrepInfo = {
+    sessionId: state.session_id,
+    sessionDir: state.session_dir,
+    processDir: state.process_dir,
+    chaptersDir: state.chapters_dir,
+    chaptersDirSentences: state.chapters_dir_sentences,
+    totalChapters: state.total_chapters,
+    totalSentences: state.total_sentences,
+    chapters: state.chapters.map((c: any) => ({
+      chapterNum: c.chapter_num,
+      sentenceCount: c.sentence_count,
+      sentenceStart: c.sentence_start,
+      sentenceEnd: c.sentence_end
+    })),
+    metadata: state.metadata
+  };
+
+  console.log('[PARALLEL-TTS] Prep complete:', prepInfo.totalSentences, 'sentences');
+  return prepInfo;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -483,47 +532,80 @@ function startWorker(
   const { config, prepInfo } = session;
   if (!prepInfo) throw new Error('Session not prepared');
 
-  const appPath = path.join(e2aPath, 'app.py');
   const settings = config.settings;
   const isChapterMode = config.parallelMode === 'chapters';
 
-  // Workers with --worker_mode load all data from session-state.json
-  // They do NOT need --ebook because prep phase already saved everything
-  // This eliminates race conditions when running multiple workers in parallel
-  const args = [
-    'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
-    appPath,
-    '--headless',
-    '--session', prepInfo.sessionId,
-    '--device', settings.device === 'gpu' ? 'cuda' : settings.device,
-    '--output_dir', config.outputDir,
-    '--worker_mode'
-    // Note: language, tts_engine, and other settings are loaded from session-state.json
-    // We still pass device to allow per-worker device override if needed
-  ];
+  // Choose between lightweight worker.py (~8GB memory) or full app.py (~25GB memory)
+  // worker.py only imports TTS dependencies, avoiding gradio/stanza/pytesseract
+  let args: string[];
 
-  // Add range args based on mode
-  if (isChapterMode && range.chapterStart !== undefined && range.chapterEnd !== undefined) {
-    args.push('--chapter_start', range.chapterStart.toString());
-    args.push('--chapter_end', range.chapterEnd.toString());
-  } else if (range.sentenceStart !== undefined && range.sentenceEnd !== undefined) {
-    args.push('--sentence_start', range.sentenceStart.toString());
-    args.push('--sentence_end', range.sentenceEnd.toString());
-  }
+  if (useLightweightWorker) {
+    // Use worker.py - lightweight entry point with minimal imports
+    const workerPath = path.join(e2aPath, 'worker.py');
+    // worker.py expects uppercase device names: CPU, CUDA, MPS, etc.
+    const deviceArg = settings.device === 'gpu' ? 'CUDA' : settings.device.toUpperCase();
+    args = [
+      'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
+      workerPath,
+      '--session', prepInfo.sessionId,
+      '--device', deviceArg
+    ];
 
-  if (settings.enableTextSplitting) {
-    args.push('--enable_text_splitting');
+    // Add output_dir if specified
+    if (config.outputDir) {
+      args.push('--output_dir', config.outputDir);
+    }
+
+    // Add range args based on mode
+    if (isChapterMode && range.chapterStart !== undefined && range.chapterEnd !== undefined) {
+      args.push('--chapter_start', range.chapterStart.toString());
+      args.push('--chapter_end', range.chapterEnd.toString());
+    } else if (range.sentenceStart !== undefined && range.sentenceEnd !== undefined) {
+      args.push('--sentence_start', range.sentenceStart.toString());
+      args.push('--sentence_end', range.sentenceEnd.toString());
+    }
+
+    // Note: tts_engine, voice, language are loaded from session-state.json by worker.py
+  } else {
+    // Use app.py with --worker_mode - full imports but same functionality
+    const appPath = path.join(e2aPath, 'app.py');
+    args = [
+      'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
+      appPath,
+      '--headless',
+      '--session', prepInfo.sessionId,
+      '--device', settings.device === 'gpu' ? 'CUDA' : settings.device.toUpperCase(),
+      '--output_dir', config.outputDir,
+      '--worker_mode'
+      // Note: language, tts_engine, and other settings are loaded from session-state.json
+      // We still pass device to allow per-worker device override if needed
+    ];
+
+    // Add range args based on mode
+    if (isChapterMode && range.chapterStart !== undefined && range.chapterEnd !== undefined) {
+      args.push('--chapter_start', range.chapterStart.toString());
+      args.push('--chapter_end', range.chapterEnd.toString());
+    } else if (range.sentenceStart !== undefined && range.sentenceEnd !== undefined) {
+      args.push('--sentence_start', range.sentenceStart.toString());
+      args.push('--sentence_end', range.sentenceEnd.toString());
+    }
+
+    if (settings.enableTextSplitting) {
+      args.push('--enable_text_splitting');
+    }
   }
 
   const rangeDesc = isChapterMode
     ? `chapters ${range.chapterStart}-${range.chapterEnd}`
     : `sentences ${range.sentenceStart}-${range.sentenceEnd}`;
-  console.log(`[PARALLEL-TTS] Worker ${workerId} starting: ${rangeDesc}`);
+  const workerType = useLightweightWorker ? 'lightweight (worker.py)' : 'full (app.py)';
+  console.log(`[PARALLEL-TTS] Worker ${workerId} starting [${workerType}]: ${rangeDesc}`);
   console.log(`[PARALLEL-TTS] Worker ${workerId} settings: engine=${settings.ttsEngine}, voice=${settings.fineTuned}, device=${settings.device}`);
 
   // Log to file
   logger.log('INFO', session.jobId, `Worker ${workerId} starting`, {
     range: rangeDesc,
+    workerType: useLightweightWorker ? 'lightweight' : 'full',
     engine: settings.ttsEngine,
     voice: settings.fineTuned,
     device: settings.device
@@ -857,7 +939,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--ebook', config.epubPath,
     '--output_dir', config.outputDir,
     '--session', prepInfo.sessionId,
-    '--device', settings.device === 'gpu' ? 'cuda' : settings.device,
+    '--device', settings.device === 'gpu' ? 'CUDA' : settings.device.toUpperCase(),
     '--language', settings.language,
     '--tts_engine', settings.ttsEngine,  // Required for session setup even in assembly mode
     '--assemble_only',  // Skip TTS, just combine existing sentence audio files
@@ -876,9 +958,119 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       shell: true
     });
 
+    // Track assembly state for progress reporting
+    let assemblySubPhase: 'combining' | 'vtt' | 'encoding' | 'metadata' = 'combining';
+    let currentChapter = 0;
+    const totalChapters = prepInfo.totalChapters;
+
+    const sendAssemblyProgress = (subPhase: typeof assemblySubPhase, subProgress: number, message?: string) => {
+      if (!mainWindow) return;
+
+      // Calculate overall percentage: combining 0-60%, vtt 60-70%, encoding 70-95%, metadata 95-100%
+      let overallPercent: number;
+      switch (subPhase) {
+        case 'combining':
+          overallPercent = Math.round(subProgress * 0.6);
+          break;
+        case 'vtt':
+          overallPercent = 60 + Math.round(subProgress * 0.1);
+          break;
+        case 'encoding':
+          overallPercent = 70 + Math.round(subProgress * 0.25);
+          break;
+        case 'metadata':
+          overallPercent = 95 + Math.round(subProgress * 0.05);
+          break;
+      }
+
+      const progress: AggregatedProgress = {
+        phase: 'assembling',
+        totalSentences: prepInfo.totalSentences,
+        completedSentences: prepInfo.totalSentences,
+        completedInSession: session.isResumeJob ? (session.totalMissing || 0) : prepInfo.totalSentences,
+        percentage: overallPercent,
+        activeWorkers: 0,
+        workers: session.workers,
+        estimatedRemaining: Math.max(10, Math.round((100 - overallPercent) * 0.6)), // Rough estimate
+        message: message || getAssemblyMessage(subPhase, subProgress, currentChapter, totalChapters),
+        assemblySubPhase: subPhase,
+        assemblyProgress: subProgress,
+        assemblyChapter: currentChapter,
+        assemblyTotalChapters: totalChapters
+      };
+      mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
+    };
+
+    const getAssemblyMessage = (
+      subPhase: 'combining' | 'vtt' | 'encoding' | 'metadata',
+      progress: number,
+      chapter: number,
+      total: number
+    ): string => {
+      switch (subPhase) {
+        case 'combining':
+          return chapter > 0
+            ? `Combining chapter ${chapter}/${total} (${progress}%)`
+            : `Combining chapters... (${progress}%)`;
+        case 'vtt':
+          return `Creating subtitles... (${progress}%)`;
+        case 'encoding':
+          return `Encoding M4B audiobook... (${progress}%)`;
+        case 'metadata':
+          return `Applying metadata...`;
+      }
+    };
+
+    // Send initial progress
+    sendAssemblyProgress('combining', 0, 'Starting assembly...');
+
     session.assemblyProcess.stdout?.on('data', (data: Buffer) => {
       const output = data.toString();
       console.log('[ASSEMBLY]', output.trim());
+
+      // Parse chapter number: "[ASSEMBLE] Chapter N: sentences X-Y"
+      const chapterMatch = output.match(/\[ASSEMBLE\] Chapter (\d+):/);
+      if (chapterMatch) {
+        currentChapter = parseInt(chapterMatch[1]);
+        sendAssemblyProgress('combining', Math.round((currentChapter / totalChapters) * 100));
+      }
+
+      // Parse combining progress: "Assemble - XX.X%"
+      const assembleMatch = output.match(/Assemble - ([\d.]+)%/);
+      if (assembleMatch && assemblySubPhase === 'combining') {
+        // This is per-chapter progress, combine with chapter progress
+        const chapterProgress = parseFloat(assembleMatch[1]);
+        const overallCombineProgress = ((currentChapter - 1) / totalChapters * 100) + (chapterProgress / totalChapters);
+        sendAssemblyProgress('combining', Math.min(100, Math.round(overallCombineProgress)));
+      }
+
+      // Detect VTT phase: "[ASSEMBLE] Creating VTT subtitle file..."
+      if (output.includes('Creating VTT') || output.includes('[VTT]')) {
+        if (assemblySubPhase !== 'vtt') {
+          assemblySubPhase = 'vtt';
+          sendAssemblyProgress('vtt', 0);
+        }
+        // VTT doesn't have granular progress, estimate based on messages
+        if (output.includes('Building VTT')) sendAssemblyProgress('vtt', 20);
+        if (output.includes('Getting audio durations')) sendAssemblyProgress('vtt', 40);
+        if (output.includes('Creating VTT blocks')) sendAssemblyProgress('vtt', 60);
+        if (output.includes('Writing')) sendAssemblyProgress('vtt', 80);
+        if (output.includes('VTT file created')) sendAssemblyProgress('vtt', 100);
+      }
+
+      // Detect encoding phase: "Export - XX.X%"
+      const exportMatch = output.match(/Export - ([\d.]+)%/);
+      if (exportMatch) {
+        if (assemblySubPhase !== 'encoding') {
+          assemblySubPhase = 'encoding';
+        }
+        sendAssemblyProgress('encoding', Math.round(parseFloat(exportMatch[1])));
+      }
+
+      // Detect combining chapters into final (after all individual chapters done)
+      if (output.includes('Combining chapters into final')) {
+        sendAssemblyProgress('combining', 95, 'Combining chapters into final audiobook...');
+      }
 
       // Look for output file path in various formats
       // Format 1: "Output #0, ipod, to '/path/file.m4b':"
@@ -1110,6 +1302,9 @@ async function applyMetadataWithM4bTool(
       await fs.copyFile(inputPath, newPath);
       await fs.unlink(inputPath);
 
+      // Also move VTT file if it exists (rename to match m4b filename)
+      await moveVttFile(inputPath, newPath);
+
       console.log(`[PARALLEL-TTS] Successfully moved to: ${newPath}`);
       return newPath;
     }
@@ -1118,6 +1313,55 @@ async function applyMetadataWithM4bTool(
   }
 
   return inputPath;
+}
+
+/**
+ * Move VTT file to a vtt subfolder, renaming to match the M4B filename
+ * Searches for VTT files in the original M4B's directory
+ */
+async function moveVttFile(originalM4bPath: string, newM4bPath: string): Promise<void> {
+  try {
+    const originalDir = path.dirname(originalM4bPath);
+    const originalBasename = path.basename(originalM4bPath, '.m4b');
+    const newDir = path.dirname(newM4bPath);
+    const newBasename = path.basename(newM4bPath, '.m4b');
+
+    // VTT files go in a 'vtt' subfolder
+    const vttDir = path.join(newDir, 'vtt');
+
+    // Look for VTT file with similar name in the original directory
+    // ebook2audiobook often uses underscores instead of spaces
+    const entries = await fs.readdir(originalDir);
+    const vttFiles = entries.filter(f => f.toLowerCase().endsWith('.vtt'));
+
+    for (const vttFile of vttFiles) {
+      const vttBasename = path.basename(vttFile, '.vtt');
+      // Check if the VTT filename is related to the M4B (contains similar words)
+      const originalWords = originalBasename.toLowerCase().replace(/[_\-.]/g, ' ').split(' ').filter(w => w.length > 2);
+      const vttWords = vttBasename.toLowerCase().replace(/[_\-.]/g, ' ').split(' ').filter(w => w.length > 2);
+
+      // If most words match, it's likely the same book's VTT
+      const matchingWords = originalWords.filter(w => vttWords.includes(w));
+      const matchRatio = matchingWords.length / Math.max(originalWords.length, 1);
+
+      if (matchRatio >= 0.5 || vttBasename.includes(originalBasename.replace(/ /g, '_'))) {
+        const originalVttPath = path.join(originalDir, vttFile);
+
+        // Create vtt subfolder if it doesn't exist
+        await fs.mkdir(vttDir, { recursive: true });
+
+        const newVttPath = path.join(vttDir, `${newBasename}.vtt`);
+
+        console.log(`[PARALLEL-TTS] Moving VTT file to vtt folder: ${vttFile} -> vtt/${path.basename(newVttPath)}`);
+
+        await fs.copyFile(originalVttPath, newVttPath);
+        await fs.unlink(originalVttPath);
+        break; // Only move one VTT file
+      }
+    }
+  } catch (err) {
+    console.warn('[PARALLEL-TTS] Failed to move VTT file (non-fatal):', err);
+  }
 }
 
 /**
@@ -1329,6 +1573,7 @@ function emitComplete(
   progressHistory.delete(session.jobId);
   stopWatchdog(session);
 
+  const completedAt = new Date().toISOString();
   const duration = Math.round((Date.now() - session.startTime) / 1000);
 
   // Log completion
@@ -1343,6 +1588,35 @@ function emitComplete(
   const sessionDone = session.isResumeJob
     ? session.workers.reduce((sum, w) => sum + (w.actualConversions || 0), 0)
     : session.prepInfo.totalSentences;
+
+  // Calculate sentences per minute (based on actual processing time)
+  const durationMinutes = duration / 60;
+  const sentencesPerMinute = durationMinutes > 0
+    ? Math.round((sessionDone / durationMinutes) * 10) / 10
+    : 0;
+
+  // Build analytics data
+  const analytics = {
+    jobId: session.jobId,
+    startedAt: new Date(session.startTime).toISOString(),
+    completedAt,
+    durationSeconds: duration,
+    totalSentences: session.prepInfo.totalSentences,
+    totalChapters: session.prepInfo.totalChapters,
+    workerCount: session.config.workerCount,
+    sentencesPerMinute,
+    settings: {
+      device: session.config.settings.device,
+      language: session.config.settings.language,
+      ttsEngine: session.config.settings.ttsEngine,
+      fineTuned: session.config.settings.fineTuned || undefined
+    },
+    success,
+    outputPath,
+    error,
+    isResumeJob: session.isResumeJob || false,
+    sentencesProcessedInSession: sessionDone
+  };
 
   const progress: AggregatedProgress = {
     phase: success ? 'complete' : 'error',
@@ -1363,7 +1637,8 @@ function emitComplete(
     success,
     outputPath,
     error,
-    duration
+    duration,
+    analytics
   });
 }
 
@@ -1646,6 +1921,7 @@ export interface ResumeCheckResult {
   error?: string;
   sessionId?: string;
   sessionDir?: string;
+  sessionPath?: string;        // Full path to session directory (for fast check)
   processDir?: string;
   totalSentences?: number;
   totalChapters?: number;
@@ -1654,6 +1930,7 @@ export interface ResumeCheckResult {
   missingIndices?: number[];
   missingRanges?: Array<{ start: number; end: number; count: number }>;
   progressPercent?: number;
+  canResume?: boolean;         // Has partial progress to resume
   chapters?: Array<{
     chapter_num: number;
     sentence_start: number;
@@ -1697,6 +1974,8 @@ async function findSessionForEpub(epubPath: string): Promise<string | null> {
   const tmpDir = path.join(e2aPath, 'tmp');
   const epubDir = path.dirname(epubPath);
 
+  console.log(`[PARALLEL-TTS] e2aPath: ${e2aPath}`);
+  console.log(`[PARALLEL-TTS] tmpDir: ${tmpDir}`);
   console.log(`[PARALLEL-TTS] Quick search for session matching: ${epubPath}`);
 
   try {
@@ -1739,18 +2018,30 @@ async function findSessionForEpub(epubPath: string): Promise<string | null> {
             const stateContent = await fs.readFile(statePath, 'utf-8');
             const state = JSON.parse(stateContent);
 
+            console.log(`[PARALLEL-TTS] Checking session ${sessionDir}:`);
+            console.log(`[PARALLEL-TTS]   state.epub_path: ${state.epub_path}`);
+            console.log(`[PARALLEL-TTS]   state.source_epub_path: ${state.source_epub_path}`);
+            console.log(`[PARALLEL-TTS]   Looking for: ${epubPath}`);
+
             // Check if this session matches the epub path (exact match)
             if (state.epub_path === epubPath) {
               console.log(`[PARALLEL-TTS] Found exact path match: ${sessionPath}`);
               return sessionPath;
             }
 
+            // Check if source_epub_path matches (original path before e2a copied it)
+            if (state.source_epub_path === epubPath) {
+              console.log(`[PARALLEL-TTS] Found source path match: ${sessionPath}`);
+              return sessionPath;
+            }
+
             // Check if same directory (handles renamed files in same folder)
-            const stateEpubDir = path.dirname(state.epub_path || '');
+            const stateEpubDir = path.dirname(state.source_epub_path || state.epub_path || '');
             if (stateEpubDir === epubDir) {
               console.log(`[PARALLEL-TTS] Found directory match: ${sessionPath}`);
               return sessionPath;
             }
+            console.log(`[PARALLEL-TTS]   No match for this session`);
           } catch {
             // No session-state.json or invalid JSON - skip
             continue;
@@ -1769,7 +2060,142 @@ async function findSessionForEpub(epubPath: string): Promise<string | null> {
 }
 
 /**
- * Check if a session can be resumed
+ * Fast check if a session can be resumed (no subprocess spawn)
+ * Reads session-state.json and counts completed sentence files directly
+ * Now also extracts all required info for resumeConversion (sessionId, chapters, missingRanges)
+ */
+export async function checkResumeStatusFast(epubPath: string): Promise<ResumeCheckResult> {
+  const sessionPath = await findSessionForEpub(epubPath);
+  if (!sessionPath) {
+    return { success: false, error: 'No session found for this epub' };
+  }
+
+  try {
+    // Find process dir and read session state
+    const processDirs = await fs.readdir(sessionPath);
+    for (const processDirName of processDirs) {
+      const fullProcessDir = path.join(sessionPath, processDirName);
+      const statePath = path.join(fullProcessDir, 'session-state.json');
+      try {
+        const stateContent = await fs.readFile(statePath, 'utf-8');
+        const state = JSON.parse(stateContent);
+
+        const totalSentences = state.total_sentences || 0;
+        const sentencesDir = state.chapters_dir_sentences;
+
+        if (!sentencesDir || totalSentences === 0) {
+          return { success: false, error: 'Invalid session state' };
+        }
+
+        // Extract session ID from path (e.g., "ebook-97ccf8f4-3a89-4edd-a0f7-78fe95a4160d")
+        // Worker expects just the UUID part, not the "ebook-" prefix
+        const folderName = path.basename(sessionPath);
+        const sessionId = folderName.startsWith('ebook-') ? folderName.slice(6) : folderName;
+
+        // Scan completed sentence files and find missing indices
+        let completedIndices: Set<number> = new Set();
+        let missingIndices: number[] = [];
+        try {
+          const files = await fs.readdir(sentencesDir);
+          // Parse sentence indices from filenames (0.flac, 1.flac, etc.)
+          for (const f of files) {
+            if (f.endsWith('.flac')) {
+              const match = f.match(/^(\d+)\.flac$/);
+              if (match) {
+                completedIndices.add(parseInt(match[1], 10));
+              }
+            }
+          }
+
+          // Find missing indices
+          for (let i = 0; i < totalSentences; i++) {
+            if (!completedIndices.has(i)) {
+              missingIndices.push(i);
+            }
+          }
+        } catch {
+          // If we can't read the directory, assume all sentences are missing
+          missingIndices = Array.from({ length: totalSentences }, (_, i) => i);
+        }
+
+        const completedSentences = completedIndices.size;
+        const isComplete = completedSentences >= totalSentences;
+
+        // Calculate missing ranges (consecutive groups of missing indices)
+        const missingRanges: Array<{ start: number; end: number; count: number }> = [];
+        if (missingIndices.length > 0) {
+          let rangeStart = missingIndices[0];
+          let rangeEnd = missingIndices[0];
+
+          for (let i = 1; i < missingIndices.length; i++) {
+            if (missingIndices[i] === rangeEnd + 1) {
+              // Consecutive - extend current range
+              rangeEnd = missingIndices[i];
+            } else {
+              // Gap found - save current range and start new one
+              missingRanges.push({
+                start: rangeStart,
+                end: rangeEnd,
+                count: rangeEnd - rangeStart + 1
+              });
+              rangeStart = missingIndices[i];
+              rangeEnd = missingIndices[i];
+            }
+          }
+          // Don't forget the last range
+          missingRanges.push({
+            start: rangeStart,
+            end: rangeEnd,
+            count: rangeEnd - rangeStart + 1
+          });
+        }
+
+        // Extract chapter info from state
+        const chapters = (state.chapters || []).map((ch: any) => ({
+          chapter_num: ch.chapter_num,
+          sentence_start: ch.sentence_start,
+          sentence_end: ch.sentence_end,
+          sentence_count: ch.sentence_count
+        }));
+
+        console.log(`[PARALLEL-TTS] Fast resume check: ${completedSentences}/${totalSentences} sentences complete`);
+        console.log(`[PARALLEL-TTS] Missing ranges: ${missingRanges.length} (${missingIndices.length} sentences)`);
+
+        return {
+          success: true,
+          complete: isComplete,
+          // Session info required for resumeConversion
+          sessionId,
+          sessionDir: sessionPath,
+          processDir: fullProcessDir,
+          // Counts
+          totalSentences,
+          totalChapters: state.total_chapters || chapters.length,
+          completedSentences,
+          missingSentences: missingIndices.length,
+          // Missing info for worker assignment
+          missingIndices,
+          missingRanges,
+          // Chapter info
+          chapters,
+          // Metadata
+          metadata: state.metadata || {},
+          // Flags
+          sessionPath,
+          canResume: !isComplete && completedSentences > 0
+        };
+      } catch {
+        continue;
+      }
+    }
+    return { success: false, error: 'No valid session state found' };
+  } catch (err) {
+    return { success: false, error: `Failed to check session: ${err}` };
+  }
+}
+
+/**
+ * Check if a session can be resumed (detailed check with subprocess)
  * Accepts either an epub path (will search for matching session) or a session path
  * Calls e2a's --resume_session to scan for completed sentences
  */
@@ -1935,6 +2361,20 @@ export async function resumeParallelConversion(
     return { success: false, error: resumeInfo.error || 'Resume info invalid' };
   }
 
+  // Check if we have all required fields - if not, re-fetch from fast check
+  // This handles jobs that were added before the fix to checkResumeStatusFast
+  // Always re-fetch to get fresh missingIndices for accurate re-splitting
+  if (!resumeInfo.sessionId || !resumeInfo.processDir || !resumeInfo.missingIndices || resumeInfo.missingIndices.length === 0) {
+    console.log('[PARALLEL-TTS] Resume info missing critical fields, re-fetching from fast check...');
+    const freshInfo = await checkResumeStatusFast(config.epubPath);
+    if (!freshInfo.success) {
+      return { success: false, error: freshInfo.error || 'Failed to re-fetch resume info' };
+    }
+    // Merge fresh info into resumeInfo
+    resumeInfo = { ...resumeInfo, ...freshInfo };
+    console.log(`[PARALLEL-TTS] Re-fetched: sessionId=${resumeInfo.sessionId}, missingIndices=${resumeInfo.missingIndices?.length}`);
+  }
+
   if (resumeInfo.complete) {
     console.log('[PARALLEL-TTS] All sentences already complete, proceeding to assembly');
     // Go directly to assembly
@@ -1966,83 +2406,52 @@ export async function resumeParallelConversion(
     metadata: resumeInfo.metadata || {}
   };
 
-  // Calculate workers for missing ranges
-  // If we have explicit missing ranges, use those; otherwise calculate from missing indices
+  // Re-split missing sentences evenly among all available workers
+  // This ensures we always use all workers, regardless of how the missing sentences are distributed
+  const missingIndices = resumeInfo.missingIndices || [];
+  const totalMissing = missingIndices.length;
+
   let workers: WorkerState[];
 
-  if (resumeInfo.missingRanges && resumeInfo.missingRanges.length > 0) {
-    // Use the missing ranges directly - each range becomes a worker
-    // But limit to config.workerCount workers
-    const ranges = resumeInfo.missingRanges;
+  if (totalMissing === 0) {
+    // No missing sentences - shouldn't happen but handle gracefully
+    workers = [];
+  } else {
+    // Split missing indices evenly among workers
+    const actualWorkerCount = Math.min(config.workerCount, totalMissing);
+    const indicesPerWorker = Math.ceil(totalMissing / actualWorkerCount);
 
-    if (ranges.length <= config.workerCount) {
-      // One worker per range
-      workers = ranges.map((range, i) => ({
-        id: i,
-        process: null,
-        sentenceStart: range.start,
-        sentenceEnd: range.end,
-        currentSentence: range.start,
-        completedSentences: 0,
-        status: 'pending' as WorkerStatus,
-        retryCount: 0
-      }));
-    } else {
-      // More ranges than workers - combine ranges into worker assignments
-      // For simplicity, just divide the total missing sentences among workers
-      const totalMissing = resumeInfo.missingSentences || 0;
-      const missingSentencesPerWorker = Math.ceil(totalMissing / config.workerCount);
+    workers = [];
+    for (let workerId = 0; workerId < actualWorkerCount; workerId++) {
+      const startIdx = workerId * indicesPerWorker;
+      const endIdx = Math.min(startIdx + indicesPerWorker - 1, totalMissing - 1);
 
-      workers = [];
-      let rangeIdx = 0;
-      let sentenceCount = 0;
-      let workerStart = ranges[0]?.start ?? 0;
+      if (startIdx <= endIdx) {
+        // Get the actual sentence indices for this worker
+        const workerIndices = missingIndices.slice(startIdx, endIdx + 1);
+        const sentenceStart = workerIndices[0];
+        const sentenceEnd = workerIndices[workerIndices.length - 1];
 
-      for (let workerId = 0; workerId < config.workerCount && rangeIdx < ranges.length; workerId++) {
-        let workerSentences = 0;
-        let workerEnd = workerStart;
-
-        // Accumulate ranges until we have enough sentences for this worker
-        while (rangeIdx < ranges.length && workerSentences < missingSentencesPerWorker) {
-          workerSentences += ranges[rangeIdx].count;
-          workerEnd = ranges[rangeIdx].end;
-          rangeIdx++;
-        }
-
-        if (workerSentences > 0) {
-          workers.push({
-            id: workerId,
-            process: null,
-            sentenceStart: workerStart,
-            sentenceEnd: workerEnd,
-            currentSentence: workerStart,
-            completedSentences: 0,
-            status: 'pending' as WorkerStatus,
-            retryCount: 0
-          });
-
-          if (rangeIdx < ranges.length) {
-            workerStart = ranges[rangeIdx].start;
-          }
-        }
+        workers.push({
+          id: workerId,
+          process: null,
+          sentenceStart,
+          sentenceEnd,
+          currentSentence: sentenceStart,
+          completedSentences: 0,
+          status: 'pending' as WorkerStatus,
+          retryCount: 0,
+          // Store the actual indices this worker should process
+          assignedIndices: workerIndices
+        });
       }
     }
-  } else {
-    // Fallback: divide all sentences among workers (this shouldn't happen with proper resume info)
-    const sentenceRanges = calculateSentenceRanges(prepInfo.totalSentences, config.workerCount);
-    workers = sentenceRanges.map((range, i) => ({
-      id: i,
-      process: null,
-      sentenceStart: range.start,
-      sentenceEnd: range.end,
-      currentSentence: range.start,
-      completedSentences: 0,
-      status: 'pending' as WorkerStatus,
-      retryCount: 0
-    }));
   }
 
-  console.log('[PARALLEL-TTS] Resume workers:', workers.map(w => `${w.id}: ${w.sentenceStart}-${w.sentenceEnd}`));
+  console.log('[PARALLEL-TTS] Resume: Re-splitting', totalMissing, 'missing sentences among', workers.length, 'workers');
+  console.log('[PARALLEL-TTS] Resume workers:', workers.map(w =>
+    `${w.id}: sentences ${w.sentenceStart}-${w.sentenceEnd} (${(w as any).assignedIndices?.length || 0} total)`
+  ));
 
   // Create session with resume tracking info
   const session: ConversionSession = {
@@ -2231,6 +2640,8 @@ export function buildResumeInfo(prepInfo: PrepInfo, settings: ParallelTtsSetting
 export const parallelTtsBridge = {
   setE2aPath,
   getE2aPath,
+  setUseLightweightWorker,
+  getUseLightweightWorker,
   setMainWindow,
   initializeLogger,
   detectRecommendedWorkerCount,
@@ -2242,6 +2653,7 @@ export const parallelTtsBridge = {
   listActiveSessions,
   // Resume support
   checkResumeStatus,
+  checkResumeStatusFast,
   listResumableSessions,
   resumeParallelConversion,
   buildResumeInfo

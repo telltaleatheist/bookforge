@@ -129,7 +129,7 @@ interface ProjectInfo {
   createdAt: string;
   modifiedAt: string;
   size: number;
-  coverImage?: string;  // Base64 cover image from project metadata
+  coverImagePath?: string;  // Relative path to cover in media folder
 }
 
 interface ProjectListResult {
@@ -823,6 +823,84 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Unified Audiobook Export (saves EPUB to BFP project's audiobook folder)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Export EPUB to audiobook folder and update BFP project with audiobook state.
+   * This is the unified approach - audiobook data lives with the BFP project.
+   */
+  async audiobookExportFromProject(
+    bfpPath: string,
+    epubData: ArrayBuffer,
+    deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>
+  ): Promise<{
+    success: boolean;
+    audiobookFolder?: string;
+    epubPath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.audiobook.exportFromProject(bfpPath, epubData, deletedBlockExamples);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Update audiobook state in BFP project (status, paths, progress, etc.)
+   */
+  async audiobookUpdateState(
+    bfpPath: string,
+    audiobookState: Record<string, unknown>
+  ): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.audiobook.updateState(bfpPath, audiobookState);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Get audiobook folder path for a BFP project
+   */
+  async audiobookGetFolder(bfpPath: string): Promise<{
+    success: boolean;
+    folder?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.audiobook.getFolder(bfpPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * List BFP projects that have audiobook state (for audiobook producer queue)
+   */
+  async audiobookListProjectsWithAudiobook(): Promise<{
+    success: boolean;
+    projects?: Array<{
+      name: string;
+      bfpPath: string;
+      audiobookFolder: string;
+      status: string;
+      exportedAt?: string;
+      cleanedAt?: string;
+      completedAt?: string;
+      metadata?: {
+        title?: string;
+        author?: string;
+        coverImagePath?: string;
+      };
+    }>;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.audiobook.listProjectsWithAudiobook();
+    }
+    return { success: false, error: 'Not running in Electron', projects: [] };
+  }
+
   /**
    * Load project metadata from the audiobook project folder.
    * Returns deleted block examples if they exist (for detailed AI cleanup).
@@ -855,6 +933,35 @@ export class ElectronService {
       }
     }
     return null;
+  }
+
+  // Media operations - external image storage
+  /**
+   * Save a base64 image to the media folder, returns relative path
+   */
+  async mediaSaveImage(base64Data: string, prefix: string = 'cover'): Promise<{
+    success: boolean;
+    path?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.media.saveImage(base64Data, prefix);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Load an image from the media folder by relative path, returns base64 data URL
+   */
+  async mediaLoadImage(relativePath: string): Promise<{
+    success: boolean;
+    data?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.media.loadImage(relativePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
   }
 
   // OCR operations (Tesseract)
@@ -1491,5 +1598,130 @@ export class ElectronService {
       return (window as any).electron.libraryServer.getStatus();
     }
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Reassembly - Browse and reassemble incomplete e2a sessions
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async reassemblyScanSessions(customTmpPath?: string): Promise<{
+    success: boolean;
+    data?: {
+      sessions: Array<{
+        sessionId: string;
+        sessionDir: string;
+        processDir: string;
+        metadata: { title?: string; author?: string; language?: string; epubPath?: string };
+        totalSentences: number;
+        completedSentences: number;
+        percentComplete: number;
+        chapters: Array<{
+          chapterNum: number;
+          title?: string;
+          sentenceStart: number;
+          sentenceEnd: number;
+          sentenceCount: number;
+          completedCount: number;
+          excluded: boolean;
+        }>;
+        createdAt: string;
+        modifiedAt: string;
+      }>;
+      tmpPath: string;
+    };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.reassembly.scanSessions(customTmpPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async reassemblyGetSession(sessionId: string, customTmpPath?: string): Promise<{
+    success: boolean;
+    data?: {
+      sessionId: string;
+      sessionDir: string;
+      processDir: string;
+      metadata: { title?: string; author?: string; language?: string; epubPath?: string };
+      totalSentences: number;
+      completedSentences: number;
+      percentComplete: number;
+      chapters: Array<{
+        chapterNum: number;
+        title?: string;
+        sentenceStart: number;
+        sentenceEnd: number;
+        sentenceCount: number;
+        completedCount: number;
+        excluded: boolean;
+      }>;
+      createdAt: string;
+      modifiedAt: string;
+    };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.reassembly.getSession(sessionId, customTmpPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async reassemblyStart(jobId: string, config: {
+    sessionId: string;
+    sessionDir: string;
+    processDir: string;
+    outputDir: string;
+    metadata: {
+      title: string;
+      author: string;
+      year?: string;
+      coverPath?: string;
+      outputFilename?: string;
+    };
+    excludedChapters: number[];
+  }): Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.reassembly.startReassembly(jobId, config);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async reassemblyStop(jobId: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.reassembly.stopReassembly(jobId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async reassemblyDeleteSession(sessionId: string, customTmpPath?: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.reassembly.deleteSession(sessionId, customTmpPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async reassemblyIsAvailable(): Promise<{ success: boolean; data?: { available: boolean }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.reassembly.isAvailable();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  onReassemblyProgress(callback: (data: {
+    jobId: string;
+    progress: {
+      phase: 'preparing' | 'combining' | 'encoding' | 'metadata' | 'complete' | 'error';
+      percentage: number;
+      currentChapter?: number;
+      totalChapters?: number;
+      message?: string;
+      error?: string;
+    };
+  }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.reassembly.onProgress(callback);
+    }
+    return () => {};
   }
 }

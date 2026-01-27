@@ -5,7 +5,7 @@
 import { AIProvider } from '../../../core/models/ai-config.types';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation';
+export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly';
 
 // Job status
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
@@ -63,10 +63,14 @@ export interface QueueJob {
   contentSkipsAffected?: number;
   // Path to JSON file containing skipped chunk details
   skippedChunksPath?: string;
+  // BFP project path for analytics saving
+  bfpPath?: string;
+  // Analytics data (from completed job)
+  analytics?: any;
 }
 
 // Job configuration union type
-export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig;
+export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -131,6 +135,29 @@ export interface TranslationJobConfig {
   ollamaBaseUrl?: string;
   claudeApiKey?: string;
   openaiApiKey?: string;
+}
+
+// Reassembly job configuration - reassembles incomplete e2a sessions
+export interface ReassemblyJobConfig {
+  type: 'reassembly';
+  sessionId: string;
+  sessionDir: string;
+  processDir: string;
+  outputDir: string;
+  metadata: {
+    title: string;
+    author: string;
+    year?: string;
+    coverPath?: string;
+    outputFilename?: string;
+    // Extended metadata (applied with m4b-tool)
+    narrator?: string;
+    series?: string;
+    seriesNumber?: string;
+    genre?: string;
+    description?: string;
+  };
+  excludedChapters: number[];
 }
 
 // Resume info for TTS jobs - allows resuming interrupted conversions
@@ -221,6 +248,8 @@ export interface JobResult {
   contentSkipsAffected?: number;
   // Path to JSON file containing skipped chunk details
   skippedChunksPath?: string;
+  // Analytics data (TTS or cleanup job)
+  analytics?: any;
 }
 
 // Skipped chunk data structure (matches ai-bridge.ts)
@@ -247,8 +276,10 @@ export interface AudiobookMetadata {
 export interface CreateJobRequest {
   type: JobType;
   epubPath: string;
-  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig>;
+  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;
+  // BFP project path for analytics saving
+  bfpPath?: string;
 }

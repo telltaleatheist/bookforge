@@ -180,7 +180,19 @@
       "Bash(pip show:*)",
       "Bash(mdfind:*)",
       "Bash(sudo ln:*)",
-      "Bash(conda env list:*)"
+      "Bash(conda env list:*)",
+      "Bash(conda info:*)",
+      "Bash(mediainfo:*)",
+      "Bash(m4b-tool:*)",
+      "Bash(mp4tags:*)",
+      "Bash(for f in '/Volumes/Callisto/books/audiobooks/Black Sun - Aryan Cults. Goodrick-Clarke, Nicholas. \\(2009\\).m4b' /Volumes/Callisto/books/audiobooks/Black_Sun_-_Aryan_Cults._Goodrick-Clarke,_Nicholas.__2009__part3.m4b /Volumes/Callisto/books/audiobooks/Black_Sun_-_Aryan_Cults._Goodrick-Clarke,_Nicholas.__2009__part4.m4b)",
+      "Bash(do echo '=== $\\(basename $f\\) ===' ffprobe -hide_banner -show_entries format=duration -of default=noprint_wrappers=1 $f)",
+      "Bash(SESSION_DIR=/Users/telltale/Projects/ebook2audiobook-latest/tmp/ebook-e770631b-1f69-4f64-a0e6-2cd15a779606/5f8f733248cb8d284730adf9c1dcdf30 echo '=== Chapters directory ===' ls -la $SESSION_DIR/chapters/)",
+      "Bash(SESSION_DIR=/Users/telltale/Projects/ebook2audiobook-latest/tmp/ebook-e770631b-1f69-4f64-a0e6-2cd15a779606/5f8f733248cb8d284730adf9c1dcdf30 echo '=== Session directory contents ===' ls -la $SESSION_DIR/ echo echo '=== Chapters directory ===' ls -la $SESSION_DIR/chapters/)",
+      "Bash(SESSION_DIR=\"/Users/telltale/Projects/ebook2audiobook-latest/tmp/ebook-e770631b-1f69-4f64-a0e6-2cd15a779606/5f8f733248cb8d284730adf9c1dcdf30\" echo:*)",
+      "Bash(head -30 echo echo '=== Check for VTT ===' find /Volumes/Callisto/books/audiobooks -name *Gestapo*.vtt)",
+      "Bash(SESSION_DIR=/Users/telltale/Projects/ebook2audiobook-latest/tmp/ebook-e770631b-1f69-4f64-a0e6-2cd15a779606/5f8f733248cb8d284730adf9c1dcdf30 echo:*)",
+      "Bash(mp4chaps:*)"
     ]
   }
 }

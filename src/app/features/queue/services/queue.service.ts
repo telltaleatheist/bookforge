@@ -17,6 +17,7 @@ import {
   OcrCleanupConfig,
   TtsConversionConfig,
   TranslationJobConfig,
+  ReassemblyJobConfig,
   ResumeCheckResult,
   TtsResumeInfo
 } from '../models/queue.types';
@@ -82,8 +83,9 @@ declare global {
         isActive: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
         listActive: () => Promise<{ success: boolean; data?: Array<{ jobId: string; progress: ParallelAggregatedProgress; epubPath: string; startTime: number }>; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
-        onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number }) => void) => () => void;
+        onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any }) => void) => () => void;
         // Resume support
+        checkResumeFast: (epubPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
         checkResume: (sessionPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
         resumeConversion: (jobId: string, config: any, resumeInfo: ResumeCheckResult) => Promise<{ success: boolean; data?: any; error?: string }>;
         buildResumeInfo: (prepInfo: any, settings: any) => Promise<{ success: boolean; data?: TtsResumeInfo; error?: string }>;
@@ -99,6 +101,17 @@ declare global {
       };
       fs?: {
         exists: (filePath: string) => Promise<boolean>;
+      };
+      reassembly?: {
+        startReassembly: (jobId: string, config: {
+          sessionId: string;
+          sessionDir: string;
+          processDir: string;
+          outputDir: string;
+          metadata: { title: string; author: string; year?: string; coverPath?: string; outputFilename?: string };
+          excludedChapters: number[];
+        }) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
+        onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
       };
     };
   }
@@ -121,11 +134,18 @@ export class QueueService {
   private readonly _jobs = signal<QueueJob[]>([]);
   private readonly _isRunning = signal<boolean>(false); // Don't auto-run - user starts manually
   private readonly _currentJobId = signal<string | null>(null);
+  private readonly _lastCompletedJobWithAnalytics = signal<{
+    jobId: string;
+    jobType: string;
+    bfpPath?: string;
+    analytics: any;
+  } | null>(null);
 
   // Public readonly computed signals
   readonly jobs = computed(() => this._jobs());
   readonly isRunning = computed(() => this._isRunning());
   readonly currentJobId = computed(() => this._currentJobId());
+  readonly lastCompletedJobWithAnalytics = computed(() => this._lastCompletedJobWithAnalytics());
 
   // Computed helpers
   readonly currentJob = computed(() => {
@@ -215,7 +235,8 @@ export class QueueService {
             jobId: data.jobId,
             success: data.success,
             outputPath: data.outputPath,
-            error: data.error
+            error: data.error,
+            analytics: data.analytics
           });
         });
       });
@@ -299,6 +320,9 @@ export class QueueService {
   }
 
   private handleJobComplete(result: JobResult): void {
+    // Get the job before updating to capture the type
+    const completedJob = this._jobs().find(j => j.id === result.jobId);
+
     // Update the job status
     this._jobs.update(jobs =>
       jobs.map(job => {
@@ -317,17 +341,34 @@ export class QueueService {
           contentSkipsDetected: result.contentSkipsDetected,
           contentSkipsAffected: result.contentSkipsAffected,
           // Path to skipped chunks JSON
-          skippedChunksPath: result.skippedChunksPath
+          skippedChunksPath: result.skippedChunksPath,
+          // Analytics data
+          analytics: result.analytics
         };
       })
     );
 
-    // Clear current job
-    this._currentJobId.set(null);
+    // Emit analytics event for external handlers (e.g., saving to BFP)
+    if (result.analytics && completedJob) {
+      this._lastCompletedJobWithAnalytics.set({
+        jobId: result.jobId,
+        jobType: completedJob.type,
+        bfpPath: completedJob.bfpPath,
+        analytics: result.analytics
+      });
+    }
 
-    // Process next job if queue is running
-    if (this._isRunning()) {
-      this.processNext();
+    // Only clear current job and process next if this IS the current job
+    // This prevents a failed TTS job from interrupting a running OCR job
+    if (this._currentJobId() === result.jobId) {
+      this._currentJobId.set(null);
+
+      // Process next job if queue is running
+      if (this._isRunning()) {
+        this.processNext();
+      }
+    } else {
+      console.log(`[QUEUE] Job ${result.jobId} completed but is not the current job (${this._currentJobId()}), not processing next`);
     }
   }
 
@@ -346,7 +387,8 @@ export class QueueService {
       status: 'pending',
       addedAt: new Date(),
       metadata: request.metadata,
-      config: this.buildJobConfig(request)
+      config: this.buildJobConfig(request),
+      bfpPath: request.bfpPath  // For analytics saving
     };
 
     // Handle resume info if provided
@@ -906,6 +948,29 @@ export class QueueService {
           }
           await electron.queue.runTtsConversion(job.id, seqEpubPath, config);
         }
+      } else if (job.type === 'reassembly') {
+        // Reassembly job - reassemble incomplete e2a session
+        const config = job.config as ReassemblyJobConfig | undefined;
+        if (!config) {
+          throw new Error('Reassembly configuration required');
+        }
+
+        console.log('[QUEUE] Starting reassembly job:', {
+          sessionId: config.sessionId,
+          outputDir: config.outputDir
+        });
+
+        // Call the reassembly API
+        if (!electron.reassembly) {
+          throw new Error('Reassembly not available');
+        }
+
+        const result = await electron.reassembly.startReassembly(job.id, config);
+        if (!result.success) {
+          throw new Error(result.error || 'Reassembly failed');
+        }
+
+        // The job completion will be handled by the onComplete callback
       }
     } catch (err) {
       // Error starting job
@@ -928,7 +993,7 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | undefined {
+  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | undefined {
     if (request.type === 'ocr-cleanup') {
       const config = request.config as Partial<OcrCleanupConfig>;
       if (!config?.aiProvider || !config?.aiModel) {
@@ -986,6 +1051,20 @@ export class QueueService {
         parallelWorkers: config.parallelWorkers,
         useParallel: config.useParallel ?? false,
         parallelMode: config.parallelMode
+      };
+    } else if (request.type === 'reassembly') {
+      const config = request.config as Partial<ReassemblyJobConfig>;
+      if (!config?.sessionId || !config?.sessionDir || !config?.processDir || !config?.outputDir) {
+        return undefined; // Session info and output dir are required
+      }
+      return {
+        type: 'reassembly',
+        sessionId: config.sessionId,
+        sessionDir: config.sessionDir,
+        processDir: config.processDir,
+        outputDir: config.outputDir,
+        metadata: config.metadata || { title: 'Unknown', author: 'Unknown' },
+        excludedChapters: config.excludedChapters || []
       };
     }
     return undefined;

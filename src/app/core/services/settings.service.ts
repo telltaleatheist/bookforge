@@ -118,6 +118,14 @@ export class SettingsService {
             default: '',
             placeholder: 'Default: ~/Documents/BookForge/audiobooks',
           },
+          {
+            key: 'e2aTmpPath',
+            type: 'path',
+            label: 'ebook2audiobook Tmp Path',
+            description: 'Path to the ebook2audiobook tmp folder containing incomplete sessions. Used by the Reassembly feature.',
+            default: '/Users/telltale/Projects/ebook2audiobook/tmp',
+            placeholder: '/path/to/ebook2audiobook/tmp',
+          },
         ],
       },
       {

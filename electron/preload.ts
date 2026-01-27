@@ -31,10 +31,13 @@ export interface ProjectInfo {
   path: string;
   sourcePath: string;
   sourceName: string;
+  libraryPath?: string;
+  fileHash?: string;
   deletedCount: number;
   createdAt: string;
   modifiedAt: string;
   size: number;
+  coverImagePath?: string;  // Relative path to cover in media folder
 }
 
 export interface ProjectListResult {
@@ -503,6 +506,16 @@ export interface QueueJobResult {
   success: boolean;
   outputPath?: string;
   error?: string;
+  // Copyright detection for AI cleanup jobs
+  copyrightIssuesDetected?: boolean;
+  copyrightChunksAffected?: number;
+  // Content skips detection for AI cleanup jobs
+  contentSkipsDetected?: boolean;
+  contentSkipsAffected?: number;
+  // Path to skipped chunks JSON
+  skippedChunksPath?: string;
+  // Analytics data (TTS or cleanup job)
+  analytics?: any;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -671,6 +684,67 @@ export interface TtsResumeInfo {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Reassembly Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface E2aSession {
+  sessionId: string;
+  sessionDir: string;
+  processDir: string;
+  metadata: {
+    title?: string;
+    author?: string;
+    language?: string;
+    epubPath?: string;
+  };
+  totalSentences: number;
+  completedSentences: number;
+  percentComplete: number;
+  chapters: E2aChapter[];
+  createdAt: string;   // ISO string
+  modifiedAt: string;  // ISO string
+}
+
+export interface E2aChapter {
+  chapterNum: number;
+  title?: string;
+  sentenceStart: number;
+  sentenceEnd: number;
+  sentenceCount: number;
+  completedCount: number;
+  excluded: boolean;
+}
+
+export interface ReassemblyConfig {
+  sessionId: string;
+  sessionDir: string;
+  processDir: string;
+  outputDir: string;
+  metadata: {
+    title: string;
+    author: string;
+    year?: string;
+    coverPath?: string;
+    outputFilename?: string;
+  };
+  excludedChapters: number[];
+}
+
+export interface ReassemblyProgress {
+  phase: 'preparing' | 'combining' | 'encoding' | 'metadata' | 'complete' | 'error';
+  percentage: number;
+  currentChapter?: number;
+  totalChapters?: number;
+  message?: string;
+  error?: string;
+}
+
+export interface E2aSessionScanResult {
+  sessions: E2aSession[];
+  tmpPath: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Library Server Types
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -731,11 +805,13 @@ export interface ElectronAPI {
     readBinary: (filePath: string) => Promise<{ success: boolean; data?: Uint8Array; error?: string }>;
     exists: (filePath: string) => Promise<boolean>;
     writeText: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>;
+    writeTempFile: (filename: string, data: Uint8Array) => Promise<{ success: boolean; path?: string; dataUrl?: string; error?: string }>;
   };
   project: {
     save: (projectData: unknown, suggestedName?: string) => Promise<ProjectSaveResult>;
     load: () => Promise<ProjectLoadResult>;
     saveToPath: (filePath: string, projectData: unknown) => Promise<ProjectSaveResult>;
+    updateMetadata: (bfpPath: string, metadata: unknown) => Promise<{ success: boolean; error?: string }>;
   };
   dialog: {
     openPdf: () => Promise<OpenPdfResult>;
@@ -808,6 +884,18 @@ export interface ElectronAPI {
       error?: string;
     }>;
   };
+  media: {
+    saveImage: (base64Data: string, prefix?: string) => Promise<{
+      success: boolean;
+      path?: string;
+      error?: string;
+    }>;
+    loadImage: (relativePath: string) => Promise<{
+      success: boolean;
+      data?: string;
+      error?: string;
+    }>;
+  };
   audiobook: {
     createProject: (sourcePath: string, originalFilename: string) => Promise<{
       success: boolean;
@@ -840,6 +928,40 @@ export interface ElectronAPI {
       originalPath?: string;
       cleanedPath?: string;
       outputPath?: string;
+      error?: string;
+    }>;
+    // Unified audiobook export (saves to BFP project folder)
+    exportFromProject: (bfpPath: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>) => Promise<{
+      success: boolean;
+      audiobookFolder?: string;
+      epubPath?: string;
+      error?: string;
+    }>;
+    updateState: (bfpPath: string, audiobookState: Record<string, unknown>) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    getFolder: (bfpPath: string) => Promise<{
+      success: boolean;
+      folder?: string;
+      error?: string;
+    }>;
+    listProjectsWithAudiobook: () => Promise<{
+      success: boolean;
+      projects?: Array<{
+        name: string;
+        bfpPath: string;
+        audiobookFolder: string;
+        status: string;
+        exportedAt?: string;
+        cleanedAt?: string;
+        completedAt?: string;
+        metadata?: {
+          title?: string;
+          author?: string;
+          coverImagePath?: string;
+        };
+      }>;
       error?: string;
     }>;
   };
@@ -1044,9 +1166,19 @@ export interface ElectronAPI {
     onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
     onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number }) => void) => () => void;
     // Resume support
+    checkResumeFast: (epubPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
     checkResume: (sessionPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
     resumeConversion: (jobId: string, config: ParallelConversionConfig, resumeInfo: ResumeCheckResult) => Promise<{ success: boolean; data?: ParallelConversionResult; error?: string }>;
     buildResumeInfo: (prepInfo: any, settings: any) => Promise<{ success: boolean; data?: TtsResumeInfo; error?: string }>;
+  };
+  reassembly: {
+    scanSessions: (customTmpPath?: string) => Promise<{ success: boolean; data?: E2aSessionScanResult; error?: string }>;
+    getSession: (sessionId: string, customTmpPath?: string) => Promise<{ success: boolean; data?: E2aSession; error?: string }>;
+    startReassembly: (jobId: string, config: ReassemblyConfig) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
+    stopReassembly: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    deleteSession: (sessionId: string, customTmpPath?: string) => Promise<{ success: boolean; error?: string }>;
+    isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
+    onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => () => void;
   };
   platform: string;
 }
@@ -1154,6 +1286,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('fs:exists', filePath),
     writeText: (filePath: string, content: string) =>
       ipcRenderer.invoke('fs:write-text', filePath, content),
+    writeTempFile: (filename: string, data: Uint8Array) =>
+      ipcRenderer.invoke('fs:write-temp-file', filename, data),
   },
   project: {
     save: (projectData: unknown, suggestedName?: string) =>
@@ -1162,6 +1296,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('project:load'),
     saveToPath: (filePath: string, projectData: unknown) =>
       ipcRenderer.invoke('project:save-to-path', filePath, projectData),
+    updateMetadata: (bfpPath: string, metadata: unknown) =>
+      ipcRenderer.invoke('project:update-metadata', bfpPath, metadata),
   },
   dialog: {
     openPdf: () =>
@@ -1211,6 +1347,12 @@ const electronAPI: ElectronAPI = {
     loadDeletedExamplesFromBfp: (epubPath: string) =>
       ipcRenderer.invoke('library:load-deleted-examples-from-bfp', epubPath),
   },
+  media: {
+    saveImage: (base64Data: string, prefix?: string) =>
+      ipcRenderer.invoke('media:save-image', base64Data, prefix),
+    loadImage: (relativePath: string) =>
+      ipcRenderer.invoke('media:load-image', relativePath),
+  },
   audiobook: {
     createProject: (sourcePath: string, originalFilename: string) =>
       ipcRenderer.invoke('audiobook:create-project', sourcePath, originalFilename),
@@ -1224,6 +1366,15 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:delete-project', projectId),
     getPaths: (projectId: string) =>
       ipcRenderer.invoke('audiobook:get-paths', projectId),
+    // Unified audiobook export (saves to BFP project folder)
+    exportFromProject: (bfpPath: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>) =>
+      ipcRenderer.invoke('audiobook:export-from-project', bfpPath, epubData, deletedBlockExamples),
+    updateState: (bfpPath: string, audiobookState: Record<string, unknown>) =>
+      ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
+    getFolder: (bfpPath: string) =>
+      ipcRenderer.invoke('audiobook:get-folder', bfpPath),
+    listProjectsWithAudiobook: () =>
+      ipcRenderer.invoke('audiobook:list-projects-with-audiobook'),
   },
   epub: {
     parse: (epubPath: string) =>
@@ -1550,8 +1701,8 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('parallel-tts:progress', listener);
       };
     },
-    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number }) => {
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any }) => {
         callback(data);
       };
       ipcRenderer.on('parallel-tts:complete', listener);
@@ -1560,12 +1711,41 @@ const electronAPI: ElectronAPI = {
       };
     },
     // Resume support
+    checkResumeFast: (epubPath: string) =>
+      ipcRenderer.invoke('parallel-tts:check-resume-fast', epubPath),
     checkResume: (sessionPath: string) =>
       ipcRenderer.invoke('parallel-tts:check-resume', sessionPath),
     resumeConversion: (jobId: string, config: ParallelConversionConfig, resumeInfo: ResumeCheckResult) =>
       ipcRenderer.invoke('parallel-tts:resume-conversion', jobId, config, resumeInfo),
     buildResumeInfo: (prepInfo: any, settings: any) =>
       ipcRenderer.invoke('parallel-tts:build-resume-info', prepInfo, settings),
+  },
+  reassembly: {
+    scanSessions: async (customTmpPath?: string) => {
+      console.log('[PRELOAD] reassembly:scanSessions calling IPC with path:', customTmpPath);
+      const result = await ipcRenderer.invoke('reassembly:scan-sessions', customTmpPath);
+      console.log('[PRELOAD] reassembly:scanSessions result:', result?.success, 'sessions:', result?.data?.sessions?.length);
+      return result;
+    },
+    getSession: (sessionId: string, customTmpPath?: string) =>
+      ipcRenderer.invoke('reassembly:get-session', sessionId, customTmpPath),
+    startReassembly: (jobId: string, config: ReassemblyConfig) =>
+      ipcRenderer.invoke('reassembly:start', jobId, config),
+    stopReassembly: (jobId: string) =>
+      ipcRenderer.invoke('reassembly:stop', jobId),
+    deleteSession: (sessionId: string, customTmpPath?: string) =>
+      ipcRenderer.invoke('reassembly:delete-session', sessionId, customTmpPath),
+    isAvailable: () =>
+      ipcRenderer.invoke('reassembly:is-available'),
+    onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: ReassemblyProgress }) => {
+        callback(data);
+      };
+      ipcRenderer.on('reassembly:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('reassembly:progress', listener);
+      };
+    },
   },
   platform: process.platform,
 };

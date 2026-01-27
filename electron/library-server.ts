@@ -184,8 +184,8 @@ export class LibraryServer {
       // Check if books path is flat (files directly) or organized (subfolders)
       const entries = await fs.readdir(this.booksPath, { withFileTypes: true });
 
-      // Count files and directories
-      const directories = entries.filter(e => e.isDirectory() && !e.name.startsWith('.'));
+      // Count files and directories (exclude hidden folders and 'vtt' folder)
+      const directories = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'vtt');
       const files = entries.filter(e => e.isFile() && this.isBookFile(e.name));
 
       if (directories.length > 0) {
@@ -384,8 +384,8 @@ export class LibraryServer {
       for (const entry of entries) {
         if (entry.isFile() && this.isBookFile(entry.name)) {
           count++;
-        } else if (entry.isDirectory() && !entry.name.startsWith('.')) {
-          // Recursively count in subdirectories
+        } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'vtt') {
+          // Recursively count in subdirectories (skip vtt folder)
           count += await this.countBooksInFolder(path.join(folderPath, entry.name));
         }
       }
@@ -403,7 +403,8 @@ export class LibraryServer {
       const entries = await fs.readdir(folderPath, { withFileTypes: true });
 
       for (const entry of entries) {
-        if (entry.name.startsWith('.')) continue;
+        // Skip hidden files/folders and the vtt folder
+        if (entry.name.startsWith('.') || entry.name === 'vtt') continue;
 
         const entryPath = path.join(folderPath, entry.name);
         const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;

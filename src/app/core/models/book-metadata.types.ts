@@ -9,7 +9,8 @@ export interface BookMetadata {
   language?: string;
   publisher?: string;
   description?: string;
-  coverImage?: string;  // Base64 data URL for cover image
+  coverImage?: string;      // @deprecated - use coverImagePath. Base64 data URL (for old projects)
+  coverImagePath?: string;  // Relative path to cover in media folder (e.g., "media/cover_abc123.jpg")
 }
 
 /**

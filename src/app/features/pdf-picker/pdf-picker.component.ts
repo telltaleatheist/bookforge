@@ -86,7 +86,39 @@ export interface BookMetadata {
   language?: string;
   publisher?: string;
   description?: string;
-  coverImage?: string;  // Base64 data URL for cover image
+  coverImage?: string;  // @deprecated - use coverImagePath. Base64 data URL (for old projects)
+  coverImagePath?: string;  // Relative path to cover in media folder (e.g., "media/cover_abc123.jpg")
+}
+
+// Audiobook production state (stored in BFP project)
+interface AudiobookState {
+  status: 'pending' | 'cleaning' | 'converting' | 'complete' | 'error';
+  // Exported EPUB for TTS (in project folder)
+  exportedEpubPath?: string;
+  // Cleaned EPUB after AI cleanup
+  cleanedEpubPath?: string;
+  // TTS settings used for conversion
+  ttsSettings?: {
+    voice?: string;
+    speed?: number;
+    language?: string;
+  };
+  // Output paths
+  outputM4bPath?: string;
+  outputChaptersFolder?: string;
+  // Progress tracking
+  progress?: {
+    phase: 'preparing' | 'cleaning' | 'converting' | 'merging' | 'complete' | 'error';
+    percentage: number;
+    currentChapter?: number;
+    totalChapters?: number;
+    message?: string;
+  };
+  // Timestamps
+  exportedAt?: string;
+  cleanedAt?: string;
+  completedAt?: string;
+  error?: string;
 }
 
 interface BookForgeProject {
@@ -110,6 +142,8 @@ interface BookForgeProject {
   chapters_source?: 'toc' | 'heuristic' | 'manual' | 'mixed';  // How chapters were determined
   deleted_pages?: number[];  // Pages to exclude from export (0-indexed)
   metadata?: BookMetadata;  // Book metadata for EPUB export
+  // Audiobook production (unified with BFP project)
+  audiobook?: AudiobookState;
   created_at: string;
   modified_at: string;
 }
@@ -4520,6 +4554,7 @@ export class PdfPickerComponent {
       this.deletedBlockIds(),
       chapters,
       this.pdfName(),
+      this.projectPath() || '',  // Pass the BFP project path
       this.editorState.textCorrections(),
       this.deletedPages(),
       deletedHighlights,

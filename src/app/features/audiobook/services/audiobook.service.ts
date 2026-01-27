@@ -311,7 +311,8 @@ export class AudiobookService {
   }
 
   /**
-   * List EPUBs in the audiobook queue
+   * List EPUBs in the audiobook queue (legacy - uses old queue folder)
+   * @deprecated Use listUnifiedProjects() instead
    */
   async listQueue(): Promise<QueueFileInfo[]> {
     if (!this.electron) {
@@ -322,6 +323,59 @@ export class AudiobookService {
       const result = await this.electron.library.listQueue();
       if (result.success && result.files) {
         return result.files;
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * List BFP projects that have been exported to audiobook (unified system)
+   * This replaces listQueue() - audiobook data is stored in BFP projects
+   */
+  async listUnifiedProjects(): Promise<Array<{
+    name: string;
+    bfpPath: string;
+    audiobookFolder: string;
+    epubPath: string;
+    status: string;
+    exportedAt?: string;
+    cleanedAt?: string;
+    completedAt?: string;
+    metadata?: {
+      title?: string;
+      author?: string;
+      year?: string;
+      coverImagePath?: string;
+      outputFilename?: string;
+    };
+    analytics?: {
+      ttsJobs?: any[];
+      cleanupJobs?: any[];
+    };
+  }>> {
+    if (!this.electron) {
+      return [];
+    }
+
+    try {
+      const result = await this.electron.audiobook.listProjectsWithAudiobook();
+      if (result.success && result.projects) {
+        return result.projects.map((p: {
+          name: string;
+          bfpPath: string;
+          audiobookFolder: string;
+          status: string;
+          exportedAt?: string;
+          cleanedAt?: string;
+          completedAt?: string;
+          metadata?: { title?: string; author?: string; year?: string; coverImagePath?: string; outputFilename?: string; };
+          analytics?: { ttsJobs?: any[]; cleanupJobs?: any[]; };
+        }) => ({
+          ...p,
+          epubPath: `${p.audiobookFolder}/exported.epub`
+        }));
       }
       return [];
     } catch {

@@ -1,8 +1,8 @@
-import { Component, input, output, signal, ChangeDetectionStrategy, ElementRef, ViewChild, effect, untracked } from '@angular/core';
+import { Component, input, output, signal, ChangeDetectionStrategy, ElementRef, ViewChild, effect, untracked, inject, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { Chapter } from '../../../../core/services/electron.service';
+import { Chapter, ElectronService } from '../../../../core/services/electron.service';
 import { BookMetadata } from '../../pdf-picker.component';
 
 @Component({
@@ -93,14 +93,14 @@ import { BookMetadata } from '../../pdf-picker.component';
             <label>Cover Image</label>
             <div
               class="cover-paste-box"
-              [class.has-image]="localMetadata().coverImage"
+              [class.has-image]="coverImageUrl()"
               tabindex="0"
               (paste)="onCoverPaste($event)"
               (click)="coverPasteBox?.focus()"
               #coverPasteBox
             >
-              @if (localMetadata().coverImage) {
-                <img [src]="localMetadata().coverImage" alt="Cover" />
+              @if (coverImageUrl()) {
+                <img [src]="coverImageUrl()" alt="Cover" />
                 <button class="remove-cover" (click)="removeCover($event)" title="Remove cover">×</button>
               } @else {
                 <div class="paste-hint">
@@ -707,6 +707,8 @@ export class ChaptersPanelComponent {
   @ViewChild('editInput') editInput?: ElementRef<HTMLInputElement>;
   @ViewChild('coverPasteBox') coverPasteBox?: ElementRef<HTMLDivElement>;
 
+  private readonly electronService = inject(ElectronService);
+
   chapters = input.required<Chapter[]>();
   chaptersSource = input.required<'toc' | 'heuristic' | 'manual' | 'mixed'>();
   detecting = input<boolean>(false);
@@ -731,6 +733,18 @@ export class ChaptersPanelComponent {
 
   // Local metadata for editing (synced from input)
   readonly localMetadata = signal<BookMetadata>({});
+
+  // Cover image loaded from external path (for new format)
+  readonly loadedCoverImage = signal<string | null>(null);
+
+  // Computed cover URL - uses old format or loads from path
+  readonly coverImageUrl = computed(() => {
+    const meta = this.localMetadata();
+    // Old format - embedded base64
+    if (meta.coverImage) return meta.coverImage;
+    // New format - loaded from path
+    return this.loadedCoverImage();
+  });
 
   // Save indicator state
   readonly showSavedIndicator = signal(false);
@@ -764,6 +778,21 @@ export class ChaptersPanelComponent {
         this.metadataChange.emit({ ...this.localMetadata() });
       }
     }, { allowSignalWrites: true });
+
+    // Load cover image from external path when coverImagePath changes
+    effect(() => {
+      const meta = this.localMetadata();
+      if (meta.coverImagePath && !meta.coverImage) {
+        // Load from external file
+        this.electronService.mediaLoadImage(meta.coverImagePath).then(result => {
+          if (result.success && result.data) {
+            this.loadedCoverImage.set(result.data);
+          }
+        });
+      } else if (!meta.coverImagePath) {
+        this.loadedCoverImage.set(null);
+      }
+    }, { allowSignalWrites: true });
   }
 
   updateMetadataField(field: keyof BookMetadata, event: Event): void {
@@ -783,11 +812,25 @@ export class ChaptersPanelComponent {
         const file = item.getAsFile();
         if (file) {
           const reader = new FileReader();
-          reader.onload = (e) => {
+          reader.onload = async (e) => {
             const dataUrl = e.target?.result as string;
             if (dataUrl) {
-              this.localMetadata.update(m => ({ ...m, coverImage: dataUrl }));
-              this.metadataChange.emit({ ...this.localMetadata() });
+              // Save to media folder and store path instead of embedding
+              const result = await this.electronService.mediaSaveImage(dataUrl, 'cover');
+              if (result.success && result.path) {
+                // Remove old coverImage, set new coverImagePath
+                this.localMetadata.update(m => {
+                  const { coverImage, ...rest } = m;
+                  return { ...rest, coverImagePath: result.path };
+                });
+                // Also update the loaded image for display
+                this.loadedCoverImage.set(dataUrl);
+                this.metadataChange.emit({ ...this.localMetadata() });
+              } else {
+                // Fallback to old behavior if save fails
+                this.localMetadata.update(m => ({ ...m, coverImage: dataUrl }));
+                this.metadataChange.emit({ ...this.localMetadata() });
+              }
             }
           };
           reader.readAsDataURL(file);
@@ -800,9 +843,11 @@ export class ChaptersPanelComponent {
   removeCover(event: Event): void {
     event.stopPropagation();
     this.localMetadata.update(m => {
-      const { coverImage, ...rest } = m;
+      // Remove both old and new format fields
+      const { coverImage, coverImagePath, ...rest } = m;
       return rest;
     });
+    this.loadedCoverImage.set(null);
     this.metadataChange.emit({ ...this.localMetadata() });
   }
 

@@ -2,7 +2,8 @@ import { Component, input, output, signal, computed, effect, OnDestroy } from '@
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 
-export type ConversionPhase = 'preparing' | 'converting' | 'merging' | 'complete' | 'error';
+export type ConversionPhase = 'preparing' | 'converting' | 'merging' | 'assembling' | 'complete' | 'error';
+export type AssemblySubPhase = 'combining' | 'vtt' | 'encoding' | 'metadata';
 
 export interface TTSProgress {
   phase: ConversionPhase;
@@ -12,6 +13,11 @@ export interface TTSProgress {
   estimatedRemaining: number; // seconds
   message?: string;
   error?: string;
+  // Assembly phase details
+  assemblySubPhase?: AssemblySubPhase;
+  assemblyProgress?: number;
+  assemblyChapter?: number;
+  assemblyTotalChapters?: number;
 }
 
 @Component({
@@ -65,6 +71,12 @@ export interface TTSProgress {
           @case ('merging') {
             <p class="status-message">Merging chapters into final audiobook...</p>
           }
+          @case ('assembling') {
+            <p class="status-message">{{ assemblyStatusMessage() }}</p>
+            @if (progress().assemblyProgress !== undefined) {
+              <p class="current-action">{{ progress().assemblySubPhase }} - {{ progress().assemblyProgress }}%</p>
+            }
+          }
           @case ('complete') {
             <p class="status-message success">Conversion complete!</p>
           }
@@ -78,7 +90,7 @@ export interface TTSProgress {
       </div>
 
       <!-- Time Remaining -->
-      @if (progress().phase === 'converting' || progress().phase === 'merging') {
+      @if (progress().phase === 'converting' || progress().phase === 'merging' || progress().phase === 'assembling') {
         <div class="time-remaining">
           <span class="label">Estimated time remaining:</span>
           <span class="value">{{ formatTime(displayedTimeRemaining()) }}</span>
@@ -377,7 +389,7 @@ export class ProgressPanelComponent implements OnDestroy {
       }
 
       // Start or stop the countdown based on phase
-      if (prog.phase === 'converting' || prog.phase === 'merging') {
+      if (prog.phase === 'converting' || prog.phase === 'merging' || prog.phase === 'assembling') {
         this.startCountdown();
       } else {
         this.stopCountdown();
@@ -420,9 +432,31 @@ export class ProgressPanelComponent implements OnDestroy {
       case 'preparing': return 'Preparing';
       case 'converting': return 'Converting';
       case 'merging': return 'Merging';
+      case 'assembling': return 'Assembling';
       case 'complete': return 'Complete';
       case 'error': return 'Error';
       default: return '';
+    }
+  });
+
+  readonly assemblyStatusMessage = computed(() => {
+    const prog = this.progress();
+    if (prog.message) return prog.message;
+
+    switch (prog.assemblySubPhase) {
+      case 'combining':
+        if (prog.assemblyChapter && prog.assemblyTotalChapters) {
+          return `Combining chapter ${prog.assemblyChapter} of ${prog.assemblyTotalChapters}...`;
+        }
+        return 'Combining chapters...';
+      case 'vtt':
+        return 'Creating subtitles...';
+      case 'encoding':
+        return 'Encoding M4B audiobook...';
+      case 'metadata':
+        return 'Applying metadata...';
+      default:
+        return 'Assembling audiobook...';
     }
   });
 

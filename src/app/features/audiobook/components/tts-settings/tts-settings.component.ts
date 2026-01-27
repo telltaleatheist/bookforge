@@ -894,6 +894,7 @@ export class TtsSettingsComponent implements OnInit {
     enableTextSplitting: false
   });
   readonly epubPath = input<string>('');
+  readonly bfpPath = input<string | undefined>(undefined);  // BFP project path for analytics saving
   readonly metadata = input<{
     title?: string;
     author?: string;
@@ -978,8 +979,8 @@ export class TtsSettingsComponent implements OnInit {
     console.log('[TTS] Checking for resumable session, epubPath:', epubPath);
 
     const electron = (window as any).electron;
-    if (!electron?.parallelTts?.checkResume) {
-      console.log('[TTS] parallelTts.checkResume not available');
+    if (!electron?.parallelTts?.checkResumeFast) {
+      console.log('[TTS] parallelTts.checkResumeFast not available');
       return;
     }
 
@@ -988,17 +989,18 @@ export class TtsSettingsComponent implements OnInit {
     this.resumeInfo.set(null);
 
     try {
-      // Check if there's a resumable session for this epub
-      console.log('[TTS] Calling checkResume...');
-      const result = await electron.parallelTts.checkResume(epubPath);
-      console.log('[TTS] Resume check result:', result);
+      // Fast check - just counts files, no subprocess spawn
+      console.log('[TTS] Calling checkResumeFast...');
+      const result = await electron.parallelTts.checkResumeFast(epubPath);
+      console.log('[TTS] Fast resume check result:', result);
 
-      if (result.success && result.data && !result.data.complete && result.data.progressPercent !== undefined) {
-        // Found an incomplete session
+      if (result.success && result.data && result.data.canResume) {
+        // Found an incomplete session with progress
         this.hasResumableSession.set(true);
         this.resumeInfo.set(result.data);
-        console.log('[TTS] Found resumable session:', result.data.sessionId,
-          `${result.data.completedSentences}/${result.data.totalSentences} sentences (${result.data.progressPercent?.toFixed(1)}%)`);
+        const percent = ((result.data.completedSentences || 0) / (result.data.totalSentences || 1)) * 100;
+        console.log('[TTS] Found resumable session:',
+          `${result.data.completedSentences}/${result.data.totalSentences} sentences (${percent.toFixed(1)}%)`);
       }
     } catch (err) {
       console.error('[TTS] Failed to check for resumable session:', err);
@@ -1065,6 +1067,7 @@ export class TtsSettingsComponent implements OnInit {
         type: 'tts-conversion',
         epubPath: epubPathToUse,
         metadata: meta,
+        bfpPath: this.bfpPath(),  // For analytics saving
         config: {
           type: 'tts-conversion',
           device: currentSettings.device,

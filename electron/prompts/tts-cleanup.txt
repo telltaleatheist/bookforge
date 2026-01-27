@@ -58,6 +58,11 @@ REMOVE ARTIFACTS
 - Page number patterns
 - Stray single letters that don't belong
 
+SPLIT LONG SENTENCES
+- Split any sentences longer than 250 characters into multiple shorter sentences
+- Find natural break points (commas, conjunctions, semicolons) to split
+- Preserve the original meaning when splitting
+
 ═══════════════════════════════════════════════════════════════════════════════
 PRESERVE
 ═══════════════════════════════════════════════════════════════════════════════

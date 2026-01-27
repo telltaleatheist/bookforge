@@ -1,12 +1,11 @@
-import { Component, inject, signal, computed, OnInit, ViewChild } from '@angular/core';
+import { Component, inject, signal, computed, OnInit, ViewChild, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
   SplitPaneComponent,
   ToolbarComponent,
-  ToolbarItem,
-  DesktopButtonComponent
+  ToolbarItem
 } from '../../creamsicle-desktop';
-import { AudiobookQueueComponent, QueueItem, CompletedAudiobook } from './components/audiobook-queue/audiobook-queue.component';
+import { AudiobookQueueComponent, QueueItem, QueueItemStatus, CompletedAudiobook } from './components/audiobook-queue/audiobook-queue.component';
 import { MetadataEditorComponent, EpubMetadata } from './components/metadata-editor/metadata-editor.component';
 import { AiCleanupPanelComponent } from './components/ai-cleanup-panel/ai-cleanup-panel.component';
 import { TranslationPanelComponent } from './components/translation-panel/translation-panel.component';
@@ -19,9 +18,12 @@ import { AudiobookService } from './services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { LibraryService } from '../../core/services/library.service';
+import { QueueService } from '../queue/services/queue.service';
+import { AnalyticsPanelComponent } from './components/analytics-panel/analytics-panel.component';
+import { ProjectAnalytics, TTSJobAnalytics, CleanupJobAnalytics } from '../../core/models/analytics.types';
 
 // Workflow states for the audiobook producer
-type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'skipped' | 'complete';
+type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'skipped' | 'analytics' | 'complete';
 
 @Component({
   selector: 'app-audiobook',
@@ -30,7 +32,6 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
     CommonModule,
     SplitPaneComponent,
     ToolbarComponent,
-    DesktopButtonComponent,
     AudiobookQueueComponent,
     MetadataEditorComponent,
     TranslationPanelComponent,
@@ -38,7 +39,8 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
     TtsSettingsComponent,
     DiffViewComponent,
     PlayViewComponent,
-    SkippedChunksPanelComponent
+    SkippedChunksPanelComponent,
+    AnalyticsPanelComponent
   ],
   template: `
     <!-- Toolbar -->
@@ -54,9 +56,6 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
         <div pane-primary class="queue-panel">
           <div class="panel-header">
             <h3>Audiobook Queue</h3>
-            <desktop-button variant="ghost" size="xs" [iconOnly]="true" title="Add EPUB" (click)="addToQueue()">
-              +
-            </desktop-button>
           </div>
           <app-audiobook-queue
             [items]="queueItems()"
@@ -64,7 +63,6 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
             [completedAudiobooks]="completedAudiobooks()"
             (select)="selectItem($event)"
             (remove)="removeFromQueue($event)"
-            (filesDropped)="onFilesDropped($event)"
             (openCompletedFolder)="onOpenCompletedFolder()"
             (playAudiobook)="onPlayAudiobook($event)"
           />
@@ -128,6 +126,15 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                   Skipped Chunks
                 </button>
               }
+              @if (hasAnalytics()) {
+                <button
+                  class="tab"
+                  [class.active]="workflowState() === 'analytics'"
+                  (click)="setWorkflowState('analytics')"
+                >
+                  Analytics
+                </button>
+              }
             </div>
 
 
@@ -154,6 +161,7 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                 @case ('cleanup') {
                   <app-ai-cleanup-panel
                     [epubPath]="originalEpubPath()"
+                    [bfpPath]="selectedItem()?.bfpPath"
                     [metadata]="{ title: selectedMetadata()?.title, author: selectedMetadata()?.author }"
                     (cleanupComplete)="onCleanupComplete()"
                   />
@@ -162,6 +170,7 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                   <app-tts-settings
                     [settings]="ttsSettings()"
                     [epubPath]="currentEpubPath()"
+                    [bfpPath]="selectedItem()?.bfpPath"
                     [metadata]="{
                       title: selectedMetadata()?.title,
                       author: selectedMetadata()?.author,
@@ -192,6 +201,11 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                     [cleanedEpubPath]="currentEpubPath()"
                   />
                 }
+                @case ('analytics') {
+                  <app-analytics-panel
+                    [analytics]="currentAnalytics()"
+                  />
+                }
               }
             </div>
           } @else {
@@ -199,10 +213,7 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
             <div class="empty-state">
               <div class="empty-icon">&#127911;</div>
               <h2>Audiobook Producer</h2>
-              <p>Select an EPUB from the queue or drag and drop files to get started.</p>
-              <desktop-button variant="primary" (click)="addToQueue()">
-                Add EPUB
-              </desktop-button>
+              <p>Select a book from the queue to continue, or use "Export to Audiobook" from the Library to add new books.</p>
             </div>
           }
         </div>
@@ -357,6 +368,7 @@ export class AudiobookComponent implements OnInit {
   private readonly electronService = inject(ElectronService);
   private readonly settingsService = inject(SettingsService);
   private readonly libraryService = inject(LibraryService);
+  private readonly queueService = inject(QueueService);
 
   // State
   readonly queueItems = signal<QueueItem[]>([]);
@@ -380,8 +392,84 @@ export class AudiobookComponent implements OnInit {
   // Diff view state
   readonly diffPaths = signal<{ originalPath: string; cleanedPath: string } | null>(null);
 
+  // Analytics state - keyed by project ID
+  private readonly _projectAnalytics = signal<Map<string, ProjectAnalytics>>(new Map());
+
   // ViewChild reference to diff view for manual refresh
   @ViewChild(DiffViewComponent) diffViewRef?: DiffViewComponent;
+
+  constructor() {
+    // Watch for completed jobs with analytics and save to BFP
+    effect(() => {
+      const completedJob = this.queueService.lastCompletedJobWithAnalytics();
+      if (!completedJob || !completedJob.bfpPath || !completedJob.analytics) return;
+
+      // Save analytics to BFP
+      this.saveAnalyticsToBfp(
+        completedJob.bfpPath,
+        completedJob.jobType,
+        completedJob.analytics
+      );
+    });
+  }
+
+  /**
+   * Save job analytics to the BFP project file
+   */
+  private async saveAnalyticsToBfp(
+    bfpPath: string,
+    jobType: string,
+    analytics: TTSJobAnalytics | CleanupJobAnalytics
+  ): Promise<void> {
+    if (!this.electron) return;
+
+    try {
+      // Get project ID from bfpPath for local state update
+      const projectId = bfpPath.split('/').pop()?.replace('.bfp', '') || '';
+
+      // Get existing analytics from local state or initialize empty
+      const existingAnalytics = this._projectAnalytics().get(projectId) || {
+        ttsJobs: [],
+        cleanupJobs: []
+      };
+
+      // Append new analytics to appropriate array
+      let updatedAnalytics: ProjectAnalytics;
+      if (jobType === 'tts-conversion') {
+        updatedAnalytics = {
+          ...existingAnalytics,
+          ttsJobs: [...existingAnalytics.ttsJobs, analytics as TTSJobAnalytics]
+        };
+      } else if (jobType === 'ocr-cleanup') {
+        updatedAnalytics = {
+          ...existingAnalytics,
+          cleanupJobs: [...existingAnalytics.cleanupJobs, analytics as CleanupJobAnalytics]
+        };
+      } else {
+        console.log('[Audiobook] Unknown job type for analytics:', jobType);
+        return;
+      }
+
+      // Save to BFP via IPC
+      const result = await this.electron.audiobook.updateState(bfpPath, {
+        analytics: updatedAnalytics
+      });
+
+      if (result.success) {
+        // Update local state
+        const analyticsMap = this._projectAnalytics();
+        const newMap = new Map(analyticsMap);
+        newMap.set(projectId, updatedAnalytics);
+        this._projectAnalytics.set(newMap);
+
+        console.log(`[Audiobook] Saved ${jobType} analytics to BFP:`, analytics.jobId);
+      } else {
+        console.error('[Audiobook] Failed to save analytics to BFP:', result.error);
+      }
+    } catch (err) {
+      console.error('[Audiobook] Error saving analytics:', err);
+    }
+  }
 
   // Check if we're running in Electron
   private get electron(): any {
@@ -466,17 +554,23 @@ export class AudiobookComponent implements OnInit {
     return filename.replace(/\s+/g, ' ').replace(/\.\s*\./g, '.');
   });
 
+  // Get analytics for the currently selected item
+  readonly currentAnalytics = computed((): ProjectAnalytics | undefined => {
+    const item = this.selectedItem();
+    if (!item?.projectId) return undefined;
+    return this._projectAnalytics().get(item.projectId);
+  });
+
+  // Check if the current item has any analytics
+  readonly hasAnalytics = computed(() => {
+    const analytics = this.currentAnalytics();
+    if (!analytics) return false;
+    return (analytics.ttsJobs?.length > 0) || (analytics.cleanupJobs?.length > 0);
+  });
+
   // Toolbar
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
     const items: ToolbarItem[] = [
-      {
-        id: 'add',
-        type: 'button',
-        icon: '+',
-        label: 'Add EPUB',
-        tooltip: 'Add EPUB to queue'
-      },
-      { id: 'sep1', type: 'divider' },
       {
         id: 'refresh',
         type: 'button',
@@ -510,9 +604,6 @@ export class AudiobookComponent implements OnInit {
 
   onToolbarAction(item: ToolbarItem): void {
     switch (item.id) {
-      case 'add':
-        this.addToQueue();
-        break;
       case 'refresh':
         this.loadQueue().then(() => this.loadCompletedAudiobooks());
         // Also refresh diff view if on the diff tab
@@ -527,15 +618,16 @@ export class AudiobookComponent implements OnInit {
   }
 
   async loadQueue(): Promise<void> {
-    const files = await this.audiobookService.listQueue();
+    // Use unified project list - only shows projects exported to audiobook producer
+    const projects = await this.audiobookService.listUnifiedProjects();
 
     const items: QueueItem[] = [];
-    for (const file of files) {
-      // Parse EPUB to get metadata
-      const structure = await this.epubService.open(file.path);
+    for (const project of projects) {
+      // Parse EPUB to get full metadata
+      const structure = await this.epubService.open(project.epubPath);
       if (structure) {
-        // Try to load saved metadata - parse author into first/last
-        const authorParts = (structure.metadata.author || '').trim().split(' ');
+        // Parse author into first/last
+        const authorParts = (project.metadata?.author || structure.metadata.author || '').trim().split(' ');
         let authorFirst = '';
         let authorLast = '';
         if (authorParts.length >= 2) {
@@ -545,59 +637,80 @@ export class AudiobookComponent implements OnInit {
           authorFirst = authorParts[0];
         }
 
-        let metadata: EpubMetadata = {
-          title: structure.metadata.title,
-          subtitle: structure.metadata.subtitle,
-          author: structure.metadata.author,
-          authorFirst,
-          authorLast,
-          year: structure.metadata.year,
-          language: structure.metadata.language,
-          coverPath: structure.metadata.coverPath
-        };
-
-        // Check for saved metadata override
-        if (this.electron) {
-          try {
-            const savedResult = await this.electron.library.loadMetadata(file.path);
-            if (savedResult.success && savedResult.metadata) {
-              metadata = { ...metadata, ...savedResult.metadata };
-
-              // If coverPath exists but no coverData, load the cover image
-              if (savedResult.metadata.coverPath && !savedResult.metadata.coverData && file.projectId) {
-                try {
-                  const coverResult = await this.electron.library.loadCoverImage(file.projectId, savedResult.metadata.coverPath);
-                  if (coverResult.success && coverResult.coverData) {
-                    metadata.coverData = coverResult.coverData;
-                  }
-                } catch {
-                  // Cover image not found, continue without it
-                }
-              }
-            }
-          } catch {
-            // No saved metadata, use EPUB defaults
+        // Resolve cover path to full filesystem path if available in BFP
+        let resolvedCoverPath: string | undefined;
+        if (project.metadata?.coverImagePath) {
+          const libPath = this.libraryService.libraryPath();
+          if (libPath) {
+            resolvedCoverPath = `${libPath}/${project.metadata.coverImagePath}`;
           }
         }
 
+        let metadata: EpubMetadata = {
+          title: project.metadata?.title || structure.metadata.title || project.name,
+          subtitle: structure.metadata.subtitle,
+          author: project.metadata?.author || structure.metadata.author || '',
+          authorFirst,
+          authorLast,
+          year: project.metadata?.year || structure.metadata.year,
+          language: structure.metadata.language,
+          coverPath: resolvedCoverPath,  // Full path to cover file in media folder
+          outputFilename: project.metadata?.outputFilename
+        };
+
+        // Load cover image as base64 for display in UI
+        if (project.metadata?.coverImagePath && this.electron) {
+          try {
+            const coverResult = await this.electron.media.loadImage(project.metadata.coverImagePath);
+            if (coverResult.success && coverResult.data) {
+              metadata.coverData = coverResult.data;
+            }
+          } catch {
+            // Cover image not found, continue without it
+          }
+        }
+
+        // Check if cleaned EPUB exists based on project state
+        const hasCleaned = !!project.cleanedAt;
+
+        // Map status from BFP audiobook state
+        let status: QueueItemStatus = 'pending';
+        if (project.status === 'cleaning') status = 'cleanup';
+        else if (project.status === 'converting') status = 'converting';
+        else if (project.status === 'complete') status = 'complete';
+        else if (project.status === 'error') status = 'error';
+
+        // Check if skipped-chunks.json actually exists (don't assume based on hasCleaned)
+        const skippedChunksFile = `${project.audiobookFolder}/skipped-chunks.json`;
+        const hasSkippedChunks = hasCleaned && this.electron
+          ? await this.electron.fs.exists(skippedChunksFile).catch(() => false)
+          : false;
+
         items.push({
-          id: file.path,
-          path: file.path,
-          filename: file.filename,
-          metadata: {
-            ...metadata,
-            // Never show internal filenames like "cleaned.epub" or "original.epub"
-            // Always prefer the actual book title from EPUB metadata
-            title: metadata.title && !metadata.title.match(/^(cleaned|original)\.epub$/i)
-              ? metadata.title
-              : structure.metadata.title || 'Untitled'
-          },
-          status: 'pending',
-          addedAt: new Date(file.addedAt),
-          projectId: file.projectId,
-          hasCleaned: file.hasCleaned,
-          skippedChunksPath: file.skippedChunksPath
+          id: project.bfpPath,  // Use BFP path as unique ID
+          path: project.epubPath,
+          filename: `${project.name}.epub`,
+          metadata,
+          status,
+          addedAt: project.exportedAt ? new Date(project.exportedAt) : new Date(),
+          bfpPath: project.bfpPath,
+          projectId: project.name,  // Required for currentEpubPath to use cleaned.epub
+          audiobookFolder: project.audiobookFolder,
+          hasCleaned,
+          skippedChunksPath: hasSkippedChunks ? skippedChunksFile : undefined
         });
+
+        // Load analytics for this project if available
+        if (project.analytics) {
+          const analyticsMap = this._projectAnalytics();
+          const newMap = new Map(analyticsMap);
+          newMap.set(project.name, {
+            ttsJobs: project.analytics.ttsJobs || [],
+            cleanupJobs: project.analytics.cleanupJobs || []
+          });
+          this._projectAnalytics.set(newMap);
+        }
+
         await this.epubService.close();
       }
     }
@@ -644,24 +757,51 @@ export class AudiobookComponent implements OnInit {
    * Mark queue items that have a completed audiobook
    */
   private markItemsWithAudiobooks(completed: CompletedAudiobook[]): void {
-    // Build a set of completed filenames (lowercase for case-insensitive matching)
-    const completedFilenames = new Set(
-      completed.map(a => a.filename.toLowerCase())
-    );
+    // Build list of completed filenames (lowercase for case-insensitive matching)
+    const completedFilenames = completed.map(a => a.filename.toLowerCase());
 
-    console.log('[Audiobook] Completed filenames:', Array.from(completedFilenames));
+    console.log('[Audiobook] Completed filenames:', completedFilenames);
 
-    // Update queue items
-    this.queueItems.update(items =>
-      items.map(item => {
-        const expectedFilename = this.generateFilenameForItem(item.metadata);
-        const hasAudiobook = completedFilenames.has(expectedFilename.toLowerCase());
+    // Update queue items and sort (completed at bottom)
+    this.queueItems.update(items => {
+      const updated = items.map(item => {
+        const expectedFilename = this.generateFilenameForItem(item.metadata).toLowerCase();
+
+        // Try exact match first
+        let hasAudiobook = completedFilenames.includes(expectedFilename);
+
+        // If no exact match, try fuzzy matching by author + title prefix
+        if (!hasAudiobook && item.metadata) {
+          const meta = item.metadata;
+
+          // Normalize function - remove apostrophes, extra spaces, lowercase
+          const normalize = (s: string) => s.toLowerCase().replace(/['']/g, '').replace(/\s+/g, ' ').trim();
+
+          // Get author last name for matching
+          const authorLast = normalize(meta.authorLast || (meta.author || '').split(' ').pop() || '');
+
+          // Check if any completed file contains this author and starts with similar title
+          const titleStart = normalize((meta.title || '').split(/[-:,]/)[0]);
+
+          hasAudiobook = completedFilenames.some(cf => {
+            const cfNorm = normalize(cf);
+            // Match if completed filename contains author last name and starts with title prefix
+            return cfNorm.includes(authorLast) && cfNorm.startsWith(titleStart);
+          });
+        }
+
         console.log('[Audiobook] Checking item:', item.metadata.title);
         console.log('[Audiobook]   Expected:', expectedFilename);
         console.log('[Audiobook]   Match:', hasAudiobook);
         return { ...item, hasAudiobook };
-      })
-    );
+      });
+
+      // Sort: items without completed audiobook first, then completed at bottom
+      return updated.sort((a, b) => {
+        if (a.hasAudiobook === b.hasAudiobook) return 0;
+        return a.hasAudiobook ? 1 : -1;
+      });
+    });
   }
 
   /**
@@ -741,45 +881,6 @@ export class AudiobookComponent implements OnInit {
     }
   }
 
-  async addToQueue(): Promise<void> {
-    if (!this.electron) return;
-
-    // Open file dialog
-    const result = await this.electron.dialog.openPdf();
-    if (result.success && result.filePath) {
-      const filePath = result.filePath;
-
-      // Check if it's an EPUB
-      if (!filePath.toLowerCase().endsWith('.epub')) {
-        return; // Only EPUBs are supported
-      }
-
-      // Copy to queue (handles duplicates)
-      const filename = filePath.split('/').pop() || 'unknown.epub';
-      await this.addEpubToQueue(filePath, filename);
-    }
-  }
-
-  /**
-   * Add an EPUB to the queue, replacing any existing entry with the same filename
-   */
-  private async addEpubToQueue(filePath: string, filename: string): Promise<void> {
-    // Check for existing item with same filename and remove it first
-    const existingItem = this.queueItems().find(
-      item => item.filename.toLowerCase() === filename.toLowerCase()
-    );
-    if (existingItem) {
-      console.log('[Audiobook] Replacing existing item:', existingItem.filename);
-      await this.removeFromQueue(existingItem.id);
-    }
-
-    // Copy to queue
-    const copyResult = await this.audiobookService.copyToQueue(filePath, filename);
-    if (copyResult.success) {
-      await this.loadQueue();
-    }
-  }
-
   selectItem(id: string): void {
     this.selectedItemId.set(id);
     this.workflowState.set('metadata');
@@ -814,7 +915,7 @@ export class AudiobookComponent implements OnInit {
       if (item?.hasCleaned) {
         const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
         const paths = {
-          originalPath: `${originalDir}/original.epub`,
+          originalPath: `${originalDir}/exported.epub`,
           cleanedPath: `${originalDir}/cleaned.epub`
         };
         console.log('[Audiobook] Setting diffPaths:', paths);
@@ -855,8 +956,10 @@ export class AudiobookComponent implements OnInit {
     this.savingMetadata.set(true);
 
     try {
-      // Save to project file (for persistence between sessions)
-      const result = await this.electron.library.saveMetadata(item.path, metadata);
+      // Save to BFP file if available (unified system), otherwise fall back to old project.json
+      const result = item.bfpPath
+        ? await this.electron.project.updateMetadata(item.bfpPath, metadata)
+        : await this.electron.library.saveMetadata(item.path, metadata);
       if (result.success) {
         // Update local state
         this.onMetadataChange(metadata);
@@ -895,21 +998,6 @@ export class AudiobookComponent implements OnInit {
 
   onTtsSettingsChange(settings: TTSSettings): void {
     this.ttsSettings.set(settings);
-  }
-
-  async onFilesDropped(files: File[]): Promise<void> {
-    if (!this.electron) return;
-
-    for (const file of files) {
-      if (file.name.toLowerCase().endsWith('.epub')) {
-        // For browser File objects, we need to get the path
-        // In Electron, dropped files have a `path` property
-        const filePath = (file as any).path;
-        if (filePath) {
-          await this.addEpubToQueue(filePath, file.name);
-        }
-      }
-    }
   }
 
   async onDiffTextEdited(event: { chapterId: string; oldText: string; newText: string }): Promise<void> {
@@ -983,29 +1071,11 @@ export class AudiobookComponent implements OnInit {
 
   /**
    * Get the cover path for the currently selected item
+   * Cover path is already resolved to full filesystem path in metadata
    */
   getSelectedCoverPath(): string | undefined {
     const item = this.selectedItem();
-    if (!item?.projectId) return undefined;
-    return this.getProjectCoverPath(item.projectId);
-  }
-
-  /**
-   * Get the path to the cover image for a project
-   * The cover is stored in the project folder as cover.png or cover.jpg
-   */
-  getProjectCoverPath(projectId: string): string | undefined {
-    if (!this.electron || !projectId) return undefined;
-
-    // Get the audiobooks base path and construct cover path
-    // Projects are in ~/Documents/BookForge/audiobooks/{projectId}/
-    // Cover is typically saved as cover.png or project metadata references it
-    const item = this.selectedItem();
-    if (!item?.metadata?.coverPath) return undefined;
-
-    // The coverPath in metadata might be relative (e.g., "cover.png")
-    // We need to construct the full path based on the project folder
-    const projectPath = item.path.substring(0, item.path.lastIndexOf('/'));
-    return `${projectPath}/${item.metadata.coverPath}`;
+    // coverPath in metadata is now the full filesystem path
+    return item?.metadata?.coverPath;
   }
 }
