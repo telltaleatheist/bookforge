@@ -119,6 +119,28 @@ export interface VoiceOption {
           </div>
         </div>
 
+        <!-- TTS Engine Selection -->
+        <div class="form-group">
+          <label for="ttsEngine">TTS Engine</label>
+          <div class="engine-options">
+            @for (engine of availableEngines(); track engine.id) {
+              <label class="radio-option compact" [class.selected]="settings().ttsEngine === engine.id">
+                <input
+                  type="radio"
+                  name="ttsEngine"
+                  [value]="engine.id"
+                  [ngModel]="settings().ttsEngine"
+                  (ngModelChange)="onEngineChange($event)"
+                />
+                <div class="radio-content">
+                  <span class="radio-label">{{ engine.name }}</span>
+                  <span class="radio-desc">{{ engine.description }}</span>
+                </div>
+              </label>
+            }
+          </div>
+        </div>
+
         <!-- Language Selection -->
         <div class="form-row">
           <div class="form-group">
@@ -127,20 +149,26 @@ export interface VoiceOption {
               id="language"
               [ngModel]="settings().language"
               (ngModelChange)="updateSetting('language', $event)"
+              [disabled]="settings().ttsEngine === 'orpheus'"
             >
               <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
-              <option value="de">German</option>
-              <option value="it">Italian</option>
-              <option value="pt">Portuguese</option>
-              <option value="ja">Japanese</option>
-              <option value="zh">Chinese</option>
+              @if (settings().ttsEngine !== 'orpheus') {
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+                <option value="it">Italian</option>
+                <option value="pt">Portuguese</option>
+                <option value="ja">Japanese</option>
+                <option value="zh">Chinese</option>
+              }
             </select>
+            @if (settings().ttsEngine === 'orpheus') {
+              <span class="hint">Orpheus only supports English</span>
+            }
           </div>
 
           <div class="form-group">
-            <label for="fineTuned">Voice Model</label>
+            <label for="fineTuned">Voice</label>
             <select
               id="fineTuned"
               [ngModel]="settings().fineTuned"
@@ -150,6 +178,9 @@ export interface VoiceOption {
                 <option [value]="voice.id">{{ voice.name }}</option>
               }
             </select>
+            @if (currentVoiceDescription()) {
+              <span class="hint">{{ currentVoiceDescription() }}</span>
+            }
           </div>
         </div>
 
@@ -484,10 +515,22 @@ export interface VoiceOption {
       }
     }
 
-    .device-options {
+    .device-options, .engine-options {
       display: flex;
       flex-direction: column;
       gap: 0.5rem;
+    }
+
+    .radio-option.compact {
+      padding: 0.5rem 0.75rem;
+
+      .radio-label {
+        font-size: 0.8125rem;
+      }
+
+      .radio-desc {
+        font-size: 0.6875rem;
+      }
     }
 
     .radio-option {
@@ -912,12 +955,32 @@ export class TtsSettingsComponent implements OnInit {
   readonly showAdvanced = signal(false);
   readonly addingToQueue = signal(false);
   readonly addedToQueue = signal(false);
-  readonly availableVoices = signal<VoiceOption[]>([
+  // Voice options by TTS engine
+  private readonly xttsVoices: VoiceOption[] = [
     { id: 'ScarlettJohansson', name: 'Scarlett Johansson', language: 'en', description: 'Natural, warm female voice' },
     { id: 'DavidAttenborough', name: 'David Attenborough', language: 'en', description: 'Documentary-style narration' },
     { id: 'BobRoss', name: 'Bob Ross', language: 'en', description: 'Calm, soothing male voice' },
     { id: 'MorganFreeman', name: 'Morgan Freeman', language: 'en', description: 'Deep, authoritative male voice' },
     { id: 'internal', name: 'Default XTTS', language: 'en', description: 'Built-in XTTS voice' }
+  ];
+
+  private readonly orpheusVoices: VoiceOption[] = [
+    { id: 'tara', name: 'Tara', language: 'en', description: 'Female - most conversational/realistic' },
+    { id: 'leah', name: 'Leah', language: 'en', description: 'Female - highly conversational' },
+    { id: 'jess', name: 'Jess', language: 'en', description: 'Female - conversational' },
+    { id: 'mia', name: 'Mia', language: 'en', description: 'Female' },
+    { id: 'zoe', name: 'Zoe', language: 'en', description: 'Female' },
+    { id: 'leo', name: 'Leo', language: 'en', description: 'Male - conversational' },
+    { id: 'dan', name: 'Dan', language: 'en', description: 'Male - conversational' },
+    { id: 'zac', name: 'Zac', language: 'en', description: 'Male' }
+  ];
+
+  readonly availableVoices = signal<VoiceOption[]>(this.xttsVoices);
+
+  // Available TTS engines
+  readonly availableEngines = signal<{id: string, name: string, description: string}[]>([
+    { id: 'xtts', name: 'XTTS (Coqui)', description: 'Good quality, supports voice cloning' },
+    { id: 'orpheus', name: 'Orpheus 3B', description: 'Best prosody/naturalness, English only' }
   ]);
 
   // Parallel processing state
@@ -930,6 +993,12 @@ export class TtsSettingsComponent implements OnInit {
   readonly resumeInfo = signal<ResumeCheckResult | null>(null);
   readonly showResumeOption = signal(false); // User clicked to see details
   private lastCheckedPath: string | null = null; // Avoid redundant session searches
+
+  // Computed: current voice description
+  currentVoiceDescription(): string {
+    const voice = this.availableVoices().find(v => v.id === this.settings().fineTuned);
+    return voice?.description || '';
+  }
 
   constructor() {
     // Watch for epubPath changes and check for resumable sessions
@@ -956,6 +1025,13 @@ export class TtsSettingsComponent implements OnInit {
   ngOnInit(): void {
     this.checkStatus();
     this.detectHardware();
+    // Set available voices based on current engine
+    const currentEngine = this.settings().ttsEngine;
+    if (currentEngine === 'orpheus') {
+      this.availableVoices.set(this.orpheusVoices);
+    } else {
+      this.availableVoices.set(this.xttsVoices);
+    }
   }
 
   private async detectHardware(): Promise<void> {
@@ -1035,6 +1111,30 @@ export class TtsSettingsComponent implements OnInit {
     const current = this.settings();
     const updated = { ...current, [key]: value };
     this.settingsChange.emit(updated);
+  }
+
+  onEngineChange(engine: string): void {
+    // Update available voices based on engine
+    if (engine === 'orpheus') {
+      this.availableVoices.set(this.orpheusVoices);
+      // Set default Orpheus voice and force English
+      const current = this.settings();
+      this.settingsChange.emit({
+        ...current,
+        ttsEngine: engine,
+        fineTuned: 'tara',  // Default Orpheus voice
+        language: 'en'      // Orpheus only supports English
+      });
+    } else {
+      this.availableVoices.set(this.xttsVoices);
+      // Set default XTTS voice
+      const current = this.settings();
+      this.settingsChange.emit({
+        ...current,
+        ttsEngine: engine,
+        fineTuned: 'ScarlettJohansson'  // Default XTTS voice
+      });
+    }
   }
 
   async addToQueue(useResume: boolean = false): Promise<void> {
