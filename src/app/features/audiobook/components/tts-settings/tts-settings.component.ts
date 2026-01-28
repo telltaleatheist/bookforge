@@ -496,6 +496,13 @@ export interface VoiceOption {
           outline: none;
           border-color: var(--accent-primary);
         }
+
+        /* Fix dropdown option styling on Windows */
+        option {
+          background: #1a1a1a;
+          color: #e0e0e0;
+          padding: 0.5rem;
+        }
       }
 
       input[type="range"] {
