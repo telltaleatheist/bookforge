@@ -2258,7 +2258,7 @@ export function extractBlockTexts(xhtml: string): string[] {
   const $ = cheerio.load(xhtml, { xmlMode: true });
   const texts: string[] = [];
 
-  $(BLOCK_SELECTORS).each((_: number, el: cheerio.Element) => {
+  $(BLOCK_SELECTORS).each((_, el) => {
     // Get text content (strips nested tags, decodes entities)
     const text = $(el).text().trim();
     // Only include elements that have actual text
@@ -2279,7 +2279,7 @@ export function replaceBlockTexts(xhtml: string, cleanedTexts: string[]): string
   const $ = cheerio.load(xhtml, { xmlMode: true });
   let textIndex = 0;
 
-  $(BLOCK_SELECTORS).each((_: number, el: cheerio.Element) => {
+  $(BLOCK_SELECTORS).each((_, el) => {
     // Only replace elements that had text (matching extractBlockTexts logic)
     const originalText = $(el).text().trim();
     if (originalText.length > 0) {
@@ -2330,7 +2330,7 @@ export function countBlockElements(xhtml: string): number {
   const $ = cheerio.load(xhtml, { xmlMode: true });
   let count = 0;
 
-  $(BLOCK_SELECTORS).each((_: number, el: cheerio.Element) => {
+  $(BLOCK_SELECTORS).each((_, el) => {
     if ($(el).text().trim().length > 0) {
       count++;
     }
