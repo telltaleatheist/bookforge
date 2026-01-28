@@ -1523,11 +1523,12 @@ export async function cleanupEpub(
     let totalCharactersProcessed = 0;  // Track total characters for analytics
     const cleanupStartTime = Date.now();  // Track start time for analytics
 
-    // Generate output path - save as cleaned.epub in the same folder as the original
+    // Generate output path - save as {originalName}_cleaned.epub in the same folder
     const epubDir = path.dirname(epubPath);
-    const outputPath = path.join(epubDir, 'cleaned.epub');
+    const epubBasename = path.basename(epubPath, '.epub');
+    const outputPath = path.join(epubDir, `${epubBasename}_cleaned.epub`);
 
-    // Delete any existing cleaned.epub to start fresh
+    // Delete any existing _cleaned.epub to start fresh
     try {
       await fsPromises.unlink(outputPath);
     } catch {

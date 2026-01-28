@@ -505,7 +505,7 @@ export class AudiobookComponent implements OnInit {
     // For TTS, prefer the cleaned version if it exists
     if (item.hasCleaned && item.projectId) {
       const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
-      return `${originalDir}/cleaned.epub`;
+      return `${originalDir}/exported_cleaned.epub`;
     }
 
     return item.path;
@@ -694,7 +694,7 @@ export class AudiobookComponent implements OnInit {
           status,
           addedAt: project.exportedAt ? new Date(project.exportedAt) : new Date(),
           bfpPath: project.bfpPath,
-          projectId: project.name,  // Required for currentEpubPath to use cleaned.epub
+          projectId: project.name,  // Required for currentEpubPath to use exported_cleaned.epub
           audiobookFolder: project.audiobookFolder,
           hasCleaned,
           skippedChunksPath: hasSkippedChunks ? skippedChunksFile : undefined
@@ -916,7 +916,7 @@ export class AudiobookComponent implements OnInit {
         const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
         const paths = {
           originalPath: `${originalDir}/exported.epub`,
-          cleanedPath: `${originalDir}/cleaned.epub`
+          cleanedPath: `${originalDir}/exported_cleaned.epub`
         };
         console.log('[Audiobook] Setting diffPaths:', paths);
         this.diffPaths.set(paths);

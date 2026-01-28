@@ -2411,7 +2411,7 @@ function setupIpcHandlers(): void {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Audiobook Project handlers
-  // Each audiobook is a folder containing: original.epub, cleaned.epub, project.json, output.m4b
+  // Each audiobook is a folder containing: exported.epub, exported_cleaned.epub (optional), project.json, output.m4b
   // ─────────────────────────────────────────────────────────────────────────────
 
   const getAudiobooksBasePath = () => {
@@ -2547,7 +2547,7 @@ function setupIpcHandlers(): void {
           const [hasExported, hasOriginalLegacy, hasCleaned, hasOutput] = await Promise.all([
             fs.access(path.join(folderPath, 'exported.epub')).then(() => true).catch(() => false),
             fs.access(path.join(folderPath, 'original.epub')).then(() => true).catch(() => false),
-            fs.access(path.join(folderPath, 'cleaned.epub')).then(() => true).catch(() => false),
+            fs.access(path.join(folderPath, 'exported_cleaned.epub')).then(() => true).catch(() => false),
             fs.access(path.join(folderPath, 'output.m4b')).then(() => true).catch(() => false)
           ]);
           const hasOriginal = hasExported || hasOriginalLegacy;
@@ -2595,7 +2595,7 @@ function setupIpcHandlers(): void {
       const [hasExported, hasOriginalLegacy, hasCleaned, hasOutput] = await Promise.all([
         fs.access(path.join(folderPath, 'exported.epub')).then(() => true).catch(() => false),
         fs.access(path.join(folderPath, 'original.epub')).then(() => true).catch(() => false),
-        fs.access(path.join(folderPath, 'cleaned.epub')).then(() => true).catch(() => false),
+        fs.access(path.join(folderPath, 'exported_cleaned.epub')).then(() => true).catch(() => false),
         fs.access(path.join(folderPath, 'output.m4b')).then(() => true).catch(() => false)
       ]);
       const hasOriginal = hasExported || hasOriginalLegacy;
@@ -2677,7 +2677,7 @@ function setupIpcHandlers(): void {
       success: true,
       folderPath,
       originalPath,
-      cleanedPath: path.join(folderPath, 'cleaned.epub'),
+      cleanedPath: path.join(folderPath, 'exported_cleaned.epub'),
       outputPath: path.join(folderPath, 'output.m4b')
     };
   });
@@ -2719,8 +2719,8 @@ function setupIpcHandlers(): void {
           existingCreatedAt = existingProject.createdAt;
         }
 
-        // Remove old files (exported.epub, original.epub (legacy), cleaned.epub, project.json)
-        const filesToRemove = ['exported.epub', 'original.epub', 'cleaned.epub', 'project.json'];
+        // Remove old files (exported.epub, original.epub (legacy), cleaned epubs, project.json)
+        const filesToRemove = ['exported.epub', 'original.epub', 'cleaned.epub', 'exported_cleaned.epub', 'project.json'];
         for (const file of filesToRemove) {
           try {
             await fs.unlink(path.join(folderPath, file));
@@ -2842,7 +2842,7 @@ function setupIpcHandlers(): void {
             size: stats.size,
             addedAt: projectData?.createdAt || stats.mtime.toISOString(),
             projectId: folder.name,
-            hasCleaned: await fs.access(path.join(folderPath, 'cleaned.epub')).then(() => true).catch(() => false),
+            hasCleaned: await fs.access(path.join(folderPath, 'exported_cleaned.epub')).then(() => true).catch(() => false),
             skippedChunksPath: hasSkippedChunks ? skippedChunksFile : undefined
           };
         } catch {
