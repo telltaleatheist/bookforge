@@ -450,17 +450,35 @@ export class AudiobookComponent implements OnInit {
         return;
       }
 
-      // Save to BFP via IPC
-      const result = await this.electron.audiobook.updateState(bfpPath, {
+      // Build state update object
+      const stateUpdate: Record<string, unknown> = {
         analytics: updatedAnalytics
-      });
+      };
+
+      // Set cleanedAt timestamp when OCR cleanup completes
+      if (jobType === 'ocr-cleanup') {
+        stateUpdate['cleanedAt'] = new Date().toISOString();
+      }
+
+      // Save to BFP via IPC
+      const result = await this.electron.audiobook.updateState(bfpPath, stateUpdate);
 
       if (result.success) {
-        // Update local state
+        // Update local analytics state
         const analyticsMap = this._projectAnalytics();
         const newMap = new Map(analyticsMap);
         newMap.set(projectId, updatedAnalytics);
         this._projectAnalytics.set(newMap);
+
+        // Update local queue item's hasCleaned flag for OCR cleanup
+        if (jobType === 'ocr-cleanup') {
+          this.queueItems.update(items =>
+            items.map(item =>
+              item.bfpPath === bfpPath ? { ...item, hasCleaned: true } : item
+            )
+          );
+          console.log(`[Audiobook] Set hasCleaned=true for ${bfpPath}`);
+        }
 
         console.log(`[Audiobook] Saved ${jobType} analytics to BFP:`, analytics.jobId);
       } else {
