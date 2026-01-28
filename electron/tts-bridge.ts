@@ -10,6 +10,7 @@ import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as logger from './audiobook-logger';
+import { getDefaultE2aPath, getCondaRunArgs, getCondaPath } from './e2a-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -57,9 +58,8 @@ export interface VoiceInfo {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Default path to ebook2audiobook - can be overridden in settings
-const DEFAULT_E2A_PATH = '/Users/telltale/Projects/ebook2audiobook';
-let e2aPath = DEFAULT_E2A_PATH;
+// Default path to ebook2audiobook - uses cross-platform detection
+let e2aPath = getDefaultE2aPath();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // State
@@ -293,12 +293,13 @@ export async function startConversion(
 
     // Use conda run to activate the ebook2audiobook environment
     // --no-capture-output prevents conda from buffering all stdout/stderr
-    const fullArgs = ['run', '--no-capture-output', '-n', 'ebook2audiobook', 'python', ...args];
+    // getCondaRunArgs() detects if a local python_env folder exists (prefix) or uses named env
+    const fullArgs = [...getCondaRunArgs(e2aPath), ...args];
     console.log('[TTS] Starting ebook2audiobook with command:');
     console.log('[TTS]   conda', fullArgs.join(' '));
     console.log('[TTS]   cwd:', e2aPath);
 
-    currentProcess = spawn('conda', fullArgs, {
+    currentProcess = spawn(getCondaPath(), fullArgs, {
       cwd: e2aPath,
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
       shell: true

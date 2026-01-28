@@ -6,13 +6,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
+import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath } from './e2a-paths';
+import * as os from 'os';
 
-// Default E2A tmp path (should be overridden via settings)
-const DEFAULT_E2A_TMP_PATH = '/Users/telltale/Projects/ebook2audiobook/tmp';
+// Default E2A tmp path (uses cross-platform detection)
+const DEFAULT_E2A_TMP_PATH = getDefaultE2aTmpPath();
 
-// The e2a app path that supports --title/--author/--cover options
-// Note: ebook2audiobook-latest doesn't support these, so we use the non-latest version
-const E2A_APP_PATH = '/Users/telltale/Projects/ebook2audiobook';
+// The e2a app path (uses cross-platform detection)
+const E2A_APP_PATH = getDefaultE2aPath();
 
 // Derive the e2a app path from the tmp path (parent directory)
 // Falls back to E2A_APP_PATH if the derived path doesn't have the assembly features
@@ -650,15 +651,14 @@ export async function startReassembly(
 
   return new Promise((resolve) => {
     const appPath = path.join(e2aPath, 'app.py');
+    const platform = os.platform();
 
-    // Build command parts - need to run as a single bash command for proper argument handling
-    const cmdParts = [
-      'source /opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh &&',
-      `cd ${escapeShellArg(e2aPath)} &&`,
-      'conda run --no-capture-output -n ebook2audiobook python app.py',
+    // Build arguments for app.py
+    const appArgs = [
+      appPath,
       '--headless',
-      '--ebook', escapeShellArg(epubPath),
-      '--output_dir', escapeShellArg(config.outputDir),
+      '--ebook', epubPath,
+      '--output_dir', config.outputDir,
       '--session', config.sessionId,
       '--device', 'cpu',
       '--language', language,
@@ -685,25 +685,28 @@ export async function startReassembly(
       }
     }
     if (outputFilename) {
-      cmdParts.push('--output_filename', escapeShellArg(outputFilename));
+      appArgs.push('--output_filename', outputFilename);
     }
 
     // Add metadata if provided (for m4b tagging)
     if (config.metadata.title) {
-      cmdParts.push('--title', escapeShellArg(config.metadata.title));
+      appArgs.push('--title', config.metadata.title);
     }
     if (config.metadata.author) {
-      cmdParts.push('--author', escapeShellArg(config.metadata.author));
+      appArgs.push('--author', config.metadata.author);
     }
     if (config.metadata.coverPath) {
-      cmdParts.push('--cover', escapeShellArg(config.metadata.coverPath));
+      appArgs.push('--cover', config.metadata.coverPath);
     }
 
-    const fullCommand = cmdParts.join(' ');
-    console.log('[REASSEMBLY] Running command:', fullCommand);
+    // Build the full command using cross-platform conda args
+    const condaArgs = [...getCondaRunArgs(e2aPath), ...appArgs];
+    console.log('[REASSEMBLY] Running command: conda', condaArgs.join(' '));
 
-    const proc = spawn('/bin/bash', ['-c', fullCommand], {
-      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    const proc = spawn(getCondaPath(), condaArgs, {
+      cwd: e2aPath,
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      shell: true
     });
 
     activeReassemblies.set(jobId, proc);

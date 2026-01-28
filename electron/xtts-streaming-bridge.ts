@@ -10,6 +10,7 @@ import { BrowserWindow, app } from 'electron';
 import * as path from 'path';
 import * as readline from 'readline';
 import * as fs from 'fs';
+import { getDefaultE2aPath, getCondaRunArgs, getCondaPath } from './e2a-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -43,8 +44,7 @@ export interface XTTSResponse {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-const E2A_PATH = '/Users/telltale/Projects/ebook2audiobook';
-const CONDA_ENV = 'ebook2audiobook';
+const E2A_PATH = getDefaultE2aPath();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // State
@@ -96,9 +96,9 @@ export async function startSession(): Promise<{ success: boolean; voices?: strin
       console.log('[XTTS] Script exists:', fs.existsSync(scriptPath));
 
       // Spawn Python process using conda environment
-      pythonProcess = spawn('conda', [
-        'run', '--no-capture-output', '-n', CONDA_ENV, 'python', scriptPath
-      ], {
+      // getCondaRunArgs() handles prefix vs named env detection
+      const condaArgs = [...getCondaRunArgs(E2A_PATH), scriptPath];
+      pythonProcess = spawn(getCondaPath(), condaArgs, {
         cwd: E2A_PATH,
         env: { ...process.env, PYTHONUNBUFFERED: '1' },
         shell: true,

@@ -23,7 +23,20 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Add ebook2audiobook to path
-E2A_PATH = '/Users/telltale/Projects/ebook2audiobook'
+# Use environment variable if set, otherwise detect based on platform
+def get_e2a_path():
+    if os.environ.get('EBOOK2AUDIOBOOK_PATH'):
+        return os.environ['EBOOK2AUDIOBOOK_PATH']
+    # Cross-platform default
+    home = os.path.expanduser('~')
+    if sys.platform == 'win32':
+        return os.path.join(home, 'Projects', 'ebook2audiobook')
+    elif sys.platform == 'darwin':
+        return '/Users/telltale/Projects/ebook2audiobook'
+    else:
+        return os.path.join(home, 'Projects', 'ebook2audiobook')
+
+E2A_PATH = get_e2a_path()
 sys.path.insert(0, E2A_PATH)
 
 from huggingface_hub import hf_hub_download

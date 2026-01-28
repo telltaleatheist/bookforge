@@ -155,35 +155,22 @@ export interface ParallelConversionResult {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Default e2a paths - prefer ebook2audiobook-latest for parallel worker support
-// Can be overridden with setE2aPath() or EBOOK2AUDIOBOOK_PATH environment variable
-const DEFAULT_E2A_PATH_LATEST = '/Users/telltale/Projects/ebook2audiobook-latest';
-const DEFAULT_E2A_PATH_LEGACY = '/Users/telltale/Projects/ebook2audiobook';
+import { getDefaultE2aPath, getCondaRunArgs, getCondaPath } from './e2a-paths';
 
-// Check environment variable first, then prefer latest if available
-function getDefaultE2aPath(): string {
-  if (process.env.EBOOK2AUDIOBOOK_PATH) {
-    return process.env.EBOOK2AUDIOBOOK_PATH;
-  }
-  // Prefer ebook2audiobook-latest for parallel worker support
-  try {
-    const fs = require('fs');
-    if (fs.existsSync(DEFAULT_E2A_PATH_LATEST)) {
-      return DEFAULT_E2A_PATH_LATEST;
-    }
-  } catch {
-    // Fall through to legacy path
-  }
-  return DEFAULT_E2A_PATH_LEGACY;
-}
-
+// Use centralized cross-platform path detection
 let e2aPath = getDefaultE2aPath();
+
+// Helper to get conda run args for current e2aPath
+function condaRunArgs(): string[] {
+  return getCondaRunArgs(e2aPath);
+}
 let mainWindow: BrowserWindow | null = null;
 let loggerInitialized = false;
 
 // Use lightweight worker.py for lower memory usage (~8GB vs ~25GB)
 // Set to false to use app.py with --worker_mode (full imports)
-let useLightweightWorker = true;
+// Note: parallel-workers branch doesn't have worker.py, so we use app.py
+let useLightweightWorker = false;
 
 // Watchdog configuration - detect stuck workers
 const WORKER_STARTUP_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes to start showing progress
@@ -367,14 +354,14 @@ export async function prepareSession(
   const sessionDir = path.join(e2aPath, 'tmp', `ebook-${sessionId}`);
 
   const args = [
-    'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
+    ...condaRunArgs(),
     appPath,
     '--headless',
     '--ebook', epubPath,
     '--session', sessionId,
     '--language', settings.language,
     '--tts_engine', settings.ttsEngine,
-    '--device', settings.device === 'gpu' ? 'CUDA' : settings.device.toUpperCase(),
+    '--device', settings.device.toLowerCase(),
     '--prep_only'
   ];
 
@@ -388,7 +375,7 @@ export async function prepareSession(
   await new Promise<void>((resolve, reject) => {
     let stderr = '';
 
-    const prepProcess = spawn('conda', args, {
+    const prepProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
       shell: true
@@ -542,10 +529,10 @@ function startWorker(
   if (useLightweightWorker) {
     // Use worker.py - lightweight entry point with minimal imports
     const workerPath = path.join(e2aPath, 'worker.py');
-    // worker.py expects uppercase device names: CPU, CUDA, MPS, etc.
-    const deviceArg = settings.device === 'gpu' ? 'CUDA' : settings.device.toUpperCase();
+    // parallel-workers branch expects lowercase device names: cpu, gpu, mps
+    const deviceArg = settings.device.toLowerCase();
     args = [
-      'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
+      ...condaRunArgs(),
       workerPath,
       '--session', prepInfo.sessionId,
       '--device', deviceArg
@@ -570,11 +557,11 @@ function startWorker(
     // Use app.py with --worker_mode - full imports but same functionality
     const appPath = path.join(e2aPath, 'app.py');
     args = [
-      'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
+      ...condaRunArgs(),
       appPath,
       '--headless',
       '--session', prepInfo.sessionId,
-      '--device', settings.device === 'gpu' ? 'CUDA' : settings.device.toUpperCase(),
+      '--device', settings.device.toLowerCase(),
       '--output_dir', config.outputDir,
       '--worker_mode'
       // Note: language, tts_engine, and other settings are loaded from session-state.json
@@ -611,7 +598,7 @@ function startWorker(
     device: settings.device
   }).catch(() => {}); // Don't fail if logging fails
 
-  const workerProcess = spawn('conda', args, {
+  const workerProcess = spawn(getCondaPath(), args, {
     cwd: e2aPath,
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
     shell: true
@@ -769,27 +756,53 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
     const errors = permanentlyFailed
       .map(w => `Worker ${w.id} (sentences ${w.sentenceStart}-${w.sentenceEnd}): ${w.error}`)
       .join('; ');
-
-    console.error(`[PARALLEL-TTS] Workers permanently failed after ${MAX_WORKER_RETRIES} retries:`, errors);
-    emitComplete(session, false, undefined, `Workers failed after retries: ${errors}`);
-    activeSessions.delete(session.jobId);
-    return;
+    console.warn(`[PARALLEL-TTS] Workers permanently failed after ${MAX_WORKER_RETRIES} retries:`, errors);
+    // Don't abort immediately - continue to check if we can still assemble with partial results
   }
 
-  // Check if all workers are complete (including any that just started retrying)
+  // Check if all workers are done (complete, failed, or permanently failed)
   const stillRunning = session.workers.some(w => w.status === 'running' || w.status === 'pending');
   const retriesInProgress = failedWorkers.some(w => w.retryCount < MAX_WORKER_RETRIES);
 
-  if (!stillRunning && !retriesInProgress && allComplete) {
-    // All workers done - run assembly
-    console.log('[PARALLEL-TTS] All workers complete, starting assembly');
-    await logger.log('INFO', session.jobId, 'All workers complete, starting assembly');
+  // All workers finished (success or permanent failure)
+  if (!stillRunning && !retriesInProgress) {
     stopWatchdog(session);
+
+    const completedWorkers = session.workers.filter(w => w.status === 'complete');
+    const failedWorkersList = permanentlyFailed.length > 0 ? permanentlyFailed : [];
+
+    // If ALL workers failed, abort
+    if (completedWorkers.length === 0 && failedWorkersList.length > 0) {
+      const errors = failedWorkersList
+        .map(w => `Worker ${w.id} (sentences ${w.sentenceStart}-${w.sentenceEnd}): ${w.error}`)
+        .join('; ');
+      console.error(`[PARALLEL-TTS] All workers failed, cannot proceed`);
+      emitComplete(session, false, undefined, `All workers failed: ${errors}`);
+      activeSessions.delete(session.jobId);
+      return;
+    }
+
+    // Some workers completed - attempt assembly (may work with partial results)
+    if (failedWorkersList.length > 0) {
+      console.warn(`[PARALLEL-TTS] ${failedWorkersList.length} worker(s) failed, but ${completedWorkers.length} succeeded. Attempting assembly with available sentences...`);
+      await logger.log('WARN', session.jobId, `Partial completion: ${completedWorkers.length}/${session.workers.length} workers succeeded`);
+    } else {
+      console.log('[PARALLEL-TTS] All workers complete, starting assembly');
+      await logger.log('INFO', session.jobId, 'All workers complete, starting assembly');
+    }
+
     try {
       const outputPath = await runAssembly(session);
+      // Mark as success even with partial worker failures if assembly succeeded
+      if (failedWorkersList.length > 0) {
+        console.log(`[PARALLEL-TTS] Assembly succeeded despite ${failedWorkersList.length} worker failure(s)`);
+      }
       emitComplete(session, true, outputPath);
     } catch (err) {
-      emitComplete(session, false, undefined, `Assembly failed: ${err}`);
+      const workerErrors = failedWorkersList.length > 0
+        ? ` (${failedWorkersList.length} worker(s) also failed)`
+        : '';
+      emitComplete(session, false, undefined, `Assembly failed: ${err}${workerErrors}`);
     }
     activeSessions.delete(session.jobId);
   }
@@ -933,13 +946,13 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   const settings = config.settings;
 
   const args = [
-    'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
+    ...condaRunArgs(),
     appPath,
     '--headless',
     '--ebook', config.epubPath,
     '--output_dir', config.outputDir,
     '--session', prepInfo.sessionId,
-    '--device', settings.device === 'gpu' ? 'CUDA' : settings.device.toUpperCase(),
+    '--device', settings.device.toLowerCase(),
     '--language', settings.language,
     '--tts_engine', settings.ttsEngine,  // Required for session setup even in assembly mode
     '--assemble_only',  // Skip TTS, just combine existing sentence audio files
@@ -952,7 +965,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     let stderr = '';
     let outputPath = '';
 
-    session.assemblyProcess = spawn('conda', args, {
+    session.assemblyProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
       shell: true
@@ -2214,7 +2227,7 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
   const appPath = path.join(e2aPath, 'app.py');
 
   const args = [
-    'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
+    ...condaRunArgs(),
     appPath,
     '--headless',
     '--resume_session', sessionPath
@@ -2226,7 +2239,7 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
     let stdout = '';
     let stderr = '';
 
-    const resumeCheckProcess = spawn('conda', args, {
+    const resumeCheckProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
       shell: true
@@ -2311,7 +2324,7 @@ export async function listResumableSessions(): Promise<Array<{
   const appPath = path.join(e2aPath, 'app.py');
 
   const args = [
-    'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
+    ...condaRunArgs(),
     appPath,
     '--headless',
     '--list_sessions'
@@ -2322,7 +2335,7 @@ export async function listResumableSessions(): Promise<Array<{
   return new Promise((resolve) => {
     let stdout = '';
 
-    const listProcess = spawn('conda', args, {
+    const listProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
       shell: true

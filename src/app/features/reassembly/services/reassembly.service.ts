@@ -21,8 +21,8 @@ export class ReassemblyService {
   private readonly destroyRef = inject(DestroyRef);
   private readonly ngZone = inject(NgZone);
 
-  // Default e2a path
-  private readonly DEFAULT_E2A_TMP_PATH = '/Users/telltale/Projects/ebook2audiobook/tmp';
+  // Default e2a path - empty string means use cross-platform default on backend
+  private readonly DEFAULT_E2A_TMP_PATH = '';
 
   // State signals
   private readonly _sessions = signal<E2aSession[]>([]);

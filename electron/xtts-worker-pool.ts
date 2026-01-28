@@ -10,6 +10,7 @@ import { BrowserWindow, app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as readline from 'readline';
+import { getDefaultE2aPath, getCondaRunArgs, getCondaPath } from './e2a-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -56,8 +57,7 @@ interface Worker {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-const E2A_PATH = '/Users/telltale/Projects/ebook2audiobook';
-const CONDA_ENV = 'ebook2audiobook';
+const E2A_PATH = getDefaultE2aPath();
 const NUM_WORKERS = 3;  // Number of parallel workers
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -129,9 +129,13 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
 
       console.log(`[XTTS Pool] Starting worker ${id}...`);
 
-      const process = spawn('conda', [
-        'run', '--no-capture-output', '-n', CONDA_ENV, 'python', '-u', scriptPath
-      ], {
+      // Get conda run args dynamically (handles prefix vs named env)
+      const condaArgs = [...getCondaRunArgs(E2A_PATH)];
+      // Replace 'python' with 'python -u' for unbuffered output, add script path
+      condaArgs[condaArgs.length - 1] = 'python';
+      condaArgs.push('-u', scriptPath);
+
+      const process = spawn(getCondaPath(), condaArgs, {
         cwd: E2A_PATH,
         env: { ...global.process.env, PYTHONUNBUFFERED: '1' },
         shell: true,
