@@ -7,9 +7,26 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 
-// Default E2A paths (can be overridden via settings)
+// Default E2A tmp path (should be overridden via settings)
 const DEFAULT_E2A_TMP_PATH = '/Users/telltale/Projects/ebook2audiobook/tmp';
-const DEFAULT_E2A_PATH = '/Users/telltale/Projects/ebook2audiobook';
+
+// The e2a app path that supports --title/--author/--cover options
+// Note: ebook2audiobook-latest doesn't support these, so we use the non-latest version
+const E2A_APP_PATH = '/Users/telltale/Projects/ebook2audiobook';
+
+// Derive the e2a app path from the tmp path (parent directory)
+// Falls back to E2A_APP_PATH if the derived path doesn't have the assembly features
+function getE2aAppPath(tmpPath: string): string {
+  // Always use the app path that supports --title/--author/--cover
+  // The tmp path may be different (e.g., ebook2audiobook-latest/tmp)
+  return E2A_APP_PATH;
+}
+
+// Escape a string for safe use as a shell argument (wrap in quotes, escape internal quotes)
+function escapeShellArg(arg: string): string {
+  // Wrap in double quotes and escape internal double quotes and backslashes
+  return `"${arg.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
 
 // Types
 export interface E2aSession {
@@ -22,6 +39,14 @@ export interface E2aSession {
     language?: string;
     epubPath?: string;
     coverPath?: string;
+    // Extended metadata (saved by BookForge)
+    year?: string;
+    narrator?: string;
+    series?: string;
+    seriesNumber?: string;
+    genre?: string;
+    description?: string;
+    outputFilename?: string;
   };
   totalSentences: number;
   completedSentences: number;
@@ -46,6 +71,7 @@ export interface ReassemblyConfig {
   sessionDir: string;
   processDir: string;
   outputDir: string;
+  e2aTmpPath?: string;  // Path to e2a tmp folder from settings - app path is derived from this
   metadata: {
     title: string;
     author: string;
@@ -164,7 +190,14 @@ async function parseSession(sessionId: string, sessionDir: string): Promise<E2aS
   const stats = fs.statSync(sessionDir);
 
   // Look for cover image in processDir
-  const coverPath = findCoverImage(processDir);
+  // Check bookforge_metadata.coverPath first, then find in directory
+  let coverPath = sessionState?.bookforge_metadata?.coverPath;
+  if (!coverPath || !fs.existsSync(coverPath)) {
+    coverPath = findCoverImage(processDir);
+  }
+
+  // Get extended metadata from bookforge_metadata if saved
+  const bookforgeMetadata = sessionState?.bookforge_metadata || {};
 
   const session: E2aSession = {
     sessionId,
@@ -175,7 +208,15 @@ async function parseSession(sessionId: string, sessionDir: string): Promise<E2aS
       author: sessionState?.metadata?.creator,
       language: sessionState?.metadata?.language,
       epubPath: sessionState?.epubPath,
-      coverPath
+      coverPath,
+      // Extended metadata from bookforge_metadata
+      year: bookforgeMetadata.year,
+      narrator: bookforgeMetadata.narrator,
+      series: bookforgeMetadata.series,
+      seriesNumber: bookforgeMetadata.seriesNumber,
+      genre: bookforgeMetadata.genre,
+      description: bookforgeMetadata.description,
+      outputFilename: bookforgeMetadata.outputFilename
     },
     totalSentences,
     completedSentences,
@@ -427,23 +468,155 @@ export async function deleteSession(sessionId: string, customTmpPath?: string): 
 }
 
 /**
+ * Save/update session metadata including cover image
+ * @param sessionId - The session ID
+ * @param processDir - Path to the process directory containing session-state.json
+ * @param metadata - Metadata to save
+ * @param coverData - Optional cover image data (base64 or file path)
+ */
+export async function saveSessionMetadata(
+  sessionId: string,
+  processDir: string,
+  metadata: {
+    title?: string;
+    author?: string;
+    year?: string;
+    narrator?: string;
+    series?: string;
+    seriesNumber?: string;
+    genre?: string;
+    description?: string;
+    outputFilename?: string;
+  },
+  coverData?: {
+    type: 'base64' | 'path';
+    data: string;  // base64 string or file path
+    mimeType?: string;  // e.g., 'image/jpeg'
+  }
+): Promise<{ success: boolean; error?: string; coverPath?: string }> {
+  console.log('[REASSEMBLY] Saving metadata for session:', sessionId);
+
+  if (!fs.existsSync(processDir)) {
+    return { success: false, error: 'Process directory not found' };
+  }
+
+  const statePath = path.join(processDir, 'session-state.json');
+
+  try {
+    // Read existing session state
+    let sessionState: any = {};
+    if (fs.existsSync(statePath)) {
+      const content = fs.readFileSync(statePath, 'utf-8');
+      sessionState = JSON.parse(content);
+    }
+
+    // Update metadata section
+    if (!sessionState.metadata) {
+      sessionState.metadata = {};
+    }
+
+    // Map our metadata fields to e2a's expected format
+    if (metadata.title !== undefined) sessionState.metadata.title = metadata.title;
+    if (metadata.author !== undefined) sessionState.metadata.creator = metadata.author;
+
+    // Store extended metadata in a custom section (e2a may not use these, but we preserve them)
+    if (!sessionState.bookforge_metadata) {
+      sessionState.bookforge_metadata = {};
+    }
+    if (metadata.year !== undefined) sessionState.bookforge_metadata.year = metadata.year;
+    if (metadata.narrator !== undefined) sessionState.bookforge_metadata.narrator = metadata.narrator;
+    if (metadata.series !== undefined) sessionState.bookforge_metadata.series = metadata.series;
+    if (metadata.seriesNumber !== undefined) sessionState.bookforge_metadata.seriesNumber = metadata.seriesNumber;
+    if (metadata.genre !== undefined) sessionState.bookforge_metadata.genre = metadata.genre;
+    if (metadata.description !== undefined) sessionState.bookforge_metadata.description = metadata.description;
+    if (metadata.outputFilename !== undefined) sessionState.bookforge_metadata.outputFilename = metadata.outputFilename;
+
+    // Handle cover image
+    let savedCoverPath: string | undefined;
+    if (coverData) {
+      // Determine extension from mime type
+      let ext = 'jpg';
+      if (coverData.mimeType === 'image/png') ext = 'png';
+      else if (coverData.mimeType === 'image/webp') ext = 'webp';
+
+      const coverFilename = `cover.${ext}`;
+      const coverPath = path.join(processDir, coverFilename);
+
+      if (coverData.type === 'base64') {
+        // Write base64 data to file
+        const base64Data = coverData.data.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Buffer.from(base64Data, 'base64');
+        fs.writeFileSync(coverPath, buffer);
+        savedCoverPath = coverPath;
+        console.log('[REASSEMBLY] Saved cover image:', coverPath);
+      } else if (coverData.type === 'path' && fs.existsSync(coverData.data)) {
+        // Copy file to process directory
+        fs.copyFileSync(coverData.data, coverPath);
+        savedCoverPath = coverPath;
+        console.log('[REASSEMBLY] Copied cover image:', coverPath);
+      }
+
+      // Store cover path in session state
+      if (savedCoverPath) {
+        sessionState.bookforge_metadata.coverPath = savedCoverPath;
+      }
+    }
+
+    // Write updated session state
+    fs.writeFileSync(statePath, JSON.stringify(sessionState, null, 2), 'utf-8');
+    console.log('[REASSEMBLY] Saved session state:', statePath);
+
+    return { success: true, coverPath: savedCoverPath };
+  } catch (err) {
+    console.error('[REASSEMBLY] Error saving metadata:', err);
+    return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
+  }
+}
+
+/**
  * Start reassembly process using e2a's --assemble_only flag
+ * Matches the assembly logic from parallel-tts-bridge.ts
  */
 export async function startReassembly(
   jobId: string,
   config: ReassemblyConfig,
   mainWindow: BrowserWindow | null
 ): Promise<{ success: boolean; outputPath?: string; error?: string }> {
+  // Derive e2a app path from tmp path (parent directory)
+  const tmpPath = config.e2aTmpPath || DEFAULT_E2A_TMP_PATH;
+  const e2aPath = getE2aAppPath(tmpPath);
+
   console.log('[REASSEMBLY] Starting reassembly:', {
     jobId,
     sessionId: config.sessionId,
     outputDir: config.outputDir,
+    e2aPath,
+    tmpPath,
     excludedChapters: config.excludedChapters
   });
 
   // Verify session exists
   if (!fs.existsSync(config.processDir)) {
     return { success: false, error: 'Session process directory not found' };
+  }
+
+  // Create symlink if session is in a different tmp folder than e2a expects
+  // e2a looks for sessions in <e2aPath>/tmp/ebook-<sessionId>
+  const e2aExpectedTmp = path.join(e2aPath, 'tmp');
+  const e2aExpectedSessionDir = path.join(e2aExpectedTmp, `ebook-${config.sessionId}`);
+
+  if (config.sessionDir !== e2aExpectedSessionDir && !fs.existsSync(e2aExpectedSessionDir)) {
+    try {
+      // Ensure the e2a tmp folder exists
+      if (!fs.existsSync(e2aExpectedTmp)) {
+        fs.mkdirSync(e2aExpectedTmp, { recursive: true });
+      }
+      // Create symlink to actual session location
+      fs.symlinkSync(config.sessionDir, e2aExpectedSessionDir);
+      console.log(`[REASSEMBLY] Created symlink: ${e2aExpectedSessionDir} -> ${config.sessionDir}`);
+    } catch (err) {
+      console.log(`[REASSEMBLY] Symlink exists or failed: ${err}`);
+    }
   }
 
   // Find the epub path from session state
@@ -465,6 +638,9 @@ export async function startReassembly(
     console.log('[REASSEMBLY] No epub found, using dummy path:', epubPath);
   }
 
+  // Get language from session state
+  const language = sessionState?.metadata?.language || 'en';
+
   // Send initial progress
   sendProgress(mainWindow, jobId, {
     phase: 'preparing',
@@ -473,64 +649,122 @@ export async function startReassembly(
   });
 
   return new Promise((resolve) => {
-    const appPath = path.join(DEFAULT_E2A_PATH, 'app.py');
+    const appPath = path.join(e2aPath, 'app.py');
 
-    // Build e2a command arguments
-    const args = [
-      'run', '--no-capture-output', '-n', 'ebook2audiobook', 'python',
-      appPath,
+    // Build command parts - need to run as a single bash command for proper argument handling
+    const cmdParts = [
+      'source /opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh &&',
+      `cd ${escapeShellArg(e2aPath)} &&`,
+      'conda run --no-capture-output -n ebook2audiobook python app.py',
       '--headless',
-      '--ebook', epubPath,
-      '--output_dir', config.outputDir,
+      '--ebook', escapeShellArg(epubPath),
+      '--output_dir', escapeShellArg(config.outputDir),
       '--session', config.sessionId,
-      '--device', 'mps',  // Default device (lowercase required)
-      '--language', sessionState?.metadata?.language || 'en',
-      '--tts_engine', 'xtts',  // Required for session setup
+      '--device', 'cpu',
+      '--language', language,
+      '--tts_engine', 'xtts',
       '--assemble_only',
       '--no_split'
     ];
 
-    // Add output filename if provided
-    if (config.metadata.outputFilename) {
-      args.push('--output_filename', config.metadata.outputFilename);
+    // Add output filename - use provided or generate "Title - Author (Year)"
+    let outputFilename = config.metadata.outputFilename;
+    if (!outputFilename && config.metadata.title) {
+      // Generate filename: "Title - Author (Year)" or "Title - Author"
+      const sanitize = (s: string) => s.replace(/[<>:"/\\|?*]/g, '').trim();
+      const title = sanitize(config.metadata.title);
+      const author = config.metadata.author ? sanitize(config.metadata.author) : '';
+      const year = config.metadata.year || '';
+
+      if (author && year) {
+        outputFilename = `${title} - ${author} (${year})`;
+      } else if (author) {
+        outputFilename = `${title} - ${author}`;
+      } else {
+        outputFilename = title;
+      }
+    }
+    if (outputFilename) {
+      cmdParts.push('--output_filename', escapeShellArg(outputFilename));
     }
 
-    console.log('[REASSEMBLY] Running command:', 'conda', args.join(' '));
+    // Add metadata if provided (for m4b tagging)
+    if (config.metadata.title) {
+      cmdParts.push('--title', escapeShellArg(config.metadata.title));
+    }
+    if (config.metadata.author) {
+      cmdParts.push('--author', escapeShellArg(config.metadata.author));
+    }
+    if (config.metadata.coverPath) {
+      cmdParts.push('--cover', escapeShellArg(config.metadata.coverPath));
+    }
 
-    const proc = spawn('conda', args, {
-      cwd: DEFAULT_E2A_PATH,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
-      shell: true
+    const fullCommand = cmdParts.join(' ');
+    console.log('[REASSEMBLY] Running command:', fullCommand);
+
+    const proc = spawn('/bin/bash', ['-c', fullCommand], {
+      env: { ...process.env, PYTHONUNBUFFERED: '1' }
     });
 
     activeReassemblies.set(jobId, proc);
 
     let stderr = '';
     let outputPath = '';
+    let totalChapters = 0;
 
     proc.stdout?.on('data', (data) => {
       const line = data.toString();
       console.log('[REASSEMBLY] stdout:', line);
 
       // Parse progress from e2a output
-      if (line.includes('Combining chapter')) {
-        const match = line.match(/Combining chapter (\d+)\/(\d+)/);
-        if (match) {
-          const current = parseInt(match[1], 10);
-          const total = parseInt(match[2], 10);
+      // First, get total chapters from "Assembling audiobook from X chapters..."
+      if (line.includes('Assembling audiobook from')) {
+        const totalMatch = line.match(/Assembling audiobook from (\d+) chapters/);
+        if (totalMatch) {
+          totalChapters = parseInt(totalMatch[1], 10);
           sendProgress(mainWindow, jobId, {
             phase: 'combining',
-            percentage: Math.round((current / total) * 60),
+            percentage: 5,
+            currentChapter: 0,
+            totalChapters,
+            message: `Assembling ${totalChapters} chapters...`
+          });
+        }
+      } else if (line.includes('Combining chapter')) {
+        // Parse "Combining chapter N: sentences X-Y"
+        const match = line.match(/Combining chapter (\d+):/);
+        if (match) {
+          const current = parseInt(match[1], 10);
+          const total = totalChapters || 19; // fallback
+          sendProgress(mainWindow, jobId, {
+            phase: 'combining',
+            percentage: Math.round(5 + (current / total) * 55),
             currentChapter: current,
             totalChapters: total,
             message: `Combining chapter ${current}/${total}`
           });
         }
+      } else if (line.includes('Combined block audio file saved')) {
+        // Chapter complete - could track this too
       } else if (line.includes('Creating subtitles')) {
         sendProgress(mainWindow, jobId, {
           phase: 'combining',
           percentage: 65,
           message: 'Creating subtitles...'
+        });
+      } else if (line.includes('Output #0, ipod') || line.includes('.m4b')) {
+        // Encoding to M4B started
+        sendProgress(mainWindow, jobId, {
+          phase: 'encoding',
+          percentage: 70,
+          message: 'Encoding M4B audiobook...'
+        });
+      } else if (line.includes('flac (native) -> aac')) {
+        // AAC encoding in progress
+        sendProgress(mainWindow, jobId, {
+          phase: 'encoding',
+          percentage: 75,
+          message: 'Encoding audio to AAC...'
         });
       } else if (line.includes('Encoding') || line.includes('encoding')) {
         sendProgress(mainWindow, jobId, {
@@ -538,14 +772,33 @@ export async function startReassembly(
           percentage: 75,
           message: 'Encoding M4B audiobook...'
         });
-      } else if (line.includes('Adding metadata') || line.includes('chapter markers')) {
+      } else if (line.includes('Adding metadata') || line.includes('chapter markers') || line.includes('Chapter #')) {
         sendProgress(mainWindow, jobId, {
           phase: 'metadata',
-          percentage: 90,
+          percentage: 85,
           message: 'Adding metadata and chapter markers...'
         });
+      } else if (line.includes('"success": true') || line.includes('"success":true')) {
+        // Parse JSON success output from e2a
+        try {
+          const jsonMatch = line.match(/\{.*"success":\s*true.*\}/);
+          if (jsonMatch) {
+            const result = JSON.parse(jsonMatch[0]);
+            if (result.output_files && result.output_files[0]) {
+              outputPath = result.output_files[0];
+              console.log('[REASSEMBLY] Output path from JSON:', outputPath);
+            }
+          }
+        } catch (e) {
+          // Not valid JSON, try regex
+        }
+        sendProgress(mainWindow, jobId, {
+          phase: 'metadata',
+          percentage: 95,
+          message: 'Finalizing audiobook...'
+        });
       } else if (line.includes('Audiobook saved to:') || line.includes('Output:')) {
-        // Extract output path
+        // Extract output path from text
         const pathMatch = line.match(/(?:Audiobook saved to:|Output:)\s*(.+\.m4b)/i);
         if (pathMatch) {
           outputPath = pathMatch[1].trim();
@@ -635,9 +888,12 @@ function sendProgress(
 
 /**
  * Check if e2a is available
+ * @param customTmpPath - Optional custom path to the e2a tmp folder
  */
-export function isE2aAvailable(): boolean {
-  return fs.existsSync(DEFAULT_E2A_PATH) && fs.existsSync(path.join(DEFAULT_E2A_PATH, 'app.py'));
+export function isE2aAvailable(customTmpPath?: string): boolean {
+  const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
+  const e2aPath = getE2aAppPath(tmpPath);
+  return fs.existsSync(e2aPath) && fs.existsSync(path.join(e2aPath, 'app.py'));
 }
 
 /**

@@ -192,7 +192,8 @@
       "Bash(SESSION_DIR=\"/Users/telltale/Projects/ebook2audiobook-latest/tmp/ebook-e770631b-1f69-4f64-a0e6-2cd15a779606/5f8f733248cb8d284730adf9c1dcdf30\" echo:*)",
       "Bash(head -30 echo echo '=== Check for VTT ===' find /Volumes/Callisto/books/audiobooks -name *Gestapo*.vtt)",
       "Bash(SESSION_DIR=/Users/telltale/Projects/ebook2audiobook-latest/tmp/ebook-e770631b-1f69-4f64-a0e6-2cd15a779606/5f8f733248cb8d284730adf9c1dcdf30 echo:*)",
-      "Bash(mp4chaps:*)"
+      "Bash(mp4chaps:*)",
+      "Bash(jobs:*)"
     ]
   }
 }

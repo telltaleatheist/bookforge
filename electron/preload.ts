@@ -1177,6 +1177,25 @@ export interface ElectronAPI {
     startReassembly: (jobId: string, config: ReassemblyConfig) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
     stopReassembly: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     deleteSession: (sessionId: string, customTmpPath?: string) => Promise<{ success: boolean; error?: string }>;
+    saveMetadata: (
+      sessionId: string,
+      processDir: string,
+      metadata: {
+        title?: string;
+        author?: string;
+        year?: string;
+        narrator?: string;
+        series?: string;
+        seriesNumber?: string;
+        genre?: string;
+        description?: string;
+      },
+      coverData?: {
+        type: 'base64' | 'path';
+        data: string;
+        mimeType?: string;
+      }
+    ) => Promise<{ success: boolean; error?: string; coverPath?: string }>;
     isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => () => void;
   };
@@ -1735,6 +1754,25 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('reassembly:stop', jobId),
     deleteSession: (sessionId: string, customTmpPath?: string) =>
       ipcRenderer.invoke('reassembly:delete-session', sessionId, customTmpPath),
+    saveMetadata: (
+      sessionId: string,
+      processDir: string,
+      metadata: {
+        title?: string;
+        author?: string;
+        year?: string;
+        narrator?: string;
+        series?: string;
+        seriesNumber?: string;
+        genre?: string;
+        description?: string;
+      },
+      coverData?: {
+        type: 'base64' | 'path';
+        data: string;
+        mimeType?: string;
+      }
+    ) => ipcRenderer.invoke('reassembly:save-metadata', sessionId, processDir, metadata, coverData),
     isAvailable: () =>
       ipcRenderer.invoke('reassembly:is-available'),
     onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => {

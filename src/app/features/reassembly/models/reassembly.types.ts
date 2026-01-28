@@ -22,6 +22,14 @@ export interface E2aSessionMetadata {
   language?: string;
   epubPath?: string;
   coverPath?: string;  // Path to cover image if available
+  // Extended metadata (saved by BookForge)
+  year?: string;
+  narrator?: string;
+  series?: string;
+  seriesNumber?: string;
+  genre?: string;
+  description?: string;
+  outputFilename?: string;
 }
 
 export interface E2aChapter {

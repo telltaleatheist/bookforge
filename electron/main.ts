@@ -3830,6 +3830,16 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('reassembly:save-metadata', async (_event, sessionId: string, processDir: string, metadata: any, coverData?: any) => {
+    try {
+      const { saveSessionMetadata } = await import('./reassembly-bridge.js');
+      const result = await saveSessionMetadata(sessionId, processDir, metadata, coverData);
+      return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('reassembly:is-available', async () => {
     try {
       const { isE2aAvailable } = await import('./reassembly-bridge.js');

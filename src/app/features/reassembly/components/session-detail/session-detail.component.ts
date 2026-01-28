@@ -10,6 +10,7 @@ import { ChapterListComponent } from '../chapter-list/chapter-list.component';
 import { ConfirmModalComponent } from '../confirm-modal/confirm-modal.component';
 import { QueueService } from '../../../queue/services/queue.service';
 import { ReassemblyJobConfig } from '../../../queue/models/queue.types';
+import { ElectronService } from '../../../../core/services/electron.service';
 
 type Tab = 'metadata' | 'chapters' | 'actions';
 
@@ -152,6 +153,30 @@ type Tab = 'metadata' | 'chapters' | 'actions';
               <div class="form-group">
                 <label>Description</label>
                 <textarea [(ngModel)]="editDescription" placeholder="Book description or synopsis" rows="2"></textarea>
+              </div>
+
+              <!-- Save Button -->
+              <div class="save-section">
+                <button
+                  class="btn"
+                  [class.btn-primary]="!metadataSaved()"
+                  [class.btn-success]="metadataSaved()"
+                  [disabled]="isSaving()"
+                  (click)="onSaveMetadata()"
+                >
+                  @if (isSaving()) {
+                    <span class="spinner"></span>
+                    Saving...
+                  } @else if (metadataSaved()) {
+                    <span class="check-icon">&#10003;</span>
+                    Saved
+                  } @else {
+                    Save Metadata
+                  }
+                </button>
+                @if (saveError()) {
+                  <span class="save-error">{{ saveError() }}</span>
+                }
               </div>
 
               <!-- Session Info (collapsible) -->
@@ -527,6 +552,20 @@ type Tab = 'metadata' | 'chapters' | 'actions';
       }
     }
 
+    .save-section {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-default);
+
+      .save-error {
+        font-size: 12px;
+        color: var(--status-error, #ef4444);
+      }
+    }
+
     .session-info-details {
       margin-top: 16px;
 
@@ -711,6 +750,7 @@ type Tab = 'metadata' | 'chapters' | 'actions';
 export class SessionDetailComponent {
   readonly reassemblyService = inject(ReassemblyService);
   private readonly queueService = inject(QueueService);
+  private readonly electronService = inject(ElectronService);
 
   // State
   readonly activeTab = signal<Tab>('metadata');
@@ -721,8 +761,16 @@ export class SessionDetailComponent {
   // Delete modal state
   readonly showDeleteModal = signal(false);
 
+  // Save metadata state
+  readonly isSaving = signal(false);
+  readonly metadataSaved = signal(false);
+  readonly saveError = signal<string | null>(null);
+
   // Track if job was added to queue
   readonly addedToQueue = signal(false);
+
+  // Track last loaded session to detect changes
+  private lastLoadedSessionId = '';
 
   // Editable metadata - basic
   editTitle = '';
@@ -797,38 +845,71 @@ export class SessionDetailComponent {
     // Using a simple check in template would be cleaner but this works
   }
 
-  ngOnChanges(): void {
-    this.updateEditFields();
-  }
-
   ngDoCheck(): void {
     // Update edit fields when session changes
     const session = this.session();
-    if (session && this.editTitle === '' && session.metadata?.title) {
+    if (session && session.sessionId !== this.lastLoadedSessionId) {
+      this.lastLoadedSessionId = session.sessionId;
       this.updateEditFields();
+    } else if (!session && this.lastLoadedSessionId) {
+      // Session was deselected
+      this.lastLoadedSessionId = '';
     }
   }
 
-  private updateEditFields(): void {
+  private async updateEditFields(): Promise<void> {
     const session = this.session();
     if (session) {
       this.editTitle = session.metadata?.title || '';
       this.editAuthor = session.metadata?.author || '';
-      this.editYear = '';
       this.editOutputFilename = '';
-      // Reset extended metadata
+      // Load extended metadata from session (if previously saved)
+      this.editYear = session.metadata?.year || '';
+      this.editNarrator = session.metadata?.narrator || '';
+      this.editSeries = session.metadata?.series || '';
+      this.editSeriesNumber = session.metadata?.seriesNumber || '';
+      this.editGenre = session.metadata?.genre || '';
+      this.editDescription = session.metadata?.description || '';
+      this.editOutputFilename = session.metadata?.outputFilename || '';
+      // Reset cover edit state
       this.editCoverPath = '';
       this.editCoverDataUrl = '';
-      this.editNarrator = '';
-      this.editSeries = '';
-      this.editSeriesNumber = '';
-      this.editGenre = '';
-      this.editDescription = '';
       // Reset cover error states
       this.editCoverError.set(false);
       this.sessionCoverError.set(false);
       // Reset added to queue state
       this.addedToQueue.set(false);
+      // Reset save state
+      this.isSaving.set(false);
+      this.metadataSaved.set(false);
+      this.saveError.set(null);
+
+      // Load session cover as data URL if available (file:// URLs don't work in Electron)
+      const coverPath = session.metadata?.coverPath;
+      if (coverPath) {
+        await this.loadCoverAsDataUrl(coverPath);
+      }
+    }
+  }
+
+  private async loadCoverAsDataUrl(coverPath: string): Promise<void> {
+    const electron = (window as any).electron;
+    if (!electron?.fs?.readBinary) {
+      console.log('[COVER] readBinary not available');
+      return;
+    }
+
+    try {
+      const readResult = await electron.fs.readBinary(coverPath);
+      if (readResult.success && readResult.data) {
+        const ext = coverPath.split('.').pop()?.toLowerCase() || 'jpg';
+        const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+        const base64 = this.uint8ArrayToBase64(readResult.data);
+        this.editCoverDataUrl = `data:${mimeType};base64,${base64}`;
+        console.log('[COVER] Loaded session cover from:', coverPath);
+      }
+    } catch (err) {
+      console.error('[COVER] Failed to load session cover:', err);
     }
   }
 
@@ -1001,12 +1082,89 @@ export class SessionDetailComponent {
     this.reassemblyService.toggleChapterExclusion(chapterNum);
   }
 
+  async onSaveMetadata(): Promise<void> {
+    const session = this.session();
+    if (!session) return;
+
+    this.isSaving.set(true);
+    this.saveError.set(null);
+    this.metadataSaved.set(false);
+
+    try {
+      // Prepare metadata
+      const metadata = {
+        title: this.editTitle || undefined,
+        author: this.editAuthor || undefined,
+        year: this.editYear || undefined,
+        narrator: this.editNarrator || undefined,
+        series: this.editSeries || undefined,
+        seriesNumber: this.editSeriesNumber || undefined,
+        genre: this.editGenre || undefined,
+        description: this.editDescription || undefined,
+        outputFilename: this.editOutputFilename || undefined
+      };
+
+      // Prepare cover data if we have a user-selected cover
+      let coverData: { type: 'base64' | 'path'; data: string; mimeType?: string } | undefined;
+
+      if (this.editCoverDataUrl) {
+        // We have a base64 data URL from paste/drop
+        coverData = {
+          type: 'base64',
+          data: this.editCoverDataUrl,
+          mimeType: this.editCoverDataUrl.startsWith('data:image/png') ? 'image/png' :
+                    this.editCoverDataUrl.startsWith('data:image/webp') ? 'image/webp' : 'image/jpeg'
+        };
+      } else if (this.editCoverPath) {
+        // We have a file path from file picker
+        coverData = {
+          type: 'path',
+          data: this.editCoverPath
+        };
+      }
+
+      const result = await this.electronService.reassemblySaveMetadata(
+        session.sessionId,
+        session.processDir,
+        metadata,
+        coverData
+      );
+
+      if (result.success) {
+        this.metadataSaved.set(true);
+        console.log('[REASSEMBLY] Metadata saved successfully');
+
+        // Refresh the session to update the UI with saved data
+        await this.reassemblyService.refreshSession(session.sessionId);
+
+        // Reload cover from the saved path (file:// URLs don't work, need data URL)
+        if (result.coverPath) {
+          await this.loadCoverAsDataUrl(result.coverPath);
+        }
+
+        // Auto-reset the "Saved" state after 3 seconds
+        setTimeout(() => {
+          this.metadataSaved.set(false);
+        }, 3000);
+      } else {
+        this.saveError.set(result.error || 'Failed to save metadata');
+      }
+    } catch (err) {
+      this.saveError.set(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      this.isSaving.set(false);
+    }
+  }
+
   async onAddToQueue(): Promise<void> {
     const session = this.session();
     if (!session) return;
 
     // Get output directory from settings (use default for now)
     const outputDir = '/Volumes/Callisto/books/audiobooks';
+
+    // Get e2a tmp path from settings (passed to backend so it can derive app path)
+    const e2aTmpPath = this.reassemblyService.e2aTmpPath();
 
     // Determine cover path - use user selection or fall back to session cover
     const coverPath = this.editCoverPath || this.sessionCoverPath() || undefined;
@@ -1018,12 +1176,13 @@ export class SessionDetailComponent {
       sessionDir: session.sessionDir,
       processDir: session.processDir,
       outputDir,
+      e2aTmpPath,  // Pass settings path so backend can derive e2a app path
       metadata: {
         title: this.editTitle || session.metadata?.title || 'Untitled',
         author: this.editAuthor || session.metadata?.author || 'Unknown',
         year: this.editYear || undefined,
         coverPath,
-        outputFilename: this.editOutputFilename || undefined,
+        outputFilename: this.editOutputFilename || session.metadata?.outputFilename || undefined,
         // Extended metadata
         narrator: this.editNarrator || undefined,
         series: this.editSeries || undefined,

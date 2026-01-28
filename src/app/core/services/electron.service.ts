@@ -1701,6 +1701,31 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  async reassemblySaveMetadata(
+    sessionId: string,
+    processDir: string,
+    metadata: {
+      title?: string;
+      author?: string;
+      year?: string;
+      narrator?: string;
+      series?: string;
+      seriesNumber?: string;
+      genre?: string;
+      description?: string;
+    },
+    coverData?: {
+      type: 'base64' | 'path';
+      data: string;
+      mimeType?: string;
+    }
+  ): Promise<{ success: boolean; error?: string; coverPath?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.reassembly.saveMetadata(sessionId, processDir, metadata, coverData);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async reassemblyIsAvailable(): Promise<{ success: boolean; data?: { available: boolean }; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.reassembly.isAvailable();

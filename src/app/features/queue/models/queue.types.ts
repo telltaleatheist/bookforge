@@ -144,6 +144,7 @@ export interface ReassemblyJobConfig {
   sessionDir: string;
   processDir: string;
   outputDir: string;
+  e2aTmpPath?: string;  // Path to e2a tmp folder from settings - app path is derived from this
   metadata: {
     title: string;
     author: string;
