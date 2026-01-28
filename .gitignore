@@ -48,6 +48,7 @@ release/*
 dist/*
 .vscode/*
 CLAUDE.md
+.claude/
 .editorconfig
 resources/bin/*
 summary-*.json
