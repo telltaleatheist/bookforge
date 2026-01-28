@@ -161,8 +161,9 @@ import { getDefaultE2aPath, getCondaRunArgs, getCondaPath } from './e2a-paths';
 let e2aPath = getDefaultE2aPath();
 
 // Helper to get conda run args for current e2aPath
-function condaRunArgs(): string[] {
-  return getCondaRunArgs(e2aPath);
+// Pass ttsEngine to use the correct environment (orpheus_env for Orpheus, python_env for others)
+function condaRunArgs(ttsEngine?: string): string[] {
+  return getCondaRunArgs(e2aPath, ttsEngine);
 }
 let mainWindow: BrowserWindow | null = null;
 let loggerInitialized = false;
@@ -358,7 +359,7 @@ export async function prepareSession(
   const deviceArg = deviceMap[settings.device] || settings.device.toUpperCase();
 
   const args = [
-    ...condaRunArgs(),
+    ...condaRunArgs(settings.ttsEngine),
     appPath,
     '--headless',
     '--ebook', epubPath,
@@ -536,7 +537,7 @@ function startWorker(
     // parallel-workers branch expects lowercase device names: cpu, gpu, mps
     const deviceArg = settings.device.toLowerCase();
     args = [
-      ...condaRunArgs(),
+      ...condaRunArgs(settings.ttsEngine),
       workerPath,
       '--session', prepInfo.sessionId,
       '--device', deviceArg
@@ -564,7 +565,7 @@ function startWorker(
     const appDeviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
     const appDeviceArg = appDeviceMap[settings.device] || settings.device.toUpperCase();
     args = [
-      ...condaRunArgs(),
+      ...condaRunArgs(settings.ttsEngine),
       appPath,
       '--headless',
       '--session', prepInfo.sessionId,
@@ -957,7 +958,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   const asmDeviceArg = asmDeviceMap[settings.device] || settings.device.toUpperCase();
 
   const args = [
-    ...condaRunArgs(),
+    ...condaRunArgs(settings.ttsEngine),
     appPath,
     '--headless',
     '--ebook', config.epubPath,

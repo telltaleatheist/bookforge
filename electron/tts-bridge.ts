@@ -303,7 +303,8 @@ export async function startConversion(
     // Use conda run to activate the ebook2audiobook environment
     // --no-capture-output prevents conda from buffering all stdout/stderr
     // getCondaRunArgs() detects if a local python_env folder exists (prefix) or uses named env
-    const fullArgs = [...getCondaRunArgs(e2aPath), ...args];
+    // Pass ttsEngine to use the correct environment (orpheus_env for Orpheus, python_env for others)
+    const fullArgs = [...getCondaRunArgs(e2aPath, settings.ttsEngine), ...args];
     console.log('[TTS] Starting ebook2audiobook with command:');
     console.log('[TTS]   conda', fullArgs.join(' '));
     console.log('[TTS]   cwd:', e2aPath);

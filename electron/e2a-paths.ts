@@ -117,22 +117,56 @@ export function getDefaultE2aTmpPath(): string {
 }
 
 /**
+ * Get the environment path for a specific TTS engine.
+ *
+ * Different TTS engines may require different conda environments due to
+ * dependency conflicts (e.g., vLLM requires transformers>=4.56, but coqui-tts
+ * needs an older version).
+ *
+ * @param ttsEngine - The TTS engine name (e.g., 'xtts', 'orpheus')
+ * @param e2aPath - Optional base e2a path (defaults to auto-detected path)
+ * @returns The path to the appropriate conda environment
+ */
+export function getEnvPathForEngine(ttsEngine?: string, e2aPath?: string): string {
+  const basePath = e2aPath || getDefaultE2aPath();
+
+  // Orpheus uses a separate environment due to vLLM dependency conflicts
+  if (ttsEngine?.toLowerCase() === 'orpheus') {
+    const orpheusEnvPath = path.join(basePath, 'orpheus_env');
+    if (fs.existsSync(orpheusEnvPath)) {
+      return orpheusEnvPath;
+    }
+    // Fall back to python_env if orpheus_env doesn't exist
+    console.warn('[E2A-PATHS] Warning: orpheus_env not found, falling back to python_env');
+  }
+
+  // Default: use python_env for XTTS and other engines
+  return path.join(basePath, 'python_env');
+}
+
+/**
  * Get the conda run arguments for executing Python in the ebook2audiobook environment.
  *
  * ebook2audiobook uses a prefix-based conda environment (./python_env folder in the project)
  * rather than a named environment. This function returns the correct args for conda run.
+ *
+ * For Orpheus TTS engine, uses orpheus_env instead (separate env due to vLLM conflicts).
+ *
+ * @param e2aPath - Optional base e2a path (defaults to auto-detected path)
+ * @param ttsEngine - Optional TTS engine name to determine which environment to use
  */
-export function getCondaRunArgs(e2aPath?: string): string[] {
-  const platform = os.platform();
+export function getCondaRunArgs(e2aPath?: string, ttsEngine?: string): string[] {
   const basePath = e2aPath || getDefaultE2aPath();
-  const pythonEnvPath = path.join(basePath, 'python_env');
+  const envPath = getEnvPathForEngine(ttsEngine, basePath);
 
-  // Check if local python_env exists (prefix-based environment)
-  if (fs.existsSync(pythonEnvPath)) {
-    return ['run', '--no-capture-output', '-p', pythonEnvPath, 'python'];
+  // Check if the environment exists (prefix-based environment)
+  if (fs.existsSync(envPath)) {
+    console.log(`[E2A-PATHS] Using conda env: ${envPath} for engine: ${ttsEngine || 'default'}`);
+    return ['run', '--no-capture-output', '-p', envPath, 'python'];
   }
 
   // Fallback to named environment (legacy or custom setup)
+  console.log('[E2A-PATHS] Falling back to named environment: ebook2audiobook');
   return ['run', '--no-capture-output', '-n', 'ebook2audiobook', 'python'];
 }
 
@@ -149,23 +183,26 @@ export function getPythonCommand(): { command: string; args: string[] } {
 
 /**
  * Get platform-specific conda activation prefix for shell commands
+ *
+ * @param e2aPath - Optional base e2a path (defaults to auto-detected path)
+ * @param ttsEngine - Optional TTS engine name to determine which environment to use
  */
-export function getCondaActivation(e2aPath?: string): string {
+export function getCondaActivation(e2aPath?: string, ttsEngine?: string): string {
   const platform = os.platform();
   const basePath = e2aPath || getDefaultE2aPath();
-  const pythonEnvPath = path.join(basePath, 'python_env');
+  const envPath = getEnvPathForEngine(ttsEngine, basePath);
 
-  // Check if local python_env exists (prefix-based environment)
-  const hasLocalEnv = fs.existsSync(pythonEnvPath);
+  // Check if the environment exists (prefix-based environment)
+  const hasLocalEnv = fs.existsSync(envPath);
 
   if (platform === 'win32') {
     if (hasLocalEnv) {
-      return `conda activate "${pythonEnvPath}" && `;
+      return `conda activate "${envPath}" && `;
     }
     return 'conda activate ebook2audiobook && ';
   } else {
     if (hasLocalEnv) {
-      return `source $(conda info --base)/etc/profile.d/conda.sh && conda activate "${pythonEnvPath}" && `;
+      return `source $(conda info --base)/etc/profile.d/conda.sh && conda activate "${envPath}" && `;
     }
     return 'source $(conda info --base)/etc/profile.d/conda.sh && conda activate ebook2audiobook && ';
   }
@@ -246,6 +283,7 @@ export const e2aPaths = {
   getPythonCommand,
   getCondaActivation,
   getCondaPath,
+  getEnvPathForEngine,
   normalizePath,
   setCondaPath,
   setE2aPath,
