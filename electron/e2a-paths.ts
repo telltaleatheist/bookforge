@@ -4,13 +4,36 @@
  * Provides cross-platform default paths for ebook2audiobook installation.
  * Paths can be overridden via:
  * 1. Environment variable: EBOOK2AUDIOBOOK_PATH
- * 2. Application settings (e2aPath setting)
- * 3. Calling setE2aPath() programmatically
+ * 2. Application settings (e2aPath, condaPath settings)
+ * 3. Calling setE2aPath() / setCondaPath() programmatically
  */
 
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Configurable paths (set from settings)
+// ─────────────────────────────────────────────────────────────────────────────
+
+let configuredCondaPath: string | null = null;
+let configuredE2aPath: string | null = null;
+
+/**
+ * Set the conda executable path (from app settings)
+ */
+export function setCondaPath(condaPath: string | null): void {
+  configuredCondaPath = condaPath && condaPath.trim() ? condaPath.trim() : null;
+  console.log('[E2A-PATHS] Conda path configured:', configuredCondaPath || '(auto-detect)');
+}
+
+/**
+ * Set the e2a installation path (from app settings)
+ */
+export function setE2aPath(e2aPath: string | null): void {
+  configuredE2aPath = e2aPath && e2aPath.trim() ? e2aPath.trim() : null;
+  console.log('[E2A-PATHS] E2A path configured:', configuredE2aPath || '(auto-detect)');
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Platform-specific default paths
@@ -48,15 +71,20 @@ function getDefaultE2aPaths(): { primary: string; fallback: string } {
 
 /**
  * Get the default ebook2audiobook installation path
- * Checks environment variable first, then platform-specific defaults
+ * Checks configured path first, then environment variable, then platform-specific defaults
  */
 export function getDefaultE2aPath(): string {
-  // 1. Check environment variable
+  // 1. Check configured path (from settings)
+  if (configuredE2aPath && fs.existsSync(configuredE2aPath)) {
+    return configuredE2aPath;
+  }
+
+  // 2. Check environment variable
   if (process.env.EBOOK2AUDIOBOOK_PATH) {
     return process.env.EBOOK2AUDIOBOOK_PATH;
   }
 
-  // 2. Check platform-specific paths
+  // 3. Check platform-specific paths
   const defaults = getDefaultE2aPaths();
 
   // Prefer primary path if it exists
@@ -157,6 +185,11 @@ export function normalizePath(p: string): string {
  * so we need to use the full path.
  */
 export function getCondaPath(): string {
+  // 1. Check configured path (from settings)
+  if (configuredCondaPath && fs.existsSync(configuredCondaPath)) {
+    return configuredCondaPath;
+  }
+
   const platform = os.platform();
   const homeDir = os.homedir();
 
@@ -184,6 +217,8 @@ export function getCondaPath(): string {
   } else {
     // On macOS/Linux, conda is usually in PATH or we can find it
     const candidates = [
+      '/opt/homebrew/Caskroom/miniconda/base/bin/conda',  // Homebrew miniconda (common on Mac)
+      path.join(homeDir, 'Miniforge3', 'bin', 'conda'),
       path.join(homeDir, 'miniforge3', 'bin', 'conda'),
       path.join(homeDir, 'miniconda3', 'bin', 'conda'),
       path.join(homeDir, 'anaconda3', 'bin', 'conda'),
@@ -212,4 +247,6 @@ export const e2aPaths = {
   getCondaActivation,
   getCondaPath,
   normalizePath,
+  setCondaPath,
+  setE2aPath,
 };

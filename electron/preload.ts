@@ -1009,6 +1009,9 @@ export interface ElectronAPI {
     stop: () => Promise<{ success: boolean; error?: string }>;
     getStatus: () => Promise<{ success: boolean; data?: LibraryServerStatus; error?: string }>;
   };
+  e2a: {
+    configurePaths: (config: { e2aPath?: string; condaPath?: string }) => Promise<{ success: boolean; error?: string }>;
+  };
   tts: {
     checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; version?: string; error?: string }; error?: string }>;
     getVoices: () => Promise<{ success: boolean; data?: VoiceInfo[]; error?: string }>;
@@ -1485,6 +1488,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('library-server:stop'),
     getStatus: () =>
       ipcRenderer.invoke('library-server:status'),
+  },
+  e2a: {
+    configurePaths: (config: { e2aPath?: string; condaPath?: string }) =>
+      ipcRenderer.invoke('e2a:configure-paths', config),
   },
   tts: {
     checkAvailable: () =>

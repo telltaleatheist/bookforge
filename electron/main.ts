@@ -2111,6 +2111,25 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // E2A Path Configuration
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('e2a:configure-paths', async (_event, config: { e2aPath?: string; condaPath?: string }) => {
+    try {
+      const { setCondaPath, setE2aPath } = await import('./e2a-paths.js');
+      if (config.e2aPath !== undefined) {
+        setE2aPath(config.e2aPath || null);
+      }
+      if (config.condaPath !== undefined) {
+        setCondaPath(config.condaPath || null);
+      }
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // TTS Bridge handlers (ebook2audiobook)
   // ─────────────────────────────────────────────────────────────────────────────
 

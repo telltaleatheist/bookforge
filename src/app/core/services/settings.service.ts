@@ -119,6 +119,22 @@ export class SettingsService {
             placeholder: 'Default: ~/Documents/BookForge/audiobooks',
           },
           {
+            key: 'e2aPath',
+            type: 'path',
+            label: 'ebook2audiobook Path',
+            description: 'Path to ebook2audiobook installation folder',
+            default: '',
+            placeholder: 'Auto-detect',
+          },
+          {
+            key: 'condaPath',
+            type: 'path',
+            label: 'Conda Executable',
+            description: 'Path to conda executable. Leave empty for auto-detect.',
+            default: '',
+            placeholder: 'Auto-detect',
+          },
+          {
             key: 'e2aTmpPath',
             type: 'path',
             label: 'ebook2audiobook Tmp Path',
@@ -175,10 +191,27 @@ export class SettingsService {
         // Initialize with defaults
         this.initializeDefaults();
       }
+
+      // Configure e2a paths in main process
+      await this.applyE2aPaths();
     } catch {
       this.initializeDefaults();
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  /**
+   * Apply e2a path settings to the main process
+   * Called after loading settings and when paths are changed
+   */
+  private async applyE2aPaths(): Promise<void> {
+    try {
+      const e2aPath = this.get<string>('e2aPath') || '';
+      const condaPath = this.get<string>('condaPath') || '';
+      await this.electron.configureE2aPaths({ e2aPath, condaPath });
+    } catch (err) {
+      console.error('[SettingsService] Failed to apply e2a paths:', err);
     }
   }
 
@@ -219,6 +252,11 @@ export class SettingsService {
   set(key: string, value: unknown): void {
     this.values.update(v => ({ ...v, [key]: value }));
     this.saveSettings();
+
+    // Apply e2a path changes immediately
+    if (key === 'e2aPath' || key === 'condaPath') {
+      this.applyE2aPaths();
+    }
   }
 
   /**
