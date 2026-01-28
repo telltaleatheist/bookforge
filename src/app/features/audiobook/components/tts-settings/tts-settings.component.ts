@@ -184,7 +184,8 @@ export interface VoiceOption {
           </div>
         </div>
 
-        <!-- Parallel Processing -->
+        <!-- Parallel Processing (hidden for Orpheus - single worker only) -->
+        @if (settings().ttsEngine !== 'orpheus') {
         <div class="parallel-section">
           <div class="section-header">
             <span class="section-title">Parallel Processing</span>
@@ -270,6 +271,7 @@ export interface VoiceOption {
             </div>
           }
         </div>
+        }
 
         <!-- Advanced Settings -->
         <div class="advanced-section">
@@ -1117,13 +1119,16 @@ export class TtsSettingsComponent implements OnInit {
     // Update available voices based on engine
     if (engine === 'orpheus') {
       this.availableVoices.set(this.orpheusVoices);
-      // Set default Orpheus voice and force English
+      // Set default Orpheus voice, force English, and disable parallel processing
+      // Orpheus doesn't benefit from multiple workers (MLX uses unified memory, vLLM has built-in batching)
       const current = this.settings();
       this.settingsChange.emit({
         ...current,
         ttsEngine: engine,
         fineTuned: 'tara',  // Default Orpheus voice
-        language: 'en'      // Orpheus only supports English
+        language: 'en',     // Orpheus only supports English
+        useParallel: false, // Force single worker for Orpheus
+        parallelWorkers: 1
       });
     } else {
       this.availableVoices.set(this.xttsVoices);
@@ -1170,6 +1175,11 @@ export class TtsSettingsComponent implements OnInit {
       const outputDir = configuredDir || this.libraryService.audiobooksPath() || '';
       console.log('[TTS-SETTINGS] Output dir - configured:', configuredDir, 'library:', this.libraryService.audiobooksPath(), 'using:', outputDir);
 
+      // Orpheus uses single worker only (MLX unified memory, vLLM built-in batching)
+      const isOrpheus = currentSettings.ttsEngine === 'orpheus';
+      const useParallel = isOrpheus ? false : (currentSettings.useParallel || false);
+      const parallelWorkers = isOrpheus ? 1 : currentSettings.parallelWorkers;
+
       // Build job config
       const jobConfig: any = {
         type: 'tts-conversion',
@@ -1190,9 +1200,9 @@ export class TtsSettingsComponent implements OnInit {
           enableTextSplitting: currentSettings.enableTextSplitting,
           outputFilename: meta?.outputFilename,
           outputDir: outputDir || undefined,
-          // Parallel processing options
-          useParallel: currentSettings.useParallel || false,
-          parallelWorkers: currentSettings.parallelWorkers
+          // Parallel processing options (forced off for Orpheus)
+          useParallel: useParallel,
+          parallelWorkers: parallelWorkers
         }
       };
 
