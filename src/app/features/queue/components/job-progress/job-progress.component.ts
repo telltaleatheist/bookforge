@@ -50,6 +50,9 @@ interface ETAState {
             } @else if (currentJob.type === 'tts-conversion') {
               <span class="type-icon">&#127911;</span>
               <span>TTS Conversion</span>
+            } @else if (currentJob.type === 'reassembly') {
+              <span class="type-icon">&#128295;</span>
+              <span>Reassembly</span>
             }
           </div>
 
@@ -84,7 +87,12 @@ interface ETAState {
             <span class="stat-label">ETA</span>
             <span class="stat-value">{{ etaFormatted() }}</span>
           </div>
-          @if (job()?.totalChunksInJob) {
+          @if (job()?.type === 'reassembly') {
+            <div class="stat">
+              <span class="stat-label">Phase</span>
+              <span class="stat-value">{{ getReassemblyPhase() }}</span>
+            </div>
+          } @else if (job()?.totalChunksInJob) {
             <div class="stat">
               <span class="stat-label">Chunks</span>
               <span class="stat-value">{{ job()!.chunksCompletedInJob || 0 }}/{{ job()!.totalChunksInJob }}</span>
@@ -366,6 +374,23 @@ export class JobProgressComponent implements OnDestroy {
       const j = this.job();
       if (!j || j.status !== 'processing') return;
 
+      // For reassembly jobs, track chapter progress instead of chunks
+      if (j.type === 'reassembly') {
+        const currentChapter = j.currentChapter || 0;
+
+        if (currentChapter > this.etaState.lastChunksCompleted) {
+          // Record first work time when first chapter completes
+          if (this.etaState.firstWorkTime === null && currentChapter > 0) {
+            this.etaState.firstWorkTime = Date.now();
+            console.log('[ETA] Reassembly: First chapter completed - timer started');
+          }
+
+          this.etaState.lastChunksCompleted = currentChapter;
+          this.recalculateReassemblyETA(j);
+        }
+        return;
+      }
+
       const chunksCompleted = j.chunksCompletedInJob || 0;
 
       // Check if a new chunk was completed
@@ -450,6 +475,71 @@ export class JobProgressComponent implements OnDestroy {
     console.log(`[ETA] ${remainingChunks} remaining × ${avgTimePerChunkSec.toFixed(1)}s = ${remainingSeconds}s (${this.formatDuration(remainingSeconds)})`);
   }
 
+  /**
+   * Recalculate ETA for reassembly jobs based on chapter progress.
+   * Reassembly has phases:
+   * - Combining chapters (0-50%): combine sentences into chapter FLACs
+   * - Concatenating (50-65%): merge chapter FLACs into one FLAC
+   * - Encoding (65-90%): FLAC to M4B with AAC
+   * - Metadata (90-100%): chapter markers, tags
+   *
+   * We estimate based on chapter combining progress during that phase,
+   * then switch to progress-based estimates for later phases.
+   */
+  private recalculateReassemblyETA(job: QueueJob): void {
+    const currentChapter = job.currentChapter || 0;
+    const totalChapters = job.totalChapters || 0;
+    const progress = job.progress || 0;
+
+    if (!this.etaState.firstWorkTime) {
+      return;
+    }
+
+    const totalElapsedMs = Date.now() - this.etaState.firstWorkTime;
+    const totalElapsedSec = totalElapsedMs / 1000;
+
+    // If we're past the chapter combining phase (> 50%), use progress-based ETA
+    if (progress > 50) {
+      // Simple progress-based estimate
+      const progressRemaining = 100 - progress;
+      // Estimate based on how long we've been past 50%
+      // This is rough but better than nothing for the encoding phase
+      if (progress > 0 && totalElapsedSec > 0) {
+        const remainingSeconds = Math.round((totalElapsedSec / progress) * progressRemaining);
+        this.etaState.estimatedSecondsRemaining = remainingSeconds;
+        this.etaCountdown.set(remainingSeconds);
+        console.log(`[ETA] Reassembly (post-combining): ${progress}% done, ~${remainingSeconds}s remaining`);
+      }
+      return;
+    }
+
+    // In chapter combining phase - use chapter-based estimates
+    if (currentChapter < 2 || totalChapters === 0) {
+      return;
+    }
+
+    // Average time per chapter
+    const chaptersForAverage = currentChapter - 1;
+    const avgTimePerChapterSec = totalElapsedSec / chaptersForAverage;
+
+    // Remaining chapters in combining phase
+    const remainingChapters = totalChapters - currentChapter;
+
+    // Estimate: remaining chapters + concatenation (5-10% of total) + encoding (~30% of total)
+    // Encoding typically takes about 50-70% as long as chapter combining
+    const combiningRemaining = remainingChapters * avgTimePerChapterSec;
+    const concatenatingEstimate = totalChapters * avgTimePerChapterSec * 0.1; // Concatenation is fast
+    const encodingEstimate = totalChapters * avgTimePerChapterSec * 0.5; // Encoding takes about 50%
+
+    const remainingSeconds = Math.round(combiningRemaining + concatenatingEstimate + encodingEstimate);
+
+    this.etaState.estimatedSecondsRemaining = remainingSeconds;
+    this.etaCountdown.set(remainingSeconds);
+
+    console.log(`[ETA] Reassembly: ${chaptersForAverage} chapters in ${totalElapsedSec.toFixed(0)}s → ${avgTimePerChapterSec.toFixed(1)}s/chapter`);
+    console.log(`[ETA] ${remainingChapters} chapters + concat + encoding = ${remainingSeconds}s (${this.formatDuration(remainingSeconds)})`);
+  }
+
   private startTimer(): void {
     if (this.timerInterval) return;
     this.timerInterval = setInterval(() => {
@@ -498,8 +588,12 @@ export class JobProgressComponent implements OnDestroy {
       return 'Complete';
     }
 
-    // If first work hasn't completed yet, show loading status
+    // If first work hasn't completed yet, show appropriate loading status
     if (!this.etaState.firstWorkTime) {
+      // Reassembly doesn't load models - show different message
+      if (j.type === 'reassembly') {
+        return 'Starting...';
+      }
       return 'Loading models...';
     }
 
@@ -555,5 +649,42 @@ export class JobProgressComponent implements OnDestroy {
     const totalSentences = worker.sentenceEnd - worker.sentenceStart + 1;
     if (totalSentences <= 0) return 0;
     return Math.min(100, (worker.completedSentences / totalSentences) * 100);
+  }
+
+  // Get human-readable phase name for reassembly jobs
+  getReassemblyPhase(): string {
+    const j = this.job();
+    if (!j) return '-';
+
+    const progress = j.progress || 0;
+    const message = j.progressMessage?.toLowerCase() || '';
+
+    // Use message content if available
+    if (message.includes('combining chapter') && message.includes('sentences')) {
+      return `Chapters (${j.currentChapter || 0}/${j.totalChapters || '?'})`;
+    }
+    if (message.includes('concatenat')) {
+      return 'Concatenating';
+    }
+    if (message.includes('encod') || message.includes('aac')) {
+      return 'Encoding M4B';
+    }
+    if (message.includes('metadata') || message.includes('chapter marker')) {
+      return 'Metadata';
+    }
+    if (message.includes('finaliz')) {
+      return 'Finalizing';
+    }
+
+    // Fall back to progress-based phase
+    if (progress < 50) {
+      return `Chapters (${j.currentChapter || 0}/${j.totalChapters || '?'})`;
+    } else if (progress < 65) {
+      return 'Concatenating';
+    } else if (progress < 90) {
+      return 'Encoding M4B';
+    } else {
+      return 'Metadata';
+    }
   }
 }

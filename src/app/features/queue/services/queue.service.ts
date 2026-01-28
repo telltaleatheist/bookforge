@@ -129,6 +129,7 @@ export class QueueService {
   private unsubscribeComplete: (() => void) | null = null;
   private unsubscribeParallelProgress: (() => void) | null = null;
   private unsubscribeParallelComplete: (() => void) | null = null;
+  private unsubscribeReassemblyProgress: (() => void) | null = null;
 
   // State signals
   private readonly _jobs = signal<QueueJob[]>([]);
@@ -200,6 +201,9 @@ export class QueueService {
       if (this.unsubscribeParallelComplete) {
         this.unsubscribeParallelComplete();
       }
+      if (this.unsubscribeReassemblyProgress) {
+        this.unsubscribeReassemblyProgress();
+      }
     });
   }
 
@@ -241,6 +245,34 @@ export class QueueService {
         });
       });
     }
+
+    // Listen for reassembly progress updates
+    if (electron.reassembly) {
+      this.unsubscribeReassemblyProgress = electron.reassembly.onProgress((data) => {
+        this.ngZone.run(() => {
+          this.handleReassemblyProgressUpdate(data.jobId, data.progress);
+        });
+      });
+    }
+  }
+
+  private handleReassemblyProgressUpdate(jobId: string, progress: any): void {
+    this._jobs.update(jobs =>
+      jobs.map(job => {
+        if (job.id !== jobId) return job;
+        return {
+          ...job,
+          progress: progress.percentage || 0,
+          status: progress.phase === 'complete' ? 'completed' as JobStatus :
+                  progress.phase === 'error' ? 'error' as JobStatus :
+                  'processing' as JobStatus,
+          currentChapter: progress.currentChapter,
+          totalChapters: progress.totalChapters,
+          progressMessage: progress.message || progress.phase,
+          error: progress.error
+        };
+      })
+    );
   }
 
   private handleProgressUpdate(progress: QueueProgress): void {

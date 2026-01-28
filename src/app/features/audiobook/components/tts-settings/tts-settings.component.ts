@@ -929,15 +929,23 @@ export class TtsSettingsComponent implements OnInit {
   readonly hasResumableSession = signal(false);
   readonly resumeInfo = signal<ResumeCheckResult | null>(null);
   readonly showResumeOption = signal(false); // User clicked to see details
+  private lastCheckedPath: string | null = null; // Avoid redundant session searches
 
   constructor() {
     // Watch for epubPath changes and check for resumable sessions
+    // Only check if path actually changed (debounce rapid changes)
     effect(() => {
       const path = this.epubPath();
       if (path) {
+        // Skip if we already checked this path
+        if (path === this.lastCheckedPath) {
+          return;
+        }
+        this.lastCheckedPath = path;
         this.checkForResumableSession(path);
       } else {
         // Clear resume state when no epub
+        this.lastCheckedPath = null;
         this.hasResumableSession.set(false);
         this.resumeInfo.set(null);
         this.showResumeOption.set(false);

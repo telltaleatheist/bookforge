@@ -711,72 +711,124 @@ export async function startReassembly(
     let stderr = '';
     let outputPath = '';
     let totalChapters = 0;
+    let chaptersCompleted = 0;
+    let currentPhase: 'combining' | 'concatenating' | 'encoding' | 'metadata' = 'combining';
+
+    // Progress ranges for each phase:
+    // Combining chapters: 0-50% (sentences into chapter FLACs)
+    // Concatenating: 50-65% (chapter FLACs into one FLAC)
+    // Encoding: 65-90% (FLAC to M4B with AAC)
+    // Metadata: 90-100% (chapter markers, tags, m4b-tool)
 
     proc.stdout?.on('data', (data) => {
       const line = data.toString();
       console.log('[REASSEMBLY] stdout:', line);
 
       // Parse progress from e2a output
-      // First, get total chapters from "Assembling audiobook from X chapters..."
+      // Phase 1: Get total chapters from "Assembling audiobook from X chapters..."
       if (line.includes('Assembling audiobook from')) {
         const totalMatch = line.match(/Assembling audiobook from (\d+) chapters/);
         if (totalMatch) {
           totalChapters = parseInt(totalMatch[1], 10);
+          currentPhase = 'combining';
           sendProgress(mainWindow, jobId, {
             phase: 'combining',
-            percentage: 5,
+            percentage: 1,
             currentChapter: 0,
             totalChapters,
-            message: `Assembling ${totalChapters} chapters...`
+            message: `Combining sentences into ${totalChapters} chapters...`
           });
         }
-      } else if (line.includes('Combining chapter')) {
-        // Parse "Combining chapter N: sentences X-Y"
+      } else if (line.includes('Combining chapter') && !line.includes('Combining chapters into final')) {
+        // Phase 1: "Combining chapter N: sentences X-Y" - combining sentences into chapter FLACs
         const match = line.match(/Combining chapter (\d+):/);
         if (match) {
           const current = parseInt(match[1], 10);
-          const total = totalChapters || 19; // fallback
+          const total = totalChapters || 19;
+          currentPhase = 'combining';
+          // Progress: 0-50% for chapter combining
+          const pct = Math.round((current / total) * 50);
           sendProgress(mainWindow, jobId, {
             phase: 'combining',
-            percentage: Math.round(5 + (current / total) * 55),
+            percentage: pct,
             currentChapter: current,
             totalChapters: total,
-            message: `Combining chapter ${current}/${total}`
+            message: `Combining chapter ${current}/${total} sentences...`
           });
         }
       } else if (line.includes('Combined block audio file saved')) {
-        // Chapter complete - could track this too
+        // Chapter FLAC saved
+        chaptersCompleted++;
+      } else if (line.includes('Combining chapters into final audiobook')) {
+        // Phase 2: Concatenating all chapter FLACs into one big FLAC
+        currentPhase = 'concatenating';
+        sendProgress(mainWindow, jobId, {
+          phase: 'combining',
+          percentage: 50,
+          currentChapter: totalChapters,
+          totalChapters,
+          message: 'Concatenating chapters into final audio...'
+        });
+      } else if (line.includes('Splitting disabled') || line.includes('Creating single file')) {
+        // Still in concatenation phase
+        const hourMatch = line.match(/([\d.]+)h of audio/);
+        const duration = hourMatch ? hourMatch[1] : '';
+        sendProgress(mainWindow, jobId, {
+          phase: 'combining',
+          percentage: 52,
+          message: duration ? `Concatenating ${duration} hours of audio...` : 'Concatenating chapters...'
+        });
+      } else if (currentPhase === 'concatenating' && line.includes('speed=')) {
+        // ffmpeg progress during concatenation - parse speed
+        const speedMatch = line.match(/speed=([\d.]+)e?\+?(\d+)?x/);
+        if (speedMatch) {
+          // Still concatenating
+          sendProgress(mainWindow, jobId, {
+            phase: 'combining',
+            percentage: 55,
+            message: 'Concatenating chapter audio files...'
+          });
+        }
       } else if (line.includes('Creating subtitles')) {
         sendProgress(mainWindow, jobId, {
           phase: 'combining',
-          percentage: 65,
+          percentage: 60,
           message: 'Creating subtitles...'
         });
-      } else if (line.includes('Output #0, ipod') || line.includes('.m4b')) {
-        // Encoding to M4B started
+      } else if (line.includes('-> #0:0 (flac (native) -> aac')) {
+        // Phase 3: AAC encoding started (FLAC to M4B)
+        currentPhase = 'encoding';
+        sendProgress(mainWindow, jobId, {
+          phase: 'encoding',
+          percentage: 65,
+          message: 'Encoding to M4B audiobook...'
+        });
+      } else if (line.includes('Output #0, ipod') || line.includes('to \'') && line.includes('.m4b')) {
+        // M4B encoding in progress
+        currentPhase = 'encoding';
         sendProgress(mainWindow, jobId, {
           phase: 'encoding',
           percentage: 70,
           message: 'Encoding M4B audiobook...'
         });
-      } else if (line.includes('flac (native) -> aac')) {
-        // AAC encoding in progress
-        sendProgress(mainWindow, jobId, {
-          phase: 'encoding',
-          percentage: 75,
-          message: 'Encoding audio to AAC...'
-        });
-      } else if (line.includes('Encoding') || line.includes('encoding')) {
-        sendProgress(mainWindow, jobId, {
-          phase: 'encoding',
-          percentage: 75,
-          message: 'Encoding M4B audiobook...'
-        });
+      } else if (currentPhase === 'encoding' && line.includes('size=') && line.includes('time=')) {
+        // ffmpeg progress during encoding - parse time for progress estimate
+        const timeMatch = line.match(/time=(\d+):(\d+):(\d+)/);
+        if (timeMatch) {
+          // Rough estimate: 65-90% range for encoding
+          sendProgress(mainWindow, jobId, {
+            phase: 'encoding',
+            percentage: 75,
+            message: 'Encoding audio to AAC...'
+          });
+        }
       } else if (line.includes('Adding metadata') || line.includes('chapter markers') || line.includes('Chapter #')) {
+        // Phase 4: Metadata
+        currentPhase = 'metadata';
         sendProgress(mainWindow, jobId, {
           phase: 'metadata',
-          percentage: 85,
-          message: 'Adding metadata and chapter markers...'
+          percentage: 90,
+          message: 'Adding chapter markers and metadata...'
         });
       } else if (line.includes('"success": true') || line.includes('"success":true')) {
         // Parse JSON success output from e2a
