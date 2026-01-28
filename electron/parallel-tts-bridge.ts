@@ -638,8 +638,8 @@ function startWorker(
         emitProgress(session);
       }
 
-      // Parse progress: "Converting X.XX%: : Y/Z"
-      const progressMatch = line.match(/Converting\s+([\d.]+)%.*?(\d+)\/(\d+)/i);
+      // Parse progress: "Converting X.XX%: : Y/Z" or "X.XX%: : Y/Z" (worker mode)
+      const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%.*?(\d+)\/(\d+)/i);
       if (progressMatch) {
         const current = parseInt(progressMatch[2]);
         worker.currentSentence = worker.sentenceStart + current;
@@ -673,7 +673,8 @@ function startWorker(
       }
 
       // Parse progress from stderr too - e2a often outputs progress to stderr
-      const progressMatch = line.match(/Converting\s+([\d.]+)%.*?(\d+)\/(\d+)/i);
+      // Match "Converting X.XX%: : Y/Z" or "X.XX%: : Y/Z" (worker mode)
+      const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%.*?(\d+)\/(\d+)/i);
       if (progressMatch) {
         const current = parseInt(progressMatch[2]);
         worker.currentSentence = worker.sentenceStart + current;
