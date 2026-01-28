@@ -353,6 +353,10 @@ export async function prepareSession(
   const sessionId = crypto.randomUUID();
   const sessionDir = path.join(e2aPath, 'tmp', `ebook-${sessionId}`);
 
+  // Map UI device names to e2a CLI device names (app.py expects uppercase)
+  const deviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
+  const deviceArg = deviceMap[settings.device] || settings.device.toUpperCase();
+
   const args = [
     ...condaRunArgs(),
     appPath,
@@ -361,7 +365,7 @@ export async function prepareSession(
     '--session', sessionId,
     '--language', settings.language,
     '--tts_engine', settings.ttsEngine,
-    '--device', settings.device.toLowerCase(),
+    '--device', deviceArg,
     '--prep_only'
   ];
 
@@ -556,12 +560,15 @@ function startWorker(
   } else {
     // Use app.py with --worker_mode - full imports but same functionality
     const appPath = path.join(e2aPath, 'app.py');
+    // Map UI device names to e2a CLI device names (app.py expects uppercase)
+    const appDeviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
+    const appDeviceArg = appDeviceMap[settings.device] || settings.device.toUpperCase();
     args = [
       ...condaRunArgs(),
       appPath,
       '--headless',
       '--session', prepInfo.sessionId,
-      '--device', settings.device.toLowerCase(),
+      '--device', appDeviceArg,
       '--output_dir', config.outputDir,
       '--worker_mode'
       // Note: language, tts_engine, and other settings are loaded from session-state.json
@@ -945,6 +952,10 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   const appPath = path.join(e2aPath, 'app.py');
   const settings = config.settings;
 
+  // Map UI device names to e2a CLI device names (app.py expects uppercase)
+  const asmDeviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
+  const asmDeviceArg = asmDeviceMap[settings.device] || settings.device.toUpperCase();
+
   const args = [
     ...condaRunArgs(),
     appPath,
@@ -952,7 +963,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--ebook', config.epubPath,
     '--output_dir', config.outputDir,
     '--session', prepInfo.sessionId,
-    '--device', settings.device.toLowerCase(),
+    '--device', asmDeviceArg,
     '--language', settings.language,
     '--tts_engine', settings.ttsEngine,  // Required for session setup even in assembly mode
     '--assemble_only',  // Skip TTS, just combine existing sentence audio files

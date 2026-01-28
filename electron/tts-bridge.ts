@@ -244,12 +244,21 @@ export async function startConversion(
 
   // Build command arguments - matching BookForge's _build_tts_command
   const appPath = path.join(e2aPath, 'app.py');
+
+  // Map UI device names to e2a CLI device names
+  const deviceMap: Record<string, string> = {
+    'gpu': 'CUDA',
+    'mps': 'MPS',
+    'cpu': 'CPU'
+  };
+  const deviceArg = deviceMap[settings.device] || settings.device.toUpperCase();
+
   const args = [
     appPath,
     '--headless',
     '--ebook', epubPath,
     '--output_dir', outputDir,
-    '--device', settings.device,
+    '--device', deviceArg,
     '--language', settings.language,
     '--tts_engine', settings.ttsEngine || 'xtts',
     '--fine_tuned', settings.fineTuned || 'ScarlettJohansson',
