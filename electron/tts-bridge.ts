@@ -157,6 +157,22 @@ function parseProgressLine(line: string, currentProgress: TTSProgress): TTSProgr
     };
   }
 
+  // Sentence progress pattern from e2a stderr: "4.00%: : 1/25" or "4.00%: 1/25"
+  const sentenceMatch = trimmed.match(/^([\d.]+)%:\s*:?\s*(\d+)\/(\d+)/);
+  if (sentenceMatch) {
+    const percent = parseFloat(sentenceMatch[1]);
+    const current = parseInt(sentenceMatch[2]);
+    const total = parseInt(sentenceMatch[3]);
+    return {
+      ...currentProgress,
+      phase: 'converting',
+      currentChapter: current,
+      totalChapters: total,
+      percentage: percent,
+      message: `Converting sentence ${current} of ${total} (${percent.toFixed(1)}%)`
+    };
+  }
+
   // Chapter progress pattern: "Processing chapter X of Y"
   const chapterMatch = trimmed.match(/chapter\s+(\d+)\s+of\s+(\d+)/i);
   if (chapterMatch) {
@@ -173,8 +189,9 @@ function parseProgressLine(line: string, currentProgress: TTSProgress): TTSProgr
   }
 
   // tqdm progress bar pattern: "XX%|" or "X/Y [XX:XX"
+  // Exclude download progress (Fetching, Downloading) which shouldn't affect overall progress
   const tqdmMatch = trimmed.match(/(\d+)%\|/);
-  if (tqdmMatch) {
+  if (tqdmMatch && !trimmed.toLowerCase().includes('fetching') && !trimmed.toLowerCase().includes('downloading')) {
     const percent = parseInt(tqdmMatch[1]);
     return {
       ...currentProgress,

@@ -184,15 +184,18 @@ export interface VoiceOption {
           </div>
         </div>
 
-        <!-- Parallel Processing (hidden for Orpheus - single worker only) -->
-        @if (settings().ttsEngine !== 'orpheus') {
+        <!-- Parallel Processing / Resumable Mode -->
         <div class="parallel-section">
           <div class="section-header">
-            <span class="section-title">Parallel Processing</span>
-            @if (loadingHardwareInfo()) {
-              <span class="loading-badge">Detecting hardware...</span>
-            } @else if (hardwareInfo()) {
-              <span class="hardware-badge">{{ hardwareInfo()!.reason }}</span>
+            @if (settings().ttsEngine === 'orpheus') {
+              <span class="section-title">Resumable Mode</span>
+            } @else {
+              <span class="section-title">Parallel Processing</span>
+              @if (loadingHardwareInfo()) {
+                <span class="loading-badge">Detecting hardware...</span>
+              } @else if (hardwareInfo()) {
+                <span class="hardware-badge">{{ hardwareInfo()!.reason }}</span>
+              }
             }
           </div>
 
@@ -203,12 +206,18 @@ export interface VoiceOption {
               (ngModelChange)="updateSetting('useParallel', $event)"
             />
             <div class="checkbox-content">
-              <span class="checkbox-label">Enable parallel workers</span>
-              <span class="checkbox-desc">Use multiple TTS workers simultaneously for faster conversion</span>
+              @if (settings().ttsEngine === 'orpheus') {
+                <span class="checkbox-label">Enable resumable conversion</span>
+                <span class="checkbox-desc">Save progress sentence-by-sentence. Resume if interrupted.</span>
+              } @else {
+                <span class="checkbox-label">Enable parallel workers</span>
+                <span class="checkbox-desc">Use multiple TTS workers simultaneously for faster conversion</span>
+              }
             </div>
           </label>
 
-          @if (settings().useParallel) {
+          <!-- Worker count and division mode - hidden for Orpheus (always 1 worker) -->
+          @if (settings().useParallel && settings().ttsEngine !== 'orpheus') {
             <div class="form-group worker-count">
               <label>Worker Count</label>
               <div class="worker-options">
@@ -271,7 +280,6 @@ export interface VoiceOption {
             </div>
           }
         </div>
-        }
 
         <!-- Advanced Settings -->
         <div class="advanced-section">
@@ -1119,16 +1127,16 @@ export class TtsSettingsComponent implements OnInit {
     // Update available voices based on engine
     if (engine === 'orpheus') {
       this.availableVoices.set(this.orpheusVoices);
-      // Set default Orpheus voice, force English, and disable parallel processing
+      // Set default Orpheus voice, force English, force 1 worker
       // Orpheus doesn't benefit from multiple workers (MLX uses unified memory, vLLM has built-in batching)
+      // But useParallel can still be enabled for resumability
       const current = this.settings();
       this.settingsChange.emit({
         ...current,
         ttsEngine: engine,
         fineTuned: 'tara',  // Default Orpheus voice
         language: 'en',     // Orpheus only supports English
-        useParallel: false, // Force single worker for Orpheus
-        parallelWorkers: 1
+        parallelWorkers: 1  // Force single worker (but parallel mode still available for resumability)
       });
     } else {
       this.availableVoices.set(this.xttsVoices);
@@ -1176,8 +1184,9 @@ export class TtsSettingsComponent implements OnInit {
       console.log('[TTS-SETTINGS] Output dir - configured:', configuredDir, 'library:', this.libraryService.audiobooksPath(), 'using:', outputDir);
 
       // Orpheus uses single worker only (MLX unified memory, vLLM built-in batching)
+      // But parallel mode can still be enabled for resumability
       const isOrpheus = currentSettings.ttsEngine === 'orpheus';
-      const useParallel = isOrpheus ? false : (currentSettings.useParallel || false);
+      const useParallel = currentSettings.useParallel || false;
       const parallelWorkers = isOrpheus ? 1 : currentSettings.parallelWorkers;
 
       // Build job config
