@@ -1827,11 +1827,85 @@ export function stopParallelConversion(jobId: string): boolean {
     session.assemblyProcess.kill('SIGTERM');
   }
 
+  // Emit cancelled analytics before cleanup
+  emitCancelledAnalytics(session);
+
   // Clean up progress history
   progressHistory.delete(jobId);
 
   activeSessions.delete(jobId);
   return true;
+}
+
+/**
+ * Emit analytics for a cancelled job
+ */
+function emitCancelledAnalytics(session: ConversionSession): void {
+  if (!mainWindow || !session.prepInfo) return;
+
+  const cancelledAt = new Date().toISOString();
+  const duration = Math.round((Date.now() - session.startTime) / 1000);
+
+  // Calculate sentences completed before cancellation
+  const completedSentences = session.isResumeJob
+    ? (session.baselineCompleted || 0) + session.workers.reduce((sum, w) => sum + (w.actualConversions || 0), 0)
+    : session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
+
+  const sessionDone = session.isResumeJob
+    ? session.workers.reduce((sum, w) => sum + (w.actualConversions || 0), 0)
+    : completedSentences;
+
+  // Calculate sentences per minute
+  const durationMinutes = duration / 60;
+  const sentencesPerMinute = durationMinutes > 0 && sessionDone > 0
+    ? Math.round((sessionDone / durationMinutes) * 10) / 10
+    : 0;
+
+  // Build analytics for cancelled job
+  const analytics = {
+    jobId: session.jobId,
+    startedAt: new Date(session.startTime).toISOString(),
+    completedAt: cancelledAt,
+    durationSeconds: duration,
+    totalSentences: session.prepInfo.totalSentences,
+    totalChapters: session.prepInfo.totalChapters,
+    workerCount: session.config.workerCount,
+    sentencesPerMinute,
+    settings: {
+      device: session.config.settings.device,
+      language: session.config.settings.language,
+      ttsEngine: session.config.settings.ttsEngine,
+      fineTuned: session.config.settings.fineTuned || undefined
+    },
+    success: false,
+    error: 'Cancelled by user',
+    isResumeJob: session.isResumeJob || false,
+    sentencesProcessedInSession: sessionDone,
+    wasCancelled: true,
+    completedSentencesAtCancel: completedSentences
+  };
+
+  const progress: AggregatedProgress = {
+    phase: 'error',
+    totalSentences: session.prepInfo.totalSentences,
+    completedSentences,
+    completedInSession: sessionDone,
+    percentage: Math.round((completedSentences / session.prepInfo.totalSentences) * 100),
+    activeWorkers: 0,
+    workers: serializeWorkers(session.workers) as WorkerState[],
+    estimatedRemaining: 0,
+    message: 'Cancelled by user',
+    error: 'Cancelled by user'
+  };
+
+  mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
+  mainWindow.webContents.send('parallel-tts:complete', {
+    jobId: session.jobId,
+    success: false,
+    error: 'Cancelled by user',
+    duration,
+    analytics
+  });
 }
 
 /**

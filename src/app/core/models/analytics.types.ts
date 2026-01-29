@@ -35,6 +35,10 @@ export interface TTSJobAnalytics {
   // Resume info (if this was a resume job)
   isResumeJob?: boolean;
   sentencesProcessedInSession?: number;
+
+  // Cancellation info (if job was cancelled)
+  wasCancelled?: boolean;
+  completedSentencesAtCancel?: number;
 }
 
 export interface CleanupJobAnalytics {
