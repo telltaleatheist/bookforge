@@ -541,8 +541,15 @@ function startWorker(
       ...condaRunArgs(settings.ttsEngine),
       workerPath,
       '--session', prepInfo.sessionId,
-      '--device', deviceArg
+      '--device', deviceArg,
+      '--tts_engine', settings.ttsEngine
     ];
+
+    // Always pass fine_tuned (voice) to ensure current UI selection is used
+    // This is critical for resume jobs where session-state.json has the original voice
+    if (settings.fineTuned) {
+      args.push('--fine_tuned', settings.fineTuned);
+    }
 
     // Add output_dir if specified
     if (config.outputDir) {
@@ -557,8 +564,6 @@ function startWorker(
       args.push('--sentence_start', range.sentenceStart.toString());
       args.push('--sentence_end', range.sentenceEnd.toString());
     }
-
-    // Note: tts_engine, voice, language are loaded from session-state.json by worker.py
   } else {
     // Use app.py with --worker_mode - full imports but same functionality
     const appPath = path.join(e2aPath, 'app.py');
@@ -572,10 +577,14 @@ function startWorker(
       '--session', prepInfo.sessionId,
       '--device', appDeviceArg,
       '--output_dir', config.outputDir,
-      '--worker_mode'
-      // Note: language, tts_engine, and other settings are loaded from session-state.json
-      // We still pass device to allow per-worker device override if needed
+      '--worker_mode',
+      '--tts_engine', settings.ttsEngine
     ];
+
+    // Always pass fine_tuned (voice) to ensure current UI selection is used
+    if (settings.fineTuned) {
+      args.push('--fine_tuned', settings.fineTuned);
+    }
 
     // Add range args based on mode
     if (isChapterMode && range.chapterStart !== undefined && range.chapterEnd !== undefined) {

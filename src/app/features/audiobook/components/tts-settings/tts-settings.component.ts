@@ -975,11 +975,11 @@ export class TtsSettingsComponent implements OnInit {
   ];
 
   private readonly orpheusVoices: VoiceOption[] = [
-    { id: 'tara', name: 'Tara', language: 'en', description: 'Female - most conversational/realistic' },
-    { id: 'leah', name: 'Leah', language: 'en', description: 'Female - highly conversational' },
+    { id: 'leah', name: 'Leah', language: 'en', description: 'Female - best quality, natural prosody' },
+    { id: 'mia', name: 'Mia', language: 'en', description: 'Female - clean, clear' },
     { id: 'jess', name: 'Jess', language: 'en', description: 'Female - conversational' },
-    { id: 'mia', name: 'Mia', language: 'en', description: 'Female' },
     { id: 'zoe', name: 'Zoe', language: 'en', description: 'Female' },
+    { id: 'tara', name: 'Tara', language: 'en', description: 'Female - has echo artifacts' },
     { id: 'leo', name: 'Leo', language: 'en', description: 'Male - conversational' },
     { id: 'dan', name: 'Dan', language: 'en', description: 'Male - conversational' },
     { id: 'zac', name: 'Zac', language: 'en', description: 'Male' }
@@ -1134,7 +1134,7 @@ export class TtsSettingsComponent implements OnInit {
       this.settingsChange.emit({
         ...current,
         ttsEngine: engine,
-        fineTuned: 'tara',  // Default Orpheus voice
+        fineTuned: 'leah',  // Default Orpheus voice (tara has echo artifacts)
         language: 'en',     // Orpheus only supports English
         useParallel: true,  // Always use resumable mode for Orpheus
         parallelWorkers: 1  // Force single worker
