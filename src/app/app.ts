@@ -136,6 +136,12 @@ export class App implements OnInit {
       route: '/reassembly'
     },
     {
+      id: 'post-processing',
+      icon: '\u{1F50A}', // Speaker with sound waves
+      label: 'Post-Processing',
+      route: '/post-processing'
+    },
+    {
       id: 'settings',
       icon: '\u{2699}', // Gear emoji
       label: 'Settings',

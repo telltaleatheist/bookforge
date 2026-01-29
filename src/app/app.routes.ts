@@ -27,6 +27,10 @@ export const routes: Routes = [
     loadComponent: () => import('./features/reassembly/reassembly.component').then(m => m.ReassemblyComponent)
   },
   {
+    path: 'post-processing',
+    loadComponent: () => import('./features/post-processing/post-processing.component').then(m => m.PostProcessingComponent)
+  },
+  {
     path: 'epub-editor',
     loadComponent: () => import('./features/epub-editor/epub-editor.component').then(m => m.EpubEditorComponent)
   },

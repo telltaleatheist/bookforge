@@ -3867,6 +3867,53 @@ function setupIpcHandlers(): void {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // DeepFilterNet Post-Processing
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('deepfilter:check-available', async () => {
+    try {
+      const { checkDeepFilterAvailable } = await import('./deepfilter-bridge.js');
+      const result = await checkDeepFilterAvailable();
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('deepfilter:list-files', async (_event, audiobooksDir: string) => {
+    try {
+      const { listAudioFiles } = await import('./deepfilter-bridge.js');
+      const files = await listAudioFiles(audiobooksDir);
+      return { success: true, data: files };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('deepfilter:denoise', async (_event, filePath: string) => {
+    try {
+      const { denoiseFile, initDeepFilterBridge } = await import('./deepfilter-bridge.js');
+      if (mainWindow) {
+        initDeepFilterBridge(mainWindow);
+      }
+      const result = await denoiseFile(filePath);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('deepfilter:cancel', async () => {
+    try {
+      const { cancelDenoise } = await import('./deepfilter-bridge.js');
+      const cancelled = cancelDenoise();
+      return { success: true, data: cancelled };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
 }
 
 // Register custom protocol as privileged (must be done before app ready)

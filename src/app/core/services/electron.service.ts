@@ -1770,4 +1770,79 @@ export class ElectronService {
     }
     return false;
   }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // DeepFilterNet Post-Processing
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Check if DeepFilterNet is available
+   */
+  async deepfilterCheckAvailable(): Promise<{ available: boolean; error?: string }> {
+    if (this.isElectron && (window as any).electron.deepfilter) {
+      const result = await (window as any).electron.deepfilter.checkAvailable();
+      return result.success ? result.data : { available: false, error: result.error };
+    }
+    return { available: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * List audio files in the audiobooks directory
+   */
+  async deepfilterListFiles(audiobooksDir: string): Promise<{
+    success: boolean;
+    data?: Array<{
+      name: string;
+      path: string;
+      size: number;
+      modifiedAt: Date;
+      format: string;
+    }>;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.deepfilter) {
+      return (window as any).electron.deepfilter.listFiles(audiobooksDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Denoise an audio file using DeepFilterNet
+   */
+  async deepfilterDenoise(filePath: string): Promise<{
+    success: boolean;
+    data?: { success: boolean; outputPath?: string; error?: string };
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.deepfilter) {
+      return (window as any).electron.deepfilter.denoise(filePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Cancel the current denoising operation
+   */
+  async deepfilterCancel(): Promise<boolean> {
+    if (this.isElectron && (window as any).electron.deepfilter) {
+      const result = await (window as any).electron.deepfilter.cancel();
+      return result.success && result.data;
+    }
+    return false;
+  }
+
+  /**
+   * Subscribe to deepfilter progress updates
+   */
+  onDeepfilterProgress(callback: (progress: {
+    phase: 'starting' | 'converting' | 'denoising' | 'finalizing' | 'complete' | 'error';
+    percentage: number;
+    message: string;
+    error?: string;
+  }) => void): () => void {
+    if (this.isElectron && (window as any).electron.deepfilter) {
+      return (window as any).electron.deepfilter.onProgress(callback);
+    }
+    return () => {};
+  }
 }

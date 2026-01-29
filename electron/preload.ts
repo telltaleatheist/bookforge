@@ -745,6 +745,25 @@ export interface E2aSessionScanResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DeepFilterNet Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AudioFileInfo {
+  name: string;
+  path: string;
+  size: number;
+  modifiedAt: Date;
+  format: string;
+}
+
+export interface DenoiseProgress {
+  phase: 'starting' | 'converting' | 'denoising' | 'finalizing' | 'complete' | 'error';
+  percentage: number;
+  message: string;
+  error?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Library Server Types
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1201,6 +1220,13 @@ export interface ElectronAPI {
     ) => Promise<{ success: boolean; error?: string; coverPath?: string }>;
     isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => () => void;
+  };
+  deepfilter: {
+    checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; error?: string }; error?: string }>;
+    listFiles: (audiobooksDir: string) => Promise<{ success: boolean; data?: AudioFileInfo[]; error?: string }>;
+    denoise: (filePath: string) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
+    cancel: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
+    onProgress: (callback: (progress: DenoiseProgress) => void) => () => void;
   };
   platform: string;
 }
@@ -1789,6 +1815,25 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('reassembly:progress', listener);
       return () => {
         ipcRenderer.removeListener('reassembly:progress', listener);
+      };
+    },
+  },
+  deepfilter: {
+    checkAvailable: () =>
+      ipcRenderer.invoke('deepfilter:check-available'),
+    listFiles: (audiobooksDir: string) =>
+      ipcRenderer.invoke('deepfilter:list-files', audiobooksDir),
+    denoise: (filePath: string) =>
+      ipcRenderer.invoke('deepfilter:denoise', filePath),
+    cancel: () =>
+      ipcRenderer.invoke('deepfilter:cancel'),
+    onProgress: (callback: (progress: DenoiseProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: DenoiseProgress) => {
+        callback(progress);
+      };
+      ipcRenderer.on('deepfilter:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('deepfilter:progress', listener);
       };
     },
   },
