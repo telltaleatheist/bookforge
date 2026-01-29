@@ -328,7 +328,7 @@ export async function startConversion(
 
     currentProcess = spawn(getCondaPath(), fullArgs, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
       shell: true
     });
 

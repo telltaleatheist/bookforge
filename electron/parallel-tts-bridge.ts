@@ -19,6 +19,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
+import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 
 // Power save blocker ID - prevents system sleep during TTS conversion
 let powerBlockerId: number | null = null;
@@ -382,7 +383,7 @@ export async function prepareSession(
 
     const prepProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
       shell: true
     });
 
@@ -608,7 +609,7 @@ function startWorker(
 
   const workerProcess = spawn(getCondaPath(), args, {
     cwd: e2aPath,
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
     shell: true
   });
 
@@ -980,7 +981,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
 
     session.assemblyProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
       shell: true
     });
 
@@ -1223,10 +1224,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Metadata Post-Processing with m4b-tool
+// Metadata Post-Processing (uses shared metadata-tools module)
 // ─────────────────────────────────────────────────────────────────────────────
-
-const M4B_TOOL_PATH = '/opt/homebrew/bin/m4b-tool';
 
 interface MetadataConfig {
   title?: string;
@@ -1264,35 +1263,34 @@ async function applyMetadataWithM4bTool(
     // Still try to apply metadata in place
   }
 
-  console.log('[PARALLEL-TTS] Applying metadata with m4b-tool:', metadata);
+  console.log('[PARALLEL-TTS] Applying metadata:', metadata);
 
   // ALWAYS remove e2a's default cover - we don't want auto-extracted covers
   // Only apply our own cover if coverPath is provided
   console.log('[PARALLEL-TTS] Removing e2a default cover...');
   try {
-    await runM4bToolCommand(inputPath, ['--skip-cover', '-f']);
+    await removeCover(inputPath);
   } catch (err) {
     console.warn('[PARALLEL-TTS] Failed to remove cover (may not exist):', err);
   }
 
-  // Build m4b-tool meta command arguments
-  const args: string[] = [];
+  // Build metadata object for the shared module
+  const metadataToApply: AudiobookMetadata = {};
 
   if (metadata.title) {
-    args.push('--name', metadata.title);
+    metadataToApply.title = metadata.title;
   }
   if (metadata.author) {
-    args.push('--artist', metadata.author);
+    metadataToApply.author = metadata.author;
   }
   if (metadata.year) {
-    args.push('--year', metadata.year);
+    metadataToApply.year = metadata.year;
   }
   if (metadata.coverPath) {
     console.log('[PARALLEL-TTS] Will apply cover from:', metadata.coverPath);
-    // Verify cover file exists before adding to args
     try {
       await fs.access(metadata.coverPath);
-      args.push('--cover', metadata.coverPath);
+      metadataToApply.coverPath = metadata.coverPath;
     } catch {
       console.error('[PARALLEL-TTS] Cover file not found:', metadata.coverPath);
     }
@@ -1301,10 +1299,9 @@ async function applyMetadataWithM4bTool(
   }
 
   // Apply metadata if we have any changes
-  if (args.length > 0) {
-    args.push('-f'); // Force overwrite
-    console.log('[PARALLEL-TTS] Applying metadata:', args.join(' '));
-    await runM4bToolCommand(inputPath, args);
+  if (Object.keys(metadataToApply).length > 0) {
+    console.log('[PARALLEL-TTS] Applying metadata:', metadataToApply);
+    await applyMetadata(inputPath, metadataToApply);
   }
 
   // Rename and move if custom filename specified and outputDir is valid
@@ -1413,41 +1410,6 @@ async function getUniqueFilePath(filePath: string): Promise<string> {
       return uniquePath;
     }
   }
-}
-
-/**
- * Run m4b-tool meta command
- */
-function runM4bToolCommand(filePath: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const fullArgs = ['meta', ...args, filePath];
-    console.log(`[M4B-TOOL] ${M4B_TOOL_PATH} ${fullArgs.join(' ')}`);
-
-    const proc = spawn(M4B_TOOL_PATH, fullArgs, {
-      shell: false
-    });
-
-    let stderr = '';
-
-    proc.stdout?.on('data', (data: Buffer) => {
-      console.log('[M4B-TOOL]', data.toString().trim());
-    });
-
-    proc.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
-      console.log('[M4B-TOOL STDERR]', data.toString().trim());
-    });
-
-    proc.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`m4b-tool failed with code ${code}: ${stderr}`));
-      }
-    });
-
-    proc.on('error', reject);
-  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2254,7 +2216,7 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
 
     const resumeCheckProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
       shell: true
     });
 
@@ -2350,7 +2312,7 @@ export async function listResumableSessions(): Promise<Array<{
 
     const listProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
       shell: true
     });
 

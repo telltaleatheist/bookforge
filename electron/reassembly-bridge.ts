@@ -8,6 +8,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath } from './e2a-paths';
 import * as os from 'os';
+import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 
 // Default E2A tmp path (uses cross-platform detection)
 const DEFAULT_E2A_TMP_PATH = getDefaultE2aTmpPath();
@@ -621,7 +622,52 @@ export async function startReassembly(
   }
 
   // Find the epub path from session state
-  const sessionState = parseSessionState(config.processDir);
+  let sessionState = parseSessionState(config.processDir);
+
+  // Update session metadata with user-provided values before reassembly
+  // This allows user to override epub's built-in metadata
+  if (sessionState && config.metadata) {
+    const statePath = path.join(config.processDir, 'session-state.json');
+    let metadataUpdated = false;
+
+    if (!sessionState.metadata) {
+      sessionState.metadata = {};
+    }
+
+    // Override with user-provided metadata (only if provided)
+    if (config.metadata.title) {
+      sessionState.metadata.title = config.metadata.title;
+      metadataUpdated = true;
+    }
+    if (config.metadata.author) {
+      sessionState.metadata.creator = config.metadata.author;
+      metadataUpdated = true;
+    }
+    if (config.metadata.year) {
+      // e2a expects 'published' in ISO format for year extraction
+      sessionState.metadata.published = `${config.metadata.year}-01-01T00:00:00.000Z`;
+      metadataUpdated = true;
+    }
+    if (config.metadata.description) {
+      sessionState.metadata.description = config.metadata.description;
+      metadataUpdated = true;
+    }
+
+    // Write updated session state back if we made changes
+    if (metadataUpdated) {
+      try {
+        fs.writeFileSync(statePath, JSON.stringify(sessionState, null, 2), 'utf-8');
+        console.log('[REASSEMBLY] Updated session metadata with user values:', {
+          title: sessionState.metadata.title,
+          creator: sessionState.metadata.creator,
+          year: config.metadata.year
+        });
+      } catch (err) {
+        console.error('[REASSEMBLY] Failed to update session metadata:', err);
+      }
+    }
+  }
+
   let epubPath = sessionState?.epubPath;
 
   // Try to find an epub file in the process directory if not in state
@@ -660,44 +706,15 @@ export async function startReassembly(
       '--ebook', epubPath,
       '--output_dir', config.outputDir,
       '--session', config.sessionId,
-      '--device', 'cpu',
+      '--device', 'CPU',
       '--language', language,
       '--tts_engine', 'xtts',
       '--assemble_only',
       '--no_split'
     ];
 
-    // Add output filename - use provided or generate "Title - Author (Year)"
-    let outputFilename = config.metadata.outputFilename;
-    if (!outputFilename && config.metadata.title) {
-      // Generate filename: "Title - Author (Year)" or "Title - Author"
-      const sanitize = (s: string) => s.replace(/[<>:"/\\|?*]/g, '').trim();
-      const title = sanitize(config.metadata.title);
-      const author = config.metadata.author ? sanitize(config.metadata.author) : '';
-      const year = config.metadata.year || '';
-
-      if (author && year) {
-        outputFilename = `${title} - ${author} (${year})`;
-      } else if (author) {
-        outputFilename = `${title} - ${author}`;
-      } else {
-        outputFilename = title;
-      }
-    }
-    if (outputFilename) {
-      appArgs.push('--output_filename', outputFilename);
-    }
-
-    // Add metadata if provided (for m4b tagging)
-    if (config.metadata.title) {
-      appArgs.push('--title', config.metadata.title);
-    }
-    if (config.metadata.author) {
-      appArgs.push('--author', config.metadata.author);
-    }
-    if (config.metadata.coverPath) {
-      appArgs.push('--cover', config.metadata.coverPath);
-    }
+    // Note: --output_filename, --title, --author, --cover are not supported by all e2a versions
+    // Metadata will be applied after assembly using m4b-tool if available
 
     // Build the full command using cross-platform conda args
     const condaArgs = [...getCondaRunArgs(e2aPath), ...appArgs];
@@ -705,7 +722,7 @@ export async function startReassembly(
 
     const proc = spawn(getCondaPath(), condaArgs, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
       shell: true
     });
 
@@ -952,7 +969,8 @@ export function isE2aAvailable(customTmpPath?: string): boolean {
 }
 
 /**
- * Apply extended metadata to M4B using m4b-tool
+ * Apply extended metadata to M4B using shared metadata-tools module
+ * (uses tone on Windows, m4b-tool on macOS/Linux)
  */
 async function applyMetadataWithM4bTool(
   m4bPath: string,
@@ -960,98 +978,71 @@ async function applyMetadataWithM4bTool(
   mainWindow: BrowserWindow | null,
   jobId: string
 ): Promise<{ success: boolean; error?: string }> {
-  // Check if m4b-tool is available
-  const m4bToolPath = '/opt/homebrew/bin/m4b-tool';
-  if (!fs.existsSync(m4bToolPath)) {
-    console.log('[REASSEMBLY] m4b-tool not found, skipping metadata application');
+  // Check if a metadata tool is available
+  const toolInfo = getMetadataToolPath();
+  if (!toolInfo) {
+    console.log('[REASSEMBLY] No metadata tool found, skipping metadata application');
     return { success: true };  // Not an error - just skip if not available
   }
+
+  console.log(`[REASSEMBLY] Using metadata tool: ${toolInfo.tool} at ${toolInfo.path}`);
 
   if (!fs.existsSync(m4bPath)) {
     return { success: false, error: 'M4B file not found for metadata application' };
   }
 
-  // Build m4b-tool meta command arguments
-  const args = ['meta', m4bPath];
+  // Build metadata object for the shared module
+  const metadataToApply: AudiobookMetadata = {};
 
-  // Add metadata flags
   if (metadata.title) {
-    args.push('--name', metadata.title);
+    metadataToApply.title = metadata.title;
   }
   if (metadata.author) {
-    args.push('--artist', metadata.author);
-    args.push('--albumartist', metadata.author);  // Also set album artist
+    metadataToApply.author = metadata.author;
   }
   if (metadata.year) {
-    args.push('--year', metadata.year);
+    metadataToApply.year = metadata.year;
   }
   if (metadata.narrator) {
-    args.push('--writer', metadata.narrator);  // Use writer tag for narrator
+    metadataToApply.narrator = metadata.narrator;
   }
   if (metadata.series) {
-    let album = metadata.series;
+    metadataToApply.series = metadata.series;
     if (metadata.seriesNumber) {
-      album += `, Book ${metadata.seriesNumber}`;
+      metadataToApply.seriesNumber = metadata.seriesNumber;
     }
-    args.push('--album', album);
   }
   if (metadata.genre) {
-    args.push('--genre', metadata.genre);
+    metadataToApply.genre = metadata.genre;
   }
   if (metadata.description) {
-    args.push('--description', metadata.description);
-    args.push('--longdesc', metadata.description);
+    metadataToApply.description = metadata.description;
   }
   if (metadata.coverPath && fs.existsSync(metadata.coverPath)) {
-    args.push('--cover', metadata.coverPath);
+    metadataToApply.coverPath = metadata.coverPath;
   }
 
   // If no metadata to apply, skip
-  if (args.length <= 2) {
+  if (Object.keys(metadataToApply).length === 0) {
     console.log('[REASSEMBLY] No extended metadata to apply');
     return { success: true };
   }
 
-  console.log('[REASSEMBLY] Applying metadata with m4b-tool:', args.join(' '));
+  console.log('[REASSEMBLY] Applying metadata:', metadataToApply);
 
   sendProgress(mainWindow, jobId, {
     phase: 'metadata',
     percentage: 95,
-    message: 'Applying extended metadata with m4b-tool...'
+    message: `Applying extended metadata with ${toolInfo.tool}...`
   });
 
-  return new Promise((resolve) => {
-    const proc = spawn(m4bToolPath, args, {
-      env: { ...process.env },
-      shell: false
-    });
-
-    let stderr = '';
-
-    proc.stdout?.on('data', (data) => {
-      console.log('[REASSEMBLY] m4b-tool stdout:', data.toString());
-    });
-
-    proc.stderr?.on('data', (data) => {
-      stderr += data.toString();
-      console.log('[REASSEMBLY] m4b-tool stderr:', data.toString());
-    });
-
-    proc.on('close', (code) => {
-      if (code === 0) {
-        console.log('[REASSEMBLY] m4b-tool metadata applied successfully');
-        resolve({ success: true });
-      } else {
-        console.error('[REASSEMBLY] m4b-tool failed:', stderr);
-        // Don't fail the whole job - metadata is non-critical
-        resolve({ success: true });
-      }
-    });
-
-    proc.on('error', (err) => {
-      console.error('[REASSEMBLY] m4b-tool error:', err);
-      // Don't fail the whole job
-      resolve({ success: true });
-    });
-  });
+  try {
+    await applyMetadata(m4bPath, metadataToApply);
+    console.log('[REASSEMBLY] Metadata applied successfully');
+    return { success: true };
+  } catch (err) {
+    console.error('[REASSEMBLY] Metadata application failed:', err);
+    // Don't fail the whole job - metadata is non-critical
+    return { success: true };
+  }
 }

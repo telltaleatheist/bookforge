@@ -11,6 +11,8 @@ import { ConfirmModalComponent } from '../confirm-modal/confirm-modal.component'
 import { QueueService } from '../../../queue/services/queue.service';
 import { ReassemblyJobConfig } from '../../../queue/models/queue.types';
 import { ElectronService } from '../../../../core/services/electron.service';
+import { SettingsService } from '../../../../core/services/settings.service';
+import { LibraryService } from '../../../../core/services/library.service';
 
 type Tab = 'metadata' | 'chapters' | 'actions';
 
@@ -751,6 +753,8 @@ export class SessionDetailComponent {
   readonly reassemblyService = inject(ReassemblyService);
   private readonly queueService = inject(QueueService);
   private readonly electronService = inject(ElectronService);
+  private readonly settingsService = inject(SettingsService);
+  private readonly libraryService = inject(LibraryService);
 
   // State
   readonly activeTab = signal<Tab>('metadata');
@@ -1160,8 +1164,9 @@ export class SessionDetailComponent {
     const session = this.session();
     if (!session) return;
 
-    // Get output directory from settings (use default for now)
-    const outputDir = '/Volumes/Callisto/books/audiobooks';
+    // Get output directory from settings, or fall back to library's audiobooks folder
+    const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
+    const outputDir = configuredDir || this.libraryService.audiobooksPath() || '';
 
     // Get e2a tmp path from settings (passed to backend so it can derive app path)
     const e2aTmpPath = this.reassemblyService.e2aTmpPath();
