@@ -578,6 +578,7 @@ function startWorker(
       '--device', appDeviceArg,
       '--output_dir', config.outputDir,
       '--worker_mode',
+      '--skip_deps',  // Deps already verified during prep phase
       '--tts_engine', settings.ttsEngine
     ];
 
@@ -982,6 +983,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--language', settings.language,
     '--tts_engine', settings.ttsEngine,  // Required for session setup even in assembly mode
     '--assemble_only',  // Skip TTS, just combine existing sentence audio files
+    '--skip_deps',      // Deps already verified during prep phase
     '--no_split'        // Don't split into multiple parts - create single file
   ];
 
