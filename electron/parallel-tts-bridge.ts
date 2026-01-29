@@ -648,8 +648,10 @@ function startWorker(
         emitProgress(session);
       }
 
-      // Parse progress: "Converting X.XX%: : Y/Z" or "X.XX%: : Y/Z" (worker mode)
-      const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%.*?(\d+)\/(\d+)/i);
+      // Parse progress: "X.XX%: N/M" or "X.XX%: : N/M" (worker mode)
+      // Pattern requires N/M to be followed by whitespace or end of string to avoid matching
+      // vLLM progress bars like "100%|██| 1/1 [00:00<00:00...]"
+      const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%:?\s*:?\s*(\d+)\/(\d+)(?:\s|$)/i);
       if (progressMatch) {
         const current = parseInt(progressMatch[2]);
         worker.currentSentence = worker.sentenceStart + current;
@@ -683,8 +685,9 @@ function startWorker(
       }
 
       // Parse progress from stderr too - e2a often outputs progress to stderr
-      // Match "Converting X.XX%: : Y/Z" or "X.XX%: : Y/Z" (worker mode)
-      const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%.*?(\d+)\/(\d+)/i);
+      // Pattern requires N/M to be followed by whitespace or end of string to avoid matching
+      // vLLM progress bars like "100%|██| 1/1 [00:00<00:00...]"
+      const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%:?\s*:?\s*(\d+)\/(\d+)(?:\s|$)/i);
       if (progressMatch) {
         const current = parseInt(progressMatch[2]);
         worker.currentSentence = worker.sentenceStart + current;
