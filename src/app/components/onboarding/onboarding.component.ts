@@ -1,6 +1,7 @@
 import { Component, inject, signal, output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { LibraryService } from '../../core/services/library.service';
+import { ElectronService } from '../../core/services/electron.service';
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
 
 type OnboardingStep = 'welcome' | 'library';
@@ -92,7 +93,6 @@ type OnboardingStep = 'welcome' | 'library';
                 class="library-option"
                 [class.selected]="selectedOption() === 'custom'"
                 (click)="browseForFolder()"
-                [disabled]="true"
               >
                 <span class="option-icon">&#128193;</span>
                 <div class="option-content">
@@ -348,6 +348,7 @@ type OnboardingStep = 'welcome' | 'library';
 })
 export class OnboardingComponent {
   private readonly libraryService = inject(LibraryService);
+  private readonly electronService = inject(ElectronService);
 
   // State
   readonly currentStep = signal<OnboardingStep>('welcome');
@@ -377,9 +378,11 @@ export class OnboardingComponent {
   }
 
   async browseForFolder(): Promise<void> {
-    // TODO: Implement folder browser dialog via IPC
-    // For now, just use default
-    this.selectedOption.set('custom');
+    const result = await this.electronService.openFolderDialog();
+    if (result.success && result.folderPath) {
+      this.customPath.set(result.folderPath);
+      this.selectedOption.set('custom');
+    }
   }
 
   async createLibrary(): Promise<void> {
