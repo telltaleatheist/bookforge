@@ -892,7 +892,8 @@ export async function startReassembly(
           await applyMetadataWithM4bTool(outputPath, config.metadata, mainWindow, jobId);
         } else if (config.outputDir) {
           // Try to find the output file in the output directory
-          const outputFiles = fs.readdirSync(config.outputDir).filter(f => f.endsWith('.m4b'));
+          // Exclude macOS resource forks (._* files)
+          const outputFiles = fs.readdirSync(config.outputDir).filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
           if (outputFiles.length > 0) {
             // Find the most recently modified m4b
             const sortedFiles = outputFiles

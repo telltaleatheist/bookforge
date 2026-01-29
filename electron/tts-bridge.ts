@@ -470,7 +470,8 @@ export async function startConversion(
         if (!finalOutputPath) {
           try {
             const files = await fs.readdir(outputDir);
-            const m4bFiles = files.filter(f => f.endsWith('.m4b'));
+            // Filter for .m4b files, excluding macOS resource forks (._* files)
+            const m4bFiles = files.filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
 
             if (m4bFiles.length > 0) {
               // If multiple files, find the most recently modified one

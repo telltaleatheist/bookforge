@@ -882,10 +882,12 @@ export class QueueService {
           } else if (electron.fs?.exists) {
             // Check for processed EPUBs in priority order
             const basePath = job.epubPath.replace(/\.epub$/i, '');
+            const epubDir = job.epubPath.substring(0, job.epubPath.lastIndexOf('/'));
             const candidates = [
               `${basePath}_translated_cleaned.epub`,  // Translated + cleaned (best)
               `${basePath}_translated.epub`,           // Translated only
-              `${basePath}_cleaned.epub`               // Cleaned only
+              `${basePath}_cleaned.epub`,              // Cleaned only (new naming: exported_cleaned.epub)
+              `${epubDir}/cleaned.epub`                // Cleaned only (legacy naming: cleaned.epub)
             ];
             let foundPath: string | null = null;
             for (const candidatePath of candidates) {
@@ -963,10 +965,12 @@ export class QueueService {
             seqEpubPath = job.outputPath;
           } else if (electron.fs?.exists) {
             const basePath = job.epubPath.replace(/\.epub$/i, '');
+            const epubDir = job.epubPath.substring(0, job.epubPath.lastIndexOf('/'));
             const candidates = [
               `${basePath}_translated_cleaned.epub`,
               `${basePath}_translated.epub`,
-              `${basePath}_cleaned.epub`
+              `${basePath}_cleaned.epub`,
+              `${epubDir}/cleaned.epub`  // Legacy naming
             ];
             for (const candidatePath of candidates) {
               try {

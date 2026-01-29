@@ -1231,7 +1231,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         if (!outputPath) {
           try {
             const files = await fs.readdir(config.outputDir);
-            const m4bFiles = files.filter(f => f.endsWith('.m4b'));
+            // Filter for .m4b files, excluding macOS resource forks (._* files)
+            const m4bFiles = files.filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
             if (m4bFiles.length > 0) {
               // Get most recent
               let mostRecent = { file: m4bFiles[0], mtime: 0 };
@@ -1289,7 +1290,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         console.log('[PARALLEL-TTS] Assembly exited with non-zero code, checking for output file anyway...');
         try {
           const files = await fs.readdir(config.outputDir);
-          const m4bFiles = files.filter(f => f.endsWith('.m4b'));
+          // Filter for .m4b files, excluding macOS resource forks (._* files)
+          const m4bFiles = files.filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
           if (m4bFiles.length > 0) {
             // Get most recent
             let mostRecent = { file: m4bFiles[0], mtime: 0 };
@@ -1777,6 +1779,10 @@ export async function startParallelConversion(
     return { success: false, error };
   }
 
+  // NOTE: We intentionally do NOT auto-skip to assembly for complete sessions.
+  // Users who want to assemble an existing session should use the Reassembly feature.
+  // TTS jobs always run prep to create a fresh session with the current settings.
+
   // Prepare the session first
   let prepInfo: PrepInfo;
   try {
@@ -2096,6 +2102,7 @@ export interface ResumeCheckResult {
   sessionDir?: string;
   sessionPath?: string;        // Full path to session directory (for fast check)
   processDir?: string;
+  sourceEpubPath?: string;     // Original epub path stored in session (useful for directory matches)
   totalSentences?: number;
   totalChapters?: number;
   completedSentences?: number;
@@ -2141,11 +2148,10 @@ function extractTitleFromPath(folderPath: string): string {
 /**
  * Find session directory for an epub by scanning e2a's tmp folder
  * Returns the session directory path if found, or null
- * Matches by: exact path > same directory > title from metadata > title from path
+ * Matches by exact epub path only (epub_path or source_epub_path in session state)
  */
 async function findSessionForEpub(epubPath: string): Promise<string | null> {
   const tmpDir = path.join(e2aPath, 'tmp');
-  const epubDir = path.dirname(epubPath);
 
   console.log(`[PARALLEL-TTS] e2aPath: ${e2aPath}`);
   console.log(`[PARALLEL-TTS] tmpDir: ${tmpDir}`);
@@ -2208,12 +2214,8 @@ async function findSessionForEpub(epubPath: string): Promise<string | null> {
               return sessionPath;
             }
 
-            // Check if same directory (handles renamed files in same folder)
-            const stateEpubDir = path.dirname(state.source_epub_path || state.epub_path || '');
-            if (stateEpubDir === epubDir) {
-              console.log(`[PARALLEL-TTS] Found directory match: ${sessionPath}`);
-              return sessionPath;
-            }
+            // NOTE: Directory matching removed - too many false positives when multiple
+            // books are in the same folder. Only match on exact epub paths.
             console.log(`[PARALLEL-TTS]   No match for this session`);
           } catch {
             // No session-state.json or invalid JSON - skip
@@ -2341,6 +2343,7 @@ export async function checkResumeStatusFast(epubPath: string): Promise<ResumeChe
           sessionId,
           sessionDir: sessionPath,
           processDir: fullProcessDir,
+          sourceEpubPath: state.source_epub_path,  // Original epub path stored in session
           // Counts
           totalSentences,
           totalChapters: state.total_chapters || chapters.length,
