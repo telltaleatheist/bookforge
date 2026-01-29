@@ -17,6 +17,10 @@ import {
   getCondaPath as getToolCondaPath,
   getE2aPath as getToolE2aPath,
   updateConfig as updateToolConfig,
+  shouldUseWsl2ForOrpheus,
+  getWslDistro,
+  getWslCondaPath,
+  getWslE2aPath,
 } from './tool-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -194,6 +198,63 @@ export function getCondaPath(): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// WSL Path Conversion (Windows only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Convert a Windows path to WSL path format
+ * C:\Users\foo\book.epub -> /mnt/c/Users/foo/book.epub
+ *
+ * @param winPath - Windows path (e.g., "C:\Users\foo\file.txt")
+ * @returns WSL-compatible path (e.g., "/mnt/c/Users/foo/file.txt")
+ */
+export function windowsToWslPath(winPath: string): string {
+  if (!winPath) return winPath;
+
+  // Normalize to forward slashes first
+  const normalized = winPath.replace(/\\/g, '/');
+
+  // Match drive letter pattern (C:, D:, etc.)
+  const match = normalized.match(/^([A-Za-z]):(.*)/);
+  if (match) {
+    const driveLetter = match[1].toLowerCase();
+    const restOfPath = match[2];
+    return `/mnt/${driveLetter}${restOfPath}`;
+  }
+
+  // Not a Windows path, return as-is
+  return winPath;
+}
+
+/**
+ * Convert a WSL path to Windows path format
+ * /mnt/c/Users/foo/book.epub -> C:\Users\foo\book.epub
+ *
+ * @param wslPath - WSL path (e.g., "/mnt/c/Users/foo/file.txt")
+ * @returns Windows path (e.g., "C:\Users\foo\file.txt")
+ */
+export function wslToWindowsPath(wslPath: string): string {
+  if (!wslPath) return wslPath;
+
+  // Match WSL mount pattern (/mnt/c/...)
+  const match = wslPath.match(/^\/mnt\/([a-z])(\/.*)?$/i);
+  if (match) {
+    const driveLetter = match[1].toUpperCase();
+    const restOfPath = (match[2] || '').replace(/\//g, '\\');
+    return `${driveLetter}:${restOfPath}`;
+  }
+
+  // Not a WSL mounted path, return as-is
+  return wslPath;
+}
+
+/**
+ * Check if the current configuration should use WSL for Orpheus
+ * Re-exported for convenience
+ */
+export { shouldUseWsl2ForOrpheus, getWslDistro, getWslCondaPath, getWslE2aPath };
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Exports
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -207,4 +268,12 @@ export const e2aPaths = {
   normalizePath,
   setCondaPath,
   setE2aPath,
+  // WSL path conversion
+  windowsToWslPath,
+  wslToWindowsPath,
+  // WSL config (re-exported from tool-paths)
+  shouldUseWsl2ForOrpheus,
+  getWslDistro,
+  getWslCondaPath,
+  getWslE2aPath,
 };

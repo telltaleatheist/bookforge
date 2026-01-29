@@ -2274,6 +2274,32 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // WSL2 Support (Windows only, for Orpheus TTS)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('wsl:detect', async () => {
+    try {
+      const { detectWslAvailability } = await import('./tool-paths.js');
+      return { success: true, data: detectWslAvailability() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('wsl:check-orpheus-setup', async (_event, config: {
+    distro?: string;
+    condaPath?: string;
+    e2aPath?: string;
+  }) => {
+    try {
+      const { checkWslOrpheusSetup } = await import('./tool-paths.js');
+      return { success: true, data: checkWslOrpheusSetup(config) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // TTS Bridge handlers (ebook2audiobook)
   // ─────────────────────────────────────────────────────────────────────────────
 

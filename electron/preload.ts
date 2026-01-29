@@ -1048,6 +1048,14 @@ export interface ElectronAPI {
     updateConfig: (updates: Record<string, string | undefined>) => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
     getStatus: () => Promise<{ success: boolean; data?: Record<string, { configured: boolean; detected: boolean; path: string }>; error?: string }>;
   };
+  wsl: {
+    detect: () => Promise<{ success: boolean; data?: { available: boolean; version?: number; distros: string[]; defaultDistro?: string; error?: string }; error?: string }>;
+    checkOrpheusSetup: (config: { distro?: string; condaPath?: string; e2aPath?: string }) => Promise<{
+      success: boolean;
+      data?: { valid: boolean; condaFound: boolean; e2aFound: boolean; orpheusEnvFound: boolean; errors: string[] };
+      error?: string;
+    }>;
+  };
   tts: {
     checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; version?: string; error?: string }; error?: string }>;
     getVoices: () => Promise<{ success: boolean; data?: VoiceInfo[]; error?: string }>;
@@ -1549,6 +1557,12 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('tool-paths:update-config', updates),
     getStatus: () =>
       ipcRenderer.invoke('tool-paths:get-status'),
+  },
+  wsl: {
+    detect: () =>
+      ipcRenderer.invoke('wsl:detect'),
+    checkOrpheusSetup: (config: { distro?: string; condaPath?: string; e2aPath?: string }) =>
+      ipcRenderer.invoke('wsl:check-orpheus-setup', config),
   },
   tts: {
     checkAvailable: () =>

@@ -626,6 +626,146 @@ import {
                   </div>
                 </div>
 
+                <!-- WSL2 Settings (Windows only, for Orpheus TTS) -->
+                @if (isWindows()) {
+                  <div class="wsl-section">
+                    <h3 class="wsl-section-title">WSL2 for Orpheus TTS</h3>
+                    <p class="wsl-description">
+                      Run Orpheus TTS in WSL2 for full CUDA graph performance (~6x faster than Windows native).
+                    </p>
+
+                    @if (wslAvailable(); as wsl) {
+                      @if (wsl.available) {
+                        <div class="wsl-status available">
+                          <span class="status-badge detected">WSL2 Available</span>
+                          <span class="wsl-version">WSL v{{ wsl.version || 2 }}</span>
+                        </div>
+
+                        <!-- Enable toggle -->
+                        <div class="tool-row">
+                          <div class="tool-info">
+                            <h4>Enable WSL2 for Orpheus</h4>
+                            <p class="tool-description">Use WSL2 to run Orpheus TTS with full CUDA graphs</p>
+                          </div>
+                          <div class="tool-control">
+                            <input
+                              type="checkbox"
+                              class="toggle-input"
+                              [checked]="getToolPathValue('useWsl2ForOrpheus') === 'true'"
+                              (change)="toggleWsl2ForOrpheus($any($event.target).checked)"
+                            />
+                          </div>
+                        </div>
+
+                        <!-- WSL Distro -->
+                        <div class="tool-row">
+                          <div class="tool-info">
+                            <h4>WSL Distribution</h4>
+                            <p class="tool-description">Select the WSL distro with ebook2audiobook installed</p>
+                          </div>
+                          <div class="tool-control">
+                            <select
+                              class="text-input"
+                              [value]="getToolPathValue('wslDistro') || wsl.defaultDistro || ''"
+                              (change)="selectWslDistro($any($event.target).value)"
+                            >
+                              @for (distro of wsl.distros; track distro) {
+                                <option [value]="distro">{{ distro }}{{ distro === wsl.defaultDistro ? ' (default)' : '' }}</option>
+                              }
+                            </select>
+                          </div>
+                        </div>
+
+                        <!-- WSL Conda Path -->
+                        <div class="tool-row">
+                          <div class="tool-info">
+                            <h4>WSL Conda Path</h4>
+                            <p class="tool-description">Path to conda inside WSL (e.g., /home/user/miniconda3/bin/conda)</p>
+                          </div>
+                          <div class="tool-control">
+                            <input
+                              type="text"
+                              class="text-input"
+                              [value]="getToolPathValue('wslCondaPath')"
+                              placeholder="/home/$USER/miniconda3/bin/conda"
+                              (change)="updateToolPath('wslCondaPath', $any($event.target).value)"
+                            />
+                          </div>
+                        </div>
+
+                        <!-- WSL E2A Path -->
+                        <div class="tool-row">
+                          <div class="tool-info">
+                            <h4>WSL ebook2audiobook Path</h4>
+                            <p class="tool-description">Path to ebook2audiobook inside WSL</p>
+                          </div>
+                          <div class="tool-control">
+                            <input
+                              type="text"
+                              class="text-input"
+                              [value]="getToolPathValue('wslE2aPath')"
+                              placeholder="/home/$USER/ebook2audiobook"
+                              (change)="updateToolPath('wslE2aPath', $any($event.target).value)"
+                            />
+                          </div>
+                        </div>
+
+                        <!-- Verify Button and Status -->
+                        <div class="wsl-verify-section">
+                          <desktop-button
+                            variant="ghost"
+                            size="sm"
+                            (click)="verifyWslSetup()"
+                            [disabled]="wslVerifying()"
+                          >
+                            {{ wslVerifying() ? 'Verifying...' : 'Verify WSL Setup' }}
+                          </desktop-button>
+
+                          @if (wslSetupStatus(); as setup) {
+                            <div class="wsl-setup-status" [class.valid]="setup.valid" [class.invalid]="!setup.valid">
+                              @if (setup.valid) {
+                                <span class="status-icon">&#10003;</span>
+                                <span>WSL setup verified - ready for Orpheus TTS</span>
+                              } @else {
+                                <span class="status-icon">&#10007;</span>
+                                <div class="setup-checklist">
+                                  <div [class.found]="setup.condaFound" [class.not-found]="!setup.condaFound">
+                                    {{ setup.condaFound ? '✓' : '✗' }} Conda
+                                  </div>
+                                  <div [class.found]="setup.e2aFound" [class.not-found]="!setup.e2aFound">
+                                    {{ setup.e2aFound ? '✓' : '✗' }} ebook2audiobook
+                                  </div>
+                                  <div [class.found]="setup.orpheusEnvFound" [class.not-found]="!setup.orpheusEnvFound">
+                                    {{ setup.orpheusEnvFound ? '✓' : '✗' }} orpheus_env
+                                  </div>
+                                </div>
+                                @if (setup.errors.length > 0) {
+                                  <div class="setup-errors">
+                                    @for (error of setup.errors; track error) {
+                                      <p class="error-text">{{ error }}</p>
+                                    }
+                                  </div>
+                                }
+                              }
+                            </div>
+                          }
+                        </div>
+                      } @else {
+                        <div class="wsl-status not-available">
+                          <span class="status-badge not-found">WSL2 Not Available</span>
+                          <p class="wsl-help">
+                            To use WSL2 for Orpheus TTS, install WSL using: <code>wsl --install</code>
+                          </p>
+                        </div>
+                      }
+                    } @else {
+                      <div class="wsl-loading">
+                        <span>Detecting WSL...</span>
+                      </div>
+                    }
+                  </div>
+                }
+
                 @if (toolPathsSaveStatus(); as status) {
                   <div class="status-message" [class.success]="status.success" [class.error]="!status.success">
                     {{ status.message }}
@@ -1426,6 +1566,118 @@ import {
       color: var(--text-tertiary);
       font-style: italic;
     }
+
+    /* WSL2 Section Styles */
+    .wsl-section {
+      margin-top: var(--ui-spacing-xl);
+      padding-top: var(--ui-spacing-xl);
+      border-top: 1px solid var(--border);
+    }
+
+    .wsl-section-title {
+      margin: 0 0 var(--ui-spacing-sm) 0;
+      font-size: var(--ui-font-base);
+      font-weight: $font-weight-semibold;
+      color: var(--text-primary);
+    }
+
+    .wsl-description {
+      margin: 0 0 var(--ui-spacing-lg) 0;
+      font-size: var(--ui-font-sm);
+      color: var(--text-tertiary);
+    }
+
+    .wsl-status {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      margin-bottom: var(--ui-spacing-lg);
+
+      &.not-available {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .wsl-version {
+        font-size: var(--ui-font-xs);
+        color: var(--text-tertiary);
+      }
+
+      .wsl-help {
+        margin: var(--ui-spacing-sm) 0 0 0;
+        font-size: var(--ui-font-sm);
+        color: var(--text-tertiary);
+
+        code {
+          background: var(--bg-surface);
+          padding: 2px 6px;
+          border-radius: 4px;
+          font-family: monospace;
+        }
+      }
+    }
+
+    .wsl-loading {
+      color: var(--text-tertiary);
+      font-style: italic;
+    }
+
+    .wsl-verify-section {
+      margin-top: var(--ui-spacing-lg);
+      padding: var(--ui-spacing-lg);
+      background: var(--bg-surface);
+      border-radius: $radius-md;
+    }
+
+    .wsl-setup-status {
+      margin-top: var(--ui-spacing-md);
+      padding: var(--ui-spacing-md);
+      border-radius: $radius-sm;
+
+      &.valid {
+        background: var(--success-bg);
+        color: var(--success);
+      }
+
+      &.invalid {
+        background: var(--error-bg);
+        color: var(--error);
+      }
+
+      .status-icon {
+        font-size: var(--ui-font-lg);
+        margin-right: var(--ui-spacing-sm);
+      }
+
+      .setup-checklist {
+        display: flex;
+        gap: var(--ui-spacing-md);
+        margin-top: var(--ui-spacing-sm);
+
+        .found {
+          color: var(--success);
+        }
+
+        .not-found {
+          color: var(--error);
+        }
+      }
+
+      .setup-errors {
+        margin-top: var(--ui-spacing-sm);
+
+        .error-text {
+          margin: var(--ui-spacing-xs) 0 0 0;
+          font-size: var(--ui-font-xs);
+        }
+      }
+    }
+
+    .toggle-input {
+      width: 40px;
+      height: 20px;
+      cursor: pointer;
+    }
   `]
 })
 export class SettingsComponent implements OnInit {
@@ -1495,6 +1747,23 @@ export class SettingsComponent implements OnInit {
   readonly toolPathsLoading = signal(false);
   readonly toolPathsSaveStatus = signal<{ success: boolean; message: string } | null>(null);
 
+  // WSL2 state (Windows only, for Orpheus TTS)
+  readonly wslAvailable = signal<{
+    available: boolean;
+    version?: number;
+    distros: string[];
+    defaultDistro?: string;
+  } | null>(null);
+  readonly wslSetupStatus = signal<{
+    valid: boolean;
+    condaFound: boolean;
+    e2aFound: boolean;
+    orpheusEnvFound: boolean;
+    errors: string[];
+  } | null>(null);
+  readonly wslVerifying = signal(false);
+  readonly isWindows = signal(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('win'));
+
   // Combine built-in and plugin sections
   readonly allSections = computed(() => {
     return this.settingsService.sections();
@@ -1512,6 +1781,10 @@ export class SettingsComponent implements OnInit {
     this.refreshLibraryServerStatus();
     // Load tool paths
     this.refreshToolPaths();
+    // Detect WSL on Windows
+    if (this.isWindows()) {
+      this.detectWsl();
+    }
   }
 
   goBack(): void {
@@ -1999,5 +2272,62 @@ export class SettingsComponent implements OnInit {
   getToolStatus(key: string): { configured: boolean; detected: boolean; path: string } | undefined {
     const status = this.toolPathsStatus();
     return status[key];
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // WSL2 Methods (Windows only, for Orpheus TTS)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async detectWsl(): Promise<void> {
+    if (!this.isWindows()) return;
+
+    try {
+      const result = await this.electronService.wslDetect();
+      if (result.success && result.data) {
+        this.wslAvailable.set(result.data);
+      }
+    } catch (err) {
+      console.error('Failed to detect WSL:', err);
+      this.wslAvailable.set(null);
+    }
+  }
+
+  async verifyWslSetup(): Promise<void> {
+    if (!this.isWindows()) return;
+
+    this.wslVerifying.set(true);
+    this.wslSetupStatus.set(null);
+
+    try {
+      const config = this.toolPathsConfig();
+      const result = await this.electronService.wslCheckOrpheusSetup({
+        distro: config['wslDistro'] || undefined,
+        condaPath: config['wslCondaPath'] || undefined,
+        e2aPath: config['wslE2aPath'] || undefined,
+      });
+
+      if (result.success && result.data) {
+        this.wslSetupStatus.set(result.data);
+      }
+    } catch (err) {
+      console.error('Failed to verify WSL setup:', err);
+      this.wslSetupStatus.set({
+        valid: false,
+        condaFound: false,
+        e2aFound: false,
+        orpheusEnvFound: false,
+        errors: [err instanceof Error ? err.message : 'Unknown error'],
+      });
+    } finally {
+      this.wslVerifying.set(false);
+    }
+  }
+
+  async toggleWsl2ForOrpheus(enabled: boolean): Promise<void> {
+    await this.updateToolPath('useWsl2ForOrpheus', enabled ? 'true' : '');
+  }
+
+  async selectWslDistro(distro: string): Promise<void> {
+    await this.updateToolPath('wslDistro', distro);
   }
 }

@@ -109,6 +109,189 @@ function cleanupOrphanedVllmProcesses(): void {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WSL2 Spawn Support (Windows only, for Orpheus TTS)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface WslSpawnConfig {
+  condaArgs: string[];       // Conda run args (without conda executable)
+  cwd: string;               // Working directory (Windows path)
+  env?: Record<string, string>;  // Environment variables
+  ttsEngine?: string;        // TTS engine name
+}
+
+/**
+ * Check if we should use WSL for this spawn (Orpheus on Windows with WSL enabled)
+ */
+function shouldUseWslForSpawn(ttsEngine?: string): boolean {
+  if (os.platform() !== 'win32') return false;
+  if (ttsEngine?.toLowerCase() !== 'orpheus') return false;
+  return shouldUseWsl2ForOrpheus();
+}
+
+/**
+ * Build bash command for WSL execution
+ * Converts Windows paths and builds the full conda activation command
+ */
+function buildWslBashCommand(config: WslSpawnConfig): string {
+  const wslCondaPath = getWslCondaPath();
+  const wslE2aPath = getWslE2aPath();
+
+  // Build environment variable exports
+  const envExports = config.env
+    ? Object.entries(config.env)
+        .map(([key, value]) => `export ${key}="${value}"`)
+        .join(' && ')
+    : '';
+
+  // Convert condaArgs paths from Windows to WSL format
+  const wslArgs = config.condaArgs.map((arg) => {
+    // Convert any Windows paths in args (e.g., epub path, output dir)
+    if (/^[A-Za-z]:[\\/]/.test(arg)) {
+      return windowsToWslPath(arg);
+    }
+    // Handle paths that come after flags like --ebook, --output_dir
+    return arg;
+  });
+
+  // Build the full command:
+  // 1. cd to e2a directory
+  // 2. Set environment variables
+  // 3. Run conda with converted args
+  const cdCommand = `cd "${wslE2aPath}"`;
+  const condaCommand = `"${wslCondaPath}" ${wslArgs.join(' ')}`;
+
+  const parts = [cdCommand];
+  if (envExports) {
+    parts.push(envExports);
+  }
+  parts.push(condaCommand);
+
+  return parts.join(' && ');
+}
+
+/**
+ * Spawn a process, routing to WSL if configured for Orpheus
+ * On macOS/Linux or non-Orpheus: uses regular spawn
+ * On Windows with Orpheus + WSL enabled: spawns via wsl.exe
+ */
+function spawnWithWslSupport(
+  condaPath: string,
+  args: string[],
+  options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    shell: boolean;
+  },
+  ttsEngine?: string
+): ChildProcess {
+  // Check if we should use WSL
+  if (shouldUseWslForSpawn(ttsEngine)) {
+    console.log('[PARALLEL-TTS] Using WSL2 for Orpheus TTS spawn');
+
+    const wslBashCommand = buildWslBashCommand({
+      condaArgs: args,
+      cwd: options.cwd,
+      env: options.env as Record<string, string>,
+      ttsEngine,
+    });
+
+    console.log('[PARALLEL-TTS] WSL command:', wslBashCommand.substring(0, 200) + '...');
+
+    const distro = getWslDistro();
+    const wslArgs = distro
+      ? ['-d', distro, 'bash', '-ic', wslBashCommand]
+      : ['bash', '-ic', wslBashCommand];
+
+    return spawn('wsl.exe', wslArgs, {
+      env: process.env,  // Pass through Windows env (WSL inherits these)
+      shell: false,      // Don't use shell, wsl.exe handles it
+    });
+  }
+
+  // Regular Windows/Mac/Linux spawn
+  return spawn(condaPath, args, options);
+}
+
+/**
+ * Kill a WSL process tree
+ * WSL processes need special handling: kill Python in WSL, then kill wsl.exe
+ */
+function killWslProcessTree(process: ChildProcess, label: string, ttsEngine?: string): void {
+  if (!process || process.killed) return;
+
+  const pid = process.pid;
+  if (!pid) {
+    console.log(`[PARALLEL-TTS] ${label}: No PID, using SIGTERM`);
+    try {
+      process.kill('SIGTERM');
+    } catch (err) {
+      console.error(`[PARALLEL-TTS] Failed to kill ${label}:`, err);
+    }
+    return;
+  }
+
+  if (shouldUseWslForSpawn(ttsEngine)) {
+    // WSL process: kill Python processes inside WSL first
+    console.log(`[PARALLEL-TTS] Killing WSL ${label} process tree (PID: ${pid})`);
+    const distro = getWslDistro();
+    const distroArg = distro ? `-d ${distro}` : '';
+
+    try {
+      // Kill Python processes matching e2a patterns inside WSL
+      execSync(`wsl.exe ${distroArg} pkill -f "python.*app.py"`, {
+        timeout: 5000,
+        stdio: 'ignore',
+      });
+      console.log(`[PARALLEL-TTS] Killed Python processes in WSL`);
+    } catch (err) {
+      // pkill may return non-zero if no processes found
+      console.log(`[PARALLEL-TTS] WSL pkill returned (may be no matching processes)`);
+    }
+
+    try {
+      // Kill the wsl.exe wrapper process on Windows
+      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', timeout: 5000 });
+      console.log(`[PARALLEL-TTS] Killed wsl.exe wrapper process`);
+    } catch (err) {
+      console.log(`[PARALLEL-TTS] wsl.exe process may have already exited`);
+    }
+  } else {
+    // Regular process tree kill
+    killProcessTree(process, label);
+  }
+}
+
+/**
+ * Clean up orphaned vLLM processes in WSL
+ * Similar to cleanupOrphanedVllmProcesses but for WSL
+ */
+function cleanupWslOrphanedProcesses(): void {
+  if (os.platform() !== 'win32') return;
+  if (!shouldUseWsl2ForOrpheus()) return;
+
+  console.log('[PARALLEL-TTS] Cleaning up orphaned processes in WSL...');
+  const distro = getWslDistro();
+  const distroArg = distro ? `-d ${distro}` : '';
+
+  try {
+    // Kill any orphaned Python processes running e2a in WSL
+    execSync(`wsl.exe ${distroArg} pkill -f "python.*app.py"`, {
+      timeout: 5000,
+      stdio: 'ignore',
+    });
+    // Kill any orphaned vLLM processes in WSL
+    execSync(`wsl.exe ${distroArg} pkill -f "vllm"`, {
+      timeout: 5000,
+      stdio: 'ignore',
+    });
+    console.log('[PARALLEL-TTS] WSL orphaned process cleanup complete');
+  } catch (err) {
+    // pkill returns non-zero if no processes found, that's OK
+    console.log('[PARALLEL-TTS] WSL orphaned process cleanup returned (may be no processes)');
+  }
+}
+
 // Power save blocker ID - prevents system sleep during TTS conversion
 let powerBlockerId: number | null = null;
 
@@ -244,7 +427,16 @@ export interface ParallelConversionResult {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { getDefaultE2aPath, getCondaRunArgs, getCondaPath } from './e2a-paths';
+import {
+  getDefaultE2aPath,
+  getCondaRunArgs,
+  getCondaPath,
+  shouldUseWsl2ForOrpheus,
+  getWslDistro,
+  getWslCondaPath,
+  getWslE2aPath,
+  windowsToWslPath,
+} from './e2a-paths';
 
 // Use centralized cross-platform path detection
 let e2aPath = getDefaultE2aPath();
@@ -333,6 +525,7 @@ export function killAllWorkers(): void {
 
   for (const [jobId, session] of activeSessions) {
     console.log(`[PARALLEL-TTS] Killing workers for job ${jobId}`);
+    const ttsEngine = session.config?.settings?.ttsEngine;
 
     // Clear watchdog timer
     if (session.watchdogTimer) {
@@ -340,20 +533,23 @@ export function killAllWorkers(): void {
     }
 
     // Kill all worker processes (including child process trees)
+    // Use WSL-aware kill for Orpheus on Windows with WSL enabled
     for (const worker of session.workers) {
       if (worker.process && !worker.process.killed) {
-        killProcessTree(worker.process, `worker ${worker.id}`);
+        killWslProcessTree(worker.process, `worker ${worker.id}`, ttsEngine);
       }
     }
 
     // Kill assembly process if running
     if (session.assemblyProcess && !session.assemblyProcess.killed) {
-      killProcessTree(session.assemblyProcess, 'assembly');
+      killWslProcessTree(session.assemblyProcess, 'assembly', ttsEngine);
     }
   }
 
   // Clean up any orphaned vLLM processes that escaped the process tree
   cleanupOrphanedVllmProcesses();
+  // Also clean up orphaned processes in WSL if applicable
+  cleanupWslOrphanedProcesses();
 
   activeSessions.clear();
   console.log('[PARALLEL-TTS] All workers killed');
@@ -472,11 +668,16 @@ export async function prepareSession(
   await new Promise<void>((resolve, reject) => {
     let stderr = '';
 
-    const prepProcess = spawn(getCondaPath(), args, {
-      cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
-      shell: true
-    });
+    const prepProcess = spawnWithWslSupport(
+      getCondaPath(),
+      args,
+      {
+        cwd: e2aPath,
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
+        shell: true
+      },
+      settings.ttsEngine
+    );
 
     // Log stdout for visibility (but don't parse it)
     prepProcess.stdout?.on('data', (data: Buffer) => {
@@ -708,11 +909,16 @@ function startWorker(
     device: settings.device
   }).catch(() => {}); // Don't fail if logging fails
 
-  const workerProcess = spawn(getCondaPath(), args, {
-    cwd: e2aPath,
-    env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
-    shell: true
-  });
+  const workerProcess = spawnWithWslSupport(
+    getCondaPath(),
+    args,
+    {
+      cwd: e2aPath,
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
+      shell: true
+    },
+    settings.ttsEngine
+  );
 
   // Update worker state with PID and timestamps
   const worker = session.workers[workerId];
@@ -725,7 +931,7 @@ function startWorker(
   // Initialize actual conversions counter
   worker.actualConversions = 0;
 
-  logger.log('INFO', session.jobId, `Worker ${workerId} spawned`, { pid: workerProcess.pid }).catch(() => {});
+  logger.log('INFO', session.jobId, `Worker ${workerId} spawned`, { pid: workerProcess.pid, usingWsl: shouldUseWslForSpawn(settings.ttsEngine) }).catch(() => {});
 
   // Parse worker progress from stdout
   workerProcess.stdout?.on('data', (data: Buffer) => {
@@ -988,11 +1194,12 @@ async function checkForStuckWorkers(session: ConversionSession): Promise<void> {
   }
 
   // Kill stuck workers so they can be retried
+  const ttsEngine = session.config?.settings?.ttsEngine;
   for (const worker of stuckWorkers) {
     if (worker.process) {
       console.log(`[PARALLEL-TTS] Killing stuck worker ${worker.id} (PID: ${worker.pid})`);
       await logger.log('WARN', session.jobId, `Killing stuck worker ${worker.id}`, { pid: worker.pid });
-      killProcessTree(worker.process, `stuck worker ${worker.id}`);
+      killWslProcessTree(worker.process, `stuck worker ${worker.id}`, ttsEngine);
       worker.status = 'error';
       worker.error = 'Worker stuck - no progress';
       // The process close handler will trigger retry logic
@@ -1917,11 +2124,13 @@ export function stopParallelConversion(jobId: string): boolean {
 
   session.cancelled = true;
   stopWatchdog(session);
+  const ttsEngine = session.config?.settings?.ttsEngine;
 
   // Kill all worker processes (including child process trees like vLLM)
+  // Use WSL-aware kill for Orpheus on Windows with WSL enabled
   for (const worker of session.workers) {
     if (worker.process) {
-      killProcessTree(worker.process, `worker ${worker.id}`);
+      killWslProcessTree(worker.process, `worker ${worker.id}`, ttsEngine);
       worker.status = 'error';
       worker.error = 'Cancelled';
     }
@@ -1929,11 +2138,13 @@ export function stopParallelConversion(jobId: string): boolean {
 
   // Kill assembly process if running
   if (session.assemblyProcess) {
-    killProcessTree(session.assemblyProcess, 'assembly');
+    killWslProcessTree(session.assemblyProcess, 'assembly', ttsEngine);
   }
 
   // Clean up any orphaned vLLM processes that escaped the process tree
   cleanupOrphanedVllmProcesses();
+  // Also clean up orphaned processes in WSL if applicable
+  cleanupWslOrphanedProcesses();
 
   // Emit cancelled analytics before cleanup
   emitCancelledAnalytics(session);

@@ -410,6 +410,215 @@ export function getToolStatus(): Record<string, ToolStatus> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// WSL2 Support (Windows only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface WslDetectionResult {
+  available: boolean;
+  version?: number;  // 1 or 2
+  distros: string[];
+  defaultDistro?: string;
+  error?: string;
+}
+
+export interface WslOrpheusSetupResult {
+  valid: boolean;
+  condaFound: boolean;
+  e2aFound: boolean;
+  orpheusEnvFound: boolean;
+  errors: string[];
+}
+
+/**
+ * Detect if WSL2 is available on this Windows machine
+ * Returns info about available distros
+ */
+export function detectWslAvailability(): WslDetectionResult {
+  // WSL is only available on Windows
+  if (os.platform() !== 'win32') {
+    return { available: false, distros: [], error: 'WSL is only available on Windows' };
+  }
+
+  try {
+    // Check if wsl.exe exists and get version
+    const versionOutput = execSync('wsl.exe --version', {
+      encoding: 'utf8',
+      timeout: 10000,
+      windowsHide: true,
+    }).trim();
+
+    // Parse WSL version from output (first line usually contains "WSL version: X.X.X")
+    const versionMatch = versionOutput.match(/WSL.*?:\s*(\d+)/i);
+    const version = versionMatch ? parseInt(versionMatch[1], 10) : 2;
+
+    // List available distros
+    const listOutput = execSync('wsl.exe --list --quiet', {
+      encoding: 'utf8',
+      timeout: 10000,
+      windowsHide: true,
+    }).trim();
+
+    // Parse distro names (filter out empty lines and clean up encoding issues)
+    const distros = listOutput
+      .split('\n')
+      .map((line) => line.replace(/\0/g, '').trim())  // Remove null chars from UTF-16 output
+      .filter((line) => line.length > 0);
+
+    // Get default distro (first in list, or explicitly marked)
+    let defaultDistro: string | undefined;
+    try {
+      const defaultOutput = execSync('wsl.exe --list --verbose', {
+        encoding: 'utf8',
+        timeout: 10000,
+        windowsHide: true,
+      }).trim();
+      // Default distro is marked with * in verbose output
+      const defaultMatch = defaultOutput.match(/\*\s+(\S+)/);
+      if (defaultMatch) {
+        defaultDistro = defaultMatch[1].replace(/\0/g, '');
+      }
+    } catch {
+      defaultDistro = distros[0];
+    }
+
+    return {
+      available: distros.length > 0,
+      version,
+      distros,
+      defaultDistro,
+    };
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+
+    // Check if WSL is simply not installed
+    if (errorMessage.includes('not recognized') || errorMessage.includes('not found')) {
+      return { available: false, distros: [], error: 'WSL is not installed' };
+    }
+
+    return { available: false, distros: [], error: errorMessage };
+  }
+}
+
+/**
+ * Check if Orpheus setup exists in WSL
+ * Verifies conda, e2a, and orpheus_env are present
+ */
+export function checkWslOrpheusSetup(config: {
+  distro?: string;
+  condaPath?: string;
+  e2aPath?: string;
+}): WslOrpheusSetupResult {
+  // Only works on Windows
+  if (os.platform() !== 'win32') {
+    return {
+      valid: false,
+      condaFound: false,
+      e2aFound: false,
+      orpheusEnvFound: false,
+      errors: ['WSL is only available on Windows'],
+    };
+  }
+
+  const errors: string[] = [];
+  const distroArg = config.distro ? ['-d', config.distro] : [];
+
+  // Default paths if not specified
+  const condaPath = config.condaPath || '/home/$USER/miniconda3/bin/conda';
+  const e2aPath = config.e2aPath || '/home/$USER/ebook2audiobook';
+  const orpheusEnvPath = `${e2aPath}/orpheus_env`;
+
+  let condaFound = false;
+  let e2aFound = false;
+  let orpheusEnvFound = false;
+
+  try {
+    // Check conda exists
+    const condaCheck = execSync(
+      `wsl.exe ${distroArg.join(' ')} bash -c "test -f ${condaPath} && echo 'found' || echo 'not found'"`,
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+    ).trim();
+    condaFound = condaCheck.includes('found');
+    if (!condaFound) {
+      errors.push(`Conda not found at ${condaPath}`);
+    }
+  } catch (err) {
+    errors.push(`Failed to check conda: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  try {
+    // Check e2a directory exists
+    const e2aCheck = execSync(
+      `wsl.exe ${distroArg.join(' ')} bash -c "test -d ${e2aPath} && echo 'found' || echo 'not found'"`,
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+    ).trim();
+    e2aFound = e2aCheck.includes('found');
+    if (!e2aFound) {
+      errors.push(`ebook2audiobook not found at ${e2aPath}`);
+    }
+  } catch (err) {
+    errors.push(`Failed to check e2a: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  try {
+    // Check orpheus_env exists
+    const orpheusCheck = execSync(
+      `wsl.exe ${distroArg.join(' ')} bash -c "test -d ${orpheusEnvPath} && echo 'found' || echo 'not found'"`,
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+    ).trim();
+    orpheusEnvFound = orpheusCheck.includes('found');
+    if (!orpheusEnvFound) {
+      errors.push(`Orpheus environment not found at ${orpheusEnvPath}`);
+    }
+  } catch (err) {
+    errors.push(`Failed to check orpheus_env: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return {
+    valid: condaFound && e2aFound && orpheusEnvFound,
+    condaFound,
+    e2aFound,
+    orpheusEnvFound,
+    errors,
+  };
+}
+
+/**
+ * Check if WSL2 should be used for Orpheus TTS
+ * Returns true only on Windows with useWsl2ForOrpheus enabled
+ */
+export function shouldUseWsl2ForOrpheus(): boolean {
+  if (os.platform() !== 'win32') {
+    return false;
+  }
+  loadConfig();
+  return state.config.useWsl2ForOrpheus === true;
+}
+
+/**
+ * Get WSL distro name from config
+ */
+export function getWslDistro(): string | undefined {
+  loadConfig();
+  return state.config.wslDistro;
+}
+
+/**
+ * Get WSL conda path from config
+ */
+export function getWslCondaPath(): string {
+  loadConfig();
+  return state.config.wslCondaPath || '/home/$USER/miniconda3/bin/conda';
+}
+
+/**
+ * Get WSL e2a path from config
+ */
+export function getWslE2aPath(): string {
+  loadConfig();
+  return state.config.wslE2aPath || '/home/$USER/ebook2audiobook';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Exports
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -423,4 +632,11 @@ export const toolPaths = {
   getE2aPath,
   getDeepFilterCondaEnv,
   getToolStatus,
+  // WSL2 functions
+  detectWslAvailability,
+  checkWslOrpheusSetup,
+  shouldUseWsl2ForOrpheus,
+  getWslDistro,
+  getWslCondaPath,
+  getWslE2aPath,
 };

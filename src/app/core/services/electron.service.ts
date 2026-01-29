@@ -1664,6 +1664,48 @@ export class ElectronService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // WSL2 Support (Windows only, for Orpheus TTS)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async wslDetect(): Promise<{
+    success: boolean;
+    data?: {
+      available: boolean;
+      version?: number;
+      distros: string[];
+      defaultDistro?: string;
+      error?: string;
+    };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.wsl.detect();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async wslCheckOrpheusSetup(config: {
+    distro?: string;
+    condaPath?: string;
+    e2aPath?: string;
+  }): Promise<{
+    success: boolean;
+    data?: {
+      valid: boolean;
+      condaFound: boolean;
+      e2aFound: boolean;
+      orpheusEnvFound: boolean;
+      errors: string[];
+    };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.wsl.checkOrpheusSetup(config);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // Reassembly - Browse and reassemble incomplete e2a sessions
   // ─────────────────────────────────────────────────────────────────────────────
 
