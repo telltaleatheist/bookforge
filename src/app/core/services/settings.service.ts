@@ -74,6 +74,13 @@ export class SettingsService {
   private initializeBuiltinSections(): void {
     const builtinSections: SettingsSection[] = [
       {
+        id: 'library',
+        name: 'Library',
+        description: 'Configure your BookForge library location',
+        icon: '📚',
+        fields: [], // Library section has custom UI
+      },
+      {
         id: 'general',
         name: 'General',
         description: 'General application settings',

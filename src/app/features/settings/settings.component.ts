@@ -5,6 +5,7 @@ import { Router } from '@angular/router';
 import { SettingsService, SettingsSection, SettingField } from '../../core/services/settings.service';
 import { PluginService, PluginInfo } from '../../core/services/plugin.service';
 import { ElectronService } from '../../core/services/electron.service';
+import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
 import {
   AIConfig,
@@ -78,8 +79,55 @@ import {
               }
             </div>
 
-            <!-- Storage section has custom UI -->
-            @if (section.id === 'storage') {
+            <!-- Library section has custom UI -->
+            @if (section.id === 'library') {
+              <div class="library-section">
+                <div class="field-row">
+                  <div class="field-info">
+                    <label class="field-label">Library Location</label>
+                    <p class="field-description">All projects, audiobooks, and cache files are stored here</p>
+                  </div>
+                  <div class="field-control">
+                    <div class="path-input-group">
+                      <input
+                        type="text"
+                        class="text-input path-input library-path-input"
+                        [value]="currentLibraryPath()"
+                        placeholder="Select a folder..."
+                        readonly
+                      />
+                      <desktop-button
+                        variant="ghost"
+                        size="sm"
+                        (click)="browseForLibraryFolder()"
+                      >
+                        Browse...
+                      </desktop-button>
+                    </div>
+                  </div>
+                </div>
+
+                @if (libraryChangeStatus(); as status) {
+                  <div class="status-message" [class.success]="status.success" [class.error]="!status.success">
+                    {{ status.message }}
+                  </div>
+                }
+
+                <div class="help-text">
+                  <p>
+                    <strong>Note:</strong> Changing the library location does not move existing files.
+                    If you've copied your library to a new location, select the new folder here.
+                  </p>
+                  <p style="margin-top: 8px;">
+                    <strong>Current structure:</strong><br/>
+                    {{ currentLibraryPath() }}/projects/ - Project files (.bfp)<br/>
+                    {{ currentLibraryPath() }}/audiobooks/ - Audiobook exports<br/>
+                    {{ currentLibraryPath() }}/cache/ - Page render cache
+                  </p>
+                </div>
+              </div>
+            } @else if (section.id === 'storage') {
+              <!-- Storage section has custom UI -->
               <div class="storage-section">
                 <div class="storage-item">
                   <div class="storage-info">
@@ -808,6 +856,16 @@ import {
       width: 300px;
     }
 
+    .library-path-input {
+      width: 400px;
+    }
+
+    .library-section {
+      display: flex;
+      flex-direction: column;
+      gap: var(--ui-spacing-lg);
+    }
+
     .select-input {
       min-width: 150px;
 
@@ -1139,8 +1197,13 @@ export class SettingsComponent implements OnInit {
   private readonly settingsService = inject(SettingsService);
   private readonly pluginService = inject(PluginService);
   private readonly electronService = inject(ElectronService);
+  private readonly libraryService = inject(LibraryService);
 
-  readonly selectedSection = signal('general');
+  readonly selectedSection = signal('library');
+
+  // Library section state
+  readonly currentLibraryPath = computed(() => this.libraryService.libraryPath() || '~/Documents/BookForge');
+  readonly libraryChangeStatus = signal<{ success: boolean; message: string } | null>(null);
 
   // Storage section state
   readonly totalCacheSize = signal(0);
@@ -1316,6 +1379,33 @@ export class SettingsComponent implements OnInit {
     const result = await this.electronService.openFolderDialog();
     if (result.success && result.folderPath) {
       this.setFieldValue(field, result.folderPath);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Library Configuration Methods
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async browseForLibraryFolder(): Promise<void> {
+    const result = await this.electronService.openFolderDialog();
+    if (result.success && result.folderPath) {
+      this.libraryChangeStatus.set(null);
+
+      // Set the new library path
+      const setResult = await this.libraryService.setLibraryPath(result.folderPath);
+      if (setResult.success) {
+        this.libraryChangeStatus.set({
+          success: true,
+          message: `Library location updated to: ${result.folderPath}`
+        });
+        // Clear status after 5 seconds
+        setTimeout(() => this.libraryChangeStatus.set(null), 5000);
+      } else {
+        this.libraryChangeStatus.set({
+          success: false,
+          message: setResult.error || 'Failed to update library location'
+        });
+      }
     }
   }
 
