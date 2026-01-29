@@ -523,7 +523,8 @@ export class AudiobookComponent implements OnInit {
     // For TTS, prefer the cleaned version if it exists
     if (item.hasCleaned && item.projectId) {
       const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
-      return `${originalDir}/exported_cleaned.epub`;
+      const cleanedName = item.cleanedFilename || 'exported_cleaned.epub';
+      return `${originalDir}/${cleanedName}`;
     }
 
     return item.path;
@@ -691,6 +692,18 @@ export class AudiobookComponent implements OnInit {
         // Check if cleaned EPUB exists based on project state
         const hasCleaned = !!project.cleanedAt;
 
+        // Determine which cleaned epub filename exists (new: exported_cleaned.epub, legacy: cleaned.epub)
+        let cleanedFilename: string | undefined;
+        if (hasCleaned && this.electron) {
+          const newCleanedPath = `${project.audiobookFolder}/exported_cleaned.epub`;
+          const legacyCleanedPath = `${project.audiobookFolder}/cleaned.epub`;
+          if (await this.electron.fs.exists(newCleanedPath).catch(() => false)) {
+            cleanedFilename = 'exported_cleaned.epub';
+          } else if (await this.electron.fs.exists(legacyCleanedPath).catch(() => false)) {
+            cleanedFilename = 'cleaned.epub';
+          }
+        }
+
         // Map status from BFP audiobook state
         let status: QueueItemStatus = 'pending';
         if (project.status === 'cleaning') status = 'cleanup';
@@ -712,9 +725,10 @@ export class AudiobookComponent implements OnInit {
           status,
           addedAt: project.exportedAt ? new Date(project.exportedAt) : new Date(),
           bfpPath: project.bfpPath,
-          projectId: project.name,  // Required for currentEpubPath to use exported_cleaned.epub
+          projectId: project.name,  // Required for currentEpubPath to use cleaned epub
           audiobookFolder: project.audiobookFolder,
           hasCleaned,
+          cleanedFilename,
           skippedChunksPath: hasSkippedChunks ? skippedChunksFile : undefined
         });
 
@@ -932,9 +946,10 @@ export class AudiobookComponent implements OnInit {
       console.log('[Audiobook] setWorkflowState(diff) - item:', item?.id, 'hasCleaned:', item?.hasCleaned, 'path:', item?.path);
       if (item?.hasCleaned) {
         const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
+        const cleanedName = item.cleanedFilename || 'exported_cleaned.epub';
         const paths = {
           originalPath: `${originalDir}/exported.epub`,
-          cleanedPath: `${originalDir}/exported_cleaned.epub`
+          cleanedPath: `${originalDir}/${cleanedName}`
         };
         console.log('[Audiobook] Setting diffPaths:', paths);
         this.diffPaths.set(paths);
@@ -1038,13 +1053,15 @@ export class AudiobookComponent implements OnInit {
   }
 
   async onShowInFinder(): Promise<void> {
-    // Open the completed audiobooks folder
+    // Open the configured audiobooks output folder
     if (!this.electron) return;
 
     try {
-      const pathsResult = await this.electron.library.getAudiobooksPath();
-      if (pathsResult.success && pathsResult.completedPath) {
-        await this.electron.shell.openPath(pathsResult.completedPath);
+      // Use configured output dir, or fall back to library's audiobooks folder
+      const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
+      const outputDir = configuredDir || this.libraryService.audiobooksPath();
+      if (outputDir) {
+        await this.electron.shell.openPath(outputDir);
       }
     } catch (err) {
       console.error('Error opening audiobooks folder:', err);

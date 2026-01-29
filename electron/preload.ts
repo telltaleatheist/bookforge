@@ -856,6 +856,16 @@ export interface ElectronAPI {
       alreadyExists?: boolean;
       error?: string;
     }>;
+    resolveSource: (options: {
+      libraryPath?: string;
+      sourcePath?: string;
+      fileHash?: string;
+      sourceName?: string;
+    }) => Promise<{
+      success: boolean;
+      resolvedPath?: string;
+      error?: string;
+    }>;
     copyToQueue: (data: ArrayBuffer | string, filename: string, metadata?: {
       title?: string;
       author?: string;
@@ -902,6 +912,8 @@ export interface ElectronAPI {
       examples?: Array<{ text: string; category: string; page?: number }>;
       error?: string;
     }>;
+    setRoot: (libraryPath: string | null) => Promise<{ success: boolean; error?: string }>;
+    getRoot: () => Promise<{ path: string }>;
   };
   media: {
     saveImage: (base64Data: string, prefix?: string) => Promise<{
@@ -1030,6 +1042,11 @@ export interface ElectronAPI {
   };
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string }) => Promise<{ success: boolean; error?: string }>;
+  };
+  toolPaths: {
+    getConfig: () => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
+    updateConfig: (updates: Record<string, string | undefined>) => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
+    getStatus: () => Promise<{ success: boolean; data?: Record<string, { configured: boolean; detected: boolean; path: string }>; error?: string }>;
   };
   tts: {
     checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; version?: string; error?: string }; error?: string }>;
@@ -1378,6 +1395,8 @@ const electronAPI: ElectronAPI = {
   library: {
     importFile: (sourcePath: string) =>
       ipcRenderer.invoke('library:import-file', sourcePath),
+    resolveSource: (options: { libraryPath?: string; sourcePath?: string; fileHash?: string; sourceName?: string }) =>
+      ipcRenderer.invoke('library:resolve-source', options),
     copyToQueue: (data: ArrayBuffer | string, filename: string, metadata?: { title?: string; author?: string; language?: string }) =>
       ipcRenderer.invoke('library:copy-to-queue', data, filename, metadata),
     listQueue: () =>
@@ -1394,6 +1413,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('library:load-cover-image', projectId, coverFilename),
     loadDeletedExamplesFromBfp: (epubPath: string) =>
       ipcRenderer.invoke('library:load-deleted-examples-from-bfp', epubPath),
+    setRoot: (libraryPath: string | null) =>
+      ipcRenderer.invoke('library:set-root', libraryPath),
+    getRoot: () =>
+      ipcRenderer.invoke('library:get-root'),
   },
   media: {
     saveImage: (base64Data: string, prefix?: string) =>
@@ -1518,6 +1541,14 @@ const electronAPI: ElectronAPI = {
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string }) =>
       ipcRenderer.invoke('e2a:configure-paths', config),
+  },
+  toolPaths: {
+    getConfig: () =>
+      ipcRenderer.invoke('tool-paths:get-config'),
+    updateConfig: (updates: Record<string, string | undefined>) =>
+      ipcRenderer.invoke('tool-paths:update-config', updates),
+    getStatus: () =>
+      ipcRenderer.invoke('tool-paths:get-status'),
   },
   tts: {
     checkAvailable: () =>

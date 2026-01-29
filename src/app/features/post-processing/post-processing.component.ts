@@ -2,6 +2,7 @@ import { Component, OnInit, OnDestroy, signal, computed, inject } from '@angular
 import { CommonModule } from '@angular/common';
 import { ElectronService } from '../../core/services/electron.service';
 import { SettingsService } from '../../core/services/settings.service';
+import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
 
 interface AudioFile {
@@ -50,7 +51,7 @@ interface DenoiseProgress {
               variant="ghost"
               size="sm"
               [disabled]="isProcessing()"
-              (clicked)="refreshFiles()"
+              (click)="refreshFiles()"
             >
               Refresh
             </desktop-button>
@@ -114,7 +115,7 @@ interface DenoiseProgress {
               <desktop-button
                 variant="danger"
                 size="sm"
-                (clicked)="cancelProcessing()"
+                (click)="cancelProcessing()"
               >
                 Cancel
               </desktop-button>
@@ -123,7 +124,7 @@ interface DenoiseProgress {
             <desktop-button
               variant="primary"
               [disabled]="selectedCount() === 0 || !isAvailable()"
-              (clicked)="startProcessing()"
+              (click)="startProcessing()"
             >
               Denoise Selected Files
             </desktop-button>
@@ -420,9 +421,10 @@ interface DenoiseProgress {
       .warning {
         margin-top: 1rem;
         padding: 0.75rem;
-        background: var(--warning-subtle, #fff3cd);
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-default);
         border-radius: 4px;
-        color: var(--warning-text, #856404);
+        color: var(--text-secondary);
       }
     }
   `]
@@ -430,6 +432,7 @@ interface DenoiseProgress {
 export class PostProcessingComponent implements OnInit, OnDestroy {
   private readonly electron = inject(ElectronService);
   private readonly settings = inject(SettingsService);
+  private readonly libraryService = inject(LibraryService);
   private unsubscribeProgress?: () => void;
 
   // State
@@ -463,7 +466,10 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
   }
 
   private async checkAvailability(): Promise<void> {
+    console.log('[PostProcessing] Checking DeepFilter availability...');
     const result = await this.electron.deepfilterCheckAvailable();
+    console.log('[PostProcessing] Availability result:', JSON.stringify(result));
+    console.log('[PostProcessing] available:', result.available, 'error:', result.error);
     this.isAvailable.set(result.available);
     this.availabilityError.set(result.error || null);
   }
@@ -487,15 +493,23 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
     this.lastError.set(null);
 
     try {
-      const audiobooksDir = this.settings.get<string>('audiobookOutputDir') ||
-        `${await this.getDefaultAudiobooksDir()}`;
+      const configuredDir = this.settings.get<string>('audiobookOutputDir');
+      const libraryAudiobooksPath = this.libraryService.audiobooksPath();
+      const audiobooksDir = configuredDir || libraryAudiobooksPath;
+
+      console.log('[PostProcessing] Configured dir:', configuredDir);
+      console.log('[PostProcessing] Library audiobooks path:', libraryAudiobooksPath);
+      console.log('[PostProcessing] Using:', audiobooksDir);
 
       if (!audiobooksDir) {
+        console.error('[PostProcessing] No audiobooks directory - library path not set');
+        this.lastError.set('Library not configured. Complete onboarding first.');
         this.files.set([]);
         return;
       }
 
       const result = await this.electron.deepfilterListFiles(audiobooksDir);
+      console.log('[PostProcessing] List files result:', result.success, 'count:', result.data?.length);
 
       if (result.success && result.data) {
         this.files.set(result.data.map(f => ({ ...f, selected: false })));
@@ -513,12 +527,8 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
     }
   }
 
-  private async getDefaultAudiobooksDir(): Promise<string> {
-    // Default to ~/Documents/BookForge/audiobooks
-    return `${process.env['HOME'] || ''}/Documents/BookForge/audiobooks`;
-  }
-
   toggleFile(file: AudioFile): void {
+    console.log('[PostProcessing] toggleFile called for:', file.name, 'isProcessing:', this.isProcessing());
     if (this.isProcessing()) return;
 
     this.files.update(files =>
@@ -526,11 +536,17 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
         f.path === file.path ? { ...f, selected: !f.selected } : f
       )
     );
+    console.log('[PostProcessing] Selected count after toggle:', this.selectedCount());
   }
 
   async startProcessing(): Promise<void> {
+    console.log('[PostProcessing] startProcessing called, isAvailable:', this.isAvailable(), 'selectedCount:', this.selectedCount());
     const selected = this.selectedFiles();
-    if (selected.length === 0) return;
+    console.log('[PostProcessing] Starting processing, selected files:', selected.length);
+    if (selected.length === 0) {
+      console.log('[PostProcessing] No files selected');
+      return;
+    }
 
     this.isProcessing.set(true);
     this.lastError.set(null);
@@ -548,10 +564,12 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
     if (this.completedCount() === 0 && this.currentIndex === 0) {
       this.filesToProcess = [...this.selectedFiles()];
       this.currentIndex = 0;
+      console.log('[PostProcessing] Initialized queue with', this.filesToProcess.length, 'files');
     }
 
     // Check if we're done
     if (this.currentIndex >= this.filesToProcess.length) {
+      console.log('[PostProcessing] All files processed');
       this.isProcessing.set(false);
       this.currentProgress.set(null);
       this.currentFile.set('');
@@ -563,12 +581,15 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
     }
 
     const file = this.filesToProcess[this.currentIndex];
+    console.log('[PostProcessing] Processing file:', file.name, 'path:', file.path);
     this.currentFile.set(file.name);
     this.currentIndex++;
 
     const result = await this.electron.deepfilterDenoise(file.path);
+    console.log('[PostProcessing] Denoise result:', result);
 
     if (!result.success) {
+      console.error('[PostProcessing] Denoise failed:', result.error);
       this.lastError.set(result.error || 'Failed to process file');
       this.isProcessing.set(false);
     }

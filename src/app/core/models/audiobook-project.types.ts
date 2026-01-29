@@ -3,7 +3,7 @@
  *
  * Each audiobook is a self-contained project folder with:
  * - exported.epub: The source EPUB file
- * - exported_cleaned.epub: AI-cleaned version (optional)
+ * - exported_cleaned.epub or cleaned.epub: AI-cleaned version (optional)
  * - project.json: Metadata, settings, and state
  * - output.m4b: Final audiobook (when complete)
  */
@@ -15,7 +15,8 @@ export interface AudiobookProject {
   // Source file info
   originalFilename: string;      // Original EPUB filename before import
   hasOriginal: boolean;          // exported.epub exists
-  hasCleaned: boolean;           // exported_cleaned.epub exists
+  hasCleaned: boolean;           // cleaned epub exists (exported_cleaned.epub or cleaned.epub)
+  cleanedFilename?: string;      // Filename of cleaned epub if it exists
   hasOutput: boolean;            // output.m4b exists
 
   // Metadata (from EPUB or edited by user)
@@ -87,6 +88,7 @@ export interface AudiobookProjectInfo {
   metadata: AudiobookMetadata;
   hasOriginal: boolean;
   hasCleaned: boolean;
+  cleanedFilename?: string;      // Filename of cleaned epub if it exists
   hasOutput: boolean;
   state: AudiobookState;
   createdAt: string;

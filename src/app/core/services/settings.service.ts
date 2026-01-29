@@ -158,6 +158,13 @@ export class SettingsService {
         icon: '🌐',
         fields: [], // Library Server section has custom UI
       },
+      {
+        id: 'tools',
+        name: 'External Tools',
+        description: 'Configure paths to external tools (conda, ffmpeg, etc.)',
+        icon: '🔧',
+        fields: [], // Tools section has custom UI
+      },
     ];
 
     this.sections.set(builtinSections);

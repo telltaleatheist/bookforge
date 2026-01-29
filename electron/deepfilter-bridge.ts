@@ -9,9 +9,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { BrowserWindow } from 'electron';
-
-// Conda environment that has DeepFilterNet installed
-const CONDA_ENV = 'ebook2audiobook';
+import { getCondaPath, getFfmpegPath, getDeepFilterCondaEnv } from './tool-paths';
 
 // Supported audio formats
 const SUPPORTED_FORMATS = ['.m4b', '.m4a', '.mp3', '.wav', '.flac', '.ogg', '.opus'];
@@ -48,45 +46,6 @@ export function initDeepFilterBridge(window: BrowserWindow): void {
 }
 
 /**
- * Get conda executable path
- */
-function getCondaPath(): string {
-  const possiblePaths = [
-    '/opt/homebrew/Caskroom/miniconda/base/condabin/conda',
-    '/opt/homebrew/bin/conda',
-    '/usr/local/bin/conda',
-    path.join(process.env.HOME || '', 'miniconda3/bin/conda'),
-    path.join(process.env.HOME || '', 'anaconda3/bin/conda'),
-    'conda'
-  ];
-
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) {
-      return p;
-    }
-  }
-  return 'conda';
-}
-
-/**
- * Get ffmpeg path
- */
-function getFfmpegPath(): string {
-  const possiblePaths = [
-    '/opt/homebrew/bin/ffmpeg',
-    '/usr/local/bin/ffmpeg',
-    'ffmpeg'
-  ];
-
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) {
-      return p;
-    }
-  }
-  return 'ffmpeg';
-}
-
-/**
  * List audio files in the audiobooks output directory
  */
 export async function listAudioFiles(audiobooksDir: string): Promise<AudioFile[]> {
@@ -99,6 +58,11 @@ export async function listAudioFiles(audiobooksDir: string): Promise<AudioFile[]
   const entries = fs.readdirSync(audiobooksDir, { withFileTypes: true });
 
   for (const entry of entries) {
+    // Skip hidden files and macOS resource forks
+    if (entry.name.startsWith('.') || entry.name.startsWith('._')) {
+      continue;
+    }
+
     if (entry.isFile()) {
       const ext = path.extname(entry.name).toLowerCase();
       if (SUPPORTED_FORMATS.includes(ext)) {
@@ -147,11 +111,13 @@ export async function denoiseFile(inputPath: string): Promise<DenoiseResult> {
   // Temp files
   const tempWav = path.join(dir, `${basename}_temp_input.wav`);
   const denoisedWav = path.join(dir, `${basename}_temp_denoised.wav`);
+  const denoisedWavCopy = path.join(dir, `${basename}_temp_denoised_copy.wav`);
   const tempOutput = path.join(dir, `${basename}_temp_output${ext}`);
   const backupPath = path.join(dir, `${basename}_backup${ext}`);
 
   const condaPath = getCondaPath();
   const ffmpegPath = getFfmpegPath();
+  const condaEnv = getDeepFilterCondaEnv();
 
   try {
     // Step 1: Convert to WAV if needed
@@ -163,7 +129,9 @@ export async function denoiseFile(inputPath: string): Promise<DenoiseResult> {
           '-y', '-i', inputPath,
           '-vn', '-acodec', 'pcm_s16le', '-ar', '48000', '-ac', '1',
           tempWav
-        ]);
+        ], {
+          windowsHide: true
+        });
 
         ffmpeg.on('close', (code) => {
           if (code === 0) resolve();
@@ -182,10 +150,11 @@ export async function denoiseFile(inputPath: string): Promise<DenoiseResult> {
     await new Promise<void>((resolve, reject) => {
       // Use conda run to execute deepFilter in the correct environment
       activeProcess = spawn(condaPath, [
-        'run', '-n', CONDA_ENV, '--no-capture-output',
+        'run', '-n', condaEnv, '--no-capture-output',
         'deepFilter', inputWav, '-o', denoisedWav
       ], {
-        env: { ...process.env, PYTHONUNBUFFERED: '1' }
+        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        windowsHide: true
       });
 
       let stderr = '';
@@ -252,30 +221,80 @@ export async function denoiseFile(inputPath: string): Promise<DenoiseResult> {
     if (ext !== '.wav') {
       emitProgress({ phase: 'finalizing', percentage: 85, message: 'Re-encoding to original format...' });
 
-      await new Promise<void>((resolve, reject) => {
-        // Use appropriate codec based on format
-        let codecArgs: string[];
-        if (ext === '.m4b' || ext === '.m4a') {
-          codecArgs = ['-c:a', 'aac', '-b:a', '128k'];
-        } else if (ext === '.mp3') {
-          codecArgs = ['-c:a', 'libmp3lame', '-b:a', '192k'];
-        } else if (ext === '.flac') {
-          codecArgs = ['-c:a', 'flac'];
-        } else if (ext === '.ogg' || ext === '.opus') {
-          codecArgs = ['-c:a', 'libopus', '-b:a', '128k'];
-        } else {
-          codecArgs = ['-c:a', 'copy'];
+      // Wait for file handles to be released (Windows/antivirus can be slow)
+      // Check if file is accessible by attempting to open it
+      const waitForFileAccess = async (filePath: string, maxWaitMs: number = 15000): Promise<boolean> => {
+        const startTime = Date.now();
+        while (Date.now() - startTime < maxWaitMs) {
+          try {
+            // Try to open the file for reading - this will fail if locked
+            const fd = fs.openSync(filePath, 'r');
+            fs.closeSync(fd);
+            console.log(`[DEEPFILTER] File ${filePath} is now accessible`);
+            return true;
+          } catch (err) {
+            console.log(`[DEEPFILTER] Waiting for file access... (${Math.round((Date.now() - startTime) / 1000)}s)`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         }
+        return false;
+      };
+
+      const fileAccessible = await waitForFileAccess(denoisedWav);
+      if (!fileAccessible) {
+        throw new Error(`File ${denoisedWav} remained locked after 15 seconds`);
+      }
+
+      // Copy the file to break any remaining locks (Windows Defender, indexers, etc.)
+      console.log('[DEEPFILTER] Copying denoised file to break locks:', denoisedWavCopy);
+      fs.copyFileSync(denoisedWav, denoisedWavCopy);
+
+      // Use the copy as input for FFmpeg
+      const ffmpegInput = denoisedWavCopy;
+
+      // Use appropriate codec based on format
+      let codecArgs: string[];
+      if (ext === '.m4b') {
+        // M4B is an audiobook format using MPEG-4 container with AAC audio
+        codecArgs = ['-c:a', 'aac', '-b:a', '128k', '-f', 'mp4'];
+      } else if (ext === '.m4a') {
+        codecArgs = ['-c:a', 'aac', '-b:a', '128k', '-f', 'ipod'];
+      } else if (ext === '.mp3') {
+        codecArgs = ['-c:a', 'libmp3lame', '-b:a', '192k'];
+      } else if (ext === '.flac') {
+        codecArgs = ['-c:a', 'flac'];
+      } else if (ext === '.ogg' || ext === '.opus') {
+        codecArgs = ['-c:a', 'libopus', '-b:a', '128k'];
+      } else {
+        codecArgs = ['-c:a', 'copy'];
+      }
+
+      // Run FFmpeg encoding
+      await new Promise<void>((resolve, reject) => {
+        console.log('[DEEPFILTER] Re-encoding with ffmpeg:', ffmpegPath);
+        console.log('[DEEPFILTER] Input:', ffmpegInput);
+        console.log('[DEEPFILTER] Output:', tempOutput);
+        console.log('[DEEPFILTER] Codec args:', codecArgs);
 
         const ffmpeg = spawn(ffmpegPath, [
-          '-y', '-i', denoisedWav,
+          '-y', '-i', ffmpegInput,
           ...codecArgs,
           tempOutput
-        ]);
+        ], {
+          windowsHide: true
+        });
+
+        let ffmpegStderr = '';
+        ffmpeg.stderr?.on('data', (data) => {
+          ffmpegStderr += data.toString();
+        });
 
         ffmpeg.on('close', (code) => {
           if (code === 0) resolve();
-          else reject(new Error(`FFmpeg encoding failed with code ${code}`));
+          else {
+            console.error('[DEEPFILTER] FFmpeg stderr:', ffmpegStderr);
+            reject(new Error(`FFmpeg encoding failed with code ${code}: ${ffmpegStderr.slice(-500)}`));
+          }
         });
 
         ffmpeg.on('error', reject);
@@ -294,7 +313,7 @@ export async function denoiseFile(inputPath: string): Promise<DenoiseResult> {
     fs.copyFileSync(finalOutput, inputPath);
 
     // Clean up temp files
-    const tempFiles = [tempWav, denoisedWav, tempOutput, backupPath];
+    const tempFiles = [tempWav, denoisedWav, denoisedWavCopy, tempOutput, backupPath];
     for (const f of tempFiles) {
       if (fs.existsSync(f) && f !== inputPath) {
         try {
@@ -311,7 +330,7 @@ export async function denoiseFile(inputPath: string): Promise<DenoiseResult> {
 
   } catch (error) {
     // Clean up temp files on error
-    const tempFiles = [tempWav, denoisedWav, tempOutput];
+    const tempFiles = [tempWav, denoisedWav, denoisedWavCopy, tempOutput];
     for (const f of tempFiles) {
       if (fs.existsSync(f)) {
         try {
@@ -334,7 +353,9 @@ export async function denoiseFile(inputPath: string): Promise<DenoiseResult> {
  */
 export function cancelDenoise(): boolean {
   if (activeProcess) {
-    activeProcess.kill('SIGTERM');
+    // On Windows, use SIGKILL as SIGTERM may not work properly
+    const signal = process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM';
+    activeProcess.kill(signal);
     activeProcess = null;
     return true;
   }
@@ -346,12 +367,15 @@ export function cancelDenoise(): boolean {
  */
 export async function checkDeepFilterAvailable(): Promise<{ available: boolean; error?: string }> {
   const condaPath = getCondaPath();
+  const condaEnv = getDeepFilterCondaEnv();
 
   return new Promise((resolve) => {
     const check = spawn(condaPath, [
-      'run', '-n', CONDA_ENV, '--no-capture-output',
+      'run', '-n', condaEnv, '--no-capture-output',
       'deepFilter', '--help'
-    ]);
+    ], {
+      windowsHide: true
+    });
 
     let stderr = '';
 

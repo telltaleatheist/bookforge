@@ -12,7 +12,7 @@
  * - --sentence_start / --sentence_end: Define worker's sentence range
  */
 
-import { spawn, ChildProcess, execSync } from 'child_process';
+import { spawn, ChildProcess, execSync, exec } from 'child_process';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -20,6 +20,94 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
+
+/**
+ * Kill a process and all its children (process tree)
+ * On Windows, uses taskkill /F /T to force kill the entire tree
+ * On Unix, uses process.kill with SIGKILL
+ */
+function killProcessTree(process: ChildProcess, label: string): void {
+  if (!process || process.killed) return;
+
+  const pid = process.pid;
+  if (!pid) {
+    console.log(`[PARALLEL-TTS] ${label}: No PID, using SIGTERM`);
+    try {
+      process.kill('SIGTERM');
+    } catch (err) {
+      console.error(`[PARALLEL-TTS] Failed to kill ${label}:`, err);
+    }
+    return;
+  }
+
+  if (os.platform() === 'win32') {
+    // Windows: use taskkill to kill entire process tree
+    console.log(`[PARALLEL-TTS] Killing ${label} process tree (PID: ${pid})`);
+    try {
+      // /F = force, /T = tree (kill child processes)
+      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' });
+      console.log(`[PARALLEL-TTS] Killed ${label} process tree`);
+    } catch (err) {
+      // Process may have already exited
+      console.log(`[PARALLEL-TTS] ${label} process tree kill returned (may have already exited)`);
+    }
+  } else {
+    // Unix: SIGKILL for forceful termination
+    console.log(`[PARALLEL-TTS] Killing ${label} (PID: ${pid})`);
+    try {
+      process.kill('SIGKILL');
+    } catch (err) {
+      console.error(`[PARALLEL-TTS] Failed to kill ${label}:`, err);
+    }
+  }
+}
+
+/**
+ * Clean up orphaned vLLM processes on Windows
+ * vLLM uses ZMQ sockets for inter-process communication on ports 29500-29600
+ * These processes can escape the normal process tree kill, so we find and kill them by port
+ */
+function cleanupOrphanedVllmProcesses(): void {
+  if (os.platform() !== 'win32') return;
+
+  console.log('[PARALLEL-TTS] Cleaning up orphaned vLLM processes...');
+
+  try {
+    // Find processes listening on vLLM's typical ZMQ port range (29500-29600)
+    const netstatOutput = execSync('netstat -ano', { encoding: 'utf8', timeout: 5000 });
+    const lines = netstatOutput.split('\n');
+    const pidsToKill = new Set<string>();
+
+    for (const line of lines) {
+      // Look for LISTENING connections on ports 29500-29600
+      const match = line.match(/TCP\s+127\.0\.0\.1:(295\d{2})\s+.*LISTENING\s+(\d+)/);
+      if (match) {
+        const port = match[1];
+        const pid = match[2];
+        console.log(`[PARALLEL-TTS] Found process ${pid} on vLLM port ${port}`);
+        pidsToKill.add(pid);
+      }
+    }
+
+    // Kill each orphaned process
+    for (const pid of pidsToKill) {
+      try {
+        console.log(`[PARALLEL-TTS] Killing orphaned vLLM process (PID: ${pid})`);
+        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', timeout: 5000 });
+        console.log(`[PARALLEL-TTS] Killed orphaned process ${pid}`);
+      } catch (err) {
+        // Process may have already exited
+        console.log(`[PARALLEL-TTS] Orphaned process ${pid} kill returned (may have already exited)`);
+      }
+    }
+
+    if (pidsToKill.size > 0) {
+      console.log(`[PARALLEL-TTS] Cleaned up ${pidsToKill.size} orphaned vLLM process(es)`);
+    }
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Error cleaning up orphaned vLLM processes:', err);
+  }
+}
 
 // Power save blocker ID - prevents system sleep during TTS conversion
 let powerBlockerId: number | null = null;
@@ -251,18 +339,21 @@ export function killAllWorkers(): void {
       clearInterval(session.watchdogTimer);
     }
 
-    // Kill all worker processes
+    // Kill all worker processes (including child process trees)
     for (const worker of session.workers) {
       if (worker.process && !worker.process.killed) {
-        try {
-          worker.process.kill('SIGTERM');
-          console.log(`[PARALLEL-TTS] Killed worker ${worker.id} (PID: ${worker.pid})`);
-        } catch (err) {
-          console.error(`[PARALLEL-TTS] Failed to kill worker ${worker.id}:`, err);
-        }
+        killProcessTree(worker.process, `worker ${worker.id}`);
       }
     }
+
+    // Kill assembly process if running
+    if (session.assemblyProcess && !session.assemblyProcess.killed) {
+      killProcessTree(session.assemblyProcess, 'assembly');
+    }
   }
+
+  // Clean up any orphaned vLLM processes that escaped the process tree
+  cleanupOrphanedVllmProcesses();
 
   activeSessions.clear();
   console.log('[PARALLEL-TTS] All workers killed');
@@ -383,7 +474,7 @@ export async function prepareSession(
 
     const prepProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true
     });
 
@@ -619,7 +710,7 @@ function startWorker(
 
   const workerProcess = spawn(getCondaPath(), args, {
     cwd: e2aPath,
-    env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+    env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
     shell: true
   });
 
@@ -901,7 +992,7 @@ async function checkForStuckWorkers(session: ConversionSession): Promise<void> {
     if (worker.process) {
       console.log(`[PARALLEL-TTS] Killing stuck worker ${worker.id} (PID: ${worker.pid})`);
       await logger.log('WARN', session.jobId, `Killing stuck worker ${worker.id}`, { pid: worker.pid });
-      worker.process.kill('SIGTERM');
+      killProcessTree(worker.process, `stuck worker ${worker.id}`);
       worker.status = 'error';
       worker.error = 'Worker stuck - no progress';
       // The process close handler will trigger retry logic
@@ -928,6 +1019,9 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
       ? `chapters ${worker.chapterStart}-${worker.chapterEnd}`
       : `sentences ${worker.sentenceStart}-${worker.sentenceEnd}`
   }`);
+
+  // Clean up any orphaned vLLM processes before retry (the failed worker may have left them)
+  cleanupOrphanedVllmProcesses();
 
   // Start the worker with the same range
   const range: WorkerRange = isChapterMode
@@ -995,7 +1089,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
 
     session.assemblyProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true
     });
 
@@ -1818,10 +1912,10 @@ export function stopParallelConversion(jobId: string): boolean {
   session.cancelled = true;
   stopWatchdog(session);
 
-  // Kill all worker processes
+  // Kill all worker processes (including child process trees like vLLM)
   for (const worker of session.workers) {
     if (worker.process) {
-      worker.process.kill('SIGTERM');
+      killProcessTree(worker.process, `worker ${worker.id}`);
       worker.status = 'error';
       worker.error = 'Cancelled';
     }
@@ -1829,8 +1923,11 @@ export function stopParallelConversion(jobId: string): boolean {
 
   // Kill assembly process if running
   if (session.assemblyProcess) {
-    session.assemblyProcess.kill('SIGTERM');
+    killProcessTree(session.assemblyProcess, 'assembly');
   }
+
+  // Clean up any orphaned vLLM processes that escaped the process tree
+  cleanupOrphanedVllmProcesses();
 
   // Emit cancelled analytics before cleanup
   emitCancelledAnalytics(session);
@@ -2304,7 +2401,7 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
 
     const resumeCheckProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true
     });
 
@@ -2400,7 +2497,7 @@ export async function listResumableSessions(): Promise<Array<{
 
     const listProcess = spawn(getCondaPath(), args, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true
     });
 

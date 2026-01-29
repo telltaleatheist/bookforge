@@ -2,111 +2,74 @@
  * Centralized ebook2audiobook path configuration
  *
  * Provides cross-platform default paths for ebook2audiobook installation.
+ * Uses tool-paths.ts for base path detection and adds e2a-specific functionality.
+ *
  * Paths can be overridden via:
- * 1. Environment variable: EBOOK2AUDIOBOOK_PATH
- * 2. Application settings (e2aPath, condaPath settings)
+ * 1. Tool paths config file (managed by tool-paths.ts)
+ * 2. Environment variable: EBOOK2AUDIOBOOK_PATH
  * 3. Calling setE2aPath() / setCondaPath() programmatically
  */
 
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import {
+  getCondaPath as getToolCondaPath,
+  getE2aPath as getToolE2aPath,
+  updateConfig as updateToolConfig,
+} from './tool-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Configurable paths (set from settings)
+// Configurable paths (runtime overrides - for backward compatibility)
 // ─────────────────────────────────────────────────────────────────────────────
 
-let configuredCondaPath: string | null = null;
-let configuredE2aPath: string | null = null;
+let runtimeCondaPath: string | null = null;
+let runtimeE2aPath: string | null = null;
 
 /**
- * Set the conda executable path (from app settings)
+ * Set the conda executable path (runtime override)
+ * For persistent config, use tool-paths.ts updateConfig()
  */
 export function setCondaPath(condaPath: string | null): void {
-  configuredCondaPath = condaPath && condaPath.trim() ? condaPath.trim() : null;
-  console.log('[E2A-PATHS] Conda path configured:', configuredCondaPath || '(auto-detect)');
+  runtimeCondaPath = condaPath && condaPath.trim() ? condaPath.trim() : null;
+  console.log('[E2A-PATHS] Conda path configured:', runtimeCondaPath || '(auto-detect)');
+
+  // Also update persistent config
+  if (runtimeCondaPath) {
+    updateToolConfig({ condaPath: runtimeCondaPath });
+  }
 }
 
 /**
- * Set the e2a installation path (from app settings)
+ * Set the e2a installation path (runtime override)
+ * For persistent config, use tool-paths.ts updateConfig()
  */
 export function setE2aPath(e2aPath: string | null): void {
-  configuredE2aPath = e2aPath && e2aPath.trim() ? e2aPath.trim() : null;
-  console.log('[E2A-PATHS] E2A path configured:', configuredE2aPath || '(auto-detect)');
-}
+  runtimeE2aPath = e2aPath && e2aPath.trim() ? e2aPath.trim() : null;
+  console.log('[E2A-PATHS] E2A path configured:', runtimeE2aPath || '(auto-detect)');
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Platform-specific default paths
-// ─────────────────────────────────────────────────────────────────────────────
-
-function getDefaultE2aPaths(): { primary: string; fallback: string } {
-  const platform = os.platform();
-  const homeDir = os.homedir();
-
-  if (platform === 'win32') {
-    // Windows: Use user's Projects folder
-    const projectsDir = path.join(homeDir, 'Projects');
-    return {
-      primary: path.join(projectsDir, 'ebook2audiobook'),
-      fallback: path.join(projectsDir, 'ebook2audiobook'),
-    };
-  } else if (platform === 'darwin') {
-    // macOS: Original paths for backward compatibility
-    return {
-      primary: '/Users/telltale/Projects/ebook2audiobook-latest',
-      fallback: '/Users/telltale/Projects/ebook2audiobook',
-    };
-  } else {
-    // Linux and others
-    return {
-      primary: path.join(homeDir, 'Projects', 'ebook2audiobook'),
-      fallback: path.join(homeDir, 'ebook2audiobook'),
-    };
+  // Also update persistent config
+  if (runtimeE2aPath) {
+    updateToolConfig({ e2aPath: runtimeE2aPath });
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Path resolution
+// Path Resolution (delegates to tool-paths.ts)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Get the default ebook2audiobook installation path
- * Checks configured path first, then environment variable, then platform-specific defaults
+ * Checks runtime override first, then delegates to tool-paths.ts
  */
 export function getDefaultE2aPath(): string {
-  // 1. Check configured path (from settings)
-  if (configuredE2aPath && fs.existsSync(configuredE2aPath)) {
-    return configuredE2aPath;
+  // 1. Check runtime override
+  if (runtimeE2aPath && fs.existsSync(runtimeE2aPath)) {
+    return runtimeE2aPath;
   }
 
-  // 2. Check environment variable
-  if (process.env.EBOOK2AUDIOBOOK_PATH) {
-    return process.env.EBOOK2AUDIOBOOK_PATH;
-  }
-
-  // 3. Check platform-specific paths
-  const defaults = getDefaultE2aPaths();
-
-  // Prefer primary path if it exists
-  try {
-    if (fs.existsSync(defaults.primary)) {
-      return defaults.primary;
-    }
-  } catch {
-    // Fall through
-  }
-
-  // Try fallback path
-  try {
-    if (fs.existsSync(defaults.fallback)) {
-      return defaults.fallback;
-    }
-  } catch {
-    // Fall through
-  }
-
-  // Return primary as default even if it doesn't exist yet
-  return defaults.primary;
+  // 2. Delegate to centralized tool-paths
+  return getToolE2aPath();
 }
 
 /**
@@ -218,59 +181,16 @@ export function normalizePath(p: string): string {
 
 /**
  * Get the full path to the conda executable.
- * On Windows, conda may not be in PATH when running from Electron,
- * so we need to use the full path.
+ * Checks runtime override first, then delegates to tool-paths.ts
  */
 export function getCondaPath(): string {
-  // 1. Check configured path (from settings)
-  if (configuredCondaPath && fs.existsSync(configuredCondaPath)) {
-    return configuredCondaPath;
+  // 1. Check runtime override
+  if (runtimeCondaPath && fs.existsSync(runtimeCondaPath)) {
+    return runtimeCondaPath;
   }
 
-  const platform = os.platform();
-  const homeDir = os.homedir();
-
-  if (platform === 'win32') {
-    // Check common Windows conda locations
-    const candidates = [
-      path.join(homeDir, 'Miniforge3', 'Scripts', 'conda.exe'),
-      path.join(homeDir, 'miniconda3', 'Scripts', 'conda.exe'),
-      path.join(homeDir, 'anaconda3', 'Scripts', 'conda.exe'),
-      path.join(homeDir, 'Miniconda3', 'Scripts', 'conda.exe'),
-      path.join(homeDir, 'Anaconda3', 'Scripts', 'conda.exe'),
-      'C:\\ProgramData\\Miniforge3\\Scripts\\conda.exe',
-      'C:\\ProgramData\\miniconda3\\Scripts\\conda.exe',
-      'C:\\ProgramData\\Anaconda3\\Scripts\\conda.exe',
-    ];
-
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) {
-        return candidate;
-      }
-    }
-
-    // Fallback to just 'conda' and hope it's in PATH
-    return 'conda';
-  } else {
-    // On macOS/Linux, conda is usually in PATH or we can find it
-    const candidates = [
-      '/opt/homebrew/Caskroom/miniconda/base/bin/conda',  // Homebrew miniconda (common on Mac)
-      path.join(homeDir, 'Miniforge3', 'bin', 'conda'),
-      path.join(homeDir, 'miniforge3', 'bin', 'conda'),
-      path.join(homeDir, 'miniconda3', 'bin', 'conda'),
-      path.join(homeDir, 'anaconda3', 'bin', 'conda'),
-      '/opt/homebrew/Caskroom/miniforge/base/bin/conda',
-      '/usr/local/Caskroom/miniforge/base/bin/conda',
-    ];
-
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) {
-        return candidate;
-      }
-    }
-
-    return 'conda';
-  }
+  // 2. Delegate to centralized tool-paths
+  return getToolCondaPath();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

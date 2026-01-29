@@ -81,13 +81,57 @@ export class LibraryService {
       const stored = localStorage.getItem(this.STORAGE_KEY);
       if (stored) {
         const settings: LibrarySettings = JSON.parse(stored);
-        this._libraryPath.set(settings.libraryPath);
-        this._onboardingComplete.set(settings.onboardingComplete);
+        console.log('[LibraryService] Loaded settings from localStorage:', settings);
+
+        // Validate and sync library path to main process
+        if (settings.libraryPath) {
+          this.validateAndSyncPath(settings);
+        } else {
+          this._libraryPath.set(null);
+          this._onboardingComplete.set(settings.onboardingComplete);
+        }
       }
     } catch (e) {
       console.error('Failed to load library settings:', e);
     }
     this._loading.set(false);
+  }
+
+  /**
+   * Validate stored path exists on current system, reset if not
+   */
+  private async validateAndSyncPath(settings: LibrarySettings): Promise<void> {
+    try {
+      const result = await this.electronService.setLibraryRoot(settings.libraryPath);
+      if (result.success) {
+        this._libraryPath.set(settings.libraryPath);
+        this._onboardingComplete.set(settings.onboardingComplete);
+        console.log('[LibraryService] Library path validated:', settings.libraryPath);
+      } else {
+        // Path doesn't exist (e.g., Mac path on Windows) - reset settings
+        console.warn('[LibraryService] Stored path invalid, resetting:', result.error);
+        this._libraryPath.set(null);
+        this._onboardingComplete.set(false);
+        this.saveSettings();
+      }
+    } catch (e) {
+      console.error('[LibraryService] Failed to validate path:', e);
+      this._libraryPath.set(null);
+      this._onboardingComplete.set(false);
+      this.saveSettings();
+    }
+  }
+
+  /**
+   * Sync library path to the main process
+   */
+  private async syncLibraryPathToMain(path: string | null): Promise<void> {
+    try {
+      await this.electronService.setLibraryRoot(path);
+      console.log('[LibraryService] Synced library path to main:', path);
+    } catch (e) {
+      console.error('[LibraryService] Failed to sync library path to main:', e);
+    }
   }
 
   /**
@@ -115,6 +159,9 @@ export class LibraryService {
       this._libraryPath.set(path);
       this._onboardingComplete.set(true);
       this.saveSettings();
+
+      // Sync to main process
+      await this.syncLibraryPathToMain(path);
 
       return { success: true };
     } catch (e) {
@@ -150,6 +197,9 @@ export class LibraryService {
    */
   async useDefaultLibrary(): Promise<{ success: boolean; error?: string }> {
     try {
+      // Clear custom library root in main process (use default)
+      await this.syncLibraryPathToMain(null);
+
       const result = await this.electronService.projectsEnsureFolder();
       if (!result.success) {
         return { success: false, error: result.error };

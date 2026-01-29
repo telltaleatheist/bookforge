@@ -30,6 +30,7 @@ export interface QueueItem {
   bfpPath?: string;  // Path to the source BFP project (unified system)
   audiobookFolder?: string;  // Folder containing audiobook files (unified system)
   hasCleaned?: boolean;
+  cleanedFilename?: string;  // Filename of cleaned epub (may be 'exported_cleaned.epub' or 'cleaned.epub')
   hasAudiobook?: boolean;  // True if completed audiobook exists for this book
   skippedChunksPath?: string;  // Path to JSON file with skipped chunks from AI cleanup
 }

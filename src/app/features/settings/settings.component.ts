@@ -490,6 +490,161 @@ import {
                   </p>
                 </div>
               </div>
+            } @else if (section.id === 'tools') {
+              <!-- External Tools Section -->
+              <div class="tools-section">
+                @if (toolPathsLoading()) {
+                  <p class="loading-hint">Loading tool paths...</p>
+                }
+
+                <!-- Conda Path -->
+                <div class="tool-row">
+                  <div class="tool-info">
+                    <h4>Conda</h4>
+                    <p class="tool-description">Python environment manager (required for TTS)</p>
+                    @if (getToolStatus('conda'); as status) {
+                      <div class="tool-status" [class.detected]="status.detected" [class.not-detected]="!status.detected">
+                        @if (status.configured) {
+                          <span class="status-badge configured">Configured</span>
+                        } @else if (status.detected) {
+                          <span class="status-badge detected">Auto-detected</span>
+                        } @else {
+                          <span class="status-badge not-found">Not found</span>
+                        }
+                        <span class="tool-path">{{ status.path }}</span>
+                      </div>
+                    }
+                  </div>
+                  <div class="tool-control">
+                    <div class="path-input-group">
+                      <input
+                        type="text"
+                        class="text-input path-input"
+                        [value]="getToolPathValue('condaPath')"
+                        placeholder="Auto-detect"
+                        (change)="updateToolPath('condaPath', $any($event.target).value)"
+                      />
+                      <desktop-button variant="ghost" size="sm" (click)="browseForToolPath('condaPath')">
+                        Browse...
+                      </desktop-button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- FFmpeg Path -->
+                <div class="tool-row">
+                  <div class="tool-info">
+                    <h4>FFmpeg</h4>
+                    <p class="tool-description">Audio/video converter (required for audiobook output)</p>
+                    @if (getToolStatus('ffmpeg'); as status) {
+                      <div class="tool-status" [class.detected]="status.detected" [class.not-detected]="!status.detected">
+                        @if (status.configured) {
+                          <span class="status-badge configured">Configured</span>
+                        } @else if (status.detected) {
+                          <span class="status-badge detected">Auto-detected</span>
+                        } @else {
+                          <span class="status-badge not-found">Not found</span>
+                        }
+                        <span class="tool-path">{{ status.path }}</span>
+                      </div>
+                    }
+                  </div>
+                  <div class="tool-control">
+                    <div class="path-input-group">
+                      <input
+                        type="text"
+                        class="text-input path-input"
+                        [value]="getToolPathValue('ffmpegPath')"
+                        placeholder="Auto-detect"
+                        (change)="updateToolPath('ffmpegPath', $any($event.target).value)"
+                      />
+                      <desktop-button variant="ghost" size="sm" (click)="browseForToolPath('ffmpegPath')">
+                        Browse...
+                      </desktop-button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- E2A Path -->
+                <div class="tool-row">
+                  <div class="tool-info">
+                    <h4>ebook2audiobook</h4>
+                    <p class="tool-description">TTS conversion engine installation folder</p>
+                    @if (getToolStatus('e2a'); as status) {
+                      <div class="tool-status" [class.detected]="status.detected" [class.not-detected]="!status.detected">
+                        @if (status.configured) {
+                          <span class="status-badge configured">Configured</span>
+                        } @else if (status.detected) {
+                          <span class="status-badge detected">Auto-detected</span>
+                        } @else {
+                          <span class="status-badge not-found">Not found</span>
+                        }
+                        <span class="tool-path">{{ status.path }}</span>
+                      </div>
+                    }
+                  </div>
+                  <div class="tool-control">
+                    <div class="path-input-group">
+                      <input
+                        type="text"
+                        class="text-input path-input"
+                        [value]="getToolPathValue('e2aPath')"
+                        placeholder="Auto-detect"
+                        (change)="updateToolPath('e2aPath', $any($event.target).value)"
+                      />
+                      <desktop-button variant="ghost" size="sm" (click)="browseForToolPath('e2aPath')">
+                        Browse...
+                      </desktop-button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- DeepFilter Conda Env -->
+                <div class="tool-row">
+                  <div class="tool-info">
+                    <h4>DeepFilterNet Environment</h4>
+                    <p class="tool-description">Conda environment name with DeepFilterNet installed</p>
+                    @if (getToolStatus('deepFilterEnv'); as status) {
+                      <div class="tool-status detected">
+                        @if (status.configured) {
+                          <span class="status-badge configured">Configured</span>
+                        } @else {
+                          <span class="status-badge detected">Default</span>
+                        }
+                        <span class="tool-path">{{ status.path }}</span>
+                      </div>
+                    }
+                  </div>
+                  <div class="tool-control">
+                    <input
+                      type="text"
+                      class="text-input"
+                      [value]="getToolPathValue('deepFilterCondaEnv')"
+                      placeholder="ebook2audiobook"
+                      (change)="updateToolPath('deepFilterCondaEnv', $any($event.target).value)"
+                    />
+                  </div>
+                </div>
+
+                @if (toolPathsSaveStatus(); as status) {
+                  <div class="status-message" [class.success]="status.success" [class.error]="!status.success">
+                    {{ status.message }}
+                  </div>
+                }
+
+                <div class="section-actions">
+                  <desktop-button variant="ghost" size="sm" (click)="refreshToolPaths()" [disabled]="toolPathsLoading()">
+                    Refresh Detection
+                  </desktop-button>
+                </div>
+
+                <div class="help-text">
+                  <p>
+                    <strong>Tip:</strong> Leave paths empty to use auto-detection.
+                    The app will search common installation locations for each tool.
+                  </p>
+                </div>
+              </div>
             } @else {
               <div class="fields-list">
                 @for (field of section.fields; track field.key) {
@@ -1190,6 +1345,87 @@ import {
         line-height: 1.5;
       }
     }
+
+    // Tools Section Styles
+    .tools-section {
+      display: flex;
+      flex-direction: column;
+      gap: var(--ui-spacing-lg);
+    }
+
+    .tool-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: var(--ui-spacing-xl);
+      padding: var(--ui-spacing-lg);
+      background: var(--bg-surface);
+      border-radius: $radius-md;
+    }
+
+    .tool-info {
+      flex: 1;
+      min-width: 0;
+
+      h4 {
+        margin: 0 0 var(--ui-spacing-xs) 0;
+        font-size: var(--ui-font-base);
+        font-weight: $font-weight-semibold;
+        color: var(--text-primary);
+      }
+
+      .tool-description {
+        margin: 0 0 var(--ui-spacing-sm) 0;
+        font-size: var(--ui-font-sm);
+        color: var(--text-tertiary);
+      }
+    }
+
+    .tool-status {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      font-size: var(--ui-font-sm);
+    }
+
+    .status-badge {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: var(--ui-font-xs);
+      font-weight: $font-weight-medium;
+
+      &.configured {
+        background: color-mix(in srgb, var(--accent) 15%, transparent);
+        color: var(--accent);
+      }
+
+      &.detected {
+        background: var(--success-bg);
+        color: var(--success);
+      }
+
+      &.not-found {
+        background: var(--error-bg);
+        color: var(--error);
+      }
+    }
+
+    .tool-path {
+      color: var(--text-secondary);
+      font-family: monospace;
+      font-size: var(--ui-font-xs);
+      word-break: break-all;
+    }
+
+    .tool-control {
+      flex-shrink: 0;
+      min-width: 320px;
+    }
+
+    .loading-hint {
+      color: var(--text-tertiary);
+      font-style: italic;
+    }
   `]
 })
 export class SettingsComponent implements OnInit {
@@ -1253,6 +1489,12 @@ export class SettingsComponent implements OnInit {
   readonly libraryServerLoading = signal(false);
   readonly libraryServerError = signal<string | null>(null);
 
+  // Tools section state
+  readonly toolPathsConfig = signal<Record<string, string | undefined>>({});
+  readonly toolPathsStatus = signal<Record<string, { configured: boolean; detected: boolean; path: string }>>({});
+  readonly toolPathsLoading = signal(false);
+  readonly toolPathsSaveStatus = signal<{ success: boolean; message: string } | null>(null);
+
   // Combine built-in and plugin sections
   readonly allSections = computed(() => {
     return this.settingsService.sections();
@@ -1268,6 +1510,8 @@ export class SettingsComponent implements OnInit {
     this.refreshCacheSize();
     // Check library server status
     this.refreshLibraryServerStatus();
+    // Load tool paths
+    this.refreshToolPaths();
   }
 
   goBack(): void {
@@ -1678,5 +1922,82 @@ export class SettingsComponent implements OnInit {
     } finally {
       this.libraryServerLoading.set(false);
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Tool Paths Methods
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async refreshToolPaths(): Promise<void> {
+    this.toolPathsLoading.set(true);
+    try {
+      // Load config
+      const configResult = await this.electronService.toolPathsGetConfig();
+      if (configResult.success && configResult.data) {
+        this.toolPathsConfig.set(configResult.data);
+      }
+
+      // Load status
+      const statusResult = await this.electronService.toolPathsGetStatus();
+      if (statusResult.success && statusResult.data) {
+        this.toolPathsStatus.set(statusResult.data);
+      }
+    } catch (err) {
+      console.error('Failed to load tool paths:', err);
+    } finally {
+      this.toolPathsLoading.set(false);
+    }
+  }
+
+  async updateToolPath(key: string, value: string): Promise<void> {
+    this.toolPathsSaveStatus.set(null);
+    try {
+      const result = await this.electronService.toolPathsUpdateConfig({ [key]: value || undefined });
+      if (result.success && result.data) {
+        this.toolPathsConfig.set(result.data);
+        // Refresh status to show updated detection
+        await this.refreshToolPaths();
+        this.toolPathsSaveStatus.set({ success: true, message: 'Saved' });
+        setTimeout(() => this.toolPathsSaveStatus.set(null), 2000);
+      }
+    } catch (err) {
+      this.toolPathsSaveStatus.set({
+        success: false,
+        message: err instanceof Error ? err.message : 'Failed to save'
+      });
+    }
+  }
+
+  async browseForToolPath(key: string): Promise<void> {
+    // For all paths, use folder dialog - user can then append executable name if needed
+    const result = await this.electronService.openFolderDialog();
+
+    if (result.success && result.folderPath) {
+      // For executable paths, append the expected filename
+      let finalPath = result.folderPath;
+      const isWindows = navigator.platform.toLowerCase().includes('win');
+
+      if (key === 'condaPath') {
+        finalPath = isWindows
+          ? `${result.folderPath}\\conda.exe`
+          : `${result.folderPath}/conda`;
+      } else if (key === 'ffmpegPath') {
+        finalPath = isWindows
+          ? `${result.folderPath}\\ffmpeg.exe`
+          : `${result.folderPath}/ffmpeg`;
+      }
+
+      await this.updateToolPath(key, finalPath);
+    }
+  }
+
+  getToolPathValue(key: string): string {
+    const config = this.toolPathsConfig();
+    return config[key] || '';
+  }
+
+  getToolStatus(key: string): { configured: boolean; detected: boolean; path: string } | undefined {
+    const status = this.toolPathsStatus();
+    return status[key];
   }
 }

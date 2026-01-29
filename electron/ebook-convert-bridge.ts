@@ -119,7 +119,7 @@ interface CommandResult {
 
 function runCommand(cmd: string, args: string[]): Promise<CommandResult> {
   return new Promise((resolve) => {
-    const proc = spawn(cmd, args);
+    const proc = spawn(cmd, args, { windowsHide: true });
     let stdout = '';
     let stderr = '';
 

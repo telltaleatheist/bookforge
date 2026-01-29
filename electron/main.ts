@@ -13,9 +13,20 @@ import { getHeadlessOcrService } from './headless-ocr';
 
 let mainWindow: BrowserWindow | null = null;
 
+// Custom library root (set via IPC from renderer settings)
+// Module-level so all path functions can use it
+let customLibraryRoot: string | null = null;
+
+function getLibraryRoot(): string {
+  if (customLibraryRoot) {
+    return customLibraryRoot;
+  }
+  return path.join(app.getPath('documents'), 'BookForge');
+}
+
 // Library server config file path
 function getLibraryServerConfigPath(): string {
-  return path.join(os.homedir(), 'Documents', 'BookForge', 'library-server.json');
+  return path.join(getLibraryRoot(), 'library-server.json');
 }
 
 // Load library server config from file
@@ -59,26 +70,50 @@ async function autoStartLibraryServer(): Promise<void> {
 // This avoids file:// security restrictions
 function registerPageProtocol(): void {
   protocol.handle('bookforge-page', async (request) => {
-    // URL format: bookforge-page://path or bookforge-page:///path
-    // Extract path after the protocol prefix, handling various formats
+    // URL format: bookforge-page:///path
+    // On Mac: bookforge-page:///Users/name/...
+    // On Windows: bookforge-page:///C:/Users/name/... or bookforge-page://C:/Users/name/...
     let filePath: string;
 
-    // Simple extraction: remove protocol prefix and decode
     const urlStr = request.url;
+
+    // Extract path after protocol
     if (urlStr.startsWith('bookforge-page:///')) {
-      // Triple slash format: bookforge-page:///Users/...
-      filePath = urlStr.substring('bookforge-page://'.length);
+      filePath = urlStr.substring('bookforge-page:///'.length);
     } else if (urlStr.startsWith('bookforge-page://')) {
-      // Double slash format: bookforge-page://Users/... - add leading slash
-      filePath = '/' + urlStr.substring('bookforge-page://'.length);
+      filePath = urlStr.substring('bookforge-page://'.length);
     } else {
       filePath = urlStr.replace('bookforge-page:', '');
     }
 
     filePath = decodeURIComponent(filePath);
 
+    // Handle Windows paths
+    if (process.platform === 'win32') {
+      // Case 1: Path like "c/Users/..." (Unix-style drive letter, no colon) -> "C:/Users/..."
+      if (/^[a-zA-Z]\/[^:]/.test(filePath)) {
+        filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+      }
+      // Case 2: Path like "C:/Users/..." is already correct, just normalize slashes
+    }
+
+    // On Mac/Linux, ensure absolute path starts with /
+    if (process.platform !== 'win32' && !filePath.startsWith('/')) {
+      filePath = '/' + filePath;
+    }
+
     // Normalize to platform-specific separators
     filePath = filePath.split('/').join(path.sep);
+
+    // Debug first few requests
+    if (!(registerPageProtocol as any).logged) {
+      (registerPageProtocol as any).logged = 0;
+    }
+    if ((registerPageProtocol as any).logged < 3) {
+      console.log('[Protocol] URL:', urlStr);
+      console.log('[Protocol] Resolved path:', filePath);
+      (registerPageProtocol as any).logged++;
+    }
 
     try {
       // Read file directly from disk
@@ -879,11 +914,30 @@ function setupIpcHandlers(): void {
   });
 
   // Projects folder management
-  // Library folder structure
-  const getLibraryRoot = () => {
-    const documentsPath = app.getPath('documents');
-    return path.join(documentsPath, 'BookForge');
-  };
+  // Library folder structure - uses module-level getLibraryRoot()
+
+  // IPC handler to set custom library root (uses module-level customLibraryRoot)
+  ipcMain.handle('library:set-root', async (_event, libraryPath: string | null) => {
+    console.log('[library:set-root] Setting library root to:', libraryPath);
+
+    // Validate path exists if provided
+    if (libraryPath) {
+      try {
+        await fs.access(libraryPath);
+      } catch {
+        console.error('[library:set-root] Path does not exist:', libraryPath);
+        return { success: false, error: `Path does not exist: ${libraryPath}` };
+      }
+    }
+
+    customLibraryRoot = libraryPath;
+    return { success: true };
+  });
+
+  // IPC handler to get current library root
+  ipcMain.handle('library:get-root', async () => {
+    return { path: getLibraryRoot() };
+  });
 
   const getProjectsFolder = () => path.join(getLibraryRoot(), 'projects');
   const getFilesFolder = () => path.join(getLibraryRoot(), 'files');
@@ -1061,6 +1115,64 @@ function setupIpcHandlers(): void {
       console.error('[library:import-file] Error:', err);
       return { success: false, error: (err as Error).message };
     }
+  });
+
+  // Resolve project source file - finds file in current library by hash or filename
+  // Used when opening projects from another machine where paths don't match
+  ipcMain.handle('library:resolve-source', async (_event, options: {
+    libraryPath?: string;
+    sourcePath?: string;
+    fileHash?: string;
+    sourceName?: string;
+  }) => {
+    console.log('[library:resolve-source] Resolving:', options);
+    const filesFolder = getFilesFolder();
+
+    // 1. Try the stored library_path directly
+    if (options.libraryPath) {
+      try {
+        await fs.access(options.libraryPath);
+        console.log('[library:resolve-source] Found at libraryPath:', options.libraryPath);
+        return { success: true, resolvedPath: options.libraryPath };
+      } catch {
+        console.log('[library:resolve-source] libraryPath not found:', options.libraryPath);
+      }
+    }
+
+    // 2. Try finding by hash in current library
+    if (options.fileHash) {
+      const byHash = await findFileByHash(options.fileHash);
+      if (byHash) {
+        console.log('[library:resolve-source] Found by hash:', byHash);
+        return { success: true, resolvedPath: byHash };
+      }
+    }
+
+    // 3. Try finding by filename in current library files folder
+    const filename = options.sourceName || (options.sourcePath ? path.basename(options.sourcePath) : null);
+    if (filename) {
+      const byName = path.join(filesFolder, filename);
+      try {
+        await fs.access(byName);
+        console.log('[library:resolve-source] Found by name:', byName);
+        return { success: true, resolvedPath: byName };
+      } catch {
+        console.log('[library:resolve-source] Not found by name:', byName);
+      }
+    }
+
+    // 4. Try the original source_path as last resort
+    if (options.sourcePath) {
+      try {
+        await fs.access(options.sourcePath);
+        console.log('[library:resolve-source] Found at sourcePath:', options.sourcePath);
+        return { success: true, resolvedPath: options.sourcePath };
+      } catch {
+        console.log('[library:resolve-source] sourcePath not found:', options.sourcePath);
+      }
+    }
+
+    return { success: false, error: 'Source file not found in library' };
   });
 
   // List all projects in the folder (checks both root and projects/ for backward compat)
@@ -2130,6 +2242,38 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // Tool Paths Configuration (centralized config for external tools)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('tool-paths:get-config', async () => {
+    try {
+      const { getConfig } = await import('./tool-paths.js');
+      return { success: true, data: getConfig() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('tool-paths:update-config', async (_event, updates: Record<string, string | undefined>) => {
+    try {
+      const { updateConfig } = await import('./tool-paths.js');
+      const newConfig = updateConfig(updates);
+      return { success: true, data: newConfig };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('tool-paths:get-status', async () => {
+    try {
+      const { getToolStatus } = await import('./tool-paths.js');
+      return { success: true, data: getToolStatus() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // TTS Bridge handlers (ebook2audiobook)
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2225,9 +2369,8 @@ function setupIpcHandlers(): void {
     try {
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
       parallelTtsBridge.setMainWindow(mainWindow);
-      // Initialize logger with library path (default: ~/Documents/BookForge)
-      const libraryPath = path.join(os.homedir(), 'Documents', 'BookForge');
-      await parallelTtsBridge.initializeLogger(libraryPath);
+      // Initialize logger with current library path
+      await parallelTtsBridge.initializeLogger(getLibraryRoot());
       const result = await parallelTtsBridge.startParallelConversion(jobId, config);
       return { success: true, data: result };
     } catch (err) {
@@ -2415,8 +2558,7 @@ function setupIpcHandlers(): void {
   // ─────────────────────────────────────────────────────────────────────────────
 
   const getAudiobooksBasePath = () => {
-    const documentsPath = app.getPath('documents');
-    return path.join(documentsPath, 'BookForge', 'audiobooks');
+    return path.join(getLibraryRoot(), 'audiobooks');
   };
 
   // Helper to generate a unique project folder name (with timestamp for uniqueness)
@@ -2424,6 +2566,20 @@ function setupIpcHandlers(): void {
     const baseName = filename.replace(/\.epub$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
     const timestamp = Date.now().toString(36);
     return `${baseName}_${timestamp}`;
+  };
+
+  // Helper to find cleaned epub - checks for both 'exported_cleaned.epub' (new) and 'cleaned.epub' (legacy)
+  const findCleanedEpub = async (folderPath: string): Promise<string | null> => {
+    const newName = path.join(folderPath, 'exported_cleaned.epub');
+    const legacyName = path.join(folderPath, 'cleaned.epub');
+
+    if (await fs.access(newName).then(() => true).catch(() => false)) {
+      return newName;
+    }
+    if (await fs.access(legacyName).then(() => true).catch(() => false)) {
+      return legacyName;
+    }
+    return null;
   };
 
   // Helper to generate a stable project ID (without timestamp, for deduplication)
@@ -2544,13 +2700,15 @@ function setupIpcHandlers(): void {
           }
 
           // Check which files exist (exported.epub is new name, original.epub is legacy)
-          const [hasExported, hasOriginalLegacy, hasCleaned, hasOutput] = await Promise.all([
+          const [hasExported, hasOriginalLegacy, cleanedPath, hasOutput] = await Promise.all([
             fs.access(path.join(folderPath, 'exported.epub')).then(() => true).catch(() => false),
             fs.access(path.join(folderPath, 'original.epub')).then(() => true).catch(() => false),
-            fs.access(path.join(folderPath, 'exported_cleaned.epub')).then(() => true).catch(() => false),
+            findCleanedEpub(folderPath),
             fs.access(path.join(folderPath, 'output.m4b')).then(() => true).catch(() => false)
           ]);
           const hasOriginal = hasExported || hasOriginalLegacy;
+          const hasCleaned = cleanedPath !== null;
+          const cleanedFilename = cleanedPath ? path.basename(cleanedPath) : null;
 
           return {
             id: folder.name,
@@ -2560,6 +2718,7 @@ function setupIpcHandlers(): void {
             state: projectData.state,
             hasOriginal,
             hasCleaned,
+            cleanedFilename,
             hasOutput,
             createdAt: projectData.createdAt,
             modifiedAt: projectData.modifiedAt
@@ -2592,13 +2751,15 @@ function setupIpcHandlers(): void {
         return { success: false, error: 'Project not found' };
       }
 
-      const [hasExported, hasOriginalLegacy, hasCleaned, hasOutput] = await Promise.all([
+      const [hasExported, hasOriginalLegacy, cleanedPath, hasOutput] = await Promise.all([
         fs.access(path.join(folderPath, 'exported.epub')).then(() => true).catch(() => false),
         fs.access(path.join(folderPath, 'original.epub')).then(() => true).catch(() => false),
-        fs.access(path.join(folderPath, 'exported_cleaned.epub')).then(() => true).catch(() => false),
+        findCleanedEpub(folderPath),
         fs.access(path.join(folderPath, 'output.m4b')).then(() => true).catch(() => false)
       ]);
       const hasOriginal = hasExported || hasOriginalLegacy;
+      const hasCleaned = cleanedPath !== null;
+      const cleanedFilename = cleanedPath ? path.basename(cleanedPath) : null;
 
       return {
         success: true,
@@ -2610,6 +2771,7 @@ function setupIpcHandlers(): void {
           state: projectData.state,
           hasOriginal,
           hasCleaned,
+          cleanedFilename,
           hasOutput,
           createdAt: projectData.createdAt,
           modifiedAt: projectData.modifiedAt
@@ -2673,11 +2835,14 @@ function setupIpcHandlers(): void {
     const hasExported = await fs.access(exportedPath).then(() => true).catch(() => false);
     const originalPath = hasExported ? exportedPath : legacyPath;
 
+    // Find cleaned epub (checks both 'exported_cleaned.epub' and 'cleaned.epub')
+    const cleanedPath = await findCleanedEpub(folderPath) || path.join(folderPath, 'exported_cleaned.epub');
+
     return {
       success: true,
       folderPath,
       originalPath,
-      cleanedPath: path.join(folderPath, 'exported_cleaned.epub'),
+      cleanedPath,
       outputPath: path.join(folderPath, 'output.m4b')
     };
   });
@@ -2835,14 +3000,18 @@ function setupIpcHandlers(): void {
           }
 
           const skippedChunksFile = path.join(folderPath, 'skipped-chunks.json');
-          const hasSkippedChunks = await fs.access(skippedChunksFile).then(() => true).catch(() => false);
+          const [hasSkippedChunks, cleanedPath] = await Promise.all([
+            fs.access(skippedChunksFile).then(() => true).catch(() => false),
+            findCleanedEpub(folderPath)
+          ]);
           return {
             path: epubPath,
             filename: projectData?.originalFilename || folder.name + '.epub',
             size: stats.size,
             addedAt: projectData?.createdAt || stats.mtime.toISOString(),
             projectId: folder.name,
-            hasCleaned: await fs.access(path.join(folderPath, 'exported_cleaned.epub')).then(() => true).catch(() => false),
+            hasCleaned: cleanedPath !== null,
+            cleanedFilename: cleanedPath ? path.basename(cleanedPath) : null,
             skippedChunksPath: hasSkippedChunks ? skippedChunksFile : undefined
           };
         } catch {
@@ -2879,7 +3048,13 @@ function setupIpcHandlers(): void {
       }
 
       const entries = await fs.readdir(audiobooksPath, { withFileTypes: true });
-      const m4bFiles = entries.filter(e => e.isFile() && e.name.toLowerCase().endsWith('.m4b'));
+      // Filter for m4b files, excluding hidden files and macOS resource forks
+      const m4bFiles = entries.filter(e =>
+        e.isFile() &&
+        e.name.toLowerCase().endsWith('.m4b') &&
+        !e.name.startsWith('.') &&
+        !e.name.startsWith('._')
+      );
 
       const files = await Promise.all(m4bFiles.map(async (file) => {
         const filePath = path.join(audiobooksPath, file.name);
@@ -2998,7 +3173,7 @@ function setupIpcHandlers(): void {
       }
 
       // Search for BFP projects with matching source name
-      const projectsFolder = path.join(os.homedir(), 'Documents', 'BookForge', 'projects');
+      const projectsFolder = path.join(getLibraryRoot(), 'projects');
       try {
         await fs.access(projectsFolder);
       } catch {
@@ -3693,11 +3868,14 @@ function setupIpcHandlers(): void {
   });
 
   // Queue persistence handlers
+  // Queue is system-specific (each machine has its own jobs), so store in app userData folder
+  const getQueueFilePath = () => path.join(app.getPath('userData'), 'queue.json');
+
   ipcMain.handle('queue:save-state', async (_event, queueState: string) => {
     try {
-      const bookforgePath = path.join(os.homedir(), 'Documents', 'BookForge');
-      await fs.mkdir(bookforgePath, { recursive: true });
-      const queueFile = path.join(bookforgePath, 'queue.json');
+      const userDataPath = app.getPath('userData');
+      await fs.mkdir(userDataPath, { recursive: true });
+      const queueFile = getQueueFilePath();
       await atomicWriteFile(queueFile, queueState);
       return { success: true };
     } catch (error) {
@@ -3708,7 +3886,7 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('queue:load-state', async () => {
     try {
-      const queueFile = path.join(os.homedir(), 'Documents', 'BookForge', 'queue.json');
+      const queueFile = getQueueFilePath();
       const exists = fsSync.existsSync(queueFile);
       if (!exists) {
         return { success: true, data: null };
@@ -3728,7 +3906,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('logger:initialize', async () => {
     try {
       const logger = await import('./audiobook-logger.js');
-      const libraryPath = path.join(os.homedir(), 'Documents', 'BookForge');
+      const libraryPath = getLibraryRoot();
       await logger.initializeLogger(libraryPath);
 
       // Also initialize the TTS bridge logger

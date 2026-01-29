@@ -810,6 +810,23 @@ export class ElectronService {
   }
 
   /**
+   * Resolve a project's source file path - finds file in current library by hash or filename
+   * Used when opening projects from another machine where paths don't match
+   */
+  async libraryResolveSource(options: {
+    libraryPath?: string;
+    sourcePath?: string;
+    fileHash?: string;
+    sourceName?: string;
+  }): Promise<{ success: boolean; resolvedPath?: string; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.library.resolveSource(options);
+    }
+    // In browser mode, just return the library path or source path
+    return { success: true, resolvedPath: options.libraryPath || options.sourcePath };
+  }
+
+  /**
    * Copy a file to the audiobook producer queue folder
    */
   async copyToAudiobookQueue(sourcePath: string, filename: string): Promise<{
@@ -931,6 +948,27 @@ export class ElectronService {
       if (result.success && result.examples) {
         return result.examples;
       }
+    }
+    return null;
+  }
+
+  /**
+   * Set custom library root path
+   */
+  async setLibraryRoot(libraryPath: string | null): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.library.setRoot(libraryPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Get current library root path
+   */
+  async getLibraryRoot(): Promise<string | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.library.getRoot();
+      return result.path;
     }
     return null;
   }
@@ -1596,6 +1634,31 @@ export class ElectronService {
   async libraryServerGetStatus(): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[]; booksPath: string }; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.libraryServer.getStatus();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Tool Paths Configuration
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async toolPathsGetConfig(): Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.toolPaths.getConfig();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async toolPathsUpdateConfig(updates: Record<string, string | undefined>): Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.toolPaths.updateConfig(updates);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async toolPathsGetStatus(): Promise<{ success: boolean; data?: Record<string, { configured: boolean; detected: boolean; path: string }>; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.toolPaths.getStatus();
     }
     return { success: false, error: 'Not running in Electron' };
   }

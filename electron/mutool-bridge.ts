@@ -181,13 +181,16 @@ export class MutoolBridge {
 
     for (const p of paths) {
       try {
-        await fsPromises.access(p, fs.constants.X_OK);
+        // On Windows, X_OK doesn't work properly - just check file exists
+        const accessMode = isWin ? fs.constants.F_OK : fs.constants.X_OK;
+        await fsPromises.access(p, accessMode);
         // Verify it runs
         await execAsync(`"${p}" -v`, { timeout: 5000 });
         this.mutoolPath = p;
         console.log(`[MuTool] Using bundled binary: ${p}`);
         return p;
-      } catch {
+      } catch (err) {
+        console.log(`[MuTool] Not found or not executable: ${p}`, (err as Error).message);
         // Not found at this path, continue
       }
     }

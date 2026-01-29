@@ -196,12 +196,15 @@ async function setupWindows() {
   // Extract
   await extractZip(zipPath, TEMP_DIR);
 
-  // Find and copy mutool.exe
-  const extractedDir = path.join(TEMP_DIR, `mupdf-${MUPDF_VERSION}-windows`);
-  const mutoolSrc = path.join(extractedDir, 'mutool.exe');
+  // Find mutool.exe - Windows zip extracts directly without subdirectory
+  let mutoolSrc = path.join(TEMP_DIR, 'mutool.exe');
+  if (!existsSync(mutoolSrc)) {
+    // Try with version subdirectory as fallback
+    mutoolSrc = path.join(TEMP_DIR, `mupdf-${MUPDF_VERSION}-windows`, 'mutool.exe');
+  }
 
   if (!existsSync(mutoolSrc)) {
-    throw new Error(`mutool.exe not found in extracted archive at ${mutoolSrc}`);
+    throw new Error(`mutool.exe not found in extracted archive`);
   }
 
   fs.copyFileSync(mutoolSrc, binaryPath);

@@ -5174,28 +5174,29 @@ export class PdfPickerComponent {
       return;
     }
 
-    // Load the source PDF - prefer library_path, fall back to source_path
+    // Load the source PDF - resolve path for current system
     this.loading.set(true);
     this.loadingText.set('Loading project...');
 
-    // If project is missing library_path or file_hash, import the source file to library
-    let libraryPath = project.library_path;
-    let fileHash = project.file_hash || '';
+    // Resolve the source file path - handles cross-machine portability
+    const resolveResult = await this.electronService.libraryResolveSource({
+      libraryPath: project.library_path,
+      sourcePath: project.source_path,
+      fileHash: project.file_hash,
+      sourceName: project.source_name
+    });
 
-    if (!libraryPath || !fileHash) {
-      this.loadingText.set('Importing to library...');
-      const importResult = await this.electronService.libraryImportFile(project.source_path);
-      if (importResult.success && importResult.libraryPath) {
-        libraryPath = importResult.libraryPath;
-        fileHash = importResult.hash || '';
-      } else {
-        // Fall back to source path if import fails
-        libraryPath = project.source_path;
-        console.warn('[loadProject] Library import failed, using source path:', project.source_path);
-      }
+    if (!resolveResult.success || !resolveResult.resolvedPath) {
+      this.loading.set(false);
+      this.showAlert({
+        title: 'Source File Not Found',
+        message: `Could not find the source file for this project.\n\nExpected: ${project.source_name || project.source_path}\n\nThe file may need to be imported to your library on this machine.`,
+        type: 'error'
+      });
+      return;
     }
 
-    const pdfPathToLoad = libraryPath;
+    const pdfPathToLoad = resolveResult.resolvedPath;
 
     try {
       const pdfResult = await this.pdfService.analyzePdf(pdfPathToLoad);
@@ -5220,8 +5221,8 @@ export class PdfPickerComponent {
         totalPages: pdfResult.page_count,
         pdfName: pdfResult.pdf_name,
         pdfPath: project.source_path,
-        libraryPath: libraryPath,
-        fileHash: fileHash,
+        libraryPath: resolveResult.resolvedPath,
+        fileHash: project.file_hash || '',
         deletedBlockIds: new Set(project.deleted_block_ids || []),
         pageOrder: project.page_order || [],
         blockEdits: blockEditsMap
@@ -5324,28 +5325,29 @@ export class PdfPickerComponent {
     // Save current document state before loading new one
     this.saveCurrentDocumentState();
 
-    // Load the source PDF - prefer library_path, fall back to source_path
+    // Load the source PDF - resolve path for current system
     this.loading.set(true);
     this.loadingText.set('Loading project...');
 
-    // If project is missing library_path or file_hash, import the source file to library
-    let libraryPath = project.library_path;
-    let fileHash = project.file_hash || '';
+    // Resolve the source file path - handles cross-machine portability
+    const resolveResult = await this.electronService.libraryResolveSource({
+      libraryPath: project.library_path,
+      sourcePath: project.source_path,
+      fileHash: project.file_hash,
+      sourceName: project.source_name
+    });
 
-    if (!libraryPath || !fileHash) {
-      this.loadingText.set('Importing to library...');
-      const importResult = await this.electronService.libraryImportFile(project.source_path);
-      if (importResult.success && importResult.libraryPath) {
-        libraryPath = importResult.libraryPath;
-        fileHash = importResult.hash || '';
-      } else {
-        // Fall back to source path if import fails
-        libraryPath = project.source_path;
-        console.warn('[loadProjectFromPath] Library import failed, using source path:', project.source_path);
-      }
+    if (!resolveResult.success || !resolveResult.resolvedPath) {
+      this.loading.set(false);
+      this.showAlert({
+        title: 'Source File Not Found',
+        message: `Could not find the source file for this project.\n\nExpected: ${project.source_name || project.source_path}\n\nThe file may need to be imported to your library on this machine.`,
+        type: 'error'
+      });
+      return;
     }
 
-    const pdfPathToLoad = libraryPath;
+    const pdfPathToLoad = resolveResult.resolvedPath;
 
     try {
       const pdfResult = await this.pdfService.analyzePdf(pdfPathToLoad);
@@ -5358,8 +5360,8 @@ export class PdfPickerComponent {
       const newDoc: OpenDocument = {
         id: docId,
         path: project.source_path,
-        libraryPath: libraryPath,
-        fileHash: fileHash,
+        libraryPath: resolveResult.resolvedPath,
+        fileHash: project.file_hash || '',
         name: project.source_name || pdfResult.pdf_name,
         blocks: pdfResult.blocks,
         categories: pdfResult.categories,
@@ -5401,8 +5403,8 @@ export class PdfPickerComponent {
         totalPages: pdfResult.page_count,
         pdfName: project.source_name || pdfResult.pdf_name,
         pdfPath: project.source_path,
-        libraryPath: libraryPath,
-        fileHash: fileHash,
+        libraryPath: resolveResult.resolvedPath,
+        fileHash: project.file_hash || '',
         deletedBlockIds: deletedBlockIds,
         pageOrder: pageOrder,
         blockEdits: blockEditsMap

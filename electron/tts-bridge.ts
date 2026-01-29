@@ -5,12 +5,54 @@
  * Parses progress from stdout and emits events via IPC.
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, execSync } from 'child_process';
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as logger from './audiobook-logger';
 import { getDefaultE2aPath, getCondaRunArgs, getCondaPath } from './e2a-paths';
+
+/**
+ * Kill a process and all its children (process tree)
+ * On Windows, uses taskkill /F /T to force kill the entire tree
+ * On Unix, uses process.kill with SIGKILL
+ */
+function killProcessTree(process: ChildProcess, label: string): void {
+  if (!process || process.killed) return;
+
+  const pid = process.pid;
+  if (!pid) {
+    console.log(`[TTS] ${label}: No PID, using SIGTERM`);
+    try {
+      process.kill('SIGTERM');
+    } catch (err) {
+      console.error(`[TTS] Failed to kill ${label}:`, err);
+    }
+    return;
+  }
+
+  if (os.platform() === 'win32') {
+    // Windows: use taskkill to kill entire process tree
+    console.log(`[TTS] Killing ${label} process tree (PID: ${pid})`);
+    try {
+      // /F = force, /T = tree (kill child processes)
+      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' });
+      console.log(`[TTS] Killed ${label} process tree`);
+    } catch (err) {
+      // Process may have already exited
+      console.log(`[TTS] ${label} process tree kill returned (may have already exited)`);
+    }
+  } else {
+    // Unix: SIGKILL for forceful termination
+    console.log(`[TTS] Killing ${label} (PID: ${pid})`);
+    try {
+      process.kill('SIGKILL');
+    } catch (err) {
+      console.error(`[TTS] Failed to kill ${label}:`, err);
+    }
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -328,7 +370,7 @@ export async function startConversion(
 
     currentProcess = spawn(getCondaPath(), fullArgs, {
       cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true
     });
 
@@ -530,7 +572,7 @@ export async function startConversion(
  */
 export function stopConversion(): boolean {
   if (currentProcess) {
-    currentProcess.kill('SIGTERM');
+    killProcessTree(currentProcess, 'TTS conversion');
     currentProcess = null;
     return true;
   }
