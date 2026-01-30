@@ -710,8 +710,16 @@ import {
                           </div>
                         </div>
 
-                        <!-- Verify Button and Status -->
+                        <!-- Save and Verify Buttons -->
                         <div class="wsl-verify-section">
+                          <desktop-button
+                            variant="primary"
+                            size="sm"
+                            (click)="saveWslSettings()"
+                            [disabled]="wslSaving()"
+                          >
+                            {{ wslSaving() ? 'Saved!' : 'Save WSL Settings' }}
+                          </desktop-button>
                           <desktop-button
                             variant="ghost"
                             size="sm"
@@ -736,7 +744,7 @@ import {
                                     {{ setup.e2aFound ? '✓' : '✗' }} ebook2audiobook
                                   </div>
                                   <div [class.found]="setup.orpheusEnvFound" [class.not-found]="!setup.orpheusEnvFound">
-                                    {{ setup.orpheusEnvFound ? '✓' : '✗' }} orpheus_env
+                                    {{ setup.orpheusEnvFound ? '✓' : '✗' }} orpheus_tts conda env
                                   </div>
                                 </div>
                                 @if (setup.errors.length > 0) {
@@ -1762,6 +1770,7 @@ export class SettingsComponent implements OnInit {
     errors: string[];
   } | null>(null);
   readonly wslVerifying = signal(false);
+  readonly wslSaving = signal(false);
   readonly isWindows = signal(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('win'));
 
   // Combine built-in and plugin sections
@@ -2329,5 +2338,21 @@ export class SettingsComponent implements OnInit {
 
   async selectWslDistro(distro: string): Promise<void> {
     await this.updateToolPath('wslDistro', distro);
+  }
+
+  async saveWslSettings(): Promise<void> {
+    this.wslSaving.set(true);
+    // Settings are already saved on change, but this provides user confirmation
+    // and ensures config is reloaded
+    try {
+      await this.refreshToolPaths();
+      // Brief delay to show "Saved!" feedback
+      setTimeout(() => {
+        this.wslSaving.set(false);
+      }, 1500);
+    } catch (err) {
+      console.error('Failed to save WSL settings:', err);
+      this.wslSaving.set(false);
+    }
   }
 }

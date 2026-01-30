@@ -109,6 +109,62 @@ function cleanupOrphanedVllmProcesses(): void {
   }
 }
 
+/**
+ * Aggressively kill ALL Python processes related to ebook2audiobook
+ * This is the nuclear option - used on app exit to ensure no orphans
+ * Uses WMIC to find python processes by command line pattern
+ */
+export function forceKillAllE2aProcesses(): void {
+  console.log('[PARALLEL-TTS] Force killing all e2a-related processes...');
+
+  if (os.platform() === 'win32') {
+    try {
+      // Use WMIC to find python processes with app.py in command line
+      // This catches vLLM worker processes that escape normal tree kill
+      const wmicOutput = execSync(
+        'wmic process where "commandline like \'%app.py%\' and name like \'%python%\'" get processid',
+        { encoding: 'utf8', timeout: 10000 }
+      );
+
+      const pids = wmicOutput
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => /^\d+$/.test(line));
+
+      for (const pid of pids) {
+        try {
+          console.log(`[PARALLEL-TTS] Force killing Python process (PID: ${pid})`);
+          execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', timeout: 5000 });
+        } catch {
+          // Process may have already exited
+        }
+      }
+
+      if (pids.length > 0) {
+        console.log(`[PARALLEL-TTS] Force killed ${pids.length} e2a Python process(es)`);
+      }
+    } catch (err) {
+      // WMIC may fail or return empty, that's OK
+      console.log('[PARALLEL-TTS] WMIC process search completed');
+    }
+
+    // Also try to kill any vllm processes directly
+    try {
+      execSync('taskkill /F /IM "python.exe" /FI "WINDOWTITLE eq *vllm*"', {
+        stdio: 'ignore',
+        timeout: 5000,
+      });
+    } catch {
+      // May not find any, that's OK
+    }
+  }
+
+  // Also clean up WSL processes if applicable
+  if (os.platform() === 'win32') {
+    cleanupWslOrphanedProcesses();
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WSL2 Spawn Support (Windows only, for Orpheus TTS)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,37 +193,59 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   const wslCondaPath = getWslCondaPath();
   const wslE2aPath = getWslE2aPath();
 
-  // Build environment variable exports
-  const envExports = config.env
-    ? Object.entries(config.env)
-        .map(([key, value]) => `export ${key}="${value}"`)
-        .join(' && ')
-    : '';
+  // Don't export Windows env vars to WSL - they contain paths with parentheses
+  // that break bash syntax. WSL has its own environment and doesn't need these.
+  // Only export specific safe variables if needed in the future.
 
   // Convert condaArgs paths from Windows to WSL format
-  const wslArgs = config.condaArgs.map((arg) => {
-    // Convert any Windows paths in args (e.g., epub path, output dir)
-    if (/^[A-Za-z]:[\\/]/.test(arg)) {
-      return windowsToWslPath(arg);
+  // Also replace Windows conda env path with WSL native orpheus_tts conda env
+  // And replace Windows e2a path with WSL native e2a path
+  const wslArgs: string[] = [];
+  let skipNext = false;
+  const orpheusCondaEnv = getWslOrpheusCondaEnv();
+
+  for (let i = 0; i < config.condaArgs.length; i++) {
+    const arg = config.condaArgs[i];
+
+    if (skipNext) {
+      skipNext = false;
+      continue;
     }
-    // Handle paths that come after flags like --ebook, --output_dir
-    return arg;
-  });
+
+    // Replace -p <windows_env_path> with -n orpheus_tts (use WSL native conda env)
+    if (arg === '-p' && config.condaArgs[i + 1]?.includes('orpheus')) {
+      wslArgs.push('-n', orpheusCondaEnv);
+      skipNext = true;  // Skip the next arg (the Windows path)
+      continue;
+    }
+
+    // Replace Windows e2a paths with WSL native e2a path
+    // This is critical - running Python code from /mnt/c/ causes multiprocessing issues
+    if (/^[A-Za-z]:[\\/]/.test(arg) && arg.includes('ebook2audiobook')) {
+      // Extract the relative path after ebook2audiobook
+      const match = arg.match(/ebook2audiobook[\\\/]?(.*)/i);
+      if (match) {
+        const relativePath = match[1].replace(/\\/g, '/');
+        wslArgs.push(`${wslE2aPath}/${relativePath}`);
+      } else {
+        wslArgs.push(wslE2aPath);
+      }
+    }
+    // Convert other Windows paths (epub, output dir) to /mnt/... format
+    else if (/^[A-Za-z]:[\\/]/.test(arg)) {
+      wslArgs.push(windowsToWslPath(arg));
+    } else {
+      wslArgs.push(arg);
+    }
+  }
 
   // Build the full command:
   // 1. cd to e2a directory
-  // 2. Set environment variables
-  // 3. Run conda with converted args
+  // 2. Run conda with converted args
   const cdCommand = `cd "${wslE2aPath}"`;
   const condaCommand = `"${wslCondaPath}" ${wslArgs.join(' ')}`;
 
-  const parts = [cdCommand];
-  if (envExports) {
-    parts.push(envExports);
-  }
-  parts.push(condaCommand);
-
-  return parts.join(' && ');
+  return `${cdCommand} && ${condaCommand}`;
 }
 
 /**
@@ -435,17 +513,33 @@ import {
   getWslDistro,
   getWslCondaPath,
   getWslE2aPath,
+  getWslOrpheusCondaEnv,
   windowsToWslPath,
+  wslPathToWindows,
 } from './e2a-paths';
 
 // Use centralized cross-platform path detection
 let e2aPath = getDefaultE2aPath();
 
 // Helper to get conda run args for current e2aPath
-// Pass ttsEngine to use the correct environment (orpheus_env for Orpheus, python_env for others)
+// Pass ttsEngine to use the correct environment (orpheus_tts for Orpheus in WSL, python_env for others)
 function condaRunArgs(ttsEngine?: string): string[] {
   return getCondaRunArgs(e2aPath, ttsEngine);
 }
+
+/**
+ * Convert a path to Windows-accessible format for reading files
+ * If it's a WSL path (starts with /), convert to Windows UNC path
+ * Otherwise return as-is
+ */
+function toReadablePath(p: string): string {
+  if (p && p.startsWith('/') && !p.startsWith('/mnt/')) {
+    // This is a native WSL path, convert to Windows UNC
+    return wslPathToWindows(p);
+  }
+  return p;
+}
+
 let mainWindow: BrowserWindow | null = null;
 let loggerInitialized = false;
 
@@ -487,6 +581,8 @@ interface ConversionSession {
   totalMissing?: number;       // Sentences to process in this resume session
   // Watchdog
   watchdogTimer?: NodeJS.Timeout;
+  // ETA calculation - exclude model setup time
+  firstSentenceCompletedTime?: number;  // When first sentence actually completed (excludes model loading)
 }
 
 const activeSessions: Map<string, ConversionSession> = new Map();
@@ -640,7 +736,25 @@ export async function prepareSession(
 ): Promise<PrepInfo> {
   const appPath = path.join(e2aPath, 'app.py');
   const sessionId = crypto.randomUUID();
-  const sessionDir = path.join(e2aPath, 'tmp', `ebook-${sessionId}`);
+
+  // When using WSL for Orpheus, the session is created in WSL's filesystem
+  // We need to use the WSL path for session directory and convert to Windows UNC for reading
+  const useWsl = shouldUseWslForSpawn(settings.ttsEngine);
+  let sessionDir: string;
+  let sessionDirForReading: string;
+
+  if (useWsl) {
+    // Session will be created in WSL's e2a path
+    const wslE2aPath = getWslE2aPath();
+    sessionDir = `${wslE2aPath}/tmp/ebook-${sessionId}`;
+    // Convert to Windows UNC path for reading from Node.js
+    sessionDirForReading = wslPathToWindows(sessionDir);
+    console.log(`[PARALLEL-TTS] WSL session dir: ${sessionDir} -> ${sessionDirForReading}`);
+  } else {
+    // Session in Windows e2a path
+    sessionDir = path.join(e2aPath, 'tmp', `ebook-${sessionId}`);
+    sessionDirForReading = sessionDir;
+  }
 
   // Map UI device names to e2a CLI device names (app.py expects uppercase)
   const deviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
@@ -711,13 +825,14 @@ export async function prepareSession(
   });
 
   // Read the session-state.json file from the process subdirectory
-  const entries = await fs.readdir(sessionDir, { withFileTypes: true });
+  // Use sessionDirForReading which is a Windows-accessible path (UNC for WSL paths)
+  const entries = await fs.readdir(sessionDirForReading, { withFileTypes: true });
   const processDir = entries.find(e => e.isDirectory());
   if (!processDir) {
-    throw new Error(`No process directory found in ${sessionDir}`);
+    throw new Error(`No process directory found in ${sessionDirForReading}`);
   }
 
-  const statePath = path.join(sessionDir, processDir.name, 'session-state.json');
+  const statePath = path.join(sessionDirForReading, processDir.name, 'session-state.json');
   const stateContent = await fs.readFile(statePath, 'utf-8');
   const state = JSON.parse(stateContent);
 
@@ -1294,11 +1409,17 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     let stderr = '';
     let outputPath = '';
 
-    session.assemblyProcess = spawn(getCondaPath(), args, {
-      cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
-      shell: true
-    });
+    // Use WSL-aware spawn for Orpheus to ensure session files are found in WSL filesystem
+    session.assemblyProcess = spawnWithWslSupport(
+      getCondaPath(),
+      args,
+      {
+        cwd: e2aPath,
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
+        shell: true
+      },
+      settings.ttsEngine  // Pass TTS engine to check if WSL should be used
+    );
 
     // Track assembly state for progress reporting
     let assemblySubPhase: 'combining' | 'vtt' | 'encoding' | 'metadata' = 'combining';
@@ -1420,7 +1541,13 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       // Format 3: "created: /path/file.m4b"
       const outputMatch = output.match(/(?:output[^']*to|saved to|created|wrote)[:\s]+(['"]?)([\/~][^'":\n]+\.m4b)\1/i);
       if (outputMatch) {
-        outputPath = outputMatch[2].trim();
+        let detectedPath = outputMatch[2].trim();
+        // If running via WSL, convert WSL path (/mnt/c/...) back to Windows path
+        if (shouldUseWslForSpawn(settings.ttsEngine) && detectedPath.startsWith('/mnt/')) {
+          detectedPath = wslPathToWindows(detectedPath);
+          console.log('[PARALLEL-TTS] Converted WSL output path to Windows:', detectedPath);
+        }
+        outputPath = detectedPath;
       }
     });
 
@@ -1761,7 +1888,6 @@ function emitProgress(session: ConversionSession): void {
 
   const activeWorkers = session.workers.filter(w => w.status === 'running').length;
   const now = Date.now();
-  const sessionElapsedSeconds = (now - session.startTime) / 1000;
 
   let totalCompleted: number;
   let sentencesDoneInSession: number; // Sentences processed in THIS session only
@@ -1779,14 +1905,6 @@ function emitProgress(session: ConversionSession): void {
     sentencesDoneInSession = actualNewConversions; // Only count new work in this session
     percentage = Math.min(100, (totalCompleted / session.prepInfo.totalSentences) * 100);
     remainingSentences = session.prepInfo.totalSentences - totalCompleted;
-
-    // Debug logging for resume jobs (every 30 seconds)
-    if (Math.floor(sessionElapsedSeconds) % 30 === 0 && actualNewConversions > 0) {
-      const rate = actualNewConversions / sessionElapsedSeconds;
-      const etaMinutes = remainingSentences / rate / 60;
-      console.log(`[PARALLEL-TTS] Resume: ${actualNewConversions} new in ${Math.round(sessionElapsedSeconds)}s ` +
-        `(${rate.toFixed(3)}/s), ${remainingSentences} remaining, ETA: ${etaMinutes.toFixed(1)} min`);
-    }
   } else {
     // Normal (non-resume) job - use direct worker counts
     totalCompleted = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
@@ -1794,6 +1912,17 @@ function emitProgress(session: ConversionSession): void {
     percentage = (totalCompleted / session.prepInfo.totalSentences) * 100;
     remainingSentences = session.prepInfo.totalSentences - totalCompleted;
   }
+
+  // Track when first sentence completes (excludes model loading time from ETA)
+  if (sentencesDoneInSession > 0 && !session.firstSentenceCompletedTime) {
+    session.firstSentenceCompletedTime = now;
+    console.log(`[PARALLEL-TTS] First sentence completed - ETA timing starts now (setup took ${Math.round((now - session.startTime) / 1000)}s)`);
+  }
+
+  // For ETA calculation, use time since first sentence completed (excludes model setup)
+  // This gives much more accurate ETAs since model loading can take 30-60+ seconds
+  const etaBaseTime = session.firstSentenceCompletedTime || session.startTime;
+  const workElapsedSeconds = (now - etaBaseTime) / 1000;
 
   // Track progress history for this session (for sliding window ETA calculation)
   if (!progressHistory.has(session.jobId)) {
@@ -1810,15 +1939,18 @@ function emitProgress(session: ConversionSession): void {
   }
 
   // Calculate ETA using the better of two methods:
-  // 1. Session-wide rate: sentencesDoneInSession / sessionElapsedSeconds
+  // 1. Work rate: sentencesDoneInSession / workElapsedSeconds (excludes model setup)
   // 2. Window-based rate: sentences in last 30 seconds / 30 seconds
-  // Use session-wide for stability, window-based for responsiveness once we have enough data
+  // Use work rate for stability, window-based for responsiveness once we have enough data
   let estimatedRemaining = 0;
 
-  if (sentencesDoneInSession > 0 && sessionElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
-    // Primary: Use session-wide rate (most accurate for overall progress)
-    const sessionRate = sentencesDoneInSession / sessionElapsedSeconds;
-    estimatedRemaining = Math.round(remainingSentences / sessionRate);
+  // For ETA, we need at least 1 sentence done and some time elapsed since first completion
+  // Use > 1 because when firstSentenceCompletedTime is set, sentencesDoneInSession is 1
+  // and workElapsedSeconds is 0, which would cause division issues
+  if (sentencesDoneInSession > 1 && workElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
+    // Primary: Use work rate (excludes model setup time for accuracy)
+    const workRate = sentencesDoneInSession / workElapsedSeconds;
+    estimatedRemaining = Math.round(remainingSentences / workRate);
 
     // If we have enough window data, blend with window rate for responsiveness
     if (history.length >= MIN_SAMPLES_FOR_ETA) {
@@ -1828,17 +1960,17 @@ function emitProgress(session: ConversionSession): void {
 
       if (sentencesInWindow > 0 && timeInWindow > 5) {
         const windowRate = sentencesInWindow / timeInWindow;
-        // Blend: 70% session-wide, 30% recent window (prefer stability)
-        const blendedRate = sessionRate * 0.7 + windowRate * 0.3;
+        // Blend: 70% work rate, 30% recent window (prefer stability)
+        const blendedRate = workRate * 0.7 + windowRate * 0.3;
         estimatedRemaining = Math.round(remainingSentences / blendedRate);
       }
     }
   }
 
-  // Calculate rate for display
+  // Calculate rate for display (use work time, not total session time)
   let rateDisplay = '';
-  if (sentencesDoneInSession > 0 && sessionElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
-    const rate = sentencesDoneInSession / sessionElapsedSeconds;
+  if (sentencesDoneInSession > 1 && workElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
+    const rate = sentencesDoneInSession / workElapsedSeconds;
     if (rate >= 1) {
       rateDisplay = ` (${rate.toFixed(1)}/s)`;
     } else if (rate >= 0.1) {
@@ -2479,10 +2611,12 @@ export async function checkResumeStatusFast(epubPath: string): Promise<ResumeChe
         const sessionId = folderName.startsWith('ebook-') ? folderName.slice(6) : folderName;
 
         // Scan completed sentence files and find missing indices
+        // Convert to readable path if it's a WSL path
+        const sentencesDirReadable = toReadablePath(sentencesDir);
         let completedIndices: Set<number> = new Set();
         let missingIndices: number[] = [];
         try {
-          const files = await fs.readdir(sentencesDir);
+          const files = await fs.readdir(sentencesDirReadable);
           // Parse sentence indices from filenames (0.flac, 1.flac, etc.)
           for (const f of files) {
             if (f.endsWith('.flac')) {

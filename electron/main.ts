@@ -4214,11 +4214,24 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', async () => {
+// Track if we've already run cleanup to avoid duplicate work
+let cleanupDone = false;
+
+app.on('before-quit', async (event) => {
+  if (cleanupDone) return;
+
+  // Prevent quit until cleanup is done
+  event.preventDefault();
+  cleanupDone = true;
+
+  console.log('[MAIN] Running cleanup before quit...');
+
   // Kill any active TTS workers
   try {
-    const { killAllWorkers } = await import('./parallel-tts-bridge.js');
+    const { killAllWorkers, forceKillAllE2aProcesses } = await import('./parallel-tts-bridge.js');
     killAllWorkers();
+    // Also run aggressive cleanup to catch any orphans
+    forceKillAllE2aProcesses();
   } catch (err) {
     console.error('[MAIN] Failed to kill TTS workers:', err);
   }
@@ -4231,4 +4244,24 @@ app.on('before-quit', async () => {
   // Dispose all plugins
   const registry = getPluginRegistry();
   await registry.disposeAll();
+
+  console.log('[MAIN] Cleanup complete, quitting...');
+  app.quit();
+});
+
+// Synchronous backup cleanup on process exit (catches force-quit scenarios)
+process.on('exit', () => {
+  if (process.platform === 'win32') {
+    try {
+      // Synchronous last-ditch effort to kill any orphaned Python processes
+      // This runs even on force-quit but has limited time
+      const { execSync } = require('child_process');
+      execSync('taskkill /F /IM "python.exe" /FI "WINDOWTITLE eq *ebook2audiobook*"', {
+        stdio: 'ignore',
+        timeout: 2000,
+      });
+    } catch {
+      // Best effort, may fail
+    }
+  }
 });

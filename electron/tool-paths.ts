@@ -36,8 +36,9 @@ export interface ToolPathsConfig {
   // WSL2 Configuration (Windows only, for Orpheus TTS)
   useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus
   wslDistro?: string;              // WSL distro name (e.g., "Ubuntu")
-  wslCondaPath?: string;           // Conda path inside WSL (e.g., "/home/user/miniconda3/bin/conda")
+  wslCondaPath?: string;           // Conda path inside WSL (e.g., "/home/user/anaconda3/bin/conda")
   wslE2aPath?: string;             // e2a path inside WSL (e.g., "/home/user/ebook2audiobook")
+  wslOrpheusCondaEnv?: string;     // Conda env name for Orpheus in WSL (default: "orpheus_tts")
 }
 
 interface ToolPathsState {
@@ -501,12 +502,13 @@ export function detectWslAvailability(): WslDetectionResult {
 
 /**
  * Check if Orpheus setup exists in WSL
- * Verifies conda, e2a, and orpheus_env are present
+ * Verifies conda, e2a, and orpheus_tts conda environment are present
  */
 export function checkWslOrpheusSetup(config: {
   distro?: string;
   condaPath?: string;
   e2aPath?: string;
+  orpheusCondaEnv?: string;
 }): WslOrpheusSetupResult {
   // Only works on Windows
   if (os.platform() !== 'win32') {
@@ -520,12 +522,12 @@ export function checkWslOrpheusSetup(config: {
   }
 
   const errors: string[] = [];
-  const distroArg = config.distro ? ['-d', config.distro] : [];
+  const distroArg = config.distro ? `-d ${config.distro}` : '';
 
   // Default paths if not specified
-  const condaPath = config.condaPath || '/home/$USER/miniconda3/bin/conda';
+  const condaPath = config.condaPath || '/home/$USER/anaconda3/bin/conda';
   const e2aPath = config.e2aPath || '/home/$USER/ebook2audiobook';
-  const orpheusEnvPath = `${e2aPath}/orpheus_env`;
+  const orpheusCondaEnv = config.orpheusCondaEnv || getWslOrpheusCondaEnv();
 
   let condaFound = false;
   let e2aFound = false;
@@ -534,7 +536,7 @@ export function checkWslOrpheusSetup(config: {
   try {
     // Check conda exists
     const condaCheck = execSync(
-      `wsl.exe ${distroArg.join(' ')} bash -c "test -f ${condaPath} && echo 'found' || echo 'not found'"`,
+      `wsl.exe ${distroArg} bash -c "test -f ${condaPath} && echo 'found' || echo 'not found'"`,
       { encoding: 'utf8', timeout: 10000, windowsHide: true }
     ).trim();
     condaFound = condaCheck.includes('found');
@@ -548,7 +550,7 @@ export function checkWslOrpheusSetup(config: {
   try {
     // Check e2a directory exists
     const e2aCheck = execSync(
-      `wsl.exe ${distroArg.join(' ')} bash -c "test -d ${e2aPath} && echo 'found' || echo 'not found'"`,
+      `wsl.exe ${distroArg} bash -c "test -d ${e2aPath} && echo 'found' || echo 'not found'"`,
       { encoding: 'utf8', timeout: 10000, windowsHide: true }
     ).trim();
     e2aFound = e2aCheck.includes('found');
@@ -560,17 +562,19 @@ export function checkWslOrpheusSetup(config: {
   }
 
   try {
-    // Check orpheus_env exists
+    // Check orpheus_tts conda environment exists
+    // Use conda env list to check if the environment exists
+    const condaBase = condaPath.replace(/\/bin\/conda$/, '');
     const orpheusCheck = execSync(
-      `wsl.exe ${distroArg.join(' ')} bash -c "test -d ${orpheusEnvPath} && echo 'found' || echo 'not found'"`,
-      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+      `wsl.exe ${distroArg} bash -lc "source ${condaBase}/etc/profile.d/conda.sh && conda env list | grep -q '^${orpheusCondaEnv} ' && echo 'found' || echo 'not found'"`,
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
     ).trim();
     orpheusEnvFound = orpheusCheck.includes('found');
     if (!orpheusEnvFound) {
-      errors.push(`Orpheus environment not found at ${orpheusEnvPath}`);
+      errors.push(`Orpheus conda environment '${orpheusCondaEnv}' not found`);
     }
   } catch (err) {
-    errors.push(`Failed to check orpheus_env: ${err instanceof Error ? err.message : String(err)}`);
+    errors.push(`Failed to check orpheus conda env: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return {
@@ -591,7 +595,9 @@ export function shouldUseWsl2ForOrpheus(): boolean {
     return false;
   }
   loadConfig();
-  return state.config.useWsl2ForOrpheus === true;
+  // Handle both boolean true and string 'true' (settings UI saves as string)
+  const value = state.config.useWsl2ForOrpheus as unknown;
+  return value === true || value === 'true';
 }
 
 /**
@@ -618,6 +624,44 @@ export function getWslE2aPath(): string {
   return state.config.wslE2aPath || '/home/$USER/ebook2audiobook';
 }
 
+/**
+ * Get WSL Orpheus conda environment name from config
+ */
+export function getWslOrpheusCondaEnv(): string {
+  loadConfig();
+  return state.config.wslOrpheusCondaEnv || 'orpheus_tts';
+}
+
+/**
+ * Convert a WSL path to a Windows UNC path that Node.js can access
+ * e.g., /home/user/file.txt -> \\wsl$\Ubuntu\home\user\file.txt
+ */
+export function wslPathToWindows(wslPath: string, distro?: string): string {
+  if (!wslPath || !wslPath.startsWith('/')) {
+    return wslPath; // Not a WSL path
+  }
+  const distroName = distro || getWslDistro() || 'Ubuntu';
+  // Convert forward slashes to backslashes and prepend UNC prefix
+  const windowsPath = `\\\\wsl$\\${distroName}${wslPath.replace(/\//g, '\\')}`;
+  return windowsPath;
+}
+
+/**
+ * Convert a Windows path to a WSL path
+ * e.g., C:\Users\foo\file.txt -> /mnt/c/Users/foo/file.txt
+ */
+export function windowsToWslPath(winPath: string): string {
+  if (!winPath || !/^[A-Za-z]:/.test(winPath)) {
+    return winPath; // Not a Windows path
+  }
+  const normalized = winPath.replace(/\\/g, '/');
+  const match = normalized.match(/^([A-Za-z]):(.*)/);
+  if (match) {
+    return `/mnt/${match[1].toLowerCase()}${match[2]}`;
+  }
+  return winPath;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Exports
 // ─────────────────────────────────────────────────────────────────────────────
@@ -639,4 +683,7 @@ export const toolPaths = {
   getWslDistro,
   getWslCondaPath,
   getWslE2aPath,
+  getWslOrpheusCondaEnv,
+  wslPathToWindows,
+  windowsToWslPath,
 };

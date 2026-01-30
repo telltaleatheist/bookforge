@@ -21,6 +21,8 @@ import {
   getWslDistro,
   getWslCondaPath,
   getWslE2aPath,
+  getWslOrpheusCondaEnv,
+  wslPathToWindows,
 } from './tool-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -117,7 +119,8 @@ export function getEnvPathForEngine(ttsEngine?: string, e2aPath?: string): strin
  * ebook2audiobook uses a prefix-based conda environment (./python_env folder in the project)
  * rather than a named environment. This function returns the correct args for conda run.
  *
- * For Orpheus TTS engine, uses orpheus_env instead (separate env due to vLLM conflicts).
+ * Note: For Orpheus TTS on Windows, WSL2 with orpheus_tts conda env is preferred for
+ * CUDA graph performance. This function is for fallback/legacy Windows native execution.
  *
  * @param e2aPath - Optional base e2a path (defaults to auto-detected path)
  * @param ttsEngine - Optional TTS engine name to determine which environment to use
@@ -252,7 +255,7 @@ export function wslToWindowsPath(wslPath: string): string {
  * Check if the current configuration should use WSL for Orpheus
  * Re-exported for convenience
  */
-export { shouldUseWsl2ForOrpheus, getWslDistro, getWslCondaPath, getWslE2aPath };
+export { shouldUseWsl2ForOrpheus, getWslDistro, getWslCondaPath, getWslE2aPath, getWslOrpheusCondaEnv, wslPathToWindows };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Exports
@@ -271,6 +274,7 @@ export const e2aPaths = {
   // WSL path conversion
   windowsToWslPath,
   wslToWindowsPath,
+  wslPathToWindows,
   // WSL config (re-exported from tool-paths)
   shouldUseWsl2ForOrpheus,
   getWslDistro,
