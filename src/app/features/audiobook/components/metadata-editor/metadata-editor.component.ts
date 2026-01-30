@@ -162,6 +162,36 @@ export interface EpubMetadata {
             Open Audiobooks Folder
           </desktop-button>
         </div>
+
+        <!-- Audio File Linking Section -->
+        <div class="audio-link-section">
+          <label>Linked Audio File</label>
+          @if (audioFilePath()) {
+            <div class="audio-file-row">
+              <span class="audio-file-path" [title]="audioFilePath()">{{ getFilename(audioFilePath()) }}</span>
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                (click)="browseForAudio()"
+                title="Change linked audio file"
+              >
+                Change
+              </desktop-button>
+            </div>
+          } @else {
+            <div class="no-audio-row">
+              <span class="no-audio-text">No audio file linked</span>
+              <desktop-button
+                variant="secondary"
+                size="sm"
+                (click)="browseForAudio()"
+              >
+                Link Audio File
+              </desktop-button>
+            </div>
+            <span class="hint">Link an audiobook file to enable enhancement features</span>
+          }
+        </div>
       </div>
 
       <!-- Hidden file input for cover selection -->
@@ -312,18 +342,80 @@ export interface EpubMetadata {
         color: var(--text-muted);
       }
     }
+
+    .audio-link-section {
+      margin-top: 1.5rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border-default);
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+
+      > label {
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+      }
+
+      .hint {
+        font-size: 0.6875rem;
+        color: var(--text-muted);
+      }
+    }
+
+    .audio-file-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg-subtle);
+      border-radius: 6px;
+      border: 1px solid var(--border-default);
+    }
+
+    .audio-file-path {
+      flex: 1;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .no-audio-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .no-audio-text {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
   `]
 })
 export class MetadataEditorComponent {
   // Inputs
   readonly metadata = input<EpubMetadata | null>(null);
   readonly saving = input<boolean>(false);
+  readonly audioFilePath = input<string>('');
 
   // Outputs
   readonly metadataChange = output<EpubMetadata>();
   readonly coverChange = output<string>();
   readonly save = output<EpubMetadata>();
   readonly showInFinder = output<void>();
+  readonly linkAudio = output<string>();
+
+  // Electron access
+  private get electron(): any {
+    return typeof window !== 'undefined' && (window as any).electron
+      ? (window as any).electron
+      : null;
+  }
 
   // Local state for save feedback
   readonly saveSuccess = signal(false);
@@ -512,6 +604,27 @@ export class MetadataEditorComponent {
 
   onShowInFinder(): void {
     this.showInFinder.emit();
+  }
+
+  getFilename(path: string): string {
+    if (!path) return '';
+    // Handle both forward and back slashes
+    const parts = path.replace(/\\/g, '/').split('/');
+    return parts[parts.length - 1] || path;
+  }
+
+  async browseForAudio(): Promise<void> {
+    if (!this.electron?.dialog) return;
+
+    try {
+      const result = await this.electron.dialog.openAudio();
+
+      if (result.success && result.filePath) {
+        this.linkAudio.emit(result.filePath);
+      }
+    } catch (err) {
+      console.error('[MetadataEditor] Error opening file dialog:', err);
+    }
   }
 
   @HostListener('window:paste', ['$event'])

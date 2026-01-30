@@ -20,14 +20,8 @@ export type EnhancementStatus = 'none' | 'pending' | 'processing' | 'complete' |
       @if (!audioFilePath()) {
         <div class="no-audio-section">
           <div class="no-audio-icon">&#127911;</div>
-          <p>No audio file found for this project.</p>
-          <p class="hint">If you've moved the audiobook to a different location, you can link it manually.</p>
-          <desktop-button
-            variant="primary"
-            (click)="browseForAudio()"
-          >
-            Link Audio File
-          </desktop-button>
+          <p>No audio file linked to this project.</p>
+          <p class="hint">Go to the Metadata tab to link an audio file.</p>
         </div>
       } @else {
         <!-- Audio file info -->
@@ -36,14 +30,6 @@ export type EnhancementStatus = 'none' | 'pending' | 'processing' | 'complete' |
             <span class="audio-file-label">Audio File:</span>
             <span class="audio-file-path" [title]="audioFilePath()">{{ getFilename(audioFilePath()) }}</span>
           </div>
-          <desktop-button
-            variant="ghost"
-            size="xs"
-            (click)="browseForAudio()"
-            title="Change linked audio file"
-          >
-            Change
-          </desktop-button>
         </div>
 
         <div class="status-section">
@@ -187,7 +173,6 @@ export type EnhancementStatus = 'none' | 'pending' | 'processing' | 'complete' |
       .hint {
         font-size: 0.75rem;
         color: var(--text-muted);
-        margin-bottom: 1rem;
       }
     }
 
@@ -378,7 +363,6 @@ export class PostProcessingPanelComponent implements OnInit, OnDestroy {
 
   // Outputs
   readonly jobQueued = output<string>(); // Emits job ID when queued
-  readonly linkAudio = output<string>(); // Emits path when user links an audio file
 
   // State
   readonly isAvailable = signal(false);
@@ -492,19 +476,5 @@ export class PostProcessingPanelComponent implements OnInit, OnDestroy {
     // Handle both forward and back slashes
     const parts = path.replace(/\\/g, '/').split('/');
     return parts[parts.length - 1] || path;
-  }
-
-  async browseForAudio(): Promise<void> {
-    if (!this.electron?.dialog) return;
-
-    try {
-      const result = await this.electron.dialog.openAudio();
-
-      if (result.success && result.filePath) {
-        this.linkAudio.emit(result.filePath);
-      }
-    } catch (err) {
-      console.error('[PostProcessingPanel] Error opening file dialog:', err);
-    }
   }
 }

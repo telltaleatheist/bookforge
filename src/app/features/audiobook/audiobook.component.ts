@@ -153,10 +153,12 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                   <app-metadata-editor
                     [metadata]="selectedMetadata()"
                     [saving]="savingMetadata()"
+                    [audioFilePath]="audioFilePath()"
                     (metadataChange)="onMetadataChange($event)"
                     (coverChange)="onCoverChange($event)"
                     (save)="onSaveMetadata($event)"
                     (showInFinder)="onShowInFinder()"
+                    (linkAudio)="onLinkAudio($event)"
                   />
                 }
                 @case ('translate') {
@@ -224,7 +226,6 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                     [enhancementStatus]="selectedItem()?.enhancementStatus || 'none'"
                     [enhancedAt]="selectedItem()?.enhancedAt"
                     (jobQueued)="onEnhanceJobQueued($event)"
-                    (linkAudio)="onLinkAudio($event)"
                   />
                 }
               }
