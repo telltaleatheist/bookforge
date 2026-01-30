@@ -134,7 +134,8 @@ export class QueueService {
   // State signals
   private readonly _jobs = signal<QueueJob[]>([]);
   private readonly _isRunning = signal<boolean>(false); // Don't auto-run - user starts manually
-  private readonly _currentJobId = signal<string | null>(null);
+  private readonly _currentJobId = signal<string | null>(null); // Queue-driven job
+  private readonly _standaloneJobIds = signal<Set<string>>(new Set()); // Manually started jobs
   private readonly _lastCompletedJobWithAnalytics = signal<{
     jobId: string;
     jobType: string;
@@ -146,7 +147,13 @@ export class QueueService {
   readonly jobs = computed(() => this._jobs());
   readonly isRunning = computed(() => this._isRunning());
   readonly currentJobId = computed(() => this._currentJobId());
+  readonly standaloneJobIds = computed(() => this._standaloneJobIds());
   readonly lastCompletedJobWithAnalytics = computed(() => this._lastCompletedJobWithAnalytics());
+
+  // Check if any job is currently running (queue or standalone)
+  readonly hasActiveJobs = computed(() =>
+    this._currentJobId() !== null || this._standaloneJobIds().size > 0
+  );
 
   // Computed helpers
   readonly currentJob = computed(() => {
@@ -390,7 +397,18 @@ export class QueueService {
       });
     }
 
-    // Only clear current job and process next if this IS the current job
+    // Check if this was a standalone job
+    const standaloneIds = this._standaloneJobIds();
+    if (standaloneIds.has(result.jobId)) {
+      // Standalone job completed - just remove from tracking, don't process next
+      const newSet = new Set(standaloneIds);
+      newSet.delete(result.jobId);
+      this._standaloneJobIds.set(newSet);
+      console.log(`[QUEUE] Standalone job ${result.jobId} completed, not processing next`);
+      return;
+    }
+
+    // Only clear current job and process next if this IS the current queue job
     // This prevents a failed TTS job from interrupting a running OCR job
     if (this._currentJobId() === result.jobId) {
       this._currentJobId.set(null);
@@ -615,6 +633,43 @@ export class QueueService {
   }
 
   /**
+   * Start a specific job as standalone (doesn't chain to next job when complete)
+   * Can run alongside the queue - useful for running reassembly while TTS is processing
+   */
+  async runJobStandalone(jobId: string): Promise<boolean> {
+    const job = this._jobs().find(j => j.id === jobId);
+    if (!job) {
+      console.error(`[QUEUE] Job ${jobId} not found`);
+      return false;
+    }
+
+    if (job.status !== 'pending') {
+      console.error(`[QUEUE] Job ${jobId} is not pending (status: ${job.status})`);
+      return false;
+    }
+
+    // Mark job as standalone
+    this._jobs.update(jobs =>
+      jobs.map(j => {
+        if (j.id !== jobId) return j;
+        return { ...j, isStandalone: true };
+      })
+    );
+
+    // Track in standalone set
+    const newSet = new Set(this._standaloneJobIds());
+    newSet.add(jobId);
+    this._standaloneJobIds.set(newSet);
+
+    console.log(`[QUEUE] Starting standalone job ${jobId}`);
+
+    // Run the job (reuse existing runJob logic)
+    await this.runJob(job);
+
+    return true;
+  }
+
+  /**
    * Move a job up in the queue
    */
   moveJobUp(jobId: string): boolean {
@@ -744,8 +799,15 @@ export class QueueService {
       return;
     }
 
+    // Check if this is a standalone job (already tracked in _standaloneJobIds)
+    const isStandalone = this._standaloneJobIds().has(job.id);
+
+    // Only set as current job if not standalone
+    if (!isStandalone) {
+      this._currentJobId.set(job.id);
+    }
+
     // Update job status to processing
-    this._currentJobId.set(job.id);
     this._jobs.update(jobs =>
       jobs.map(j => {
         if (j.id !== job.id) return j;
@@ -1020,11 +1082,21 @@ export class QueueService {
           };
         })
       );
-      this._currentJobId.set(null);
 
-      // Try next job
-      if (this._isRunning()) {
-        await this.processNext();
+      // Check if this was a standalone job
+      const standaloneIds = this._standaloneJobIds();
+      if (standaloneIds.has(job.id)) {
+        // Remove from standalone tracking
+        const newSet = new Set(standaloneIds);
+        newSet.delete(job.id);
+        this._standaloneJobIds.set(newSet);
+        console.log(`[QUEUE] Standalone job ${job.id} failed to start`);
+      } else {
+        // Queue job - clear current and try next
+        this._currentJobId.set(null);
+        if (this._isRunning()) {
+          await this.processNext();
+        }
       }
     }
   }

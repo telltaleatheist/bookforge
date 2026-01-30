@@ -89,6 +89,7 @@ import { QueueJob, JobType } from './models/queue.types';
                 (moveDown)="moveJobDown($event)"
                 (select)="selectJob($event)"
                 (reorder)="reorderJobs($event)"
+                (runNow)="runJobStandalone($event)"
               />
             } @else if (finishedJobs().length === 0) {
               <div class="empty-jobs">
@@ -119,6 +120,7 @@ import { QueueJob, JobType } from './models/queue.types';
                       (moveDown)="moveJobDown($event)"
                       (select)="selectJob($event)"
                       (reorder)="reorderJobs($event)"
+                      (runNow)="runJobStandalone($event)"
                     />
                   </div>
                 }
@@ -149,6 +151,7 @@ import { QueueJob, JobType } from './models/queue.types';
                 [job]="selected"
                 (remove)="removeJob($event)"
                 (retry)="retryJob($event)"
+                (runNow)="runJobStandalone($event)"
                 (viewDiff)="openDiffModal($event)"
                 (showInFolder)="showInFolder($event)"
               />
@@ -635,6 +638,17 @@ export class QueueComponent implements OnInit, OnDestroy {
 
   startQueue(): void {
     this.queueService.startQueue();
+  }
+
+  /**
+   * Run a job standalone (doesn't chain to next job when complete)
+   * Allows running multiple jobs in parallel - useful for reassembly while TTS is running
+   */
+  async runJobStandalone(jobId: string): Promise<void> {
+    const success = await this.queueService.runJobStandalone(jobId);
+    if (!success) {
+      console.error('[Queue] Failed to start standalone job:', jobId);
+    }
   }
 
   selectJob(jobId: string): void {

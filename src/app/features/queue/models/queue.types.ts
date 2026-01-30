@@ -38,6 +38,8 @@ export interface QueueJob {
   metadata?: AudiobookMetadata;
   // Job-specific configuration
   config?: JobConfig;
+  // Standalone mode - job was started manually, doesn't trigger next job on completion
+  isStandalone?: boolean;
   // Progress tracking for ETA calculation
   currentChunk?: number;          // Current chunk (1-indexed, job-wide)
   totalChunks?: number;           // Total chunks in entire job

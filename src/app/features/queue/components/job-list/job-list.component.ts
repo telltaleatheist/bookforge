@@ -94,6 +94,15 @@ interface DragState {
           <div class="job-actions">
             @if (job.status === 'pending') {
               <desktop-button
+                variant="primary"
+                size="xs"
+                [iconOnly]="true"
+                title="Run now (standalone)"
+                (click)="runNow.emit(job.id); $event.stopPropagation()"
+              >
+                &#9654;
+              </desktop-button>
+              <desktop-button
                 variant="ghost"
                 size="xs"
                 [iconOnly]="true"
@@ -436,6 +445,7 @@ export class JobListComponent {
   readonly moveDown = output<string>();
   readonly select = output<string>();
   readonly reorder = output<{ fromId: string; toId: string }>();
+  readonly runNow = output<string>();  // Run job standalone (doesn't chain to next)
 
   // Drag state
   readonly dragState = signal<DragState | null>(null);

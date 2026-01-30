@@ -38,6 +38,9 @@ import { QueueJob, OcrCleanupConfig, TtsConversionConfig } from '../../models/qu
           </div>
           <div class="header-actions">
             @if (selectedJob.status === 'pending') {
+              <desktop-button variant="primary" size="xs" (click)="runNow.emit(selectedJob.id)">
+                &#9654; Run Now
+              </desktop-button>
               <desktop-button variant="ghost" size="xs" (click)="remove.emit(selectedJob.id)">
                 Remove
               </desktop-button>
@@ -412,6 +415,7 @@ export class JobDetailsComponent {
   // Outputs
   readonly remove = output<string>();
   readonly retry = output<string>();
+  readonly runNow = output<string>();  // Run job standalone
   readonly viewDiff = output<{ originalPath: string; cleanedPath: string }>();
   readonly showInFolder = output<string>();
 
