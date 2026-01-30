@@ -14,7 +14,16 @@ TITLE="$2"
 AUTHOR="$3"
 OUTPUT_NAME=$(echo "$TITLE" | sed 's/[^a-zA-Z0-9 ]//g' | sed 's/ /_/g')
 
-SESSION_DIR="/Users/telltale/Projects/ebook2audiobook/tmp/ebook-$SESSION_ID"
+# Use environment variable if set, otherwise check -latest first
+E2A_PATH="${EBOOK2AUDIOBOOK_PATH:-}"
+if [ -z "$E2A_PATH" ]; then
+    if [ -d "$HOME/Projects/ebook2audiobook-latest" ]; then
+        E2A_PATH="$HOME/Projects/ebook2audiobook-latest"
+    else
+        E2A_PATH="$HOME/Projects/ebook2audiobook"
+    fi
+fi
+SESSION_DIR="$E2A_PATH/tmp/ebook-$SESSION_ID"
 
 # Find the actual working directory
 WORK_DIR=$(find "$SESSION_DIR" -maxdepth 1 -type d ! -path "$SESSION_DIR" | head -1)
@@ -96,7 +105,7 @@ if [ $? -eq 0 ]; then
 
     # Look for cover image in the audiobook folder
     # Try to match based on title similarity
-    AUDIOBOOK_FOLDER="/Users/telltale/Documents/BookForge/audiobooks"
+    AUDIOBOOK_FOLDER="${BOOKFORGE_LIBRARY:-/Volumes/Callisto/Shared/BookForge}/audiobooks"
     COVER_PATH=""
     TITLE_SEARCH=$(echo "$TITLE" | sed 's/[^a-zA-Z0-9 ]//g' | sed 's/ /_/g')
 

@@ -1950,4 +1950,79 @@ export class ElectronService {
     }
     return () => {};
   }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Resemble Enhance (better than DeepFilterNet for TTS reverb/echo)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Check if Resemble Enhance is available
+   */
+  async resembleCheckAvailable(): Promise<{ available: boolean; error?: string }> {
+    if (this.isElectron && (window as any).electron.resemble) {
+      const result = await (window as any).electron.resemble.checkAvailable();
+      return result.success ? result.data : { available: false, error: result.error };
+    }
+    return { available: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * List audio files in the audiobooks directory
+   */
+  async resembleListFiles(audiobooksDir: string): Promise<{
+    success: boolean;
+    data?: Array<{
+      name: string;
+      path: string;
+      size: number;
+      modifiedAt: Date;
+      format: string;
+    }>;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.resemble) {
+      return (window as any).electron.resemble.listFiles(audiobooksDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Enhance an audio file using Resemble Enhance
+   */
+  async resembleEnhance(filePath: string): Promise<{
+    success: boolean;
+    data?: { success: boolean; outputPath?: string; error?: string };
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.resemble) {
+      return (window as any).electron.resemble.enhance(filePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Cancel the current enhancement operation
+   */
+  async resembleCancel(): Promise<boolean> {
+    if (this.isElectron && (window as any).electron.resemble) {
+      const result = await (window as any).electron.resemble.cancel();
+      return result.success && result.data;
+    }
+    return false;
+  }
+
+  /**
+   * Subscribe to resemble enhance progress updates
+   */
+  onResembleProgress(callback: (progress: {
+    phase: 'starting' | 'converting' | 'enhancing' | 'finalizing' | 'complete' | 'error';
+    percentage: number;
+    message: string;
+    error?: string;
+  }) => void): () => void {
+    if (this.isElectron && (window as any).electron.resemble) {
+      return (window as any).electron.resemble.onProgress(callback);
+    }
+    return () => {};
+  }
 }

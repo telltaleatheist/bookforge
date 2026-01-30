@@ -27,14 +27,16 @@ warnings.filterwarnings('ignore')
 def get_e2a_path():
     if os.environ.get('EBOOK2AUDIOBOOK_PATH'):
         return os.environ['EBOOK2AUDIOBOOK_PATH']
-    # Cross-platform default
+    # Check environment variable first, then use cross-platform default
+    if os.environ.get('EBOOK2AUDIOBOOK_PATH'):
+        return os.environ['EBOOK2AUDIOBOOK_PATH']
+
     home = os.path.expanduser('~')
-    if sys.platform == 'win32':
-        return os.path.join(home, 'Projects', 'ebook2audiobook')
-    elif sys.platform == 'darwin':
-        return '/Users/telltale/Projects/ebook2audiobook'
-    else:
-        return os.path.join(home, 'Projects', 'ebook2audiobook')
+    # Check -latest first, then fallback
+    latest_path = os.path.join(home, 'Projects', 'ebook2audiobook-latest')
+    if os.path.exists(latest_path):
+        return latest_path
+    return os.path.join(home, 'Projects', 'ebook2audiobook')
 
 E2A_PATH = get_e2a_path()
 sys.path.insert(0, E2A_PATH)

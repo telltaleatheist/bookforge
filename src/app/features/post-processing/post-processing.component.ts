@@ -14,8 +14,8 @@ interface AudioFile {
   selected?: boolean;
 }
 
-interface DenoiseProgress {
-  phase: 'starting' | 'converting' | 'denoising' | 'finalizing' | 'complete' | 'error';
+interface EnhanceProgress {
+  phase: 'starting' | 'converting' | 'enhancing' | 'finalizing' | 'complete' | 'error';
   percentage: number;
   message: string;
   error?: string;
@@ -29,15 +29,15 @@ interface DenoiseProgress {
     <div class="post-processing">
       <header class="header">
         <h1>Post-Processing</h1>
-        <p class="subtitle">Denoise audiobooks using DeepFilterNet</p>
+        <p class="subtitle">Enhance audiobooks using Resemble Enhance</p>
       </header>
 
       @if (!isAvailable()) {
         <div class="warning-banner">
           <span class="warning-icon">&#9888;</span>
           <div>
-            <strong>DeepFilterNet not available</strong>
-            <p>{{ availabilityError() || 'Please ensure DeepFilterNet is installed in the ebook2audiobook conda environment.' }}</p>
+            <strong>Resemble Enhance not available</strong>
+            <p>{{ availabilityError() || 'Please set up the resemble conda environment. See AUDIO_ENHANCEMENT.md for instructions.' }}</p>
           </div>
         </div>
       }
@@ -126,7 +126,7 @@ interface DenoiseProgress {
               [disabled]="selectedCount() === 0 || !isAvailable()"
               (click)="startProcessing()"
             >
-              Denoise Selected Files
+              Enhance Selected Files
             </desktop-button>
           }
 
@@ -138,22 +138,22 @@ interface DenoiseProgress {
 
           @if (completedCount() > 0 && !isProcessing()) {
             <div class="success-message">
-              Successfully denoised {{ completedCount() }} file{{ completedCount() === 1 ? '' : 's' }}
+              Successfully enhanced {{ completedCount() }} file{{ completedCount() === 1 ? '' : 's' }}
             </div>
           }
         </section>
 
         <!-- Info Panel -->
         <section class="info-section">
-          <h3>About DeepFilterNet</h3>
+          <h3>About Resemble Enhance</h3>
           <p>
-            DeepFilterNet is a deep learning-based noise suppression tool that removes
-            background noise, echo, and static from speech audio. It's particularly
-            useful for cleaning up TTS output that may have artifacts.
+            Resemble Enhance is a deep learning audio enhancement tool that removes
+            reverb, echo, and improves speech quality. It works better than DeepFilterNet
+            for TTS artifacts like the baked-in reverb in Orpheus output.
           </p>
           <p class="warning">
-            <strong>Note:</strong> Processing will replace the original file. The operation
-            may take a few minutes per file depending on length.
+            <strong>Note:</strong> Processing will replace the original file. Enhancement
+            may take several minutes per file (roughly 2.5x audio length on CPU).
           </p>
         </section>
       </div>
@@ -441,7 +441,7 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
   readonly loading = signal(true);
   readonly files = signal<AudioFile[]>([]);
   readonly isProcessing = signal(false);
-  readonly currentProgress = signal<DenoiseProgress | null>(null);
+  readonly currentProgress = signal<EnhanceProgress | null>(null);
   readonly currentFile = signal<string>('');
   readonly lastError = signal<string | null>(null);
   readonly completedCount = signal(0);
@@ -466,8 +466,8 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
   }
 
   private async checkAvailability(): Promise<void> {
-    console.log('[PostProcessing] Checking DeepFilter availability...');
-    const result = await this.electron.deepfilterCheckAvailable();
+    console.log('[PostProcessing] Checking Resemble Enhance availability...');
+    const result = await this.electron.resembleCheckAvailable();
     console.log('[PostProcessing] Availability result:', JSON.stringify(result));
     console.log('[PostProcessing] available:', result.available, 'error:', result.error);
     this.isAvailable.set(result.available);
@@ -475,7 +475,7 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
   }
 
   private setupProgressListener(): void {
-    this.unsubscribeProgress = this.electron.onDeepfilterProgress((progress) => {
+    this.unsubscribeProgress = this.electron.onResembleProgress((progress) => {
       this.currentProgress.set(progress);
 
       if (progress.phase === 'complete') {
@@ -508,7 +508,7 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
         return;
       }
 
-      const result = await this.electron.deepfilterListFiles(audiobooksDir);
+      const result = await this.electron.resembleListFiles(audiobooksDir);
       console.log('[PostProcessing] List files result:', result.success, 'count:', result.data?.length);
 
       if (result.success && result.data) {
@@ -585,11 +585,11 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
     this.currentFile.set(file.name);
     this.currentIndex++;
 
-    const result = await this.electron.deepfilterDenoise(file.path);
-    console.log('[PostProcessing] Denoise result:', result);
+    const result = await this.electron.resembleEnhance(file.path);
+    console.log('[PostProcessing] Enhance result:', result);
 
     if (!result.success) {
-      console.error('[PostProcessing] Denoise failed:', result.error);
+      console.error('[PostProcessing] Enhancement failed:', result.error);
       this.lastError.set(result.error || 'Failed to process file');
       this.isProcessing.set(false);
     }
@@ -597,7 +597,7 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
   }
 
   async cancelProcessing(): Promise<void> {
-    await this.electron.deepfilterCancel();
+    await this.electron.resembleCancel();
     this.isProcessing.set(false);
     this.currentProgress.set(null);
     this.currentFile.set('');

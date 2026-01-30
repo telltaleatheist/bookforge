@@ -4073,7 +4073,55 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // DeepFilterNet Post-Processing
+  // Resemble Enhance Post-Processing (replaces DeepFilterNet)
+  // Better for TTS artifacts like reverb/echo in Orpheus output
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('resemble:check-available', async () => {
+    try {
+      const { checkResembleAvailable } = await import('./resemble-bridge.js');
+      const result = await checkResembleAvailable();
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('resemble:list-files', async (_event, audiobooksDir: string) => {
+    try {
+      const { listAudioFiles } = await import('./resemble-bridge.js');
+      const files = await listAudioFiles(audiobooksDir);
+      return { success: true, data: files };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('resemble:enhance', async (_event, filePath: string) => {
+    try {
+      const { enhanceFile, initResembleBridge } = await import('./resemble-bridge.js');
+      if (mainWindow) {
+        initResembleBridge(mainWindow);
+      }
+      const result = await enhanceFile(filePath);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('resemble:cancel', async () => {
+    try {
+      const { cancelEnhance } = await import('./resemble-bridge.js');
+      const cancelled = cancelEnhance();
+      return { success: true, data: cancelled };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // DeepFilterNet Post-Processing (deprecated - use Resemble Enhance instead)
   // ─────────────────────────────────────────────────────────────────────────────
 
   ipcMain.handle('deepfilter:check-available', async () => {

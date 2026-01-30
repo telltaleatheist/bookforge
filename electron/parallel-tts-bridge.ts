@@ -20,6 +20,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
+import { checkResembleAvailable, enhanceFile, initResembleBridge } from './resemble-bridge';
 
 /**
  * Kill a process and all its children (process tree)
@@ -477,7 +478,7 @@ export interface ParallelTtsSettings {
 }
 
 export interface AggregatedProgress {
-  phase: 'preparing' | 'converting' | 'assembling' | 'complete' | 'error';
+  phase: 'preparing' | 'converting' | 'assembling' | 'enhancing' | 'complete' | 'error';
   totalSentences: number;
   completedSentences: number;
   completedInSession: number;  // Sentences completed in THIS session (for ETA calculation)
@@ -518,22 +519,19 @@ import {
   wslPathToWindows,
 } from './e2a-paths';
 
-// Use centralized cross-platform path detection
-let e2aPath = getDefaultE2aPath();
-
-// Helper to get conda run args for current e2aPath
+// Helper to get conda run args - always uses fresh e2aPath from centralized config
 // Pass ttsEngine to use the correct environment (orpheus_tts for Orpheus in WSL, python_env for others)
 function condaRunArgs(ttsEngine?: string): string[] {
-  return getCondaRunArgs(e2aPath, ttsEngine);
+  return getCondaRunArgs(getDefaultE2aPath(), ttsEngine);
 }
 
 /**
  * Convert a path to Windows-accessible format for reading files
- * If it's a WSL path (starts with /), convert to Windows UNC path
- * Otherwise return as-is
+ * Only converts WSL paths on Windows - Mac/Linux paths starting with / are normal Unix paths
  */
 function toReadablePath(p: string): string {
-  if (p && p.startsWith('/') && !p.startsWith('/mnt/')) {
+  // Only convert on Windows when it looks like a WSL path
+  if (process.platform === 'win32' && p && p.startsWith('/') && !p.startsWith('/mnt/')) {
     // This is a native WSL path, convert to Windows UNC
     return wslPathToWindows(p);
   }
@@ -592,11 +590,14 @@ const activeSessions: Map<string, ConversionSession> = new Map();
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function setE2aPath(newPath: string): void {
-  e2aPath = newPath;
+  // Delegate to centralized e2a-paths module
+  const { setE2aPath: setCentralE2aPath } = require('./e2a-paths');
+  setCentralE2aPath(newPath);
 }
 
 export function getE2aPath(): string {
-  return e2aPath;
+  // Always get fresh from centralized config
+  return getDefaultE2aPath();
 }
 
 export function setUseLightweightWorker(useLight: boolean): void {
@@ -734,7 +735,7 @@ export async function prepareSession(
   epubPath: string,
   settings: ParallelTtsSettings
 ): Promise<PrepInfo> {
-  const appPath = path.join(e2aPath, 'app.py');
+  const appPath = path.join(getDefaultE2aPath(), 'app.py');
   const sessionId = crypto.randomUUID();
 
   // When using WSL for Orpheus, the session is created in WSL's filesystem
@@ -752,7 +753,7 @@ export async function prepareSession(
     console.log(`[PARALLEL-TTS] WSL session dir: ${sessionDir} -> ${sessionDirForReading}`);
   } else {
     // Session in Windows e2a path
-    sessionDir = path.join(e2aPath, 'tmp', `ebook-${sessionId}`);
+    sessionDir = path.join(getDefaultE2aPath(), 'tmp', `ebook-${sessionId}`);
     sessionDirForReading = sessionDir;
   }
 
@@ -786,7 +787,7 @@ export async function prepareSession(
       getCondaPath(),
       args,
       {
-        cwd: e2aPath,
+        cwd: getDefaultE2aPath(),
         env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
         shell: true
       },
@@ -941,7 +942,7 @@ function startWorker(
 
   if (useLightweightWorker) {
     // Use worker.py - lightweight entry point with minimal imports
-    const workerPath = path.join(e2aPath, 'worker.py');
+    const workerPath = path.join(getDefaultE2aPath(), 'worker.py');
     // parallel-workers branch expects lowercase device names: cpu, gpu, mps
     const deviceArg = settings.device.toLowerCase();
     args = [
@@ -973,7 +974,7 @@ function startWorker(
     }
   } else {
     // Use app.py with --worker_mode - full imports but same functionality
-    const appPath = path.join(e2aPath, 'app.py');
+    const appPath = path.join(getDefaultE2aPath(), 'app.py');
     // Map UI device names to e2a CLI device names (app.py expects uppercase)
     const appDeviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
     const appDeviceArg = appDeviceMap[settings.device] || settings.device.toUpperCase();
@@ -1028,7 +1029,7 @@ function startWorker(
     getCondaPath(),
     args,
     {
-      cwd: e2aPath,
+      cwd: getDefaultE2aPath(),
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true
     },
@@ -1068,10 +1069,15 @@ function startWorker(
       const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%:?\s*:?\s*(\d+)\/(\d+)(?:\s|$)/i);
       if (progressMatch) {
         const current = parseInt(progressMatch[2]);
+        const previous = worker.completedSentences || 0;
         worker.currentSentence = worker.sentenceStart + current;
         // Always update completedSentences to show progress through the worker's range
-        // For resume jobs, actualConversions tracks actual TTS work separately
         worker.completedSentences = current;
+        // For resume jobs, also update actualConversions based on progress delta
+        // This handles engines like Orpheus that don't output "Recovering missing sentence"
+        if (session.isResumeJob && current > previous) {
+          worker.actualConversions = (worker.actualConversions || 0) + (current - previous);
+        }
         // Update watchdog tracking
         worker.lastProgressAt = Date.now();
         if (!worker.hasShownProgress) {
@@ -1104,10 +1110,15 @@ function startWorker(
       const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%:?\s*:?\s*(\d+)\/(\d+)(?:\s|$)/i);
       if (progressMatch) {
         const current = parseInt(progressMatch[2]);
+        const previous = worker.completedSentences || 0;
         worker.currentSentence = worker.sentenceStart + current;
         // Always update completedSentences to show progress through the worker's range
-        // For resume jobs, actualConversions tracks actual TTS work separately
         worker.completedSentences = current;
+        // For resume jobs, also update actualConversions based on progress delta
+        // This handles engines like Orpheus that don't output "Recovering missing sentence"
+        if (session.isResumeJob && current > previous) {
+          worker.actualConversions = (worker.actualConversions || 0) + (current - previous);
+        }
         // Update watchdog tracking
         worker.lastProgressAt = Date.now();
         if (!worker.hasShownProgress) {
@@ -1381,7 +1392,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   }
 
   // Run e2a with --assemble_only to combine sentence audio files into final audiobook
-  const appPath = path.join(e2aPath, 'app.py');
+  const appPath = path.join(getDefaultE2aPath(), 'app.py');
   const settings = config.settings;
 
   // Map UI device names to e2a CLI device names (app.py expects uppercase)
@@ -1414,7 +1425,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       getCondaPath(),
       args,
       {
-        cwd: e2aPath,
+        cwd: getDefaultE2aPath(),
         env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
         shell: true
       },
@@ -1604,7 +1615,11 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         if (config.metadata && finalPath && config.outputDir) {
           try {
             console.log('[PARALLEL-TTS] Calling applyMetadataWithM4bTool...');
-            const processedPath = await applyMetadataWithM4bTool(finalPath, config.metadata, config.outputDir);
+            let processedPath = await applyMetadataWithM4bTool(finalPath, config.metadata, config.outputDir);
+            console.log('[PARALLEL-TTS] After metadata, path:', processedPath);
+
+            // Run Resemble Enhance for Orpheus TTS output (removes reverb)
+            processedPath = await runResembleEnhance(processedPath, settings.ttsEngine, session.jobId);
             console.log('[PARALLEL-TTS] Final processed path:', processedPath);
             resolve(processedPath);
           } catch (metaErr) {
@@ -1616,7 +1631,15 @@ async function runAssembly(session: ConversionSession): Promise<string> {
             console.error('[PARALLEL-TTS] Cannot apply metadata/rename - outputDir is empty');
           }
           console.log('[PARALLEL-TTS] Skipping metadata - config.metadata is:', config.metadata);
-          resolve(finalPath);
+
+          // Still run Resemble Enhance for Orpheus even without metadata
+          let resultPath = finalPath;
+          try {
+            resultPath = await runResembleEnhance(finalPath, settings.ttsEngine, session.jobId);
+          } catch (err) {
+            console.error('[PARALLEL-TTS] Resemble Enhance failed:', err);
+          }
+          resolve(resultPath);
         }
       } else {
         // Even if e2a exited with error, the m4b file might have been created
@@ -1643,7 +1666,10 @@ async function runAssembly(session: ConversionSession): Promise<string> {
             if (config.metadata && config.outputDir) {
               try {
                 console.log('[PARALLEL-TTS] Attempting post-processing despite assembly error...');
-                const processedPath = await applyMetadataWithM4bTool(foundPath, config.metadata, config.outputDir);
+                let processedPath = await applyMetadataWithM4bTool(foundPath, config.metadata, config.outputDir);
+
+                // Run Resemble Enhance for Orpheus
+                processedPath = await runResembleEnhance(processedPath, settings.ttsEngine, session.jobId);
                 console.log('[PARALLEL-TTS] Post-processing succeeded:', processedPath);
                 resolve(processedPath);
                 return;
@@ -1653,7 +1679,14 @@ async function runAssembly(session: ConversionSession): Promise<string> {
                 return;
               }
             }
-            resolve(foundPath);
+
+            // Still run Resemble Enhance for Orpheus even without metadata
+            try {
+              const enhancedPath = await runResembleEnhance(foundPath, settings.ttsEngine, session.jobId);
+              resolve(enhancedPath);
+            } catch (err) {
+              resolve(foundPath);
+            }
             return;
           }
         } catch (findErr) {
@@ -1853,6 +1886,81 @@ async function getUniqueFilePath(filePath: string): Promise<string> {
       // File doesn't exist, we can use this path
       return uniquePath;
     }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resemble Enhance Post-Processing (for Orpheus TTS)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run Resemble Enhance on the audiobook file to remove reverb/echo
+ * Only runs automatically for Orpheus TTS output (which has baked-in reverb)
+ *
+ * @param inputPath - Path to the M4B file to enhance
+ * @param ttsEngine - The TTS engine used (only 'orpheus' triggers auto-enhance)
+ * @param jobId - Job ID for progress reporting
+ * @returns The path to the enhanced file (same as input, file is modified in-place)
+ */
+async function runResembleEnhance(
+  inputPath: string,
+  ttsEngine: string,
+  jobId: string
+): Promise<string> {
+  // DISABLED: Auto-enhancement takes ~19 hours for 8-hour book on CPU
+  // Use Post-Processing tab to enhance manually when convenient
+  console.log('[PARALLEL-TTS] Auto-enhancement disabled - use Post-Processing tab');
+  return inputPath;
+
+  // Only run for Orpheus TTS
+  if (ttsEngine !== 'orpheus') {
+    console.log('[PARALLEL-TTS] Skipping Resemble Enhance - not using Orpheus TTS');
+    return inputPath;
+  }
+
+  // Check if Resemble Enhance is available
+  const available = await checkResembleAvailable();
+  if (!available.available) {
+    console.log('[PARALLEL-TTS] Resemble Enhance not available, skipping post-processing');
+    console.log('[PARALLEL-TTS] Setup instructions in AUDIO_ENHANCEMENT.md');
+    return inputPath;
+  }
+
+  console.log('[PARALLEL-TTS] Running Resemble Enhance on Orpheus output...');
+
+  // Initialize the bridge with mainWindow for progress updates
+  if (mainWindow) {
+    initResembleBridge(mainWindow!);
+
+    // Emit enhancing phase progress
+    const progress: AggregatedProgress = {
+      phase: 'enhancing',
+      totalSentences: 0,
+      completedSentences: 0,
+      completedInSession: 0,
+      percentage: 98,
+      activeWorkers: 0,
+      workers: [],
+      estimatedRemaining: 300, // Estimate 5 minutes for enhancement
+      message: 'Enhancing audio quality (removing reverb)...'
+    };
+    mainWindow!.webContents.send('parallel-tts:progress', { jobId, progress });
+  }
+
+  try {
+    const result = await enhanceFile(inputPath);
+    if (result.success) {
+      console.log('[PARALLEL-TTS] Resemble Enhance completed successfully');
+      return result.outputPath || inputPath;
+    } else {
+      console.error('[PARALLEL-TTS] Resemble Enhance failed:', result.error);
+      // Non-fatal - return original file
+      return inputPath;
+    }
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Resemble Enhance error:', err);
+    // Non-fatal - return original file
+    return inputPath;
   }
 }
 
@@ -2389,7 +2497,7 @@ export function getConversionProgress(jobId: string): AggregatedProgress | null 
     completedInSession: sessionCompleted,
     percentage,
     activeWorkers,
-    workers: session.workers,
+    workers: serializeWorkers(session.workers) as WorkerState[],
     estimatedRemaining
   };
 }
@@ -2492,11 +2600,15 @@ function extractTitleFromPath(folderPath: string): string {
  * Find session directory for an epub by scanning e2a's tmp folder
  * Returns the session directory path if found, or null
  * Matches by exact epub path only (epub_path or source_epub_path in session state)
+ *
+ * When multiple sessions match the same epub:
+ * - Prefers incomplete sessions over complete ones (for resume functionality)
+ * - Among incomplete sessions, prefers the most recent (by folder modification time)
  */
 async function findSessionForEpub(epubPath: string): Promise<string | null> {
-  const tmpDir = path.join(e2aPath, 'tmp');
+  const tmpDir = path.join(getDefaultE2aPath(), 'tmp');
 
-  console.log(`[PARALLEL-TTS] e2aPath: ${e2aPath}`);
+  console.log(`[PARALLEL-TTS] e2aPath: ${getDefaultE2aPath()}`);
   console.log(`[PARALLEL-TTS] tmpDir: ${tmpDir}`);
   console.log(`[PARALLEL-TTS] Quick search for session matching: ${epubPath}`);
 
@@ -2520,8 +2632,17 @@ async function findSessionForEpub(epubPath: string): Promise<string | null> {
 
     console.log(`[PARALLEL-TTS] Checking ${ebookDirs.length} session(s) for exact match`);
 
-    // FAST PATH: Only check for exact path or directory matches
-    // Skip expensive fuzzy title matching - user can manually choose to resume if needed
+    // Collect ALL matching sessions with their completion status
+    interface SessionMatch {
+      sessionPath: string;
+      processPath: string;
+      totalSentences: number;
+      completedSentences: number;
+      isComplete: boolean;
+      mtime: number;
+    }
+    const matches: SessionMatch[] = [];
+
     for (const sessionDir of ebookDirs) {
       const sessionPath = path.join(tmpDir, sessionDir);
 
@@ -2540,26 +2661,41 @@ async function findSessionForEpub(epubPath: string): Promise<string | null> {
             const stateContent = await fs.readFile(statePath, 'utf-8');
             const state = JSON.parse(stateContent);
 
-            console.log(`[PARALLEL-TTS] Checking session ${sessionDir}:`);
-            console.log(`[PARALLEL-TTS]   state.epub_path: ${state.epub_path}`);
-            console.log(`[PARALLEL-TTS]   state.source_epub_path: ${state.source_epub_path}`);
-            console.log(`[PARALLEL-TTS]   Looking for: ${epubPath}`);
+            // Check if this session matches the epub path
+            const matches_epub = state.epub_path === epubPath;
+            const matches_source = state.source_epub_path === epubPath;
 
-            // Check if this session matches the epub path (exact match)
-            if (state.epub_path === epubPath) {
-              console.log(`[PARALLEL-TTS] Found exact path match: ${sessionPath}`);
-              return sessionPath;
+            if (matches_epub || matches_source) {
+              console.log(`[PARALLEL-TTS] Found matching session ${sessionDir}:`);
+              console.log(`[PARALLEL-TTS]   total_sentences: ${state.total_sentences}`);
+
+              // Quick count of completed sentences
+              const sentencesDir = state.chapters_dir_sentences;
+              let completedCount = 0;
+              if (sentencesDir) {
+                const sentencesDirReadable = toReadablePath(sentencesDir);
+                try {
+                  const files = await fs.readdir(sentencesDirReadable);
+                  completedCount = files.filter(f => f.endsWith('.flac')).length;
+                } catch {
+                  // Can't read sentences dir
+                }
+              }
+
+              const totalSentences = state.total_sentences || 0;
+              const isComplete = completedCount >= totalSentences && totalSentences > 0;
+
+              console.log(`[PARALLEL-TTS]   completed: ${completedCount}/${totalSentences} (${isComplete ? 'COMPLETE' : 'INCOMPLETE'})`);
+
+              matches.push({
+                sessionPath,
+                processPath,
+                totalSentences,
+                completedSentences: completedCount,
+                isComplete,
+                mtime: sessionStat.mtimeMs
+              });
             }
-
-            // Check if source_epub_path matches (original path before e2a copied it)
-            if (state.source_epub_path === epubPath) {
-              console.log(`[PARALLEL-TTS] Found source path match: ${sessionPath}`);
-              return sessionPath;
-            }
-
-            // NOTE: Directory matching removed - too many false positives when multiple
-            // books are in the same folder. Only match on exact epub paths.
-            console.log(`[PARALLEL-TTS]   No match for this session`);
           } catch {
             // No session-state.json or invalid JSON - skip
             continue;
@@ -2569,6 +2705,18 @@ async function findSessionForEpub(epubPath: string): Promise<string | null> {
         continue;
       }
     }
+
+    if (matches.length === 0) {
+      console.log(`[PARALLEL-TTS] No matching session found`);
+      return null;
+    }
+
+    // Always return the most recent session (by folder modification time)
+    matches.sort((a, b) => b.mtime - a.mtime);
+    const best = matches[0];
+    console.log(`[PARALLEL-TTS] Selected most recent session: ${best.sessionPath} (${best.completedSentences}/${best.totalSentences}, ${best.isComplete ? 'complete' : 'incomplete'})`);
+    return best.sessionPath;
+
   } catch (err) {
     console.error('[PARALLEL-TTS] Error scanning for sessions:', err);
   }
@@ -2732,7 +2880,7 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
     sessionPath = foundSession;
   }
 
-  const appPath = path.join(e2aPath, 'app.py');
+  const appPath = path.join(getDefaultE2aPath(), 'app.py');
 
   const args = [
     ...condaRunArgs(),
@@ -2748,7 +2896,7 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
     let stderr = '';
 
     const resumeCheckProcess = spawn(getCondaPath(), args, {
-      cwd: e2aPath,
+      cwd: getDefaultE2aPath(),
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true
     });
@@ -2829,7 +2977,7 @@ export async function listResumableSessions(): Promise<Array<{
   language?: string;
   voice?: string;
 }>> {
-  const appPath = path.join(e2aPath, 'app.py');
+  const appPath = path.join(getDefaultE2aPath(), 'app.py');
 
   const args = [
     ...condaRunArgs(),
@@ -2844,7 +2992,7 @@ export async function listResumableSessions(): Promise<Array<{
     let stdout = '';
 
     const listProcess = spawn(getCondaPath(), args, {
-      cwd: e2aPath,
+      cwd: getDefaultE2aPath(),
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true
     });

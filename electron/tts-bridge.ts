@@ -100,9 +100,6 @@ export interface VoiceInfo {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Default path to ebook2audiobook - uses cross-platform detection
-let e2aPath = getDefaultE2aPath();
-
 // ─────────────────────────────────────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,11 +113,14 @@ let startTime: number = 0;
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function setE2aPath(newPath: string): void {
-  e2aPath = newPath;
+  // Delegate to centralized e2a-paths module
+  const { setE2aPath: setCentralE2aPath } = require('./e2a-paths');
+  setCentralE2aPath(newPath);
 }
 
 export function getE2aPath(): string {
-  return e2aPath;
+  // Always get fresh from centralized config
+  return getDefaultE2aPath();
 }
 
 export function setMainWindow(window: BrowserWindow | null): void {
@@ -137,7 +137,7 @@ export function setMainWindow(window: BrowserWindow | null): void {
 export async function checkAvailable(): Promise<{ available: boolean; version?: string; error?: string }> {
   try {
     // Check if the app.py exists
-    const appPath = path.join(e2aPath, 'app.py');
+    const appPath = path.join(getDefaultE2aPath(), 'app.py');
     await fs.access(appPath);
 
     // Try to get version by running with --help or checking requirements
@@ -145,7 +145,7 @@ export async function checkAvailable(): Promise<{ available: boolean; version?: 
     return { available: true, version: '1.0.0' };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    return { available: false, error: `ebook2audiobook not found at ${e2aPath}: ${message}` };
+    return { available: false, error: `ebook2audiobook not found at ${getDefaultE2aPath()}: ${message}` };
   }
 }
 
@@ -302,7 +302,7 @@ export async function startConversion(
   }
 
   // Build command arguments - matching BookForge's _build_tts_command
-  const appPath = path.join(e2aPath, 'app.py');
+  const appPath = path.join(getDefaultE2aPath(), 'app.py');
 
   // Map UI device names to e2a CLI device names
   const deviceMap: Record<string, string> = {
@@ -363,13 +363,14 @@ export async function startConversion(
     // --no-capture-output prevents conda from buffering all stdout/stderr
     // getCondaRunArgs() detects if a local python_env folder exists (prefix) or uses named env
     // For Orpheus: uses WSL with orpheus_tts conda env for CUDA graph performance on Windows
-    const fullArgs = [...getCondaRunArgs(e2aPath, settings.ttsEngine), ...args];
+    const currentE2aPath = getDefaultE2aPath();
+    const fullArgs = [...getCondaRunArgs(currentE2aPath, settings.ttsEngine), ...args];
     console.log('[TTS] Starting ebook2audiobook with command:');
     console.log('[TTS]   conda', fullArgs.join(' '));
-    console.log('[TTS]   cwd:', e2aPath);
+    console.log('[TTS]   cwd:', currentE2aPath);
 
     currentProcess = spawn(getCondaPath(), fullArgs, {
-      cwd: e2aPath,
+      cwd: currentE2aPath,
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true
     });

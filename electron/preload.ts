@@ -763,6 +763,13 @@ export interface DenoiseProgress {
   error?: string;
 }
 
+export interface EnhanceProgress {
+  phase: 'starting' | 'converting' | 'enhancing' | 'finalizing' | 'complete' | 'error';
+  percentage: number;
+  message: string;
+  error?: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Library Server Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1252,6 +1259,13 @@ export interface ElectronAPI {
     denoise: (filePath: string) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
     cancel: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
     onProgress: (callback: (progress: DenoiseProgress) => void) => () => void;
+  };
+  resemble: {
+    checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; error?: string }; error?: string }>;
+    listFiles: (audiobooksDir: string) => Promise<{ success: boolean; data?: AudioFileInfo[]; error?: string }>;
+    enhance: (filePath: string) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
+    cancel: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
+    onProgress: (callback: (progress: EnhanceProgress) => void) => () => void;
   };
   platform: string;
 }
@@ -1879,6 +1893,25 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('deepfilter:progress', listener);
       return () => {
         ipcRenderer.removeListener('deepfilter:progress', listener);
+      };
+    },
+  },
+  resemble: {
+    checkAvailable: () =>
+      ipcRenderer.invoke('resemble:check-available'),
+    listFiles: (audiobooksDir: string) =>
+      ipcRenderer.invoke('resemble:list-files', audiobooksDir),
+    enhance: (filePath: string) =>
+      ipcRenderer.invoke('resemble:enhance', filePath),
+    cancel: () =>
+      ipcRenderer.invoke('resemble:cancel'),
+    onProgress: (callback: (progress: EnhanceProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: EnhanceProgress) => {
+        callback(progress);
+      };
+      ipcRenderer.on('resemble:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('resemble:progress', listener);
       };
     },
   },

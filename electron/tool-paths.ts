@@ -30,8 +30,11 @@ export interface ToolPathsConfig {
   // FFmpeg
   ffmpegPath?: string;
 
-  // DeepFilterNet
+  // DeepFilterNet (deprecated - use Resemble Enhance instead)
   deepFilterCondaEnv?: string;  // Conda environment name for DeepFilterNet
+
+  // Resemble Enhance (audio enhancement for removing reverb/echo from TTS output)
+  resembleCondaEnv?: string;    // Conda environment name for Resemble Enhance (default: 'resemble')
 
   // WSL2 Configuration (Windows only, for Orpheus TTS)
   useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus
@@ -260,8 +263,9 @@ function getE2aCandidates(): string[] {
   const candidates: string[] = [];
 
   for (const dir of projectDirs) {
-    candidates.push(path.join(dir, 'ebook2audiobook'));
+    // Check -latest first (typically more up-to-date)
     candidates.push(path.join(dir, 'ebook2audiobook-latest'));
+    candidates.push(path.join(dir, 'ebook2audiobook'));
   }
 
   if (platform === 'win32') {
@@ -366,6 +370,16 @@ export function getDeepFilterCondaEnv(): string {
   return state.config.deepFilterCondaEnv || 'ebook2audiobook';
 }
 
+/**
+ * Get Resemble Enhance conda environment name
+ * Priority: config > fallback to 'resemble'
+ * See AUDIO_ENHANCEMENT.md for setup instructions
+ */
+export function getResembleCondaEnv(): string {
+  loadConfig();
+  return state.config.resembleCondaEnv || 'resemble';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Detection Status (for UI)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -406,6 +420,11 @@ export function getToolStatus(): Record<string, ToolStatus> {
       configured: !!state.config.deepFilterCondaEnv,
       detected: true,  // Can't easily check if env exists
       path: getDeepFilterCondaEnv(),
+    },
+    resembleEnv: {
+      configured: !!state.config.resembleCondaEnv,
+      detected: true,  // Can't easily check if env exists
+      path: getResembleCondaEnv(),
     },
   };
 }
