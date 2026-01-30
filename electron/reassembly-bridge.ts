@@ -9,6 +9,7 @@ import { BrowserWindow } from 'electron';
 import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath } from './e2a-paths';
 import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
+import { getReassemblyLogger } from './rolling-logger';
 
 // Default E2A tmp path (uses cross-platform detection)
 const DEFAULT_E2A_TMP_PATH = getDefaultE2aTmpPath();
@@ -590,9 +591,19 @@ export async function startReassembly(
   config: ReassemblyConfig,
   mainWindow: BrowserWindow | null
 ): Promise<{ success: boolean; outputPath?: string; error?: string }> {
+  const reassemblyLog = getReassemblyLogger();
+
   // Derive e2a app path from tmp path (parent directory)
   const tmpPath = config.e2aTmpPath || DEFAULT_E2A_TMP_PATH;
   const e2aPath = getE2aAppPath(tmpPath);
+
+  reassemblyLog.info('Starting reassembly', {
+    jobId,
+    sessionId: config.sessionId,
+    outputDir: config.outputDir,
+    title: config.metadata?.title,
+    excludedChapters: config.excludedChapters?.length || 0
+  });
 
   console.log('[REASSEMBLY] Starting reassembly:', {
     jobId,
@@ -640,18 +651,27 @@ export async function startReassembly(
       sessionState.metadata = {};
     }
 
+    // Initialize bookforge_metadata if not present
+    if (!sessionState.bookforge_metadata) {
+      sessionState.bookforge_metadata = {};
+    }
+
     // Override with user-provided metadata (only if provided)
+    // Save to both standard metadata and bookforge_metadata for e2a compatibility
     if (config.metadata.title) {
       sessionState.metadata.title = config.metadata.title;
+      sessionState.bookforge_metadata.title = config.metadata.title;
       metadataUpdated = true;
     }
     if (config.metadata.author) {
       sessionState.metadata.creator = config.metadata.author;
+      sessionState.bookforge_metadata.author = config.metadata.author;
       metadataUpdated = true;
     }
     if (config.metadata.year) {
       // e2a expects 'published' in ISO format for year extraction
       sessionState.metadata.published = `${config.metadata.year}-01-01T00:00:00.000Z`;
+      sessionState.bookforge_metadata.year = config.metadata.year;
       metadataUpdated = true;
     }
     if (config.metadata.description) {
@@ -915,14 +935,17 @@ export async function startReassembly(
           percentage: 100,
           message: 'Reassembly complete!'
         });
+        reassemblyLog.info('Reassembly complete', { jobId, outputPath });
         resolve({ success: true, outputPath });
       } else {
+        const errorMsg = stderr || `Process exited with code ${code}`;
         sendProgress(mainWindow, jobId, {
           phase: 'error',
           percentage: 0,
-          error: stderr || `Process exited with code ${code}`
+          error: errorMsg
         });
-        resolve({ success: false, error: stderr || `Process exited with code ${code}` });
+        reassemblyLog.error('Reassembly failed', { jobId, error: errorMsg });
+        resolve({ success: false, error: errorMsg });
       }
     });
 
@@ -933,6 +956,7 @@ export async function startReassembly(
         percentage: 0,
         error: err.message
       });
+      reassemblyLog.error('Reassembly process error', { jobId, error: err.message });
       resolve({ success: false, error: err.message });
     });
   });

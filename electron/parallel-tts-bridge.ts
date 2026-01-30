@@ -19,6 +19,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
+import { getTTSLogger } from './rolling-logger';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import { checkResembleAvailable, enhanceFile, initResembleBridge } from './resemble-bridge';
 
@@ -2076,17 +2077,11 @@ function emitProgress(session: ConversionSession): void {
   }
 
   // Calculate rate for display (use work time, not total session time)
+  // Always show sentences per minute for consistency
   let rateDisplay = '';
   if (sentencesDoneInSession > 1 && workElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
-    const rate = sentencesDoneInSession / workElapsedSeconds;
-    if (rate >= 1) {
-      rateDisplay = ` (${rate.toFixed(1)}/s)`;
-    } else if (rate >= 0.1) {
-      rateDisplay = ` (${(rate * 60).toFixed(1)}/min)`;
-    } else {
-      const secsPerSentence = 1 / rate;
-      rateDisplay = ` (${secsPerSentence.toFixed(0)}s each)`;
-    }
+    const sentencesPerMinute = (sentencesDoneInSession / workElapsedSeconds) * 60;
+    rateDisplay = ` (${sentencesPerMinute.toFixed(1)}/min)`;
   }
 
   const progress: AggregatedProgress = {
@@ -2122,11 +2117,24 @@ function emitComplete(
   const duration = Math.round((Date.now() - session.startTime) / 1000);
 
   // Log completion
+  const ttsLog = getTTSLogger();
   if (success) {
     logger.completeJob(session.jobId, outputPath).catch(() => {});
     logger.log('INFO', session.jobId, 'Conversion complete', { duration, outputPath }).catch(() => {});
+    ttsLog.info('TTS conversion complete', {
+      jobId: session.jobId,
+      duration,
+      outputPath,
+      totalSentences: session.prepInfo.totalSentences,
+      workerCount: session.config.workerCount
+    });
   } else {
     logger.failJob(session.jobId, error || 'Unknown error').catch(() => {});
+    ttsLog.error('TTS conversion failed', {
+      jobId: session.jobId,
+      duration,
+      error: error || 'Unknown error'
+    });
   }
 
   // Calculate total done in this session
@@ -2199,6 +2207,17 @@ export async function startParallelConversion(
   config: ParallelConversionConfig,
   onProgress?: (progress: AggregatedProgress) => void
 ): Promise<ParallelConversionResult> {
+  const ttsLog = getTTSLogger();
+  ttsLog.info('Starting TTS conversion', {
+    jobId,
+    workerCount: config.workerCount,
+    outputDir: config.outputDir,
+    ttsEngine: config.settings.ttsEngine,
+    voice: config.settings.fineTuned || config.settings.voice,
+    device: config.settings.device,
+    title: config.metadata?.title
+  });
+
   console.log(`[PARALLEL-TTS] Starting conversion for job ${jobId} with ${config.workerCount} workers`);
   console.log(`[PARALLEL-TTS] Output dir from config:`, config.outputDir);
   console.log(`[PARALLEL-TTS] Metadata received:`, JSON.stringify(config.metadata, null, 2));

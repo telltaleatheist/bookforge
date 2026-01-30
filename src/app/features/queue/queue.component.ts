@@ -85,8 +85,6 @@ import { QueueJob, JobType } from './models/queue.types';
                 (remove)="removeJob($event)"
                 (retry)="retryJob($event)"
                 (cancel)="cancelJob($event)"
-                (moveUp)="moveJobUp($event)"
-                (moveDown)="moveJobDown($event)"
                 (select)="selectJob($event)"
                 (reorder)="reorderJobs($event)"
                 (runNow)="runJobStandalone($event)"
@@ -116,8 +114,6 @@ import { QueueJob, JobType } from './models/queue.types';
                       (remove)="removeJob($event)"
                       (retry)="retryJob($event)"
                       (cancel)="cancelJob($event)"
-                      (moveUp)="moveJobUp($event)"
-                      (moveDown)="moveJobDown($event)"
                       (select)="selectJob($event)"
                       (reorder)="reorderJobs($event)"
                       (runNow)="runJobStandalone($event)"
@@ -129,22 +125,15 @@ import { QueueJob, JobType } from './models/queue.types';
           </div>
         </div>
 
-        <!-- Right Panel: Current Job / Selected Job / Empty State -->
+        <!-- Right Panel: Selected Job / Current Job / Empty State -->
         <div pane-secondary class="details-panel">
-          @if (queueService.currentJob(); as currentJob) {
-            <!-- Show progress for currently processing job -->
-            <app-job-progress
-              [job]="currentJob"
-              [message]="progressMessage()"
-              (cancel)="cancelCurrent()"
-            />
-          } @else if (selectedJob(); as selected) {
-            <!-- Show progress if selected job is processing, otherwise show details -->
+          @if (selectedJob(); as selected) {
+            <!-- Prioritize selected job - show progress if processing, otherwise details -->
             @if (selected.status === 'processing') {
               <app-job-progress
                 [job]="selected"
                 [message]="progressMessage()"
-                (cancel)="cancelCurrent()"
+                (cancel)="cancelJob(selected.id)"
               />
             } @else {
               <app-job-details
@@ -156,6 +145,13 @@ import { QueueJob, JobType } from './models/queue.types';
                 (showInFolder)="showInFolder($event)"
               />
             }
+          } @else if (queueService.currentJob(); as currentJob) {
+            <!-- No selection - default to showing queue's current job -->
+            <app-job-progress
+              [job]="currentJob"
+              [message]="progressMessage()"
+              (cancel)="cancelCurrent()"
+            />
           } @else if (queueService.jobs().length === 0) {
             <!-- Empty state -->
             <div class="empty-state">
@@ -618,14 +614,6 @@ export class QueueComponent implements OnInit, OnDestroy {
 
   cancelCurrent(): void {
     this.queueService.cancelCurrent();
-  }
-
-  moveJobUp(jobId: string): void {
-    this.queueService.moveJobUp(jobId);
-  }
-
-  moveJobDown(jobId: string): void {
-    this.queueService.moveJobDown(jobId);
   }
 
   reorderJobs(event: { fromId: string; toId: string }): void {

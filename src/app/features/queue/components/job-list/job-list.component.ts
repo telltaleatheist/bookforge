@@ -93,33 +93,15 @@ interface DragState {
           <!-- Actions -->
           <div class="job-actions">
             @if (job.status === 'pending') {
-              <desktop-button
-                variant="primary"
-                size="xs"
-                [iconOnly]="true"
+              <button
+                class="run-btn"
                 title="Run now (standalone)"
                 (click)="runNow.emit(job.id); $event.stopPropagation()"
               >
-                ▶
-              </desktop-button>
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                [iconOnly]="true"
-                title="Move up"
-                (click)="moveUp.emit(job.id); $event.stopPropagation()"
-              >
-                ⌃
-              </desktop-button>
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                [iconOnly]="true"
-                title="Move down"
-                (click)="moveDown.emit(job.id); $event.stopPropagation()"
-              >
-                ⌄
-              </desktop-button>
+                <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor">
+                  <path d="M0 0v12l10-6z"/>
+                </svg>
+              </button>
               <button
                 class="remove-btn"
                 title="Remove"
@@ -397,7 +379,8 @@ interface DragState {
     }
 
     .remove-btn,
-    .cancel-btn {
+    .cancel-btn,
+    .run-btn {
       display: flex;
       align-items: center;
       justify-content: center;
@@ -409,6 +392,20 @@ interface DragState {
       font-size: 14px;
       font-weight: 600;
       transition: all 0.15s ease;
+    }
+
+    .run-btn {
+      background: var(--accent);
+      color: white;
+
+      &:hover {
+        background: var(--accent-hover);
+      }
+
+      svg {
+        width: 10px;
+        height: 12px;
+      }
     }
 
     .remove-btn {
@@ -446,8 +443,6 @@ export class JobListComponent {
   readonly remove = output<string>();
   readonly retry = output<string>();
   readonly cancel = output<string>();
-  readonly moveUp = output<string>();
-  readonly moveDown = output<string>();
   readonly select = output<string>();
   readonly reorder = output<{ fromId: string; toId: string }>();
   readonly runNow = output<string>();  // Run job standalone (doesn't chain to next)

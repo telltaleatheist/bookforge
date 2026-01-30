@@ -456,17 +456,20 @@ export class AudiobookComponent implements OnInit {
         cleanupJobs: []
       };
 
-      // Append new analytics to appropriate array
+      // Append new analytics to appropriate array (keep only last 10 of each type)
+      const MAX_ANALYTICS_HISTORY = 10;
       let updatedAnalytics: ProjectAnalytics;
       if (jobType === 'tts-conversion') {
+        const ttsJobs = [...existingAnalytics.ttsJobs, analytics as TTSJobAnalytics];
         updatedAnalytics = {
           ...existingAnalytics,
-          ttsJobs: [...existingAnalytics.ttsJobs, analytics as TTSJobAnalytics]
+          ttsJobs: ttsJobs.slice(-MAX_ANALYTICS_HISTORY)
         };
       } else if (jobType === 'ocr-cleanup') {
+        const cleanupJobs = [...existingAnalytics.cleanupJobs, analytics as CleanupJobAnalytics];
         updatedAnalytics = {
           ...existingAnalytics,
-          cleanupJobs: [...existingAnalytics.cleanupJobs, analytics as CleanupJobAnalytics]
+          cleanupJobs: cleanupJobs.slice(-MAX_ANALYTICS_HISTORY)
         };
       } else {
         console.log('[Audiobook] Unknown job type for analytics:', jobType);
@@ -790,13 +793,14 @@ export class AudiobookComponent implements OnInit {
           skippedChunksPath: hasSkippedChunks ? skippedChunksFile : undefined
         });
 
-        // Load analytics for this project if available
+        // Load analytics for this project if available (trim to last 10 of each type)
         if (project.analytics) {
+          const MAX_ANALYTICS_HISTORY = 10;
           const analyticsMap = this._projectAnalytics();
           const newMap = new Map(analyticsMap);
           newMap.set(project.name, {
-            ttsJobs: project.analytics.ttsJobs || [],
-            cleanupJobs: project.analytics.cleanupJobs || []
+            ttsJobs: (project.analytics.ttsJobs || []).slice(-MAX_ANALYTICS_HISTORY),
+            cleanupJobs: (project.analytics.cleanupJobs || []).slice(-MAX_ANALYTICS_HISTORY)
           });
           this._projectAnalytics.set(newMap);
         }

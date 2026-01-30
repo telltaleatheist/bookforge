@@ -10,6 +10,7 @@ import { getPluginRegistry } from './plugins/plugin-registry';
 import { loadBuiltinPlugins } from './plugins/plugin-loader';
 import { libraryServer } from './library-server';
 import { getHeadlessOcrService } from './headless-ocr';
+import { initializeLoggers, getMainLogger, closeLoggers } from './rolling-logger';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -4319,6 +4320,11 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.whenReady().then(async () => {
+  // Initialize rolling logger
+  await initializeLoggers();
+  const logger = getMainLogger();
+  logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
+
   // Register the protocol handler
   registerPageProtocol();
 
@@ -4429,6 +4435,9 @@ app.on('before-quit', async (event) => {
   // Dispose all plugins
   const registry = getPluginRegistry();
   await registry.disposeAll();
+
+  // Close loggers
+  await closeLoggers();
 
   console.log('[MAIN] Cleanup complete, quitting...');
   app.quit();
