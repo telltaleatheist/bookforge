@@ -287,9 +287,8 @@ class EpubProcessor {
       try {
         const navXml = await this.readFile(this.structure.navPath);
         this.parseNavXhtml(navXml, navTitles);
-        console.log('[EPUB] Extracted', navTitles.size, 'titles from nav.xhtml');
-      } catch (err) {
-        console.warn('[EPUB] Failed to read nav.xhtml:', err);
+      } catch {
+        // nav.xhtml not found or unreadable
       }
     }
 
@@ -298,9 +297,8 @@ class EpubProcessor {
       try {
         const ncxXml = await this.readFile(this.structure.ncxPath);
         this.parseNcx(ncxXml, navTitles);
-        console.log('[EPUB] Extracted', navTitles.size, 'titles from toc.ncx');
-      } catch (err) {
-        console.warn('[EPUB] Failed to read toc.ncx:', err);
+      } catch {
+        // toc.ncx not found or unreadable
       }
     }
 
@@ -327,7 +325,6 @@ class EpubProcessor {
         }
 
         if (title) {
-          console.log('[EPUB] Chapter', chapter.id, ':', chapter.href, '->', title);
           chapter.title = title;
         }
       }
@@ -526,28 +523,19 @@ class EpubProcessor {
       'application/x-dtbook+xml'
     ]);
 
-    console.log('[EPUB] Spine has', spine.length, 'items');
-    console.log('[EPUB] Nav path:', navPath, 'NCX path:', ncxPath);
-
     for (let i = 0; i < spine.length; i++) {
       const id = spine[i];
       const item = manifest[id];
-      if (item) {
-        console.log('[EPUB] Spine item', i, ':', id, '->', item.href, '(', item.mediaType, ')');
-        if (validMediaTypes.has(item.mediaType)) {
-          chapters.push({
-            id,
-            title: `Chapter ${i + 1}`,  // Default title, will be updated from nav
-            href: item.href,
-            order: i,
-            wordCount: 0
-          });
-        }
-      } else {
-        console.log('[EPUB] Spine item', i, ':', id, '- NOT IN MANIFEST');
+      if (item && validMediaTypes.has(item.mediaType)) {
+        chapters.push({
+          id,
+          title: `Chapter ${i + 1}`,  // Default title, will be updated from nav
+          href: item.href,
+          order: i,
+          wordCount: 0
+        });
       }
     }
-    console.log('[EPUB] Found', chapters.length, 'chapters');
 
     return {
       metadata,
@@ -892,7 +880,6 @@ export function setCover(coverDataUrl: string): void {
 
   // Store for saving
   modifiedCover = { data, mediaType };
-  console.log(`[EPUB] Cover set: ${data.length} bytes, type: ${mediaType}`);
 }
 
 /**
@@ -923,7 +910,6 @@ export async function saveModifiedEpub(outputPath: string): Promise<void> {
     coverFilePath = structure.rootPath
       ? `${structure.rootPath}/${structure.metadata.coverPath}`
       : structure.metadata.coverPath;
-    console.log(`[EPUB] Will replace cover at: ${coverFilePath}`);
   }
 
   // Get all entries from the original EPUB
@@ -932,14 +918,12 @@ export async function saveModifiedEpub(outputPath: string): Promise<void> {
   for (const entryName of entries) {
     // Check if this is the cover image that needs to be replaced
     if (modifiedCover && coverFilePath && entryName === coverFilePath) {
-      console.log(`[EPUB] Replacing cover file: ${entryName}`);
       zipWriter.addFile(entryName, modifiedCover.data, true);
       continue;
     }
 
     // Check if this is the OPF file and we have modified metadata
     if (modifiedMetadata && entryName === structure.opfPath) {
-      console.log(`[EPUB] Updating metadata in: ${entryName}`);
       const originalOpf = await currentProcessor.readFile(entryName);
       const newOpf = updateOpfMetadata(originalOpf, modifiedMetadata);
       zipWriter.addFile(entryName, Buffer.from(newOpf, 'utf8'));
@@ -1707,8 +1691,6 @@ export async function exportEpubWithRemovals(
 function applyTextRemovals(xhtml: string, removals: TextRemovalEntry[]): string {
   if (removals.length === 0) return xhtml;
 
-  console.log(`[EPUB Export] Processing ${removals.length} text removals`);
-
   // Parse XHTML using DOMParser
   const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
   const parser = new DOMParser();
@@ -1724,8 +1706,6 @@ function applyTextRemovals(xhtml: string, removals: TextRemovalEntry[]): string 
     const text = removal.text;
     if (!text) continue;
 
-    console.log(`[EPUB Export] Processing removal: text="${text}", cfi="${removal.cfi}"`);
-
     // Try to find the element using CFI path
     let targetNode: any = null;
     let charStart = 0;
@@ -1736,13 +1716,11 @@ function applyTextRemovals(xhtml: string, removals: TextRemovalEntry[]): string 
       // CFI format from epub.js: epubcfi(/6/4[chap01]!/4/2/1:5,/4/2/1:10)
       // The part after ! is the document path
       const cfiContent = removal.cfi.match(/!(.+)$/)?.[1] || '';
-      console.log(`[EPUB Export] CFI content after !: "${cfiContent}"`);
 
       // Check for range (has comma) or single point
       const rangeParts = cfiContent.split(',');
       let startPath = rangeParts[0];
       let endPath = rangeParts[1] || startPath;
-      console.log(`[EPUB Export] startPath="${startPath}", endPath="${endPath}"`);
 
       // Parse start offset
       const startMatch = startPath.match(/:(\d+)$/);
@@ -1827,13 +1805,7 @@ function applyTextRemovals(xhtml: string, removals: TextRemovalEntry[]): string 
           end: charStart + text.length,
           text
         });
-      } else {
-        // Text doesn't match at CFI position - log for debugging
-        console.error(`CFI text mismatch: expected "${text}" at offset ${charStart}, found "${nodeText.substring(charStart, charStart + text.length + 20)}..."`);
       }
-    } else {
-      // CFI navigation failed
-      console.error(`CFI navigation failed for: ${removal.cfi}, text: "${text}"`);
     }
   }
 
@@ -1928,8 +1900,6 @@ export async function exportEpubWithDeletedBlocks(
       }
     }
 
-    console.log(`[EPUB Export] Processing ${deletedBlockIds.length} block deletions across ${deletedBySection.size} sections`);
-
     for (const entryName of entries) {
       // Check if this entry has blocks to delete
       // The sectionHref from blocks may or may not include the rootPath prefix
@@ -1951,8 +1921,6 @@ export async function exportEpubWithDeletedBlocks(
       }
 
       if (sectionDeletions && sectionDeletions.length > 0) {
-        console.log(`[EPUB Export] Removing ${sectionDeletions.length} blocks from: ${entryName}`);
-
         // Read and process the XHTML
         const originalXhtml = await processor.readFile(entryName);
         const modifiedXhtml = removeBlocksFromXhtml(originalXhtml, sectionDeletions);
@@ -2054,8 +2022,6 @@ function removeBlocksFromXhtml(xhtml: string, indicesToRemove: number[]): string
 
   collectElements(body);
 
-  console.log(`[EPUB Export] Found ${allElements.length} blocks, removing indices: ${indicesToRemove.join(', ')}`);
-
   // Create a set for faster lookup
   const removeSet = new Set(indicesToRemove);
 
@@ -2066,7 +2032,6 @@ function removeBlocksFromXhtml(xhtml: string, indicesToRemove: number[]): string
       const element = allElements[index];
       if (element.parentNode) {
         element.parentNode.removeChild(element);
-        console.log(`[EPUB Export] Removed block ${index}`);
       }
     }
   }
