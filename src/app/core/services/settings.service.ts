@@ -95,6 +95,13 @@ export class SettingsService {
             min: 5,
             max: 50,
           },
+          {
+            key: 'diffIgnoreWhitespace',
+            type: 'boolean',
+            label: 'Ignore whitespace in diffs',
+            description: 'When reviewing AI cleanup changes, ignore differences in whitespace, paragraph breaks, and newlines',
+            default: false,
+          },
         ],
       },
       {

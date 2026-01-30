@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import { ElectronService } from '../../../core/services/electron.service';
+import { SettingsService } from '../../../core/services/settings.service';
 import {
   DiffSession,
   DiffChapter,
@@ -9,7 +10,7 @@ import {
   DIFF_INITIAL_LOAD,
   DIFF_LOAD_MORE_SIZE
 } from '../../../core/models/diff.types';
-import { computeWordDiffAsync, countChanges, summarizeChanges } from '../../../core/utils/diff-algorithm';
+import { computeWordDiffAsync, countChanges, summarizeChanges, DiffOptions } from '../../../core/utils/diff-algorithm';
 
 export interface DiffLoadingProgress {
   phase: 'loading-metadata' | 'loading-chapter' | 'computing-diff' | 'complete';
@@ -56,7 +57,18 @@ export class DiffService {
   private backgroundLoadingAborted = false;
   private backgroundLoadingPromise: Promise<void> | null = null;
 
-  constructor(private electronService: ElectronService) {}
+  constructor(
+    private electronService: ElectronService,
+    private settingsService: SettingsService
+  ) {}
+
+  /**
+   * Get current diff options based on settings.
+   */
+  private getDiffOptions(): DiffOptions {
+    const ignoreWhitespace = this.settingsService.get<boolean>('diffIgnoreWhitespace') ?? false;
+    return { ignoreWhitespace };
+  }
 
   /**
    * Compute diff using system diff command (efficient) with JS fallback.
@@ -64,6 +76,15 @@ export class DiffService {
    * avoiding the massive O(n²) memory allocation of LCS in JavaScript.
    */
   private async computeDiff(originalText: string, cleanedText: string): Promise<DiffWord[]> {
+    const options = this.getDiffOptions();
+
+    // When ignoring whitespace, use JS algorithm directly (system diff doesn't support this mode well)
+    // The JS algorithm is efficient for this case since it compares fewer tokens (no whitespace)
+    if (options.ignoreWhitespace) {
+      console.log('[DiffService] Using JS diff with ignoreWhitespace=true');
+      return computeWordDiffAsync(originalText, cleanedText, options);
+    }
+
     // Try system diff first (much more memory efficient)
     try {
       const result = await this.electronService.computeSystemDiff(originalText, cleanedText);
@@ -80,7 +101,7 @@ export class DiffService {
 
     // Fallback to JavaScript algorithm (may cause OOM on very large texts)
     console.log('[DiffService] Using JS diff algorithm as fallback');
-    return computeWordDiffAsync(originalText, cleanedText);
+    return computeWordDiffAsync(originalText, cleanedText, options);
   }
 
   /**
@@ -845,5 +866,74 @@ export class DiffService {
     this.sessionSubject.next(null);
     this.errorSubject.next(null);
     this.cachedChapterIds = [];
+  }
+
+  /**
+   * Check if whitespace is being ignored in diffs.
+   */
+  isIgnoringWhitespace(): boolean {
+    return this.settingsService.get<boolean>('diffIgnoreWhitespace') ?? false;
+  }
+
+  /**
+   * Toggle the ignore whitespace setting and recompute the current chapter's diff.
+   */
+  async toggleIgnoreWhitespace(): Promise<void> {
+    const current = this.isIgnoringWhitespace();
+    this.settingsService.set('diffIgnoreWhitespace', !current);
+    await this.recomputeCurrentChapterDiff();
+  }
+
+  /**
+   * Recompute the diff for the current chapter with current settings.
+   * Call this after changing diff-related settings.
+   */
+  async recomputeCurrentChapterDiff(): Promise<void> {
+    const session = this.sessionSubject.getValue();
+    if (!session) return;
+
+    const chapter = session.chapters.find(c => c.id === session.currentChapterId);
+    if (!chapter) return;
+
+    this.chapterLoadingSubject.next(true);
+
+    try {
+      // Recompute diff with current settings
+      const truncatedOriginal = chapter.originalText.slice(0, chapter.loadedChars);
+      const truncatedCleaned = chapter.cleanedText.slice(0, chapter.loadedChars);
+      const diffWords = await this.computeDiff(truncatedOriginal, truncatedCleaned);
+      const changeCount = countChanges(diffWords);
+
+      // Update chapter
+      const updatedChapter: DiffChapter = {
+        ...chapter,
+        diffWords,
+        changeCount
+      };
+
+      // Update session
+      const currentSession = this.sessionSubject.getValue();
+      if (!currentSession) return;
+
+      const updatedChapters = currentSession.chapters.map(c =>
+        c.id === chapter.id ? updatedChapter : c
+      );
+
+      // Update metadata
+      const meta = currentSession.chaptersMeta.find(m => m.id === chapter.id);
+      if (meta) {
+        meta.changeCount = changeCount;
+      }
+
+      this.sessionSubject.next({
+        ...currentSession,
+        chapters: updatedChapters
+      });
+
+      // Clear disk cache since settings changed
+      await this.clearCache();
+    } finally {
+      this.chapterLoadingSubject.next(false);
+    }
   }
 }

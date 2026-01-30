@@ -304,11 +304,7 @@ import { TTSJobAnalytics, CleanupJobAnalytics, ProjectAnalytics } from '../../..
       border-radius: 4px;
       font-size: 13px;
       cursor: pointer;
-    }
-
-    .job-selector select option {
-      background: var(--bg-secondary);
-      color: var(--text-primary);
+      color-scheme: dark;
     }
 
     .analytics-grid {

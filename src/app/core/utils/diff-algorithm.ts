@@ -6,6 +6,14 @@
 import { DiffWord } from '../models/diff.types';
 
 /**
+ * Options for diff computation
+ */
+export interface DiffOptions {
+  /** When true, ignore differences in whitespace (spaces, newlines, paragraph breaks) */
+  ignoreWhitespace?: boolean;
+}
+
+/**
  * Normalize text by removing only truly INVISIBLE characters.
  * Visible punctuation changes (quotes, dashes) should still show in diff.
  */
@@ -25,8 +33,13 @@ function normalizeForComparison(text: string): string {
 
 /**
  * Tokenize text into words, preserving whitespace information
+ * @param ignoreWhitespace When true, extracts only words (no whitespace tokens)
  */
-function tokenize(text: string): string[] {
+function tokenize(text: string, ignoreWhitespace = false): string[] {
+  if (ignoreWhitespace) {
+    // Extract only words, ignoring whitespace entirely
+    return text.split(/\s+/).filter(token => token.length > 0);
+  }
   // Split on whitespace but keep words intact
   // Also handles punctuation attached to words
   return text.split(/(\s+)/).filter(token => token.length > 0);
@@ -159,11 +172,87 @@ function mergeDiffOperations(diff: DiffWord[]): DiffWord[] {
 }
 
 /**
+ * Compute word-level diff while ignoring whitespace differences.
+ * Compares only the words, then reconstructs output using the cleaned text's formatting.
+ * This makes it easy to see actual text changes without noise from paragraph/newline changes.
+ */
+function computeWordDiffIgnoringWhitespace(originalText: string, cleanedText: string): DiffWord[] {
+  // Extract words only (no whitespace)
+  const originalWords = tokenize(originalText, true);
+  const cleanedWords = tokenize(cleanedText, true);
+
+  // Handle empty cases
+  if (originalWords.length === 0 && cleanedWords.length === 0) {
+    return [{ text: cleanedText, type: 'unchanged' }];
+  }
+  if (originalWords.length === 0) {
+    return [{ text: cleanedText, type: 'added' }];
+  }
+  if (cleanedWords.length === 0) {
+    return [{ text: originalText, type: 'removed' }];
+  }
+
+  // Compute diff on words only
+  const dp = computeLCSTable(originalWords, cleanedWords);
+  const wordDiff = backtrackDiff(originalWords, cleanedWords, dp);
+
+  // Now reconstruct the output using cleaned text's formatting
+  // We need to map the word diff back to the cleaned text with its whitespace
+  const result: DiffWord[] = [];
+
+  // Get all tokens from cleaned text (words + whitespace)
+  const cleanedTokens = tokenize(cleanedText, false);
+
+  // Track position in the word diff
+  let wordDiffIdx = 0;
+
+  for (const token of cleanedTokens) {
+    const isWhitespace = /^\s+$/.test(token);
+
+    if (isWhitespace) {
+      // Whitespace from cleaned text - always show as unchanged
+      result.push({ text: token, type: 'unchanged' });
+    } else {
+      // This is a word - find its status in the diff
+      // Skip any 'removed' entries (they're not in the cleaned text)
+      while (wordDiffIdx < wordDiff.length && wordDiff[wordDiffIdx].type === 'removed') {
+        // Add removed words to output
+        result.push(wordDiff[wordDiffIdx]);
+        wordDiffIdx++;
+      }
+
+      if (wordDiffIdx < wordDiff.length) {
+        // Use the diff status for this word
+        result.push({ text: token, type: wordDiff[wordDiffIdx].type });
+        wordDiffIdx++;
+      }
+    }
+  }
+
+  // Add any remaining removed words at the end
+  while (wordDiffIdx < wordDiff.length) {
+    if (wordDiff[wordDiffIdx].type === 'removed') {
+      result.push(wordDiff[wordDiffIdx]);
+    }
+    wordDiffIdx++;
+  }
+
+  return mergeDiffOperations(result);
+}
+
+/**
  * Compute word-level diff between original and cleaned text (sync version)
  * Returns array of DiffWord objects with type annotations
  * WARNING: Can freeze UI for large texts - use computeWordDiffAsync instead
  */
-export function computeWordDiff(originalText: string, cleanedText: string): DiffWord[] {
+export function computeWordDiff(originalText: string, cleanedText: string, options: DiffOptions = {}): DiffWord[] {
+  const { ignoreWhitespace = false } = options;
+
+  // When ignoring whitespace, we diff word tokens only and reconstruct with cleaned text's formatting
+  if (ignoreWhitespace) {
+    return computeWordDiffIgnoringWhitespace(originalText, cleanedText);
+  }
+
   const originalTokens = tokenize(originalText);
   const cleanedTokens = tokenize(cleanedText);
 
@@ -265,7 +354,15 @@ function computeLineDiff(originalText: string, cleanedText: string): DiffWord[] 
  * - Medium (< 10K tokens): Line-based diff with word-level for changed sections
  * - Large (> 10K tokens): No highlighting, just show texts
  */
-export async function computeWordDiffAsync(originalText: string, cleanedText: string): Promise<DiffWord[]> {
+export async function computeWordDiffAsync(originalText: string, cleanedText: string, options: DiffOptions = {}): Promise<DiffWord[]> {
+  const { ignoreWhitespace = false } = options;
+
+  // When ignoring whitespace, use the sync version (it's simpler and usually fast enough)
+  if (ignoreWhitespace) {
+    await new Promise(resolve => setTimeout(resolve, 0)); // Yield once
+    return computeWordDiffIgnoringWhitespace(originalText, cleanedText);
+  }
+
   const originalTokens = tokenize(originalText);
   const cleanedTokens = tokenize(cleanedText);
 

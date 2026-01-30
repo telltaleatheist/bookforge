@@ -44,6 +44,15 @@ interface EditState {
               <span class="spinner-small">&#8635;</span>
             </span>
           }
+          <label class="whitespace-toggle" title="When enabled, ignores differences in whitespace, paragraph breaks, and newlines">
+            <input
+              type="checkbox"
+              [checked]="ignoreWhitespace()"
+              (change)="toggleIgnoreWhitespace()"
+              [disabled]="loading() || chapterLoading()"
+            />
+            <span class="toggle-label">Ignore whitespace</span>
+          </label>
         </div>
 
         <!-- Chapter selector -->
@@ -323,6 +332,33 @@ interface EditState {
       animation: spin 1s linear infinite;
       font-size: 0.875rem;
       opacity: 0.6;
+    }
+
+    .whitespace-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+      cursor: pointer;
+      font-size: 0.6875rem;
+      color: var(--text-secondary);
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      transition: background 0.15s;
+
+      &:hover {
+        background: var(--bg-default);
+      }
+
+      input[type="checkbox"] {
+        width: 14px;
+        height: 14px;
+        cursor: pointer;
+        accent-color: #ff6b35;
+      }
+
+      .toggle-label {
+        white-space: nowrap;
+      }
     }
 
     .chapter-selector {
@@ -675,6 +711,9 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   // Edit state
   readonly editState = signal<EditState | null>(null);
 
+  // Whitespace toggle state
+  readonly ignoreWhitespace = signal(false);
+
   // Output for text edits
   readonly textEdited = output<{ chapterId: string; oldText: string; newText: string }>();
 
@@ -765,6 +804,9 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   });
 
   ngOnInit(): void {
+    // Initialize whitespace toggle from current setting
+    this.ignoreWhitespace.set(this.diffService.isIgnoringWhitespace());
+
     // Subscribe to service state
     this.subscriptions.push(
       this.diffService.loading$.subscribe(loading => this.loading.set(loading)),
@@ -958,6 +1000,12 @@ export class DiffViewComponent implements OnInit, OnDestroy {
 
   retry(): void {
     this.loadComparison();
+  }
+
+  /** Toggle the ignore whitespace setting and recompute diff */
+  async toggleIgnoreWhitespace(): Promise<void> {
+    await this.diffService.toggleIgnoreWhitespace();
+    this.ignoreWhitespace.set(this.diffService.isIgnoringWhitespace());
   }
 
   /** Load more content for the current chapter */
