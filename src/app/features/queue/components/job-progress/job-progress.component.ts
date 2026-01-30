@@ -53,6 +53,9 @@ interface ETAState {
             } @else if (currentJob.type === 'reassembly') {
               <span class="type-icon">&#128295;</span>
               <span>Reassembly</span>
+            } @else if (currentJob.type === 'resemble-enhance') {
+              <span class="type-icon">&#10024;</span>
+              <span>Audio Enhancement</span>
             }
           </div>
 
@@ -74,7 +77,7 @@ interface ETAState {
           </div>
         </div>
 
-        @if (currentJob.progressMessage) {
+        @if (currentJob.progressMessage && currentJob.type !== 'resemble-enhance') {
           <div class="progress-message">{{ currentJob.progressMessage }}</div>
         }
 
@@ -85,7 +88,7 @@ interface ETAState {
           </div>
           <div class="stat">
             <span class="stat-label">ETA</span>
-            <span class="stat-value">{{ etaFormatted() }}</span>
+            <span class="stat-value">{{ getEtaDisplay(currentJob) }}</span>
           </div>
           @if (job()?.type === 'reassembly') {
             <div class="stat">
@@ -588,6 +591,28 @@ export class JobProgressComponent implements OnDestroy {
       return 'Complete';
     }
 
+    // For resemble-enhance jobs, parse ETA from progressMessage or use percentage-based
+    if (j.type === 'resemble-enhance') {
+      // Try to extract remaining time from message like "Enhancing: 13% (57:54 remaining)"
+      const message = j.progressMessage || '';
+      const remainingMatch = message.match(/\(([^)]+)\s+remaining\)/);
+      if (remainingMatch && remainingMatch[1]) {
+        // Return the extracted time (e.g., "57:54")
+        return remainingMatch[1];
+      }
+      // Fall back to percentage-based ETA
+      const elapsed = this.elapsedSeconds();
+      if (progress > 2 && elapsed > 10) {
+        // Simple linear estimate: (elapsed / progress) * remaining_progress
+        const totalEstimate = elapsed / (progress / 100);
+        const remaining = totalEstimate - elapsed;
+        if (remaining > 0) {
+          return this.formatDuration(Math.round(remaining));
+        }
+      }
+      return 'Calculating...';
+    }
+
     // If first work hasn't completed yet, show appropriate loading status
     if (!this.etaState.firstWorkTime) {
       // Reassembly doesn't load models - show different message
@@ -649,6 +674,44 @@ export class JobProgressComponent implements OnDestroy {
     const totalSentences = worker.sentenceEnd - worker.sentenceStart + 1;
     if (totalSentences <= 0) return 0;
     return Math.min(100, (worker.completedSentences / totalSentences) * 100);
+  }
+
+  // Get ETA display - takes job directly to ensure reactivity
+  getEtaDisplay(job: QueueJob): string {
+    // Subscribe to tick for reactivity (ensures re-render on timer tick)
+    this.tick();
+
+    if (!job || job.status !== 'processing') {
+      return '-';
+    }
+
+    const progress = job.progress || 0;
+    if (progress >= 100) {
+      return 'Complete';
+    }
+
+    // For resemble-enhance jobs, parse ETA from progressMessage
+    if (job.type === 'resemble-enhance') {
+      const message = job.progressMessage || '';
+      // Extract time from "Enhancing: 13% (57:54 remaining)"
+      const remainingMatch = message.match(/\(([^)]+)\s+remaining\)/);
+      if (remainingMatch && remainingMatch[1]) {
+        return remainingMatch[1];
+      }
+      // Fall back to percentage-based ETA
+      const elapsed = this.elapsedSeconds();
+      if (progress > 2 && elapsed > 10) {
+        const totalEstimate = elapsed / (progress / 100);
+        const remaining = totalEstimate - elapsed;
+        if (remaining > 0) {
+          return this.formatDuration(Math.round(remaining));
+        }
+      }
+      return 'Calculating...';
+    }
+
+    // For other job types, use the computed etaFormatted
+    return this.etaFormatted();
   }
 
   // Get human-readable phase name for reassembly jobs

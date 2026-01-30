@@ -13,6 +13,7 @@ import { TtsSettingsComponent, TTSSettings } from './components/tts-settings/tts
 import { DiffViewComponent } from './components/diff-view/diff-view.component';
 import { PlayViewComponent } from './components/play-view/play-view.component';
 import { SkippedChunksPanelComponent } from './components/skipped-chunks-panel/skipped-chunks-panel.component';
+import { PostProcessingPanelComponent } from './components/post-processing-panel/post-processing-panel.component';
 import { EpubService } from './services/epub.service';
 import { AudiobookService } from './services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
@@ -23,7 +24,7 @@ import { AnalyticsPanelComponent } from './components/analytics-panel/analytics-
 import { ProjectAnalytics, TTSJobAnalytics, CleanupJobAnalytics } from '../../core/models/analytics.types';
 
 // Workflow states for the audiobook producer
-type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'skipped' | 'analytics' | 'complete';
+type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'skipped' | 'analytics' | 'enhance' | 'complete';
 
 @Component({
   selector: 'app-audiobook',
@@ -40,7 +41,8 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
     DiffViewComponent,
     PlayViewComponent,
     SkippedChunksPanelComponent,
-    AnalyticsPanelComponent
+    AnalyticsPanelComponent,
+    PostProcessingPanelComponent
   ],
   template: `
     <!-- Toolbar -->
@@ -135,6 +137,15 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                   Analytics
                 </button>
               }
+              @if (selectedItem()?.hasAudiobook) {
+                <button
+                  class="tab"
+                  [class.active]="workflowState() === 'enhance'"
+                  (click)="setWorkflowState('enhance')"
+                >
+                  Enhance
+                </button>
+              }
             </div>
 
 
@@ -204,6 +215,18 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                 @case ('analytics') {
                   <app-analytics-panel
                     [analytics]="currentAnalytics()"
+                  />
+                }
+                @case ('enhance') {
+                  <app-post-processing-panel
+                    [audioFilePath]="audioFilePath()"
+                    [projectId]="selectedItem()?.projectId || ''"
+                    [bfpPath]="selectedItem()?.bfpPath || ''"
+                    [bookTitle]="selectedItem()?.metadata?.title || ''"
+                    [bookAuthor]="selectedItem()?.metadata?.author || ''"
+                    [enhancementStatus]="selectedItem()?.enhancementStatus || 'none'"
+                    [enhancedAt]="selectedItem()?.enhancedAt"
+                    (jobQueued)="onEnhanceJobQueued($event)"
                   />
                 }
               }
@@ -528,6 +551,41 @@ export class AudiobookComponent implements OnInit {
     }
 
     return item.path;
+  });
+
+  // Path to the completed audiobook m4b file for enhancement
+  readonly audioFilePath = computed(() => {
+    const item = this.selectedItem();
+    if (!item?.audiobookFolder || !item.metadata || !item.hasAudiobook) return '';
+
+    const completed = this.completedAudiobooks();
+    if (completed.length === 0) return '';
+
+    // Try to find the matching audiobook file using the same logic as markItemsWithAudiobooks
+    const meta = item.metadata;
+    const expectedFilename = this.generateFilenameForItem(meta).toLowerCase();
+
+    // Try exact match first
+    let matchedFile = completed.find(a => a.filename.toLowerCase() === expectedFilename);
+
+    // If no exact match, try fuzzy matching
+    if (!matchedFile) {
+      const normalize = (s: string) => s.toLowerCase().replace(/['']/g, '').replace(/\s+/g, ' ').trim();
+      const authorLast = normalize(meta.authorLast || (meta.author || '').split(' ').pop() || '');
+      const titleStart = normalize((meta.title || '').split(/[-:,]/)[0]);
+
+      matchedFile = completed.find(a => {
+        const cfNorm = normalize(a.filename);
+        return cfNorm.includes(authorLast) && cfNorm.startsWith(titleStart);
+      });
+    }
+
+    if (matchedFile) {
+      // Normalize path separators
+      return matchedFile.path.replace(/\\/g, '/');
+    }
+
+    return '';
   });
 
   // Generated filename from metadata (used when no custom filename set)
@@ -1031,6 +1089,22 @@ export class AudiobookComponent implements OnInit {
 
   onTtsSettingsChange(settings: TTSSettings): void {
     this.ttsSettings.set(settings);
+  }
+
+  onEnhanceJobQueued(jobId: string): void {
+    // Update the item's enhancement status to pending
+    const id = this.selectedItemId();
+    if (!id) return;
+
+    this.queueItems.update(items =>
+      items.map(item =>
+        item.id === id
+          ? { ...item, enhancementStatus: 'pending' as const, enhancementJobId: jobId }
+          : item
+      )
+    );
+
+    console.log('[Audiobook] Enhancement job queued:', jobId);
   }
 
   async onDiffTextEdited(event: { chapterId: string; oldText: string; newText: string }): Promise<void> {

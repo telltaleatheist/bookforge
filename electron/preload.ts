@@ -1261,11 +1261,20 @@ export interface ElectronAPI {
     onProgress: (callback: (progress: DenoiseProgress) => void) => () => void;
   };
   resemble: {
-    checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; error?: string }; error?: string }>;
+    checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; device?: string; usingWsl?: boolean; error?: string }; error?: string }>;
     listFiles: (audiobooksDir: string) => Promise<{ success: boolean; data?: AudioFileInfo[]; error?: string }>;
+    pickFiles: () => Promise<{ success: boolean; data?: AudioFileInfo[]; error?: string }>;
     enhance: (filePath: string) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
     cancel: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
     onProgress: (callback: (progress: EnhanceProgress) => void) => () => void;
+    // Queue-based enhancement
+    runForQueue: (jobId: string, config: {
+      inputPath: string;
+      outputPath?: string;
+      projectId?: string;
+      bfpPath?: string;
+      replaceOriginal?: boolean;
+    }) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
   };
   platform: string;
 }
@@ -1901,6 +1910,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('resemble:check-available'),
     listFiles: (audiobooksDir: string) =>
       ipcRenderer.invoke('resemble:list-files', audiobooksDir),
+    pickFiles: () =>
+      ipcRenderer.invoke('resemble:pick-files'),
     enhance: (filePath: string) =>
       ipcRenderer.invoke('resemble:enhance', filePath),
     cancel: () =>
@@ -1914,6 +1925,15 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('resemble:progress', listener);
       };
     },
+    // Queue-based enhancement
+    runForQueue: (jobId: string, config: {
+      inputPath: string;
+      outputPath?: string;
+      projectId?: string;
+      bfpPath?: string;
+      replaceOriginal?: boolean;
+    }) =>
+      ipcRenderer.invoke('queue:run-resemble-enhance', jobId, config),
   },
   platform: process.platform,
 };

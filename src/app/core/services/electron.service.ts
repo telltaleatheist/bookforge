@@ -220,8 +220,35 @@ export interface LayoutBlock {
 export class ElectronService {
   private readonly isElectron: boolean;
 
+  // Resemble Enhance warmup cache
+  private resembleAvailabilityCache: { available: boolean; device?: string; usingWsl?: boolean; error?: string } | null = null;
+  private resembleCheckPromise: Promise<{ available: boolean; device?: string; usingWsl?: boolean; error?: string }> | null = null;
+
   constructor() {
     this.isElectron = !!(window as any).electron;
+    // Start warming up Resemble Enhance check in background
+    this.warmupResembleCheck();
+  }
+
+  /**
+   * Start the Resemble Enhance availability check in the background.
+   * This warms up WSL and caches the result for instant access later.
+   */
+  private warmupResembleCheck(): void {
+    if (!this.isElectron || !(window as any).electron.resemble) {
+      return;
+    }
+    // Start the check and cache the promise
+    this.resembleCheckPromise = this.doResembleCheck();
+    this.resembleCheckPromise.then(result => {
+      this.resembleAvailabilityCache = result;
+      console.log('[ElectronService] Resemble warmup complete:', result.available ? `${result.device}${result.usingWsl ? ' (WSL)' : ''}` : result.error);
+    });
+  }
+
+  private async doResembleCheck(): Promise<{ available: boolean; device?: string; usingWsl?: boolean; error?: string }> {
+    const result = await (window as any).electron.resemble.checkAvailable();
+    return result.success ? result.data : { available: false, error: result.error };
   }
 
   get isRunningInElectron(): boolean {
@@ -1956,12 +1983,24 @@ export class ElectronService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Check if Resemble Enhance is available
+   * Check if Resemble Enhance is available.
+   * Uses cached result from warmup if available.
    */
-  async resembleCheckAvailable(): Promise<{ available: boolean; error?: string }> {
+  async resembleCheckAvailable(): Promise<{ available: boolean; device?: string; usingWsl?: boolean; error?: string }> {
+    // Return cached result if available
+    if (this.resembleAvailabilityCache) {
+      return this.resembleAvailabilityCache;
+    }
+    // Wait for in-flight check if one is pending
+    if (this.resembleCheckPromise) {
+      return this.resembleCheckPromise;
+    }
+    // Fallback: start a new check
     if (this.isElectron && (window as any).electron.resemble) {
-      const result = await (window as any).electron.resemble.checkAvailable();
-      return result.success ? result.data : { available: false, error: result.error };
+      this.resembleCheckPromise = this.doResembleCheck();
+      const result = await this.resembleCheckPromise;
+      this.resembleAvailabilityCache = result;
+      return result;
     }
     return { available: false, error: 'Not running in Electron' };
   }
@@ -1982,6 +2021,26 @@ export class ElectronService {
   }> {
     if (this.isElectron && (window as any).electron.resemble) {
       return (window as any).electron.resemble.listFiles(audiobooksDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Open a file picker to select audio files to enhance
+   */
+  async resemblePickFiles(): Promise<{
+    success: boolean;
+    data?: Array<{
+      name: string;
+      path: string;
+      size: number;
+      modifiedAt: Date;
+      format: string;
+    }>;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.resemble) {
+      return (window as any).electron.resemble.pickFiles();
     }
     return { success: false, error: 'Not running in Electron' };
   }

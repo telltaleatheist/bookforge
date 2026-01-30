@@ -100,7 +100,7 @@ interface DragState {
                 title="Run now (standalone)"
                 (click)="runNow.emit(job.id); $event.stopPropagation()"
               >
-                &#9654;
+                ▶
               </desktop-button>
               <desktop-button
                 variant="ghost"
@@ -109,7 +109,7 @@ interface DragState {
                 title="Move up"
                 (click)="moveUp.emit(job.id); $event.stopPropagation()"
               >
-                &#8593;
+                ⌃
               </desktop-button>
               <desktop-button
                 variant="ghost"
@@ -118,7 +118,7 @@ interface DragState {
                 title="Move down"
                 (click)="moveDown.emit(job.id); $event.stopPropagation()"
               >
-                &#8595;
+                ⌄
               </desktop-button>
               <button
                 class="remove-btn"
@@ -321,6 +321,11 @@ interface DragState {
         background: var(--selected-bg-muted);
         color: var(--accent-hover);
       }
+
+      &.resemble-enhance {
+        background: var(--accent-subtle);
+        color: var(--accent);
+      }
     }
 
     .book-title {
@@ -507,6 +512,8 @@ export class JobListComponent {
         return 'TTS';
       case 'reassembly':
         return 'Reassembly';
+      case 'resemble-enhance':
+        return 'Enhance';
       default:
         return type;
     }

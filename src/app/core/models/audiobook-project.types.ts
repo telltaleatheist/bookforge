@@ -57,6 +57,13 @@ export interface AudiobookState {
 
   // TTS settings (saved per-project)
   ttsSettings?: TTSSettings;
+
+  // Enhancement state (Resemble Enhance)
+  enhancementStatus?: 'none' | 'pending' | 'processing' | 'complete' | 'error';
+  enhancementProgress?: number;  // 0-100
+  enhancementError?: string;
+  enhancementJobId?: string;     // Reference to queue job
+  enhancedAt?: string;           // ISO timestamp when enhancement completed
 }
 
 export interface TTSSettings {

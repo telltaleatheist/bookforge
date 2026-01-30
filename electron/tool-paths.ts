@@ -35,6 +35,9 @@ export interface ToolPathsConfig {
 
   // Resemble Enhance (audio enhancement for removing reverb/echo from TTS output)
   resembleCondaEnv?: string;    // Conda environment name for Resemble Enhance (default: 'resemble')
+  resembleDevice?: 'auto' | 'cuda' | 'mps' | 'cpu';  // Device for Resemble Enhance (default: 'auto')
+  useWsl2ForResemble?: boolean; // Use WSL2 for Resemble Enhance on Windows (default: true on Windows)
+  wslResembleCondaEnv?: string; // Conda env name for Resemble in WSL (default: 'resemble')
 
   // WSL2 Configuration (Windows only, for Orpheus TTS)
   useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus
@@ -380,6 +383,43 @@ export function getResembleCondaEnv(): string {
   return state.config.resembleCondaEnv || 'resemble';
 }
 
+/**
+ * Get Resemble Enhance device for inference
+ * Priority: config > auto-detect based on platform
+ *
+ * Auto-detection:
+ * - Windows: 'cuda' (NVIDIA GPU with CUDA)
+ * - macOS: 'mps' (Apple Silicon Metal Performance Shaders)
+ * - Linux: 'cuda' (NVIDIA GPU with CUDA)
+ *
+ * Falls back to 'cpu' if GPU is not available (handled by resemble-enhance itself)
+ */
+export function getResembleDevice(): 'cuda' | 'mps' | 'cpu' {
+  loadConfig();
+
+  const configured = state.config.resembleDevice;
+
+  // If explicitly configured (not 'auto'), use that
+  if (configured && configured !== 'auto') {
+    return configured;
+  }
+
+  // Auto-detect based on platform
+  const platform = os.platform();
+
+  if (platform === 'darwin') {
+    // macOS: Use MPS (Metal Performance Shaders) for Apple Silicon
+    // Note: MPS may need PYTORCH_ENABLE_MPS_FALLBACK=1 for some ops
+    return 'mps';
+  } else if (platform === 'win32' || platform === 'linux') {
+    // Windows/Linux: Use CUDA for NVIDIA GPUs
+    return 'cuda';
+  }
+
+  // Fallback to CPU for unknown platforms
+  return 'cpu';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Detection Status (for UI)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -425,6 +465,11 @@ export function getToolStatus(): Record<string, ToolStatus> {
       configured: !!state.config.resembleCondaEnv,
       detected: true,  // Can't easily check if env exists
       path: getResembleCondaEnv(),
+    },
+    resembleDevice: {
+      configured: !!state.config.resembleDevice && state.config.resembleDevice !== 'auto',
+      detected: true,
+      path: getResembleDevice(),  // Returns the resolved device (cuda/mps/cpu)
     },
   };
 }
@@ -652,6 +697,32 @@ export function getWslOrpheusCondaEnv(): string {
 }
 
 /**
+ * Check if WSL2 should be used for Resemble Enhance
+ * On Windows, defaults to true (Resemble works better on Linux)
+ */
+export function shouldUseWsl2ForResemble(): boolean {
+  if (os.platform() !== 'win32') {
+    return false;
+  }
+  loadConfig();
+  // Default to true on Windows since Resemble is designed for Linux
+  const value = state.config.useWsl2ForResemble as unknown;
+  // If not explicitly set, default to true on Windows
+  if (value === undefined) {
+    return true;
+  }
+  return value === true || value === 'true';
+}
+
+/**
+ * Get WSL Resemble conda environment name from config
+ */
+export function getWslResembleCondaEnv(): string {
+  loadConfig();
+  return state.config.wslResembleCondaEnv || 'resemble';
+}
+
+/**
  * Convert a WSL path to a Windows UNC path that Node.js can access
  * e.g., /home/user/file.txt -> \\wsl$\Ubuntu\home\user\file.txt
  */
@@ -694,6 +765,8 @@ export const toolPaths = {
   getFfmpegPath,
   getE2aPath,
   getDeepFilterCondaEnv,
+  getResembleCondaEnv,
+  getResembleDevice,
   getToolStatus,
   // WSL2 functions
   detectWslAvailability,
@@ -703,6 +776,8 @@ export const toolPaths = {
   getWslCondaPath,
   getWslE2aPath,
   getWslOrpheusCondaEnv,
+  shouldUseWsl2ForResemble,
+  getWslResembleCondaEnv,
   wslPathToWindows,
   windowsToWslPath,
 };

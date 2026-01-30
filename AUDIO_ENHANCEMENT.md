@@ -57,28 +57,54 @@ Resemble Enhance is now integrated into BookForgeApp:
 
 ## Resemble Enhance Setup
 
-### Create Environment
+### Windows Setup (CUDA GPU)
+
+```powershell
+# Create environment
+conda create -n resemble python=3.10 -y
+conda activate resemble
+
+# Install PyTorch with CUDA 12.1 (for NVIDIA GPUs)
+pip install torch==2.1.1 torchaudio==2.1.1 torchvision==0.16.1 --index-url https://download.pytorch.org/whl/cu121
+
+# Install other dependencies
+pip install celluloid librosa matplotlib numpy==1.26.4 omegaconf pandas ptflops rich scipy soundfile tqdm resampy tabulate
+```
+
+### macOS Setup (MPS / CPU)
+
 ```bash
 source /opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh
 conda create -n resemble python=3.10 -y
 conda activate resemble
-```
 
-### Install Dependencies
-```bash
+# Install PyTorch (CPU version works, MPS has limited support)
 pip install torch==2.1.1 torchaudio==2.1.1 torchvision==0.16.1
+
+# Install other dependencies
 pip install celluloid librosa matplotlib numpy==1.26.4 omegaconf pandas ptflops rich scipy soundfile tqdm resampy tabulate
 ```
 
 ### Clone and Patch (removes deepspeed dependency)
+
+**On Windows (PowerShell):**
+```powershell
+cd $env:TEMP
+git clone https://github.com/resemble-ai/resemble-enhance.git resemble-enhance-repo
+cd resemble-enhance-repo
+
+# Remove deepspeed and gradio from requirements (use PowerShell)
+(Get-Content requirements.txt) | Where-Object { $_ -notmatch 'deepspeed|gradio' } | Set-Content requirements.txt
+```
+
+**On macOS/Linux:**
 ```bash
 cd /tmp
 git clone https://github.com/resemble-ai/resemble-enhance.git resemble-enhance-repo
 cd resemble-enhance-repo
 
 # Remove deepspeed from requirements
-sed -i '' '/deepspeed/d' requirements.txt
-sed -i '' '/gradio/d' requirements.txt
+sed -i.bak '/deepspeed/d; /gradio/d' requirements.txt
 ```
 
 ### Patch Files for Inference-Only Mode
@@ -166,6 +192,13 @@ except ImportError:
 ```
 
 ### Install Patched Version
+
+**On Windows (PowerShell):**
+```powershell
+pip install $env:TEMP\resemble-enhance-repo
+```
+
+**On macOS/Linux:**
 ```bash
 pip install /tmp/resemble-enhance-repo
 ```
@@ -180,8 +213,10 @@ conda activate resemble
 mkdir -p /tmp/enhance_input /tmp/enhance_output
 ffmpeg -i input.m4b -acodec pcm_s16le -ar 44100 /tmp/enhance_input/audio.wav
 
-# Run enhancement (CPU is more stable than MPS on Mac)
-resemble-enhance /tmp/enhance_input /tmp/enhance_output --device cpu
+# Run enhancement (device auto-detected based on platform)
+resemble-enhance /tmp/enhance_input /tmp/enhance_output --device cuda  # Windows/Linux
+resemble-enhance /tmp/enhance_input /tmp/enhance_output --device mps   # macOS
+resemble-enhance /tmp/enhance_input /tmp/enhance_output --device cpu   # Fallback
 ```
 
 ### Options
@@ -191,8 +226,22 @@ resemble-enhance /tmp/enhance_input /tmp/enhance_output --device cpu
 - `--denoise_only` - Only denoise, skip enhancement
 - `--lambd 0.5` - Denoise strength (0.0-1.0)
 
+### Device Auto-Detection in BookForge
+BookForge automatically selects the best device:
+- **Windows**: Uses `cuda` (NVIDIA GPU)
+- **macOS**: Uses `mps` (Apple Silicon) with `PYTORCH_ENABLE_MPS_FALLBACK=1`
+- **Linux**: Uses `cuda` (NVIDIA GPU)
+
+To override, set `resembleDevice` in tool-paths.json (in app userData folder):
+```json
+{
+  "resembleDevice": "cpu"
+}
+```
+
 ## Performance
 - CPU on M-series Mac: ~2.5 minutes per 1 minute of audio
+- GPU (CUDA): Significantly faster, roughly 5-10x improvement
 - Full audiobook would take many hours on CPU
 
 ## Other Tools to Try
@@ -201,6 +250,14 @@ resemble-enhance /tmp/enhance_input /tmp/enhance_output --device cpu
 - **iZotope RX** - Professional, paid, best dereverb
 
 ## Cleanup
+
+**On Windows (PowerShell):**
+```powershell
+conda remove -n resemble --all  # Delete conda environment
+Remove-Item -Recurse -Force $env:TEMP\resemble-enhance-repo  # Delete patched repo
+```
+
+**On macOS/Linux:**
 ```bash
 conda remove -n resemble --all  # Delete conda environment
 rm -rf /tmp/resemble-enhance-repo  # Delete patched repo

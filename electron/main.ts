@@ -4120,6 +4120,143 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Open audio file picker for enhancement
+  ipcMain.handle('resemble:pick-files', async () => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Select Audio Files to Enhance',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Audio Files', extensions: ['m4b', 'm4a', 'mp3', 'wav', 'flac', 'ogg', 'opus'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, error: 'No files selected' };
+    }
+
+    // Get file info for each selected file
+    const fs = await import('fs');
+    const path = await import('path');
+    const files = result.filePaths.map(filePath => {
+      const stats = fs.statSync(filePath);
+      return {
+        name: path.basename(filePath),
+        path: filePath,
+        size: stats.size,
+        modifiedAt: stats.mtime,
+        format: path.extname(filePath).slice(1).toUpperCase()
+      };
+    });
+
+    return { success: true, data: files };
+  });
+
+  // Queue-based resemble enhancement
+  ipcMain.handle('queue:run-resemble-enhance', async (_event, jobId: string, config: {
+    inputPath: string;
+    outputPath?: string;
+    projectId?: string;
+    bfpPath?: string;
+    replaceOriginal?: boolean;
+  }) => {
+    try {
+      const fs = await import('fs');
+      const pathModule = await import('path');
+
+      // Normalize input path for Windows (may have mixed separators)
+      const normalizedInputPath = config.inputPath.replace(/\//g, pathModule.sep);
+
+      // Check if input file exists
+      if (!fs.existsSync(normalizedInputPath)) {
+        const error = `Input file not found: ${normalizedInputPath}`;
+        console.error('[RESEMBLE-QUEUE]', error);
+        if (mainWindow) {
+          mainWindow.webContents.send('queue:job-complete', {
+            jobId,
+            success: false,
+            error
+          });
+        }
+        return { success: false, error };
+      }
+
+      const { enhanceFileForQueue, initResembleBridge } = await import('./resemble-bridge.js');
+      if (mainWindow) {
+        initResembleBridge(mainWindow);
+      }
+
+      // Determine output path (normalize for Windows)
+      let outputPath = config.outputPath?.replace(/\//g, pathModule.sep);
+      if (config.replaceOriginal === true || (!config.outputPath && !config.bfpPath)) {
+        // Replace original mode
+        outputPath = undefined;
+      }
+
+      const result = await enhanceFileForQueue(
+        jobId,
+        normalizedInputPath,
+        outputPath,
+        config.projectId,
+        (progress) => {
+          // Emit queue progress
+          if (mainWindow) {
+            mainWindow.webContents.send('queue:progress', progress);
+          }
+        }
+      );
+
+      // Emit job completion
+      if (mainWindow) {
+        mainWindow.webContents.send('queue:job-complete', {
+          jobId,
+          success: result.success,
+          outputPath: result.outputPath,
+          error: result.error
+        });
+      }
+
+      // Update project state if bfpPath provided
+      if (config.bfpPath && result.success) {
+        try {
+          const fs = await import('fs');
+          const path = await import('path');
+
+          // Read existing project file
+          const projectData = JSON.parse(fs.readFileSync(config.bfpPath, 'utf-8'));
+
+          // Update audiobook state
+          if (!projectData.audiobookState) {
+            projectData.audiobookState = {};
+          }
+          projectData.audiobookState.enhancementStatus = 'complete';
+          projectData.audiobookState.enhancedAt = new Date().toISOString();
+          projectData.audiobookState.enhancementJobId = jobId;
+
+          // Save updated project file
+          fs.writeFileSync(config.bfpPath, JSON.stringify(projectData, null, 2));
+          console.log(`[RESEMBLE-QUEUE] Updated project state for ${config.bfpPath}`);
+        } catch (err) {
+          console.error('[RESEMBLE-QUEUE] Failed to update project state:', err);
+        }
+      }
+
+      return { success: result.success, data: result, error: result.error };
+    } catch (err) {
+      // Emit error completion
+      if (mainWindow) {
+        mainWindow.webContents.send('queue:job-complete', {
+          jobId,
+          success: false,
+          error: (err as Error).message
+        });
+      }
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // DeepFilterNet Post-Processing (deprecated - use Resemble Enhance instead)
   // ─────────────────────────────────────────────────────────────────────────────

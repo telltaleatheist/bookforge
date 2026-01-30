@@ -110,10 +110,16 @@ export async function scanE2aTmpFolder(customTmpPath?: string): Promise<{ sessio
   const sessions: E2aSession[] = [];
   const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
 
+  console.log('[REASSEMBLY] Scanning tmp folder:', tmpPath);
+  console.log('[REASSEMBLY] customTmpPath provided:', customTmpPath);
+  console.log('[REASSEMBLY] DEFAULT_E2A_TMP_PATH:', DEFAULT_E2A_TMP_PATH);
+
   if (!fs.existsSync(tmpPath)) {
     console.log('[REASSEMBLY] E2A tmp folder does not exist:', tmpPath);
     return { sessions: [], tmpPath };
   }
+
+  console.log('[REASSEMBLY] Folder exists, reading entries...');
 
   const entries = fs.readdirSync(tmpPath, { withFileTypes: true });
 

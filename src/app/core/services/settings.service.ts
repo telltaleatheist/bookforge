@@ -1,4 +1,4 @@
-import { Injectable, inject, signal } from '@angular/core';
+import { Injectable, inject, signal, computed } from '@angular/core';
 import { ElectronService } from './electron.service';
 import {
   AIConfig,
@@ -57,11 +57,19 @@ export class SettingsService {
   // All registered settings sections
   readonly sections = signal<SettingsSection[]>([]);
 
-  // Current settings values
+  // Saved settings values (persisted to localStorage)
   readonly values = signal<Record<string, unknown>>({});
+
+  // Pending changes (not yet saved)
+  readonly pendingValues = signal<Record<string, unknown>>({});
 
   // Loading state
   readonly loading = signal(false);
+
+  // Whether there are unsaved changes
+  readonly hasUnsavedChanges = computed(() => {
+    return Object.keys(this.pendingValues()).length > 0;
+  });
 
   constructor() {
     this.initializeBuiltinSections();
@@ -248,9 +256,16 @@ export class SettingsService {
   }
 
   /**
-   * Get a setting value
+   * Get a setting value (checks pending values first, then saved values)
    */
   get<T>(key: string): T {
+    // Check pending values first
+    const pendingValue = this.pendingValues()[key];
+    if (pendingValue !== undefined) {
+      return pendingValue as T;
+    }
+
+    // Then check saved values
     const value = this.values()[key];
     if (value !== undefined) {
       return value as T;
@@ -268,10 +283,61 @@ export class SettingsService {
   }
 
   /**
-   * Set a setting value
+   * Get only the saved value (ignoring pending changes)
+   */
+  getSaved<T>(key: string): T {
+    return this.values()[key] as T;
+  }
+
+  /**
+   * Set a setting value as pending (does NOT auto-save)
+   */
+  setPending(key: string, value: unknown): void {
+    this.pendingValues.update(v => ({ ...v, [key]: value }));
+  }
+
+  /**
+   * Save all pending changes
+   */
+  async savePendingChanges(): Promise<void> {
+    const pending = this.pendingValues();
+    if (Object.keys(pending).length === 0) return;
+
+    // Merge pending into values
+    this.values.update(v => ({ ...v, ...pending }));
+
+    // Clear pending
+    this.pendingValues.set({});
+
+    // Persist to storage
+    await this.saveSettings();
+
+    // Apply e2a path changes if relevant
+    if ('e2aPath' in pending || 'condaPath' in pending) {
+      this.applyE2aPaths();
+    }
+
+    console.log('[SETTINGS] Saved pending changes:', Object.keys(pending));
+  }
+
+  /**
+   * Discard all pending changes
+   */
+  discardPendingChanges(): void {
+    this.pendingValues.set({});
+  }
+
+  /**
+   * Set a setting value and save immediately (legacy behavior)
    */
   set(key: string, value: unknown): void {
     this.values.update(v => ({ ...v, [key]: value }));
+    // Also clear from pending if it was there
+    this.pendingValues.update(v => {
+      const updated = { ...v };
+      delete updated[key];
+      return updated;
+    });
     this.saveSettings();
 
     // Apply e2a path changes immediately
@@ -299,6 +365,15 @@ export class SettingsService {
     for (const field of section.fields) {
       defaults[field.key] = field.default;
     }
+
+    // Clear any pending values for this section
+    this.pendingValues.update(v => {
+      const updated = { ...v };
+      for (const key of Object.keys(defaults)) {
+        delete updated[key];
+      }
+      return updated;
+    });
 
     this.values.update(v => {
       const updated = { ...v };

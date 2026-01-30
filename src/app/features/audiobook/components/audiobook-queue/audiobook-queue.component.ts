@@ -33,6 +33,10 @@ export interface QueueItem {
   cleanedFilename?: string;  // Filename of cleaned epub (may be 'exported_cleaned.epub' or 'cleaned.epub')
   hasAudiobook?: boolean;  // True if completed audiobook exists for this book
   skippedChunksPath?: string;  // Path to JSON file with skipped chunks from AI cleanup
+  // Enhancement state (Resemble Enhance)
+  enhancementStatus?: 'none' | 'pending' | 'processing' | 'complete' | 'error';
+  enhancementJobId?: string;
+  enhancedAt?: string;
 }
 
 export interface CompletedAudiobook {

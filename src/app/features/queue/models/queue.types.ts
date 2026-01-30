@@ -5,7 +5,7 @@
 import { AIProvider } from '../../../core/models/ai-config.types';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly';
+export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'resemble-enhance';
 
 // Job status
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
@@ -72,7 +72,7 @@ export interface QueueJob {
 }
 
 // Job configuration union type
-export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig;
+export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -161,6 +161,16 @@ export interface ReassemblyJobConfig {
     description?: string;
   };
   excludedChapters: number[];
+}
+
+// Resemble Enhance job configuration - audio enhancement/denoising
+export interface ResembleEnhanceJobConfig {
+  type: 'resemble-enhance';
+  inputPath: string;           // Audio file to enhance
+  outputPath?: string;         // For standalone: where to save (if not replacing original)
+  projectId?: string;          // For book-based: project ID to update state
+  bfpPath?: string;            // BFP path for state updates
+  replaceOriginal?: boolean;   // Default: true for books, configurable for standalone
 }
 
 // Resume info for TTS jobs - allows resuming interrupted conversions
@@ -279,7 +289,7 @@ export interface AudiobookMetadata {
 export interface CreateJobRequest {
   type: JobType;
   epubPath: string;
-  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig>;
+  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;

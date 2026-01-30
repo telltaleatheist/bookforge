@@ -1,9 +1,12 @@
 import { Component, OnInit, OnDestroy, signal, computed, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../core/services/electron.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { LibraryService } from '../../core/services/library.service';
+import { QueueService } from '../queue/services/queue.service';
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
+import { Router } from '@angular/router';
 
 interface AudioFile {
   name: string;
@@ -21,142 +24,208 @@ interface EnhanceProgress {
   error?: string;
 }
 
+type OutputMode = 'same-folder' | 'custom' | 'replace';
+
 @Component({
   selector: 'app-post-processing',
   standalone: true,
-  imports: [CommonModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent],
   template: `
     <div class="post-processing">
       <header class="header">
         <h1>Post-Processing</h1>
-        <p class="subtitle">Enhance audiobooks using Resemble Enhance</p>
+        <p class="subtitle">Enhance audio files using Resemble Enhance</p>
       </header>
 
-      @if (!isAvailable()) {
-        <div class="warning-banner">
-          <span class="warning-icon">&#9888;</span>
-          <div>
-            <strong>Resemble Enhance not available</strong>
-            <p>{{ availabilityError() || 'Please set up the resemble conda environment. See AUDIO_ENHANCEMENT.md for instructions.' }}</p>
-          </div>
+      @if (checkingAvailability()) {
+        <div class="loading-screen">
+          <div class="loading-spinner"></div>
+          <p>Checking Resemble Enhance availability...</p>
         </div>
-      }
-
+      } @else {
       <div class="content">
-        <!-- File List -->
-        <section class="file-list-section">
-          <div class="section-header">
-            <h2>Audio Files</h2>
-            <desktop-button
-              variant="ghost"
-              size="sm"
-              [disabled]="isProcessing()"
-              (click)="refreshFiles()"
-            >
-              Refresh
-            </desktop-button>
-          </div>
-
-          @if (loading()) {
-            <div class="loading">Loading files...</div>
-          } @else if (files().length === 0) {
-            <div class="empty-state">
-              <p>No audio files found in the audiobooks output folder.</p>
-              <p class="hint">Configure the output folder in Settings > Audiobook.</p>
+        <!-- Drop Zone -->
+        <section
+          class="drop-zone"
+          [class.dragover]="isDragging()"
+          [class.has-files]="files().length > 0"
+          (dragover)="onDragOver($event)"
+          (dragleave)="onDragLeave($event)"
+          (drop)="onDrop($event)"
+        >
+          @if (files().length === 0) {
+            <div class="drop-content">
+              <div class="drop-icon">&#127911;</div>
+              <p>Drop audio files here</p>
+              <p class="hint">or</p>
+              <desktop-button variant="secondary" (click)="pickFiles()">
+                Browse Files...
+              </desktop-button>
+              <p class="formats">Supported: M4B, M4A, MP3, WAV, FLAC, OGG, OPUS</p>
             </div>
           } @else {
-            <div class="file-grid">
-              @for (file of files(); track file.path) {
-                <div
-                  class="file-card"
-                  [class.selected]="file.selected"
-                  [class.disabled]="isProcessing()"
-                  (click)="toggleFile(file)"
-                >
-                  <div class="file-icon">{{ getFormatIcon(file.format) }}</div>
-                  <div class="file-info">
-                    <div class="file-name" [title]="file.name">{{ file.name }}</div>
-                    <div class="file-meta">
-                      <span class="format">{{ file.format }}</span>
-                      <span class="size">{{ formatSize(file.size) }}</span>
-                      <span class="date">{{ formatDate(file.modifiedAt) }}</span>
+            <!-- File List -->
+            <div class="file-list-container">
+              <div class="file-list-header">
+                <span>{{ files().length }} file{{ files().length === 1 ? '' : 's' }} loaded</span>
+                <div class="header-actions">
+                  <desktop-button variant="ghost" size="sm" (click)="pickFiles()">
+                    Add More
+                  </desktop-button>
+                  <desktop-button variant="ghost" size="sm" (click)="clearFiles()">
+                    Clear All
+                  </desktop-button>
+                </div>
+              </div>
+              <div class="file-grid">
+                @for (file of files(); track file.path) {
+                  <div
+                    class="file-card"
+                    [class.selected]="file.selected"
+                    (click)="toggleFile(file)"
+                  >
+                    <div class="file-icon">{{ getFormatIcon(file.format) }}</div>
+                    <div class="file-info">
+                      <div class="file-name" [title]="file.name">{{ file.name }}</div>
+                      <div class="file-meta">
+                        <span class="format">{{ file.format }}</span>
+                        <span class="size">{{ formatSize(file.size) }}</span>
+                      </div>
+                    </div>
+                    <div class="checkbox">
+                      @if (file.selected) {
+                        <span class="check">&#10003;</span>
+                      }
                     </div>
                   </div>
-                  <div class="checkbox">
-                    @if (file.selected) {
-                      <span class="check">&#10003;</span>
-                    }
-                  </div>
-                </div>
-              }
+                }
+              </div>
             </div>
           }
         </section>
 
-        <!-- Actions -->
-        <section class="actions-section">
-          <div class="selection-info">
-            {{ selectedCount() }} file{{ selectedCount() === 1 ? '' : 's' }} selected
-          </div>
+        <!-- Output Configuration -->
+        @if (files().length > 0) {
+          <section class="output-section">
+            <h3>Output Location</h3>
+            <div class="output-options">
+              <label class="output-option" [class.selected]="outputMode() === 'replace'">
+                <input
+                  type="radio"
+                  name="outputMode"
+                  [value]="'replace'"
+                  [checked]="outputMode() === 'replace'"
+                  (change)="setOutputMode('replace')"
+                />
+                <div class="option-content">
+                  <strong>Replace original</strong>
+                  <span>Overwrite the original file with the enhanced version</span>
+                </div>
+              </label>
+              <label class="output-option" [class.selected]="outputMode() === 'same-folder'">
+                <input
+                  type="radio"
+                  name="outputMode"
+                  [value]="'same-folder'"
+                  [checked]="outputMode() === 'same-folder'"
+                  (change)="setOutputMode('same-folder')"
+                />
+                <div class="option-content">
+                  <strong>Same folder with suffix</strong>
+                  <span>Save as filename_enhanced.ext in the same folder</span>
+                </div>
+              </label>
+              <label class="output-option" [class.selected]="outputMode() === 'custom'">
+                <input
+                  type="radio"
+                  name="outputMode"
+                  [value]="'custom'"
+                  [checked]="outputMode() === 'custom'"
+                  (change)="setOutputMode('custom')"
+                />
+                <div class="option-content">
+                  <strong>Custom directory</strong>
+                  <span>Save enhanced files to a specific folder</span>
+                </div>
+              </label>
+            </div>
 
-          @if (isProcessing()) {
-            <div class="progress-panel">
-              <div class="progress-header">
-                <span class="phase">{{ currentProgress()?.message || 'Processing...' }}</span>
-                <span class="percentage">{{ currentProgress()?.percentage || 0 }}%</span>
+            @if (outputMode() === 'custom') {
+              <div class="custom-output-path">
+                <input
+                  type="text"
+                  [value]="customOutputPath()"
+                  (input)="customOutputPath.set($any($event.target).value)"
+                  placeholder="Select output folder..."
+                  readonly
+                />
+                <desktop-button variant="secondary" size="sm" (click)="browseOutputFolder()">
+                  Browse...
+                </desktop-button>
               </div>
-              <div class="progress-bar">
-                <div
-                  class="progress-fill"
-                  [style.width.%]="currentProgress()?.percentage || 0"
-                ></div>
+            }
+
+            @if (outputMode() === 'replace') {
+              <div class="warning-message">
+                <strong>Warning:</strong> Original files will be permanently replaced.
+                Make sure you have backups if needed.
               </div>
-              <div class="progress-file">{{ currentFile() }}</div>
+            }
+          </section>
+
+          <!-- Actions -->
+          <section class="actions-section">
+            <div class="selection-info">
+              {{ selectedCount() }} file{{ selectedCount() === 1 ? '' : 's' }} selected
+            </div>
+
+            <div class="action-buttons">
               <desktop-button
-                variant="danger"
-                size="sm"
-                (click)="cancelProcessing()"
+                variant="primary"
+                [disabled]="selectedCount() === 0 || !isAvailable() || (outputMode() === 'custom' && !customOutputPath())"
+                (click)="addToQueue()"
               >
-                Cancel
+                Add to Queue
               </desktop-button>
             </div>
-          } @else {
-            <desktop-button
-              variant="primary"
-              [disabled]="selectedCount() === 0 || !isAvailable()"
-              (click)="startProcessing()"
-            >
-              Enhance Selected Files
-            </desktop-button>
-          }
 
-          @if (lastError()) {
-            <div class="error-message">
-              {{ lastError() }}
-            </div>
-          }
+            @if (queuedCount() > 0) {
+              <div class="success-message">
+                Added {{ queuedCount() }} file{{ queuedCount() === 1 ? '' : 's' }} to queue.
+                <a href="javascript:void(0)" (click)="goToQueue()">View Queue</a>
+              </div>
+            }
 
-          @if (completedCount() > 0 && !isProcessing()) {
-            <div class="success-message">
-              Successfully enhanced {{ completedCount() }} file{{ completedCount() === 1 ? '' : 's' }}
-            </div>
-          }
-        </section>
+            @if (lastError()) {
+              <div class="error-message">
+                {{ lastError() }}
+              </div>
+            }
+          </section>
+        }
 
         <!-- Info Panel -->
         <section class="info-section">
           <h3>About Resemble Enhance</h3>
           <p>
             Resemble Enhance is a deep learning audio enhancement tool that removes
-            reverb, echo, and improves speech quality. It works better than DeepFilterNet
-            for TTS artifacts like the baked-in reverb in Orpheus output.
+            reverb, echo, and improves speech quality. It works especially well for
+            TTS artifacts like the baked-in reverb in Orpheus output.
           </p>
-          <p class="warning">
-            <strong>Note:</strong> Processing will replace the original file. Enhancement
-            may take several minutes per file (roughly 2.5x audio length on CPU).
-          </p>
+          @if (deviceInfo()) {
+            <p class="device-info">
+              <strong>Device:</strong> {{ deviceInfo() }}
+            </p>
+          }
+          @if (!isAvailable()) {
+            <p class="error">
+              <strong>Not Available:</strong> {{ availabilityError() || 'Resemble Enhance is not installed.' }}
+              See AUDIO_ENHANCEMENT.md for setup instructions.
+            </p>
+          }
         </section>
       </div>
+      }
     </div>
   `,
   styles: [`
@@ -185,22 +254,32 @@ interface EnhanceProgress {
       }
     }
 
-    .warning-banner {
+    .loading-screen {
+      flex: 1;
       display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
       gap: 1rem;
-      padding: 1rem 2rem;
-      background: var(--warning-bg, #fff3cd);
-      border-bottom: 1px solid var(--warning-border, #ffc107);
-      color: var(--warning-text, #856404);
-
-      .warning-icon {
-        font-size: 1.5rem;
-      }
+      color: var(--text-secondary);
 
       p {
-        margin: 0.25rem 0 0;
+        margin: 0;
         font-size: 0.875rem;
       }
+    }
+
+    .loading-spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid var(--border-default);
+      border-top-color: var(--accent-primary);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
 
     .content {
@@ -212,34 +291,73 @@ interface EnhanceProgress {
       gap: 2rem;
     }
 
-    .file-list-section {
-      flex: 1;
+    .drop-zone {
       min-height: 200px;
+      border: 2px dashed var(--border-default);
+      border-radius: 12px;
+      transition: all 0.2s ease;
 
-      .section-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 1rem;
+      &.dragover {
+        border-color: var(--accent-primary);
+        background: var(--accent-subtle);
+      }
 
-        h2 {
-          margin: 0;
-          font-size: 1.125rem;
-          font-weight: 600;
-        }
+      &.has-files {
+        border-style: solid;
+        border-color: var(--border-default);
       }
     }
 
-    .loading, .empty-state {
-      padding: 2rem;
+    .drop-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem;
       text-align: center;
       color: var(--text-secondary);
-      background: var(--bg-subtle);
-      border-radius: 8px;
+
+      .drop-icon {
+        font-size: 3rem;
+        margin-bottom: 1rem;
+      }
+
+      p {
+        margin: 0 0 0.5rem;
+      }
 
       .hint {
-        font-size: 0.875rem;
-        margin-top: 0.5rem;
+        font-size: 0.75rem;
+        margin: 0.75rem 0;
+      }
+
+      .formats {
+        margin-top: 1rem;
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
+    }
+
+    .file-list-container {
+      padding: 1rem;
+    }
+
+    .file-list-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border-default);
+
+      span {
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+
+      .header-actions {
+        display: flex;
+        gap: 0.5rem;
       }
     }
 
@@ -247,6 +365,8 @@ interface EnhanceProgress {
       display: flex;
       flex-direction: column;
       gap: 0.5rem;
+      max-height: 300px;
+      overflow-y: auto;
     }
 
     .file-card {
@@ -260,7 +380,7 @@ interface EnhanceProgress {
       cursor: pointer;
       transition: all 0.15s ease;
 
-      &:hover:not(.disabled) {
+      &:hover {
         border-color: var(--border-hover);
         background: var(--bg-subtle);
       }
@@ -268,11 +388,6 @@ interface EnhanceProgress {
       &.selected {
         border-color: var(--accent-primary);
         background: var(--accent-subtle);
-      }
-
-      &.disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
       }
     }
 
@@ -327,6 +442,85 @@ interface EnhanceProgress {
       }
     }
 
+    .output-section {
+      h3 {
+        margin: 0 0 1rem;
+        font-size: 1rem;
+        font-weight: 600;
+      }
+    }
+
+    .output-options {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .output-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      padding: 1rem;
+      background: var(--bg-default);
+      border: 1px solid var(--border-default);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+
+      &:hover {
+        border-color: var(--border-hover);
+      }
+
+      &.selected {
+        border-color: var(--accent-primary);
+        background: var(--accent-subtle);
+      }
+
+      input[type="radio"] {
+        margin-top: 0.25rem;
+      }
+
+      .option-content {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+
+        strong {
+          font-size: 0.875rem;
+        }
+
+        span {
+          font-size: 0.75rem;
+          color: var(--text-secondary);
+        }
+      }
+    }
+
+    .custom-output-path {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 1rem;
+
+      input {
+        flex: 1;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid var(--border-default);
+        border-radius: 6px;
+        background: var(--bg-default);
+        color: var(--text-primary);
+        font-size: 0.875rem;
+      }
+    }
+
+    .warning-message {
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      background: var(--warning-bg, #fff3cd);
+      color: var(--warning-text, #856404);
+      border-radius: 6px;
+      font-size: 0.8125rem;
+    }
+
     .actions-section {
       padding: 1.5rem;
       background: var(--bg-subtle);
@@ -340,47 +534,10 @@ interface EnhanceProgress {
         font-size: 0.875rem;
         color: var(--text-secondary);
       }
-    }
 
-    .progress-panel {
-      width: 100%;
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      align-items: center;
-
-      .progress-header {
-        width: 100%;
+      .action-buttons {
         display: flex;
-        justify-content: space-between;
-        font-size: 0.875rem;
-
-        .percentage {
-          font-weight: 600;
-        }
-      }
-
-      .progress-bar {
-        width: 100%;
-        height: 8px;
-        background: var(--bg-default);
-        border-radius: 4px;
-        overflow: hidden;
-
-        .progress-fill {
-          height: 100%;
-          background: var(--accent-primary);
-          transition: width 0.3s ease;
-        }
-      }
-
-      .progress-file {
-        font-size: 0.75rem;
-        color: var(--text-secondary);
-        max-width: 100%;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        gap: 0.75rem;
       }
     }
 
@@ -398,6 +555,12 @@ interface EnhanceProgress {
       color: var(--success-text, #155724);
       border-radius: 6px;
       font-size: 0.875rem;
+
+      a {
+        color: var(--accent-primary);
+        text-decoration: underline;
+        margin-left: 0.5rem;
+      }
     }
 
     .info-section {
@@ -418,13 +581,16 @@ interface EnhanceProgress {
         line-height: 1.5;
       }
 
-      .warning {
+      .device-info {
+        color: var(--text-primary);
+      }
+
+      .error {
         margin-top: 1rem;
         padding: 0.75rem;
-        background: var(--bg-elevated);
-        border: 1px solid var(--border-default);
+        background: var(--danger-bg, #f8d7da);
         border-radius: 4px;
-        color: var(--text-secondary);
+        color: var(--danger-text, #721c24);
       }
     }
   `]
@@ -433,18 +599,24 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
   private readonly electron = inject(ElectronService);
   private readonly settings = inject(SettingsService);
   private readonly libraryService = inject(LibraryService);
+  private readonly queueService = inject(QueueService);
+  private readonly router = inject(Router);
   private unsubscribeProgress?: () => void;
 
   // State
   readonly isAvailable = signal(false);
   readonly availabilityError = signal<string | null>(null);
-  readonly loading = signal(true);
+  readonly deviceInfo = signal<string | null>(null);
+  readonly checkingAvailability = signal(true);
   readonly files = signal<AudioFile[]>([]);
-  readonly isProcessing = signal(false);
-  readonly currentProgress = signal<EnhanceProgress | null>(null);
-  readonly currentFile = signal<string>('');
+  readonly isDragging = signal(false);
   readonly lastError = signal<string | null>(null);
-  readonly completedCount = signal(0);
+  readonly queuedCount = signal(0);
+
+  // Output configuration - default to same-folder mode with _enhanced suffix
+  // (replace mode should only be used from the book panel's Enhance tab)
+  readonly outputMode = signal<OutputMode>('same-folder');
+  readonly customOutputPath = signal('');
 
   // Computed
   readonly selectedCount = computed(() =>
@@ -457,7 +629,6 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.checkAvailability();
-    this.refreshFiles();
     this.setupProgressListener();
   }
 
@@ -467,142 +638,182 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
 
   private async checkAvailability(): Promise<void> {
     console.log('[PostProcessing] Checking Resemble Enhance availability...');
+    this.checkingAvailability.set(true);
     const result = await this.electron.resembleCheckAvailable();
     console.log('[PostProcessing] Availability result:', JSON.stringify(result));
-    console.log('[PostProcessing] available:', result.available, 'error:', result.error);
     this.isAvailable.set(result.available);
     this.availabilityError.set(result.error || null);
+    this.checkingAvailability.set(false);
+
+    // Set device info
+    if (result.available && result.device) {
+      const deviceName = result.device.toUpperCase();
+      const wslSuffix = result.usingWsl ? ' (WSL)' : '';
+      this.deviceInfo.set(`${deviceName}${wslSuffix}`);
+    }
   }
 
   private setupProgressListener(): void {
     this.unsubscribeProgress = this.electron.onResembleProgress((progress) => {
-      this.currentProgress.set(progress);
-
-      if (progress.phase === 'complete') {
-        this.completedCount.update(c => c + 1);
-        this.processNextFile();
-      } else if (progress.phase === 'error') {
-        this.lastError.set(progress.error || 'Unknown error');
-        this.isProcessing.set(false);
-      }
+      // Progress is now handled by the queue system
+      // This listener is kept for backwards compatibility
+      console.log('[PostProcessing] Progress:', progress);
     });
   }
 
-  async refreshFiles(): Promise<void> {
-    this.loading.set(true);
-    this.lastError.set(null);
+  // Drag and drop handlers
+  onDragOver(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDragging.set(true);
+  }
 
-    try {
-      const configuredDir = this.settings.get<string>('audiobookOutputDir');
-      const libraryAudiobooksPath = this.libraryService.audiobooksPath();
-      const audiobooksDir = configuredDir || libraryAudiobooksPath;
+  onDragLeave(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDragging.set(false);
+  }
 
-      console.log('[PostProcessing] Configured dir:', configuredDir);
-      console.log('[PostProcessing] Library audiobooks path:', libraryAudiobooksPath);
-      console.log('[PostProcessing] Using:', audiobooksDir);
+  async onDrop(event: DragEvent): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDragging.set(false);
 
-      if (!audiobooksDir) {
-        console.error('[PostProcessing] No audiobooks directory - library path not set');
-        this.lastError.set('Library not configured. Complete onboarding first.');
-        this.files.set([]);
-        return;
-      }
+    const files = event.dataTransfer?.files;
+    if (!files || files.length === 0) return;
 
-      const result = await this.electron.resembleListFiles(audiobooksDir);
-      console.log('[PostProcessing] List files result:', result.success, 'count:', result.data?.length);
+    const supportedExtensions = ['m4b', 'm4a', 'mp3', 'wav', 'flac', 'ogg', 'opus'];
+    const newFiles: AudioFile[] = [];
 
-      if (result.success && result.data) {
-        this.files.set(result.data.map(f => ({ ...f, selected: false })));
-      } else {
-        this.files.set([]);
-        if (result.error) {
-          console.error('[PostProcessing] Failed to list files:', result.error);
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+
+      if (supportedExtensions.includes(ext)) {
+        // Get the file path - this works in Electron
+        const filePath = (file as any).path;
+        if (filePath) {
+          newFiles.push({
+            name: file.name,
+            path: filePath,
+            size: file.size,
+            modifiedAt: new Date(file.lastModified),
+            format: ext.toUpperCase(),
+            selected: true
+          });
         }
       }
-    } catch (err) {
-      console.error('[PostProcessing] Error refreshing files:', err);
-      this.files.set([]);
-    } finally {
-      this.loading.set(false);
+    }
+
+    if (newFiles.length > 0) {
+      // Add to existing files, avoiding duplicates
+      const existingPaths = new Set(this.files().map(f => f.path));
+      const uniqueNewFiles = newFiles.filter(f => !existingPaths.has(f.path));
+      this.files.update(files => [...files, ...uniqueNewFiles]);
     }
   }
 
-  toggleFile(file: AudioFile): void {
-    console.log('[PostProcessing] toggleFile called for:', file.name, 'isProcessing:', this.isProcessing());
-    if (this.isProcessing()) return;
+  async pickFiles(): Promise<void> {
+    const result = await this.electron.resemblePickFiles();
+    if (result.success && result.data && result.data.length > 0) {
+      // Add picked files to the list, avoiding duplicates
+      const existingPaths = new Set(this.files().map(f => f.path));
+      const newFiles = result.data
+        .filter(f => !existingPaths.has(f.path))
+        .map(f => ({ ...f, selected: true }));
 
+      if (newFiles.length > 0) {
+        this.files.update(files => [...files, ...newFiles]);
+      }
+    }
+  }
+
+  clearFiles(): void {
+    this.files.set([]);
+    this.queuedCount.set(0);
+    this.lastError.set(null);
+  }
+
+  toggleFile(file: AudioFile): void {
     this.files.update(files =>
       files.map(f =>
         f.path === file.path ? { ...f, selected: !f.selected } : f
       )
     );
-    console.log('[PostProcessing] Selected count after toggle:', this.selectedCount());
   }
 
-  async startProcessing(): Promise<void> {
-    console.log('[PostProcessing] startProcessing called, isAvailable:', this.isAvailable(), 'selectedCount:', this.selectedCount());
+  setOutputMode(mode: OutputMode): void {
+    this.outputMode.set(mode);
+  }
+
+  async browseOutputFolder(): Promise<void> {
+    const result = await this.electron.openFolderDialog();
+    if (result.success && result.folderPath) {
+      this.customOutputPath.set(result.folderPath);
+    }
+  }
+
+  async addToQueue(): Promise<void> {
     const selected = this.selectedFiles();
-    console.log('[PostProcessing] Starting processing, selected files:', selected.length);
-    if (selected.length === 0) {
-      console.log('[PostProcessing] No files selected');
-      return;
-    }
+    if (selected.length === 0) return;
 
-    this.isProcessing.set(true);
     this.lastError.set(null);
-    this.completedCount.set(0);
+    let addedCount = 0;
 
-    // Start with the first file
-    this.processNextFile();
+    try {
+      for (const file of selected) {
+        // Determine output path based on mode
+        let outputPath: string | undefined;
+        const mode = this.outputMode();
+
+        if (mode === 'same-folder') {
+          // Add _enhanced suffix before extension
+          const dir = file.path.substring(0, file.path.lastIndexOf('/'));
+          const ext = file.path.substring(file.path.lastIndexOf('.'));
+          const basename = file.path.substring(file.path.lastIndexOf('/') + 1, file.path.lastIndexOf('.'));
+          outputPath = `${dir}/${basename}_enhanced${ext}`;
+        } else if (mode === 'custom') {
+          const customDir = this.customOutputPath();
+          if (!customDir) {
+            this.lastError.set('Please select an output folder');
+            return;
+          }
+          outputPath = `${customDir}/${file.name}`;
+        }
+        // For 'replace' mode, outputPath stays undefined (will replace original)
+
+        await this.queueService.addJob({
+          type: 'resemble-enhance',
+          epubPath: file.path, // Using epubPath field for the audio file path
+          config: {
+            type: 'resemble-enhance',
+            inputPath: file.path,
+            outputPath,
+            replaceOriginal: mode === 'replace'
+          },
+          metadata: {
+            title: file.name
+          }
+        });
+
+        addedCount++;
+      }
+
+      this.queuedCount.set(addedCount);
+
+      // Deselect queued files
+      this.files.update(files =>
+        files.map(f => ({ ...f, selected: false }))
+      );
+
+    } catch (err) {
+      console.error('[PostProcessing] Failed to add jobs to queue:', err);
+      this.lastError.set(err instanceof Error ? err.message : 'Failed to add to queue');
+    }
   }
 
-  private filesToProcess: AudioFile[] = [];
-  private currentIndex = 0;
-
-  private async processNextFile(): Promise<void> {
-    // Initialize queue if starting
-    if (this.completedCount() === 0 && this.currentIndex === 0) {
-      this.filesToProcess = [...this.selectedFiles()];
-      this.currentIndex = 0;
-      console.log('[PostProcessing] Initialized queue with', this.filesToProcess.length, 'files');
-    }
-
-    // Check if we're done
-    if (this.currentIndex >= this.filesToProcess.length) {
-      console.log('[PostProcessing] All files processed');
-      this.isProcessing.set(false);
-      this.currentProgress.set(null);
-      this.currentFile.set('');
-      this.filesToProcess = [];
-      this.currentIndex = 0;
-      // Refresh file list to show updated files
-      this.refreshFiles();
-      return;
-    }
-
-    const file = this.filesToProcess[this.currentIndex];
-    console.log('[PostProcessing] Processing file:', file.name, 'path:', file.path);
-    this.currentFile.set(file.name);
-    this.currentIndex++;
-
-    const result = await this.electron.resembleEnhance(file.path);
-    console.log('[PostProcessing] Enhance result:', result);
-
-    if (!result.success) {
-      console.error('[PostProcessing] Enhancement failed:', result.error);
-      this.lastError.set(result.error || 'Failed to process file');
-      this.isProcessing.set(false);
-    }
-    // Progress events will handle the rest
-  }
-
-  async cancelProcessing(): Promise<void> {
-    await this.electron.resembleCancel();
-    this.isProcessing.set(false);
-    this.currentProgress.set(null);
-    this.currentFile.set('');
-    this.filesToProcess = [];
-    this.currentIndex = 0;
+  goToQueue(): void {
+    this.router.navigate(['/queue']);
   }
 
   formatSize(bytes: number): string {
@@ -610,11 +821,6 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  }
-
-  formatDate(date: Date): string {
-    const d = new Date(date);
-    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
   getFormatIcon(format: string): string {
