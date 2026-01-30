@@ -614,10 +614,20 @@ export class MetadataEditorComponent {
   }
 
   async browseForAudio(): Promise<void> {
-    if (!this.electron?.dialog) return;
+    console.log('[MetadataEditor] browseForAudio called');
+    console.log('[MetadataEditor] electron:', !!this.electron);
+    console.log('[MetadataEditor] electron.dialog:', !!this.electron?.dialog);
+    console.log('[MetadataEditor] electron.dialog.openAudio:', !!this.electron?.dialog?.openAudio);
+
+    if (!this.electron?.dialog?.openAudio) {
+      console.error('[MetadataEditor] dialog.openAudio not available');
+      return;
+    }
 
     try {
+      console.log('[MetadataEditor] Calling openAudio...');
       const result = await this.electron.dialog.openAudio();
+      console.log('[MetadataEditor] openAudio result:', result);
 
       if (result.success && result.filePath) {
         this.linkAudio.emit(result.filePath);

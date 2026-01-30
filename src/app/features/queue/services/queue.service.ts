@@ -327,6 +327,12 @@ export class QueueService {
         let displayCompleted = progress.completedSentences;
         let displayTotal = progress.totalSentences;
 
+        // During assembly phase, show phase-specific progress instead of overall
+        // This makes the progress bar show meaningful progress for each phase
+        if (progress.phase === 'assembling' && (progress as any).assemblyProgress !== undefined) {
+          displayProgress = (progress as any).assemblyProgress;
+        }
+
         // Cap percentage at 100% (in case of any calculation issues)
         if (displayProgress > 100) {
           displayProgress = Math.min(100, displayProgress);

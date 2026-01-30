@@ -1478,19 +1478,20 @@ async function runAssembly(session: ConversionSession): Promise<string> {
 
     const getAssemblyMessage = (
       subPhase: 'combining' | 'vtt' | 'encoding' | 'metadata',
-      progress: number,
+      _progress: number,
       chapter: number,
       total: number
     ): string => {
+      // Don't include percentage in message - the progress bar already shows it
       switch (subPhase) {
         case 'combining':
           return chapter > 0
-            ? `Combining chapter ${chapter}/${total} (${progress}%)`
-            : `Combining chapters... (${progress}%)`;
+            ? `Combining chapter ${chapter}/${total}`
+            : `Combining chapters...`;
         case 'vtt':
-          return `Creating subtitles... (${progress}%)`;
+          return `Creating subtitles...`;
         case 'encoding':
-          return `Encoding M4B audiobook... (${progress}%)`;
+          return `Encoding M4B audiobook...`;
         case 'metadata':
           return `Applying metadata...`;
       }
