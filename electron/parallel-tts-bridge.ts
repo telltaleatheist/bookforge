@@ -2213,7 +2213,7 @@ export async function startParallelConversion(
     workerCount: config.workerCount,
     outputDir: config.outputDir,
     ttsEngine: config.settings.ttsEngine,
-    voice: config.settings.fineTuned || config.settings.voice,
+    voice: config.settings.fineTuned,
     device: config.settings.device,
     title: config.metadata?.title
   });
