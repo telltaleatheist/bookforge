@@ -16,85 +16,116 @@ export type EnhancementStatus = 'none' | 'pending' | 'processing' | 'complete' |
         <p class="subtitle">Remove reverb and enhance speech quality using Resemble Enhance</p>
       </div>
 
-      <div class="status-section">
-        <div class="status-badge" [class]="enhancementStatus()">
-          @switch (enhancementStatus()) {
-            @case ('none') {
-              <span class="badge">Not Enhanced</span>
+      <!-- No audio file linked -->
+      @if (!audioFilePath()) {
+        <div class="no-audio-section">
+          <div class="no-audio-icon">&#127911;</div>
+          <p>No audio file found for this project.</p>
+          <p class="hint">If you've moved the audiobook to a different location, you can link it manually.</p>
+          <desktop-button
+            variant="primary"
+            (click)="browseForAudio()"
+          >
+            Link Audio File
+          </desktop-button>
+        </div>
+      } @else {
+        <!-- Audio file info -->
+        <div class="audio-file-section">
+          <div class="audio-file-info">
+            <span class="audio-file-label">Audio File:</span>
+            <span class="audio-file-path" [title]="audioFilePath()">{{ getFilename(audioFilePath()) }}</span>
+          </div>
+          <desktop-button
+            variant="ghost"
+            size="xs"
+            (click)="browseForAudio()"
+            title="Change linked audio file"
+          >
+            Change
+          </desktop-button>
+        </div>
+
+        <div class="status-section">
+          <div class="status-badge" [class]="enhancementStatus()">
+            @switch (enhancementStatus()) {
+              @case ('none') {
+                <span class="badge">Not Enhanced</span>
+              }
+              @case ('pending') {
+                <span class="badge pending">Queued</span>
+              }
+              @case ('processing') {
+                <span class="badge processing">
+                  <span class="spinner"></span>
+                  Processing...
+                </span>
+              }
+              @case ('complete') {
+                <span class="badge complete">Enhanced</span>
+              }
+              @case ('error') {
+                <span class="badge error">Error</span>
+              }
             }
-            @case ('pending') {
-              <span class="badge pending">Queued</span>
-            }
-            @case ('processing') {
-              <span class="badge processing">
-                <span class="spinner"></span>
-                Processing...
-              </span>
-            }
-            @case ('complete') {
-              <span class="badge complete">Enhanced</span>
-            }
-            @case ('error') {
-              <span class="badge error">Error</span>
-            }
+          </div>
+
+          @if (enhancedAt()) {
+            <div class="timestamp">
+              Enhanced on {{ formatDate(enhancedAt()!) }}
+            </div>
           }
         </div>
 
-        @if (enhancedAt()) {
-          <div class="timestamp">
-            Enhanced on {{ formatDate(enhancedAt()!) }}
+        @if (enhancementStatus() === 'processing' && enhancementProgress() !== undefined) {
+          <div class="progress-section">
+            <div class="progress-bar">
+              <div
+                class="progress-fill"
+                [style.width.%]="enhancementProgress()"
+              ></div>
+            </div>
+            <div class="progress-text">{{ enhancementProgress() }}%</div>
           </div>
         }
-      </div>
 
-      @if (enhancementStatus() === 'processing' && enhancementProgress() !== undefined) {
-        <div class="progress-section">
-          <div class="progress-bar">
-            <div
-              class="progress-fill"
-              [style.width.%]="enhancementProgress()"
-            ></div>
+        @if (enhancementError()) {
+          <div class="error-message">
+            {{ enhancementError() }}
           </div>
-          <div class="progress-text">{{ enhancementProgress() }}%</div>
-        </div>
-      }
-
-      @if (enhancementError()) {
-        <div class="error-message">
-          {{ enhancementError() }}
-        </div>
-      }
-
-      <div class="actions">
-        @if (enhancementStatus() === 'none' || enhancementStatus() === 'error') {
-          <desktop-button
-            variant="primary"
-            [disabled]="!audioFilePath() || !isAvailable()"
-            (click)="addToQueue()"
-          >
-            Add to Queue
-          </desktop-button>
-        } @else if (enhancementStatus() === 'complete') {
-          <desktop-button
-            variant="secondary"
-            [disabled]="!audioFilePath() || !isAvailable()"
-            (click)="addToQueue()"
-          >
-            Re-enhance
-          </desktop-button>
-        } @else if (enhancementStatus() === 'pending') {
-          <desktop-button
-            variant="ghost"
-            (click)="goToQueue()"
-          >
-            View in Queue
-          </desktop-button>
         }
 
-        @if (!isAvailable()) {
-          <p class="warning">Resemble Enhance is not available. Check Settings for setup.</p>
-        }
-      </div>
+        <div class="actions">
+          @if (enhancementStatus() === 'none' || enhancementStatus() === 'error') {
+            <desktop-button
+              variant="primary"
+              [disabled]="!isAvailable()"
+              (click)="addToQueue()"
+            >
+              Add to Queue
+            </desktop-button>
+          } @else if (enhancementStatus() === 'complete') {
+            <desktop-button
+              variant="secondary"
+              [disabled]="!isAvailable()"
+              (click)="addToQueue()"
+            >
+              Re-enhance
+            </desktop-button>
+          } @else if (enhancementStatus() === 'pending') {
+            <desktop-button
+              variant="ghost"
+              (click)="goToQueue()"
+            >
+              View in Queue
+            </desktop-button>
+          }
+
+          @if (!isAvailable()) {
+            <p class="warning">Resemble Enhance is not available. Check Settings for setup.</p>
+          }
+        </div>
+      }
 
       <div class="info-section">
         <h4>About Resemble Enhance</h4>
@@ -129,6 +160,69 @@ export type EnhancementStatus = 'none' | 'pending' | 'processing' | 'complete' |
         font-size: 0.875rem;
         color: var(--text-secondary);
       }
+    }
+
+    .no-audio-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: 2rem;
+      background: var(--bg-subtle);
+      border-radius: 8px;
+      border: 1px dashed var(--border-default);
+
+      .no-audio-icon {
+        font-size: 2.5rem;
+        opacity: 0.5;
+        margin-bottom: 0.75rem;
+      }
+
+      p {
+        margin: 0 0 0.5rem;
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+      }
+
+      .hint {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        margin-bottom: 1rem;
+      }
+    }
+
+    .audio-file-section {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.75rem 1rem;
+      background: var(--bg-subtle);
+      border-radius: 6px;
+      border: 1px solid var(--border-default);
+    }
+
+    .audio-file-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .audio-file-label {
+      font-size: 0.6875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .audio-file-path {
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .status-section {
@@ -284,6 +378,7 @@ export class PostProcessingPanelComponent implements OnInit, OnDestroy {
 
   // Outputs
   readonly jobQueued = output<string>(); // Emits job ID when queued
+  readonly linkAudio = output<string>(); // Emits path when user links an audio file
 
   // State
   readonly isAvailable = signal(false);
@@ -390,5 +485,26 @@ export class PostProcessingPanelComponent implements OnInit, OnDestroy {
       hour: '2-digit',
       minute: '2-digit'
     });
+  }
+
+  getFilename(path: string): string {
+    if (!path) return '';
+    // Handle both forward and back slashes
+    const parts = path.replace(/\\/g, '/').split('/');
+    return parts[parts.length - 1] || path;
+  }
+
+  async browseForAudio(): Promise<void> {
+    if (!this.electron?.dialog) return;
+
+    try {
+      const result = await this.electron.dialog.openAudio();
+
+      if (result.success && result.filePath) {
+        this.linkAudio.emit(result.filePath);
+      }
+    } catch (err) {
+      console.error('[PostProcessingPanel] Error opening file dialog:', err);
+    }
   }
 }

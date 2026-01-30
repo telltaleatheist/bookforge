@@ -842,6 +842,7 @@ export interface ElectronAPI {
   dialog: {
     openPdf: () => Promise<OpenPdfResult>;
     openFolder: () => Promise<{ success: boolean; canceled?: boolean; folderPath?: string; error?: string }>;
+    openAudio: () => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     saveEpub: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     saveText: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
   };
@@ -1400,6 +1401,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('dialog:open-pdf'),
     openFolder: () =>
       ipcRenderer.invoke('dialog:open-folder'),
+    openAudio: () =>
+      ipcRenderer.invoke('dialog:open-audio'),
     saveEpub: (defaultName?: string) =>
       ipcRenderer.invoke('dialog:save-epub', defaultName),
     saveText: (defaultName?: string) =>

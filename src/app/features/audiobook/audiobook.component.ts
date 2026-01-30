@@ -5,7 +5,7 @@ import {
   ToolbarComponent,
   ToolbarItem
 } from '../../creamsicle-desktop';
-import { AudiobookQueueComponent, QueueItem, QueueItemStatus, CompletedAudiobook } from './components/audiobook-queue/audiobook-queue.component';
+import { AudiobookQueueComponent, QueueItem, QueueItemStatus } from './components/audiobook-queue/audiobook-queue.component';
 import { MetadataEditorComponent, EpubMetadata } from './components/metadata-editor/metadata-editor.component';
 import { AiCleanupPanelComponent } from './components/ai-cleanup-panel/ai-cleanup-panel.component';
 import { TranslationPanelComponent } from './components/translation-panel/translation-panel.component';
@@ -62,11 +62,8 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
           <app-audiobook-queue
             [items]="queueItems()"
             [selectedId]="selectedItemId()"
-            [completedAudiobooks]="completedAudiobooks()"
             (select)="selectItem($event)"
             (remove)="removeFromQueue($event)"
-            (openCompletedFolder)="onOpenCompletedFolder()"
-            (playAudiobook)="onPlayAudiobook($event)"
           />
         </div>
 
@@ -227,6 +224,7 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                     [enhancementStatus]="selectedItem()?.enhancementStatus || 'none'"
                     [enhancedAt]="selectedItem()?.enhancedAt"
                     (jobQueued)="onEnhanceJobQueued($event)"
+                    (linkAudio)="onLinkAudio($event)"
                   />
                 }
               }
@@ -410,7 +408,6 @@ export class AudiobookComponent implements OnInit {
     enableTextSplitting: false
   });
   readonly savingMetadata = signal(false);
-  readonly completedAudiobooks = signal<CompletedAudiobook[]>([]);
 
   // Diff view state
   readonly diffPaths = signal<{ originalPath: string; cleanedPath: string } | null>(null);
@@ -559,33 +556,11 @@ export class AudiobookComponent implements OnInit {
   // Path to the completed audiobook m4b file for enhancement
   readonly audioFilePath = computed(() => {
     const item = this.selectedItem();
-    if (!item?.audiobookFolder || !item.metadata || !item.hasAudiobook) return '';
+    if (!item) return '';
 
-    const completed = this.completedAudiobooks();
-    if (completed.length === 0) return '';
-
-    // Try to find the matching audiobook file using the same logic as markItemsWithAudiobooks
-    const meta = item.metadata;
-    const expectedFilename = this.generateFilenameForItem(meta).toLowerCase();
-
-    // Try exact match first
-    let matchedFile = completed.find(a => a.filename.toLowerCase() === expectedFilename);
-
-    // If no exact match, try fuzzy matching
-    if (!matchedFile) {
-      const normalize = (s: string) => s.toLowerCase().replace(/['']/g, '').replace(/\s+/g, ' ').trim();
-      const authorLast = normalize(meta.authorLast || (meta.author || '').split(' ').pop() || '');
-      const titleStart = normalize((meta.title || '').split(/[-:,]/)[0]);
-
-      matchedFile = completed.find(a => {
-        const cfNorm = normalize(a.filename);
-        return cfNorm.includes(authorLast) && cfNorm.startsWith(titleStart);
-      });
-    }
-
-    if (matchedFile) {
-      // Normalize path separators
-      return matchedFile.path.replace(/\\/g, '/');
+    // linkedAudioPath is set either by auto-detection or manual linking
+    if (item.linkedAudioPath) {
+      return item.linkedAudioPath.replace(/\\/g, '/');
     }
 
     return '';
@@ -790,6 +765,7 @@ export class AudiobookComponent implements OnInit {
           audiobookFolder: project.audiobookFolder,
           hasCleaned,
           cleanedFilename,
+          linkedAudioPath: project.linkedAudioPath,  // Load manually linked path from BFP
           skippedChunksPath: hasSkippedChunks ? skippedChunksFile : undefined
         });
 
@@ -824,22 +800,15 @@ export class AudiobookComponent implements OnInit {
       // Use configured output dir, or fall back to library's audiobooks folder
       const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
       const outputDir = configuredDir || this.libraryService.audiobooksPath() || '';
-      console.log('[Audiobook] Output dir setting:', configuredDir);
-      console.log('[Audiobook] Library audiobooks path:', this.libraryService.audiobooksPath());
-      console.log('[Audiobook] Using folder:', outputDir);
       const result = await this.electron.library.listCompleted(outputDir || undefined);
-      console.log('[Audiobook] listCompleted result:', result.success, 'files:', result.files?.length);
 
       if (result.success && result.files) {
         const completed = result.files.map((f: any) => ({
           path: f.path,
-          filename: f.filename,
-          size: f.size,
-          modifiedAt: new Date(f.modifiedAt)
+          filename: f.filename
         }));
-        this.completedAudiobooks.set(completed);
 
-        // Mark queue items that have completed audiobooks
+        // Mark queue items that have completed audiobooks and store the matched paths
         this.markItemsWithAudiobooks(completed);
       }
     } catch (err) {
@@ -848,46 +817,52 @@ export class AudiobookComponent implements OnInit {
   }
 
   /**
-   * Mark queue items that have a completed audiobook
+   * Mark queue items that have a completed audiobook and store matched paths
    */
-  private markItemsWithAudiobooks(completed: CompletedAudiobook[]): void {
-    // Build list of completed filenames (lowercase for case-insensitive matching)
-    const completedFilenames = completed.map(a => a.filename.toLowerCase());
+  private markItemsWithAudiobooks(completed: { path: string; filename: string }[]): void {
+    // Build lookup map of completed files (lowercase filename -> full path)
+    const completedMap = new Map<string, string>();
+    for (const c of completed) {
+      completedMap.set(c.filename.toLowerCase(), c.path);
+    }
 
-    console.log('[Audiobook] Completed filenames:', completedFilenames);
+    // Normalize function for fuzzy matching
+    const normalize = (s: string) => s.toLowerCase().replace(/['']/g, '').replace(/\s+/g, ' ').trim();
 
     // Update queue items and sort (completed at bottom)
     this.queueItems.update(items => {
       const updated = items.map(item => {
-        const expectedFilename = this.generateFilenameForItem(item.metadata).toLowerCase();
-
-        // Try exact match first
-        let hasAudiobook = completedFilenames.includes(expectedFilename);
-
-        // If no exact match, try fuzzy matching by author + title prefix
-        if (!hasAudiobook && item.metadata) {
-          const meta = item.metadata;
-
-          // Normalize function - remove apostrophes, extra spaces, lowercase
-          const normalize = (s: string) => s.toLowerCase().replace(/['']/g, '').replace(/\s+/g, ' ').trim();
-
-          // Get author last name for matching
-          const authorLast = normalize(meta.authorLast || (meta.author || '').split(' ').pop() || '');
-
-          // Check if any completed file contains this author and starts with similar title
-          const titleStart = normalize((meta.title || '').split(/[-:,]/)[0]);
-
-          hasAudiobook = completedFilenames.some(cf => {
-            const cfNorm = normalize(cf);
-            // Match if completed filename contains author last name and starts with title prefix
-            return cfNorm.includes(authorLast) && cfNorm.startsWith(titleStart);
-          });
+        // Skip if already has a manually linked path
+        if (item.linkedAudioPath) {
+          return { ...item, hasAudiobook: true };
         }
 
-        console.log('[Audiobook] Checking item:', item.metadata.title);
-        console.log('[Audiobook]   Expected:', expectedFilename);
-        console.log('[Audiobook]   Match:', hasAudiobook);
-        return { ...item, hasAudiobook };
+        const expectedFilename = this.generateFilenameForItem(item.metadata).toLowerCase();
+        let matchedPath: string | undefined;
+
+        // Try exact match first
+        matchedPath = completedMap.get(expectedFilename);
+
+        // If no exact match, try fuzzy matching by author + title prefix
+        if (!matchedPath && item.metadata) {
+          const meta = item.metadata;
+          const authorLast = normalize(meta.authorLast || (meta.author || '').split(' ').pop() || '');
+          const titleStart = normalize((meta.title || '').split(/[-:,]/)[0]);
+
+          for (const [filename, path] of completedMap) {
+            const cfNorm = normalize(filename);
+            if (cfNorm.includes(authorLast) && cfNorm.startsWith(titleStart)) {
+              matchedPath = path;
+              break;
+            }
+          }
+        }
+
+        return {
+          ...item,
+          hasAudiobook: !!matchedPath,
+          linkedAudioPath: matchedPath  // Store auto-detected path
+        };
       });
 
       // Sort: items without completed audiobook first, then completed at bottom
@@ -949,29 +924,34 @@ export class AudiobookComponent implements OnInit {
     return filename.replace(/\s+/g, ' ').replace(/\.\s*\./g, '.');
   }
 
-  async onOpenCompletedFolder(): Promise<void> {
-    if (!this.electron) return;
+  /**
+   * Handle manual audio file linking from the Enhance tab
+   */
+  async onLinkAudio(audioPath: string): Promise<void> {
+    const item = this.selectedItem();
+    if (!item?.bfpPath || !this.electron) return;
 
     try {
-      // Use configured output dir, or fall back to library's audiobooks folder
-      const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
-      const outputDir = configuredDir || this.libraryService.audiobooksPath();
-      if (outputDir) {
-        await this.electron.shell.openPath(outputDir);
+      // Save the linked path to BFP
+      const result = await this.electron.audiobook.updateState(item.bfpPath, {
+        linkedAudioPath: audioPath
+      });
+
+      if (result.success) {
+        // Update local state
+        this.queueItems.update(items =>
+          items.map(i =>
+            i.id === item.id
+              ? { ...i, linkedAudioPath: audioPath, hasAudiobook: true }
+              : i
+          )
+        );
+        console.log('[Audiobook] Linked audio file:', audioPath);
+      } else {
+        console.error('[Audiobook] Failed to save linked audio path:', result.error);
       }
     } catch (err) {
-      console.error('Error opening audiobooks folder:', err);
-    }
-  }
-
-  async onPlayAudiobook(path: string): Promise<void> {
-    if (!this.electron) return;
-
-    try {
-      // Open the file with the default system player
-      await this.electron.shell.openPath(path);
-    } catch (err) {
-      console.error('Error opening audiobook:', err);
+      console.error('[Audiobook] Error linking audio file:', err);
     }
   }
 
@@ -1026,16 +1006,10 @@ export class AudiobookComponent implements OnInit {
     const id = this.selectedItemId();
     if (!id) return;
 
-    // Check if this item has a completed audiobook (filename may have changed)
-    const completedFilenames = new Set(
-      this.completedAudiobooks().map(a => a.filename.toLowerCase())
-    );
-    const expectedFilename = this.generateFilenameForItem(metadata);
-    const hasAudiobook = completedFilenames.has(expectedFilename.toLowerCase());
-
+    // Update metadata (audiobook status is preserved - it's based on linkedAudioPath)
     this.queueItems.update(items =>
       items.map(item =>
-        item.id === id ? { ...item, metadata, hasAudiobook } : item
+        item.id === id ? { ...item, metadata } : item
       )
     );
   }

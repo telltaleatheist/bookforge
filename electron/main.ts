@@ -862,6 +862,26 @@ function setupIpcHandlers(): void {
     return { success: true, filePath: result.filePaths[0] };
   });
 
+  // Open audio file picker dialog
+  ipcMain.handle('dialog:open-audio', async () => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Select Audio File',
+      filters: [
+        { name: 'Audio Files', extensions: ['m4b', 'm4a', 'mp3', 'wav', 'flac', 'ogg', 'aac'] },
+        { name: 'All Files', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, canceled: true };
+    }
+
+    return { success: true, filePath: result.filePaths[0] };
+  });
+
   // Open folder picker dialog
   ipcMain.handle('dialog:open-folder', async () => {
     if (!mainWindow) return { success: false, error: 'No window' };
@@ -3418,6 +3438,7 @@ function setupIpcHandlers(): void {
         exportedAt?: string;
         cleanedAt?: string;
         completedAt?: string;
+        linkedAudioPath?: string;
         metadata?: {
           title?: string;
           author?: string;
@@ -3450,6 +3471,7 @@ function setupIpcHandlers(): void {
               exportedAt: project.audiobook.exportedAt,
               cleanedAt: project.audiobook.cleanedAt,
               completedAt: project.audiobook.completedAt,
+              linkedAudioPath: project.audiobook.linkedAudioPath,
               metadata: project.metadata ? {
                 title: project.metadata.title,
                 author: project.metadata.author,

@@ -32,18 +32,12 @@ export interface QueueItem {
   hasCleaned?: boolean;
   cleanedFilename?: string;  // Filename of cleaned epub (may be 'exported_cleaned.epub' or 'cleaned.epub')
   hasAudiobook?: boolean;  // True if completed audiobook exists for this book
+  linkedAudioPath?: string;  // Manually linked audio file path (when auto-detection fails)
   skippedChunksPath?: string;  // Path to JSON file with skipped chunks from AI cleanup
   // Enhancement state (Resemble Enhance)
   enhancementStatus?: 'none' | 'pending' | 'processing' | 'complete' | 'error';
   enhancementJobId?: string;
   enhancedAt?: string;
-}
-
-export interface CompletedAudiobook {
-  path: string;
-  filename: string;
-  size: number;
-  modifiedAt: Date;
 }
 
 @Component({
@@ -52,7 +46,7 @@ export interface CompletedAudiobook {
   imports: [CommonModule],
   template: `
     <div class="queue-container">
-      @if (!hasItems() && !hasCompleted()) {
+      @if (!hasItems()) {
         <div class="empty-queue">
           <div class="drop-icon">&#128214;</div>
           <p>No audiobook projects</p>
@@ -60,84 +54,53 @@ export interface CompletedAudiobook {
         </div>
       } @else {
         <!-- Queue section -->
-        @if (hasItems()) {
-          <div class="section-header">In Progress</div>
-          <div class="queue-list">
-            @for (item of items(); track item.id) {
-              <div
-                class="queue-item"
-                [class.selected]="item.id === selectedId()"
-                [class.error]="item.status === 'error'"
-                (click)="select.emit(item.id)"
-              >
-                <div class="item-cover">
-                  @if (item.metadata.coverData) {
-                    <img [src]="item.metadata.coverData" alt="Cover" />
-                  } @else {
-                    <div class="no-cover">&#128214;</div>
+        <div class="queue-list">
+          @for (item of items(); track item.id) {
+            <div
+              class="queue-item"
+              [class.selected]="item.id === selectedId()"
+              [class.error]="item.status === 'error'"
+              (click)="select.emit(item.id)"
+            >
+              <div class="item-cover">
+                @if (item.metadata.coverData) {
+                  <img [src]="item.metadata.coverData" alt="Cover" />
+                } @else {
+                  <div class="no-cover">&#128214;</div>
+                }
+              </div>
+              <div class="item-info">
+                <div class="item-title">
+                  @if (item.hasAudiobook) {
+                    <span class="audiobook-check" title="Audiobook exists">✓</span>
+                  }
+                  {{ item.metadata.title || item.filename }}
+                </div>
+                <div class="item-author">{{ item.metadata.author || 'Unknown Author' }}</div>
+                <div class="item-status" [attr.data-status]="item.status">
+                  @switch (item.status) {
+                    @case ('pending') { <span>Pending</span> }
+                    @case ('metadata') { <span>Editing...</span> }
+                    @case ('cleanup') { <span>Cleaning...</span> }
+                    @case ('converting') { <span>{{ item.progress || 0 }}%</span> }
+                    @case ('complete') { <span>Complete</span> }
+                    @case ('error') { <span>Error</span> }
+                  }
+                  @if (item.hasCleaned) {
+                    <span class="cleaned-badge" title="AI Cleanup complete">✓ Cleaned</span>
                   }
                 </div>
-                <div class="item-info">
-                  <div class="item-title">
-                    @if (item.hasAudiobook) {
-                      <span class="audiobook-check" title="Audiobook exists">✓</span>
-                    }
-                    {{ item.metadata.title || item.filename }}
-                  </div>
-                  <div class="item-author">{{ item.metadata.author || 'Unknown Author' }}</div>
-                  <div class="item-status" [attr.data-status]="item.status">
-                    @switch (item.status) {
-                      @case ('pending') { <span>Pending</span> }
-                      @case ('metadata') { <span>Editing...</span> }
-                      @case ('cleanup') { <span>Cleaning...</span> }
-                      @case ('converting') { <span>{{ item.progress || 0 }}%</span> }
-                      @case ('complete') { <span>Complete</span> }
-                      @case ('error') { <span>Error</span> }
-                    }
-                    @if (item.hasCleaned) {
-                      <span class="cleaned-badge" title="AI Cleanup complete">✓ Cleaned</span>
-                    }
-                  </div>
-                </div>
-                <button
-                  class="remove-btn"
-                  title="Remove from queue"
-                  (click)="onRemoveClick($event, item.id)"
-                >
-                  &#215;
-                </button>
               </div>
-            }
-          </div>
-        }
-
-        <!-- Completed section -->
-        @if (hasCompleted()) {
-          <div class="section-header">
-            Completed
-            <button class="open-folder-btn" title="Open folder" (click)="openCompletedFolder.emit()">
-              &#128193;
-            </button>
-          </div>
-          <div class="completed-list">
-            @for (audiobook of completedAudiobooks(); track audiobook.path) {
-              <div
-                class="completed-item"
-                (click)="playAudiobook.emit(audiobook.path)"
-                title="{{ audiobook.filename }}"
+              <button
+                class="remove-btn"
+                title="Remove from queue"
+                (click)="onRemoveClick($event, item.id)"
               >
-                <div class="completed-icon">&#127911;</div>
-                <div class="completed-info">
-                  <div class="completed-title">{{ formatFilename(audiobook.filename) }}</div>
-                  <div class="completed-meta">
-                    <span class="completed-date">{{ formatDate(audiobook.modifiedAt) }}</span>
-                    <span class="completed-size">{{ formatSize(audiobook.size) }}</span>
-                  </div>
-                </div>
-              </div>
-            }
-          </div>
-        }
+                &#215;
+              </button>
+            </div>
+          }
+        </div>
       }
     </div>
   `,
@@ -326,147 +289,23 @@ export interface CompletedAudiobook {
       }
     }
 
-    .section-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 0.6875rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--text-muted);
-      padding: 0.75rem 0.5rem 0.375rem;
-      margin-top: 0.5rem;
-
-      &:first-child {
-        margin-top: 0;
-      }
-    }
-
-    .open-folder-btn {
-      background: transparent;
-      border: none;
-      padding: 0.125rem 0.25rem;
-      font-size: 0.75rem;
-      cursor: pointer;
-      color: var(--text-muted);
-      opacity: 0.7;
-      transition: opacity 0.15s;
-
-      &:hover {
-        opacity: 1;
-      }
-    }
-
-    .completed-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.375rem;
-    }
-
-    .completed-item {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.375rem 0.5rem;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      border-radius: 4px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-
-      &:hover {
-        border-color: var(--border-hover);
-        background: var(--bg-hover);
-      }
-    }
-
-    .completed-icon {
-      font-size: 1rem;
-      opacity: 0.6;
-    }
-
-    .completed-info {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .completed-title {
-      font-size: 0.75rem;
-      font-weight: 500;
-      color: var(--text-primary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .completed-meta {
-      display: flex;
-      gap: 0.5rem;
-      font-size: 0.625rem;
-      color: var(--text-muted);
-      margin-top: 0.125rem;
-    }
-
-    .completed-date {
-      color: var(--text-secondary);
-    }
-
-    .completed-size {
-      opacity: 0.7;
-    }
   `]
 })
 export class AudiobookQueueComponent {
   // Inputs
   readonly items = input<QueueItem[]>([]);
   readonly selectedId = input<string | null>(null);
-  readonly completedAudiobooks = input<CompletedAudiobook[]>([]);
 
   // Computed for reactivity
   readonly itemCount = computed(() => this.items().length);
   readonly hasItems = computed(() => this.items().length > 0);
-  readonly hasCompleted = computed(() => this.completedAudiobooks().length > 0);
 
   // Outputs
   readonly select = output<string>();
   readonly remove = output<string>();
-  readonly openCompletedFolder = output<void>();
-  readonly playAudiobook = output<string>();
 
   onRemoveClick(event: Event, id: string): void {
     event.stopPropagation();
     this.remove.emit(id);
-  }
-
-  formatFilename(filename: string): string {
-    // Remove .m4b extension and clean up underscores
-    return filename.replace(/\.m4b$/i, '').replace(/_/g, ' ');
-  }
-
-  formatDate(date: Date): string {
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-    if (diffDays === 0) {
-      return 'Today ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } else if (diffDays === 1) {
-      return 'Yesterday';
-    } else if (diffDays < 7) {
-      return date.toLocaleDateString([], { weekday: 'short' });
-    } else {
-      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-    }
-  }
-
-  formatSize(bytes: number): string {
-    if (bytes < 1024 * 1024) {
-      return (bytes / 1024).toFixed(0) + ' KB';
-    } else if (bytes < 1024 * 1024 * 1024) {
-      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    } else {
-      return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-    }
   }
 }

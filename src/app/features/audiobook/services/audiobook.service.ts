@@ -344,6 +344,7 @@ export class AudiobookService {
     exportedAt?: string;
     cleanedAt?: string;
     completedAt?: string;
+    linkedAudioPath?: string;
     metadata?: {
       title?: string;
       author?: string;
@@ -371,6 +372,7 @@ export class AudiobookService {
           exportedAt?: string;
           cleanedAt?: string;
           completedAt?: string;
+          linkedAudioPath?: string;
           metadata?: { title?: string; author?: string; year?: string; coverImagePath?: string; outputFilename?: string; };
           analytics?: { ttsJobs?: any[]; cleanupJobs?: any[]; };
         }) => ({
