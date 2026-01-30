@@ -138,3 +138,20 @@ code, pre, kbd, samp {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+// =============================================================================
+// FORM CONTROLS (Global select styling for dark mode)
+// =============================================================================
+
+select {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  cursor: pointer;
+
+  option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+  }
+}
