@@ -176,13 +176,21 @@ export async function enhanceFile(inputPath: string): Promise<EnhanceResult> {
   const condaEnv = getResembleCondaEnv();
 
   try {
+    // Clean up any leftover temp directories from previous cancelled/failed jobs
+    for (const tempDir of [tempInputDir, tempOutputDir]) {
+      if (fs.existsSync(tempDir)) {
+        console.log(`[RESEMBLE] Cleaning up leftover temp directory: ${tempDir}`);
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }
+    if (fs.existsSync(tempOutput)) {
+      console.log(`[RESEMBLE] Cleaning up leftover temp file: ${tempOutput}`);
+      fs.unlinkSync(tempOutput);
+    }
+
     // Create temp directories
-    if (!fs.existsSync(tempInputDir)) {
-      fs.mkdirSync(tempInputDir, { recursive: true });
-    }
-    if (!fs.existsSync(tempOutputDir)) {
-      fs.mkdirSync(tempOutputDir, { recursive: true });
-    }
+    fs.mkdirSync(tempInputDir, { recursive: true });
+    fs.mkdirSync(tempOutputDir, { recursive: true });
 
     // Step 1: Convert to WAV if needed (44100Hz for resemble-enhance)
     if (ext !== '.wav') {
@@ -635,13 +643,21 @@ export async function enhanceFileForQueue(
   };
 
   try {
+    // Clean up any leftover temp directories from previous cancelled/failed jobs
+    for (const tempDir of [tempInputDir, tempOutputDir]) {
+      if (fs.existsSync(tempDir)) {
+        console.log(`[RESEMBLE-QUEUE] Cleaning up leftover temp directory: ${tempDir}`);
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }
+    if (fs.existsSync(tempOutput)) {
+      console.log(`[RESEMBLE-QUEUE] Cleaning up leftover temp file: ${tempOutput}`);
+      fs.unlinkSync(tempOutput);
+    }
+
     // Create temp directories
-    if (!fs.existsSync(tempInputDir)) {
-      fs.mkdirSync(tempInputDir, { recursive: true });
-    }
-    if (!fs.existsSync(tempOutputDir)) {
-      fs.mkdirSync(tempOutputDir, { recursive: true });
-    }
+    fs.mkdirSync(tempInputDir, { recursive: true });
+    fs.mkdirSync(tempOutputDir, { recursive: true });
 
     // Step 1: Convert to WAV if needed (44100Hz for resemble-enhance)
     if (ext !== '.wav') {
