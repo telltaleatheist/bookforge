@@ -209,6 +209,7 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                   <app-skipped-chunks-panel
                     [skippedChunksPath]="selectedItem()?.skippedChunksPath || null"
                     [cleanedEpubPath]="currentEpubPath()"
+                    [originalEpubPath]="originalEpubPath()"
                   />
                 }
                 @case ('analytics') {

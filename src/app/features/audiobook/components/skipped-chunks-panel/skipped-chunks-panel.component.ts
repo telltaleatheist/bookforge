@@ -445,6 +445,7 @@ export class SkippedChunksPanelComponent implements OnChanges {
   // Inputs
   readonly skippedChunksPath = input<string | null>(null);
   readonly cleanedEpubPath = input<string | null>(null);
+  readonly originalEpubPath = input<string | null>(null);
 
   // Outputs
   readonly chunkEdited = output<{ chapterTitle: string; oldText: string; newText: string }>();
@@ -523,7 +524,9 @@ export class SkippedChunksPanelComponent implements OnChanges {
   }
 
   async saveEdit(index: number, chunk: SkippedChunk): Promise<void> {
-    const epubPath = this.cleanedEpubPath();
+    // Use original epub for editing - skipped chunks contain text from the original,
+    // which was skipped/removed during AI cleanup and doesn't exist in cleaned epub
+    const epubPath = this.originalEpubPath() || this.cleanedEpubPath();
     if (!epubPath) {
       this.error.set('No EPUB path available');
       return;
