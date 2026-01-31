@@ -929,8 +929,16 @@ export class AudiobookComponent implements OnInit {
    * Handle manual audio file linking from the Enhance tab
    */
   async onLinkAudio(audioPath: string): Promise<void> {
+    console.log('[Audiobook] onLinkAudio called with:', audioPath);
     const item = this.selectedItem();
-    if (!item?.bfpPath || !this.electron) return;
+    console.log('[Audiobook] Selected item:', item?.id, 'bfpPath:', item?.bfpPath);
+    if (!item?.bfpPath || !this.electron) {
+      console.error('[Audiobook] Cannot link audio - missing bfpPath or electron:', {
+        hasBfpPath: !!item?.bfpPath,
+        hasElectron: !!this.electron
+      });
+      return;
+    }
 
     try {
       // Save the linked path to BFP

@@ -630,7 +630,10 @@ export class MetadataEditorComponent {
       console.log('[MetadataEditor] openAudio result:', result);
 
       if (result.success && result.filePath) {
+        console.log('[MetadataEditor] Emitting linkAudio with path:', result.filePath);
         this.linkAudio.emit(result.filePath);
+      } else {
+        console.log('[MetadataEditor] Dialog result did not have success/filePath:', result);
       }
     } catch (err) {
       console.error('[MetadataEditor] Error opening file dialog:', err);

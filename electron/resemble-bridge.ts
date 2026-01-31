@@ -329,32 +329,45 @@ export async function enhanceFile(inputPath: string): Promise<EnhanceResult> {
       // Use appropriate codec based on format
       // Note: -movflags +faststart moves moov atom to beginning, making files
       // more resilient to truncation and better for streaming
-      let codecArgs: string[];
+      let ffmpegArgs: string[];
       if (ext === '.m4b' || ext === '.m4a') {
-        // M4B/M4A are audiobook/audio formats using MPEG-4 container with AAC
-        // Using -f ipod ensures proper container format
-        codecArgs = ['-c:a', 'aac', '-b:a', '128k', '-f', 'ipod', '-movflags', '+faststart'];
+        // M4B/M4A: Use original file as second input to copy metadata, chapters, and cover art
+        // -i enhancedWav: audio source (input 0)
+        // -i inputPath: metadata/chapters/cover source (input 1)
+        // -map 0:a: take audio from input 0
+        // -map 1:v?: take video (cover art) from input 1 if present
+        // -map_metadata 1: copy metadata from input 1
+        // -map_chapters 1: copy chapters from input 1
+        // -c:v copy: copy video stream without re-encoding
+        ffmpegArgs = [
+          '-y',
+          '-i', enhancedWav,
+          '-i', inputPath,
+          '-map', '0:a',
+          '-map', '1:v?',
+          '-map_metadata', '1',
+          '-map_chapters', '1',
+          '-c:a', 'aac', '-b:a', '128k',
+          '-c:v', 'copy',
+          '-f', 'ipod', '-movflags', '+faststart',
+          tempOutput
+        ];
       } else if (ext === '.mp3') {
-        codecArgs = ['-c:a', 'libmp3lame', '-b:a', '192k'];
+        ffmpegArgs = ['-y', '-i', enhancedWav, '-c:a', 'libmp3lame', '-b:a', '192k', tempOutput];
       } else if (ext === '.flac') {
-        codecArgs = ['-c:a', 'flac'];
+        ffmpegArgs = ['-y', '-i', enhancedWav, '-c:a', 'flac', tempOutput];
       } else if (ext === '.ogg' || ext === '.opus') {
-        codecArgs = ['-c:a', 'libopus', '-b:a', '128k'];
+        ffmpegArgs = ['-y', '-i', enhancedWav, '-c:a', 'libopus', '-b:a', '128k', tempOutput];
       } else {
-        codecArgs = ['-c:a', 'copy'];
+        ffmpegArgs = ['-y', '-i', enhancedWav, '-c:a', 'copy', tempOutput];
       }
 
       // Run FFmpeg encoding
       await new Promise<void>((resolve, reject) => {
         console.log('[RESEMBLE] Re-encoding with ffmpeg:', ffmpegPath);
-        console.log('[RESEMBLE] Input:', enhancedWav);
-        console.log('[RESEMBLE] Output:', tempOutput);
+        console.log('[RESEMBLE] Args:', ffmpegArgs.join(' '));
 
-        const ffmpeg = spawn(ffmpegPath, [
-          '-y', '-i', enhancedWav,
-          ...codecArgs,
-          tempOutput
-        ], {
+        const ffmpeg = spawn(ffmpegPath, ffmpegArgs, {
           windowsHide: true
         });
 
@@ -771,32 +784,45 @@ export async function enhanceFileForQueue(
       // Use appropriate codec based on format
       // Note: -movflags +faststart moves moov atom to beginning, making files
       // more resilient to truncation and better for streaming
-      let codecArgs: string[];
+      let ffmpegArgs: string[];
       if (ext === '.m4b' || ext === '.m4a') {
-        // M4B/M4A are audiobook/audio formats using MPEG-4 container with AAC
-        // Using -f ipod ensures proper container format
-        codecArgs = ['-c:a', 'aac', '-b:a', '128k', '-f', 'ipod', '-movflags', '+faststart'];
+        // M4B/M4A: Use original file as second input to copy metadata, chapters, and cover art
+        // -i enhancedWav: audio source (input 0)
+        // -i normalizedInput: metadata/chapters/cover source (input 1)
+        // -map 0:a: take audio from input 0
+        // -map 1:v?: take video (cover art) from input 1 if present
+        // -map_metadata 1: copy metadata from input 1
+        // -map_chapters 1: copy chapters from input 1
+        // -c:v copy: copy video stream without re-encoding
+        ffmpegArgs = [
+          '-y',
+          '-i', enhancedWav,
+          '-i', normalizedInput,
+          '-map', '0:a',
+          '-map', '1:v?',
+          '-map_metadata', '1',
+          '-map_chapters', '1',
+          '-c:a', 'aac', '-b:a', '128k',
+          '-c:v', 'copy',
+          '-f', 'ipod', '-movflags', '+faststart',
+          tempOutput
+        ];
       } else if (ext === '.mp3') {
-        codecArgs = ['-c:a', 'libmp3lame', '-b:a', '192k'];
+        ffmpegArgs = ['-y', '-i', enhancedWav, '-c:a', 'libmp3lame', '-b:a', '192k', tempOutput];
       } else if (ext === '.flac') {
-        codecArgs = ['-c:a', 'flac'];
+        ffmpegArgs = ['-y', '-i', enhancedWav, '-c:a', 'flac', tempOutput];
       } else if (ext === '.ogg' || ext === '.opus') {
-        codecArgs = ['-c:a', 'libopus', '-b:a', '128k'];
+        ffmpegArgs = ['-y', '-i', enhancedWav, '-c:a', 'libopus', '-b:a', '128k', tempOutput];
       } else {
-        codecArgs = ['-c:a', 'copy'];
+        ffmpegArgs = ['-y', '-i', enhancedWav, '-c:a', 'copy', tempOutput];
       }
 
       // Run FFmpeg encoding
       await new Promise<void>((resolve, reject) => {
         console.log('[RESEMBLE-QUEUE] Re-encoding with ffmpeg:', ffmpegPath);
-        console.log('[RESEMBLE-QUEUE] Input:', enhancedWav);
-        console.log('[RESEMBLE-QUEUE] Output:', tempOutput);
+        console.log('[RESEMBLE-QUEUE] Args:', ffmpegArgs.join(' '));
 
-        const ffmpeg = spawn(ffmpegPath, [
-          '-y', '-i', enhancedWav,
-          ...codecArgs,
-          tempOutput
-        ], {
+        const ffmpeg = spawn(ffmpegPath, ffmpegArgs, {
           windowsHide: true
         });
 

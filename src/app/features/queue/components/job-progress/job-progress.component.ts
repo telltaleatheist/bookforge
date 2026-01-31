@@ -597,7 +597,17 @@ export class JobProgressComponent implements OnDestroy {
       const message = j.progressMessage || '';
       const remainingMatch = message.match(/\(([^)]+)\s+remaining\)/);
       if (remainingMatch && remainingMatch[1]) {
-        // Return the extracted time (e.g., "57:54")
+        // Parse mm:ss or hh:mm:ss format to seconds and reformat consistently
+        const timeParts = remainingMatch[1].split(':').map(Number);
+        let seconds = 0;
+        if (timeParts.length === 2) {
+          seconds = timeParts[0] * 60 + timeParts[1];
+        } else if (timeParts.length === 3) {
+          seconds = timeParts[0] * 3600 + timeParts[1] * 60 + timeParts[2];
+        }
+        if (seconds > 0) {
+          return this.formatDuration(seconds);
+        }
         return remainingMatch[1];
       }
       // Fall back to percentage-based ETA
@@ -696,6 +706,17 @@ export class JobProgressComponent implements OnDestroy {
       // Extract time from "Enhancing: 13% (57:54 remaining)"
       const remainingMatch = message.match(/\(([^)]+)\s+remaining\)/);
       if (remainingMatch && remainingMatch[1]) {
+        // Parse mm:ss or hh:mm:ss format to seconds and reformat consistently
+        const timeParts = remainingMatch[1].split(':').map(Number);
+        let seconds = 0;
+        if (timeParts.length === 2) {
+          seconds = timeParts[0] * 60 + timeParts[1];
+        } else if (timeParts.length === 3) {
+          seconds = timeParts[0] * 3600 + timeParts[1] * 60 + timeParts[2];
+        }
+        if (seconds > 0) {
+          return this.formatDuration(seconds);
+        }
         return remainingMatch[1];
       }
       // Fall back to percentage-based ETA

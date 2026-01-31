@@ -134,7 +134,9 @@ function registerPageProtocol(): void {
 
 // Atomic file write - writes to temp file then renames to prevent corruption
 async function atomicWriteFile(filePath: string, content: string): Promise<void> {
-  const tempPath = path.join(os.tmpdir(), `bookforge-${Date.now()}-${Math.random().toString(36).substr(2)}.tmp`);
+  // Create temp file in the same directory as target to avoid cross-device rename issues on Windows
+  const targetDir = path.dirname(filePath);
+  const tempPath = path.join(targetDir, `.bookforge-${Date.now()}-${Math.random().toString(36).substr(2)}.tmp`);
   await fs.writeFile(tempPath, content, 'utf-8');
   await fs.rename(tempPath, filePath);
 }
