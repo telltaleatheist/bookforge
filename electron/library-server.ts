@@ -181,27 +181,12 @@ export class LibraryServer {
     try {
       const sections: SectionInfo[] = [];
 
-      // Check if books path is flat (files directly) or organized (subfolders)
+      // Recursively find all directories with books
+      await this.collectSections(this.booksPath, '', sections);
+
+      // Check for files at the root level
       const entries = await fs.readdir(this.booksPath, { withFileTypes: true });
-
-      // Count files and directories (exclude hidden folders and 'vtt' folder)
-      const directories = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'vtt');
       const files = entries.filter(e => e.isFile() && this.isBookFile(e.name));
-
-      if (directories.length > 0) {
-        // Books are organized into folders - each folder is a section
-        for (const dir of directories) {
-          const dirPath = path.join(this.booksPath, dir.name);
-          const bookCount = await this.countBooksInFolder(dirPath);
-          if (bookCount > 0) {
-            sections.push({
-              name: dir.name,
-              path: dir.name,
-              bookCount
-            });
-          }
-        }
-      }
 
       // If there are files at the root level, add a "Root" section
       if (files.length > 0) {
@@ -212,13 +197,60 @@ export class LibraryServer {
         });
       }
 
-      // Sort sections alphabetically
-      sections.sort((a, b) => a.name.localeCompare(b.name));
+      // Sort sections: "Books" first, then "audiobooks", then "xtts conversions", then alphabetically
+      sections.sort((a, b) => {
+        const order = (s: SectionInfo) => {
+          const name = s.name.toLowerCase();
+          if (s.path === '.') return 0;  // "Books" (root) first
+          if (name === 'audiobooks') return 1;
+          if (name === 'xtts conversions') return 2;
+          return 3;  // Everything else
+        };
+        const orderA = order(a);
+        const orderB = order(b);
+        if (orderA !== orderB) return orderA - orderB;
+        return a.name.localeCompare(b.name);
+      });
 
       res.json({ sections });
     } catch (err) {
       console.error('[LibraryServer] Error getting sections:', err);
       res.status(500).json({ error: 'Failed to get sections' });
+    }
+  }
+
+  /**
+   * Recursively collect all directories that contain books as sections
+   */
+  private async collectSections(basePath: string, relativePath: string, sections: SectionInfo[]): Promise<void> {
+    try {
+      const fullPath = relativePath ? path.join(basePath, relativePath) : basePath;
+      const entries = await fs.readdir(fullPath, { withFileTypes: true });
+
+      // Find directories (exclude hidden and vtt)
+      const directories = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'vtt');
+
+      for (const dir of directories) {
+        const dirRelPath = relativePath ? `${relativePath}/${dir.name}` : dir.name;
+        const dirFullPath = path.join(basePath, dirRelPath);
+
+        // Count books directly in this folder
+        const bookCount = await this.countBooksInFolder(dirFullPath);
+
+        // Add as section if it has books
+        if (bookCount > 0) {
+          sections.push({
+            name: dir.name,
+            path: dirRelPath,
+            bookCount
+          });
+        }
+
+        // Recursively check subdirectories
+        await this.collectSections(basePath, dirRelPath, sections);
+      }
+    } catch (err) {
+      console.error('[LibraryServer] Error collecting sections:', err);
     }
   }
 
@@ -384,10 +416,8 @@ export class LibraryServer {
       for (const entry of entries) {
         if (entry.isFile() && this.isBookFile(entry.name)) {
           count++;
-        } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'vtt') {
-          // Recursively count in subdirectories (skip vtt folder)
-          count += await this.countBooksInFolder(path.join(folderPath, entry.name));
         }
+        // Don't recurse - subdirectories are separate sections
       }
 
       return count;
@@ -422,11 +452,8 @@ export class LibraryServer {
             size: stats.size,
             modifiedAt: stats.mtime.toISOString()
           });
-        } else if (entry.isDirectory()) {
-          // Recursively get books from subdirectories
-          const subBooks = await this.getBooksInFolder(entryPath, relPath);
-          books.push(...subBooks);
         }
+        // Don't recurse into subdirectories - they appear as separate sections
       }
     } catch (err) {
       console.error('[LibraryServer] Error reading folder:', folderPath, err);

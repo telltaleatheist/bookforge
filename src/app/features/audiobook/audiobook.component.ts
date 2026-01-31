@@ -926,7 +926,7 @@ export class AudiobookComponent implements OnInit {
   }
 
   /**
-   * Handle manual audio file linking from the Enhance tab
+   * Handle manual audio file linking from the Metadata tab
    */
   async onLinkAudio(audioPath: string): Promise<void> {
     console.log('[Audiobook] onLinkAudio called with:', audioPath);
@@ -941,10 +941,12 @@ export class AudiobookComponent implements OnInit {
     }
 
     try {
+      console.log('[Audiobook] Calling updateState with linkedAudioPath:', audioPath);
       // Save the linked path to BFP
       const result = await this.electron.audiobook.updateState(item.bfpPath, {
         linkedAudioPath: audioPath
       });
+      console.log('[Audiobook] updateState result:', result);
 
       if (result.success) {
         // Update local state
@@ -955,7 +957,7 @@ export class AudiobookComponent implements OnInit {
               : i
           )
         );
-        console.log('[Audiobook] Linked audio file:', audioPath);
+        console.log('[Audiobook] Linked audio file successfully:', audioPath);
       } else {
         console.error('[Audiobook] Failed to save linked audio path:', result.error);
       }

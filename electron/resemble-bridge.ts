@@ -8,7 +8,6 @@
  * Setup:
  * - Requires 'resemble' conda environment with patched resemble-enhance
  * - See AUDIO_ENHANCEMENT.md for detailed setup instructions
- * - CPU mode is recommended for stability (MPS has issues on Mac)
  */
 
 import { spawn, ChildProcess } from 'child_process';
@@ -226,11 +225,6 @@ export async function enhanceFile(inputPath: string): Promise<EnhanceResult> {
         ...process.env,
         PYTHONUNBUFFERED: '1',
       };
-
-      // For MPS (macOS), enable fallback for ops not supported on Metal
-      if (device === 'mps') {
-        envVars.PYTORCH_ENABLE_MPS_FALLBACK = '1';
-      }
 
       if (useWsl) {
         // Use WSL for Resemble Enhance on Windows
@@ -690,11 +684,6 @@ export async function enhanceFileForQueue(
         ...process.env,
         PYTHONUNBUFFERED: '1',
       };
-
-      // For MPS (macOS), enable fallback for ops not supported on Metal
-      if (device === 'mps') {
-        envVars.PYTORCH_ENABLE_MPS_FALLBACK = '1';
-      }
 
       if (useWsl) {
         // Use WSL for Resemble Enhance on Windows

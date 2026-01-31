@@ -133,12 +133,24 @@ function registerPageProtocol(): void {
 }
 
 // Atomic file write - writes to temp file then renames to prevent corruption
+// Uses temp file in same directory to avoid cross-device link issues
 async function atomicWriteFile(filePath: string, content: string): Promise<void> {
-  // Create temp file in the same directory as target to avoid cross-device rename issues on Windows
-  const targetDir = path.dirname(filePath);
-  const tempPath = path.join(targetDir, `.bookforge-${Date.now()}-${Math.random().toString(36).substr(2)}.tmp`);
-  await fs.writeFile(tempPath, content, 'utf-8');
-  await fs.rename(tempPath, filePath);
+  // Create temp file in the same directory as target to ensure same filesystem
+  const dir = path.dirname(filePath);
+  const tempPath = path.join(dir, `.bookforge-${Date.now()}-${Math.random().toString(36).substr(2)}.tmp`);
+
+  try {
+    await fs.writeFile(tempPath, content, 'utf-8');
+    await fs.rename(tempPath, filePath);
+  } catch (err: any) {
+    // Clean up temp file if it exists
+    try {
+      await fs.unlink(tempPath);
+    } catch {
+      // Ignore cleanup errors
+    }
+    throw err;
+  }
 }
 
 const isDev = !app.isPackaged;
