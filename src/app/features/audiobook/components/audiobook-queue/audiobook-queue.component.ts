@@ -33,6 +33,7 @@ export interface QueueItem {
   cleanedFilename?: string;  // Filename of cleaned epub (may be 'exported_cleaned.epub' or 'cleaned.epub')
   hasAudiobook?: boolean;  // True if completed audiobook exists for this book
   linkedAudioPath?: string;  // Manually linked audio file path (when auto-detection fails)
+  linkedAudioPathValid?: boolean;  // True if linkedAudioPath exists on current system (for cross-platform)
   skippedChunksPath?: string;  // Path to JSON file with skipped chunks from AI cleanup
   // Enhancement state (Resemble Enhance)
   enhancementStatus?: 'none' | 'pending' | 'processing' | 'complete' | 'error';
@@ -73,6 +74,8 @@ export interface QueueItem {
                 <div class="item-title">
                   @if (item.hasAudiobook) {
                     <span class="audiobook-check" title="Audiobook exists">✓</span>
+                  } @else if (item.linkedAudioPath && item.linkedAudioPathValid === false) {
+                    <span class="path-invalid" title="Linked audio file not found on this system">⚠</span>
                   }
                   {{ item.metadata.title || item.filename }}
                 </div>
@@ -228,6 +231,12 @@ export interface QueueItem {
 
     .audiobook-check {
       color: var(--accent-success);
+      font-size: 0.75rem;
+      flex-shrink: 0;
+    }
+
+    .path-invalid {
+      color: var(--warning, #f59e0b);
       font-size: 0.75rem;
       flex-shrink: 0;
     }

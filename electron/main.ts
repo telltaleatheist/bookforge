@@ -3453,6 +3453,7 @@ function setupIpcHandlers(): void {
         cleanedAt?: string;
         completedAt?: string;
         linkedAudioPath?: string;
+        linkedAudioPathValid?: boolean;  // True if linkedAudioPath exists on current system
         metadata?: {
           title?: string;
           author?: string;
@@ -3477,6 +3478,14 @@ function setupIpcHandlers(): void {
           // Only include projects with audiobook state
           if (project.audiobook) {
             const projectName = entry.name.replace('.bfp', '');
+
+            // Check if linked audio path exists on current system
+            // (handles cross-platform scenarios like Mac path on Windows)
+            let linkedAudioPathValid: boolean | undefined;
+            if (project.audiobook.linkedAudioPath) {
+              linkedAudioPathValid = fsSync.existsSync(project.audiobook.linkedAudioPath);
+            }
+
             projects.push({
               name: projectName,
               bfpPath,
@@ -3486,6 +3495,7 @@ function setupIpcHandlers(): void {
               cleanedAt: project.audiobook.cleanedAt,
               completedAt: project.audiobook.completedAt,
               linkedAudioPath: project.audiobook.linkedAudioPath,
+              linkedAudioPathValid,
               metadata: project.metadata ? {
                 title: project.metadata.title,
                 author: project.metadata.author,

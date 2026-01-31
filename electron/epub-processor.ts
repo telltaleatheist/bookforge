@@ -1510,8 +1510,13 @@ export async function replaceTextInEpub(
     let foundHref: string | null = null;
     let modifiedXhtml: string | null = null;
 
+    // Strip [[BLOCK]] markers from the search text - these are internal processing artifacts
+    // that don't exist in the actual EPUB content
+    const cleanedOldText = oldText.replace(/\n*\[\[BLOCK\]\]\n*/g, '\n\n');
+    const cleanedNewText = newText.replace(/\n*\[\[BLOCK\]\]\n*/g, '\n\n');
+
     // Normalize whitespace for comparison
-    const normalizedOldText = oldText.replace(/\s+/g, ' ').trim();
+    const normalizedOldText = cleanedOldText.replace(/\s+/g, ' ').trim();
 
     for (const chapter of structure.chapters) {
       const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
@@ -1524,16 +1529,16 @@ export async function replaceTextInEpub(
         // Check if this chapter contains the text (whitespace-normalized comparison)
         if (normalizedExtracted.includes(normalizedOldText)) {
           // Found it! Replace in the extracted text and rebuild
-          // Use the original formatting for replacement
-          const modifiedText = extractedText.replace(oldText, newText);
+          // Use the cleaned text (without [[BLOCK]] markers) for replacement
+          const modifiedText = extractedText.replace(cleanedOldText, cleanedNewText);
 
           // If direct replacement didn't work, try normalized
           if (modifiedText === extractedText) {
             // Try a more flexible replacement
-            const escapedOld = oldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const escapedOld = cleanedOldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const flexPattern = escapedOld.replace(/\s+/g, '\\s+');
             const regex = new RegExp(flexPattern, 's');
-            const flexModified = extractedText.replace(regex, newText);
+            const flexModified = extractedText.replace(regex, cleanedNewText);
             if (flexModified !== extractedText) {
               modifiedXhtml = rebuildXhtml(xhtml, flexModified);
             }

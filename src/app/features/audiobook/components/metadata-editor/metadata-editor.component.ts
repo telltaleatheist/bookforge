@@ -167,15 +167,18 @@ export interface EpubMetadata {
         <div class="audio-link-section">
           <label>Linked Audio File</label>
           @if (audioFilePath()) {
-            <div class="audio-file-row">
+            <div class="audio-file-row" [class.path-invalid]="!audioFilePathValid()">
               <span class="audio-file-path" [title]="audioFilePath()">{{ getFilename(audioFilePath()) }}</span>
+              @if (!audioFilePathValid()) {
+                <span class="path-warning" title="File not found on this system">File not found</span>
+              }
               <desktop-button
                 variant="ghost"
                 size="xs"
                 (click)="browseForAudio()"
                 title="Change linked audio file"
               >
-                Change
+                {{ audioFilePathValid() ? 'Change' : 'Relink' }}
               </desktop-button>
             </div>
           } @else {
@@ -373,6 +376,11 @@ export interface EpubMetadata {
       background: var(--bg-subtle);
       border-radius: 6px;
       border: 1px solid var(--border-default);
+
+      &.path-invalid {
+        border-color: var(--warning, #f59e0b);
+        background: color-mix(in srgb, var(--warning, #f59e0b) 8%, var(--bg-subtle));
+      }
     }
 
     .audio-file-path {
@@ -383,6 +391,17 @@ export interface EpubMetadata {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+
+      .path-invalid & {
+        color: var(--text-secondary);
+      }
+    }
+
+    .path-warning {
+      font-size: 0.6875rem;
+      font-weight: 500;
+      color: var(--warning, #f59e0b);
+      white-space: nowrap;
     }
 
     .no-audio-row {
@@ -402,6 +421,7 @@ export class MetadataEditorComponent {
   readonly metadata = input<EpubMetadata | null>(null);
   readonly saving = input<boolean>(false);
   readonly audioFilePath = input<string>('');
+  readonly audioFilePathValid = input<boolean>(true);  // Cross-platform path validation
 
   // Outputs
   readonly metadataChange = output<EpubMetadata>();

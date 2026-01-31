@@ -345,6 +345,7 @@ export class AudiobookService {
     cleanedAt?: string;
     completedAt?: string;
     linkedAudioPath?: string;
+    linkedAudioPathValid?: boolean;
     metadata?: {
       title?: string;
       author?: string;
@@ -373,6 +374,7 @@ export class AudiobookService {
           cleanedAt?: string;
           completedAt?: string;
           linkedAudioPath?: string;
+          linkedAudioPathValid?: boolean;
           metadata?: { title?: string; author?: string; year?: string; coverImagePath?: string; outputFilename?: string; };
           analytics?: { ttsJobs?: any[]; cleanupJobs?: any[]; };
         }) => ({

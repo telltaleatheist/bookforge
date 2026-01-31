@@ -40,6 +40,15 @@ import {
   BLOCK_MARKER
 } from './epub-processor.js';
 
+/**
+ * Strip [[BLOCK]] markers from text for storage in skipped chunks.
+ * The EPUB content doesn't have these markers - they're internal processing artifacts.
+ * Storing text without markers enables the edit functionality to find the text in the EPUB.
+ */
+function stripBlockMarkers(text: string): string {
+  return text.replace(/\n*\[\[BLOCK\]\]\n*/g, '\n\n').trim();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -824,6 +833,7 @@ async function cleanChunkWithClaude(
         skipFallbackCount++;
         console.warn(`[Claude] Suspicious skip: ${text.length} chars is too large for legitimate skip`);
         // Track the skipped chunk with details
+        // Strip [[BLOCK]] markers so text can be found in EPUB for editing
         if (chunkMeta) {
           skippedChunks.push({
             chapterTitle: chunkMeta.chapterTitle,
@@ -831,7 +841,7 @@ async function cleanChunkWithClaude(
             overallChunkNumber: chunkMeta.overallChunkNumber,
             totalChunks: chunkMeta.totalChunks,
             reason: 'content-skip',
-            text: text,
+            text: stripBlockMarkers(text),
             aiResponse: cleaned.substring(0, 500)
           });
         }
@@ -870,6 +880,7 @@ async function cleanChunkWithClaude(
       if (isCopyrightRefusal) {
         copyrightFallbackCount++;
         // Track the skipped chunk with details
+        // Strip [[BLOCK]] markers so text can be found in EPUB for editing
         if (chunkMeta) {
           skippedChunks.push({
             chapterTitle: chunkMeta.chapterTitle,
@@ -877,7 +888,7 @@ async function cleanChunkWithClaude(
             overallChunkNumber: chunkMeta.overallChunkNumber,
             totalChunks: chunkMeta.totalChunks,
             reason: 'copyright',
-            text: text,
+            text: stripBlockMarkers(text),
             aiResponse: cleaned.substring(0, 500)
           });
         }
@@ -949,6 +960,7 @@ async function cleanChunkWithOpenAI(
         skipFallbackCount++;
         console.warn(`[OpenAI] Suspicious skip: ${text.length} chars is too large for legitimate skip`);
         // Track the skipped chunk with details
+        // Strip [[BLOCK]] markers so text can be found in EPUB for editing
         if (chunkMeta) {
           skippedChunks.push({
             chapterTitle: chunkMeta.chapterTitle,
@@ -956,7 +968,7 @@ async function cleanChunkWithOpenAI(
             overallChunkNumber: chunkMeta.overallChunkNumber,
             totalChunks: chunkMeta.totalChunks,
             reason: 'content-skip',
-            text: text,
+            text: stripBlockMarkers(text),
             aiResponse: cleaned.substring(0, 500)
           });
         }
@@ -994,6 +1006,7 @@ async function cleanChunkWithOpenAI(
       if (isCopyrightRefusal) {
         copyrightFallbackCount++;
         // Track the skipped chunk with details
+        // Strip [[BLOCK]] markers so text can be found in EPUB for editing
         if (chunkMeta) {
           skippedChunks.push({
             chapterTitle: chunkMeta.chapterTitle,
@@ -1001,7 +1014,7 @@ async function cleanChunkWithOpenAI(
             overallChunkNumber: chunkMeta.overallChunkNumber,
             totalChunks: chunkMeta.totalChunks,
             reason: 'copyright',
-            text: text,
+            text: stripBlockMarkers(text),
             aiResponse: cleaned.substring(0, 500)
           });
         }

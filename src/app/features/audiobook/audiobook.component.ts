@@ -154,6 +154,7 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                     [metadata]="selectedMetadata()"
                     [saving]="savingMetadata()"
                     [audioFilePath]="audioFilePath()"
+                    [audioFilePathValid]="audioFilePathValid()"
                     (metadataChange)="onMetadataChange($event)"
                     (coverChange)="onCoverChange($event)"
                     (save)="onSaveMetadata($event)"
@@ -568,6 +569,21 @@ export class AudiobookComponent implements OnInit {
     return '';
   });
 
+  // Whether the audio file path is valid on the current system
+  readonly audioFilePathValid = computed(() => {
+    const item = this.selectedItem();
+    if (!item) return true;  // No item = no error to show
+
+    // If there's a linked path, check if it's valid
+    if (item.linkedAudioPath) {
+      // linkedAudioPathValid is explicitly set when loading from BFP
+      // If undefined, assume valid (backwards compatibility with auto-detected paths)
+      return item.linkedAudioPathValid !== false;
+    }
+
+    return true;
+  });
+
   // Generated filename from metadata (used when no custom filename set)
   readonly generatedFilename = computed(() => {
     const meta = this.selectedMetadata();
@@ -768,6 +784,7 @@ export class AudiobookComponent implements OnInit {
           hasCleaned,
           cleanedFilename,
           linkedAudioPath: project.linkedAudioPath,  // Load manually linked path from BFP
+          linkedAudioPathValid: project.linkedAudioPathValid,  // Cross-platform path validation
           skippedChunksPath: hasSkippedChunks ? skippedChunksFile : undefined
         });
 
@@ -834,8 +851,8 @@ export class AudiobookComponent implements OnInit {
     // Update queue items and sort (completed at bottom)
     this.queueItems.update(items => {
       const updated = items.map(item => {
-        // Skip if already has a manually linked path
-        if (item.linkedAudioPath) {
+        // Skip if already has a manually linked path that's valid on this system
+        if (item.linkedAudioPath && item.linkedAudioPathValid !== false) {
           return { ...item, hasAudiobook: true };
         }
 

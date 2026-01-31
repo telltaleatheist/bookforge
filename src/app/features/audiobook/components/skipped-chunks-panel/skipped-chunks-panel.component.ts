@@ -524,9 +524,9 @@ export class SkippedChunksPanelComponent implements OnChanges {
   }
 
   async saveEdit(index: number, chunk: SkippedChunk): Promise<void> {
-    // Use original epub for editing - skipped chunks contain text from the original,
-    // which was skipped/removed during AI cleanup and doesn't exist in cleaned epub
-    const epubPath = this.originalEpubPath() || this.cleanedEpubPath();
+    // Use cleaned epub for editing - skipped chunks contain text from the cleaned epub
+    // (that's what TTS reads from), not the original
+    const epubPath = this.cleanedEpubPath() || this.originalEpubPath();
     if (!epubPath) {
       this.error.set('No EPUB path available');
       return;
