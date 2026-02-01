@@ -949,7 +949,7 @@ export class TtsSettingsComponent implements OnInit {
         }
         this.lastCheckedPath = path;
         this.checkForResumableSession(path);
-        this.updateChapterCount();
+        this.openAndUpdateChapterCount(path);
       } else {
         // Clear resume state when no epub
         this.lastCheckedPath = null;
@@ -962,9 +962,14 @@ export class TtsSettingsComponent implements OnInit {
   }
 
   /**
-   * Get chapter count from the currently open EPUB
+   * Open the EPUB at the given path and update chapter count.
+   * This ensures we read chapters from the correct EPUB (cleaned vs original).
    */
-  private updateChapterCount(): void {
+  private async openAndUpdateChapterCount(epubPath: string): Promise<void> {
+    // Check if epubService is already open at this path
+    if (this.epubService.currentPath() !== epubPath) {
+      await this.epubService.open(epubPath);
+    }
     const chapters = this.epubService.chapters();
     this.chapterCount.set(chapters.length);
   }
