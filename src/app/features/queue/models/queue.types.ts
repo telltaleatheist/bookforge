@@ -24,6 +24,8 @@ export interface ParallelWorkerProgress {
   // For resume jobs, this may be less than (sentenceEnd - sentenceStart + 1)
   // because some sentences in the range are already complete
   totalAssigned?: number;
+  // Actual TTS conversions done (for resume jobs, excludes skipped sentences)
+  actualConversions?: number;
 }
 
 // Base job interface

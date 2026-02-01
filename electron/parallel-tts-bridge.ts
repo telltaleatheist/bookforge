@@ -498,6 +498,9 @@ export interface AggregatedProgress {
   assemblyProgress?: number;  // 0-100 for current sub-phase
   assemblyChapter?: number;   // Current chapter being processed
   assemblyTotalChapters?: number;
+  // Historical data for accurate elapsed time across runs
+  totalElapsedSeconds?: number;  // Total elapsed across all runs (for resume jobs)
+  historicalRate?: number;       // Historical sentences per minute average
 }
 
 export interface ParallelConversionResult {
@@ -586,9 +589,215 @@ interface ConversionSession {
   watchdogTimer?: NodeJS.Timeout;
   // ETA calculation - exclude model setup time
   firstSentenceCompletedTime?: number;  // When first sentence actually completed (excludes model loading)
+  // Persistent state - loaded from previous runs
+  persistentState?: PersistentSessionState;
+  // State save timer
+  stateSaveTimer?: NodeJS.Timeout;
+}
+
+// Persistent session state - saved to disk for resume capability
+interface SessionRunRecord {
+  runId: string;
+  startTime: string;           // ISO timestamp
+  endTime?: string;            // ISO timestamp
+  elapsedSeconds: number;
+  sentencesProcessedInRun: number;
+  sentencesPerMinute: number;
+  workerCount: number;
+  status: 'running' | 'completed' | 'cancelled' | 'error';
+  error?: string;
+}
+
+interface PersistentSessionState {
+  sessionId: string;
+  processDir: string;
+  originalStartTime: string;   // When the book was first started
+  runs: SessionRunRecord[];
+  // Aggregated totals
+  totalElapsedSeconds: number;
+  totalSentencesProcessed: number;
+  // For ETA calculation on resume
+  historicalSentencesPerMinute: number;
+  // Book info
+  totalSentences: number;
+  totalChapters: number;
+  // Settings used
+  settings: {
+    device: string;
+    language: string;
+    ttsEngine: string;
+    fineTuned?: string;
+  };
+  // Metadata
+  metadata?: {
+    title?: string;
+    author?: string;
+  };
 }
 
 const activeSessions: Map<string, ConversionSession> = new Map();
+const STATE_SAVE_INTERVAL = 30000; // Save state every 30 seconds
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Persistent Session State Functions
+// ─────────────────────────────────────────────────────────────────────────────
+
+function getStateFilePath(processDir: string): string {
+  return path.join(processDir, 'session_state.json');
+}
+
+async function loadPersistentState(processDir: string): Promise<PersistentSessionState | null> {
+  try {
+    const stateFile = getStateFilePath(processDir);
+    if (fs.existsSync(stateFile)) {
+      const data = fs.readFileSync(stateFile, 'utf8');
+      const state = JSON.parse(data) as PersistentSessionState;
+      console.log(`[PARALLEL-TTS] Loaded persistent state: ${state.runs.length} previous runs, ${state.totalElapsedSeconds}s total elapsed`);
+      return state;
+    }
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Failed to load persistent state:', err);
+  }
+  return null;
+}
+
+async function savePersistentState(session: ConversionSession): Promise<void> {
+  if (!session.prepInfo?.processDir) return;
+
+  try {
+    const now = Date.now();
+    const currentRunElapsed = Math.round((now - session.startTime) / 1000);
+    const sessionDone = session.isResumeJob
+      ? session.workers.reduce((sum, w) => sum + (w.actualConversions || 0), 0)
+      : session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
+
+    // Calculate current run's rate
+    const durationMinutes = currentRunElapsed / 60;
+    const currentSentencesPerMinute = durationMinutes > 0 && sessionDone > 0
+      ? Math.round((sessionDone / durationMinutes) * 10) / 10
+      : 0;
+
+    // Get or create state
+    let state = session.persistentState;
+    if (!state) {
+      state = {
+        sessionId: session.prepInfo.sessionId,
+        processDir: session.prepInfo.processDir,
+        originalStartTime: new Date(session.startTime).toISOString(),
+        runs: [],
+        totalElapsedSeconds: 0,
+        totalSentencesProcessed: 0,
+        historicalSentencesPerMinute: 0,
+        totalSentences: session.prepInfo.totalSentences,
+        totalChapters: session.prepInfo.totalChapters,
+        settings: {
+          device: session.config.settings.device,
+          language: session.config.settings.language,
+          ttsEngine: session.config.settings.ttsEngine,
+          fineTuned: session.config.settings.fineTuned
+        },
+        metadata: session.config.metadata ? {
+          title: session.config.metadata.title,
+          author: session.config.metadata.author
+        } : undefined
+      };
+      session.persistentState = state;
+    }
+
+    // Find or create current run record
+    const currentRunId = session.jobId;
+    let currentRun = state.runs.find(r => r.runId === currentRunId);
+    if (!currentRun) {
+      currentRun = {
+        runId: currentRunId,
+        startTime: new Date(session.startTime).toISOString(),
+        elapsedSeconds: 0,
+        sentencesProcessedInRun: 0,
+        sentencesPerMinute: 0,
+        workerCount: session.config.workerCount,
+        status: 'running'
+      };
+      state.runs.push(currentRun);
+    }
+
+    // Update current run
+    currentRun.elapsedSeconds = currentRunElapsed;
+    currentRun.sentencesProcessedInRun = sessionDone;
+    currentRun.sentencesPerMinute = currentSentencesPerMinute;
+
+    // Calculate totals (sum of all completed runs + current run)
+    const completedRuns = state.runs.filter(r => r.runId !== currentRunId);
+    const completedElapsed = completedRuns.reduce((sum, r) => sum + r.elapsedSeconds, 0);
+    const completedSentences = completedRuns.reduce((sum, r) => sum + r.sentencesProcessedInRun, 0);
+
+    state.totalElapsedSeconds = completedElapsed + currentRunElapsed;
+    state.totalSentencesProcessed = completedSentences + sessionDone;
+
+    // Calculate historical rate (weighted average)
+    if (state.totalElapsedSeconds > 0 && state.totalSentencesProcessed > 0) {
+      state.historicalSentencesPerMinute = Math.round(
+        (state.totalSentencesProcessed / (state.totalElapsedSeconds / 60)) * 10
+      ) / 10;
+    }
+
+    // Save to disk
+    const stateFile = getStateFilePath(session.prepInfo.processDir);
+    fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Failed to save persistent state:', err);
+  }
+}
+
+async function finalizeRunState(
+  session: ConversionSession,
+  status: 'completed' | 'cancelled' | 'error',
+  error?: string
+): Promise<void> {
+  if (!session.prepInfo?.processDir || !session.persistentState) return;
+
+  try {
+    const state = session.persistentState;
+    const currentRun = state.runs.find(r => r.runId === session.jobId);
+    if (currentRun) {
+      currentRun.endTime = new Date().toISOString();
+      currentRun.status = status;
+      if (error) currentRun.error = error;
+    }
+
+    // Recalculate totals
+    state.totalElapsedSeconds = state.runs.reduce((sum, r) => sum + r.elapsedSeconds, 0);
+    state.totalSentencesProcessed = state.runs.reduce((sum, r) => sum + r.sentencesProcessedInRun, 0);
+
+    if (state.totalElapsedSeconds > 0 && state.totalSentencesProcessed > 0) {
+      state.historicalSentencesPerMinute = Math.round(
+        (state.totalSentencesProcessed / (state.totalElapsedSeconds / 60)) * 10
+      ) / 10;
+    }
+
+    // Save final state
+    const stateFile = getStateFilePath(session.prepInfo.processDir);
+    fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+    console.log(`[PARALLEL-TTS] Finalized run state: ${status}, total ${state.totalElapsedSeconds}s, ${state.totalSentencesProcessed} sentences`);
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Failed to finalize run state:', err);
+  }
+}
+
+function startStateSaveTimer(session: ConversionSession): void {
+  if (session.stateSaveTimer) return;
+  session.stateSaveTimer = setInterval(() => {
+    savePersistentState(session).catch(err => {
+      console.error('[PARALLEL-TTS] Periodic state save failed:', err);
+    });
+  }, STATE_SAVE_INTERVAL);
+}
+
+function stopStateSaveTimer(session: ConversionSession): void {
+  if (session.stateSaveTimer) {
+    clearInterval(session.stateSaveTimer);
+    session.stateSaveTimer = undefined;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration Functions
@@ -1969,7 +2178,8 @@ function serializeWorkers(workers: WorkerState[]): Omit<WorkerState, 'process'>[
     retryCount: w.retryCount,
     chapterStart: w.chapterStart,
     chapterEnd: w.chapterEnd,
-    totalAssigned: w.totalAssigned
+    totalAssigned: w.totalAssigned,
+    actualConversions: w.actualConversions
   }));
 }
 
@@ -1978,6 +2188,9 @@ const progressHistory: Map<string, { completedSentences: number; timestamp: numb
 const ETA_SAMPLE_WINDOW = 30000; // Use last 30 seconds of data for ETA calculation
 const MIN_SAMPLES_FOR_ETA = 3; // Need at least 3 data points before showing ETA
 const MIN_SESSION_TIME_FOR_ETA = 10; // Wait at least 10 seconds before showing ETA
+// Track last save for incremental state saving
+const lastStateSave: Map<string, { sentences: number; time: number }> = new Map();
+const STATE_SAVE_SENTENCE_INTERVAL = 10; // Save state every 10 sentences
 
 function emitProgress(session: ConversionSession): void {
   if (!mainWindow || !session.prepInfo) return;
@@ -2071,6 +2284,15 @@ function emitProgress(session: ConversionSession): void {
     rateDisplay = ` (${sentencesPerMinute.toFixed(1)}/min)`;
   }
 
+  // Calculate total elapsed including previous runs
+  const currentRunElapsed = Math.round((now - session.startTime) / 1000);
+  const previousRunsElapsed = session.persistentState
+    ? session.persistentState.runs
+        .filter(r => r.runId !== session.jobId)
+        .reduce((sum, r) => sum + r.elapsedSeconds, 0)
+    : 0;
+  const totalElapsedSeconds = previousRunsElapsed + currentRunElapsed;
+
   const progress: AggregatedProgress = {
     phase: 'converting',
     totalSentences: session.prepInfo.totalSentences,
@@ -2082,10 +2304,22 @@ function emitProgress(session: ConversionSession): void {
     estimatedRemaining,
     message: session.isResumeJob
       ? `Resuming: ${sentencesDoneInSession} new${rateDisplay}`
-      : `${activeWorkers} workers${rateDisplay}`
+      : `${activeWorkers} workers${rateDisplay}`,
+    // Historical data for accurate elapsed time display
+    totalElapsedSeconds,
+    historicalRate: session.persistentState?.historicalSentencesPerMinute
   };
 
   mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
+
+  // Save state incrementally (every N sentences)
+  const lastSave = lastStateSave.get(session.jobId) || { sentences: 0, time: 0 };
+  if (sentencesDoneInSession - lastSave.sentences >= STATE_SAVE_SENTENCE_INTERVAL) {
+    lastStateSave.set(session.jobId, { sentences: sentencesDoneInSession, time: now });
+    savePersistentState(session).catch(err => {
+      console.error('[PARALLEL-TTS] Incremental state save failed:', err);
+    });
+  }
 }
 
 function emitComplete(
@@ -2098,7 +2332,14 @@ function emitComplete(
 
   // Clean up
   progressHistory.delete(session.jobId);
+  lastStateSave.delete(session.jobId);
   stopWatchdog(session);
+  stopStateSaveTimer(session);
+
+  // Finalize persistent state
+  finalizeRunState(session, success ? 'completed' : 'error', error).catch(err => {
+    console.error('[PARALLEL-TTS] Failed to finalize state:', err);
+  });
 
   const completedAt = new Date().toISOString();
   const duration = Math.round((Date.now() - session.startTime) / 1000);
@@ -2135,7 +2376,17 @@ function emitComplete(
     ? Math.round((sessionDone / durationMinutes) * 10) / 10
     : 0;
 
-  // Build analytics data
+  // Get persistent state for comprehensive analytics
+  const persistentState = session.persistentState;
+  const totalElapsedAcrossRuns = persistentState
+    ? persistentState.totalElapsedSeconds
+    : duration;
+  const totalSentencesAcrossRuns = persistentState
+    ? persistentState.totalSentencesProcessed
+    : sessionDone;
+  const historicalRate = persistentState?.historicalSentencesPerMinute || sentencesPerMinute;
+
+  // Build analytics data (includes both session and historical data)
   const analytics = {
     jobId: session.jobId,
     startedAt: new Date(session.startTime).toISOString(),
@@ -2155,7 +2406,14 @@ function emitComplete(
     outputPath,
     error,
     isResumeJob: session.isResumeJob || false,
-    sentencesProcessedInSession: sessionDone
+    sentencesProcessedInSession: sessionDone,
+    // Historical data from all runs
+    totalElapsedSecondsAllRuns: totalElapsedAcrossRuns,
+    totalSentencesProcessedAllRuns: totalSentencesAcrossRuns,
+    averageSentencesPerMinuteAllRuns: historicalRate,
+    numberOfRuns: persistentState?.runs.length || 1,
+    originalStartTime: persistentState?.originalStartTime || new Date(session.startTime).toISOString(),
+    runs: persistentState?.runs || []
   };
 
   const progress: AggregatedProgress = {
@@ -2312,6 +2570,17 @@ export async function startParallelConversion(
 
   activeSessions.set(jobId, session);
 
+  // Load any existing persistent state (for tracking across restarts)
+  const existingState = await loadPersistentState(prepInfo.processDir);
+  if (existingState) {
+    session.persistentState = existingState;
+    console.log(`[PARALLEL-TTS] Loaded persistent state from previous runs: ${existingState.totalElapsedSeconds}s elapsed`);
+  }
+
+  // Start periodic state saving
+  startStateSaveTimer(session);
+  await savePersistentState(session); // Save initial state
+
   // Emit initial progress
   if (mainWindow) {
     const progress: AggregatedProgress = {
@@ -2415,6 +2684,12 @@ export function stopParallelConversion(jobId: string): boolean {
 function emitCancelledAnalytics(session: ConversionSession): void {
   if (!mainWindow || !session.prepInfo) return;
 
+  // Stop state save timer and finalize state
+  stopStateSaveTimer(session);
+  finalizeRunState(session, 'cancelled', 'Cancelled by user').catch(err => {
+    console.error('[PARALLEL-TTS] Failed to finalize cancelled state:', err);
+  });
+
   const cancelledAt = new Date().toISOString();
   const duration = Math.round((Date.now() - session.startTime) / 1000);
 
@@ -2433,7 +2708,17 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     ? Math.round((sessionDone / durationMinutes) * 10) / 10
     : 0;
 
-  // Build analytics for cancelled job
+  // Get persistent state for comprehensive analytics
+  const persistentState = session.persistentState;
+  const totalElapsedAcrossRuns = persistentState
+    ? persistentState.totalElapsedSeconds
+    : duration;
+  const totalSentencesAcrossRuns = persistentState
+    ? persistentState.totalSentencesProcessed
+    : sessionDone;
+  const historicalRate = persistentState?.historicalSentencesPerMinute || sentencesPerMinute;
+
+  // Build analytics for cancelled job (includes historical data)
   const analytics = {
     jobId: session.jobId,
     startedAt: new Date(session.startTime).toISOString(),
@@ -2454,7 +2739,14 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     isResumeJob: session.isResumeJob || false,
     sentencesProcessedInSession: sessionDone,
     wasCancelled: true,
-    completedSentencesAtCancel: completedSentences
+    completedSentencesAtCancel: completedSentences,
+    // Historical data from all runs
+    totalElapsedSecondsAllRuns: totalElapsedAcrossRuns,
+    totalSentencesProcessedAllRuns: totalSentencesAcrossRuns,
+    averageSentencesPerMinuteAllRuns: historicalRate,
+    numberOfRuns: persistentState?.runs.length || 1,
+    originalStartTime: persistentState?.originalStartTime || new Date(session.startTime).toISOString(),
+    runs: persistentState?.runs || []
   };
 
   const progress: AggregatedProgress = {
@@ -3285,6 +3577,17 @@ export async function resumeParallelConversion(
   };
 
   activeSessions.set(jobId, session);
+
+  // Load persistent state from previous runs
+  const existingState = await loadPersistentState(prepInfo.processDir);
+  if (existingState) {
+    session.persistentState = existingState;
+    console.log(`[PARALLEL-TTS] Resume: Loaded persistent state - ${existingState.runs.length} previous runs, ${existingState.totalElapsedSeconds}s total elapsed, ${existingState.historicalSentencesPerMinute} sent/min avg`);
+  }
+
+  // Start periodic state saving
+  startStateSaveTimer(session);
+  await savePersistentState(session); // Save initial state for this run
 
   console.log(`[PARALLEL-TTS] Resume session created: baseline=${session.baselineCompleted}, missing=${session.totalMissing}`);
 

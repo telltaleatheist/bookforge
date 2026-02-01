@@ -693,8 +693,10 @@ export class JobProgressComponent implements OnDestroy {
         const totalPerWorker = totalSentences / workerCount;
         // Distribute already-completed sentences evenly as baseline
         const baselinePerWorker = job.resumeCompletedSentences / workerCount;
+        // Use actualConversions for resume jobs (accurate count of TTS work done)
+        const workDone = worker.actualConversions ?? worker.completedSentences;
         // Worker's progress = (baseline + work done) / total responsibility
-        return Math.min(100, ((baselinePerWorker + worker.completedSentences) / totalPerWorker) * 100);
+        return Math.min(100, ((baselinePerWorker + workDone) / totalPerWorker) * 100);
       }
     }
 
