@@ -375,6 +375,9 @@ export class QueueService {
   }
 
   private handleJobComplete(result: JobResult): void {
+    console.log(`[QUEUE] handleJobComplete called for job ${result.jobId}, success=${result.success}`);
+    console.log(`[QUEUE] Current state: isRunning=${this._isRunning()}, currentJobId=${this._currentJobId()}`);
+
     // Get the job before updating to capture the type
     const completedJob = this._jobs().find(j => j.id === result.jobId);
 
@@ -430,7 +433,10 @@ export class QueueService {
 
       // Process next job if queue is running
       if (this._isRunning()) {
+        console.log(`[QUEUE] Job ${result.jobId} completed, processing next job`);
         this.processNext();
+      } else {
+        console.log(`[QUEUE] Job ${result.jobId} completed but queue is paused, not processing next`);
       }
     } else {
       console.log(`[QUEUE] Job ${result.jobId} completed but is not the current job (${this._currentJobId()}), not processing next`);

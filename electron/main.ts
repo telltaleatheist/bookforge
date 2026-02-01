@@ -4307,6 +4307,7 @@ function setupIpcHandlers(): void {
       );
 
       // Emit job completion
+      console.log(`[RESEMBLE-QUEUE] Job ${jobId}: Sending queue:job-complete event, success=${result.success}`);
       if (mainWindow) {
         mainWindow.webContents.send('queue:job-complete', {
           jobId,
@@ -4314,6 +4315,9 @@ function setupIpcHandlers(): void {
           outputPath: result.outputPath,
           error: result.error
         });
+        console.log(`[RESEMBLE-QUEUE] Job ${jobId}: queue:job-complete event sent`);
+      } else {
+        console.error(`[RESEMBLE-QUEUE] Job ${jobId}: mainWindow is null, cannot send queue:job-complete`);
       }
 
       // Update project state if bfpPath provided
