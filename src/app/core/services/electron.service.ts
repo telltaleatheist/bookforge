@@ -931,6 +931,8 @@ export class ElectronService {
       exportedAt?: string;
       cleanedAt?: string;
       completedAt?: string;
+      linkedAudioPath?: string;
+      linkedAudioPathValid?: boolean;
       metadata?: {
         title?: string;
         author?: string;
