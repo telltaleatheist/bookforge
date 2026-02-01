@@ -325,7 +325,8 @@ export async function startConversion(
     '--top_p', settings.topP.toString(),
     '--top_k', settings.topK.toString(),
     '--repetition_penalty', settings.repetitionPenalty.toString(),
-    '--speed', settings.speed.toString()
+    '--speed', settings.speed.toString(),
+    '--skip_deps'  // Skip dependency checks - already installed
   ];
 
   if (settings.enableTextSplitting) {
