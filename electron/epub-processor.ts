@@ -2288,9 +2288,12 @@ export function extractBlockTextsWithMarkers(xhtml: string): string {
 
 /**
  * Split text that was joined with BLOCK_MARKER back into individual texts.
+ * Uses a flexible regex to handle whitespace variations from AI responses.
  */
 export function splitBlockTexts(markedText: string): string[] {
-  return markedText.split(BLOCK_MARKER).map(t => t.trim()).filter(t => t.length > 0);
+  // Match [[BLOCK]] with optional surrounding whitespace (AI might change \n\n to \n or remove it)
+  const flexibleMarkerRegex = /\s*\[\[BLOCK\]\]\s*/g;
+  return markedText.split(flexibleMarkerRegex).map(t => t.trim()).filter(t => t.length > 0);
 }
 
 /**

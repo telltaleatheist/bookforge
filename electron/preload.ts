@@ -980,6 +980,10 @@ export interface ElectronAPI {
       success: boolean;
       error?: string;
     }>;
+    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup', analytics: { jobId: string; [key: string]: unknown }) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
     getFolder: (bfpPath: string) => Promise<{
       success: boolean;
       folder?: string;
@@ -1476,6 +1480,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:export-from-project', bfpPath, epubData, deletedBlockExamples),
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) =>
       ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
+    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup', analytics: { jobId: string; [key: string]: unknown }) =>
+      ipcRenderer.invoke('audiobook:append-analytics', bfpPath, jobType, analytics),
     getFolder: (bfpPath: string) =>
       ipcRenderer.invoke('audiobook:get-folder', bfpPath),
     listProjectsWithAudiobook: () =>

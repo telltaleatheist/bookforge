@@ -136,39 +136,6 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
         }
       </div>
 
-      <!-- Cleanup Mode Selection -->
-      <div class="mode-section">
-        <label class="field-label">Cleanup Mode</label>
-        <div class="mode-options">
-          <label class="mode-option" [class.selected]="cleanupMode() === 'structure'">
-            <input
-              type="radio"
-              name="cleanupMode"
-              value="structure"
-              [checked]="cleanupMode() === 'structure'"
-              (change)="setCleanupMode('structure')"
-            />
-            <div class="mode-content">
-              <span class="mode-name">Structure Preserving</span>
-              <span class="mode-desc">Preserves HTML tags, cleans text inside elements</span>
-            </div>
-          </label>
-          <label class="mode-option" [class.selected]="cleanupMode() === 'full'">
-            <input
-              type="radio"
-              name="cleanupMode"
-              value="full"
-              [checked]="cleanupMode() === 'full'"
-              (change)="setCleanupMode('full')"
-            />
-            <div class="mode-content">
-              <span class="mode-name">Full Document</span>
-              <span class="mode-desc">Sends HTML to AI - can fix structural issues but riskier</span>
-            </div>
-          </label>
-        </div>
-      </div>
-
       <!-- Parallel Workers Option (only for Claude/OpenAI) -->
       @if (supportsParallel()) {
         <div class="parallel-section">
@@ -492,66 +459,6 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
       display: flex;
       justify-content: flex-end;
       margin-top: 0.5rem;
-    }
-
-    .mode-section {
-      padding: 0.75rem;
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-subtle);
-      border-radius: 6px;
-    }
-
-    .mode-options {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-    }
-
-    .mode-option {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.5rem;
-      padding: 0.625rem 0.75rem;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all 0.15s;
-
-      input[type="radio"] {
-        margin-top: 0.125rem;
-        accent-color: var(--accent);
-      }
-
-      .mode-content {
-        display: flex;
-        flex-direction: column;
-        gap: 0.125rem;
-      }
-
-      .mode-name {
-        font-size: 0.8125rem;
-        font-weight: 500;
-        color: var(--text-primary);
-      }
-
-      .mode-desc {
-        font-size: 0.6875rem;
-        color: var(--text-tertiary);
-      }
-
-      &:hover {
-        border-color: var(--border-hover);
-      }
-
-      &.selected {
-        border-color: var(--accent);
-        background: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
-
-        .mode-name {
-          color: var(--accent);
-        }
-      }
     }
 
     .parallel-section {
@@ -922,10 +829,6 @@ export class AiCleanupPanelComponent implements OnInit {
 
   setParallelWorkers(count: number): void {
     this.parallelWorkers.set(count);
-  }
-
-  setCleanupMode(mode: 'structure' | 'full'): void {
-    this.cleanupMode.set(mode);
   }
 
   toggleTestMode(event: Event): void {

@@ -184,93 +184,42 @@ export interface VoiceOption {
           </div>
         </div>
 
-        <!-- Parallel Processing (not shown for Orpheus - always uses resumable mode) -->
+        <!-- Parallel Processing (not shown for Orpheus - always uses single worker) -->
         @if (settings().ttsEngine !== 'orpheus') {
         <div class="parallel-section">
           <div class="section-header">
-            <span class="section-title">Parallel Processing</span>
+            <span class="section-title">Parallel Workers</span>
             @if (loadingHardwareInfo()) {
-              <span class="loading-badge">Detecting hardware...</span>
+              <span class="loading-badge">Detecting RAM...</span>
             } @else if (hardwareInfo()) {
               <span class="hardware-badge">{{ hardwareInfo()!.reason }}</span>
             }
           </div>
-
-          <label class="checkbox-option" [class.selected]="settings().useParallel">
-            <input
-              type="checkbox"
-              [ngModel]="settings().useParallel"
-              (ngModelChange)="updateSetting('useParallel', $event)"
-            />
-            <div class="checkbox-content">
-              <span class="checkbox-label">Enable parallel workers</span>
-              <span class="checkbox-desc">Use multiple TTS workers simultaneously for faster conversion</span>
-            </div>
-          </label>
-
-          <!-- Worker count and division mode -->
-          @if (settings().useParallel) {
-            <div class="form-group worker-count">
-              <label>Worker Count</label>
-              <div class="worker-options">
-                <label class="worker-option" [class.selected]="!settings().parallelWorkers || settings().parallelWorkers === 0">
-                  <input
-                    type="radio"
-                    name="workerCount"
-                    [value]="0"
-                    [ngModel]="settings().parallelWorkers || 0"
-                    (ngModelChange)="updateSetting('parallelWorkers', $event)"
-                  />
-                  <span>Auto ({{ hardwareInfo()?.recommendedWorkers || 2 }})</span>
-                </label>
-                @for (count of [1, 2, 3, 4]; track count) {
-                  <label class="worker-option" [class.selected]="settings().parallelWorkers === count">
-                    <input
-                      type="radio"
-                      name="workerCount"
-                      [value]="count"
-                      [ngModel]="settings().parallelWorkers || 0"
-                      (ngModelChange)="updateSetting('parallelWorkers', $event)"
-                    />
-                    <span>{{ count }}</span>
-                  </label>
-                }
-              </div>
-              <span class="hint">More workers = faster conversion but more memory usage</span>
-            </div>
-
-            <div class="form-group parallel-mode">
-              <label>Division Mode</label>
-              <div class="mode-options">
-                <label class="mode-option" [class.selected]="!settings().parallelMode || settings().parallelMode === 'sentences'">
-                  <input
-                    type="radio"
-                    name="parallelMode"
-                    value="sentences"
-                    [ngModel]="settings().parallelMode || 'sentences'"
-                    (ngModelChange)="updateSetting('parallelMode', $event)"
-                  />
-                  <div class="mode-content">
-                    <span class="mode-label">By Sentences</span>
-                    <span class="mode-desc">Fine-grained division for better load balancing</span>
-                  </div>
-                </label>
-                <label class="mode-option" [class.selected]="settings().parallelMode === 'chapters'">
-                  <input
-                    type="radio"
-                    name="parallelMode"
-                    value="chapters"
-                    [ngModel]="settings().parallelMode || 'sentences'"
-                    (ngModelChange)="updateSetting('parallelMode', $event)"
-                  />
-                  <div class="mode-content">
-                    <span class="mode-label">By Chapters</span>
-                    <span class="mode-desc">Natural boundaries, simpler assembly</span>
-                  </div>
-                </label>
-              </div>
-            </div>
-          }
+          <div class="worker-options">
+            <label class="worker-option" [class.selected]="!settings().parallelWorkers || settings().parallelWorkers === 0">
+              <input
+                type="radio"
+                name="workerCount"
+                [value]="0"
+                [ngModel]="settings().parallelWorkers || 0"
+                (ngModelChange)="onWorkerCountChange($event)"
+              />
+              <span>Auto ({{ hardwareInfo()?.recommendedWorkers || 2 }})</span>
+            </label>
+            @for (count of [1, 2, 3, 4]; track count) {
+              <label class="worker-option" [class.selected]="settings().parallelWorkers === count">
+                <input
+                  type="radio"
+                  name="workerCount"
+                  [value]="count"
+                  [ngModel]="settings().parallelWorkers || 0"
+                  (ngModelChange)="onWorkerCountChange($event)"
+                />
+                <span>{{ count }}</span>
+              </label>
+            }
+          </div>
+          <span class="hint">More workers = faster conversion but more memory (~3GB per worker)</span>
         </div>
         }
 
@@ -693,52 +642,6 @@ export interface VoiceOption {
       50% { opacity: 1; }
     }
 
-    .checkbox-option {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.75rem;
-      padding: 0.75rem;
-      background: var(--bg-elevated);
-      border: 2px solid var(--border-default);
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all 0.15s;
-
-      &:hover {
-        border-color: var(--border-hover);
-      }
-
-      &.selected {
-        border-color: var(--accent-primary);
-        background: color-mix(in srgb, var(--accent-primary) 5%, transparent);
-      }
-
-      input[type="checkbox"] {
-        margin-top: 0.125rem;
-      }
-
-      .checkbox-content {
-        display: flex;
-        flex-direction: column;
-        gap: 0.125rem;
-      }
-
-      .checkbox-label {
-        font-size: 0.875rem;
-        font-weight: 500;
-        color: var(--text-primary);
-      }
-
-      .checkbox-desc {
-        font-size: 0.75rem;
-        color: var(--text-muted);
-      }
-    }
-
-    .worker-count {
-      margin-top: 0.5rem;
-    }
-
     .worker-options {
       display: flex;
       gap: 0.5rem;
@@ -770,62 +673,6 @@ export interface VoiceOption {
       input[type="radio"] {
         display: none;
       }
-    }
-
-    .parallel-mode {
-      margin-top: 0.75rem;
-    }
-
-    .mode-options {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-    }
-
-    .mode-option {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.5rem;
-      padding: 0.75rem;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      border-radius: 4px;
-      cursor: pointer;
-      transition: all 0.15s;
-
-      &:hover {
-        border-color: var(--border-hover);
-      }
-
-      &.selected {
-        border-color: var(--accent-primary);
-        background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
-
-        .mode-label {
-          color: var(--accent-primary);
-        }
-      }
-
-      input[type="radio"] {
-        display: none;
-      }
-    }
-
-    .mode-content {
-      display: flex;
-      flex-direction: column;
-      gap: 0.125rem;
-    }
-
-    .mode-label {
-      font-size: 0.875rem;
-      font-weight: 500;
-      color: var(--text-primary);
-    }
-
-    .mode-desc {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
     }
 
     .resume-section {
@@ -1015,7 +862,7 @@ export class TtsSettingsComponent implements OnInit {
     topP: 0.9,
     topK: 40,
     repetitionPenalty: 2.0,
-    speed: 1.0,
+    speed: 1.25,
     enableTextSplitting: false
   });
   readonly epubPath = input<string>('');
@@ -1208,6 +1055,18 @@ export class TtsSettingsComponent implements OnInit {
     const current = this.settings();
     const updated = { ...current, [key]: value };
     this.settingsChange.emit(updated);
+  }
+
+  onWorkerCountChange(count: number): void {
+    const current = this.settings();
+    // Always enable parallel mode when setting worker count
+    // useParallel enables resumable mode which has no downside
+    this.settingsChange.emit({
+      ...current,
+      parallelWorkers: count,
+      useParallel: true,
+      parallelMode: 'sentences'  // Always use sentence-based division
+    });
   }
 
   onEngineChange(engine: string): void {

@@ -403,14 +403,13 @@ export class QueueService {
       })
     );
 
-    // Emit analytics event for external handlers (e.g., saving to BFP)
-    if (result.analytics && completedJob) {
-      this._lastCompletedJobWithAnalytics.set({
-        jobId: result.jobId,
-        jobType: completedJob.type,
-        bfpPath: completedJob.bfpPath,
-        analytics: result.analytics
-      });
+    // Save analytics directly to BFP (no longer using signal/effect pattern to avoid duplicates)
+    if (result.analytics && completedJob?.bfpPath) {
+      this.saveAnalyticsToBfp(
+        completedJob.bfpPath,
+        completedJob.type,
+        result.analytics
+      );
     }
 
     // Check if this was a standalone job
@@ -1357,6 +1356,41 @@ export class QueueService {
       console.log(`[QUEUE] Saved ${jobs.length} jobs to disk`);
     } catch (err) {
       console.error('[QUEUE] Error saving queue state:', err);
+    }
+  }
+
+  /**
+   * Save job analytics directly to the BFP project file.
+   * Called once per job completion to avoid duplicate saves from component effects.
+   * Uses the appendAnalytics IPC handler which atomically handles read-dedupe-write.
+   */
+  private async saveAnalyticsToBfp(
+    bfpPath: string,
+    jobType: string,
+    analytics: { jobId: string; [key: string]: unknown }
+  ): Promise<void> {
+    const electron = window.electron as any;
+    if (!electron?.audiobook?.appendAnalytics) {
+      console.warn('[QUEUE] Cannot save analytics - electron.audiobook.appendAnalytics not available');
+      return;
+    }
+
+    // Validate job type
+    if (jobType !== 'tts-conversion' && jobType !== 'ocr-cleanup') {
+      console.log('[QUEUE] Unknown job type for analytics:', jobType);
+      return;
+    }
+
+    try {
+      // Use the atomic appendAnalytics handler which handles deduplication
+      const result = await electron.audiobook.appendAnalytics(bfpPath, jobType, analytics);
+      if (result.success) {
+        console.log(`[QUEUE] Saved ${jobType} analytics to BFP:`, analytics.jobId);
+      } else {
+        console.error('[QUEUE] Failed to save analytics to BFP:', result.error);
+      }
+    } catch (err) {
+      console.error('[QUEUE] Error saving analytics to BFP:', err);
     }
   }
 

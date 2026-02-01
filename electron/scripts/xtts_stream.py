@@ -15,6 +15,8 @@ import sys
 import os
 import base64
 import io
+import gc
+from contextlib import nullcontext
 import numpy as np
 import torch
 import warnings
@@ -48,60 +50,38 @@ TTS_DIR = os.path.join(E2A_PATH, 'models', 'tts')
 VOICES_DIR = os.path.join(E2A_PATH, 'voices')
 DEFAULT_SAMPLERATE = 24000
 
-# Fine-tuned models available
+# Fine-tuned models available on HuggingFace (these are actual model checkpoints)
 FINE_TUNED_MODELS = {
     'ScarlettJohansson': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/ScarlettJohansson/',
-        'voice': os.path.join(VOICES_DIR, 'eng', 'adult', 'female', 'ScarlettJohansson_24000.wav')
     },
     'DavidAttenborough': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/DavidAttenborough/',
-        'voice': os.path.join(VOICES_DIR, 'eng', 'elder', 'male', 'DavidAttenborough_24000.wav')
     },
     'MorganFreeman': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/MorganFreeman/',
-        'voice': os.path.join(VOICES_DIR, 'eng', 'adult', 'male', 'MorganFreeman_24000.wav')
     },
     'NeilGaiman': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/NeilGaiman/',
-        'voice': os.path.join(VOICES_DIR, 'eng', 'adult', 'male', 'NeilGaiman_24000.wav')
     },
     'RayPorter': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/RayPorter/',
-        'voice': os.path.join(VOICES_DIR, 'eng', 'adult', 'male', 'RayPorter_24000.wav')
     },
     'RosamundPike': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/RosamundPike/',
-        'voice': os.path.join(VOICES_DIR, 'eng', 'adult', 'female', 'RosamundPike_24000.wav')
     },
-    'internal': {
-        'repo': 'coqui/XTTS-v2',
-        'sub': '',
-        'voice': os.path.join(VOICES_DIR, 'eng', 'adult', 'male', 'KumarDahl_24000.wav')
-    }
 }
 
-# Internal voice names from speakers_xtts.pth
-INTERNAL_VOICES = {
-    "ClaribelDervla": "Claribel Dervla", "DaisyStudious": "Daisy Studious", "GracieWise": "Gracie Wise",
-    "TammieEma": "Tammie Ema", "AlisonDietlinde": "Alison Dietlinde", "AnaFlorence": "Ana Florence",
-    "AnnmarieNele": "Annmarie Nele", "AsyaAnara": "Asya Anara", "BrendaStern": "Brenda Stern",
-    "GittaNikolina": "Gitta Nikolina", "HenrietteUsha": "Henriette Usha", "SofiaHellen": "Sofia Hellen",
-    "TammyGrit": "Tammy Grit", "TanjaAdelina": "Tanja Adelina", "VjollcaJohnnie": "Vjollca Johnnie",
-    "AndrewChipper": "Andrew Chipper", "BadrOdhiambo": "Badr Odhiambo", "DionisioSchuyler": "Dionisio Schuyler",
-    "RoystonMin": "Royston Min", "ViktorEka": "Viktor Eka", "AbrahanMack": "Abrahan Mack",
-    "AddeMichal": "Adde Michal", "BaldurSanjin": "Baldur Sanjin", "CraigGutsy": "Craig Gutsy",
-    "DamienBlack": "Damien Black", "GilbertoMathias": "Gilberto Mathias", "IlkinUrbano": "Ilkin Urbano",
-    "KazuhikoAtallah": "Kazuhiko Atallah", "LudvigMilivoj": "Ludvig Milivoj", "SuadQasim": "Suad Qasim",
-    "TorcullDiarmuid": "Torcull Diarmuid", "ViktorMenelaos": "Viktor Menelaos", "ZacharieAimilios": "Zacharie Aimilios",
-    "NovaHogarth": "Nova Hogarth", "MajaRuoho": "Maja Ruoho", "UtaObando": "Uta Obando",
-}
+
+def get_available_voices() -> list:
+    """Get list of available fine-tuned model voices"""
+    return sorted(FINE_TUNED_MODELS.keys())
 
 
 def send_response(response_type: str, data: dict = None):
@@ -146,23 +126,34 @@ class XTTSStreamServer:
         self.device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
         self.speakers_dict = None
 
+    def _cleanup_memory(self):
+        """Clean up GPU/MPS memory after generation"""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            torch.cuda.synchronize()
+        elif hasattr(torch, 'mps') and hasattr(torch.mps, 'empty_cache'):
+            torch.mps.empty_cache()
+
     def load_model(self, voice_name: str = 'ScarlettJohansson'):
-        """Load or switch XTTS model and voice"""
+        """Load fine-tuned XTTS model for the specified voice"""
         try:
+            # Clean up before loading
+            self._cleanup_memory()
+
             from TTS.tts.configs.xtts_config import XttsConfig
             from TTS.tts.models.xtts import Xtts
 
-            # Determine model paths
-            if voice_name in FINE_TUNED_MODELS:
-                model_info = FINE_TUNED_MODELS[voice_name]
-            else:
-                model_info = FINE_TUNED_MODELS['internal']
-                voice_name = 'internal'
+            # Only fine-tuned models are supported
+            if voice_name not in FINE_TUNED_MODELS:
+                raise ValueError(f"Voice '{voice_name}' not found. Available: {list(FINE_TUNED_MODELS.keys())}")
 
-            # Download model files
+            model_info = FINE_TUNED_MODELS[voice_name]
             hf_repo = model_info['repo']
             hf_sub = model_info['sub']
 
+            # Download model files from HuggingFace
             config_path = hf_hub_download(
                 repo_id=hf_repo,
                 filename=f"{hf_sub}config.json",
@@ -179,67 +170,43 @@ class XTTSStreamServer:
                 cache_dir=TTS_DIR
             )
 
-            # Load speakers dictionary for internal voices
-            if voice_name == 'internal' and self.speakers_dict is None:
-                speakers_path = hf_hub_download(
-                    repo_id=hf_repo,
-                    filename="speakers_xtts.pth",
-                    cache_dir=TTS_DIR
-                )
-                self.speakers_dict = torch.load(speakers_path)
+            # Download ref.wav for conditioning latents
+            ref_path = hf_hub_download(
+                repo_id=hf_repo,
+                filename=f"{hf_sub}ref.wav",
+                cache_dir=TTS_DIR
+            )
 
-            # Load model if not already loaded or if switching to different fine-tuned model
-            if self.tts is None:
+            # Load model if not already loaded (or reload if switching voices)
+            # Fine-tuned models need their specific checkpoint, so reload when switching
+            if self.tts is None or self.current_voice != voice_name:
                 send_response('status', {'message': f'Loading XTTS model ({self.device})...'})
+
+                # Clean up old model if switching
+                if self.tts is not None:
+                    del self.tts
+                    self.tts = None
+                    self._cleanup_memory()
 
                 config = XttsConfig()
                 config.load_json(config_path)
 
                 self.tts = Xtts.init_from_config(config)
-                # Use keyword arguments to avoid parameter order issues
                 self.tts.load_checkpoint(
                     config,
                     checkpoint_path=checkpoint_path,
                     vocab_path=vocab_path,
-                    use_deepspeed=False
+                    eval=True
                 )
                 self.tts.to(self.device)
 
                 send_response('status', {'message': 'Model loaded'})
 
-            # Compute speaker latents for the voice
-            if self.current_voice != voice_name:
+                # Compute speaker latents from ref.wav
                 send_response('status', {'message': f'Loading voice: {voice_name}'})
-
-                # Check if it's an internal speaker
-                if voice_name in INTERNAL_VOICES and self.speakers_dict:
-                    speaker_name = INTERNAL_VOICES[voice_name]
-                    if speaker_name in self.speakers_dict:
-                        self.gpt_cond_latent, self.speaker_embedding = self.speakers_dict[speaker_name].values()
-                    else:
-                        # Use voice file
-                        voice_path = model_info['voice']
-                        self.gpt_cond_latent, self.speaker_embedding = self.tts.get_conditioning_latents(
-                            audio_path=[voice_path]
-                        )
-                else:
-                    # Use voice file for fine-tuned models
-                    voice_path = model_info['voice']
-                    if os.path.exists(voice_path):
-                        self.gpt_cond_latent, self.speaker_embedding = self.tts.get_conditioning_latents(
-                            audio_path=[voice_path]
-                        )
-                    else:
-                        # Fallback: try ref.wav in model directory
-                        model_dir = os.path.dirname(checkpoint_path)
-                        ref_path = os.path.join(model_dir, 'ref.wav')
-                        if os.path.exists(ref_path):
-                            self.gpt_cond_latent, self.speaker_embedding = self.tts.get_conditioning_latents(
-                                audio_path=[ref_path]
-                            )
-                        else:
-                            raise FileNotFoundError(f"Voice file not found: {voice_path}")
-
+                self.gpt_cond_latent, self.speaker_embedding = self.tts.get_conditioning_latents(
+                    audio_path=[ref_path]
+                )
                 self.current_voice = voice_name
                 send_response('status', {'message': f'Voice loaded: {voice_name}'})
 
@@ -249,7 +216,7 @@ class XTTSStreamServer:
             send_response('error', {'message': f'Failed to load model: {str(e)}'})
             return False
 
-    def generate_sentence(self, text: str, language: str = 'en', speed: float = 1.0,
+    def generate_sentence(self, text: str, language: str = 'en', speed: float = 1.25,
                          temperature: float = 0.75, top_p: float = 0.85,
                          repetition_penalty: float = 3.0, stream: bool = False):
         """Generate audio for a sentence and return as base64 WAV"""
@@ -264,33 +231,12 @@ class XTTSStreamServer:
             repetition_penalty = float(repetition_penalty)
             speed = float(speed)
 
-            # Use inference_mode for better performance
-            with torch.inference_mode():
-                if stream and hasattr(self.tts, 'inference_stream'):
-                    # Streaming mode - yield chunks as they're generated
-                    chunks = []
-                    for chunk in self.tts.inference_stream(
-                        text=text,
-                        language=language,
-                        gpt_cond_latent=self.gpt_cond_latent,
-                        speaker_embedding=self.speaker_embedding,
-                        temperature=temperature,
-                        top_p=top_p,
-                        repetition_penalty=repetition_penalty,
-                        speed=speed,
-                        enable_text_splitting=False
-                    ):
-                        if isinstance(chunk, torch.Tensor):
-                            chunk = chunk.cpu().numpy()
-                        chunks.append(chunk)
+            # Use no_grad + autocast like e2a does
+            # Note: inference_stream() has compatibility issues with transformers, use regular inference
+            with torch.no_grad():
+                autocast_ctx = torch.autocast(device_type=self.device, dtype=torch.float16) if self.device in ['cuda', 'mps'] else nullcontext()
 
-                    # Concatenate all chunks
-                    if chunks:
-                        audio_data = np.concatenate(chunks)
-                    else:
-                        audio_data = None
-                else:
-                    # Non-streaming mode
+                with autocast_ctx:
                     result = self.tts.inference(
                         text=text,
                         language=language,
@@ -305,6 +251,7 @@ class XTTSStreamServer:
                     audio_data = result.get('wav')
                     if isinstance(audio_data, torch.Tensor):
                         audio_data = audio_data.cpu().numpy()
+                    del result
 
             if audio_data is not None and len(audio_data) > 0:
                 # Calculate duration
@@ -313,20 +260,33 @@ class XTTSStreamServer:
                 # Convert to base64 WAV
                 wav_base64 = audio_to_wav_base64(audio_data, DEFAULT_SAMPLERATE)
 
+                # Clean up audio data before sending response
+                del audio_data
+                self._cleanup_memory()
+
                 send_response('audio', {
                     'data': wav_base64,
                     'duration': duration,
                     'sampleRate': DEFAULT_SAMPLERATE
                 })
+
+                # Clean up base64 string after sending
+                del wav_base64
             else:
                 send_response('error', {'message': 'No audio generated'})
 
+            # Final cleanup after each generation
+            self._cleanup_memory()
+
         except Exception as e:
+            self._cleanup_memory()
             send_response('error', {'message': f'Generation failed: {str(e)}'})
 
     def run(self):
         """Main loop: read requests from stdin, process, send responses to stdout"""
-        send_response('ready', {'voices': list(FINE_TUNED_MODELS.keys())})
+        # Discover voices from the voices directory
+        available_voices = get_available_voices()
+        send_response('ready', {'voices': available_voices})
 
         for line in sys.stdin:
             try:
@@ -337,7 +297,12 @@ class XTTSStreamServer:
                 request = json.loads(line)
                 action = request.get('action')
 
-                if action == 'load':
+                if action == 'list_voices':
+                    # Re-scan voices directory
+                    voices = get_available_voices()
+                    send_response('voices', {'voices': voices})
+
+                elif action == 'load':
                     voice = request.get('voice', 'ScarlettJohansson')
                     success = self.load_model(voice)
                     if success:

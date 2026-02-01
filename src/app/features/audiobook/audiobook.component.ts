@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, OnInit, ViewChild, effect } from '@angular/core';
+import { Component, inject, signal, computed, OnInit, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
   SplitPaneComponent,
@@ -21,7 +21,7 @@ import { SettingsService } from '../../core/services/settings.service';
 import { LibraryService } from '../../core/services/library.service';
 import { QueueService } from '../queue/services/queue.service';
 import { AnalyticsPanelComponent } from './components/analytics-panel/analytics-panel.component';
-import { ProjectAnalytics, TTSJobAnalytics, CleanupJobAnalytics } from '../../core/models/analytics.types';
+import { ProjectAnalytics } from '../../core/models/analytics.types';
 
 // Workflow states for the audiobook producer
 type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'skipped' | 'analytics' | 'enhance' | 'complete';
@@ -399,7 +399,7 @@ export class AudiobookComponent implements OnInit {
   readonly selectedItemId = signal<string | null>(null);
   readonly workflowState = signal<WorkflowState>('metadata');
   readonly ttsSettings = signal<TTSSettings>({
-    device: 'mps',
+    device: this.getDefaultDevice(),
     language: 'en',
     ttsEngine: 'xtts',
     fineTuned: 'ScarlettJohansson',  // Default to Scarlett Johansson voice
@@ -407,9 +407,20 @@ export class AudiobookComponent implements OnInit {
     topP: 0.9,
     topK: 40,
     repetitionPenalty: 2.0,
-    speed: 1.0,
+    speed: 1.25,
     enableTextSplitting: false
   });
+
+  /** Get default device based on platform */
+  private getDefaultDevice(): 'mps' | 'gpu' | 'cpu' {
+    const platform = this.electronService.platform;
+    if (platform === 'darwin') {
+      return 'mps';  // macOS uses Metal Performance Shaders
+    } else if (platform === 'win32' || platform === 'linux') {
+      return 'gpu';  // Windows/Linux use CUDA
+    }
+    return 'cpu';  // Fallback
+  }
   readonly savingMetadata = signal(false);
 
   // Diff view state
@@ -421,99 +432,8 @@ export class AudiobookComponent implements OnInit {
   // ViewChild reference to diff view for manual refresh
   @ViewChild(DiffViewComponent) diffViewRef?: DiffViewComponent;
 
-  constructor() {
-    // Watch for completed jobs with analytics and save to BFP
-    effect(() => {
-      const completedJob = this.queueService.lastCompletedJobWithAnalytics();
-      if (!completedJob || !completedJob.bfpPath || !completedJob.analytics) return;
-
-      // Save analytics to BFP
-      this.saveAnalyticsToBfp(
-        completedJob.bfpPath,
-        completedJob.jobType,
-        completedJob.analytics
-      );
-    });
-  }
-
-  /**
-   * Save job analytics to the BFP project file
-   */
-  private async saveAnalyticsToBfp(
-    bfpPath: string,
-    jobType: string,
-    analytics: TTSJobAnalytics | CleanupJobAnalytics
-  ): Promise<void> {
-    if (!this.electron) return;
-
-    try {
-      // Get project ID from bfpPath for local state update
-      const projectId = bfpPath.split('/').pop()?.replace('.bfp', '') || '';
-
-      // Get existing analytics from local state or initialize empty
-      const existingAnalytics = this._projectAnalytics().get(projectId) || {
-        ttsJobs: [],
-        cleanupJobs: []
-      };
-
-      // Append new analytics to appropriate array (keep only last 10 of each type)
-      const MAX_ANALYTICS_HISTORY = 10;
-      let updatedAnalytics: ProjectAnalytics;
-      if (jobType === 'tts-conversion') {
-        const ttsJobs = [...existingAnalytics.ttsJobs, analytics as TTSJobAnalytics];
-        updatedAnalytics = {
-          ...existingAnalytics,
-          ttsJobs: ttsJobs.slice(-MAX_ANALYTICS_HISTORY)
-        };
-      } else if (jobType === 'ocr-cleanup') {
-        const cleanupJobs = [...existingAnalytics.cleanupJobs, analytics as CleanupJobAnalytics];
-        updatedAnalytics = {
-          ...existingAnalytics,
-          cleanupJobs: cleanupJobs.slice(-MAX_ANALYTICS_HISTORY)
-        };
-      } else {
-        console.log('[Audiobook] Unknown job type for analytics:', jobType);
-        return;
-      }
-
-      // Build state update object
-      const stateUpdate: Record<string, unknown> = {
-        analytics: updatedAnalytics
-      };
-
-      // Set cleanedAt timestamp when OCR cleanup completes
-      if (jobType === 'ocr-cleanup') {
-        stateUpdate['cleanedAt'] = new Date().toISOString();
-      }
-
-      // Save to BFP via IPC
-      const result = await this.electron.audiobook.updateState(bfpPath, stateUpdate);
-
-      if (result.success) {
-        // Update local analytics state
-        const analyticsMap = this._projectAnalytics();
-        const newMap = new Map(analyticsMap);
-        newMap.set(projectId, updatedAnalytics);
-        this._projectAnalytics.set(newMap);
-
-        // Update local queue item's hasCleaned flag for OCR cleanup
-        if (jobType === 'ocr-cleanup') {
-          this.queueItems.update(items =>
-            items.map(item =>
-              item.bfpPath === bfpPath ? { ...item, hasCleaned: true } : item
-            )
-          );
-          console.log(`[Audiobook] Set hasCleaned=true for ${bfpPath}`);
-        }
-
-        console.log(`[Audiobook] Saved ${jobType} analytics to BFP:`, analytics.jobId);
-      } else {
-        console.error('[Audiobook] Failed to save analytics to BFP:', result.error);
-      }
-    } catch (err) {
-      console.error('[Audiobook] Error saving analytics:', err);
-    }
-  }
+  // Note: Analytics saving is now handled directly by QueueService.handleJobComplete()
+  // to avoid duplicate saves from component lifecycle effects.
 
   // Check if we're running in Electron
   private get electron(): any {

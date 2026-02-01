@@ -1840,7 +1840,8 @@ export async function cleanupEpub(
           );
         } else {
           // STRUCTURE MODE: Split on markers and use cheerio to replace block texts
-          const cleanedBlocks = cleanedText.split(BLOCK_MARKER).map(t => t.trim()).filter(t => t.length > 0);
+          // Use flexible regex to handle whitespace variations from AI responses
+          const cleanedBlocks = cleanedText.split(/\s*\[\[BLOCK\]\]\s*/g).map(t => t.trim()).filter(t => t.length > 0);
           rebuiltXhtml = replaceBlockTexts(originalXhtml, cleanedBlocks);
         }
         modifiedChapters.set(chapterId, rebuiltXhtml);
@@ -1932,7 +1933,7 @@ export async function cleanupEpub(
                 );
               } else {
                 // STRUCTURE MODE: Split on markers and use cheerio
-                const partialBlocks = partialText.split(BLOCK_MARKER).map(t => t.trim()).filter(t => t.length > 0);
+                const partialBlocks = partialText.split(/\s*\[\[BLOCK\]\]\s*/g).map(t => t.trim()).filter(t => t.length > 0);
                 rebuiltXhtml = replaceBlockTexts(originalXhtml, partialBlocks);
               }
               modifiedChapters.set(chapter.id, rebuiltXhtml);
@@ -2021,7 +2022,8 @@ export async function cleanupEpub(
           );
         } else {
           // STRUCTURE MODE: Split on markers and use cheerio
-          const cleanedBlocks = cleanedText.split(BLOCK_MARKER).map(t => t.trim()).filter(t => t.length > 0);
+          // Use flexible regex to handle whitespace variations from AI responses
+          const cleanedBlocks = cleanedText.split(/\s*\[\[BLOCK\]\]\s*/g).map(t => t.trim()).filter(t => t.length > 0);
           rebuiltXhtml = replaceBlockTexts(originalXhtml, cleanedBlocks);
         }
         modifiedChapters.set(chapter.id, rebuiltXhtml);

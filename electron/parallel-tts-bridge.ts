@@ -692,35 +692,18 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
     availableMemGB = os.freemem() / (1024 * 1024 * 1024);
   }
 
-  // Each TTS worker needs roughly 14-18GB for the model + audio buffers + overhead
-  // This is conservative to prevent memory pressure crashes
-  const memPerWorker = 16; // Conservative estimate in GB
-  const maxByMemory = Math.floor(availableMemGB / memPerWorker);
+  // Each TTS worker uses ~3GB memory
+  // Reserve 2GB overhead for OOM protection
+  // Formula: floor((available - 2) / 3), capped at 4, minimum 1
+  const memPerWorker = 3;
+  const overheadGB = 2;
+  const maxByMemory = Math.floor((availableMemGB - overheadGB) / memPerWorker);
+  const count = Math.min(4, Math.max(1, maxByMemory));
 
-  // Apple Silicon with unified memory - still be conservative as TTS is memory-intensive
-  if (platform === 'darwin') {
-    try {
-      const cpuInfo = execSync('sysctl -n machdep.cpu.brand_string', { encoding: 'utf-8' });
-      const isAppleSilicon = cpuInfo.toLowerCase().includes('apple');
-
-      if (isAppleSilicon) {
-        // Conservative recommendations - 4 workers was causing crashes even on 64GB
-        // Each XTTS worker loads full model + generates audio, causing memory pressure
-        const recommendedByTotal = totalMemGB >= 128 ? 4 : totalMemGB >= 64 ? 2 : totalMemGB >= 32 ? 2 : 1;
-        const count = Math.min(recommendedByTotal, Math.max(1, maxByMemory));
-        return {
-          count,
-          reason: `Apple Silicon - ${Math.round(availableMemGB)}GB available of ${Math.round(totalMemGB)}GB`
-        };
-      }
-    } catch {
-      // Fall through to generic detection
-    }
-  }
-
-  // Generic detection based on available RAM
-  const count = Math.min(2, Math.max(1, maxByMemory));
-  return { count, reason: `${Math.round(availableMemGB)}GB RAM available` };
+  return {
+    count,
+    reason: `${Math.round(availableMemGB)}GB available`
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

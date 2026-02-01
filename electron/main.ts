@@ -3432,6 +3432,57 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Append analytics to BFP project (handles deduplication atomically)
+  ipcMain.handle('audiobook:append-analytics', async (
+    _event,
+    bfpPath: string,
+    jobType: 'tts-conversion' | 'ocr-cleanup',
+    analytics: { jobId: string; [key: string]: unknown }
+  ) => {
+    const MAX_ANALYTICS_HISTORY = 10;
+
+    try {
+      const bfpContent = await fs.readFile(bfpPath, 'utf-8');
+      const bfpProject = JSON.parse(bfpContent);
+
+      // Initialize audiobook state if needed
+      if (!bfpProject.audiobook) {
+        bfpProject.audiobook = {};
+      }
+
+      // Initialize analytics if needed
+      const existingAnalytics = bfpProject.audiobook.analytics || {
+        ttsJobs: [],
+        cleanupJobs: []
+      };
+
+      // Deduplicate by jobId and append
+      if (jobType === 'tts-conversion') {
+        const dedupedJobs = (existingAnalytics.ttsJobs || []).filter(
+          (j: { jobId: string }) => j.jobId !== analytics.jobId
+        );
+        existingAnalytics.ttsJobs = [...dedupedJobs, analytics].slice(-MAX_ANALYTICS_HISTORY);
+      } else if (jobType === 'ocr-cleanup') {
+        const dedupedJobs = (existingAnalytics.cleanupJobs || []).filter(
+          (j: { jobId: string }) => j.jobId !== analytics.jobId
+        );
+        existingAnalytics.cleanupJobs = [...dedupedJobs, analytics].slice(-MAX_ANALYTICS_HISTORY);
+
+        // Also set cleanedAt timestamp for OCR cleanup
+        bfpProject.audiobook.cleanedAt = new Date().toISOString();
+      }
+
+      bfpProject.audiobook.analytics = existingAnalytics;
+      bfpProject.modified_at = new Date().toISOString();
+
+      await atomicWriteFile(bfpPath, JSON.stringify(bfpProject, null, 2));
+
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Get audiobook folder path for a project
   ipcMain.handle('audiobook:get-folder', async (_event, bfpPath: string) => {
     const projectName = path.basename(bfpPath, '.bfp');

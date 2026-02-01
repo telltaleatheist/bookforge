@@ -497,7 +497,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   );
   readonly isGenerating = signal(false);
   readonly selectedVoice = signal<string>('ScarlettJohansson');
-  readonly selectedSpeed = signal<number>(1.5);
+  readonly selectedSpeed = signal<number>(1.25);
   readonly currentSentenceIndex = signal<number>(0);
 
   // Computed
@@ -791,39 +791,58 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.isGenerating.set(true);
     this.playbackState.set('buffering');
 
-    // Parallel generation settings
-    const NUM_PARALLEL = 3;  // Match worker pool size
-    const BUFFER_BEFORE_PLAY = 2;  // Start playback after this many sentences
+    // Generation settings
+    const NUM_WORKERS = 3;  // Number of parallel workers
+    const BUFFER_AHEAD = 10;  // Generate this many sentences ahead of playback
+    const BUFFER_BEFORE_PLAY = 4;  // Start playback after this many sentences buffered
 
-    // Track pending generations and completed audio (may complete out of order)
-    const pendingAudio: Map<number, { data: string; duration: number; sampleRate: number } | null> = new Map();
-    const enqueuedSentences = new Set<number>();  // Track what's been enqueued to prevent duplicates
-    let nextToEnqueue = startIndex;  // Next sentence index to add to audio queue
+    // Completed audio storage (may complete out of order, enqueue in order)
+    const completedAudio: Map<number, { data: string; duration: number; sampleRate: number } | null> = new Map();
+    let nextToEnqueue = startIndex;  // Next sentence to add to audio queue (in order)
     let playbackStarted = false;
 
-    // Helper to safely enqueue with mutex
-    const safeEnqueue = async () => {
-      // Chain on the lock to ensure sequential enqueuing
-      this.enqueueLock = this.enqueueLock.then(async () => {
-        while (nextToEnqueue < chapter.sentences.length && pendingAudio.has(nextToEnqueue)) {
-          // Skip if already enqueued (safety check)
-          if (enqueuedSentences.has(nextToEnqueue)) {
-            pendingAudio.delete(nextToEnqueue);
-            nextToEnqueue++;
-            continue;
-          }
+    // Task queue for workers (thread-safe via single-threaded JS)
+    const taskQueue: number[] = [];  // Sentence indices to generate
+    let generationComplete = false;
 
-          const audio = pendingAudio.get(nextToEnqueue);
-          if (audio) {
-            await this.audioPlayer.enqueueAudio(audio, nextToEnqueue);
-            enqueuedSentences.add(nextToEnqueue);
-            console.log('[PlayView] Enqueued sentence', nextToEnqueue, 'queue size:', this.audioPlayer.getQueueLength());
-          } else {
-            console.warn('[PlayView] Skipping failed sentence', nextToEnqueue);
-          }
-          pendingAudio.delete(nextToEnqueue);
-          nextToEnqueue++;
+    // Initialize task queue with first batch
+    const totalSentences = chapter.sentences.length;
+    for (let i = startIndex; i < Math.min(startIndex + BUFFER_AHEAD + NUM_WORKERS, totalSentences); i++) {
+      taskQueue.push(i);
+    }
+    let highestQueued = taskQueue.length > 0 ? taskQueue[taskQueue.length - 1] : startIndex - 1;
+
+    // Get next task from queue (returns undefined if empty)
+    const getNextTask = (): number | undefined => {
+      return taskQueue.shift();
+    };
+
+    // Add more tasks as playback progresses
+    const maybeAddMoreTasks = () => {
+      // Keep BUFFER_AHEAD sentences queued ahead of what's been enqueued
+      while (highestQueued < totalSentences - 1 && highestQueued < nextToEnqueue + BUFFER_AHEAD + NUM_WORKERS) {
+        highestQueued++;
+        taskQueue.push(highestQueued);
+      }
+    };
+
+    // Enqueue completed audio in order
+    const enqueueInOrder = async () => {
+      while (completedAudio.has(nextToEnqueue)) {
+        const audio = completedAudio.get(nextToEnqueue);
+        completedAudio.delete(nextToEnqueue);
+
+        if (audio) {
+          await this.audioPlayer.enqueueAudio(audio, nextToEnqueue);
+          console.log('[PlayView] Enqueued sentence', nextToEnqueue, 'queue size:', this.audioPlayer.getQueueLength());
+        } else {
+          console.warn('[PlayView] Skipping failed sentence', nextToEnqueue);
         }
+
+        nextToEnqueue++;
+
+        // Add more tasks as we progress
+        maybeAddMoreTasks();
 
         // Start playback once we have enough buffered
         if (!playbackStarted && this.audioPlayer.getQueueLength() >= BUFFER_BEFORE_PLAY) {
@@ -831,66 +850,68 @@ export class PlayViewComponent implements OnInit, OnDestroy {
           this.audioPlayer.play();
           playbackStarted = true;
         }
-      });
-
-      await this.enqueueLock;
+      }
     };
 
     try {
-      console.log('[PlayView] Starting parallel generation from sentence', startIndex,
-        'total:', chapter.sentences.length, 'workers:', NUM_PARALLEL);
+      console.log('[PlayView] Starting generation from sentence', startIndex,
+        'total:', totalSentences, 'workers:', NUM_WORKERS);
 
-      // Generate a single sentence
-      const generateOne = async (sentenceIndex: number) => {
-        if (signal.aborted) return;
+      let activeWorkers = 0;
+      let resolveAllDone: () => void;
+      const allDonePromise = new Promise<void>(resolve => { resolveAllDone = resolve; });
 
-        const sentence = chapter.sentences[sentenceIndex];
-        console.log('[PlayView] Generating sentence', sentenceIndex, ':', sentence.text.substring(0, 40) + '...');
+      // Worker function: get task, generate, repeat until no more tasks
+      const worker = async (workerId: number) => {
+        while (!signal.aborted) {
+          const sentenceIndex = getNextTask();
+          if (sentenceIndex === undefined) {
+            // No more tasks
+            break;
+          }
 
-        const result = await this.electronService.playGenerateSentence(
-          sentence.text,
-          sentence.index,
-          settings
-        );
+          const sentence = chapter.sentences[sentenceIndex];
+          console.log(`[PlayView W${workerId}] Generating sentence`, sentenceIndex);
 
-        if (signal.aborted) return;
+          const result = await this.electronService.playGenerateSentence(
+            sentence.text,
+            sentence.index,
+            settings
+          );
 
-        if (result.success && result.audio) {
-          console.log('[PlayView] Got audio for sentence', sentenceIndex, 'duration:', result.audio.duration);
-          pendingAudio.set(sentenceIndex, result.audio);
-        } else {
-          console.error('[PlayView] Generation failed for sentence', sentenceIndex, result.error);
-          pendingAudio.set(sentenceIndex, null);  // Mark as failed
+          if (signal.aborted) break;
+
+          if (result.success && result.audio) {
+            console.log(`[PlayView W${workerId}] Got audio for sentence`, sentenceIndex, 'duration:', result.audio.duration?.toFixed(2) + 's');
+            completedAudio.set(sentenceIndex, result.audio);
+          } else {
+            console.error(`[PlayView W${workerId}] Failed sentence`, sentenceIndex, result.error);
+            completedAudio.set(sentenceIndex, null);
+          }
+
+          // Enqueue any completed audio in order
+          await enqueueInOrder();
         }
 
-        // Try to enqueue any completed audio in order (with mutex)
-        await safeEnqueue();
+        // Worker done
+        activeWorkers--;
+        if (activeWorkers === 0) {
+          generationComplete = true;
+          resolveAllDone!();
+        }
       };
 
-      // Process sentences in batches of NUM_PARALLEL
-      for (let batchStart = startIndex; batchStart < chapter.sentences.length; batchStart += NUM_PARALLEL) {
-        if (signal.aborted) break;
-
-        const batchEnd = Math.min(batchStart + NUM_PARALLEL, chapter.sentences.length);
-        const batchPromises: Promise<void>[] = [];
-
-        for (let i = batchStart; i < batchEnd; i++) {
-          batchPromises.push(generateOne(i));
-        }
-
-        // Wait for batch to complete before starting next batch
-        await Promise.all(batchPromises);
-
-        // Final enqueue pass for this batch
-        await safeEnqueue();
-
-        // Start playback if not started yet and we have audio
-        if (!playbackStarted && this.audioPlayer.getQueueLength() > 0) {
-          console.log('[PlayView] Starting playback with', this.audioPlayer.getQueueLength(), 'sentences');
-          this.audioPlayer.play();
-          playbackStarted = true;
-        }
+      // Start workers
+      for (let i = 0; i < NUM_WORKERS; i++) {
+        activeWorkers++;
+        worker(i);  // Don't await - run in parallel
       }
+
+      // Wait for all workers to complete
+      await allDonePromise;
+
+      // Final enqueue pass
+      await enqueueInOrder();
 
     } finally {
       this.isGenerating.set(false);

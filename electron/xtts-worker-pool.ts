@@ -68,6 +68,7 @@ let workers: Worker[] = [];
 let mainWindow: BrowserWindow | null = null;
 let currentVoice: string | null = null;
 let nextWorkerIndex = 0;
+let discoveredVoices: string[] = [];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -177,6 +178,11 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
 
             if (response.type === 'ready') {
               worker.isReady = true;
+              // Store discovered voices from the first worker
+              if (response.voices && response.voices.length > 0 && discoveredVoices.length === 0) {
+                discoveredVoices = response.voices;
+                console.log(`[XTTS Pool] Discovered ${discoveredVoices.length} voices`);
+              }
               resolve({ success: true });
             }
           } catch (err) {
@@ -387,6 +393,7 @@ export async function endSession(): Promise<void> {
   workers = [];
   currentVoice = null;
   nextWorkerIndex = 0;
+  discoveredVoices = [];
 }
 
 /**
@@ -397,18 +404,11 @@ export function isSessionActive(): boolean {
 }
 
 /**
- * Get available voices
+ * Get available voices (discovered from e2a voices directory)
  */
 export function getAvailableVoices(): string[] {
-  return [
-    'ScarlettJohansson',
-    'DavidAttenborough',
-    'MorganFreeman',
-    'NeilGaiman',
-    'RayPorter',
-    'RosamundPike',
-    'internal'
-  ];
+  // Return discovered voices, or empty if not yet discovered
+  return discoveredVoices;
 }
 
 /**
@@ -448,15 +448,20 @@ function handleWorkerResponse(worker: Worker, response: XTTSResponse): void {
       duration: response.duration || 0,
       sampleRate: response.sampleRate || 24000
     };
+    // Save sentenceIndex before resolve (which clears pendingRequest)
+    const sentenceIndex = worker.pendingRequest.sentenceIndex;
     worker.pendingRequest.resolve({ success: true, audio });
 
     // Send IPC event
-    if (mainWindow) {
+    if (mainWindow && sentenceIndex >= 0) {
       mainWindow.webContents.send('play:audio-generated', {
-        sentenceIndex: worker.pendingRequest.sentenceIndex,
+        sentenceIndex,
         audio
       });
     }
+  } else if (response.type === 'audio' && response.data && !worker.pendingRequest) {
+    // Audio arrived but request was cancelled - just ignore
+    console.log(`[XTTS Pool ${worker.id}] Ignoring orphaned audio response`);
   } else if (response.type === 'error' && worker.pendingRequest) {
     worker.pendingRequest.resolve({ success: false, error: response.message });
   }
