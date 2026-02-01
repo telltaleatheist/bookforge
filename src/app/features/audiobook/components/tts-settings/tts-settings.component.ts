@@ -1208,11 +1208,15 @@ export class TtsSettingsComponent implements OnInit {
    */
   confirmChapterWarning(): void {
     const pending = this.pendingQueueAction();
-    this.showChapterWarning.set(false);
+    // Don't close warning yet - addToQueue checks showChapterWarning() to know if user confirmed
+    // The warning will be closed in addToQueue's finally block
     if (pending) {
       this.addToQueue(pending.useResume);
+    } else {
+      // No pending action, just close the dialog
+      this.showChapterWarning.set(false);
+      this.pendingQueueAction.set(null);
     }
-    this.pendingQueueAction.set(null);
   }
 
   /**
