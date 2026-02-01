@@ -4568,6 +4568,13 @@ export class PdfPickerComponent {
         message: result.message,
         type: 'error'
       });
+    } else if (result.warning) {
+      // Show warning about chapter mismatch - export succeeded but there's an issue
+      this.showAlert({
+        title: 'Chapter Warning',
+        message: result.warning,
+        type: 'warning'
+      });
     }
   }
 

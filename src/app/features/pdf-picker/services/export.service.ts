@@ -54,6 +54,7 @@ export interface ExportResult {
   blockCount?: number;
   chapterCount?: number;
   regionCount?: number;
+  warning?: string;  // Non-fatal warning to display to user
 }
 
 // Pattern from deleted custom categories to strip from exported text
@@ -260,7 +261,8 @@ export class ExportService {
       message: `Exported EPUB with ${result.chapterCount} chapters, ${result.blockCount} blocks.`,
       filename,
       chapterCount: result.chapterCount,
-      blockCount: result.blockCount
+      blockCount: result.blockCount,
+      warning: result.warning
     };
   }
 
@@ -624,7 +626,8 @@ export class ExportService {
         message: `Exported EPUB with ${epubResult.chapterCount} chapters to Audiobook Producer.${deletedBlockExamples.length > 0 ? ` (${deletedBlockExamples.length} deletion examples)` : ''}`,
         filename: 'exported.epub',
         chapterCount: epubResult.chapterCount,
-        blockCount: epubResult.blockCount
+        blockCount: epubResult.blockCount,
+        warning: epubResult.warning
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -753,7 +756,7 @@ export class ExportService {
     deletedPages?: Set<number>,
     deletedHighlights?: DeletedHighlight[],
     metadata?: BookMetadata
-  ): { success: boolean; blob?: Blob; message?: string; chapterCount?: number; blockCount?: number } {
+  ): { success: boolean; blob?: Blob; message?: string; chapterCount?: number; blockCount?: number; warning?: string } {
     const exportBlocks = blocks
       .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
       .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
@@ -836,11 +839,13 @@ export class ExportService {
 
     // Warn if chapters were provided but only 1 section was generated
     // This indicates the chapter positions didn't match any blocks
+    let warning: string | undefined;
     if (chapters.length > 0 && chapterSections.length === 1) {
       console.warn('[EXPORT] Warning: %d chapters were provided but only 1 section generated.', chapters.length);
       console.warn('[EXPORT] Chapter pages:', chapters.map(c => c.page).join(', '));
       console.warn('[EXPORT] Block pages:', [...new Set(exportBlocks.map(b => b.page))].sort((a, b) => a - b).slice(0, 20).join(', '), '...');
       console.warn('[EXPORT] This usually means chapter page numbers don\'t match block page numbers.');
+      warning = `Warning: ${chapters.length} chapters were defined, but only 1 chapter was generated. This usually means the chapter page numbers don't match the text block page numbers. The TTS engine will use automatic chapter detection instead.`;
     }
 
     const blob = this.generateEpubBlobWithChapters(bookTitle, chapterSections, metadata);
@@ -848,7 +853,8 @@ export class ExportService {
       success: true,
       blob,
       chapterCount: chapterSections.length,
-      blockCount: exportBlocks.length
+      blockCount: exportBlocks.length,
+      warning
     };
   }
 

@@ -401,6 +401,26 @@ export interface VoiceOption {
           }
         </div>
       }
+
+      <!-- Single Chapter Warning Dialog -->
+      @if (showChapterWarning()) {
+        <div class="warning-overlay" (click)="cancelChapterWarning()">
+          <div class="warning-dialog" (click)="$event.stopPropagation()">
+            <div class="warning-icon">&#9888;</div>
+            <h3>Only 1 Chapter Detected</h3>
+            <p>This EPUB has only 1 chapter. This usually means the chapter page numbers didn't match the text blocks during export.</p>
+            <p>The TTS engine will use automatic chapter detection instead, which may not match your intended chapter structure.</p>
+            <div class="warning-actions">
+              <desktop-button variant="ghost" (click)="cancelChapterWarning()">
+                Cancel
+              </desktop-button>
+              <desktop-button variant="primary" (click)="confirmChapterWarning()">
+                Proceed Anyway
+              </desktop-button>
+            </div>
+          </div>
+        </div>
+      }
     </div>
   `,
   styles: [`
@@ -925,6 +945,58 @@ export interface VoiceOption {
       gap: 0.75rem;
       margin-top: 1rem;
     }
+
+    .warning-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .warning-dialog {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      padding: 1.5rem;
+      max-width: 400px;
+      text-align: center;
+
+      .warning-icon {
+        font-size: 2.5rem;
+        color: var(--warning, #f59e0b);
+        margin-bottom: 0.75rem;
+      }
+
+      h3 {
+        margin: 0 0 0.75rem 0;
+        font-size: 1.125rem;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+
+      p {
+        margin: 0 0 0.75rem 0;
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+        line-height: 1.5;
+
+        &:last-of-type {
+          margin-bottom: 1.25rem;
+        }
+      }
+
+      .warning-actions {
+        display: flex;
+        justify-content: center;
+        gap: 0.75rem;
+      }
+    }
   `]
 })
 export class TtsSettingsComponent implements OnInit {
@@ -1004,6 +1076,11 @@ export class TtsSettingsComponent implements OnInit {
   readonly showResumeOption = signal(false); // User clicked to see details
   private lastCheckedPath: string | null = null; // Avoid redundant session searches
 
+  // Chapter warning state
+  readonly showChapterWarning = signal(false);
+  readonly pendingQueueAction = signal<{ useResume: boolean } | null>(null);
+  readonly chapterCount = signal<number>(0);
+
   // Computed: current voice description
   currentVoiceDescription(): string {
     const voice = this.availableVoices().find(v => v.id === this.settings().fineTuned);
@@ -1022,14 +1099,24 @@ export class TtsSettingsComponent implements OnInit {
         }
         this.lastCheckedPath = path;
         this.checkForResumableSession(path);
+        this.updateChapterCount();
       } else {
         // Clear resume state when no epub
         this.lastCheckedPath = null;
         this.hasResumableSession.set(false);
         this.resumeInfo.set(null);
         this.showResumeOption.set(false);
+        this.chapterCount.set(0);
       }
     });
+  }
+
+  /**
+   * Get chapter count from the currently open EPUB
+   */
+  private updateChapterCount(): void {
+    const chapters = this.epubService.chapters();
+    this.chapterCount.set(chapters.length);
   }
 
   ngOnInit(): void {
@@ -1155,6 +1242,15 @@ export class TtsSettingsComponent implements OnInit {
     let epubPathToUse = this.epubPath();
     if (!epubPathToUse) return;
 
+    // Check for single chapter warning (skip if resuming - chapters already processed)
+    const chapters = this.chapterCount();
+    if (!useResume && chapters <= 1 && !this.showChapterWarning()) {
+      // Show warning dialog
+      this.pendingQueueAction.set({ useResume });
+      this.showChapterWarning.set(true);
+      return;
+    }
+
     this.addingToQueue.set(true);
 
     try {
@@ -1242,6 +1338,29 @@ export class TtsSettingsComponent implements OnInit {
       console.error('Failed to add to queue:', err);
     } finally {
       this.addingToQueue.set(false);
+      // Clear any pending warning state
+      this.showChapterWarning.set(false);
+      this.pendingQueueAction.set(null);
     }
+  }
+
+  /**
+   * Confirm the single-chapter warning and proceed with adding to queue
+   */
+  confirmChapterWarning(): void {
+    const pending = this.pendingQueueAction();
+    this.showChapterWarning.set(false);
+    if (pending) {
+      this.addToQueue(pending.useResume);
+    }
+    this.pendingQueueAction.set(null);
+  }
+
+  /**
+   * Cancel the single-chapter warning dialog
+   */
+  cancelChapterWarning(): void {
+    this.showChapterWarning.set(false);
+    this.pendingQueueAction.set(null);
   }
 }
