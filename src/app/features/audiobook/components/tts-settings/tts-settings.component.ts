@@ -863,7 +863,10 @@ export class TtsSettingsComponent implements OnInit {
     topK: 40,
     repetitionPenalty: 2.0,
     speed: 1.25,
-    enableTextSplitting: false
+    enableTextSplitting: false,
+    useParallel: true,
+    parallelWorkers: 0,
+    parallelMode: 'sentences'
   });
   readonly epubPath = input<string>('');
   readonly bfpPath = input<string | undefined>(undefined);  // BFP project path for analytics saving
@@ -1140,10 +1143,10 @@ export class TtsSettingsComponent implements OnInit {
       console.log('[TTS-SETTINGS] Output dir - configured:', configuredDir, 'library:', this.libraryService.audiobooksPath(), 'using:', outputDir);
 
       // Orpheus uses single worker only (MLX unified memory, vLLM built-in batching)
-      // Always use parallel mode for Orpheus (resumability with no downside)
+      // Always use parallel mode (resumability with no downside)
       const isOrpheus = currentSettings.ttsEngine === 'orpheus';
-      const useParallel = isOrpheus ? true : (currentSettings.useParallel || false);
-      const parallelWorkers = isOrpheus ? 1 : currentSettings.parallelWorkers;
+      const useParallel = currentSettings.useParallel !== false; // Default to true
+      const parallelWorkers = isOrpheus ? 1 : (currentSettings.parallelWorkers ?? 0); // 0 = auto
 
       // Build job config
       const jobConfig: any = {
