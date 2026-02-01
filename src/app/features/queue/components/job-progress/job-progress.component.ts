@@ -114,10 +114,10 @@ interface ETAState {
                   <div class="worker-progress-bar">
                     <div
                       class="worker-progress-fill"
-                      [style.width.%]="getWorkerPercentage(worker)"
+                      [style.width.%]="getWorkerPercentage(worker, currentJob)"
                     ></div>
                   </div>
-                  <span class="worker-pct">{{ getWorkerPercentage(worker) | number:'1.0-0' }}%</span>
+                  <span class="worker-pct">{{ getWorkerPercentage(worker, currentJob) | number:'1.0-0' }}%</span>
                 </div>
               }
             </div>
@@ -680,10 +680,28 @@ export class JobProgressComponent implements OnDestroy {
   });
 
   // Calculate percentage for a worker
-  getWorkerPercentage(worker: ParallelWorkerProgress): number {
-    const totalSentences = worker.sentenceEnd - worker.sentenceStart + 1;
-    if (totalSentences <= 0) return 0;
-    return Math.min(100, (worker.completedSentences / totalSentences) * 100);
+  // For resume jobs, distributes baseline progress evenly so all workers start at the same %
+  getWorkerPercentage(worker: ParallelWorkerProgress, job?: QueueJob): number {
+    const workerCount = job?.parallelWorkers?.length || 1;
+
+    // For resume jobs, distribute completed sentences evenly among workers
+    // so each worker's progress reflects their share of the overall book
+    if (job?.isResumeJob && job.resumeCompletedSentences !== undefined && job.resumeMissingSentences !== undefined) {
+      const totalSentences = job.resumeCompletedSentences + job.resumeMissingSentences;
+      if (totalSentences > 0 && workerCount > 0) {
+        // Each worker is "responsible for" an equal share of the book
+        const totalPerWorker = totalSentences / workerCount;
+        // Distribute already-completed sentences evenly as baseline
+        const baselinePerWorker = job.resumeCompletedSentences / workerCount;
+        // Worker's progress = (baseline + work done) / total responsibility
+        return Math.min(100, ((baselinePerWorker + worker.completedSentences) / totalPerWorker) * 100);
+      }
+    }
+
+    // Fresh job: show progress through the full range
+    const totalInRange = worker.sentenceEnd - worker.sentenceStart + 1;
+    if (totalInRange <= 0) return 0;
+    return Math.min(100, (worker.completedSentences / totalInRange) * 100);
   }
 
   // Get ETA display - takes job directly to ensure reactivity

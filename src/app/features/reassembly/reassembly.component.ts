@@ -24,8 +24,8 @@ import { ReassemblyService } from './services/reassembly.service';
       <!-- Header -->
       <div class="reassembly-header">
         <div class="header-content">
-          <h1>Reassembly</h1>
-          <p class="subtitle">Browse incomplete TTS sessions and reassemble them into audiobooks</p>
+          <h1>Past Sessions</h1>
+          <p class="subtitle">Continue incomplete TTS jobs or reassemble completed sessions into audiobooks</p>
         </div>
         <div class="header-actions">
           <span class="current-path" title="{{ reassemblyService.e2aTmpPath() }}">

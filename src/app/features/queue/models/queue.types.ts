@@ -20,6 +20,10 @@ export interface ParallelWorkerProgress {
   completedSentences: number;
   status: ParallelWorkerStatus;
   error?: string;
+  // Total sentences assigned to this worker (for accurate progress calculation)
+  // For resume jobs, this may be less than (sentenceEnd - sentenceStart + 1)
+  // because some sentences in the range are already complete
+  totalAssigned?: number;
 }
 
 // Base job interface

@@ -366,7 +366,8 @@ export class QueueService {
             sentenceEnd: w.sentenceEnd,
             completedSentences: w.completedSentences,
             status: w.status,
-            error: w.error
+            error: w.error,
+            totalAssigned: (w as any).totalAssigned
           }))
         };
       })
@@ -1287,7 +1288,8 @@ export class QueueService {
                   sentenceStart: w.sentenceStart,
                   sentenceEnd: w.sentenceEnd,
                   completedSentences: w.completedSentences,
-                  status: w.status
+                  status: w.status,
+                  totalAssigned: (w as any).totalAssigned
                 })),
                 startedAt: new Date(session.startTime)
               };
@@ -1312,7 +1314,8 @@ export class QueueService {
               sentenceStart: w.sentenceStart,
               sentenceEnd: w.sentenceEnd,
               completedSentences: w.completedSentences,
-              status: w.status
+              status: w.status,
+              totalAssigned: (w as any).totalAssigned
             })),
             addedAt: new Date(session.startTime),
             startedAt: new Date(session.startTime),

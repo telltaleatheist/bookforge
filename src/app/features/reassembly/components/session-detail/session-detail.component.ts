@@ -5,6 +5,7 @@
 import { Component, inject, signal, computed, HostListener, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
 import { ReassemblyService } from '../../services/reassembly.service';
 import { ChapterListComponent } from '../chapter-list/chapter-list.component';
 import { ConfirmModalComponent } from '../confirm-modal/confirm-modal.component';
@@ -237,9 +238,19 @@ type Tab = 'metadata' | 'chapters' | 'actions';
 
               <!-- Action Buttons -->
               <div class="action-buttons">
+                @if (session()!.percentComplete < 100) {
+                  <button
+                    class="btn btn-primary"
+                    (click)="onContinueTts()"
+                  >
+                    Continue TTS
+                  </button>
+                }
+
                 <button
                   class="btn"
-                  [class.btn-primary]="!addedToQueue()"
+                  [class.btn-primary]="session()!.percentComplete >= 100 && !addedToQueue()"
+                  [class.btn-secondary]="session()!.percentComplete < 100"
                   [class.btn-success]="addedToQueue()"
                   [disabled]="isProcessing() || addedToQueue()"
                   (click)="onAddToQueue()"
@@ -251,7 +262,7 @@ type Tab = 'metadata' | 'chapters' | 'actions';
                     <span class="check-icon">&#10003;</span>
                     Added to Queue
                   } @else {
-                    Add to Queue
+                    Reassemble Audiobook
                   }
                 </button>
 
@@ -265,9 +276,18 @@ type Tab = 'metadata' | 'chapters' | 'actions';
               </div>
 
               <div class="action-info">
+                @if (session()!.percentComplete < 100) {
+                  <p>
+                    <strong>Continue TTS:</strong> Resume converting the remaining
+                    {{ session()!.totalSentences - session()!.completedSentences }} sentences
+                    from where you left off.
+                  </p>
+                }
                 <p>
-                  <strong>Add to Queue:</strong> Creates a reassembly job that will combine
-                  the existing sentence audio files into a final M4B audiobook.
+                  <strong>Reassemble Audiobook:</strong> Combine the existing sentence audio files
+                  into a final M4B audiobook. @if (session()!.percentComplete < 100) {
+                    <em>(Will be incomplete)</em>
+                  }
                 </p>
                 <p>
                   <strong>Delete Session:</strong> Permanently removes the session folder
@@ -694,6 +714,17 @@ type Tab = 'metadata' | 'chapters' | 'actions';
       }
     }
 
+    .btn-secondary {
+      background: var(--bg-muted);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-default);
+
+      &:hover:not(:disabled) {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+    }
+
     .btn-danger {
       background: var(--status-error, #dc3545);
       color: white;
@@ -755,6 +786,7 @@ export class SessionDetailComponent {
   private readonly electronService = inject(ElectronService);
   private readonly settingsService = inject(SettingsService);
   private readonly libraryService = inject(LibraryService);
+  private readonly router = inject(Router);
 
   // State
   readonly activeTab = signal<Tab>('metadata');
@@ -1158,6 +1190,31 @@ export class SessionDetailComponent {
     } finally {
       this.isSaving.set(false);
     }
+  }
+
+  /**
+   * Navigate to audiobook page to continue TTS conversion
+   */
+  onContinueTts(): void {
+    const session = this.session();
+    if (!session) return;
+
+    // Navigate to audiobook page with full session info for resume
+    // The audiobook page will detect this and offer to resume
+    this.router.navigate(['/audiobook'], {
+      queryParams: {
+        resumeSession: session.sessionId,
+        resumeSessionDir: session.sessionDir,
+        resumeProcessDir: session.processDir,
+        title: session.metadata?.title || 'Untitled',
+        author: session.metadata?.author || '',
+        // Session statistics
+        totalSentences: session.totalSentences,
+        completedSentences: session.completedSentences,
+        percentComplete: session.percentComplete,
+        modifiedAt: session.modifiedAt || new Date().toISOString()
+      }
+    });
   }
 
   async onAddToQueue(): Promise<void> {

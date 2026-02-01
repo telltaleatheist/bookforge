@@ -15,7 +15,7 @@ import { ConfirmModalComponent } from '../confirm-modal/confirm-modal.component'
   template: `
     <div class="session-list">
       <div class="list-header">
-        <h3>Incomplete Sessions</h3>
+        <h3>Past Sessions</h3>
         <button
           class="refresh-btn"
           [disabled]="reassemblyService.loading()"
@@ -75,8 +75,9 @@ import { ConfirmModalComponent } from '../confirm-modal/confirm-modal.component'
                 <div class="item-title">
                   {{ session.metadata.title || 'Untitled' }}
                 </div>
-                <div class="item-author">
-                  {{ session.metadata.author || 'Unknown Author' }}
+                <div class="item-meta">
+                  <span class="item-author">{{ session.metadata.author || 'Unknown Author' }}</span>
+                  <span class="item-date">{{ formatDate(session.modifiedAt) }}</span>
                 </div>
                 <div class="item-status">
                   <div class="progress-bar">
@@ -283,13 +284,26 @@ import { ConfirmModalComponent } from '../confirm-modal/confirm-modal.component'
       text-overflow: ellipsis;
     }
 
-    .item-author {
+    .item-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
       font-size: 0.75rem;
       color: var(--text-secondary);
+      margin-bottom: 0.25rem;
       white-space: nowrap;
       overflow: hidden;
+    }
+
+    .item-author {
+      overflow: hidden;
       text-overflow: ellipsis;
-      margin-bottom: 0.25rem;
+    }
+
+    .item-date {
+      color: var(--text-muted);
+      flex-shrink: 0;
+      font-size: 0.6875rem;
     }
 
     .item-status {

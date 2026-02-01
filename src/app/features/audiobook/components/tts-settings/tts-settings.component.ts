@@ -877,6 +877,19 @@ export class TtsSettingsComponent implements OnInit {
     coverPath?: string;      // Path to cover image file
     outputFilename?: string; // Custom output filename (e.g., "My Book.m4b")
   } | undefined>(undefined);
+  // Preloaded resume info from Past Sessions page - skips automatic session search
+  readonly preloadedResumeInfo = input<{
+    sessionId: string;
+    sessionDir: string;
+    processDir: string;
+    title?: string;
+    author?: string;
+    // Session statistics
+    totalSentences?: number;
+    completedSentences?: number;
+    percentComplete?: number;
+    modifiedAt?: string;
+  } | undefined>(undefined);
 
   // Outputs
   readonly settingsChange = output<TTSSettings>();
@@ -938,10 +951,50 @@ export class TtsSettingsComponent implements OnInit {
   }
 
   constructor() {
+    // Watch for preloaded resume info from Past Sessions page
+    effect(() => {
+      const preloaded = this.preloadedResumeInfo();
+      if (preloaded) {
+        console.log('[TTS] Using preloaded resume info from Past Sessions:', preloaded);
+        // Calculate missing sentences from the stats
+        const total = preloaded.totalSentences || 0;
+        const completed = preloaded.completedSentences || 0;
+        const missing = total - completed;
+        const percent = preloaded.percentComplete || (total > 0 ? (completed / total) * 100 : 0);
+
+        // Set resume info directly without searching
+        this.hasResumableSession.set(true);
+        this.resumeInfo.set({
+          success: true,
+          sessionId: preloaded.sessionId,
+          sessionDir: preloaded.sessionDir,
+          processDir: preloaded.processDir,
+          totalSentences: total,
+          completedSentences: completed,
+          missingSentences: missing,
+          progressPercent: percent,
+          metadata: {
+            title: preloaded.title,
+            creator: preloaded.author
+          }
+        });
+        this.showResumeOption.set(true);
+        // Skip automatic session search since we have preloaded info
+        this.lastCheckedPath = '__preloaded__';
+      }
+    });
+
     // Watch for epubPath changes and check for resumable sessions
     // Only check if path actually changed (debounce rapid changes)
     effect(() => {
       const path = this.epubPath();
+      const preloaded = this.preloadedResumeInfo();
+
+      // Skip if we have preloaded resume info
+      if (preloaded) {
+        return;
+      }
+
       if (path) {
         // Skip if we already checked this path
         if (path === this.lastCheckedPath) {
@@ -1107,7 +1160,13 @@ export class TtsSettingsComponent implements OnInit {
 
   async addToQueue(useResume: boolean = false): Promise<void> {
     let epubPathToUse = this.epubPath();
-    if (!epubPathToUse) return;
+
+    // For resume jobs from Past Sessions, we may not have an epub path
+    // The session already contains all necessary data
+    if (!epubPathToUse && !useResume) {
+      console.log('[TTS] No epub path and not resuming - cannot add to queue');
+      return;
+    }
 
     // Check for single chapter warning (skip if resuming - chapters already processed)
     const chapters = this.chapterCount();
@@ -1136,7 +1195,16 @@ export class TtsSettingsComponent implements OnInit {
       }
 
       const currentSettings = this.settings();
-      const meta = this.metadata();
+      // For resume jobs from Past Sessions, use metadata from resumeInfo if input is empty
+      let meta = this.metadata();
+      if (useResume && !meta && this.resumeInfo()?.metadata) {
+        const resumeMeta = this.resumeInfo()!.metadata!;
+        meta = {
+          title: resumeMeta.title,
+          author: resumeMeta.creator // resumeInfo uses 'creator', metadata uses 'author'
+        };
+        console.log('[TTS-SETTINGS] Using metadata from resumeInfo:', meta);
+      }
       console.log('[TTS-SETTINGS] Adding to queue with metadata:', JSON.stringify(meta, null, 2));
       console.log('[TTS-SETTINGS] outputFilename from metadata:', meta?.outputFilename);
       console.log('[TTS-SETTINGS] coverPath from metadata:', meta?.coverPath);

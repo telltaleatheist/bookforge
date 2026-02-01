@@ -420,6 +420,10 @@ export interface WorkerState {
   actualConversions?: number;  // Count of actual TTS conversions done
   // Resume mode - specific indices this worker should process
   assignedIndices?: number[];  // For scattered missing sentences
+  // Total sentences assigned to this worker (for accurate progress calculation)
+  // For regular jobs: sentenceEnd - sentenceStart + 1
+  // For resume jobs: assignedIndices.length (may be less than the range)
+  totalAssigned?: number;
   // Watchdog tracking
   startedAt?: number;          // Timestamp when worker started
   lastProgressAt?: number;     // Timestamp of last progress update
@@ -661,6 +665,11 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
   const platform = os.platform();
   const totalMemGB = os.totalmem() / (1024 * 1024 * 1024);
 
+  // Platform-specific max workers:
+  // - macOS (MPS): 4 workers - Apple Silicon handles parallel TTS well with unified memory
+  // - Windows/Linux (CUDA): 2 workers - GPU memory contention limits parallel benefit
+  const platformMaxWorkers = platform === 'darwin' ? 4 : 2;
+
   // Get AVAILABLE memory (not total) - user might be running other apps
   let availableMemGB = totalMemGB; // Fallback to total if we can't detect available
 
@@ -694,15 +703,16 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
 
   // Each TTS worker uses ~3GB memory
   // Reserve 2GB overhead for OOM protection
-  // Formula: floor((available - 2) / 3), capped at 4, minimum 1
+  // Formula: floor((available - 2) / 3), capped by platform max, minimum 1
   const memPerWorker = 3;
   const overheadGB = 2;
   const maxByMemory = Math.floor((availableMemGB - overheadGB) / memPerWorker);
-  const count = Math.min(4, Math.max(1, maxByMemory));
+  const count = Math.min(platformMaxWorkers, Math.max(1, maxByMemory));
 
+  const deviceType = platform === 'darwin' ? 'MPS' : 'CUDA';
   return {
     count,
-    reason: `${Math.round(availableMemGB)}GB available`
+    reason: `${Math.round(availableMemGB)}GB available (${deviceType})`
   };
 }
 
@@ -1053,15 +1063,11 @@ function startWorker(
       const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%:?\s*:?\s*(\d+)\/(\d+)(?:\s|$)/i);
       if (progressMatch) {
         const current = parseInt(progressMatch[2]);
-        const previous = worker.completedSentences || 0;
         worker.currentSentence = worker.sentenceStart + current;
         // Always update completedSentences to show progress through the worker's range
         worker.completedSentences = current;
-        // For resume jobs, also update actualConversions based on progress delta
-        // This handles engines like Orpheus that don't output "Recovering missing sentence"
-        if (session.isResumeJob && current > previous) {
-          worker.actualConversions = (worker.actualConversions || 0) + (current - previous);
-        }
+        // Note: For resume jobs, actualConversions is tracked via "Recovering missing sentence"
+        // output lines only - NOT via progress delta (which includes skipped sentences)
         // Update watchdog tracking
         worker.lastProgressAt = Date.now();
         if (!worker.hasShownProgress) {
@@ -1094,15 +1100,11 @@ function startWorker(
       const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%:?\s*:?\s*(\d+)\/(\d+)(?:\s|$)/i);
       if (progressMatch) {
         const current = parseInt(progressMatch[2]);
-        const previous = worker.completedSentences || 0;
         worker.currentSentence = worker.sentenceStart + current;
         // Always update completedSentences to show progress through the worker's range
         worker.completedSentences = current;
-        // For resume jobs, also update actualConversions based on progress delta
-        // This handles engines like Orpheus that don't output "Recovering missing sentence"
-        if (session.isResumeJob && current > previous) {
-          worker.actualConversions = (worker.actualConversions || 0) + (current - previous);
-        }
+        // Note: For resume jobs, actualConversions is tracked via "Recovering missing sentence"
+        // output lines only - NOT via progress delta (which includes skipped sentences)
         // Update watchdog tracking
         worker.lastProgressAt = Date.now();
         if (!worker.hasShownProgress) {
@@ -1966,7 +1968,8 @@ function serializeWorkers(workers: WorkerState[]): Omit<WorkerState, 'process'>[
     pid: w.pid,
     retryCount: w.retryCount,
     chapterStart: w.chapterStart,
-    chapterEnd: w.chapterEnd
+    chapterEnd: w.chapterEnd,
+    totalAssigned: w.totalAssigned
   }));
 }
 
@@ -2275,7 +2278,8 @@ export async function startParallelConversion(
         status: 'pending' as WorkerStatus,
         retryCount: 0,
         chapterStart: range.chapterStart,
-        chapterEnd: range.chapterEnd
+        chapterEnd: range.chapterEnd,
+        totalAssigned: sentenceEnd - sentenceStart + 1
       };
     });
   } else {
@@ -2290,7 +2294,8 @@ export async function startParallelConversion(
       currentSentence: range.start,
       completedSentences: 0,
       status: 'pending' as WorkerStatus,
-      retryCount: 0
+      retryCount: 0,
+      totalAssigned: range.end - range.start + 1
     }));
   }
 
@@ -2323,17 +2328,22 @@ export async function startParallelConversion(
     mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
   }
 
-  // Start all workers immediately - no staggering needed!
-  // With the new three-phase architecture:
-  //   Phase 1: --prep_only saves all data to session-state.json (including sentence text)
-  //   Phase 2: --worker_mode loads from session-state.json, does TTS only (NO file operations)
-  //   Phase 3: --assemble_only combines audio files
-  // Workers no longer do any preprocessing, so there are no race conditions.
+  // Start workers - stagger on Windows to avoid conda temp file race condition
+  // On Windows, conda uses temp files that conflict when multiple processes start simultaneously
+  // On Mac/Linux, we can start all workers immediately
+  const isWindows = process.platform === 'win32';
+  const WINDOWS_WORKER_STAGGER_MS = 2000; // 2 seconds between worker starts on Windows
+
   for (let i = 0; i < workers.length; i++) {
     const worker = workers[i];
     const range: WorkerRange = isChapterMode
       ? { chapterStart: worker.chapterStart, chapterEnd: worker.chapterEnd }
       : { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
+
+    if (isWindows && i > 0) {
+      // Stagger worker starts on Windows to avoid conda temp file conflicts
+      await new Promise(resolve => setTimeout(resolve, WINDOWS_WORKER_STAGGER_MS));
+    }
     startWorker(session, i, range);
   }
 
@@ -2867,6 +2877,125 @@ export async function checkResumeStatusFast(epubPath: string): Promise<ResumeChe
 }
 
 /**
+ * Check resume status directly from a processDir path
+ * Used when continuing from Past Sessions where we already know the session location
+ */
+export async function checkResumeStatusFromProcessDir(processDir: string): Promise<ResumeCheckResult> {
+  console.log('[PARALLEL-TTS] Checking resume status from processDir:', processDir);
+
+  try {
+    // Convert to readable path if it's a WSL path
+    const processDirReadable = toReadablePath(processDir);
+    const statePath = path.join(processDirReadable, 'session-state.json');
+
+    const stateContent = await fs.readFile(statePath, 'utf-8');
+    const state = JSON.parse(stateContent);
+
+    const totalSentences = state.total_sentences || 0;
+    const sentencesDir = state.chapters_dir_sentences;
+
+    if (!sentencesDir || totalSentences === 0) {
+      return { success: false, error: 'Invalid session state' };
+    }
+
+    // Extract session ID from the session dir path
+    const sessionDir = path.dirname(processDirReadable);
+    const folderName = path.basename(sessionDir);
+    const sessionId = folderName.startsWith('ebook-') ? folderName.slice(6) : folderName;
+
+    // Scan completed sentence files and find missing indices
+    const sentencesDirReadable = toReadablePath(sentencesDir);
+    let completedIndices: Set<number> = new Set();
+    let missingIndices: number[] = [];
+    try {
+      const files = await fs.readdir(sentencesDirReadable);
+      // Parse sentence indices from filenames (0.flac, 1.flac, etc.)
+      for (const f of files) {
+        if (f.endsWith('.flac')) {
+          const match = f.match(/^(\d+)\.flac$/);
+          if (match) {
+            completedIndices.add(parseInt(match[1], 10));
+          }
+        }
+      }
+
+      // Find missing indices
+      for (let i = 0; i < totalSentences; i++) {
+        if (!completedIndices.has(i)) {
+          missingIndices.push(i);
+        }
+      }
+    } catch {
+      // If we can't read the directory, assume all sentences are missing
+      missingIndices = Array.from({ length: totalSentences }, (_, i) => i);
+    }
+
+    const completedSentences = completedIndices.size;
+    const isComplete = completedSentences >= totalSentences;
+
+    // Calculate missing ranges (consecutive groups of missing indices)
+    const missingRanges: Array<{ start: number; end: number; count: number }> = [];
+    if (missingIndices.length > 0) {
+      let rangeStart = missingIndices[0];
+      let rangeEnd = missingIndices[0];
+
+      for (let i = 1; i < missingIndices.length; i++) {
+        if (missingIndices[i] === rangeEnd + 1) {
+          rangeEnd = missingIndices[i];
+        } else {
+          missingRanges.push({
+            start: rangeStart,
+            end: rangeEnd,
+            count: rangeEnd - rangeStart + 1
+          });
+          rangeStart = missingIndices[i];
+          rangeEnd = missingIndices[i];
+        }
+      }
+      missingRanges.push({
+        start: rangeStart,
+        end: rangeEnd,
+        count: rangeEnd - rangeStart + 1
+      });
+    }
+
+    // Extract chapter info from state
+    const chapters = (state.chapters || []).map((ch: any) => ({
+      chapter_num: ch.chapter_num,
+      sentence_start: ch.sentence_start,
+      sentence_end: ch.sentence_end,
+      sentence_count: ch.sentence_count
+    }));
+
+    console.log(`[PARALLEL-TTS] FromProcessDir: ${completedSentences}/${totalSentences} sentences complete`);
+    console.log(`[PARALLEL-TTS] Missing ranges: ${missingRanges.length} (${missingIndices.length} sentences)`);
+
+    return {
+      success: true,
+      complete: isComplete,
+      sessionId,
+      sessionDir,
+      processDir: processDirReadable,
+      sourceEpubPath: state.source_epub_path,
+      totalSentences,
+      totalChapters: state.total_chapters || chapters.length,
+      completedSentences,
+      missingSentences: missingIndices.length,
+      missingIndices,
+      missingRanges,
+      chapters,
+      metadata: state.metadata || {},
+      sessionPath: sessionDir,
+      canResume: !isComplete && completedSentences > 0,
+      progressPercent: totalSentences > 0 ? (completedSentences / totalSentences) * 100 : 0
+    };
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Failed to check resume from processDir:', err);
+    return { success: false, error: `Failed to check session: ${err}` };
+  }
+}
+
+/**
  * Check if a session can be resumed (detailed check with subprocess)
  * Accepts either an epub path (will search for matching session) or a session path
  * Calls e2a's --resume_session to scan for completed sentences
@@ -3037,8 +3166,21 @@ export async function resumeParallelConversion(
   // This handles jobs that were added before the fix to checkResumeStatusFast
   // Always re-fetch to get fresh missingIndices for accurate re-splitting
   if (!resumeInfo.sessionId || !resumeInfo.processDir || !resumeInfo.missingIndices || resumeInfo.missingIndices.length === 0) {
-    console.log('[PARALLEL-TTS] Resume info missing critical fields, re-fetching from fast check...');
-    const freshInfo = await checkResumeStatusFast(config.epubPath);
+    console.log('[PARALLEL-TTS] Resume info missing critical fields, re-fetching...');
+
+    let freshInfo: ResumeCheckResult;
+    if (resumeInfo.processDir) {
+      // We have processDir (e.g., from Past Sessions) - use it directly
+      console.log('[PARALLEL-TTS] Re-fetching from processDir:', resumeInfo.processDir);
+      freshInfo = await checkResumeStatusFromProcessDir(resumeInfo.processDir);
+    } else if (config.epubPath) {
+      // Fall back to epubPath search
+      console.log('[PARALLEL-TTS] Re-fetching from epubPath:', config.epubPath);
+      freshInfo = await checkResumeStatusFast(config.epubPath);
+    } else {
+      return { success: false, error: 'Cannot re-fetch resume info: no processDir or epubPath available' };
+    }
+
     if (!freshInfo.success) {
       return { success: false, error: freshInfo.error || 'Failed to re-fetch resume info' };
     }
@@ -3114,7 +3256,9 @@ export async function resumeParallelConversion(
           status: 'pending' as WorkerStatus,
           retryCount: 0,
           // Store the actual indices this worker should process
-          assignedIndices: workerIndices
+          assignedIndices: workerIndices,
+          // For resume jobs, totalAssigned is the actual missing sentences (not the range)
+          totalAssigned: workerIndices.length
         });
       }
     }
@@ -3160,10 +3304,18 @@ export async function resumeParallelConversion(
     mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
   }
 
-  // Start workers for missing ranges
+  // Start workers for missing ranges - stagger on Windows to avoid conda temp file race condition
+  const isWindows = process.platform === 'win32';
+  const WINDOWS_WORKER_STAGGER_MS = 2000; // 2 seconds between worker starts on Windows
+
   for (let i = 0; i < workers.length; i++) {
     const worker = workers[i];
     const range: WorkerRange = { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
+
+    if (isWindows && i > 0) {
+      // Stagger worker starts on Windows to avoid conda temp file conflicts
+      await new Promise(resolve => setTimeout(resolve, WINDOWS_WORKER_STAGGER_MS));
+    }
     startWorker(session, i, range);
   }
 
@@ -3326,6 +3478,7 @@ export const parallelTtsBridge = {
   // Resume support
   checkResumeStatus,
   checkResumeStatusFast,
+  checkResumeStatusFromProcessDir,
   listResumableSessions,
   resumeParallelConversion,
   buildResumeInfo

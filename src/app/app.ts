@@ -131,8 +131,8 @@ export class App implements OnInit {
     },
     {
       id: 'reassembly',
-      icon: '\u{1F527}', // Wrench emoji
-      label: 'Reassembly',
+      icon: '\u{1F4C2}', // Open folder emoji
+      label: 'Past Sessions',
       route: '/reassembly'
     },
     {

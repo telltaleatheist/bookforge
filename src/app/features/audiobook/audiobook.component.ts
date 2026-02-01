@@ -1,5 +1,6 @@
 import { Component, inject, signal, computed, OnInit, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { ActivatedRoute, Router } from '@angular/router';
 import {
   SplitPaneComponent,
   ToolbarComponent,
@@ -189,6 +190,7 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                       coverPath: getSelectedCoverPath(),
                       outputFilename: selectedMetadata()?.outputFilename || generatedFilename()
                     }"
+                    [preloadedResumeInfo]="preloadedResumeInfo()"
                     (settingsChange)="onTtsSettingsChange($event)"
                   />
                 }
@@ -231,6 +233,58 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                   />
                 }
               }
+            </div>
+          } @else if (preloadedResumeInfo()) {
+            <!-- Resume from Past Sessions - no queue item needed -->
+            <div class="resume-header">
+              <div class="resume-title-row">
+                <div>
+                  <h2>Continue TTS Conversion</h2>
+                  <p class="resume-subtitle">{{ preloadedResumeInfo()!.title }}
+                    @if (preloadedResumeInfo()!.author) {
+                      <span class="resume-author">by {{ preloadedResumeInfo()!.author }}</span>
+                    }
+                  </p>
+                </div>
+                <button class="back-link" (click)="clearResumeAndGoBack()">
+                  ← Back to Past Sessions
+                </button>
+              </div>
+
+              <!-- Session Statistics -->
+              <div class="resume-stats">
+                <div class="progress-row">
+                  <div class="progress-bar">
+                    <div class="progress-fill" [style.width.%]="preloadedResumeInfo()!.percentComplete || 0"></div>
+                  </div>
+                  <span class="progress-text">{{ (preloadedResumeInfo()!.percentComplete || 0) | number:'1.0-1' }}%</span>
+                </div>
+                <div class="stats-row">
+                  <span class="stat">
+                    <span class="stat-value">{{ preloadedResumeInfo()!.completedSentences || 0 | number }}</span>
+                    <span class="stat-label">of {{ preloadedResumeInfo()!.totalSentences || 0 | number }} sentences</span>
+                  </span>
+                  <span class="stat-divider">·</span>
+                  <span class="stat">
+                    <span class="stat-value">{{ (preloadedResumeInfo()!.totalSentences || 0) - (preloadedResumeInfo()!.completedSentences || 0) | number }}</span>
+                    <span class="stat-label">remaining</span>
+                  </span>
+                  @if (preloadedResumeInfo()!.modifiedAt) {
+                    <span class="stat-divider">·</span>
+                    <span class="stat">
+                      <span class="stat-label">Last active:</span>
+                      <span class="stat-value">{{ formatSessionDate(preloadedResumeInfo()!.modifiedAt!) }}</span>
+                    </span>
+                  }
+                </div>
+              </div>
+            </div>
+            <div class="tab-content">
+              <app-tts-settings
+                [settings]="ttsSettings()"
+                [preloadedResumeInfo]="preloadedResumeInfo()"
+                (settingsChange)="onTtsSettingsChange($event)"
+              />
             </div>
           } @else {
             <!-- Empty state -->
@@ -384,6 +438,117 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
       }
     }
 
+    .resume-header {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border-default);
+      background: var(--bg-subtle);
+
+      .resume-title-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 1rem;
+      }
+
+      h2 {
+        margin: 0 0 0.25rem 0;
+        font-size: 1.125rem;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+
+      .resume-subtitle {
+        margin: 0;
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+      }
+
+      .resume-author {
+        color: var(--text-muted);
+        font-style: italic;
+      }
+
+      .back-link {
+        background: none;
+        border: none;
+        padding: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+        color: var(--accent-primary);
+        cursor: pointer;
+        text-decoration: none;
+        white-space: nowrap;
+
+        &:hover {
+          text-decoration: underline;
+        }
+      }
+
+      .resume-stats {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        padding: 0.75rem;
+        background: var(--bg-base);
+        border-radius: 6px;
+      }
+
+      .progress-row {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .progress-bar {
+        flex: 1;
+        height: 8px;
+        background: var(--bg-elevated);
+        border-radius: 4px;
+        overflow: hidden;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: var(--accent-primary);
+        border-radius: 4px;
+        transition: width 0.3s ease;
+      }
+
+      .progress-text {
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: var(--accent-primary);
+        min-width: 3rem;
+        text-align: right;
+      }
+
+      .stats-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+        flex-wrap: wrap;
+      }
+
+      .stat {
+        display: flex;
+        gap: 0.25rem;
+      }
+
+      .stat-value {
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+
+      .stat-label {
+        color: var(--text-muted);
+      }
+
+      .stat-divider {
+        color: var(--text-muted);
+      }
+    }
+
   `]
 })
 export class AudiobookComponent implements OnInit {
@@ -393,6 +558,22 @@ export class AudiobookComponent implements OnInit {
   private readonly settingsService = inject(SettingsService);
   private readonly libraryService = inject(LibraryService);
   private readonly queueService = inject(QueueService);
+  private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
+
+  // Preloaded resume info from Past Sessions page
+  readonly preloadedResumeInfo = signal<{
+    sessionId: string;
+    sessionDir: string;
+    processDir: string;
+    title?: string;
+    author?: string;
+    // Session statistics
+    totalSentences?: number;
+    completedSentences?: number;
+    percentComplete?: number;
+    modifiedAt?: string;
+  } | undefined>(undefined);
 
   // State
   readonly queueItems = signal<QueueItem[]>([]);
@@ -594,6 +775,27 @@ export class AudiobookComponent implements OnInit {
   });
 
   async ngOnInit(): Promise<void> {
+    // Check for resume session from Past Sessions page
+    this.route.queryParams.subscribe(params => {
+      if (params['resumeSession']) {
+        console.log('[AUDIOBOOK] Received resume session from Past Sessions:', params);
+        this.preloadedResumeInfo.set({
+          sessionId: params['resumeSession'],
+          sessionDir: params['resumeSessionDir'],
+          processDir: params['resumeProcessDir'],
+          title: params['title'],
+          author: params['author'],
+          // Session statistics
+          totalSentences: params['totalSentences'] ? parseInt(params['totalSentences'], 10) : undefined,
+          completedSentences: params['completedSentences'] ? parseInt(params['completedSentences'], 10) : undefined,
+          percentComplete: params['percentComplete'] ? parseFloat(params['percentComplete']) : undefined,
+          modifiedAt: params['modifiedAt']
+        });
+        // Switch to convert tab to show the resume option
+        this.setWorkflowState('convert');
+      }
+    });
+
     await this.loadQueue();
     await this.loadCompletedAudiobooks();
   }
@@ -730,7 +932,8 @@ export class AudiobookComponent implements OnInit {
     this.queueItems.set(items);
 
     // If there's no selection but we have items, select the first one
-    if (!this.selectedItemId() && items.length > 0) {
+    // Skip auto-selection when resuming from Past Sessions (preloadedResumeInfo is set)
+    if (!this.selectedItemId() && items.length > 0 && !this.preloadedResumeInfo()) {
       this.selectItem(items[0].id);
     }
   }
@@ -910,6 +1113,36 @@ export class AudiobookComponent implements OnInit {
   selectItem(id: string): void {
     this.selectedItemId.set(id);
     this.workflowState.set('metadata');
+    // Clear preloaded resume info when user manually selects a queue item
+    if (this.preloadedResumeInfo()) {
+      this.preloadedResumeInfo.set(undefined);
+    }
+  }
+
+  /**
+   * Format a session date for display
+   */
+  formatSessionDate(dateStr: string): string {
+    try {
+      const date = new Date(dateStr);
+      const now = new Date();
+      const diffMs = now.getTime() - date.getTime();
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+      if (diffDays === 0) {
+        // Today - show time
+        return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      } else if (diffDays === 1) {
+        return 'Yesterday';
+      } else if (diffDays < 7) {
+        return `${diffDays} days ago`;
+      } else {
+        // Show date
+        return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      }
+    } catch {
+      return '';
+    }
   }
 
   async removeFromQueue(id: string): Promise<void> {
@@ -952,6 +1185,14 @@ export class AudiobookComponent implements OnInit {
         this.diffPaths.set(null);
       }
     }
+  }
+
+  /**
+   * Clear preloaded resume info and navigate back to Past Sessions
+   */
+  clearResumeAndGoBack(): void {
+    this.preloadedResumeInfo.set(undefined);
+    this.router.navigate(['/reassembly']);
   }
 
   onMetadataChange(metadata: EpubMetadata): void {

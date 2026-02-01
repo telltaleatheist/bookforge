@@ -462,12 +462,16 @@ export async function deleteSession(sessionId: string, customTmpPath?: string): 
   const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
   const sessionDir = path.join(tmpPath, `ebook-${sessionId}`);
 
-  if (!fs.existsSync(sessionDir)) {
+  try {
+    await fs.promises.access(sessionDir);
+  } catch {
+    // Directory doesn't exist
     return false;
   }
 
   try {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
+    console.log(`[REASSEMBLY] Deleting session folder (async): ${sessionDir}`);
+    await fs.promises.rm(sessionDir, { recursive: true, force: true });
     console.log(`[REASSEMBLY] Deleted session folder: ${sessionDir}`);
     return true;
   } catch (err) {
