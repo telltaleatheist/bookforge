@@ -417,6 +417,11 @@ export class QueueService {
       );
     }
 
+    // Copy VTT file to BFP audiobook folder for TTS jobs (for chapter recovery)
+    if (result.success && result.outputPath && completedJob?.bfpPath && completedJob.type === 'tts-conversion') {
+      this.copyVttToBfp(completedJob.bfpPath, result.outputPath);
+    }
+
     // Check if this was a standalone job
     const standaloneIds = this._standaloneJobIds();
     if (standaloneIds.has(result.jobId)) {
@@ -1403,6 +1408,33 @@ export class QueueService {
       }
     } catch (err) {
       console.error('[QUEUE] Error saving analytics to BFP:', err);
+    }
+  }
+
+  /**
+   * Copy VTT file to BFP audiobook folder for chapter recovery.
+   * Called after TTS completion when an output M4B is available.
+   */
+  private async copyVttToBfp(bfpPath: string, m4bOutputPath: string): Promise<void> {
+    const electron = window.electron as any;
+    if (!electron?.audiobook?.copyVtt) {
+      console.warn('[QUEUE] Cannot copy VTT - electron.audiobook.copyVtt not available');
+      return;
+    }
+
+    try {
+      const result = await electron.audiobook.copyVtt(bfpPath, m4bOutputPath);
+      if (result.success) {
+        if (result.vttPath) {
+          console.log('[QUEUE] Copied VTT to BFP:', result.vttPath);
+        } else {
+          console.log('[QUEUE] No VTT file found to copy');
+        }
+      } else {
+        console.error('[QUEUE] Failed to copy VTT to BFP:', result.error);
+      }
+    } catch (err) {
+      console.error('[QUEUE] Error copying VTT to BFP:', err);
     }
   }
 

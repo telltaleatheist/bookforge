@@ -15,6 +15,7 @@ import { DiffViewComponent } from './components/diff-view/diff-view.component';
 import { PlayViewComponent } from './components/play-view/play-view.component';
 import { SkippedChunksPanelComponent } from './components/skipped-chunks-panel/skipped-chunks-panel.component';
 import { PostProcessingPanelComponent } from './components/post-processing-panel/post-processing-panel.component';
+import { ChapterRecoveryComponent } from './components/chapter-recovery/chapter-recovery.component';
 import { EpubService } from './services/epub.service';
 import { AudiobookService } from './services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
@@ -25,7 +26,7 @@ import { AnalyticsPanelComponent } from './components/analytics-panel/analytics-
 import { ProjectAnalytics } from '../../core/models/analytics.types';
 
 // Workflow states for the audiobook producer
-type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'skipped' | 'analytics' | 'enhance' | 'complete';
+type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'skipped' | 'analytics' | 'enhance' | 'chapters' | 'complete';
 
 @Component({
   selector: 'app-audiobook',
@@ -43,7 +44,8 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
     PlayViewComponent,
     SkippedChunksPanelComponent,
     AnalyticsPanelComponent,
-    PostProcessingPanelComponent
+    PostProcessingPanelComponent,
+    ChapterRecoveryComponent
   ],
   template: `
     <!-- Toolbar -->
@@ -144,6 +146,15 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                   Enhance
                 </button>
               }
+              @if (hasVttFile()) {
+                <button
+                  class="tab"
+                  [class.active]="workflowState() === 'chapters'"
+                  (click)="setWorkflowState('chapters')"
+                >
+                  Chapters
+                </button>
+              }
             </div>
 
 
@@ -231,6 +242,16 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                     [enhancedAt]="selectedItem()?.enhancedAt"
                     (jobQueued)="onEnhanceJobQueued($event)"
                   />
+                }
+                @case ('chapters') {
+                  @if (hasVttFile() && audioFilePath()) {
+                    <app-chapter-recovery
+                      [epubPath]="currentEpubPath()"
+                      [vttPath]="vttPath()!"
+                      [m4bPath]="audioFilePath()!"
+                      (chaptersApplied)="onChaptersApplied($event)"
+                    />
+                  }
                 }
               }
             </div>
@@ -743,6 +764,22 @@ export class AudiobookComponent implements OnInit {
     const analytics = this.currentAnalytics();
     if (!analytics) return false;
     return (analytics.ttsJobs?.length > 0) || (analytics.cleanupJobs?.length > 0);
+  });
+
+  // VTT file path for chapter recovery
+  readonly vttPath = computed(() => {
+    const item = this.selectedItem();
+    if (!item?.audiobookFolder) return null;
+    // VTT files are stored as subtitles.vtt in the audiobook folder
+    return `${item.audiobookFolder}/subtitles.vtt`;
+  });
+
+  // Check if VTT file exists (for showing Chapters tab)
+  readonly hasVttFile = computed(() => {
+    const item = this.selectedItem();
+    // Check if vttPath is set in the BFP (populated when VTT was copied after TTS)
+    // For now, we'll show the tab if there's a linked audiobook - we'll verify the file exists when opening
+    return !!item?.linkedAudioPath && !!item?.audiobookFolder;
   });
 
   // Toolbar
@@ -1276,6 +1313,16 @@ export class AudiobookComponent implements OnInit {
     );
 
     console.log('[Audiobook] Enhancement job queued:', jobId);
+  }
+
+  onChaptersApplied(result: { success: boolean; outputPath?: string; chaptersApplied?: number; error?: string }): void {
+    if (result.success) {
+      console.log('[Audiobook] Chapters applied successfully:', result.chaptersApplied, 'chapters');
+      // Optionally refresh the queue to update UI
+      this.loadQueue();
+    } else {
+      console.error('[Audiobook] Failed to apply chapters:', result.error);
+    }
   }
 
   async onDiffTextEdited(event: { chapterId: string; oldText: string; newText: string }): Promise<void> {

@@ -16,6 +16,7 @@ import { spawn, ChildProcess, execSync, exec } from 'child_process';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
@@ -649,8 +650,8 @@ function getStateFilePath(processDir: string): string {
 async function loadPersistentState(processDir: string): Promise<PersistentSessionState | null> {
   try {
     const stateFile = getStateFilePath(processDir);
-    if (fs.existsSync(stateFile)) {
-      const data = fs.readFileSync(stateFile, 'utf8');
+    if (fsSync.existsSync(stateFile)) {
+      const data = fsSync.readFileSync(stateFile, 'utf8');
       const state = JSON.parse(data) as PersistentSessionState;
       console.log(`[PARALLEL-TTS] Loaded persistent state: ${state.runs.length} previous runs, ${state.totalElapsedSeconds}s total elapsed`);
       return state;
@@ -742,7 +743,7 @@ async function savePersistentState(session: ConversionSession): Promise<void> {
 
     // Save to disk
     const stateFile = getStateFilePath(session.prepInfo.processDir);
-    fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+    fsSync.writeFileSync(stateFile, JSON.stringify(state, null, 2));
   } catch (err) {
     console.error('[PARALLEL-TTS] Failed to save persistent state:', err);
   }
@@ -776,7 +777,7 @@ async function finalizeRunState(
 
     // Save final state
     const stateFile = getStateFilePath(session.prepInfo.processDir);
-    fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+    fsSync.writeFileSync(stateFile, JSON.stringify(state, null, 2));
     console.log(`[PARALLEL-TTS] Finalized run state: ${status}, total ${state.totalElapsedSeconds}s, ${state.totalSentencesProcessed} sentences`);
   } catch (err) {
     console.error('[PARALLEL-TTS] Failed to finalize run state:', err);

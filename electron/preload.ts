@@ -984,6 +984,12 @@ export interface ElectronAPI {
       success: boolean;
       error?: string;
     }>;
+    copyVtt: (bfpPath: string, m4bOutputPath: string) => Promise<{
+      success: boolean;
+      vttPath?: string | null;
+      message?: string;
+      error?: string;
+    }>;
     getFolder: (bfpPath: string) => Promise<{
       success: boolean;
       folder?: string;
@@ -1281,6 +1287,28 @@ export interface ElectronAPI {
       replaceOriginal?: boolean;
     }) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
   };
+  chapterRecovery: {
+    detectChapters: (epubPath: string, vttPath: string) => Promise<{
+      success: boolean;
+      chapters?: Array<{
+        id: string;
+        title: string;
+        epubOrder: number;
+        detectedTimestamp: string | null;
+        detectedSeconds: number | null;
+        confidence: 'high' | 'medium' | 'low' | 'manual' | 'not_found';
+        manualTimestamp: string | null;
+        openingText: string;
+      }>;
+      error?: string;
+    }>;
+    applyChapters: (m4bPath: string, chapters: Array<{ title: string; timestamp: string }>) => Promise<{
+      success: boolean;
+      outputPath?: string;
+      chaptersApplied?: number;
+      error?: string;
+    }>;
+  };
   platform: string;
 }
 
@@ -1482,6 +1510,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
     appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup', analytics: { jobId: string; [key: string]: unknown }) =>
       ipcRenderer.invoke('audiobook:append-analytics', bfpPath, jobType, analytics),
+    copyVtt: (bfpPath: string, m4bOutputPath: string) =>
+      ipcRenderer.invoke('audiobook:copy-vtt', bfpPath, m4bOutputPath),
     getFolder: (bfpPath: string) =>
       ipcRenderer.invoke('audiobook:get-folder', bfpPath),
     listProjectsWithAudiobook: () =>
@@ -1943,6 +1973,12 @@ const electronAPI: ElectronAPI = {
       replaceOriginal?: boolean;
     }) =>
       ipcRenderer.invoke('queue:run-resemble-enhance', jobId, config),
+  },
+  chapterRecovery: {
+    detectChapters: (epubPath: string, vttPath: string) =>
+      ipcRenderer.invoke('chapter-recovery:detect-chapters', epubPath, vttPath),
+    applyChapters: (m4bPath: string, chapters: Array<{ title: string; timestamp: string }>) =>
+      ipcRenderer.invoke('chapter-recovery:apply-chapters', m4bPath, chapters),
   },
   platform: process.platform,
 };

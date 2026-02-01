@@ -3483,6 +3483,75 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Copy VTT file to audiobook folder and update BFP with vttPath
+  // Called after TTS completion to preserve subtitles for chapter recovery
+  ipcMain.handle('audiobook:copy-vtt', async (
+    _event,
+    bfpPath: string,
+    m4bOutputPath: string
+  ) => {
+    try {
+      // Find VTT file in the M4B output directory or vtt subfolder
+      const outputDir = path.dirname(m4bOutputPath);
+      const m4bBasename = path.basename(m4bOutputPath, '.m4b');
+
+      let vttSourcePath: string | null = null;
+
+      // Check vtt subfolder first (where moveVttFile puts it)
+      const vttSubfolder = path.join(outputDir, 'vtt');
+      try {
+        const vttEntries = await fs.readdir(vttSubfolder);
+        const vttFile = vttEntries.find(f => f.toLowerCase().endsWith('.vtt'));
+        if (vttFile) {
+          vttSourcePath = path.join(vttSubfolder, vttFile);
+        }
+      } catch {
+        // vtt subfolder doesn't exist, check main directory
+      }
+
+      // If not in subfolder, check main directory
+      if (!vttSourcePath) {
+        const mainEntries = await fs.readdir(outputDir);
+        const vttFile = mainEntries.find(f => f.toLowerCase().endsWith('.vtt'));
+        if (vttFile) {
+          vttSourcePath = path.join(outputDir, vttFile);
+        }
+      }
+
+      if (!vttSourcePath) {
+        console.log('[AUDIOBOOK] No VTT file found for', m4bBasename);
+        return { success: true, vttPath: null, message: 'No VTT file found' };
+      }
+
+      // Get the audiobook folder for this BFP project
+      const projectName = path.basename(bfpPath, '.bfp');
+      const audiobookFolder = getAudiobookFolderForProject(projectName);
+
+      // Copy VTT to audiobook folder as subtitles.vtt
+      const vttDestPath = path.join(audiobookFolder, 'subtitles.vtt');
+      await fs.mkdir(audiobookFolder, { recursive: true });
+      await fs.copyFile(vttSourcePath, vttDestPath);
+      console.log('[AUDIOBOOK] Copied VTT to:', vttDestPath);
+
+      // Update BFP with vttPath
+      const bfpContent = await fs.readFile(bfpPath, 'utf-8');
+      const bfpProject = JSON.parse(bfpContent);
+
+      if (!bfpProject.audiobook) {
+        bfpProject.audiobook = {};
+      }
+      bfpProject.audiobook.vttPath = vttDestPath;
+      bfpProject.modified_at = new Date().toISOString();
+
+      await atomicWriteFile(bfpPath, JSON.stringify(bfpProject, null, 2));
+
+      return { success: true, vttPath: vttDestPath };
+    } catch (err) {
+      console.error('[AUDIOBOOK] Failed to copy VTT:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Get audiobook folder path for a project
   ipcMain.handle('audiobook:get-folder', async (_event, bfpPath: string) => {
     const projectName = path.basename(bfpPath, '.bfp');
@@ -4401,6 +4470,36 @@ function setupIpcHandlers(): void {
       const { cancelDenoise } = await import('./deepfilter-bridge.js');
       const cancelled = cancelDenoise();
       return { success: true, data: cancelled };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Chapter Recovery handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('chapter-recovery:detect-chapters', async (
+    _event,
+    epubPath: string,
+    vttPath: string
+  ) => {
+    try {
+      const { detectChapters } = await import('./chapter-recovery-bridge.js');
+      return await detectChapters(epubPath, vttPath);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('chapter-recovery:apply-chapters', async (
+    _event,
+    m4bPath: string,
+    chapters: Array<{ title: string; timestamp: string }>
+  ) => {
+    try {
+      const { applyChaptersToM4b } = await import('./chapter-recovery-bridge.js');
+      return await applyChaptersToM4b(m4bPath, chapters);
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
