@@ -550,9 +550,10 @@ function toReadablePath(p: string): string {
 let mainWindow: BrowserWindow | null = null;
 let loggerInitialized = false;
 
-// Use lightweight worker.py for lower memory usage (~8GB vs ~25GB)
-// Set to false to use app.py with --worker_mode (full imports)
+// Use lightweight worker.py for lower memory usage (~3GB vs ~25GB)
+// Set to false to use app.py with --headless --session (full imports)
 // worker.py imports from bookforge_ext.parallel.worker_core (minimal deps)
+// app.py imports everything (~25GB) - only use for debugging
 let useLightweightWorker = true;
 
 // Watchdog configuration - detect stuck workers
@@ -1147,8 +1148,9 @@ function startWorker(
   if (useLightweightWorker) {
     // Use worker.py - lightweight entry point with minimal imports
     const workerPath = path.join(getDefaultE2aPath(), 'worker.py');
-    // parallel-workers branch expects lowercase device names: cpu, gpu, mps
-    const deviceArg = settings.device.toLowerCase();
+    // worker.py argparser expects uppercase device names: CPU, MPS, CUDA
+    const deviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
+    const deviceArg = deviceMap[settings.device] || settings.device.toUpperCase();
     args = [
       ...condaRunArgs(settings.ttsEngine),
       workerPath,
