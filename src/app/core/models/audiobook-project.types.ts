@@ -49,8 +49,8 @@ export interface AudiobookState {
   cleanupError?: string;
   cleanupJobId?: string;         // Reference to queue job
 
-  // TTS state - 'paused' means stopped mid-conversion, can resume
-  ttsStatus: 'none' | 'pending' | 'processing' | 'paused' | 'complete' | 'error';
+  // TTS state - 'stopped' means stopped mid-conversion by user, can resume
+  ttsStatus: 'none' | 'pending' | 'processing' | 'stopped' | 'complete' | 'error';
   ttsProgress?: number;          // 0-100
   ttsError?: string;
   ttsJobId?: string;             // Reference to queue job
@@ -62,7 +62,7 @@ export interface AudiobookState {
     completed: number;           // Sentences successfully converted
     total: number;               // Total sentences in book
   };
-  ttsPausedAt?: string;          // ISO timestamp when paused/stopped
+  ttsStoppedAt?: string;         // ISO timestamp when stopped by user
 
   // TTS settings (saved per-project)
   ttsSettings?: TTSSettings;

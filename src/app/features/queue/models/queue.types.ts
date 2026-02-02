@@ -269,15 +269,15 @@ export interface JobResult {
   skippedChunksPath?: string;
   // Analytics data (TTS or cleanup job)
   analytics?: any;
-  // Pause/resume support for TTS jobs
-  wasPaused?: boolean;           // True if job was stopped by user (can be resumed)
-  pauseInfo?: {
+  // Stop/resume support for TTS jobs
+  wasStopped?: boolean;          // True if job was stopped by user (can be resumed)
+  stopInfo?: {
     sessionId?: string;
     sessionDir?: string;
     processDir?: string;
     completedSentences?: number;
     totalSentences?: number;
-    pausedAt?: string;
+    stoppedAt?: string;
   };
 }
 

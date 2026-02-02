@@ -2789,16 +2789,16 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     error: 'Stopped by user',
     duration,
     analytics,
-    // Flag to indicate this was a user-initiated pause (can be resumed)
+    // Flag to indicate this was a user-initiated stop (can be resumed)
     // The session files remain on disk and can be continued later
-    wasPaused: true,
-    pauseInfo: {
+    wasStopped: true,
+    stopInfo: {
       sessionId: session.prepInfo?.sessionId,
       sessionDir: session.prepInfo?.sessionDir,
       processDir: session.prepInfo?.processDir,
       completedSentences,
       totalSentences: session.prepInfo?.totalSentences,
-      pausedAt: new Date().toISOString()
+      stoppedAt: new Date().toISOString()
     }
   });
 }

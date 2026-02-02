@@ -264,8 +264,8 @@ export class QueueService {
             outputPath: data.outputPath,
             error: data.error,
             analytics: data.analytics,
-            wasPaused: data.wasPaused,
-            pauseInfo: data.pauseInfo
+            wasStopped: data.wasStopped,
+            stopInfo: data.stopInfo
           });
         });
       });
@@ -444,8 +444,8 @@ export class QueueService {
   }
 
   /**
-   * Update BFP state when a job is paused (stopped by user).
-   * Sets ttsStatus to 'paused' and saves progress for resume.
+   * Update BFP state when a job is stopped by user.
+   * Sets ttsStatus to 'stopped' and saves progress for resume.
    */
   /**
    * Check if a BFP has a resumable TTS session.
@@ -482,45 +482,45 @@ export class QueueService {
     }
   }
 
-  private async updateBfpPausedState(
+  private async updateBfpStoppedState(
     bfpPath: string,
-    pauseInfo?: {
+    stopInfo?: {
       sessionId?: string;
       sessionDir?: string;
       processDir?: string;
       completedSentences?: number;
       totalSentences?: number;
-      pausedAt?: string;
+      stoppedAt?: string;
     }
   ): Promise<void> {
     const electron = window.electron as any;
     if (!electron?.audiobook?.updateState) {
-      console.warn('[QUEUE] Cannot update paused state - electron.audiobook.updateState not available');
+      console.warn('[QUEUE] Cannot update stopped state - electron.audiobook.updateState not available');
       return;
     }
 
     try {
       const result = await electron.audiobook.updateState(bfpPath, {
-        ttsStatus: 'paused',
-        ttsPausedAt: pauseInfo?.pausedAt || new Date().toISOString(),
-        ttsSentenceProgress: pauseInfo ? {
-          completed: pauseInfo.completedSentences || 0,
-          total: pauseInfo.totalSentences || 0
+        ttsStatus: 'stopped',
+        ttsStoppedAt: stopInfo?.stoppedAt || new Date().toISOString(),
+        ttsSentenceProgress: stopInfo ? {
+          completed: stopInfo.completedSentences || 0,
+          total: stopInfo.totalSentences || 0
         } : undefined
       });
 
       if (result.success) {
-        console.log('[QUEUE] Updated BFP with paused state:', bfpPath);
+        console.log('[QUEUE] Updated BFP with stopped state:', bfpPath);
       } else {
-        console.error('[QUEUE] Failed to update BFP paused state:', result.error);
+        console.error('[QUEUE] Failed to update BFP stopped state:', result.error);
       }
     } catch (err) {
-      console.error('[QUEUE] Error updating BFP paused state:', err);
+      console.error('[QUEUE] Error updating BFP stopped state:', err);
     }
   }
 
   private handleJobComplete(result: JobResult): void {
-    console.log(`[QUEUE] handleJobComplete called for job ${result.jobId}, success=${result.success}, wasPaused=${result.wasPaused}`);
+    console.log(`[QUEUE] handleJobComplete called for job ${result.jobId}, success=${result.success}, wasStopped=${result.wasStopped}`);
     console.log(`[QUEUE] Current state: isRunning=${this._isRunning()}, currentJobId=${this._currentJobId()}`);
 
     // Get the job before updating to capture the type
@@ -528,13 +528,13 @@ export class QueueService {
 
     // Determine the final status:
     // - success=true -> 'complete'
-    // - wasPaused=true -> 'pending' (can be resumed, stays in queue)
+    // - wasStopped=true -> 'pending' (can be resumed, stays in queue)
     // - otherwise -> 'error'
     let finalStatus: JobStatus = result.success ? 'complete' : 'error';
-    if (result.wasPaused) {
-      // Job was paused by user - keep it in pending state so it can be resumed
+    if (result.wasStopped) {
+      // Job was stopped by user - keep it in pending state so it can be resumed
       finalStatus = 'pending';
-      console.log(`[QUEUE] Job ${result.jobId} was paused - setting status to 'pending' for resume`);
+      console.log(`[QUEUE] Job ${result.jobId} was stopped - setting status to 'pending' for resume`);
     }
 
     // Update the job status
@@ -544,7 +544,7 @@ export class QueueService {
         return {
           ...job,
           status: finalStatus,
-          error: result.wasPaused ? undefined : result.error, // Clear error for paused jobs
+          error: result.wasStopped ? undefined : result.error, // Clear error for stopped jobs
           progress: result.success ? 100 : job.progress,
           completedAt: result.success ? new Date() : job.completedAt,
           outputPath: result.outputPath || job.outputPath,
@@ -562,9 +562,9 @@ export class QueueService {
       })
     );
 
-    // Update BFP state for paused jobs
-    if (result.wasPaused && completedJob?.bfpPath) {
-      this.updateBfpPausedState(completedJob.bfpPath, result.pauseInfo);
+    // Update BFP state for stopped jobs
+    if (result.wasStopped && completedJob?.bfpPath) {
+      this.updateBfpStoppedState(completedJob.bfpPath, result.stopInfo);
     }
 
     // Save analytics directly to BFP (no longer using signal/effect pattern to avoid duplicates)
@@ -1208,7 +1208,7 @@ export class QueueService {
             console.log(`[QUEUE] Explicit resume job from ${job.resumeCompletedSentences} sentences`);
           } else if (job.bfpPath) {
             // Check if BFP has a saved session we can auto-resume from
-            // This handles jobs that were paused by user clicking Stop
+            // This handles jobs that were stopped by user clicking Stop
             resumeCheckResult = await this.checkBfpForResumableSession(job.bfpPath, epubPathForTts);
             if (resumeCheckResult?.success && !resumeCheckResult.complete) {
               shouldResume = true;
