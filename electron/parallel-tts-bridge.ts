@@ -180,10 +180,16 @@ interface WslSpawnConfig {
 }
 
 /**
- * Check if we should use WSL for this spawn (Orpheus on Windows with WSL enabled)
+ * Check if we should use WSL for this spawn
+ * Returns true if:
+ * - useWsl2ForAllTts is enabled (uses WSL for all TTS engines), OR
+ * - Engine is Orpheus AND useWsl2ForOrpheus is enabled
  */
 function shouldUseWslForSpawn(ttsEngine?: string): boolean {
   if (os.platform() !== 'win32') return false;
+  // Check if all TTS should use WSL
+  if (shouldUseWsl2ForAllTts()) return true;
+  // Otherwise, only use WSL for Orpheus
   if (ttsEngine?.toLowerCase() !== 'orpheus') return false;
   return shouldUseWsl2ForOrpheus();
 }
@@ -519,6 +525,7 @@ import {
   getDefaultE2aPath,
   getCondaRunArgs,
   getCondaPath,
+  shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
   getWslDistro,
   getWslCondaPath,

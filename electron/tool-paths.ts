@@ -39,8 +39,9 @@ export interface ToolPathsConfig {
   useWsl2ForResemble?: boolean; // Use WSL2 for Resemble Enhance on Windows (default: true on Windows)
   wslResembleCondaEnv?: string; // Conda env name for Resemble in WSL (default: 'resemble')
 
-  // WSL2 Configuration (Windows only, for Orpheus TTS)
-  useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus
+  // WSL2 Configuration (Windows only)
+  useWsl2ForAllTts?: boolean;     // Use WSL2 for ALL TTS engines (not just Orpheus)
+  useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus (legacy, superseded by useWsl2ForAllTts)
   wslDistro?: string;              // WSL distro name (e.g., "Ubuntu")
   wslCondaPath?: string;           // Conda path inside WSL (e.g., "/home/user/anaconda3/bin/conda")
   wslE2aPath?: string;             // e2a path inside WSL (e.g., "/home/user/ebook2audiobook")
@@ -651,12 +652,30 @@ export function checkWslOrpheusSetup(config: {
 }
 
 /**
+ * Check if WSL2 should be used for ALL TTS engines
+ * Returns true only on Windows with useWsl2ForAllTts enabled
+ */
+export function shouldUseWsl2ForAllTts(): boolean {
+  if (os.platform() !== 'win32') {
+    return false;
+  }
+  loadConfig();
+  // Handle both boolean true and string 'true' (settings UI saves as string)
+  const value = state.config.useWsl2ForAllTts as unknown;
+  return value === true || value === 'true';
+}
+
+/**
  * Check if WSL2 should be used for Orpheus TTS
- * Returns true only on Windows with useWsl2ForOrpheus enabled
+ * Returns true only on Windows with useWsl2ForOrpheus or useWsl2ForAllTts enabled
  */
 export function shouldUseWsl2ForOrpheus(): boolean {
   if (os.platform() !== 'win32') {
     return false;
+  }
+  // If all TTS uses WSL, Orpheus does too
+  if (shouldUseWsl2ForAllTts()) {
+    return true;
   }
   loadConfig();
   // Handle both boolean true and string 'true' (settings UI saves as string)
@@ -771,6 +790,7 @@ export const toolPaths = {
   // WSL2 functions
   detectWslAvailability,
   checkWslOrpheusSetup,
+  shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
   getWslDistro,
   getWslCondaPath,

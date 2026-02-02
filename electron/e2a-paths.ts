@@ -17,6 +17,7 @@ import {
   getCondaPath as getToolCondaPath,
   getE2aPath as getToolE2aPath,
   updateConfig as updateToolConfig,
+  shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
   getWslDistro,
   getWslCondaPath,
@@ -252,10 +253,10 @@ export function wslToWindowsPath(wslPath: string): string {
 }
 
 /**
- * Check if the current configuration should use WSL for Orpheus
+ * Check if the current configuration should use WSL for TTS
  * Re-exported for convenience
  */
-export { shouldUseWsl2ForOrpheus, getWslDistro, getWslCondaPath, getWslE2aPath, getWslOrpheusCondaEnv, wslPathToWindows };
+export { shouldUseWsl2ForAllTts, shouldUseWsl2ForOrpheus, getWslDistro, getWslCondaPath, getWslE2aPath, getWslOrpheusCondaEnv, wslPathToWindows };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Exports
