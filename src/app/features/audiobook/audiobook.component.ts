@@ -1136,11 +1136,11 @@ export class AudiobookComponent implements OnInit {
       console.log('[Audiobook] updateState result:', result);
 
       if (result.success) {
-        // Update local state
+        // Update local state - file was just selected via dialog so it definitely exists
         this.queueItems.update(items =>
           items.map(i =>
             i.id === item.id
-              ? { ...i, linkedAudioPath: audioPath, hasAudiobook: true }
+              ? { ...i, linkedAudioPath: audioPath, linkedAudioPathValid: true, hasAudiobook: true }
               : i
           )
         );
