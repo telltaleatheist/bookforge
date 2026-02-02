@@ -263,7 +263,9 @@ export class QueueService {
             success: data.success,
             outputPath: data.outputPath,
             error: data.error,
-            analytics: data.analytics
+            analytics: data.analytics,
+            wasPaused: data.wasPaused,
+            pauseInfo: data.pauseInfo
           });
         });
       });
