@@ -853,6 +853,9 @@ export class AudiobookComponent implements OnInit {
   }
 
   async loadQueue(): Promise<void> {
+    // Ensure library service is ready before accessing libraryPath()
+    await this.libraryService.whenReady();
+
     // Use unified project list - only shows projects exported to audiobook producer
     const projects = await this.audiobookService.listUnifiedProjects();
 
@@ -878,6 +881,9 @@ export class AudiobookComponent implements OnInit {
           const libPath = this.libraryService.libraryPath();
           if (libPath) {
             resolvedCoverPath = `${libPath}/${project.metadata.coverImagePath}`;
+            console.log(`[Audiobook] Resolved coverPath for "${project.name}":`, resolvedCoverPath);
+          } else {
+            console.warn(`[Audiobook] Cannot resolve coverPath - libraryPath is null for "${project.name}"`);
           }
         }
 

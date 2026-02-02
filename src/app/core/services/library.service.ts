@@ -28,11 +28,16 @@ export class LibraryService {
   private readonly _libraryPath = signal<string | null>(null);
   private readonly _onboardingComplete = signal<boolean>(false);
   private readonly _loading = signal<boolean>(true);
+  private readonly _ready = signal<boolean>(false);
+
+  // Promise that resolves when initialization is complete
+  private initPromise: Promise<void> | null = null;
 
   // Public computed signals
   readonly libraryPath = computed(() => this._libraryPath());
   readonly onboardingComplete = computed(() => this._onboardingComplete());
   readonly loading = computed(() => this._loading());
+  readonly ready = computed(() => this._ready());
   readonly isConfigured = computed(() => this._libraryPath() !== null && this._onboardingComplete());
 
   // Computed paths
@@ -69,13 +74,22 @@ export class LibraryService {
   private readonly STORAGE_KEY = 'bookforge_library_settings';
 
   constructor() {
-    this.loadSettings();
+    this.initPromise = this.loadSettings();
+  }
+
+  /**
+   * Wait for the service to be fully initialized.
+   * Call this before accessing libraryPath() to avoid race conditions.
+   */
+  async whenReady(): Promise<void> {
+    if (this._ready()) return;
+    await this.initPromise;
   }
 
   /**
    * Load settings from localStorage
    */
-  private loadSettings(): void {
+  private async loadSettings(): Promise<void> {
     this._loading.set(true);
     try {
       const stored = localStorage.getItem(this.STORAGE_KEY);
@@ -85,7 +99,7 @@ export class LibraryService {
 
         // Validate and sync library path to main process
         if (settings.libraryPath) {
-          this.validateAndSyncPath(settings);
+          await this.validateAndSyncPath(settings);
         } else {
           this._libraryPath.set(null);
           this._onboardingComplete.set(settings.onboardingComplete);
@@ -95,6 +109,7 @@ export class LibraryService {
       console.error('Failed to load library settings:', e);
     }
     this._loading.set(false);
+    this._ready.set(true);
   }
 
   /**

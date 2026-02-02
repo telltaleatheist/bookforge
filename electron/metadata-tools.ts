@@ -125,7 +125,10 @@ export function removeCover(filePath: string): Promise<void> {
       // tone: tone tag --meta-remove-property=EmbeddedPictures --force file.m4b
       args = ['tag', '--meta-remove-property=EmbeddedPictures', '--force', filePath];
     } else {
-      // m4b-tool: m4b-tool meta --skip-cover -f file.m4b
+      // NOTE: m4b-tool's --skip-cover doesn't actually REMOVE the cover, it just tells m4b-tool
+      // not to copy the existing cover during metadata operations. For proper cover replacement,
+      // we rely on applyMetadata() with --cover which should replace the existing cover.
+      // This call is mainly a no-op for m4b-tool but left for compatibility.
       args = ['meta', '--skip-cover', '-f', filePath];
     }
 
