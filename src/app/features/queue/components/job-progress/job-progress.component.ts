@@ -19,6 +19,10 @@ interface ETAState {
   estimatedSecondsRemaining: number; // Current ETA countdown value
   initialChunksCompleted: number;  // Chunks already done when THIS session started (for resume jobs)
   firstWorkTime: number | null;    // Timestamp when first actual work completed (excludes model load)
+  // Phase tracking for reassembly (different phases have very different speeds)
+  lastPhase: 'combining' | 'encoding' | 'export' | null;
+  phaseStartTime: number | null;   // When current phase started
+  phaseStartProgress: number;      // Progress when current phase started
 }
 
 @Component({
@@ -352,7 +356,10 @@ export class JobProgressComponent implements OnDestroy {
     lastChunksCompleted: 0,
     estimatedSecondsRemaining: 0,
     initialChunksCompleted: -1,  // -1 means not yet initialized
-    firstWorkTime: null          // Set when first chunk/sentence completes
+    firstWorkTime: null,         // Set when first chunk/sentence completes
+    lastPhase: null,
+    phaseStartTime: null,
+    phaseStartProgress: 0
   };
 
   // Signal to track current ETA countdown (decrements every second)
@@ -420,7 +427,10 @@ export class JobProgressComponent implements OnDestroy {
       lastChunksCompleted: 0,
       estimatedSecondsRemaining: 0,
       initialChunksCompleted: -1,  // -1 means not yet initialized
-      firstWorkTime: null          // Reset - will be set on first chunk completion
+      firstWorkTime: null,         // Reset - will be set on first chunk completion
+      lastPhase: null,
+      phaseStartTime: null,
+      phaseStartProgress: 0
     };
     this.etaCountdown.set(0);
   }
@@ -480,14 +490,12 @@ export class JobProgressComponent implements OnDestroy {
 
   /**
    * Recalculate ETA for reassembly jobs based on chapter progress.
-   * Reassembly has phases:
-   * - Combining chapters (0-50%): combine sentences into chapter FLACs
-   * - Concatenating (50-65%): merge chapter FLACs into one FLAC
-   * - Encoding (65-90%): FLAC to M4B with AAC
-   * - Metadata (90-100%): chapter markers, tags
+   * Reassembly has distinct phases with very different speeds:
+   * - Combining (0-50%): Slow, chapter-based
+   * - Assemble (50-90%): Medium speed
+   * - Export (90-100%): Very fast
    *
-   * We estimate based on chapter combining progress during that phase,
-   * then switch to progress-based estimates for later phases.
+   * We track each phase separately to give accurate ETAs.
    */
   private recalculateReassemblyETA(job: QueueJob): void {
     const currentChapter = job.currentChapter || 0;
@@ -498,25 +506,76 @@ export class JobProgressComponent implements OnDestroy {
       return;
     }
 
-    const totalElapsedMs = Date.now() - this.etaState.firstWorkTime;
+    const now = Date.now();
+    const totalElapsedMs = now - this.etaState.firstWorkTime;
     const totalElapsedSec = totalElapsedMs / 1000;
 
-    // If we're past the chapter combining phase (> 50%), use progress-based ETA
-    if (progress > 50) {
-      // Simple progress-based estimate
+    // Determine current phase based on progress
+    let currentPhase: 'combining' | 'encoding' | 'export';
+    if (progress >= 90) {
+      currentPhase = 'export';
+    } else if (progress >= 50) {
+      currentPhase = 'encoding';
+    } else {
+      currentPhase = 'combining';
+    }
+
+    // Track phase transitions
+    if (currentPhase !== this.etaState.lastPhase) {
+      console.log(`[ETA] Phase change: ${this.etaState.lastPhase || 'none'} → ${currentPhase} at ${progress.toFixed(1)}%`);
+      this.etaState.lastPhase = currentPhase;
+      this.etaState.phaseStartTime = now;
+      this.etaState.phaseStartProgress = progress;
+    }
+
+    // Export phase (90-100%): Very fast, calculate based on phase speed only
+    if (currentPhase === 'export') {
+      const phaseElapsedMs = now - (this.etaState.phaseStartTime || now);
+      const phaseElapsedSec = phaseElapsedMs / 1000;
+      const phaseProgress = progress - this.etaState.phaseStartProgress;
       const progressRemaining = 100 - progress;
-      // Estimate based on how long we've been past 50%
-      // This is rough but better than nothing for the encoding phase
-      if (progress > 0 && totalElapsedSec > 0) {
-        const remainingSeconds = Math.round((totalElapsedSec / progress) * progressRemaining);
+
+      if (phaseProgress > 1 && phaseElapsedSec > 0) {
+        // Calculate based on speed within export phase only
+        const speedPerPercent = phaseElapsedSec / phaseProgress;
+        const remainingSeconds = Math.max(1, Math.round(speedPerPercent * progressRemaining));
         this.etaState.estimatedSecondsRemaining = remainingSeconds;
         this.etaCountdown.set(remainingSeconds);
-        console.log(`[ETA] Reassembly (post-combining): ${progress}% done, ~${remainingSeconds}s remaining`);
+        console.log(`[ETA] Export phase: ${phaseProgress.toFixed(1)}% in ${phaseElapsedSec.toFixed(1)}s → ~${remainingSeconds}s remaining`);
+      } else {
+        // Just started export, estimate ~30 seconds
+        this.etaState.estimatedSecondsRemaining = 30;
+        this.etaCountdown.set(30);
       }
       return;
     }
 
-    // In chapter combining phase - use chapter-based estimates
+    // Assemble/Encoding phase (50-90%): Calculate based on phase speed
+    if (currentPhase === 'encoding') {
+      const phaseElapsedMs = now - (this.etaState.phaseStartTime || now);
+      const phaseElapsedSec = phaseElapsedMs / 1000;
+      const phaseProgress = progress - this.etaState.phaseStartProgress;
+      const progressToPhaseEnd = 90 - progress; // End of encoding phase
+      const exportEstimate = 30; // Export is typically ~30 seconds
+
+      if (phaseProgress > 2 && phaseElapsedSec > 0) {
+        // Calculate based on speed within encoding phase
+        const speedPerPercent = phaseElapsedSec / phaseProgress;
+        const encodingRemaining = Math.round(speedPerPercent * progressToPhaseEnd);
+        const remainingSeconds = encodingRemaining + exportEstimate;
+        this.etaState.estimatedSecondsRemaining = remainingSeconds;
+        this.etaCountdown.set(remainingSeconds);
+        console.log(`[ETA] Assemble phase: ${phaseProgress.toFixed(1)}% in ${phaseElapsedSec.toFixed(1)}s → ${encodingRemaining}s + ${exportEstimate}s export`);
+      } else {
+        // Just started encoding, rough estimate based on combining speed
+        const remainingSeconds = Math.round((totalElapsedSec / progress) * (100 - progress) * 0.5);
+        this.etaState.estimatedSecondsRemaining = remainingSeconds;
+        this.etaCountdown.set(remainingSeconds);
+      }
+      return;
+    }
+
+    // Combining phase (0-50%): Use chapter-based estimates
     if (currentChapter < 2 || totalChapters === 0) {
       return;
     }
@@ -528,19 +587,18 @@ export class JobProgressComponent implements OnDestroy {
     // Remaining chapters in combining phase
     const remainingChapters = totalChapters - currentChapter;
 
-    // Estimate: remaining chapters + concatenation (5-10% of total) + encoding (~30% of total)
-    // Encoding typically takes about 50-70% as long as chapter combining
+    // Estimate: remaining chapters + assemble (~40% of combining time) + export (~30s)
     const combiningRemaining = remainingChapters * avgTimePerChapterSec;
-    const concatenatingEstimate = totalChapters * avgTimePerChapterSec * 0.1; // Concatenation is fast
-    const encodingEstimate = totalChapters * avgTimePerChapterSec * 0.5; // Encoding takes about 50%
+    const assembleEstimate = totalChapters * avgTimePerChapterSec * 0.4;
+    const exportEstimate = 30;
 
-    const remainingSeconds = Math.round(combiningRemaining + concatenatingEstimate + encodingEstimate);
+    const remainingSeconds = Math.round(combiningRemaining + assembleEstimate + exportEstimate);
 
     this.etaState.estimatedSecondsRemaining = remainingSeconds;
     this.etaCountdown.set(remainingSeconds);
 
-    console.log(`[ETA] Reassembly: ${chaptersForAverage} chapters in ${totalElapsedSec.toFixed(0)}s → ${avgTimePerChapterSec.toFixed(1)}s/chapter`);
-    console.log(`[ETA] ${remainingChapters} chapters + concat + encoding = ${remainingSeconds}s (${this.formatDuration(remainingSeconds)})`);
+    console.log(`[ETA] Combining: ${chaptersForAverage} chapters in ${totalElapsedSec.toFixed(0)}s → ${avgTimePerChapterSec.toFixed(1)}s/chapter`);
+    console.log(`[ETA] ${remainingChapters} chapters + assemble + export = ${remainingSeconds}s (${this.formatDuration(remainingSeconds)})`);
   }
 
   private startTimer(): void {

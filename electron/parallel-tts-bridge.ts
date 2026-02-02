@@ -552,8 +552,8 @@ let loggerInitialized = false;
 
 // Use lightweight worker.py for lower memory usage (~8GB vs ~25GB)
 // Set to false to use app.py with --worker_mode (full imports)
-// Note: parallel-workers branch doesn't have worker.py, so we use app.py
-let useLightweightWorker = false;
+// worker.py imports from bookforge_ext.parallel.worker_core (minimal deps)
+let useLightweightWorker = true;
 
 // Watchdog configuration - detect stuck workers
 const WORKER_STARTUP_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes to start showing progress

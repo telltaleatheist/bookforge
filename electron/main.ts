@@ -3535,6 +3535,28 @@ function setupIpcHandlers(): void {
       await fs.copyFile(vttSourcePath, vttDestPath);
       console.log('[AUDIOBOOK] Copied VTT to:', vttDestPath);
 
+      // Delete the source VTT file after successful copy
+      try {
+        await fs.unlink(vttSourcePath);
+        console.log('[AUDIOBOOK] Deleted source VTT:', vttSourcePath);
+
+        // If source was in a vtt subfolder, try to remove the folder if empty
+        const vttSubfolderPath = path.join(outputDir, 'vtt');
+        if (vttSourcePath.startsWith(vttSubfolderPath)) {
+          try {
+            const remaining = await fs.readdir(vttSubfolderPath);
+            if (remaining.length === 0) {
+              await fs.rmdir(vttSubfolderPath);
+              console.log('[AUDIOBOOK] Removed empty vtt folder:', vttSubfolderPath);
+            }
+          } catch {
+            // Folder removal is best-effort
+          }
+        }
+      } catch (deleteErr) {
+        console.warn('[AUDIOBOOK] Failed to delete source VTT (non-fatal):', deleteErr);
+      }
+
       // Update BFP with vttPath
       const bfpContent = await fs.readFile(bfpPath, 'utf-8');
       const bfpProject = JSON.parse(bfpContent);
