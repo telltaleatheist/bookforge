@@ -14,6 +14,7 @@ export interface E2aSession {
   chapters: E2aChapter[];
   createdAt: string;         // ISO string
   modifiedAt: string;        // ISO string
+  bfpPath?: string;          // Path to linked BFP project.json (if found)
 }
 
 export interface E2aSessionMetadata {

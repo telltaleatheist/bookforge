@@ -1229,7 +1229,8 @@ export interface ElectronAPI {
     isActive: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
     listActive: () => Promise<{ success: boolean; data?: Array<{ jobId: string; progress: ParallelAggregatedProgress; epubPath: string; startTime: number }>; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
-    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number }) => void) => () => void;
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasPaused?: boolean; pauseInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; pausedAt?: string } }) => void) => () => void;
+    onSessionCreated: (callback: (data: { jobId: string; sessionId: string; sessionDir: string; processDir: string; totalSentences: number; totalChapters: number }) => void) => () => void;
     // Resume support
     checkResumeFast: (epubPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
     checkResume: (sessionPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
@@ -1860,13 +1861,23 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('parallel-tts:progress', listener);
       };
     },
-    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any }) => {
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasPaused?: boolean; pauseInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; pausedAt?: string } }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasPaused?: boolean; pauseInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; pausedAt?: string } }) => {
         callback(data);
       };
       ipcRenderer.on('parallel-tts:complete', listener);
       return () => {
         ipcRenderer.removeListener('parallel-tts:complete', listener);
+      };
+    },
+    // Session tracking for pause/resume
+    onSessionCreated: (callback: (data: { jobId: string; sessionId: string; sessionDir: string; processDir: string; totalSentences: number; totalChapters: number }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; sessionId: string; sessionDir: string; processDir: string; totalSentences: number; totalChapters: number }) => {
+        callback(data);
+      };
+      ipcRenderer.on('parallel-tts:session-created', listener);
+      return () => {
+        ipcRenderer.removeListener('parallel-tts:session-created', listener);
       };
     },
     // Resume support

@@ -85,6 +85,8 @@ declare global {
         listActive: () => Promise<{ success: boolean; data?: Array<{ jobId: string; progress: ParallelAggregatedProgress; epubPath: string; startTime: number }>; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
         onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any }) => void) => () => void;
+        // Session tracking for pause/resume
+        onSessionCreated: (callback: (data: { jobId: string; sessionId: string; sessionDir: string; processDir: string; totalSentences: number; totalChapters: number }) => void) => () => void;
         // Resume support
         checkResumeFast: (epubPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
         checkResume: (sessionPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
@@ -139,6 +141,7 @@ export class QueueService {
   private unsubscribeComplete: (() => void) | null = null;
   private unsubscribeParallelProgress: (() => void) | null = null;
   private unsubscribeParallelComplete: (() => void) | null = null;
+  private unsubscribeParallelSessionCreated: (() => void) | null = null;
   private unsubscribeReassemblyProgress: (() => void) | null = null;
 
   // State signals
@@ -218,6 +221,9 @@ export class QueueService {
       if (this.unsubscribeParallelComplete) {
         this.unsubscribeParallelComplete();
       }
+      if (this.unsubscribeParallelSessionCreated) {
+        this.unsubscribeParallelSessionCreated();
+      }
       if (this.unsubscribeReassemblyProgress) {
         this.unsubscribeReassemblyProgress();
       }
@@ -261,6 +267,15 @@ export class QueueService {
           });
         });
       });
+
+      // Listen for session-created events to save sessionId to BFP for pause/resume
+      if (electron.parallelTts.onSessionCreated) {
+        this.unsubscribeParallelSessionCreated = electron.parallelTts.onSessionCreated((data) => {
+          this.ngZone.run(() => {
+            this.handleSessionCreated(data);
+          });
+        });
+      }
     }
 
     // Listen for reassembly progress updates
@@ -376,12 +391,149 @@ export class QueueService {
     // Don't save on every progress update - too frequent
   }
 
+  /**
+   * Handle session-created event from parallel TTS.
+   * Saves the sessionId to the BFP so we can resume if the job is stopped.
+   */
+  private async handleSessionCreated(data: {
+    jobId: string;
+    sessionId: string;
+    sessionDir: string;
+    processDir: string;
+    totalSentences: number;
+    totalChapters: number;
+  }): Promise<void> {
+    console.log(`[QUEUE] Session created for job ${data.jobId}: sessionId=${data.sessionId}`);
+
+    // Find the job to get the bfpPath
+    const job = this._jobs().find(j => j.id === data.jobId);
+    if (!job?.bfpPath) {
+      console.warn('[QUEUE] Cannot save session info - no bfpPath for job', data.jobId);
+      return;
+    }
+
+    // Save session info to BFP for pause/resume capability
+    const electron = window.electron as any;
+    if (!electron?.audiobook?.updateState) {
+      console.warn('[QUEUE] Cannot save session info - electron.audiobook.updateState not available');
+      return;
+    }
+
+    try {
+      const result = await electron.audiobook.updateState(job.bfpPath, {
+        ttsSessionId: data.sessionId,
+        ttsSessionDir: data.sessionDir,
+        ttsProcessDir: data.processDir,
+        ttsSentenceProgress: {
+          completed: 0,
+          total: data.totalSentences
+        },
+        ttsStatus: 'processing'
+      });
+
+      if (result.success) {
+        console.log('[QUEUE] Saved session info to BFP:', job.bfpPath);
+      } else {
+        console.error('[QUEUE] Failed to save session info:', result.error);
+      }
+    } catch (err) {
+      console.error('[QUEUE] Error saving session info to BFP:', err);
+    }
+  }
+
+  /**
+   * Update BFP state when a job is paused (stopped by user).
+   * Sets ttsStatus to 'paused' and saves progress for resume.
+   */
+  /**
+   * Check if a BFP has a resumable TTS session.
+   * Returns ResumeCheckResult if found and valid, null otherwise.
+   */
+  private async checkBfpForResumableSession(
+    bfpPath: string,
+    epubPath: string
+  ): Promise<ResumeCheckResult | null> {
+    const electron = window.electron as any;
+    if (!electron?.parallelTts?.checkResumeFast) {
+      return null;
+    }
+
+    try {
+      // First check for a resumable session using the epub path
+      // This will find the session directory and scan for completed sentences
+      const result = await electron.parallelTts.checkResumeFast(epubPath);
+
+      if (result.success && result.data?.success) {
+        const resumeData = result.data;
+
+        // Only auto-resume if there's actual progress (not starting fresh)
+        if (resumeData.completedSentences && resumeData.completedSentences > 0) {
+          console.log(`[QUEUE] Found resumable session: ${resumeData.completedSentences}/${resumeData.totalSentences} sentences complete`);
+          return resumeData;
+        }
+      }
+
+      return null;
+    } catch (err) {
+      console.error('[QUEUE] Error checking for resumable session:', err);
+      return null;
+    }
+  }
+
+  private async updateBfpPausedState(
+    bfpPath: string,
+    pauseInfo?: {
+      sessionId?: string;
+      sessionDir?: string;
+      processDir?: string;
+      completedSentences?: number;
+      totalSentences?: number;
+      pausedAt?: string;
+    }
+  ): Promise<void> {
+    const electron = window.electron as any;
+    if (!electron?.audiobook?.updateState) {
+      console.warn('[QUEUE] Cannot update paused state - electron.audiobook.updateState not available');
+      return;
+    }
+
+    try {
+      const result = await electron.audiobook.updateState(bfpPath, {
+        ttsStatus: 'paused',
+        ttsPausedAt: pauseInfo?.pausedAt || new Date().toISOString(),
+        ttsSentenceProgress: pauseInfo ? {
+          completed: pauseInfo.completedSentences || 0,
+          total: pauseInfo.totalSentences || 0
+        } : undefined
+      });
+
+      if (result.success) {
+        console.log('[QUEUE] Updated BFP with paused state:', bfpPath);
+      } else {
+        console.error('[QUEUE] Failed to update BFP paused state:', result.error);
+      }
+    } catch (err) {
+      console.error('[QUEUE] Error updating BFP paused state:', err);
+    }
+  }
+
   private handleJobComplete(result: JobResult): void {
-    console.log(`[QUEUE] handleJobComplete called for job ${result.jobId}, success=${result.success}`);
+    console.log(`[QUEUE] handleJobComplete called for job ${result.jobId}, success=${result.success}, wasPaused=${result.wasPaused}`);
     console.log(`[QUEUE] Current state: isRunning=${this._isRunning()}, currentJobId=${this._currentJobId()}`);
 
     // Get the job before updating to capture the type
     const completedJob = this._jobs().find(j => j.id === result.jobId);
+
+    // Determine the final status:
+    // - success=true -> 'complete'
+    // - wasPaused=true -> 'pending' (can be resumed, stays in queue)
+    // - otherwise -> 'error'
+    let finalStatus: JobStatus = result.success ? 'complete' : 'error';
+    if (result.wasPaused) {
+      // Job was paused by user - keep it in pending state so it can be resumed
+      finalStatus = 'pending';
+      console.log(`[QUEUE] Job ${result.jobId} was paused - setting status to 'pending' for resume`);
+    }
 
     // Update the job status
     this._jobs.update(jobs =>
@@ -389,10 +541,10 @@ export class QueueService {
         if (job.id !== result.jobId) return job;
         return {
           ...job,
-          status: result.success ? 'complete' : 'error',
-          error: result.error,
+          status: finalStatus,
+          error: result.wasPaused ? undefined : result.error, // Clear error for paused jobs
           progress: result.success ? 100 : job.progress,
-          completedAt: new Date(),
+          completedAt: result.success ? new Date() : job.completedAt,
           outputPath: result.outputPath || job.outputPath,
           // Copyright detection for AI cleanup jobs
           copyrightIssuesDetected: result.copyrightIssuesDetected,
@@ -408,6 +560,11 @@ export class QueueService {
       })
     );
 
+    // Update BFP state for paused jobs
+    if (result.wasPaused && completedJob?.bfpPath) {
+      this.updateBfpPausedState(completedJob.bfpPath, result.pauseInfo);
+    }
+
     // Save analytics directly to BFP (no longer using signal/effect pattern to avoid duplicates)
     if (result.analytics && completedJob?.bfpPath) {
       this.saveAnalyticsToBfp(
@@ -417,8 +574,9 @@ export class QueueService {
       );
     }
 
-    // Copy VTT file to BFP audiobook folder for TTS jobs (for chapter recovery)
-    if (result.success && result.outputPath && completedJob?.bfpPath && completedJob.type === 'tts-conversion') {
+    // Copy VTT file to BFP audiobook folder for TTS and reassembly jobs (for chapter recovery)
+    if (result.success && result.outputPath && completedJob?.bfpPath &&
+        (completedJob.type === 'tts-conversion' || completedJob.type === 'reassembly')) {
       this.copyVttToBfp(completedJob.bfpPath, result.outputPath);
     }
 
@@ -1026,10 +1184,13 @@ export class QueueService {
             }
           };
 
-          // Check if this is a resume job
+          // Check if this is a resume job (explicitly set) or if we can auto-resume from BFP
+          let shouldResume = false;
+          let resumeCheckResult: ResumeCheckResult | null = null;
+
           if (job.isResumeJob && config.resumeInfo) {
-            // Build resume check result from stored info
-            const resumeCheckResult: ResumeCheckResult = {
+            // Explicitly marked as resume job (from tts-settings component)
+            resumeCheckResult = {
               success: true,
               sessionId: config.resumeInfo.sessionId,
               sessionDir: config.resumeInfo.sessionDir,
@@ -1041,8 +1202,20 @@ export class QueueService {
               missingRanges: (config as any).missingRanges,
               chapters: config.resumeInfo.chapters
             };
+            shouldResume = true;
+            console.log(`[QUEUE] Explicit resume job from ${job.resumeCompletedSentences} sentences`);
+          } else if (job.bfpPath) {
+            // Check if BFP has a saved session we can auto-resume from
+            // This handles jobs that were paused by user clicking Stop
+            resumeCheckResult = await this.checkBfpForResumableSession(job.bfpPath, epubPathForTts);
+            if (resumeCheckResult?.success && !resumeCheckResult.complete) {
+              shouldResume = true;
+              console.log(`[QUEUE] Auto-resuming from BFP session: ${resumeCheckResult.completedSentences}/${resumeCheckResult.totalSentences} sentences`);
+            }
+          }
 
-            console.log(`[QUEUE] Resuming TTS conversion from ${job.resumeCompletedSentences} sentences`);
+          if (shouldResume && resumeCheckResult) {
+            console.log(`[QUEUE] Resuming TTS conversion from ${resumeCheckResult.completedSentences} sentences`);
             await electron.parallelTts.resumeConversion(job.id, parallelConfig, resumeCheckResult);
           } else {
             // Start fresh conversion

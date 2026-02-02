@@ -66,7 +66,7 @@ export class DiffService {
    * Get current diff options based on settings.
    */
   private getDiffOptions(): DiffOptions {
-    const ignoreWhitespace = this.settingsService.get<boolean>('diffIgnoreWhitespace') ?? false;
+    const ignoreWhitespace = this.settingsService.get<boolean>('diffIgnoreWhitespace') ?? true;
     return { ignoreWhitespace };
   }
 
@@ -872,7 +872,7 @@ export class DiffService {
    * Check if whitespace is being ignored in diffs.
    */
   isIgnoringWhitespace(): boolean {
-    return this.settingsService.get<boolean>('diffIgnoreWhitespace') ?? false;
+    return this.settingsService.get<boolean>('diffIgnoreWhitespace') ?? true;
   }
 
   /**

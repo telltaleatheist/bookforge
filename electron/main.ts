@@ -2506,6 +2506,8 @@ function setupIpcHandlers(): void {
     try {
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
       parallelTtsBridge.setMainWindow(mainWindow);
+      // Initialize logger with current library path
+      await parallelTtsBridge.initializeLogger(getLibraryRoot());
       const result = await parallelTtsBridge.resumeParallelConversion(jobId, config, resumeInfo);
       return { success: true, data: result };
     } catch (err) {
@@ -4164,7 +4166,9 @@ function setupIpcHandlers(): void {
   ipcMain.handle('reassembly:scan-sessions', async (_event, customTmpPath?: string) => {
     try {
       const { scanE2aTmpFolder } = await import('./reassembly-bridge.js');
-      const result = await scanE2aTmpFolder(customTmpPath);
+      // Pass library path for BFP metadata lookup
+      const libraryPath = getLibraryRoot();
+      const result = await scanE2aTmpFolder(customTmpPath, libraryPath);
       console.log('[MAIN] reassembly:scan-sessions returning', result.sessions.length, 'sessions');
       // Log first session for debugging
       if (result.sessions.length > 0) {
@@ -4180,7 +4184,9 @@ function setupIpcHandlers(): void {
   ipcMain.handle('reassembly:get-session', async (_event, sessionId: string, customTmpPath?: string) => {
     try {
       const { getSession } = await import('./reassembly-bridge.js');
-      const session = await getSession(sessionId, customTmpPath);
+      // Pass library path for BFP metadata lookup
+      const libraryPath = getLibraryRoot();
+      const session = await getSession(sessionId, customTmpPath, libraryPath);
       if (!session) {
         return { success: false, error: 'Session not found' };
       }

@@ -49,11 +49,20 @@ export interface AudiobookState {
   cleanupError?: string;
   cleanupJobId?: string;         // Reference to queue job
 
-  // TTS state
-  ttsStatus: 'none' | 'pending' | 'processing' | 'complete' | 'error';
+  // TTS state - 'paused' means stopped mid-conversion, can resume
+  ttsStatus: 'none' | 'pending' | 'processing' | 'paused' | 'complete' | 'error';
   ttsProgress?: number;          // 0-100
   ttsError?: string;
   ttsJobId?: string;             // Reference to queue job
+
+  // TTS session tracking - enables pause/resume across app restarts
+  ttsSessionId?: string;         // e2a session UUID (persists across pause/resume)
+  ttsSessionDir?: string;        // Full path to e2a session directory
+  ttsSentenceProgress?: {        // Sentence-level progress (more precise than percentage)
+    completed: number;           // Sentences successfully converted
+    total: number;               // Total sentences in book
+  };
+  ttsPausedAt?: string;          // ISO timestamp when paused/stopped
 
   // TTS settings (saved per-project)
   ttsSettings?: TTSSettings;

@@ -1599,7 +1599,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     ...condaRunArgs(settings.ttsEngine),
     appPath,
     '--headless',
-    '--ebook', config.epubPath,
+    // Only include --ebook if we have a path (assembly_only doesn't require it)
+    ...(config.epubPath ? ['--ebook', config.epubPath] : []),
     '--output_dir', config.outputDir,
     '--session', prepInfo.sessionId,
     '--device', asmDeviceArg,
@@ -2596,6 +2597,16 @@ export async function startParallelConversion(
       message: 'Starting workers...'
     };
     mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
+
+    // Emit session-created event so frontend can save sessionId to BFP for pause/resume
+    mainWindow.webContents.send('parallel-tts:session-created', {
+      jobId,
+      sessionId: prepInfo.sessionId,
+      sessionDir: prepInfo.sessionDir,
+      processDir: prepInfo.processDir,
+      totalSentences: prepInfo.totalSentences,
+      totalChapters: prepInfo.totalChapters
+    });
   }
 
   // Start workers - stagger on Windows to avoid conda temp file race condition
@@ -2767,9 +2778,20 @@ function emitCancelledAnalytics(session: ConversionSession): void {
   mainWindow.webContents.send('parallel-tts:complete', {
     jobId: session.jobId,
     success: false,
-    error: 'Cancelled by user',
+    error: 'Stopped by user',
     duration,
-    analytics
+    analytics,
+    // Flag to indicate this was a user-initiated pause (can be resumed)
+    // The session files remain on disk and can be continued later
+    wasPaused: true,
+    pauseInfo: {
+      sessionId: session.prepInfo?.sessionId,
+      sessionDir: session.prepInfo?.sessionDir,
+      processDir: session.prepInfo?.processDir,
+      completedSentences,
+      totalSentences: session.prepInfo?.totalSentences,
+      pausedAt: new Date().toISOString()
+    }
   });
 }
 
@@ -3606,6 +3628,16 @@ export async function resumeParallelConversion(
       message: `Resuming - ${resumeInfo.completedSentences} sentences already complete...`
     };
     mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
+
+    // Emit session-created event so frontend can update BFP with session info
+    mainWindow.webContents.send('parallel-tts:session-created', {
+      jobId,
+      sessionId: prepInfo.sessionId,
+      sessionDir: prepInfo.sessionDir,
+      processDir: prepInfo.processDir,
+      totalSentences: prepInfo.totalSentences,
+      totalChapters: prepInfo.totalChapters
+    });
   }
 
   // Start workers for missing ranges - stagger on Windows to avoid conda temp file race condition

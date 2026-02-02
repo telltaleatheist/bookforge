@@ -2254,8 +2254,11 @@ export function replaceBlockTexts(xhtml: string, cleanedTexts: string[]): string
     const originalText = $(el).text().trim();
     if (originalText.length > 0) {
       if (textIndex < cleanedTexts.length) {
+        // Sanitize: strip any [[BLOCK]] markers that might have slipped into the text
+        // These are internal processing markers and should NEVER appear in final output
+        let cleanedText = cleanedTexts[textIndex].replace(/\[\[BLOCK\]\]/g, '');
         // Replace the element's text content
-        $(el).text(cleanedTexts[textIndex]);
+        $(el).text(cleanedText);
         textIndex++;
       }
     }
@@ -2275,9 +2278,8 @@ export function replaceBlockTexts(xhtml: string, cleanedTexts: string[]): string
 }
 
 /**
- * Extract text from XHTML as a single string with markers between elements.
- * This allows sending to AI as one chunk while preserving structure info.
- * Use BLOCK_MARKER to split the AI response back into individual element texts.
+ * Old marker format - kept for backwards compatibility but deprecated.
+ * Use numbered paragraph format instead (extractNumberedParagraphs/parseNumberedParagraphs).
  */
 export const BLOCK_MARKER = '\n\n[[BLOCK]]\n\n';
 
@@ -2296,6 +2298,85 @@ export function splitBlockTexts(markedText: string): string[] {
   return markedText.split(flexibleMarkerRegex).map(t => t.trim()).filter(t => t.length > 0);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// NUMBERED PARAGRAPH FORMAT - More robust than [[BLOCK]] markers
+// Each paragraph gets a unique number, making it impossible for AI to "merge"
+// paragraphs by dropping markers. We parse by number, not by separator.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Format paragraphs with numbered markers for AI processing.
+ * Format: <<<1>>>paragraph text<<<2>>>paragraph text<<<3>>>...
+ *
+ * The AI must preserve these numbered markers. We parse by extracting
+ * text between <<<N>>> and <<<N+1>>> (or end of string).
+ *
+ * @param texts Array of paragraph texts
+ * @param startIndex Starting index for numbering (for chunking across paragraphs)
+ * @returns Formatted string with numbered markers
+ */
+export function formatNumberedParagraphs(texts: string[], startIndex: number = 1): string {
+  return texts.map((text, i) => `<<<${startIndex + i}>>>${text}`).join('\n\n');
+}
+
+/**
+ * Parse AI response to extract paragraphs by their numbered markers.
+ * Returns a Map of paragraph number -> cleaned text.
+ *
+ * This is robust because:
+ * 1. We look for specific numbered markers, not generic separators
+ * 2. If a marker is missing, we know exactly which paragraph failed
+ * 3. If markers are reordered, we can still extract correctly by number
+ *
+ * @param text AI response with numbered markers
+ * @returns Map of paragraph number to text, plus array of missing numbers
+ */
+export function parseNumberedParagraphs(text: string): { paragraphs: Map<number, string>; missing: number[] } {
+  const paragraphs = new Map<number, string>();
+  const missing: number[] = [];
+
+  // Find all <<<N>>> markers and their positions
+  const markerRegex = /<<<(\d+)>>>/g;
+  const markers: { num: number; pos: number }[] = [];
+  let match;
+
+  while ((match = markerRegex.exec(text)) !== null) {
+    markers.push({ num: parseInt(match[1], 10), pos: match.index + match[0].length });
+  }
+
+  // Extract text between each marker and the next (or end of string)
+  for (let i = 0; i < markers.length; i++) {
+    const startPos = markers[i].pos;
+    const endPos = i + 1 < markers.length ? markers[i + 1].pos - markers[i + 1].num.toString().length - 5 : text.length;
+    const paragraphText = text.substring(startPos, endPos).trim();
+    paragraphs.set(markers[i].num, paragraphText);
+  }
+
+  return { paragraphs, missing };
+}
+
+/**
+ * Validate that all expected paragraph numbers are present in the parsed result.
+ *
+ * @param parsed Result from parseNumberedParagraphs
+ * @param expectedCount Number of paragraphs we expected
+ * @param startIndex Starting index that was used
+ * @returns Array of missing paragraph numbers
+ */
+export function validateNumberedParagraphs(
+  parsed: Map<number, string>,
+  expectedCount: number,
+  startIndex: number = 1
+): number[] {
+  const missing: number[] = [];
+  for (let i = startIndex; i < startIndex + expectedCount; i++) {
+    if (!parsed.has(i)) {
+      missing.push(i);
+    }
+  }
+  return missing;
+}
+
 /**
  * Get the count of text-containing block elements in XHTML.
  */
@@ -2310,6 +2391,69 @@ export function countBlockElements(xhtml: string): number {
   });
 
   return count;
+}
+
+/**
+ * Rebuild chapter XHTML from cleaned paragraph text.
+ * Takes the original XHTML (for head/styles) and replaces the body content
+ * with simple <p> elements from the cleaned paragraphs.
+ *
+ * This is used for TTS cleanup where we don't need to preserve
+ * the original element structure (h1, h2, blockquote, etc.) -
+ * everything becomes <p> elements since it's just spoken text.
+ *
+ * @param originalXhtml The original chapter XHTML (to preserve head, styles, etc.)
+ * @param paragraphs Array of cleaned paragraph strings
+ * @returns New XHTML with body replaced by <p> elements
+ */
+export function rebuildChapterFromParagraphs(originalXhtml: string, paragraphs: string[]): string {
+  const $ = cheerio.load(originalXhtml, { xmlMode: true });
+
+  // Clear the body
+  const body = $('body');
+  body.empty();
+
+  // Add each paragraph as a <p> element
+  for (const text of paragraphs) {
+    if (text.trim()) {
+      // Escape HTML entities in the text
+      const escaped = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+      body.append(`<p>${escaped}</p>\n`);
+    }
+  }
+
+  return $.xml();
+}
+
+/**
+ * Extract all text from a chapter as flowing prose.
+ * Joins all block elements with double newlines (paragraph breaks).
+ * This is the inverse of rebuildChapterFromParagraphs.
+ *
+ * @param xhtml The chapter XHTML
+ * @returns Text with paragraphs separated by blank lines
+ */
+export function extractChapterAsText(xhtml: string): string {
+  const blocks = extractBlockTexts(xhtml);
+  return blocks.join('\n\n');
+}
+
+/**
+ * Split cleaned text back into paragraphs.
+ * Splits on double newlines (blank lines between paragraphs).
+ *
+ * @param text Cleaned text from AI
+ * @returns Array of paragraph strings
+ */
+export function splitTextIntoParagraphs(text: string): string[] {
+  // Split on one or more blank lines (double newline with optional whitespace)
+  return text
+    .split(/\n\s*\n/)
+    .map(p => p.trim())
+    .filter(p => p.length > 0);
 }
 
 // Export the processor and ZipWriter for direct use if needed

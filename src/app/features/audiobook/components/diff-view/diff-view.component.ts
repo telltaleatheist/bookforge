@@ -711,8 +711,8 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   // Edit state
   readonly editState = signal<EditState | null>(null);
 
-  // Whitespace toggle state
-  readonly ignoreWhitespace = signal(false);
+  // Whitespace toggle state (default: true to compare words only)
+  readonly ignoreWhitespace = signal(true);
 
   // Output for text edits
   readonly textEdited = output<{ chapterId: string; oldText: string; newText: string }>();

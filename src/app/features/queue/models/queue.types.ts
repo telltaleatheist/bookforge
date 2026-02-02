@@ -269,6 +269,16 @@ export interface JobResult {
   skippedChunksPath?: string;
   // Analytics data (TTS or cleanup job)
   analytics?: any;
+  // Pause/resume support for TTS jobs
+  wasPaused?: boolean;           // True if job was stopped by user (can be resumed)
+  pauseInfo?: {
+    sessionId?: string;
+    sessionDir?: string;
+    processDir?: string;
+    completedSentences?: number;
+    totalSentences?: number;
+    pausedAt?: string;
+  };
 }
 
 // Skipped chunk data structure (matches ai-bridge.ts)

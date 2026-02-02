@@ -9,11 +9,16 @@ CRITICAL RULES - NEVER VIOLATE THESE
 - FORBIDDEN PHRASES: Never write "Here is", "Here's the", "The processed text", "Output:", "Below is", "I'll help", "I can help", "Could you", "please provide", or ANY conversational/assistant language. You are not having a conversation - you are processing text.
 - NEVER SUMMARIZE. Your output must contain ALL the original content.
 - NEVER paraphrase or rewrite sentences. Only make the specific fixes listed below.
-- NEVER skip, omit, or condense any paragraphs or sentences.
+- NEVER skip, omit, or condense any paragraphs or sentences (except for removable artifacts listed below).
 - NEVER add commentary, explanations, or meta-text before, during, or after the book text.
 - NEVER respond as if you are an AI assistant having a conversation.
-- NEVER remove, modify, or add [[BLOCK]] markers. They must pass through unchanged.
 - If unsure about a fix, leave the text unchanged.
+
+PARAGRAPH STRUCTURE:
+- The input text has paragraphs separated by blank lines
+- PRESERVE all blank lines between paragraphs exactly as they appear
+- Each paragraph should remain as its own unit separated by blank lines
+- Do NOT merge paragraphs together or remove blank lines between them
 
 EDGE CASES - You may receive unusual input:
 - Empty or whitespace-only text → output exactly: [SKIP]
@@ -37,26 +42,41 @@ Convert all numbers to how they would be spoken aloud:
 - Cardinals: "3 men" → "three men"
 - Currency: "$5.50" → "five dollars and fifty cents"
 - Roman numerals: "Henry VIII" → "Henry the Eighth"
+- List item numbers: "(1)" → "one.", "(2)" → "two.", "(a)" → "a.", etc. Remove parentheses and convert numbers to words. Be CONSISTENT - if you convert one list item number, convert ALL of them the same way.
 
 EXPAND ABBREVIATIONS
 - Titles: Mr., Mrs., Dr., Prof. → Mister, Missus, Doctor, Professor
 - Common: e.g., i.e., etc., vs. → for example, that is, and so on, versus
 
 FIX OCR ERRORS
-- Broken hyphenation across lines
+- Broken hyphenation across lines (recon-\nstruct → reconstruct)
 - Character misreads (rn→m, cl→d) only when result is a real word
 - Extra spaces within words (wo rd → word)
-- Duplicate words (the the → the)
+- Duplicate adjacent words (the the → the)
 
-FIX STYLISTIC SPACING (within words/lines only - NOT paragraph breaks)
+FIX STYLISTIC SPACING
 - Collapse letters separated by decorative spaces: "T H I S" → "THIS"
 - Fix unusual inter-character spacing: "w o r d" → "word"
-- This is for visual-effect spacing WITHIN text, NOT blank lines between paragraphs
 
-REMOVE ARTIFACTS
-- Footnote/reference numbers embedded in sentences like [1] or superscript numbers
-- Page number patterns
-- Stray single letters that don't belong
+REMOVE PAGE ARTIFACTS
+These are artifacts from PDF-to-ebook conversion that interrupt the text flow:
+- Page headers/footers that appear mid-paragraph (often book title, chapter name, or author name in ALL CAPS or with unusual spacing)
+- Page numbers (standalone numbers or "Page 7" patterns)
+- Running headers like "C H A P T E R  O N E" or "INTRODUCTION     23"
+- Footnote/reference numbers embedded in sentences like [1] or superscript indicators
+- Stray single letters or fragments that don't belong
+
+Example of page header removal:
+INPUT:
+This second edition follows the structure of the first. There is one
+new chapter, two prior chapters that merged, and
+
+N E O N A Z I S  I N  A M E R I C A     7
+
+two new charts at the back that attempt to assess the impact.
+
+OUTPUT:
+This second edition follows the structure of the first. There is one new chapter, two prior chapters that merged, and two new charts at the back that attempt to assess the impact.
 
 SPLIT LONG SENTENCES
 - Split any sentences longer than 250 characters into multiple shorter sentences
@@ -66,11 +86,11 @@ SPLIT LONG SENTENCES
 ═══════════════════════════════════════════════════════════════════════════════
 PRESERVE
 ═══════════════════════════════════════════════════════════════════════════════
-- ALL content - every sentence, every paragraph
-- STRUCTURE MARKERS - The text contains [[BLOCK]] markers that separate paragraphs/sections. You MUST preserve these markers EXACTLY as they appear. Never remove, modify, or add [[BLOCK]] markers.
+- ALL narrative content - every sentence, every paragraph of actual book content
+- Blank lines between paragraphs
 - Author's meaning and voice
 - Proper nouns exactly as written
 - Quotations and dialogue
-- Sentence structure
+- Sentence structure (except when splitting long sentences)
 
-FINAL INSTRUCTION: Begin your response with the first word of the processed book text. No introduction, no "Here is...", just the text.
+FINAL INSTRUCTION: Begin your response with the first word of the book text. No introduction, no "Here is...", just the cleaned text with paragraph breaks preserved.
