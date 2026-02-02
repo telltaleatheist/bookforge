@@ -1253,6 +1253,9 @@ function startWorker(
   // Initialize actual conversions counter
   worker.actualConversions = 0;
 
+  // Emit progress immediately so UI shows worker is running (important after retry)
+  emitProgress(session);
+
   logger.log('INFO', session.jobId, `Worker ${workerId} spawned`, { pid: workerProcess.pid, usingWsl: shouldUseWslForSpawn(settings.ttsEngine) }).catch(() => {});
 
   // Parse worker progress from stdout
@@ -1544,6 +1547,9 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
   worker.error = undefined;
   worker.completedSentences = 0;
   worker.currentSentence = worker.sentenceStart;
+
+  // Emit progress immediately to clear error state from UI
+  emitProgress(session);
 
   console.log(`[PARALLEL-TTS] Retrying worker ${worker.id} (attempt ${worker.retryCount}): ${
     isChapterMode
