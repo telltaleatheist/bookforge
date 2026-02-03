@@ -104,12 +104,6 @@ interface ETAState {
               <span class="stat-label">Chunks</span>
               <span class="stat-value">{{ job()!.chunksCompletedInJob || 0 }}/{{ job()!.totalChunksInJob }}</span>
             </div>
-            @if (chunksPerMinute() > 0) {
-              <div class="stat">
-                <span class="stat-label">Speed</span>
-                <span class="stat-value">{{ chunksPerMinute() | number:'1.1-1' }}/min</span>
-              </div>
-            }
           }
         </div>
 
@@ -638,26 +632,6 @@ export class JobProgressComponent implements OnDestroy {
   readonly elapsedTimeFormatted = computed(() => {
     const elapsed = this.elapsedSeconds();
     return this.formatDuration(elapsed);
-  });
-
-  // Computed: chunks per minute for OCR cleanup jobs
-  readonly chunksPerMinute = computed(() => {
-    this.tick(); // Subscribe to tick for live updates
-    const j = this.job();
-    if (!j || j.status !== 'processing') return 0;
-
-    const chunksCompleted = j.chunksCompletedInJob || 0;
-    if (chunksCompleted < 1) return 0;
-
-    // Use firstWorkTime if available (excludes model load), otherwise jobStartTime
-    const startTime = this.etaState.firstWorkTime || this.jobStartTime;
-    if (!startTime) return 0;
-
-    const elapsedMs = Date.now() - startTime;
-    const elapsedMinutes = elapsedMs / 60000;
-    if (elapsedMinutes < 0.1) return 0; // Need at least 6 seconds of data
-
-    return chunksCompleted / elapsedMinutes;
   });
 
   // Computed: ETA - uses chunk-based countdown when available, falls back to percentage-based

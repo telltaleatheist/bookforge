@@ -1567,6 +1567,16 @@ export async function cleanupEpub(
     let chunksCompletedInJob = 0;  // Cumulative chunk counter across all chapters
     let totalCharactersProcessed = 0;  // Track total characters for analytics
     const cleanupStartTime = Date.now();  // Track start time for analytics
+    let firstChunkCompletedAt: number | null = null;  // Track first chunk time for rate calculation
+
+    // Helper to calculate rate display string
+    const getRateDisplay = (): string => {
+      if (!firstChunkCompletedAt || chunksCompletedInJob < 2) return '';
+      const workSeconds = (Date.now() - firstChunkCompletedAt) / 1000;
+      if (workSeconds < 10) return '';  // Need at least 10 seconds of data
+      const chunksPerMinute = ((chunksCompletedInJob - 1) / workSeconds) * 60;
+      return ` (${chunksPerMinute.toFixed(1)}/min)`;
+    };
 
     // Generate output path - save as {originalName}_cleaned.epub in the same folder
     const epubDir = path.dirname(epubPath);
@@ -1974,6 +1984,11 @@ export async function cleanupEpub(
               }
             }
 
+            // Track first chunk completion for rate calculation
+            if (firstChunkCompletedAt === null) {
+              firstChunkCompletedAt = Date.now();
+            }
+
             sendProgress({
               jobId,
               phase: 'processing',
@@ -1982,7 +1997,7 @@ export async function cleanupEpub(
               currentChunk: chunksCompletedInJob,
               totalChunks: totalChunksInJob,
               percentage: Math.round((chunksCompletedInJob / totalChunksInJob) * 90),
-              message: `Completed chunk ${chunksCompletedInJob}/${totalChunksInJob}: ${chapter.title}`,
+              message: `Chunk ${chunksCompletedInJob}/${totalChunksInJob}${getRateDisplay()}`,
               outputPath,
               chunksCompletedInJob,
               totalChunksInJob,
