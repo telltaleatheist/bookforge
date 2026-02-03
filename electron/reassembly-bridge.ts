@@ -6,10 +6,46 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
-import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath } from './e2a-paths';
+import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath } from './e2a-paths';
 import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
+
+/**
+ * Check if a path is a WSL path (starts with \\wsl$)
+ */
+function isWslPath(p: string): boolean {
+  return p.startsWith('\\\\wsl$') || p.startsWith('//wsl$');
+}
+
+/**
+ * Build WSL bash command for assembly
+ */
+function buildWslAssemblyCommand(
+  appArgs: string[],
+  outputDir: string
+): string {
+  const wslCondaPath = getWslCondaPath();
+  const wslE2aPath = getWslE2aPath();
+
+  // Convert args - replace Windows paths with WSL paths
+  const wslArgs = appArgs.map(arg => {
+    // Convert output_dir to WSL path
+    if (arg.match(/^[A-Za-z]:\\/)) {
+      return windowsToWslPath(arg);
+    }
+    // Convert UNC paths (\\wsl$\...) to native WSL paths
+    if (arg.startsWith('\\\\wsl$\\Ubuntu\\') || arg.startsWith('//wsl$/Ubuntu/')) {
+      return arg.replace(/^(\\\\wsl\$\\Ubuntu\\|\/\/wsl\$\/Ubuntu\/)/, '/').replace(/\\/g, '/');
+    }
+    return arg;
+  });
+
+  const cdCommand = `cd "${wslE2aPath}"`;
+  const condaCommand = `"${wslCondaPath}" run --no-capture-output -p ${wslE2aPath}/python_env python ${wslArgs.join(' ')}`;
+
+  return `${cdCommand} && ${condaCommand}`;
+}
 
 // Default E2A tmp path (uses cross-platform detection)
 const DEFAULT_E2A_TMP_PATH = getDefaultE2aTmpPath();
@@ -847,6 +883,9 @@ export async function startReassembly(
     const appPath = path.join(e2aPath, 'app.py');
     const platform = os.platform();
 
+    // Check if session is in WSL - if so, we need to run assembly through WSL
+    const sessionInWsl = isWslPath(config.sessionDir);
+
     // Build arguments for app.py
     const appArgs = [
       appPath,
@@ -864,15 +903,35 @@ export async function startReassembly(
     // Note: --output_filename, --title, --author, --cover are not supported by all e2a versions
     // Metadata will be applied after assembly using m4b-tool if available
 
-    // Build the full command using cross-platform conda args
-    const condaArgs = [...getCondaRunArgs(e2aPath), ...appArgs];
-    console.log('[REASSEMBLY] Running command: conda', condaArgs.join(' '));
+    let proc: ChildProcess;
 
-    const proc = spawn(getCondaPath(), condaArgs, {
-      cwd: e2aPath,
-      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
-      shell: true
-    });
+    if (sessionInWsl && platform === 'win32') {
+      // Session is in WSL filesystem - run assembly through WSL
+      const wslE2aPath = getWslE2aPath();
+      const wslBashCommand = buildWslAssemblyCommand(appArgs, config.outputDir);
+      console.log('[REASSEMBLY] Session in WSL, running through WSL:', wslBashCommand.substring(0, 200) + '...');
+
+      const distro = getWslDistro();
+      const wslArgs = distro
+        ? ['-d', distro, 'bash', '-ic', wslBashCommand]
+        : ['bash', '-ic', wslBashCommand];
+
+      proc = spawn('wsl.exe', wslArgs, {
+        cwd: e2aPath,
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+        shell: false
+      });
+    } else {
+      // Standard Windows/macOS/Linux spawn
+      const condaArgs = [...getCondaRunArgs(e2aPath), ...appArgs];
+      console.log('[REASSEMBLY] Running command: conda', condaArgs.join(' '));
+
+      proc = spawn(getCondaPath(), condaArgs, {
+        cwd: e2aPath,
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+        shell: true
+      });
+    }
 
     activeReassemblies.set(jobId, proc);
 
