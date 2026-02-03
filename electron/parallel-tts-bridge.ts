@@ -1273,8 +1273,8 @@ function startWorker(
       console.log(`[WORKER ${workerId}]`, line.trim());
 
       // For resume jobs, track actual TTS conversions via "Recovering missing sentence" lines
-      // e2a outputs: "********* Recovering missing sentence 4613 *********"
-      if (session.isResumeJob && line.includes('Recovering missing sentence')) {
+      // e2a outputs: "**Recovering missing file sentence 4613**"
+      if (session.isResumeJob && line.includes('Recovering missing file sentence')) {
         worker.actualConversions = (worker.actualConversions || 0) + 1;
         emitProgress(session);
       }
@@ -1310,8 +1310,8 @@ function startWorker(
       console.log(`[WORKER ${workerId} STDERR]`, line.trim());
 
       // For resume jobs, track actual TTS conversions via "Recovering missing sentence" lines
-      // e2a outputs: "********* Recovering missing sentence 4613 *********"
-      if (session.isResumeJob && line.includes('Recovering missing sentence')) {
+      // e2a outputs: "**Recovering missing file sentence 4613**"
+      if (session.isResumeJob && line.includes('Recovering missing file sentence')) {
         worker.actualConversions = (worker.actualConversions || 0) + 1;
         emitProgress(session);
       }
