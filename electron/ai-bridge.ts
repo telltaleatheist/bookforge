@@ -109,7 +109,7 @@ export interface SkippedChunk {
   chunkIndex: number;
   overallChunkNumber: number;  // 1-based overall chunk number (e.g., "Chunk 5/121")
   totalChunks: number;         // Total chunks in the job
-  reason: 'copyright' | 'content-skip' | 'ai-refusal';
+  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated';
   text: string;           // The original text that was skipped
   aiResponse?: string;    // What the AI actually returned (for debugging)
 }
@@ -117,6 +117,7 @@ export interface SkippedChunk {
 let copyrightFallbackCount = 0;
 let skipFallbackCount = 0;  // Chunks where AI returned [SKIP] for non-trivial content
 let markerMismatchCount = 0;  // Chunks where AI dropped/added [[BLOCK]] markers
+let truncatedFallbackCount = 0;  // Chunks where AI returned <70% of input (non-copyright)
 let skippedChunks: SkippedChunk[] = [];  // Detailed tracking of all skipped chunks
 const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break point
 const TIMEOUT_MS = 180000; // 3 minutes per chunk
@@ -798,7 +799,11 @@ async function cleanChunkWithClaude(
       },
       body: JSON.stringify({
         model,
-        max_tokens: Math.max(4096, text.length * 2),
+        // Claude 3.5 models have 8192 max output tokens, Claude 4+ models have higher limits
+        // Cap based on model version to avoid API errors while allowing full capacity
+        max_tokens: model.includes('claude-3')
+          ? Math.min(8192, Math.max(4096, text.length * 2))
+          : Math.max(4096, text.length * 2),  // Claude 4+ can handle more
         system: systemPrompt,
         messages: [
           { role: 'user', content: text }
@@ -869,18 +874,28 @@ async function cleanChunkWithClaude(
 
       console.warn(`Claude returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
       console.warn(`[CLAUDE RESPONSE START]\n${cleaned.substring(0, 500)}...\n[CLAUDE RESPONSE END]`);
-      // Track copyright fallbacks
-      if (isCopyrightRefusal) {
-        copyrightFallbackCount++;
-        // Track the skipped chunk with details
-        // Strip [[BLOCK]] markers so text can be found in EPUB for editing
-        if (chunkMeta) {
+      // Track fallbacks - both copyright and general truncation
+      if (chunkMeta) {
+        if (isCopyrightRefusal) {
+          copyrightFallbackCount++;
           skippedChunks.push({
             chapterTitle: chunkMeta.chapterTitle,
             chunkIndex: chunkMeta.chunkIndex,
             overallChunkNumber: chunkMeta.overallChunkNumber,
             totalChunks: chunkMeta.totalChunks,
             reason: 'copyright',
+            text: text,
+            aiResponse: cleaned.substring(0, 500)
+          });
+        } else {
+          // Truncated output (not copyright-related)
+          truncatedFallbackCount++;
+          skippedChunks.push({
+            chapterTitle: chunkMeta.chapterTitle,
+            chunkIndex: chunkMeta.chunkIndex,
+            overallChunkNumber: chunkMeta.overallChunkNumber,
+            totalChunks: chunkMeta.totalChunks,
+            reason: 'truncated',
             text: text,
             aiResponse: cleaned.substring(0, 500)
           });
@@ -995,18 +1010,28 @@ async function cleanChunkWithOpenAI(
       }
 
       console.warn(`OpenAI returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
-      // Track copyright fallbacks
-      if (isCopyrightRefusal) {
-        copyrightFallbackCount++;
-        // Track the skipped chunk with details
-        // Strip [[BLOCK]] markers so text can be found in EPUB for editing
-        if (chunkMeta) {
+      // Track fallbacks - both copyright and general truncation
+      if (chunkMeta) {
+        if (isCopyrightRefusal) {
+          copyrightFallbackCount++;
           skippedChunks.push({
             chapterTitle: chunkMeta.chapterTitle,
             chunkIndex: chunkMeta.chunkIndex,
             overallChunkNumber: chunkMeta.overallChunkNumber,
             totalChunks: chunkMeta.totalChunks,
             reason: 'copyright',
+            text: text,
+            aiResponse: cleaned.substring(0, 500)
+          });
+        } else {
+          // Truncated output (not copyright-related)
+          truncatedFallbackCount++;
+          skippedChunks.push({
+            chapterTitle: chunkMeta.chapterTitle,
+            chunkIndex: chunkMeta.chunkIndex,
+            overallChunkNumber: chunkMeta.overallChunkNumber,
+            totalChunks: chunkMeta.totalChunks,
+            reason: 'truncated',
             text: text,
             aiResponse: cleaned.substring(0, 500)
           });
@@ -1341,6 +1366,7 @@ export interface CleanupJobAnalytics {
   copyrightChunksAffected: number;
   contentSkipsAffected: number;
   markerMismatchAffected: number;
+  truncatedChunksAffected: number;
   skippedChunksPath?: string;
   error?: string;
 }
@@ -1356,6 +1382,8 @@ export interface EpubCleanupResult {
   contentSkipsAffected?: number;      // Number of chunks where AI refused via [SKIP]
   markerMismatchDetected?: boolean;   // True if AI dropped/added [[BLOCK]] markers
   markerMismatchAffected?: number;    // Number of chunks that fell back due to marker mismatch
+  truncatedDetected?: boolean;        // True if AI returned <70% output for some chunks
+  truncatedAffected?: number;         // Number of chunks that fell back due to truncation
   skippedChunksPath?: string;         // Path to JSON file containing skipped chunk details
   analytics?: CleanupJobAnalytics;    // Analytics data for the job
 }
@@ -1408,6 +1436,7 @@ export async function cleanupEpub(
   copyrightFallbackCount = 0;
   skipFallbackCount = 0;
   markerMismatchCount = 0;
+  truncatedFallbackCount = 0;
   skippedChunks = [];
 
   // providerConfig is required - no fallbacks
@@ -1707,9 +1736,52 @@ export async function cleanupEpub(
       const results: ChunkResult[] = [];
       let totalChunksCompleted = 0;
 
+      // Track chunks needed per chapter for incremental saving
+      const chunksPerChapter = new Map<string, number>();
+      const completedChunksPerChapter = new Map<string, number>();
+      const savedChapters = new Set<string>();
+      for (const { chapter, chunks } of chapterChunks) {
+        chunksPerChapter.set(chapter.id, chunks.length);
+        completedChunksPerChapter.set(chapter.id, 0);
+      }
+
+      // Helper to try saving a completed chapter
+      const trySaveChapter = async (chapterId: string) => {
+        if (savedChapters.has(chapterId)) return;
+
+        const needed = chunksPerChapter.get(chapterId) || 0;
+        const completed = completedChunksPerChapter.get(chapterId) || 0;
+
+        if (completed >= needed) {
+          // All chunks for this chapter are done - collect and save
+          const chapterResults = results
+            .filter(r => r.chapterId === chapterId)
+            .sort((a, b) => a.chunkIndex - b.chunkIndex);
+
+          const originalXhtml = chapterXhtmlMap.get(chapterId);
+          if (originalXhtml && chapterResults.length > 0) {
+            const cleanedText = chapterResults.map(c => c.cleanedText).join('\n\n');
+            const paragraphs = splitTextIntoParagraphs(cleanedText);
+            const rebuiltXhtml = rebuildChapterFromParagraphs(originalXhtml, paragraphs);
+            modifiedChapters.set(chapterId, rebuiltXhtml);
+
+            // Save to disk immediately
+            try {
+              await saveModifiedEpubLocal(processor!, modifiedChapters, outputPath);
+              savedChapters.add(chapterId);
+              console.log(`[AI-CLEANUP] Saved chapter ${chapterId} (${chapterResults.length} chunks)`);
+            } catch (saveError) {
+              console.error(`[AI-CLEANUP] Failed to save chapter ${chapterId}:`, saveError);
+            }
+          }
+        }
+      };
+
       // Helper to update progress
-      const updateProgress = (chapterTitle: string) => {
+      const updateProgress = async (chapterId: string, chapterTitle: string) => {
         totalChunksCompleted++;
+        completedChunksPerChapter.set(chapterId, (completedChunksPerChapter.get(chapterId) || 0) + 1);
+
         const percentage = Math.round((totalChunksCompleted / totalChunksInJob) * 90);
         sendProgress({
           jobId,
@@ -1725,6 +1797,9 @@ export async function cleanupEpub(
           totalChunksInJob,
           chunkCompletedAt: Date.now()
         });
+
+        // Try to save this chapter if all its chunks are complete
+        await trySaveChapter(chapterId);
       };
 
       // Worker function - pulls chunks from shared queue
@@ -1748,7 +1823,7 @@ export async function cleanupEpub(
               chunkIndex: work.chunkIndex,
               cleanedText: cleaned
             });
-            updateProgress(work.chapterTitle);
+            await updateProgress(work.chapterId, work.chapterTitle);
           } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             // Check for unrecoverable errors
@@ -1763,7 +1838,7 @@ export async function cleanupEpub(
               chunkIndex: work.chunkIndex,
               cleanedText: work.text
             });
-            updateProgress(work.chapterTitle);
+            await updateProgress(work.chapterId, work.chapterTitle);
           }
         }
       };
@@ -1777,17 +1852,20 @@ export async function cleanupEpub(
         throw new Error('Job cancelled');
       }
 
-      // Reassemble: group by chapter, sort by chunk index
-      const chapterResults = new Map<string, ChunkResult[]>();
+      // Reassemble: group by chapter, sort by chunk index (only for chapters not already saved)
+      const chapterResultsMap = new Map<string, ChunkResult[]>();
       for (const result of results) {
-        if (!chapterResults.has(result.chapterId)) {
-          chapterResults.set(result.chapterId, []);
+        // Skip chapters that were already saved incrementally
+        if (savedChapters.has(result.chapterId)) continue;
+
+        if (!chapterResultsMap.has(result.chapterId)) {
+          chapterResultsMap.set(result.chapterId, []);
         }
-        chapterResults.get(result.chapterId)!.push(result);
+        chapterResultsMap.get(result.chapterId)!.push(result);
       }
 
-      // Process each chapter's results
-      for (const [chapterId, chunks] of chapterResults) {
+      // Process any remaining unsaved chapters (partial chapters from stuck workers)
+      for (const [chapterId, chunks] of chapterResultsMap) {
         chunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
 
         const originalXhtml = chapterXhtmlMap.get(chapterId);
@@ -1805,9 +1883,9 @@ export async function cleanupEpub(
 
         modifiedChapters.set(chapterId, rebuiltXhtml);
       }
-      chaptersProcessed = chapterResults.size;
+      chaptersProcessed = savedChapters.size + chapterResultsMap.size;
 
-      console.log(`[AI-CLEANUP] Reassembled ${chaptersProcessed} chapters from ${results.length} chunks`);
+      console.log(`[AI-CLEANUP] Saved ${savedChapters.size} chapters incrementally, ${chapterResultsMap.size} in final pass (${results.length} total chunks)`);
 
     } else {
       // ─────────────────────────────────────────────────────────────────────────
@@ -2014,6 +2092,9 @@ export async function cleanupEpub(
     if (markerMismatchCount > 0) {
       console.warn(`[AI-CLEANUP] Marker mismatches detected: ${markerMismatchCount} chunks had [[BLOCK]] marker count mismatch and fell back to original text`);
     }
+    if (truncatedFallbackCount > 0) {
+      console.warn(`[AI-CLEANUP] Truncation issues detected: ${truncatedFallbackCount} chunks returned <70% of input length and fell back to original text`);
+    }
 
     // Save skipped chunks to JSON file if any exist
     let skippedChunksPath: string | undefined;
@@ -2062,6 +2143,7 @@ export async function cleanupEpub(
       copyrightChunksAffected: copyrightFallbackCount,
       contentSkipsAffected: skipFallbackCount,
       markerMismatchAffected: markerMismatchCount,
+      truncatedChunksAffected: truncatedFallbackCount,
       skippedChunksPath
     };
 
@@ -2075,6 +2157,8 @@ export async function cleanupEpub(
       contentSkipsAffected: skipFallbackCount,
       markerMismatchDetected: markerMismatchCount > 0,
       markerMismatchAffected: markerMismatchCount,
+      truncatedDetected: truncatedFallbackCount > 0,
+      truncatedAffected: truncatedFallbackCount,
       skippedChunksPath,
       analytics
     };

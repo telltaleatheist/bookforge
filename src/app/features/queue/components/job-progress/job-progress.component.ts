@@ -104,6 +104,12 @@ interface ETAState {
               <span class="stat-label">Chunks</span>
               <span class="stat-value">{{ job()!.chunksCompletedInJob || 0 }}/{{ job()!.totalChunksInJob }}</span>
             </div>
+            @if (chunksPerMinute() > 0) {
+              <div class="stat">
+                <span class="stat-label">Speed</span>
+                <span class="stat-value">{{ chunksPerMinute() | number:'1.1-1' }}/min</span>
+              </div>
+            }
           }
         </div>
 
@@ -634,6 +640,26 @@ export class JobProgressComponent implements OnDestroy {
     return this.formatDuration(elapsed);
   });
 
+  // Computed: chunks per minute for OCR cleanup jobs
+  readonly chunksPerMinute = computed(() => {
+    this.tick(); // Subscribe to tick for live updates
+    const j = this.job();
+    if (!j || j.status !== 'processing') return 0;
+
+    const chunksCompleted = j.chunksCompletedInJob || 0;
+    if (chunksCompleted < 1) return 0;
+
+    // Use firstWorkTime if available (excludes model load), otherwise jobStartTime
+    const startTime = this.etaState.firstWorkTime || this.jobStartTime;
+    if (!startTime) return 0;
+
+    const elapsedMs = Date.now() - startTime;
+    const elapsedMinutes = elapsedMs / 60000;
+    if (elapsedMinutes < 0.1) return 0; // Need at least 6 seconds of data
+
+    return chunksCompleted / elapsedMinutes;
+  });
+
   // Computed: ETA - uses chunk-based countdown when available, falls back to percentage-based
   readonly etaFormatted = computed(() => {
     const j = this.job();
@@ -809,8 +835,38 @@ export class JobProgressComponent implements OnDestroy {
       return 'Calculating...';
     }
 
-    // For other job types, use the computed etaFormatted
-    return this.etaFormatted();
+    // For OCR cleanup and TTS jobs with chunk data, calculate ETA directly
+    // This avoids issues with effect batching in parallel processing
+    const chunksCompleted = job.chunksCompletedInJob || 0;
+    const totalChunks = job.totalChunksInJob || job.totalChunks || 0;
+
+    if (chunksCompleted >= 2 && totalChunks > 0) {
+      const elapsed = this.elapsedSeconds();
+      if (elapsed > 10) {
+        // Simple linear estimate based on overall progress
+        const avgTimePerChunk = elapsed / chunksCompleted;
+        const remainingChunks = totalChunks - chunksCompleted;
+        const remainingSeconds = Math.round(remainingChunks * avgTimePerChunk);
+        return this.formatDuration(remainingSeconds);
+      }
+    }
+
+    // For reassembly jobs, use the effect-based calculation
+    if (job.type === 'reassembly') {
+      return this.etaFormatted();
+    }
+
+    // Fall back to percentage-based ETA
+    const elapsed = this.elapsedSeconds();
+    if (progress > 2 && elapsed > 10) {
+      const totalEstimate = elapsed / (progress / 100);
+      const remaining = totalEstimate - elapsed;
+      if (remaining > 0) {
+        return this.formatDuration(Math.round(remaining));
+      }
+    }
+
+    return 'Calculating...';
   }
 
   // Get human-readable phase name for reassembly jobs
