@@ -959,20 +959,21 @@ export async function startReassembly(
       console.log('[REASSEMBLY] stdout:', line);
 
       // Parse progress from e2a output
-      // Parse "Assemble - XX%" and "Export - XX%" progress lines
+      // Parse "Assemble - XX%" progress lines (chapter sentence combining)
       const assembleMatch = line.match(/Assemble\s*-\s*([\d.]+)%/);
       if (assembleMatch) {
         const pct = parseFloat(assembleMatch[1]);
-        // Assemble phase is 0-50% of total progress
-        const totalPct = Math.round(pct * 0.5);
+        // Assemble phase is 0-40% of total progress (combining sentences into chapters)
+        const totalPct = Math.round(pct * 0.4);
         currentPhase = 'combining';
         sendProgress(mainWindow, jobId, {
           phase: 'combining',
           percentage: totalPct,
-          message: `Assembling audio... ${pct.toFixed(0)}%`
+          message: `Combining sentences (${pct.toFixed(0)}%)`
         });
       }
 
+      // Parse "Export - XX%" progress lines (encoding to M4B)
       const exportMatch = line.match(/Export\s*-\s*([\d.]+)%/);
       if (exportMatch) {
         const pct = parseFloat(exportMatch[1]);
@@ -982,13 +983,23 @@ export async function startReassembly(
         sendProgress(mainWindow, jobId, {
           phase: 'encoding',
           percentage: totalPct,
-          message: `Exporting to M4B... ${pct.toFixed(0)}%`
+          message: `Encoding M4B (${pct.toFixed(0)}%)`
         });
       }
 
-      // Phase 1: Get total chapters from "Assembling audiobook from X chapters..."
-      if (line.includes('Assembling audiobook from')) {
-        const totalMatch = line.match(/Assembling audiobook from (\d+) chapters/);
+      // "Assemble completed!" indicates chapter combining is done, moving to concatenation
+      if (line.includes('Assemble completed!')) {
+        currentPhase = 'concatenating';
+        sendProgress(mainWindow, jobId, {
+          phase: 'combining',
+          percentage: 45,
+          message: 'Chapters combined, preparing export...'
+        });
+      }
+
+      // Phase 1: Get total chapters from "Assembling all N chapters..." or "Assembling audiobook from X chapters..."
+      if (line.includes('Assembling all') || line.includes('Assembling audiobook from')) {
+        const totalMatch = line.match(/Assembling (?:all |audiobook from )(\d+) chapters/);
         if (totalMatch) {
           totalChapters = parseInt(totalMatch[1], 10);
           currentPhase = 'combining';
@@ -1000,12 +1011,12 @@ export async function startReassembly(
             message: `Combining sentences into ${totalChapters} chapters...`
           });
         }
-      } else if (line.includes('Combining chapter') && !line.includes('Combining chapters into final')) {
-        // Phase 1: "Combining chapter N: sentences X-Y" - combining sentences into chapter FLACs
-        const match = line.match(/Combining chapter (\d+):/);
+      } else if ((line.includes('[ASSEMBLE] Chapter') || line.includes('Combining chapter')) && !line.includes('Combining chapters into final')) {
+        // Phase 1: "[ASSEMBLE] Chapter N: sentences X-Y" or "Combining chapter N:" - combining sentences into chapter FLACs
+        const match = line.match(/(?:\[ASSEMBLE\] Chapter|Combining chapter)\s*(\d+)/);
         if (match) {
           const current = parseInt(match[1], 10);
-          const total = totalChapters || 19;
+          const total = totalChapters || 9;
           currentPhase = 'combining';
           // Progress: 0-50% for chapter combining
           const pct = Math.round((current / total) * 50);
@@ -1014,13 +1025,23 @@ export async function startReassembly(
             percentage: pct,
             currentChapter: current,
             totalChapters: total,
-            message: `Combining chapter ${current}/${total} sentences...`
+            message: `Combining chapter ${current}/${total}...`
           });
         }
-      } else if (line.includes('Combined block audio file saved')) {
-        // Chapter FLAC saved
+      } else if (line.includes('Combined block audio file saved') || line.includes('Completed →')) {
+        // Chapter FLAC saved - update progress based on chapters completed
         chaptersCompleted++;
-      } else if (line.includes('Combining chapters into final audiobook')) {
+        if (totalChapters > 0) {
+          const pct = Math.round((chaptersCompleted / totalChapters) * 40);
+          sendProgress(mainWindow, jobId, {
+            phase: 'combining',
+            percentage: pct,
+            currentChapter: chaptersCompleted,
+            totalChapters,
+            message: `Chapter ${chaptersCompleted}/${totalChapters} saved`
+          });
+        }
+      } else if (line.includes('Combining chapters into final') || line.includes('Concatenating')) {
         // Phase 2: Concatenating all chapter FLACs into one big FLAC
         currentPhase = 'concatenating';
         sendProgress(mainWindow, jobId, {
