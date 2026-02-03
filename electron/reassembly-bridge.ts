@@ -20,6 +20,7 @@ function isWslPath(p: string): boolean {
 
 /**
  * Build WSL bash command for assembly
+ * First argument in appArgs is the Windows app.py path - we skip it and use WSL native path
  */
 function buildWslAssemblyCommand(
   appArgs: string[],
@@ -28,21 +29,27 @@ function buildWslAssemblyCommand(
   const wslCondaPath = getWslCondaPath();
   const wslE2aPath = getWslE2aPath();
 
-  // Convert args - replace Windows paths with WSL paths
-  const wslArgs = appArgs.map(arg => {
-    // Convert output_dir to WSL path
+  // Skip the first argument (Windows app.py path) - we'll use WSL native path
+  const argsWithoutAppPath = appArgs.slice(1);
+
+  // Convert remaining args - replace Windows paths with WSL paths
+  const wslArgs = argsWithoutAppPath.map(arg => {
+    // Convert Windows drive paths (C:\...) to WSL paths (/mnt/c/...)
     if (arg.match(/^[A-Za-z]:\\/)) {
       return windowsToWslPath(arg);
     }
-    // Convert UNC paths (\\wsl$\...) to native WSL paths
+    // Convert UNC WSL paths (\\wsl$\Ubuntu\...) to native WSL paths (/...)
     if (arg.startsWith('\\\\wsl$\\Ubuntu\\') || arg.startsWith('//wsl$/Ubuntu/')) {
       return arg.replace(/^(\\\\wsl\$\\Ubuntu\\|\/\/wsl\$\/Ubuntu\/)/, '/').replace(/\\/g, '/');
     }
+    // Also handle already-converted /mnt/c/ style paths that should stay as-is
     return arg;
   });
 
   const cdCommand = `cd "${wslE2aPath}"`;
-  const condaCommand = `"${wslCondaPath}" run --no-capture-output -p ${wslE2aPath}/python_env python ${wslArgs.join(' ')}`;
+  // Use WSL native app.py path
+  const wslAppPath = `${wslE2aPath}/app.py`;
+  const condaCommand = `"${wslCondaPath}" run --no-capture-output -p ${wslE2aPath}/python_env python ${wslAppPath} ${wslArgs.join(' ')}`;
 
   return `${cdCommand} && ${condaCommand}`;
 }
