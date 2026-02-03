@@ -138,14 +138,10 @@ async function buildSessionToBfpMap(libraryPath?: string): Promise<Map<string, B
         }
 
         map.set(sessionId, bfpMetadata);
-        console.log(`[REASSEMBLY] Mapped session ${sessionId} to BFP:`, bfpMetadata.bfpPath);
       } catch (err) {
         // Skip invalid project files
-        console.warn(`[REASSEMBLY] Error reading project.json in ${entry.name}:`, err);
       }
     }
-
-    console.log(`[REASSEMBLY] Built session-to-BFP map with ${map.size} entries`);
   } catch (err) {
     console.error('[REASSEMBLY] Error scanning BFP projects:', err);
   }
@@ -249,20 +245,12 @@ export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: str
   const sessions: E2aSession[] = [];
   const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
 
-  console.log('[REASSEMBLY] Scanning tmp folder:', tmpPath);
-  console.log('[REASSEMBLY] customTmpPath provided:', customTmpPath);
-  console.log('[REASSEMBLY] libraryPath provided:', libraryPath);
-  console.log('[REASSEMBLY] DEFAULT_E2A_TMP_PATH:', DEFAULT_E2A_TMP_PATH);
-
   if (!fs.existsSync(tmpPath)) {
-    console.log('[REASSEMBLY] E2A tmp folder does not exist:', tmpPath);
     return { sessions: [], tmpPath };
   }
 
   // Build session-to-BFP map for metadata enrichment
   const bfpMap = await buildSessionToBfpMap(libraryPath);
-
-  console.log('[REASSEMBLY] Folder exists, reading entries...');
 
   const entries = fs.readdirSync(tmpPath, { withFileTypes: true });
 
@@ -288,7 +276,6 @@ export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: str
   // Sort by modification date, newest first
   sessions.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
 
-  console.log(`[REASSEMBLY] Found ${sessions.length} sessions in ${tmpPath}`);
   return { sessions, tmpPath };
 }
 
@@ -302,7 +289,6 @@ async function parseSession(sessionId: string, sessionDir: string, bfpMap?: Map<
   const hashDir = subEntries.find(e => e.isDirectory());
 
   if (!hashDir) {
-    console.log(`[REASSEMBLY] No hash subfolder in ${sessionDir}`);
     return null;
   }
 
@@ -311,7 +297,6 @@ async function parseSession(sessionId: string, sessionDir: string, bfpMap?: Map<
 
   // Check if sentences folder exists
   if (!fs.existsSync(sentencesDir)) {
-    console.log(`[REASSEMBLY] No sentences folder in ${processDir}`);
     return null;
   }
 
@@ -353,9 +338,6 @@ async function parseSession(sessionId: string, sessionDir: string, bfpMap?: Map<
 
   // Check if we have linked BFP metadata for this session
   const bfpMetadata = bfpMap?.get(sessionId);
-  if (bfpMetadata) {
-    console.log(`[REASSEMBLY] Found BFP metadata for session ${sessionId}:`, bfpMetadata.bfpPath);
-  }
 
   // Build metadata - prefer BFP metadata over bookforge_metadata (BFP is more reliable source)
   const metadata: E2aSession['metadata'] = {
@@ -803,6 +785,25 @@ export async function startReassembly(
     }
   }
 
+  // Copy BFP cover to session directory if provided and not already there
+  // e2a uses covers from the processDir (cleaned.jpg, cover.jpg, etc.) during assembly
+  if (config.metadata?.coverPath && fs.existsSync(config.metadata.coverPath)) {
+    const existingCover = findCoverImage(config.processDir);
+    if (!existingCover) {
+      try {
+        // Determine extension
+        const ext = path.extname(config.metadata.coverPath).toLowerCase() || '.jpg';
+        const targetCoverPath = path.join(config.processDir, `cover${ext}`);
+        fs.copyFileSync(config.metadata.coverPath, targetCoverPath);
+        console.log(`[REASSEMBLY] Copied BFP cover to session: ${config.metadata.coverPath} -> ${targetCoverPath}`);
+      } catch (err) {
+        console.error('[REASSEMBLY] Failed to copy BFP cover to session:', err);
+      }
+    } else {
+      console.log('[REASSEMBLY] Session already has cover:', existingCover);
+    }
+  }
+
   // Find the epub path from session state
   let sessionState = parseSessionState(config.processDir);
 
@@ -919,9 +920,10 @@ export async function startReassembly(
       console.log('[REASSEMBLY] Session in WSL, running through WSL:', wslBashCommand.substring(0, 200) + '...');
 
       const distro = getWslDistro();
+      // Use bash -c (non-interactive) to avoid .bashrc issues blocking stdout
       const wslArgs = distro
-        ? ['-d', distro, 'bash', '-ic', wslBashCommand]
-        : ['bash', '-ic', wslBashCommand];
+        ? ['-d', distro, 'bash', '-c', wslBashCommand]
+        : ['bash', '-c', wslBashCommand];
 
       proc = spawn('wsl.exe', wslArgs, {
         cwd: e2aPath,
@@ -947,6 +949,26 @@ export async function startReassembly(
     let totalChapters = 0;
     let chaptersCompleted = 0;
     let currentPhase: 'combining' | 'concatenating' | 'encoding' | 'metadata' = 'combining';
+    let lastProgressUpdate = Date.now();
+    let encodingStartTime = 0;
+
+    // Heartbeat timer to keep UI responsive during long encoding
+    // Sends periodic updates even if FFmpeg isn't producing parseable progress
+    const heartbeatInterval = setInterval(() => {
+      const now = Date.now();
+      if (currentPhase === 'encoding' && encodingStartTime > 0) {
+        const elapsedMinutes = Math.floor((now - encodingStartTime) / 60000);
+        // Only send heartbeat if no progress for 5+ seconds
+        if (now - lastProgressUpdate > 5000) {
+          sendProgress(mainWindow, jobId, {
+            phase: 'encoding',
+            percentage: Math.min(89, 65 + elapsedMinutes), // Slowly increment to show activity
+            message: `Encoding M4B audiobook... (${elapsedMinutes} min elapsed)`
+          });
+          lastProgressUpdate = now;
+        }
+      }
+    }, 5000);
 
     // Progress ranges for each phase:
     // Combining chapters: 0-50% (sentences into chapter FLACs)
@@ -1080,6 +1102,8 @@ export async function startReassembly(
       } else if (line.includes('-> #0:0 (flac (native) -> aac')) {
         // Phase 3: AAC encoding started (FLAC to M4B)
         currentPhase = 'encoding';
+        encodingStartTime = Date.now();
+        lastProgressUpdate = Date.now();
         sendProgress(mainWindow, jobId, {
           phase: 'encoding',
           percentage: 65,
@@ -1088,6 +1112,10 @@ export async function startReassembly(
       } else if (line.includes('Output #0, ipod') || line.includes('to \'') && line.includes('.m4b')) {
         // M4B encoding in progress
         currentPhase = 'encoding';
+        if (!encodingStartTime) {
+          encodingStartTime = Date.now();
+          lastProgressUpdate = Date.now();
+        }
         sendProgress(mainWindow, jobId, {
           phase: 'encoding',
           percentage: 70,
@@ -1141,18 +1169,91 @@ export async function startReassembly(
     });
 
     proc.stderr?.on('data', (data) => {
-      stderr += data.toString();
-      console.log('[REASSEMBLY] stderr:', data.toString());
+      const line = data.toString();
+      stderr += line;
+      console.log('[REASSEMBLY] stderr:', line);
+
+      // FFmpeg outputs progress to stderr, not stdout
+      // Parse FFmpeg progress during encoding phase
+      if (currentPhase === 'encoding' || line.includes('size=') || line.includes('time=') || line.includes('speed=')) {
+        // Parse time=HH:MM:SS.mm format for progress estimation
+        const timeMatch = line.match(/time=(\d+):(\d+):(\d+)/);
+        if (timeMatch) {
+          const hours = parseInt(timeMatch[1], 10);
+          const minutes = parseInt(timeMatch[2], 10);
+          const seconds = parseInt(timeMatch[3], 10);
+          const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+
+          // Use time to estimate progress - typical audiobooks are 5-20 hours
+          // We'll cap at 90% since we don't know total duration
+          const estimatedProgress = Math.min(85, 50 + Math.floor(totalSeconds / 600) * 5);
+
+          currentPhase = 'encoding';
+          if (!encodingStartTime) encodingStartTime = Date.now();
+          lastProgressUpdate = Date.now();
+          sendProgress(mainWindow, jobId, {
+            phase: 'encoding',
+            percentage: estimatedProgress,
+            message: `Encoding: ${hours}h ${minutes}m ${seconds}s processed...`
+          });
+        }
+
+        // Parse size for additional feedback
+        const sizeMatch = line.match(/size=\s*(\d+)kB/);
+        if (sizeMatch && !timeMatch) {
+          const sizeMB = Math.round(parseInt(sizeMatch[1], 10) / 1024);
+          currentPhase = 'encoding';
+          if (!encodingStartTime) encodingStartTime = Date.now();
+          lastProgressUpdate = Date.now();
+          sendProgress(mainWindow, jobId, {
+            phase: 'encoding',
+            percentage: 70,
+            message: `Encoding: ${sizeMB}MB written...`
+          });
+        }
+      }
+
+      // Also check for Export progress in stderr (some versions output here)
+      const exportMatch = line.match(/Export\s*-\s*([\d.]+)%/);
+      if (exportMatch) {
+        const pct = parseFloat(exportMatch[1]);
+        const totalPct = Math.round(50 + pct * 0.45);
+        currentPhase = 'encoding';
+        if (!encodingStartTime) encodingStartTime = Date.now();
+        lastProgressUpdate = Date.now();
+        sendProgress(mainWindow, jobId, {
+          phase: 'encoding',
+          percentage: totalPct,
+          message: `Encoding M4B (${pct.toFixed(0)}%)`
+        });
+      }
+
+      // Check for VTT/subtitle creation progress
+      if (line.includes('[VTT]') || line.includes('VTT')) {
+        sendProgress(mainWindow, jobId, {
+          phase: 'combining',
+          percentage: 48,
+          message: 'Creating subtitle file...'
+        });
+      }
+
+      // Check for cover embedding
+      if (line.includes('cover') || line.includes('Adding cover')) {
+        sendProgress(mainWindow, jobId, {
+          phase: 'metadata',
+          percentage: 95,
+          message: 'Adding cover image...'
+        });
+      }
     });
 
     proc.on('close', async (code) => {
+      clearInterval(heartbeatInterval);
       activeReassemblies.delete(jobId);
 
       if (code === 0) {
-        // Apply extended metadata with m4b-tool if output file exists
-        if (outputPath && fs.existsSync(outputPath)) {
-          await applyMetadataWithM4bTool(outputPath, config.metadata, mainWindow, jobId);
-        } else if (config.outputDir) {
+        // Find the output file if we don't have it yet
+        if (!outputPath && config.outputDir) {
           // Try to find the output file in the output directory
           // Exclude macOS resource forks (._* files)
           const outputFiles = fs.readdirSync(config.outputDir).filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
@@ -1162,8 +1263,38 @@ export async function startReassembly(
               .map(f => ({ name: f, path: path.join(config.outputDir, f), mtime: fs.statSync(path.join(config.outputDir, f)).mtime }))
               .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
             outputPath = sortedFiles[0].path;
-            await applyMetadataWithM4bTool(outputPath, config.metadata, mainWindow, jobId);
           }
+        }
+
+        // Rename output file if custom filename requested from BFP
+        if (outputPath && fs.existsSync(outputPath) && config.metadata?.outputFilename) {
+          const customFilename = config.metadata.outputFilename;
+          // Ensure it has .m4b extension
+          const filenameWithExt = customFilename.endsWith('.m4b') ? customFilename : `${customFilename}.m4b`;
+          // Sanitize filename (remove invalid characters)
+          const sanitized = filenameWithExt.replace(/[<>:"/\\|?*]/g, '_');
+          const newPath = path.join(path.dirname(outputPath), sanitized);
+
+          if (newPath !== outputPath) {
+            try {
+              sendProgress(mainWindow, jobId, {
+                phase: 'metadata',
+                percentage: 96,
+                message: `Renaming to ${sanitized}...`
+              });
+              fs.renameSync(outputPath, newPath);
+              console.log(`[REASSEMBLY] Renamed output file: ${outputPath} -> ${newPath}`);
+              outputPath = newPath;
+            } catch (renameErr) {
+              console.error('[REASSEMBLY] Failed to rename output file:', renameErr);
+              // Continue without renaming - not a critical failure
+            }
+          }
+        }
+
+        // Apply extended metadata with m4b-tool if output file exists
+        if (outputPath && fs.existsSync(outputPath)) {
+          await applyMetadataWithM4bTool(outputPath, config.metadata, mainWindow, jobId);
         }
 
         sendProgress(mainWindow, jobId, {
@@ -1186,6 +1317,7 @@ export async function startReassembly(
     });
 
     proc.on('error', (err) => {
+      clearInterval(heartbeatInterval);
       activeReassemblies.delete(jobId);
       sendProgress(mainWindow, jobId, {
         phase: 'error',

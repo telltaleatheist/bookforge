@@ -221,9 +221,19 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
       continue;
     }
 
-    // Replace -p <windows_env_path> with -n orpheus_tts (use WSL native conda env)
-    if (arg === '-p' && config.condaArgs[i + 1]?.includes('orpheus')) {
-      wslArgs.push('-n', orpheusCondaEnv);
+    // Replace -p <windows_env_path> with appropriate WSL path
+    if (arg === '-p' && config.condaArgs[i + 1]) {
+      const envPath = config.condaArgs[i + 1];
+      if (envPath.includes('orpheus')) {
+        // Orpheus uses its own conda env
+        wslArgs.push('-n', orpheusCondaEnv);
+      } else if (envPath.includes('python_env') || envPath.includes('ebook2audiobook')) {
+        // e2a's python_env - use WSL native path
+        wslArgs.push('-p', `${wslE2aPath}/python_env`);
+      } else {
+        // Other conda env - convert Windows path to WSL
+        wslArgs.push('-p', windowsToWslPath(envPath));
+      }
       skipNext = true;  // Skip the next arg (the Windows path)
       continue;
     }
@@ -249,12 +259,14 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   }
 
   // Build the full command:
-  // 1. cd to e2a directory
-  // 2. Run conda with converted args
+  // 1. Export Python env vars so output isn't buffered (critical for subprocess stdout capture)
+  // 2. cd to e2a directory
+  // 3. Run conda with converted args
+  const exportCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8`;
   const cdCommand = `cd "${wslE2aPath}"`;
   const condaCommand = `"${wslCondaPath}" ${wslArgs.join(' ')}`;
 
-  return `${cdCommand} && ${condaCommand}`;
+  return `${exportCommand} && ${cdCommand} && ${condaCommand}`;
 }
 
 /**
@@ -283,12 +295,13 @@ function spawnWithWslSupport(
       ttsEngine,
     });
 
-    console.log('[PARALLEL-TTS] WSL command:', wslBashCommand.substring(0, 200) + '...');
+    console.log('[PARALLEL-TTS] WSL full command:', wslBashCommand);
 
     const distro = getWslDistro();
+    // Use bash -c (non-interactive) to avoid .bashrc issues blocking stdout
     const wslArgs = distro
-      ? ['-d', distro, 'bash', '-ic', wslBashCommand]
-      : ['bash', '-ic', wslBashCommand];
+      ? ['-d', distro, 'bash', '-c', wslBashCommand]
+      : ['bash', '-c', wslBashCommand];
 
     return spawn('wsl.exe', wslArgs, {
       env: process.env,  // Pass through Windows env (WSL inherits these)
@@ -1045,16 +1058,20 @@ export async function prepareSession(
     throw new Error(`No process directory found in ${sessionDirForReading}`);
   }
 
-  const statePath = path.join(sessionDirForReading, processDir.name, 'session-state.json');
+  // Build Windows-accessible paths from sessionDirForReading
+  // The session-state.json contains WSL-native paths, but we need Windows UNC paths for file operations
+  const processDirForReading = path.join(sessionDirForReading, processDir.name);
+  const statePath = path.join(processDirForReading, 'session-state.json');
   const stateContent = await fs.readFile(statePath, 'utf-8');
   const state = JSON.parse(stateContent);
 
   const prepInfo: PrepInfo = {
     sessionId: state.session_id,
-    sessionDir: state.session_dir,
-    processDir: state.process_dir,
-    chaptersDir: state.chapters_dir,
-    chaptersDirSentences: state.chapters_dir_sentences,
+    // Use Windows-accessible paths for file operations, not WSL-native paths from state
+    sessionDir: sessionDirForReading,
+    processDir: processDirForReading,
+    chaptersDir: path.join(processDirForReading, 'chapters'),
+    chaptersDirSentences: path.join(processDirForReading, 'chapters', 'sentences'),
     totalChapters: state.total_chapters,
     totalSentences: state.total_sentences,
     chapters: state.chapters.map((c: any) => ({

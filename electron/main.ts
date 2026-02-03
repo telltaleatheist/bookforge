@@ -4191,11 +4191,6 @@ function setupIpcHandlers(): void {
       // Pass library path for BFP metadata lookup
       const libraryPath = getLibraryRoot();
       const result = await scanE2aTmpFolder(customTmpPath, libraryPath);
-      console.log('[MAIN] reassembly:scan-sessions returning', result.sessions.length, 'sessions');
-      // Log first session for debugging
-      if (result.sessions.length > 0) {
-        console.log('[MAIN] First session:', JSON.stringify(result.sessions[0], null, 2));
-      }
       return { success: true, data: result };
     } catch (err) {
       console.error('[MAIN] reassembly:scan-sessions error:', err);
