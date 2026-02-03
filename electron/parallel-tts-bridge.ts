@@ -885,8 +885,8 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
 
   // Platform-specific max workers:
   // - macOS (MPS): 4 workers - Apple Silicon handles parallel TTS well with unified memory
-  // - Windows/Linux (CUDA): 2 workers - GPU memory contention limits parallel benefit
-  const platformMaxWorkers = platform === 'darwin' ? 4 : 2;
+  // - Windows/Linux (CUDA): 1 worker - GPU memory contention limits parallel benefit
+  const platformMaxWorkers = platform === 'darwin' ? 4 : 1;
 
   // Get AVAILABLE memory (not total) - user might be running other apps
   let availableMemGB = totalMemGB; // Fallback to total if we can't detect available

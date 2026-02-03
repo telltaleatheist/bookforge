@@ -204,7 +204,7 @@ export interface VoiceOption {
                 [ngModel]="settings().parallelWorkers || 0"
                 (ngModelChange)="onWorkerCountChange($event)"
               />
-              <span>Auto ({{ hardwareInfo()?.recommendedWorkers || 2 }})</span>
+              <span>Auto ({{ hardwareInfo()?.recommendedWorkers || 1 }})</span>
             </label>
             @for (count of [1, 2, 3, 4]; track count) {
               <label class="worker-option" [class.selected]="settings().parallelWorkers === count">
@@ -1043,7 +1043,7 @@ export class TtsSettingsComponent implements OnInit {
     const electron = (window as any).electron;
     if (!electron?.parallelTts?.detectRecommendedWorkerCount) {
       // Default fallback when not in Electron
-      this.hardwareInfo.set({ recommendedWorkers: 2, reason: 'Default (2 workers)' });
+      this.hardwareInfo.set({ recommendedWorkers: 1, reason: 'Default (1 worker)' });
       return;
     }
 
@@ -1058,7 +1058,7 @@ export class TtsSettingsComponent implements OnInit {
       }
     } catch (err) {
       console.error('Failed to detect hardware:', err);
-      this.hardwareInfo.set({ recommendedWorkers: 2, reason: 'Default (2 workers)' });
+      this.hardwareInfo.set({ recommendedWorkers: 1, reason: 'Default (1 worker)' });
     } finally {
       this.loadingHardwareInfo.set(false);
     }
