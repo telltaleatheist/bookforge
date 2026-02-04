@@ -720,6 +720,7 @@ export interface ReassemblyConfig {
   sessionDir: string;
   processDir: string;
   outputDir: string;
+  totalChapters?: number;  // Total chapters for progress display
   metadata: {
     title: string;
     author: string;

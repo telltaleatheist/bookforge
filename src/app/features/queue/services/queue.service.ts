@@ -111,6 +111,7 @@ declare global {
           sessionDir: string;
           processDir: string;
           outputDir: string;
+          totalChapters?: number;
           metadata: { title: string; author: string; year?: string; coverPath?: string; outputFilename?: string };
           excludedChapters: number[];
         }) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
@@ -376,6 +377,9 @@ export class QueueService {
           chunkCompletedAt: displayCompleted > (job.chunksCompletedInJob || 0) ? Date.now() : job.chunkCompletedAt,
           // Session-specific progress for accurate ETA (especially for resume jobs)
           chunksDoneInSession: (progress as any).completedInSession || displayCompleted,
+          // Map assembly chapter progress (from parallel-tts-bridge during assembly phase)
+          currentChapter: (progress as any).assemblyChapter || job.currentChapter,
+          totalChapters: (progress as any).assemblyTotalChapters || job.totalChapters,
           // Store per-worker progress for UI display
           parallelWorkers: progress.workers.map(w => ({
             id: w.id,
@@ -1405,6 +1409,7 @@ export class QueueService {
         sessionDir: config.sessionDir,
         processDir: config.processDir,
         outputDir: config.outputDir,
+        totalChapters: config.totalChapters,
         metadata: config.metadata || { title: 'Unknown', author: 'Unknown' },
         excludedChapters: config.excludedChapters || []
       };

@@ -49,6 +49,7 @@ export interface ReassemblyConfig {
   sessionDir: string;
   processDir: string;
   outputDir: string;
+  totalChapters?: number;  // Total chapters for progress display (excluding excluded ones)
   metadata: ReassemblyMetadata;
   excludedChapters: number[];  // Chapter numbers to exclude
 }

@@ -153,6 +153,7 @@ export interface ReassemblyJobConfig {
   processDir: string;
   outputDir: string;
   e2aTmpPath?: string;  // Path to e2a tmp folder from settings - app path is derived from this
+  totalChapters?: number;  // Total chapters for progress display (excluding excluded ones)
   metadata: {
     title: string;
     author: string;

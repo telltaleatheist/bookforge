@@ -197,13 +197,18 @@ export class ReassemblyService {
       message: 'Preparing reassembly...'
     });
 
+    // Calculate total chapters (excluding excluded ones)
+    const excludedChapters = this.getExcludedChapters();
+    const totalChapters = session.chapters.length - excludedChapters.length;
+
     const reassemblyConfig: ReassemblyConfig = {
       sessionId: session.sessionId,
       sessionDir: session.sessionDir,
       processDir: session.processDir,
       outputDir: config.outputDir,
+      totalChapters,
       metadata: config.metadata,
-      excludedChapters: this.getExcludedChapters()
+      excludedChapters
     };
 
     try {
