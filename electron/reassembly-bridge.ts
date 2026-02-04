@@ -951,6 +951,23 @@ export async function startReassembly(
     let currentPhase: 'combining' | 'concatenating' | 'encoding' | 'metadata' = 'combining';
     let lastProgressUpdate = Date.now();
     let encodingStartTime = 0;
+    // Export phase ETA tracking
+    let exportStartTime = 0;
+    let exportStartPct = 0;
+    let lastExportPct = 0;
+
+    // Helper to format seconds as "Xm Ys" or "Xh Ym"
+    const formatEta = (seconds: number): string => {
+      if (seconds < 60) return `${Math.round(seconds)}s`;
+      if (seconds < 3600) {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.round(seconds % 60);
+        return `${mins}m ${secs}s`;
+      }
+      const hours = Math.floor(seconds / 3600);
+      const mins = Math.round((seconds % 3600) / 60);
+      return `${hours}h ${mins}m`;
+    };
 
     // Heartbeat timer to keep UI responsive during long encoding
     // Sends periodic updates even if FFmpeg isn't producing parseable progress
@@ -999,13 +1016,35 @@ export async function startReassembly(
       const exportMatch = line.match(/Export\s*-\s*([\d.]+)%/);
       if (exportMatch) {
         const pct = parseFloat(exportMatch[1]);
+        const now = Date.now();
+
+        // Track export start for ETA calculation
+        if (exportStartTime === 0 || pct < lastExportPct) {
+          // First export progress or restart
+          exportStartTime = now;
+          exportStartPct = pct;
+        }
+        lastExportPct = pct;
+
+        // Calculate ETA based on progress rate
+        let etaDisplay = '';
+        const elapsed = (now - exportStartTime) / 1000;
+        const pctDone = pct - exportStartPct;
+        if (elapsed > 5 && pctDone > 0.5) {
+          const pctRemaining = 100 - pct;
+          const secondsPerPct = elapsed / pctDone;
+          const etaSeconds = pctRemaining * secondsPerPct;
+          etaDisplay = ` — ETA: ${formatEta(etaSeconds)}`;
+        }
+
         // Export phase is 50-95% of total progress
         const totalPct = Math.round(50 + pct * 0.45);
         currentPhase = 'encoding';
+        lastProgressUpdate = now;
         sendProgress(mainWindow, jobId, {
           phase: 'encoding',
           percentage: totalPct,
-          message: `Encoding M4B (${pct.toFixed(0)}%)`
+          message: `Encoding M4B (${pct.toFixed(1)}%)${etaDisplay}`
         });
       }
 
@@ -1214,17 +1253,37 @@ export async function startReassembly(
       }
 
       // Also check for Export progress in stderr (some versions output here)
-      const exportMatch = line.match(/Export\s*-\s*([\d.]+)%/);
-      if (exportMatch) {
-        const pct = parseFloat(exportMatch[1]);
+      const exportMatchStderr = line.match(/Export\s*-\s*([\d.]+)%/);
+      if (exportMatchStderr) {
+        const pct = parseFloat(exportMatchStderr[1]);
+        const now = Date.now();
+
+        // Track export start for ETA calculation
+        if (exportStartTime === 0 || pct < lastExportPct) {
+          exportStartTime = now;
+          exportStartPct = pct;
+        }
+        lastExportPct = pct;
+
+        // Calculate ETA
+        let etaDisplay = '';
+        const elapsed = (now - exportStartTime) / 1000;
+        const pctDone = pct - exportStartPct;
+        if (elapsed > 5 && pctDone > 0.5) {
+          const pctRemaining = 100 - pct;
+          const secondsPerPct = elapsed / pctDone;
+          const etaSeconds = pctRemaining * secondsPerPct;
+          etaDisplay = ` — ETA: ${formatEta(etaSeconds)}`;
+        }
+
         const totalPct = Math.round(50 + pct * 0.45);
         currentPhase = 'encoding';
-        if (!encodingStartTime) encodingStartTime = Date.now();
-        lastProgressUpdate = Date.now();
+        if (!encodingStartTime) encodingStartTime = now;
+        lastProgressUpdate = now;
         sendProgress(mainWindow, jobId, {
           phase: 'encoding',
           percentage: totalPct,
-          message: `Encoding M4B (${pct.toFixed(0)}%)`
+          message: `Encoding M4B (${pct.toFixed(1)}%)${etaDisplay}`
         });
       }
 
