@@ -23,6 +23,7 @@ interface ETAState {
   lastPhase: 'combining' | 'encoding' | 'export' | null;
   phaseStartTime: number | null;   // When current phase started
   phaseStartProgress: number;      // Progress when current phase started
+  lastProgress: number;            // Last progress value for progress-based ETA updates
 }
 
 @Component({
@@ -359,7 +360,8 @@ export class JobProgressComponent implements OnDestroy {
     firstWorkTime: null,         // Set when first chunk/sentence completes
     lastPhase: null,
     phaseStartTime: null,
-    phaseStartProgress: 0
+    phaseStartProgress: 0,
+    lastProgress: 0
   };
 
   // Signal to track current ETA countdown (decrements every second)
@@ -387,7 +389,9 @@ export class JobProgressComponent implements OnDestroy {
       // For reassembly jobs, track chapter progress instead of chunks
       if (j.type === 'reassembly') {
         const currentChapter = j.currentChapter || 0;
+        const progress = j.progress || 0;
 
+        // During combining phase (progress < 50%), trigger on chapter completion
         if (currentChapter > this.etaState.lastChunksCompleted) {
           // Record first work time when first chapter completes
           if (this.etaState.firstWorkTime === null && currentChapter > 0) {
@@ -397,6 +401,17 @@ export class JobProgressComponent implements OnDestroy {
 
           this.etaState.lastChunksCompleted = currentChapter;
           this.recalculateReassemblyETA(j);
+        }
+
+        // During encoding/export phase (progress >= 50%), trigger on progress changes
+        // Since no chapters complete during encoding, we need progress-based updates
+        if (progress >= 50 && this.etaState.firstWorkTime) {
+          // Track last progress to avoid recalculating on every render
+          const lastProgress = this.etaState.lastProgress || 0;
+          if (progress > lastProgress + 1) {  // Only recalculate every 1%+ change
+            this.etaState.lastProgress = progress;
+            this.recalculateReassemblyETA(j);
+          }
         }
         return;
       }
@@ -430,7 +445,8 @@ export class JobProgressComponent implements OnDestroy {
       firstWorkTime: null,         // Reset - will be set on first chunk completion
       lastPhase: null,
       phaseStartTime: null,
-      phaseStartProgress: 0
+      phaseStartProgress: 0,
+      lastProgress: 0
     };
     this.etaCountdown.set(0);
   }
