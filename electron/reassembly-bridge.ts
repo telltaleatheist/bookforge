@@ -65,6 +65,8 @@ const E2A_APP_PATH = getDefaultE2aPath();
  */
 interface BfpMetadata {
   bfpPath: string;          // Path to project.json
+  title?: string;
+  author?: string;
   year?: string;
   coverPath?: string;
   narrator?: string;
@@ -76,77 +78,61 @@ interface BfpMetadata {
 }
 
 /**
- * Builds a map of sessionId → BFP metadata by scanning all BFP projects
- * This allows linking e2a sessions back to their original BFP for metadata
+ * Get BFP metadata from source_epub_path
+ * The session's source_epub_path points directly to the BFP folder (e.g., .../audiobooks/Book_Name/cleaned.epub)
+ * Metadata comes from project.json - if it doesn't exist, there's no BFP metadata
  */
-async function buildSessionToBfpMap(libraryPath?: string): Promise<Map<string, BfpMetadata>> {
-  const map = new Map<string, BfpMetadata>();
+function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined): BfpMetadata | null {
+  if (!sourceEpubPath) return null;
 
-  if (!libraryPath) {
-    return map;
+  // Convert WSL path to Windows if needed
+  let windowsPath = sourceEpubPath;
+  if (sourceEpubPath.startsWith('/mnt/')) {
+    // /mnt/e/... → E:/...
+    const match = sourceEpubPath.match(/^\/mnt\/([a-z])\/(.*)$/i);
+    if (match) {
+      windowsPath = `${match[1].toUpperCase()}:/${match[2]}`;
+    }
   }
 
-  const audiobooksPath = path.join(libraryPath, 'audiobooks');
-  if (!fs.existsSync(audiobooksPath)) {
-    return map;
-  }
+  // Get the BFP folder (parent of cleaned.epub or exported.epub)
+  const bfpFolder = path.dirname(windowsPath);
+  if (!fs.existsSync(bfpFolder)) return null;
+
+  // project.json is the single source of truth for BFP metadata
+  const projectJsonPath = path.join(bfpFolder, 'project.json');
+  if (!fs.existsSync(projectJsonPath)) return null;
 
   try {
-    const entries = fs.readdirSync(audiobooksPath, { withFileTypes: true });
+    const content = fs.readFileSync(projectJsonPath, 'utf-8');
+    const project = JSON.parse(content);
 
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
+    const bfpMetadata: BfpMetadata = {
+      bfpPath: projectJsonPath,
+      title: project.metadata?.title,
+      author: project.metadata?.author,
+      year: project.metadata?.year,
+      coverPath: project.metadata?.coverPath,
+      narrator: project.metadata?.narrator,
+      series: project.metadata?.series,
+      seriesNumber: project.metadata?.seriesNumber,
+      genre: project.metadata?.genre,
+      description: project.metadata?.description,
+      outputFilename: project.metadata?.outputFilename
+    };
 
-      const projectJsonPath = path.join(audiobooksPath, entry.name, 'project.json');
-      if (!fs.existsSync(projectJsonPath)) continue;
-
-      try {
-        const content = fs.readFileSync(projectJsonPath, 'utf-8');
-        const project = JSON.parse(content);
-
-        // Check if this project has a TTS session
-        const sessionId = project.state?.ttsSessionId;
-        if (!sessionId) continue;
-
-        // Build metadata from BFP
-        const bfpMetadata: BfpMetadata = {
-          bfpPath: projectJsonPath,
-          year: project.metadata?.year,
-          coverPath: project.metadata?.coverPath,
-          narrator: project.metadata?.narrator,
-          series: project.metadata?.series,
-          seriesNumber: project.metadata?.seriesNumber,
-          genre: project.metadata?.genre,
-          description: project.metadata?.description,
-          outputFilename: project.metadata?.outputFilename
-        };
-
-        // Resolve relative cover path to absolute
-        if (bfpMetadata.coverPath && !path.isAbsolute(bfpMetadata.coverPath)) {
-          // Cover path might be relative to library or project folder
-          const projectFolder = path.dirname(projectJsonPath);
-          const absoluteCoverPath = path.join(projectFolder, bfpMetadata.coverPath);
-          if (fs.existsSync(absoluteCoverPath)) {
-            bfpMetadata.coverPath = absoluteCoverPath;
-          } else {
-            // Try relative to library
-            const libRelativePath = path.join(libraryPath, bfpMetadata.coverPath);
-            if (fs.existsSync(libRelativePath)) {
-              bfpMetadata.coverPath = libRelativePath;
-            }
-          }
-        }
-
-        map.set(sessionId, bfpMetadata);
-      } catch (err) {
-        // Skip invalid project files
+    // Resolve relative cover path to absolute
+    if (bfpMetadata.coverPath && !path.isAbsolute(bfpMetadata.coverPath)) {
+      const absoluteCoverPath = path.join(bfpFolder, bfpMetadata.coverPath);
+      if (fs.existsSync(absoluteCoverPath)) {
+        bfpMetadata.coverPath = absoluteCoverPath;
       }
     }
-  } catch (err) {
-    console.error('[REASSEMBLY] Error scanning BFP projects:', err);
-  }
 
-  return map;
+    return bfpMetadata;
+  } catch (err) {
+    return null;
+  }
 }
 
 // Derive the e2a app path from the tmp path (parent directory)
@@ -208,6 +194,7 @@ export interface ReassemblyConfig {
   processDir: string;
   outputDir: string;
   e2aTmpPath?: string;  // Path to e2a tmp folder from settings - app path is derived from this
+  totalChapters?: number;  // Total chapters for progress display (excluding excluded ones)
   metadata: {
     title: string;
     author: string;
@@ -238,19 +225,16 @@ const activeReassemblies = new Map<string, ChildProcess>();
 
 /**
  * Scan the e2a tmp folder for incomplete sessions
+ * BFP metadata is extracted from each session's source_epub_path
  * @param customTmpPath - Optional custom path to the e2a tmp folder
- * @param libraryPath - Optional library path for BFP metadata lookup
  */
-export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: string): Promise<{ sessions: E2aSession[]; tmpPath: string }> {
+export async function scanE2aTmpFolder(customTmpPath?: string): Promise<{ sessions: E2aSession[]; tmpPath: string }> {
   const sessions: E2aSession[] = [];
   const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
 
   if (!fs.existsSync(tmpPath)) {
     return { sessions: [], tmpPath };
   }
-
-  // Build session-to-BFP map for metadata enrichment
-  const bfpMap = await buildSessionToBfpMap(libraryPath);
 
   const entries = fs.readdirSync(tmpPath, { withFileTypes: true });
 
@@ -264,7 +248,7 @@ export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: str
     const sessionId = entry.name.replace('ebook-', '');
 
     try {
-      const session = await parseSession(sessionId, sessionDir, bfpMap);
+      const session = await parseSession(sessionId, sessionDir);
       if (session) {
         sessions.push(session);
       }
@@ -281,9 +265,9 @@ export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: str
 
 /**
  * Parse a single session directory
- * @param bfpMap - Optional map of sessionId → BFP metadata for enrichment
+ * BFP metadata is extracted from source_epub_path in the session state
  */
-async function parseSession(sessionId: string, sessionDir: string, bfpMap?: Map<string, BfpMetadata>): Promise<E2aSession | null> {
+async function parseSession(sessionId: string, sessionDir: string): Promise<E2aSession | null> {
   // Find the hash subfolder
   const subEntries = fs.readdirSync(sessionDir, { withFileTypes: true });
   const hashDir = subEntries.find(e => e.isDirectory());
@@ -326,38 +310,46 @@ async function parseSession(sessionId: string, sessionDir: string, bfpMap?: Map<
   // Get folder stats for dates
   const stats = fs.statSync(sessionDir);
 
-  // Look for cover image in processDir
-  // Check bookforge_metadata.coverPath first, then find in directory
-  let coverPath = sessionState?.bookforge_metadata?.coverPath;
-  if (!coverPath || !fs.existsSync(coverPath)) {
-    coverPath = findCoverImage(processDir);
+  // Get BFP metadata from source_epub_path (the single source of truth when available)
+  const bfpMetadata = getBfpMetadataFromSourcePath(sessionState?.source_epub_path);
+
+  // Build metadata: use BFP when available, otherwise use e2a session data
+  // No mixing - one source or the other
+  let metadata: E2aSession['metadata'];
+
+  if (bfpMetadata) {
+    // BFP is the source of truth
+    metadata = {
+      title: bfpMetadata.title,
+      author: bfpMetadata.author,
+      language: sessionState?.metadata?.language,  // Language only from epub
+      epubPath: sessionState?.source_epub_path,
+      coverPath: bfpMetadata.coverPath,
+      year: bfpMetadata.year,
+      narrator: bfpMetadata.narrator,
+      series: bfpMetadata.series,
+      seriesNumber: bfpMetadata.seriesNumber,
+      genre: bfpMetadata.genre,
+      description: bfpMetadata.description,
+      outputFilename: bfpMetadata.outputFilename
+    };
+  } else {
+    // No BFP - use e2a session data
+    metadata = {
+      title: sessionState?.metadata?.title,
+      author: sessionState?.metadata?.creator,
+      language: sessionState?.metadata?.language,
+      epubPath: sessionState?.epub_path,
+      coverPath: findCoverImage(processDir),
+      year: undefined,
+      narrator: undefined,
+      series: undefined,
+      seriesNumber: undefined,
+      genre: undefined,
+      description: undefined,
+      outputFilename: undefined
+    };
   }
-
-  // Get extended metadata from bookforge_metadata if saved
-  const bookforgeMetadata = sessionState?.bookforge_metadata || {};
-
-  // Check if we have linked BFP metadata for this session
-  const bfpMetadata = bfpMap?.get(sessionId);
-
-  // Build metadata - prefer BFP metadata over bookforge_metadata (BFP is more reliable source)
-  const metadata: E2aSession['metadata'] = {
-    title: sessionState?.metadata?.title,
-    author: sessionState?.metadata?.creator,
-    language: sessionState?.metadata?.language,
-    epubPath: sessionState?.epubPath,
-    // Cover: prefer BFP coverPath (if file exists), then bookforge_metadata, then found cover
-    coverPath: (bfpMetadata?.coverPath && fs.existsSync(bfpMetadata.coverPath))
-      ? bfpMetadata.coverPath
-      : coverPath,
-    // Extended metadata: prefer BFP, fall back to bookforge_metadata
-    year: bfpMetadata?.year || bookforgeMetadata.year,
-    narrator: bfpMetadata?.narrator || bookforgeMetadata.narrator,
-    series: bfpMetadata?.series || bookforgeMetadata.series,
-    seriesNumber: bfpMetadata?.seriesNumber || bookforgeMetadata.seriesNumber,
-    genre: bfpMetadata?.genre || bookforgeMetadata.genre,
-    description: bfpMetadata?.description || bookforgeMetadata.description,
-    outputFilename: bfpMetadata?.outputFilename || bookforgeMetadata.outputFilename
-  };
 
   const session: E2aSession = {
     sessionId,
@@ -371,7 +363,7 @@ async function parseSession(sessionId: string, sessionDir: string, bfpMap?: Map<
     // Convert dates to strings for IPC serialization
     createdAt: stats.birthtime.toISOString() as any,
     modifiedAt: stats.mtime.toISOString() as any,
-    // Store BFP path if linked (useful for UI)
+    // Store BFP path if linked
     bfpPath: bfpMetadata?.bfpPath
   };
 
@@ -578,11 +570,11 @@ function buildChapterInfo(
 
 /**
  * Get full details for a specific session
+ * BFP metadata is extracted from the session's source_epub_path
  * @param sessionId - The session ID (UUID part after ebook-)
  * @param customTmpPath - Optional custom path to the e2a tmp folder
- * @param libraryPath - Optional library path for BFP metadata lookup
  */
-export async function getSession(sessionId: string, customTmpPath?: string, libraryPath?: string): Promise<E2aSession | null> {
+export async function getSession(sessionId: string, customTmpPath?: string): Promise<E2aSession | null> {
   const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
   const sessionDir = path.join(tmpPath, `ebook-${sessionId}`);
 
@@ -590,10 +582,7 @@ export async function getSession(sessionId: string, customTmpPath?: string, libr
     return null;
   }
 
-  // Build BFP map if library path provided
-  const bfpMap = libraryPath ? await buildSessionToBfpMap(libraryPath) : undefined;
-
-  return parseSession(sessionId, sessionDir, bfpMap);
+  return parseSession(sessionId, sessionDir);
 }
 
 /**
@@ -946,11 +935,25 @@ export async function startReassembly(
 
     let stderr = '';
     let outputPath = '';
-    let totalChapters = 0;
+    // Use totalChapters from config if provided (allows UI to show progress immediately)
+    let totalChapters = config.totalChapters || 0;
     let chaptersCompleted = 0;
+    let currentChapter = 0;  // The chapter currently being processed (1-indexed)
+    let currentChapterProgress = 0;  // 0-100 progress within current chapter
     let currentPhase: 'combining' | 'concatenating' | 'encoding' | 'metadata' = 'combining';
     let lastProgressUpdate = Date.now();
     let encodingStartTime = 0;
+
+    // Send initial progress with totalChapters if known
+    if (totalChapters > 0) {
+      sendProgress(mainWindow, jobId, {
+        phase: 'combining',
+        percentage: 1,
+        currentChapter: 0,
+        totalChapters,
+        message: `Preparing to combine ${totalChapters} chapters...`
+      });
+    }
 
     // Heartbeat timer to keep UI responsive during long encoding
     // Sends periodic updates even if FFmpeg isn't producing parseable progress
@@ -981,17 +984,32 @@ export async function startReassembly(
       console.log('[REASSEMBLY] stdout:', line);
 
       // Parse progress from e2a output
-      // Parse "Assemble - XX%" progress lines (chapter sentence combining)
+      // Parse "Assemble - XX%" progress lines (per-chapter sentence combining progress)
       const assembleMatch = line.match(/Assemble\s*-\s*([\d.]+)%/);
       if (assembleMatch) {
-        const pct = parseFloat(assembleMatch[1]);
-        // Assemble phase is 0-40% of total progress (combining sentences into chapters)
-        const totalPct = Math.round(pct * 0.4);
+        currentChapterProgress = parseFloat(assembleMatch[1]);
         currentPhase = 'combining';
+
+        // Calculate overall progress: combining phase is 0-50% of total
+        // Formula: ((chaptersCompleted) + currentChapterProgress/100) / totalChapters * 50
+        let overallPct: number;
+        if (totalChapters > 0 && currentChapter > 0) {
+          // chaptersCompleted = currentChapter - 1 (since currentChapter is being processed)
+          const completedChapters = currentChapter - 1;
+          overallPct = Math.round(((completedChapters + currentChapterProgress / 100) / totalChapters) * 50);
+        } else {
+          // Fallback if we don't know totals yet - just show current chapter progress scaled
+          overallPct = Math.round(currentChapterProgress * 0.4);
+        }
+
         sendProgress(mainWindow, jobId, {
           phase: 'combining',
-          percentage: totalPct,
-          message: `Combining sentences (${pct.toFixed(0)}%)`
+          percentage: overallPct,
+          currentChapter: currentChapter || undefined,
+          totalChapters: totalChapters || undefined,
+          message: currentChapter > 0 && totalChapters > 0
+            ? `Chapter ${currentChapter}/${totalChapters} (${currentChapterProgress.toFixed(0)}%)`
+            : `Combining sentences (${currentChapterProgress.toFixed(0)}%)`
         });
       }
 
@@ -1037,32 +1055,34 @@ export async function startReassembly(
         // Phase 1: "[ASSEMBLE] Chapter N: sentences X-Y" or "Combining chapter N:" - combining sentences into chapter FLACs
         const match = line.match(/(?:\[ASSEMBLE\] Chapter|Combining chapter)\s*(\d+)/);
         if (match) {
-          const current = parseInt(match[1], 10);
-          const total = totalChapters || 9;
+          currentChapter = parseInt(match[1], 10);
+          currentChapterProgress = 0;  // Reset progress for new chapter
+          const total = totalChapters || currentChapter;  // Use current as fallback (we know at least this many exist)
           currentPhase = 'combining';
-          // Progress: 0-50% for chapter combining
-          const pct = Math.round((current / total) * 50);
+          // Progress: completed chapters / total * 50%
+          const completedChapters = currentChapter - 1;
+          const pct = total > 0 ? Math.round((completedChapters / total) * 50) : 0;
           sendProgress(mainWindow, jobId, {
             phase: 'combining',
             percentage: pct,
-            currentChapter: current,
+            currentChapter,
             totalChapters: total,
-            message: `Combining chapter ${current}/${total}...`
+            message: `Combining chapter ${currentChapter}/${total}...`
           });
         }
       } else if (line.includes('Combined block audio file saved') || line.includes('Completed →')) {
         // Chapter FLAC saved - update progress based on chapters completed
         chaptersCompleted++;
-        if (totalChapters > 0) {
-          const pct = Math.round((chaptersCompleted / totalChapters) * 40);
-          sendProgress(mainWindow, jobId, {
-            phase: 'combining',
-            percentage: pct,
-            currentChapter: chaptersCompleted,
-            totalChapters,
-            message: `Chapter ${chaptersCompleted}/${totalChapters} saved`
-          });
-        }
+        currentChapterProgress = 100;  // Mark current chapter as done
+        const total = totalChapters || chaptersCompleted;
+        const pct = total > 0 ? Math.round((chaptersCompleted / total) * 50) : 0;
+        sendProgress(mainWindow, jobId, {
+          phase: 'combining',
+          percentage: pct,
+          currentChapter: chaptersCompleted,
+          totalChapters: total,
+          message: `Chapter ${chaptersCompleted}/${total} complete`
+        });
       } else if (line.includes('Combining chapters into final') || line.includes('Concatenating')) {
         // Phase 2: Concatenating all chapter FLACs into one big FLAC
         currentPhase = 'concatenating';

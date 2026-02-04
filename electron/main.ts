@@ -3385,6 +3385,31 @@ function setupIpcHandlers(): void {
         await fs.writeFile(examplesPath, JSON.stringify(deletedBlockExamples, null, 2));
       }
 
+      // Create project.json in audiobook folder with metadata from BFP
+      // This is the source of truth for reassembly metadata
+      const projectJsonPath = path.join(audiobookFolder, 'project.json');
+      const projectJson = {
+        id: bfpProject.id || projectName,
+        version: 1,
+        metadata: {
+          title: bfpProject.metadata?.title,
+          author: bfpProject.metadata?.author,
+          year: bfpProject.metadata?.year,
+          coverPath: bfpProject.metadata?.coverPath,
+          narrator: bfpProject.metadata?.narrator,
+          series: bfpProject.metadata?.series,
+          seriesNumber: bfpProject.metadata?.seriesNumber,
+          genre: bfpProject.metadata?.genre,
+          description: bfpProject.metadata?.description,
+          outputFilename: bfpProject.metadata?.outputFilename
+        },
+        state: {
+          step: 'exported'
+        },
+        createdAt: new Date().toISOString()
+      };
+      await fs.writeFile(projectJsonPath, JSON.stringify(projectJson, null, 2));
+
       // Update BFP project with audiobook state
       bfpProject.audiobook = {
         status: 'pending',
@@ -4188,9 +4213,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('reassembly:scan-sessions', async (_event, customTmpPath?: string) => {
     try {
       const { scanE2aTmpFolder } = await import('./reassembly-bridge.js');
-      // Pass library path for BFP metadata lookup
-      const libraryPath = getLibraryRoot();
-      const result = await scanE2aTmpFolder(customTmpPath, libraryPath);
+      const result = await scanE2aTmpFolder(customTmpPath);
       return { success: true, data: result };
     } catch (err) {
       console.error('[MAIN] reassembly:scan-sessions error:', err);
@@ -4201,9 +4224,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('reassembly:get-session', async (_event, sessionId: string, customTmpPath?: string) => {
     try {
       const { getSession } = await import('./reassembly-bridge.js');
-      // Pass library path for BFP metadata lookup
-      const libraryPath = getLibraryRoot();
-      const session = await getSession(sessionId, customTmpPath, libraryPath);
+      const session = await getSession(sessionId, customTmpPath);
       if (!session) {
         return { success: false, error: 'Session not found' };
       }

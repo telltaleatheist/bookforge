@@ -1806,6 +1806,7 @@ export class ElectronService {
     sessionDir: string;
     processDir: string;
     outputDir: string;
+    totalChapters?: number;
     metadata: {
       title: string;
       author: string;
