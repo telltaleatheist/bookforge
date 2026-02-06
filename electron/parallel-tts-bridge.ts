@@ -436,8 +436,6 @@ export interface WorkerState {
   // Chapter mode
   chapterStart?: number;  // 1-indexed (for chapter mode)
   chapterEnd?: number;    // 1-indexed (for chapter mode)
-  // Resume mode - track actual TTS conversions (not skipped sentences)
-  actualConversions?: number;  // Count of actual TTS conversions done
   // Resume mode - specific indices this worker should process
   assignedIndices?: number[];  // For scattered missing sentences
   // Total sentences assigned to this worker (for accurate progress calculation)
@@ -689,9 +687,8 @@ async function savePersistentState(session: ConversionSession): Promise<void> {
   try {
     const now = Date.now();
     const currentRunElapsed = Math.round((now - session.startTime) / 1000);
-    const sessionDone = session.isResumeJob
-      ? session.workers.reduce((sum, w) => sum + (w.actualConversions || 0), 0)
-      : session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
+    // completedSentences tracks actual TTS conversions (each "Converting sentence" line = 1 conversion)
+    const sessionDone = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
 
     // Calculate current run's rate
     const durationMinutes = currentRunElapsed / 60;
@@ -1274,9 +1271,6 @@ function startWorker(
   worker.startedAt = Date.now();
   worker.hasShownProgress = false;
 
-  // Initialize actual conversions counter
-  worker.actualConversions = 0;
-
   // Emit progress immediately so UI shows worker is running (important after retry)
   emitProgress(session);
 
@@ -1289,24 +1283,15 @@ function startWorker(
       if (!line.trim()) continue;
       console.log(`[WORKER ${workerId}]`, line.trim());
 
-      // For resume jobs, track actual TTS conversions via "Recovering missing sentence" lines
-      // e2a outputs: "**Recovering missing file sentence 4613**"
-      if (session.isResumeJob && line.includes('Recovering missing file sentence')) {
-        worker.actualConversions = (worker.actualConversions || 0) + 1;
-        emitProgress(session);
-      }
-
-      // Parse progress: "X.XX%: N/M" or "X.XX%: : N/M" (worker mode)
-      // Pattern requires N/M to be followed by whitespace or end of string to avoid matching
-      // vLLM progress bars like "100%|██| 1/1 [00:00<00:00...]"
-      const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%:?\s*:?\s*(\d+)\/(\d+)(?:\s|$)/i);
+      // Parse progress: "Converting sentence X/Y (Z%)" format
+      // Example: "Converting sentence 996/3954 (0.1%)"
+      // Each line = 1 actual conversion (skipped sentences don't print progress)
+      const progressMatch = line.match(/Converting sentence (\d+)\/(\d+)\s*\(([\d.]+)%\)/i);
       if (progressMatch) {
-        const current = parseInt(progressMatch[2]);
-        worker.currentSentence = worker.sentenceStart + current;
-        // Always update completedSentences to show progress through the worker's range
-        worker.completedSentences = current;
-        // Note: For resume jobs, actualConversions is tracked via "Recovering missing sentence"
-        // output lines only - NOT via progress delta (which includes skipped sentences)
+        const currentSentence = parseInt(progressMatch[1]);
+        worker.currentSentence = currentSentence;
+        // Count each progress line as 1 completed sentence (works for both regular and resume jobs)
+        worker.completedSentences = (worker.completedSentences || 0) + 1;
         // Update watchdog tracking
         worker.lastProgressAt = Date.now();
         if (!worker.hasShownProgress) {
@@ -1326,25 +1311,12 @@ function startWorker(
       if (!line.trim()) continue;
       console.log(`[WORKER ${workerId} STDERR]`, line.trim());
 
-      // For resume jobs, track actual TTS conversions via "Recovering missing sentence" lines
-      // e2a outputs: "**Recovering missing file sentence 4613**"
-      if (session.isResumeJob && line.includes('Recovering missing file sentence')) {
-        worker.actualConversions = (worker.actualConversions || 0) + 1;
-        emitProgress(session);
-      }
-
-      // Parse progress from stderr too - e2a often outputs progress to stderr
-      // Pattern requires N/M to be followed by whitespace or end of string to avoid matching
-      // vLLM progress bars like "100%|██| 1/1 [00:00<00:00...]"
-      const progressMatch = line.match(/(?:Converting\s+)?([\d.]+)%:?\s*:?\s*(\d+)\/(\d+)(?:\s|$)/i);
+      // Parse progress from stderr too (same format)
+      const progressMatch = line.match(/Converting sentence (\d+)\/(\d+)\s*\(([\d.]+)%\)/i);
       if (progressMatch) {
-        const current = parseInt(progressMatch[2]);
-        worker.currentSentence = worker.sentenceStart + current;
-        // Always update completedSentences to show progress through the worker's range
-        worker.completedSentences = current;
-        // Note: For resume jobs, actualConversions is tracked via "Recovering missing sentence"
-        // output lines only - NOT via progress delta (which includes skipped sentences)
-        // Update watchdog tracking
+        const currentSentence = parseInt(progressMatch[1]);
+        worker.currentSentence = currentSentence;
+        worker.completedSentences = (worker.completedSentences || 0) + 1;
         worker.lastProgressAt = Date.now();
         if (!worker.hasShownProgress) {
           worker.hasShownProgress = true;
@@ -2212,8 +2184,7 @@ function serializeWorkers(workers: WorkerState[]): Omit<WorkerState, 'process'>[
     retryCount: w.retryCount,
     chapterStart: w.chapterStart,
     chapterEnd: w.chapterEnd,
-    totalAssigned: w.totalAssigned,
-    actualConversions: w.actualConversions
+    totalAssigned: w.totalAssigned
   }));
 }
 
@@ -2232,29 +2203,17 @@ function emitProgress(session: ConversionSession): void {
   const activeWorkers = session.workers.filter(w => w.status === 'running').length;
   const now = Date.now();
 
-  let totalCompleted: number;
-  let sentencesDoneInSession: number; // Sentences processed in THIS session only
-  let percentage: number;
-  let remainingSentences: number;
+  // Count completedSentences from all workers (each progress line = 1 conversion)
+  // This works for both regular and resume jobs since skipped sentences don't emit progress
+  const sentencesDoneInSession = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
 
-  if (session.isResumeJob && session.baselineCompleted !== undefined) {
-    // For resume jobs, use actualConversions count (from "Recovering missing file" lines)
-    // This gives us the actual number of TTS conversions done, not skipped sentences
-    const actualNewConversions = session.workers.reduce(
-      (sum, w) => sum + (w.actualConversions || 0), 0
-    );
+  // For resume jobs, add baseline (already completed before this session)
+  const totalCompleted = session.isResumeJob && session.baselineCompleted !== undefined
+    ? session.baselineCompleted + sentencesDoneInSession
+    : sentencesDoneInSession;
 
-    totalCompleted = session.baselineCompleted + actualNewConversions;
-    sentencesDoneInSession = actualNewConversions; // Only count new work in this session
-    percentage = Math.min(100, (totalCompleted / session.prepInfo.totalSentences) * 100);
-    remainingSentences = session.prepInfo.totalSentences - totalCompleted;
-  } else {
-    // Normal (non-resume) job - use direct worker counts
-    totalCompleted = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
-    sentencesDoneInSession = totalCompleted; // For fresh jobs, all work is in this session
-    percentage = (totalCompleted / session.prepInfo.totalSentences) * 100;
-    remainingSentences = session.prepInfo.totalSentences - totalCompleted;
-  }
+  const percentage = Math.min(100, (totalCompleted / session.prepInfo.totalSentences) * 100);
+  const remainingSentences = session.prepInfo.totalSentences - totalCompleted;
 
   // Track when first sentence completes (excludes model loading time from ETA)
   if (sentencesDoneInSession > 0 && !session.firstSentenceCompletedTime) {
@@ -2399,10 +2358,8 @@ function emitComplete(
     });
   }
 
-  // Calculate total done in this session
-  const sessionDone = session.isResumeJob
-    ? session.workers.reduce((sum, w) => sum + (w.actualConversions || 0), 0)
-    : session.prepInfo.totalSentences;
+  // Calculate total done in this session (completedSentences tracks actual TTS conversions)
+  const sessionDone = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
 
   // Calculate sentences per minute (based on actual processing time)
   const durationMinutes = duration / 60;
@@ -2738,13 +2695,11 @@ function emitCancelledAnalytics(session: ConversionSession): void {
   const duration = Math.round((Date.now() - session.startTime) / 1000);
 
   // Calculate sentences completed before cancellation
+  // completedSentences tracks actual TTS conversions for both regular and resume jobs
+  const sessionDone = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
   const completedSentences = session.isResumeJob
-    ? (session.baselineCompleted || 0) + session.workers.reduce((sum, w) => sum + (w.actualConversions || 0), 0)
-    : session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
-
-  const sessionDone = session.isResumeJob
-    ? session.workers.reduce((sum, w) => sum + (w.actualConversions || 0), 0)
-    : completedSentences;
+    ? (session.baselineCompleted || 0) + sessionDone
+    : sessionDone;
 
   // Calculate sentences per minute
   const durationMinutes = duration / 60;
@@ -2846,9 +2801,8 @@ export function getConversionProgress(jobId: string): AggregatedProgress | null 
   }
 
   // For this on-demand query, estimate session work from workers
-  const sessionCompleted = session.isResumeJob
-    ? session.workers.reduce((sum, w) => sum + (w.actualConversions || 0), 0)
-    : totalCompleted;
+  // completedSentences tracks actual TTS conversions for both regular and resume jobs
+  const sessionCompleted = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
 
   return {
     phase: 'converting',
