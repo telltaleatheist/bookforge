@@ -700,9 +700,32 @@ class ZipWriter {
     eocd.writeUInt32LE(offset, 16); // Central dir offset
     eocd.writeUInt16LE(0, 20); // Comment length
 
-    // Write everything
+    // Write to a temp file in the OS temp directory first, then rename into place.
+    // This avoids EPERM errors when the target file is briefly locked by external
+    // processes (e.g. Syncthing, antivirus, search indexer). Using the OS temp dir
+    // ensures the temp file won't be picked up by folder-sync tools.
     const output = Buffer.concat([...fileData, ...centralDirectory, eocd]);
-    await fs.writeFile(outputPath, output);
+    const tempPath = path.join(os.tmpdir(), `bookforge-epub-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+    await fs.writeFile(tempPath, output);
+
+    // Copy temp file into place with retry. On Windows, the target file may be
+    // briefly locked by Syncthing, antivirus, or search indexer. Using copyFile
+    // (not rename) because temp and output may be on different drives.
+    const maxRetries = 5;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        await fs.copyFile(tempPath, outputPath);
+        await fs.unlink(tempPath);
+        return;
+      } catch (err: any) {
+        if ((err.code === 'EPERM' || err.code === 'EBUSY') && attempt < maxRetries - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+          continue;
+        }
+        await fs.unlink(tempPath);
+        throw err;
+      }
+    }
   }
 
   private crc32(data: Buffer): number {
