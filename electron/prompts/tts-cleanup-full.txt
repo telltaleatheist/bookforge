@@ -48,12 +48,15 @@ TRANSFORMATIONS TO APPLY (to text INSIDE tags)
 ═══════════════════════════════════════════════════════════════════════════════
 
 NUMBERS → SPOKEN WORDS
+Convert numbers that are PART OF THE CONTENT to how they would be spoken:
 - Years: "1923" → "nineteen twenty-three"
 - Decades: "the 1930s" → "the nineteen thirties"
 - Ordinals: "1st" → "first", "21st" → "twenty-first"
 - Cardinals: "3 men" → "three men"
 - Currency: "$5.50" → "five dollars and fifty cents"
 - Roman numerals: "Henry VIII" → "Henry the Eighth"
+
+IMPORTANT: Do NOT convert footnote/reference numbers to words - DELETE them instead (see REMOVE ARTIFACTS below).
 
 EXPAND ABBREVIATIONS
 - Titles: Mr., Mrs., Dr., Prof. → Mister, Missus, Doctor, Professor
@@ -68,8 +71,13 @@ FIX OCR ERRORS
 FIX STYLISTIC SPACING (within words only)
 - Collapse letters separated by decorative spaces: "T H I S" → "THIS"
 
-REMOVE ARTIFACTS
-- Footnote/reference numbers like [1] or superscript numbers
+REMOVE FOOTNOTE/REFERENCE NUMBERS (DELETE, don't convert to words)
+- Bracketed references: [1], [23], (1), (23) → DELETE entirely
+- Superscript-style numbers at end of sentences/words: "said.13 The" → "said. The"
+- Numbers at START of sentences that follow a normal sentence ending: "...was common. 13 In Los Angeles" → "...was common. In Los Angeles"
+- Small standalone numbers (1-999) between sentences are almost always footnotes - DELETE them
+
+REMOVE PAGE ARTIFACTS
 - Page number patterns
 - Stray single letters
 

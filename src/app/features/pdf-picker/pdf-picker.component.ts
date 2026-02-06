@@ -315,6 +315,15 @@ interface AlertModal {
               </button>
               <button
                 class="menu-item"
+                [class.active]="showTextLayer()"
+                title="Show extracted text layer (for OCR verification)"
+                (click)="toggleShowTextLayer()"
+              >
+                <span class="menu-icon">Aa</span>
+                <span class="menu-text">Show Text Layer</span>
+              </button>
+              <button
+                class="menu-item"
                 [class.disabled]="lightweightMode()"
                 [disabled]="lightweightMode()"
                 [title]="lightweightMode() ? 'Not available in lightweight mode' : 'Re-render all pages'"
@@ -380,6 +389,7 @@ interface AlertModal {
               [sampleCurrentRect]="sampleDrawingRect()"
               [regexSearchMode]="regexPanelExpanded()"
               [removeBackgrounds]="removeBackgrounds()"
+              [showTextLayer]="showTextLayer()"
               [blankedPages]="blankedPages()"
               [pageImages]="pageImages()"
               [chapters]="chapters()"
@@ -2021,6 +2031,8 @@ export class PdfPickerComponent {
   readonly layout = signal<'vertical' | 'grid'>('grid');
   // Remove backgrounds state is managed by editor state service for undo/redo
   readonly removeBackgrounds = computed(() => this.editorState.removeBackgrounds());
+  // Show text layer overlay (for OCR verification on scanned PDFs)
+  readonly showTextLayer = computed(() => this.editorState.showTextLayer());
   // Pages that have been explicitly rendered as blank (due to image deletion)
   readonly blankedPages = signal<Set<number>>(new Set());
   // Split size = window width minus sidebar width (keeps sidebar fixed)
@@ -2842,6 +2854,14 @@ export class PdfPickerComponent {
       // Clear the flag
       this.editorState.removeBackgrounds.set(false);
     }
+  }
+
+  /**
+   * Toggle showing extracted text layer overlay for OCR verification.
+   * Useful for scanned PDFs with invisible OCR text.
+   */
+  toggleShowTextLayer(): void {
+    this.editorState.showTextLayer.update(v => !v);
   }
 
   /**

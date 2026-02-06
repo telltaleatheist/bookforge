@@ -121,6 +121,25 @@ let truncatedFallbackCount = 0;  // Chunks where AI returned <70% of input (non-
 let skippedChunks: SkippedChunk[] = [];  // Detailed tracking of all skipped chunks
 const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break point
 const TIMEOUT_MS = 180000; // 3 minutes per chunk
+const MAX_FALLBACK_COUNT = 10;  // Abort job if this many chunks fall back to original text
+
+/**
+ * Get total number of chunks that fell back to original text (all failure types)
+ */
+function getTotalFallbackCount(): number {
+  return copyrightFallbackCount + skipFallbackCount + truncatedFallbackCount;
+}
+
+/**
+ * Check if we've exceeded the max fallback threshold
+ * Throws an error to abort the job if too many chunks have failed
+ */
+function checkFallbackThreshold(): void {
+  const totalFallbacks = getTotalFallbackCount();
+  if (totalFallbacks >= MAX_FALLBACK_COUNT) {
+    throw new Error(`TOO_MANY_FALLBACKS: ${totalFallbacks} chunks fell back to original text (threshold: ${MAX_FALLBACK_COUNT}). Aborting cleanup to prevent poor quality output.`);
+  }
+}
 
 // Markers that indicate the AI couldn't process the text
 const SKIP_MARKERS = ['[SKIP]', '[NO READABLE TEXT]', '[NOTHING TO CLEAN]'];
@@ -859,8 +878,8 @@ async function cleanChunkWithClaude(
         lowerCleaned.includes('lengthy passage') ||
         lowerCleaned.includes('substantial excerpt');
 
-      if (isCopyrightRefusal && text.length >= 4000) {
-        // Split chunk in half and process each part separately (8k → 4k → 2k, then stop)
+      if (isCopyrightRefusal && text.length >= 2000) {
+        // Split chunk in half and process each part separately (8k → 4k → 2k → 1k, then stop)
         console.warn(`[Claude] Copyright refusal detected for ${text.length} char chunk - splitting in half and retrying`);
         const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
         const firstHalf = text.substring(0, midpoint);
@@ -996,8 +1015,8 @@ async function cleanChunkWithOpenAI(
         lowerCleaned.includes('lengthy passage') ||
         lowerCleaned.includes('substantial excerpt');
 
-      if (isCopyrightRefusal && text.length >= 4000) {
-        // Split chunk in half and process each part separately (8k → 4k → 2k, then stop)
+      if (isCopyrightRefusal && text.length >= 2000) {
+        // Split chunk in half and process each part separately (8k → 4k → 2k → 1k, then stop)
         console.warn(`[OpenAI] Copyright refusal detected for ${text.length} char chunk - splitting in half and retrying`);
         const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
         const firstHalf = text.substring(0, midpoint);
@@ -1590,6 +1609,15 @@ export async function cleanupEpub(
       // File doesn't exist, that's fine
     }
 
+    // Delete any existing skipped-chunks.json from previous runs
+    const oldSkippedChunksPath = path.join(epubDir, 'skipped-chunks.json');
+    try {
+      await fsPromises.unlink(oldSkippedChunksPath);
+      console.log('[AI-CLEANUP] Removed old skipped-chunks.json from previous run');
+    } catch {
+      // File doesn't exist, that's fine
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 1: Pre-scan all chapters to calculate total chunks in job
     // Mode 'structure': Uses cheerio to extract block elements (preserves HTML)
@@ -1792,6 +1820,9 @@ export async function cleanupEpub(
         totalChunksCompleted++;
         completedChunksPerChapter.set(chapterId, (completedChunksPerChapter.get(chapterId) || 0) + 1);
 
+        // Check if too many chunks have fallen back to original text
+        checkFallbackThreshold();
+
         const percentage = Math.round((totalChunksCompleted / totalChunksInJob) * 90);
         sendProgress({
           jobId,
@@ -1961,6 +1992,9 @@ export async function cleanupEpub(
 
             // Increment counter
             chunksCompletedInJob++;
+
+            // Check if too many chunks have fallen back to original text
+            checkFallbackThreshold();
 
             // Save incrementally every 5 chunks (or on last chunk of chapter)
             const isLastChunkOfChapter = c === uniqueChunks.length - 1;

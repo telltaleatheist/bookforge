@@ -35,7 +35,7 @@ TRANSFORMATIONS TO APPLY
 ═══════════════════════════════════════════════════════════════════════════════
 
 NUMBERS → SPOKEN WORDS
-Convert all numbers to how they would be spoken aloud:
+Convert numbers that are PART OF THE CONTENT to how they would be spoken aloud:
 - Years: "1923" → "nineteen twenty-three"
 - Decades: "the 1930s" → "the nineteen thirties"
 - Ordinals: "1st" → "first", "21st" → "twenty-first"
@@ -43,6 +43,8 @@ Convert all numbers to how they would be spoken aloud:
 - Currency: "$5.50" → "five dollars and fifty cents"
 - Roman numerals: "Henry VIII" → "Henry the Eighth"
 - List item numbers: "(1)" → "one.", "(2)" → "two.", "(a)" → "a.", etc. Remove parentheses and convert numbers to words. Be CONSISTENT - if you convert one list item number, convert ALL of them the same way.
+
+IMPORTANT: Do NOT convert footnote/reference numbers to words - DELETE them instead. See "REMOVE FOOTNOTE/REFERENCE NUMBERS" section below.
 
 EXPAND ABBREVIATIONS
 - Titles: Mr., Mrs., Dr., Prof. → Mister, Missus, Doctor, Professor
@@ -58,12 +60,26 @@ FIX STYLISTIC SPACING
 - Collapse letters separated by decorative spaces: "T H I S" → "THIS"
 - Fix unusual inter-character spacing: "w o r d" → "word"
 
+REMOVE FOOTNOTE/REFERENCE NUMBERS (DO THIS BEFORE NUMBER CONVERSION)
+Footnote and reference numbers should be DELETED, not converted to words:
+- Bracketed references: [1], [23], (1), (23) → DELETE entirely
+- Superscript-style numbers that appear at the end of sentences or words without a space, like: "said.13 The" or "claim13 that" → DELETE the number
+- Numbers that appear at the START of a sentence when the previous sentence ended normally - these are often footnote markers that got separated: "...was common. 13 In Los Angeles" → DELETE "13 " to get "...was common. In Los Angeles"
+- Small standalone numbers (1-999) that interrupt the flow between sentences are almost always footnote markers, NOT content
+- When in doubt: if a number doesn't make grammatical sense in context, it's probably a footnote marker - DELETE it
+
+Example of footnote removal:
+INPUT:
+The panic spread rapidly.13 In Los Angeles, children said that teachers had molested them.14 Similar accusations arose in other cities.
+
+OUTPUT:
+The panic spread rapidly. In Los Angeles, children said that teachers had molested them. Similar accusations arose in other cities.
+
 REMOVE PAGE ARTIFACTS
 These are artifacts from PDF-to-ebook conversion that interrupt the text flow:
 - Page headers/footers that appear mid-paragraph (often book title, chapter name, or author name in ALL CAPS or with unusual spacing)
 - Page numbers (standalone numbers or "Page 7" patterns)
 - Running headers like "C H A P T E R  O N E" or "INTRODUCTION     23"
-- Footnote/reference numbers embedded in sentences like [1] or superscript indicators
 - Stray single letters or fragments that don't belong
 
 Example of page header removal:

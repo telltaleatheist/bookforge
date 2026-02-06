@@ -84,6 +84,9 @@ export class PdfEditorStateService {
   // Background removal state
   readonly removeBackgrounds = signal(false);
 
+  // Show text layer overlay (for OCR verification)
+  readonly showTextLayer = signal(false);
+
   // Block edits (text corrections, position offsets, size overrides)
   readonly blockEdits = signal<Map<string, BlockEdit>>(new Map());
 
@@ -180,6 +183,7 @@ export class PdfEditorStateService {
     this.pageOrder.set(data.pageOrder || []);
     this.deletedPages.set(new Set());  // Always reset deleted pages for new document
     this.removeBackgrounds.set(false);  // Always reset background removal for new document
+    this.showTextLayer.set(false);  // Always reset text layer visibility for new document
 
     // Load block edits - prefer blockEdits, fall back to converting textCorrections
     if (data.blockEdits) {
@@ -218,6 +222,7 @@ export class PdfEditorStateService {
     this.selectedBlockIds.set([]);
     this.pageOrder.set([]);
     this.removeBackgrounds.set(false);
+    this.showTextLayer.set(false);
     this.blockEdits.set(new Map());
     this.clearHistory();
     this.hasUnsavedChanges.set(false);

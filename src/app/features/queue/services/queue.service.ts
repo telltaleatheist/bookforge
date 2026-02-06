@@ -571,6 +571,27 @@ export class QueueService {
       this.updateBfpStoppedState(completedJob.bfpPath, result.stopInfo);
     }
 
+    // If OCR job failed with TOO_MANY_FALLBACKS, skip any pending TTS jobs for the same book
+    if (!result.success && !result.wasStopped && completedJob?.type === 'ocr-cleanup' &&
+        result.error?.includes('TOO_MANY_FALLBACKS') && completedJob.bfpPath) {
+      console.log(`[QUEUE] OCR job failed with too many fallbacks - skipping TTS for ${completedJob.bfpPath}`);
+      this._jobs.update(jobs =>
+        jobs.map(job => {
+          if (job.bfpPath === completedJob.bfpPath &&
+              job.type === 'tts-conversion' &&
+              job.status === 'pending') {
+            console.log(`[QUEUE] Skipping TTS job ${job.id} due to OCR failure`);
+            return {
+              ...job,
+              status: 'error' as JobStatus,
+              error: 'Skipped: OCR cleanup failed with too many fallback chunks. Please review and re-run OCR cleanup before TTS conversion.'
+            };
+          }
+          return job;
+        })
+      );
+    }
+
     // Save analytics directly to BFP (no longer using signal/effect pattern to avoid duplicates)
     if (result.analytics && completedJob?.bfpPath) {
       this.saveAnalyticsToBfp(

@@ -92,6 +92,7 @@ export interface CropRect {
                             xmlns="http://www.w3.org/1999/xhtml"
                             class="text-overlay-content"
                             [class.deleted]="isDeleted(block.id)"
+                            [class.text-layer-mode]="showTextLayer()"
                             [style.font-size.px]="getOverlayFontSize(block)"
                             [style.width.px]="getBlockWidth(block)"
                           >{{ getDisplayText(block) }}</div>
@@ -515,6 +516,8 @@ export interface CropRect {
                             <div
                               xmlns="http://www.w3.org/1999/xhtml"
                               class="text-overlay-content"
+                              [class.deleted]="isDeleted(block.id)"
+                              [class.text-layer-mode]="showTextLayer()"
                               [style.font-size.px]="getOverlayFontSize(block)"
                               [style.width.px]="getBlockWidth(block)"
                             >{{ getDisplayText(block) }}</div>
@@ -1389,6 +1392,13 @@ export interface CropRect {
       color: #666666;
     }
 
+    /* Text layer mode - show all extracted text with semi-transparent background for readability */
+    .text-overlay-content.text-layer-mode {
+      background: rgba(255, 255, 255, 0.85);
+      border: 1px solid rgba(0, 0, 0, 0.1);
+      padding: 2px;
+    }
+
     /* Tooltip */
     .block-tooltip {
       position: fixed;
@@ -1543,6 +1553,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Remove backgrounds mode - show all text as overlays on white background
   removeBackgrounds = input<boolean>(false);
+
+  // Show text layer mode - display all extracted text overlays for OCR verification
+  showTextLayer = input<boolean>(false);
 
   // Explicitly blanked pages - pages that have been rendered as blank (due to image deletion)
   // This is controlled by the parent and used to show text overlays
@@ -2329,6 +2342,16 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       if (hasOnlyPlaceholder) {
         return false;
       }
+    }
+
+    // Show Text Layer mode: show all text blocks as overlays for OCR verification
+    // This is useful for scanned PDFs with invisible OCR text layer
+    if (this.showTextLayer()) {
+      // Skip image blocks without meaningful text content
+      if (block.is_image && (!block.text || block.text.trim().length < 5)) {
+        return false;
+      }
+      return true;
     }
 
     const deleted = this.isDeleted(block.id);

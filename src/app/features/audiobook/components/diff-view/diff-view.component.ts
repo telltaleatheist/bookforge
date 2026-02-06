@@ -1,5 +1,6 @@
-import { Component, input, signal, computed, OnInit, OnDestroy, inject, ElementRef, ViewChild, output, effect } from '@angular/core';
+import { Component, input, signal, computed, OnInit, OnDestroy, AfterViewInit, inject, ElementRef, ViewChild, output, effect, ChangeDetectionStrategy, NgZone, ChangeDetectorRef, Injector } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { DiffService, DiffLoadingProgress } from '../../services/diff.service';
 import { DiffChapter, DiffChapterMeta, DiffWord } from '../../../../core/models/diff.types';
@@ -30,6 +31,7 @@ interface EditState {
   selector: 'app-diff-view',
   standalone: true,
   imports: [CommonModule, DesktopButtonComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="diff-view" [class.loading]="loading()">
       <!-- Header with chapter selector -->
@@ -147,87 +149,38 @@ interface EditState {
             </div>
           }
 
-          <!-- Change navigation within chapter -->
-          @if (currentChapterChangeCount() > 0) {
-            <div class="change-nav">
-              <span class="change-position">Change {{ currentChangeIndex() + 1 }} of {{ currentChapterChangeCount() }}</span>
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                [disabled]="currentChangeIndex() <= 0"
-                (click)="goToPrevChange()"
-              >
-                ← Prev
-              </desktop-button>
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                [disabled]="currentChangeIndex() >= currentChapterChangeCount() - 1"
-                (click)="goToNextChange()"
-              >
-                Next →
-              </desktop-button>
-            </div>
-          }
+          <div
+            class="chapter-content"
+            #chapterContent
+            (dblclick)="onContentDblClick($event)"
+          >
+            <div class="chapter-text" [innerHTML]="safeRenderedContent()"></div>
 
-          <div class="chapter-content" #chapterContent>
-            <div class="chapter-text">
-              @for (segment of currentChapterSegments(); track segment.id) {
-                @if (isEditing(segment.id)) {
-                  <!-- Editing any segment -->
-                  <span class="text-editing">
-                    <input
-                      type="text"
-                      class="edit-input"
-                      [value]="editState()?.editedValue"
-                      (input)="onEditInput($event)"
-                      (keydown.enter)="saveEdit()"
-                      (keydown.escape)="cancelEdit()"
-                      (blur)="onEditBlur()"
-                      #editInput
-                    />
-                    <span class="edit-hint">Enter to save, Esc to cancel</span>
-                  </span>
-                } @else if (segment.type === 'unchanged') {
-                  <!-- Unchanged text - editable on double-click -->
-                  <span
-                    class="text-editable"
-                    (dblclick)="startEdit(segment)"
-                  >{{ segment.text }}</span>
-                } @else {
-                  <!-- Changed text - show only new text, hover for original -->
-                  <span
-                    class="text-change"
-                    [class.focused]="segment.changeIndex === currentChangeIndex()"
-                    [class.is-deletion]="segment.text === '(deleted)'"
-                    [attr.data-change-index]="segment.changeIndex"
-                    (click)="focusChange(segment.changeIndex!)"
-                    (dblclick)="startEdit(segment)"
-                    (mouseenter)="showTooltip($event, segment)"
-                    (mouseleave)="hideTooltip()"
-                  >@if (segment.text === '(deleted)') {<span class="deletion-marker">&#9003;</span>} @else {{{ segment.text }}}</span>
-                }
-              }
-            </div>
+            <!-- Streaming progress indicator -->
+            @if (hasMoreContent()) {
+              <div class="streaming-indicator">
+                <span class="streaming-spinner">&#8635;</span>
+                <span class="streaming-text">Loading more content... {{ contentLoadProgress() }}%</span>
+              </div>
+            }
+
+            <!-- Editing overlay (positioned absolutely over the text) -->
+            @if (editState(); as state) {
+              <div class="edit-overlay" [style.top.px]="editPosition().top" [style.left.px]="editPosition().left">
+                <input
+                  type="text"
+                  class="edit-input"
+                  [value]="state.editedValue"
+                  (input)="onEditInput($event)"
+                  (keydown.enter)="saveEdit()"
+                  (keydown.escape)="cancelEdit()"
+                  (blur)="onEditBlur()"
+                  #editInput
+                />
+                <span class="edit-hint">Enter to save, Esc to cancel</span>
+              </div>
+            }
           </div>
-
-          <!-- Load More button for large chapters -->
-          @if (hasMoreContent()) {
-            <div class="load-more-section">
-              <desktop-button
-                variant="secondary"
-                size="sm"
-                [disabled]="chapterLoading()"
-                (click)="loadMore()"
-              >
-                @if (chapterLoading()) {
-                  Loading...
-                } @else {
-                  Load More ({{ contentLoadProgress() }}% loaded)
-                }
-              </desktop-button>
-            </div>
-          }
 
           <!-- Tooltip showing original text -->
           @if (tooltipVisible() && tooltipSegment()) {
@@ -388,24 +341,6 @@ interface EditState {
       gap: 0.25rem;
     }
 
-    .change-nav {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.5rem;
-      padding: 0.25rem 0.75rem;
-      background: var(--bg-subtle);
-      border-bottom: 1px solid var(--border-subtle);
-      flex-shrink: 0;
-    }
-
-    .change-position {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      min-width: 100px;
-      text-align: center;
-    }
-
     .state-message {
       flex: 1;
       display: flex;
@@ -512,19 +447,41 @@ interface EditState {
       transition: width 0.3s ease;
     }
 
-    .load-more-section {
-      display: flex;
-      justify-content: center;
-      padding: 1rem;
-      border-top: 1px solid var(--border-subtle);
-      background: var(--bg-subtle);
-      flex-shrink: 0;
-    }
-
     .chapter-content {
       flex: 1;
       overflow: auto;
       padding: 1rem 1.5rem;
+      position: relative;
+    }
+
+    .edit-overlay {
+      position: absolute;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-elevated);
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+
+    .streaming-indicator {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 1rem;
+      color: var(--text-tertiary);
+      font-size: 0.8125rem;
+    }
+
+    .streaming-spinner {
+      display: inline-block;
+      animation: spin 1s linear infinite;
+      font-size: 1rem;
+    }
+
+    .streaming-text {
+      opacity: 0.8;
     }
 
     .chapter-text {
@@ -533,56 +490,54 @@ interface EditState {
       color: var(--text-primary);
       white-space: pre-wrap;
       word-wrap: break-word;
-    }
 
-    .text-editable {
-      cursor: text;
-      border-radius: 2px;
-      transition: background 0.15s;
+      // Use ::ng-deep to style innerHTML content (not scoped by Angular)
+      ::ng-deep {
+        .text-editable {
+          cursor: text;
+          border-radius: 2px;
+          transition: background 0.15s;
 
-      &:hover {
-        background: rgba(255, 255, 255, 0.05);
-      }
-    }
+          &:hover {
+            background: rgba(255, 255, 255, 0.05);
+          }
+        }
 
-    .text-change {
-      cursor: pointer;
-      background: rgba(255, 183, 77, 0.2);
-      border-bottom: 1px dashed rgba(255, 183, 77, 0.6);
-      border-radius: 2px;
-      padding: 1px 2px;
-      transition: background 0.15s, border-color 0.15s;
+        .text-change {
+          cursor: pointer;
+          background: rgba(255, 183, 77, 0.2);
+          border-bottom: 1px dashed rgba(255, 183, 77, 0.6);
+          border-radius: 2px;
+          padding: 1px 2px;
+          transition: background 0.15s, border-color 0.15s;
 
-      &:hover {
-        background: rgba(255, 183, 77, 0.35);
-        border-bottom-color: rgba(255, 183, 77, 0.9);
-      }
+          &:hover {
+            background: rgba(255, 183, 77, 0.35);
+            border-bottom-color: rgba(255, 183, 77, 0.9);
+          }
 
-      &.focused {
-        outline: 2px solid #ff6b35;
-        outline-offset: 2px;
-      }
+          &.is-deletion {
+            background: rgba(244, 67, 54, 0.2);
+            border-bottom-color: rgba(244, 67, 54, 0.6);
 
-      &.is-deletion {
-        background: rgba(244, 67, 54, 0.2);
-        border-bottom-color: rgba(244, 67, 54, 0.6);
+            &:hover {
+              background: rgba(244, 67, 54, 0.35);
+            }
+          }
+        }
 
-        &:hover {
-          background: rgba(244, 67, 54, 0.35);
+        .deletion-marker {
+          color: #f44336;
+          font-size: 0.75em;
+          vertical-align: middle;
+        }
+
+        .text-editing-placeholder {
+          display: inline;
+          opacity: 0;
+          pointer-events: none;
         }
       }
-    }
-
-    .deletion-marker {
-      color: #f44336;
-      font-size: 0.75em;
-      vertical-align: middle;
-    }
-
-    .text-editing {
-      display: inline-flex;
-      flex-direction: column;
-      position: relative;
     }
 
     .edit-input {
@@ -604,10 +559,8 @@ interface EditState {
     }
 
     .edit-hint {
-      position: absolute;
-      top: 100%;
-      left: 0;
       margin-top: 4px;
+      padding: 0 6px 4px;
       font-size: 0.625rem;
       color: var(--text-tertiary);
       white-space: nowrap;
@@ -684,10 +637,14 @@ interface EditState {
     }
   `]
 })
-export class DiffViewComponent implements OnInit, OnDestroy {
+export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   @ViewChild('chapterContent') chapterContentRef!: ElementRef<HTMLDivElement>;
 
   private readonly diffService = inject(DiffService);
+  private readonly ngZone = inject(NgZone);
+  private readonly cdr = inject(ChangeDetectorRef);
+  private readonly injector = inject(Injector);
+  private readonly sanitizer = inject(DomSanitizer);
   private subscriptions: Subscription[] = [];
 
   // Inputs
@@ -697,7 +654,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   // State
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
-  readonly currentChangeIndex = signal(0);
   readonly loadingProgress = signal<DiffLoadingProgress | null>(null);
   readonly chapterLoading = signal(false);
   readonly backgroundLoading = signal(false);
@@ -710,6 +666,7 @@ export class DiffViewComponent implements OnInit, OnDestroy {
 
   // Edit state
   readonly editState = signal<EditState | null>(null);
+  readonly editPosition = signal<{ top: number; left: number }>({ top: 0, left: 0 });
 
   // Whitespace toggle state (default: true to compare words only)
   readonly ignoreWhitespace = signal(true);
@@ -725,25 +682,25 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   // Track previous paths to detect changes
   private previousPaths = { original: '', cleaned: '' };
 
+  // Tooltip debounce
+  private tooltipTimeout: ReturnType<typeof setTimeout> | null = null;
+  private readonly TOOLTIP_DELAY = 50; // ms before showing tooltip (short delay to avoid flicker)
+
+  // Flag to stop all processing after destroy
+  private isDestroyed = false;
+
   constructor() {
     // Effect to watch for path changes and reload comparison
     effect(() => {
       const original = this.originalPath();
       const cleaned = this.cleanedPath();
 
-      console.log('[DiffView] effect: paths=', { original: original?.slice(-30), cleaned: cleaned?.slice(-30) });
-
       // Only reload if paths changed and both are provided
       if (original && cleaned &&
           (original !== this.previousPaths.original || cleaned !== this.previousPaths.cleaned)) {
-        console.log('[DiffView] effect: paths changed, will load');
         this.previousPaths = { original, cleaned };
         // Use setTimeout to avoid issues with effect running during change detection
         setTimeout(() => this.loadComparison(), 0);
-      } else if (!original || !cleaned) {
-        console.log('[DiffView] effect: missing paths');
-      } else {
-        console.log('[DiffView] effect: paths unchanged');
       }
     });
   }
@@ -756,11 +713,54 @@ export class DiffViewComponent implements OnInit, OnDestroy {
     return this.buildSegments(chapter.diffWords, 0, chapter.id);
   });
 
-  // Computed: change count for current chapter
-  readonly currentChapterChangeCount = computed(() => {
-    const chapter = this.currentChapter();
-    return chapter?.changeCount ?? 0;
+  // Computed: pre-rendered HTML content for performance (avoids thousands of Angular bindings)
+  readonly renderedContent = computed((): string => {
+    const segments = this.currentChapterSegments();
+    const editingId = this.editState()?.segmentId;
+
+    if (segments.length === 0) return '';
+
+    // Build HTML string directly - much faster than Angular template bindings
+    let html = '';
+    for (const segment of segments) {
+      if (editingId === segment.id) {
+        // Editing state - will be replaced by overlay
+        html += `<span class="text-editing-placeholder" data-segment-id="${this.escapeHtml(segment.id)}">...</span>`;
+      } else if (segment.type === 'unchanged') {
+        html += `<span class="text-editable" data-segment-id="${this.escapeHtml(segment.id)}">${this.escapeHtml(segment.text)}</span>`;
+      } else {
+        const deletionClass = segment.text === '(deleted)' ? ' is-deletion' : '';
+        const displayText = segment.text === '(deleted)'
+          ? '<span class="deletion-marker">&#9003;</span>'
+          : this.escapeHtml(segment.text);
+        // Store original text in data attribute for hover box
+        const originalAttr = segment.originalText
+          ? ` data-original="${this.escapeAttr(segment.originalText)}" data-new-text="${this.escapeAttr(segment.text)}"`
+          : '';
+
+        html += `<span class="text-change${deletionClass}" data-segment-id="${this.escapeHtml(segment.id)}"${originalAttr}>${displayText}</span>`;
+      }
+    }
+    return html;
   });
+
+  // Computed: SafeHtml version that bypasses Angular's sanitizer (content is trusted/escaped)
+  readonly safeRenderedContent = computed((): SafeHtml => {
+    const html = this.renderedContent();
+    return this.sanitizer.bypassSecurityTrustHtml(html);
+  });
+
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  private escapeAttr(text: string): string {
+    return this.escapeHtml(text).replace(/'/g, '&#39;');
+  }
 
   // Computed: total changes across all loaded chapters
   readonly totalChanges = computed(() => {
@@ -815,6 +815,9 @@ export class DiffViewComponent implements OnInit, OnDestroy {
       this.diffService.chapterLoading$.subscribe(loading => this.chapterLoading.set(loading)),
       this.diffService.backgroundLoading$.subscribe(loading => this.backgroundLoading.set(loading)),
       this.diffService.session$.subscribe(session => {
+        // Skip processing if component is destroyed
+        if (this.isDestroyed) return;
+
         if (session) {
           this.chaptersMeta.set(session.chaptersMeta);
           this.currentChapterId.set(session.currentChapterId);
@@ -822,7 +825,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
           // Get current chapter if loaded
           const current = session.chapters.find(c => c.id === session.currentChapterId);
           this.currentChapter.set(current || null);
-          this.currentChangeIndex.set(0);
         } else {
           this.chaptersMeta.set([]);
           this.currentChapterId.set('');
@@ -841,8 +843,91 @@ export class DiffViewComponent implements OnInit, OnDestroy {
     }, 100);
   }
 
+  ngAfterViewInit(): void {
+    // Set up a MutationObserver to attach hover listeners when content changes
+    this.setupHoverListeners();
+  }
+
+  /**
+   * Attach hover listeners to text-change elements after innerHTML is rendered.
+   * Uses MutationObserver to detect when content changes.
+   */
+  private setupHoverListeners(): void {
+    // Use an effect to re-attach listeners when content changes
+    effect(() => {
+      // This will re-run whenever renderedContent changes
+      const content = this.renderedContent();
+      if (!content || this.isDestroyed) return;
+
+      // Wait for DOM to update
+      setTimeout(() => this.attachHoverListeners(), 0);
+    }, { injector: this.injector });
+  }
+
+  private attachHoverListeners(): void {
+    const container = this.chapterContentRef?.nativeElement;
+    if (!container) return;
+
+    const changeElements = container.querySelectorAll('.text-change[data-original]');
+    changeElements.forEach((el: Element) => {
+      const htmlEl = el as HTMLElement;
+
+      // Skip if already initialized
+      if (htmlEl.dataset['hoverInit']) return;
+      htmlEl.dataset['hoverInit'] = 'true';
+
+      htmlEl.addEventListener('mouseenter', (e: MouseEvent) => {
+        const target = e.currentTarget as HTMLElement;
+        const original = target.getAttribute('data-original');
+        const newText = target.getAttribute('data-new-text') || target.textContent || '';
+
+        if (!original) return;
+
+        const rect = target.getBoundingClientRect();
+
+        this.ngZone.run(() => {
+          this.tooltipSegment.set({
+            id: target.getAttribute('data-segment-id') || '',
+            type: 'change',
+            text: newText,
+            originalText: original
+          });
+          this.tooltipX.set(rect.left);
+          this.tooltipY.set(rect.bottom + 8);
+          this.tooltipVisible.set(true);
+          this.cdr.markForCheck();
+        });
+      });
+
+      htmlEl.addEventListener('mouseleave', () => {
+        this.ngZone.run(() => {
+          this.tooltipVisible.set(false);
+          this.tooltipSegment.set(null);
+          this.cdr.markForCheck();
+        });
+      });
+    });
+  }
+
   ngOnDestroy(): void {
+    // Set destroyed flag FIRST to stop all processing
+    this.isDestroyed = true;
+
+    // Stop any streaming diff computation in the service
+    this.diffService.stopStreaming();
+
+    // Clear chapter data to stop expensive computeds from running
+    this.currentChapter.set(null);
+    this.chaptersMeta.set([]);
+
+    // Unsubscribe from all observables
     this.subscriptions.forEach(s => s.unsubscribe());
+    this.subscriptions = [];
+
+    // Clear any pending timeouts
+    if (this.tooltipTimeout) {
+      clearTimeout(this.tooltipTimeout);
+    }
   }
 
   private async loadComparison(): Promise<void> {
@@ -862,7 +947,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   async onChapterChange(event: Event): Promise<void> {
     const select = event.target as HTMLSelectElement;
     const chapterId = select.value;
-    this.currentChangeIndex.set(0);
     await this.diffService.setCurrentChapter(chapterId);
   }
 
@@ -870,7 +954,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
    * Navigate to previous chapter
    */
   async goToPrevChapter(): Promise<void> {
-    this.currentChangeIndex.set(0);
     await this.diffService.previousChapter();
   }
 
@@ -878,7 +961,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
    * Navigate to next chapter
    */
   async goToNextChapter(): Promise<void> {
-    this.currentChangeIndex.set(0);
     await this.diffService.nextChapter();
   }
 
@@ -940,38 +1022,6 @@ export class DiffViewComponent implements OnInit, OnDestroy {
     return segments;
   }
 
-  goToNextChange(): void {
-    const total = this.currentChapterChangeCount();
-    const current = this.currentChangeIndex();
-    if (current < total - 1) {
-      this.focusChange(current + 1);
-    }
-  }
-
-  goToPrevChange(): void {
-    const current = this.currentChangeIndex();
-    if (current > 0) {
-      this.focusChange(current - 1);
-    }
-  }
-
-  focusChange(index: number): void {
-    this.currentChangeIndex.set(index);
-    this.scrollToChange(index);
-  }
-
-  private scrollToChange(index: number): void {
-    setTimeout(() => {
-      const container = this.chapterContentRef?.nativeElement;
-      if (!container) return;
-
-      const changeEl = container.querySelector(`[data-change-index="${index}"]`) as HTMLElement;
-      if (changeEl) {
-        changeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }, 0);
-  }
-
   /**
    * Format byte size for display
    */
@@ -994,8 +1044,28 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   }
 
   hideTooltip(): void {
+    if (this.tooltipTimeout) {
+      clearTimeout(this.tooltipTimeout);
+      this.tooltipTimeout = null;
+    }
     this.tooltipVisible.set(false);
     this.tooltipSegment.set(null);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Event Delegation Handlers (performance optimization - single handler per event type)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  onContentDblClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement;
+    const segmentId = target.getAttribute('data-segment-id');
+    if (!segmentId) return;
+
+    const segments = this.currentChapterSegments();
+    const segment = segments.find(s => s.id === segmentId);
+    if (segment) {
+      this.startEdit(segment);
+    }
   }
 
   retry(): void {
@@ -1028,6 +1098,20 @@ export class DiffViewComponent implements OnInit, OnDestroy {
   startEdit(segment: DiffSegment): void {
     this.hideTooltip();
     const chapterId = this.currentChapterId();
+
+    // Find the element position relative to the chapter content
+    const container = this.chapterContentRef?.nativeElement;
+    const segmentEl = container?.querySelector(`[data-segment-id="${segment.id}"]`) as HTMLElement;
+
+    if (segmentEl && container) {
+      const containerRect = container.getBoundingClientRect();
+      const segmentRect = segmentEl.getBoundingClientRect();
+      this.editPosition.set({
+        top: segmentRect.top - containerRect.top + container.scrollTop,
+        left: segmentRect.left - containerRect.left
+      });
+    }
+
     this.editState.set({
       segmentId: segment.id,
       chapterId,

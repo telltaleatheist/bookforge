@@ -51,7 +51,8 @@ export interface DiffComparisonResult {
 }
 
 // Constants for memory protection and performance
-export const DIFF_INITIAL_LOAD = 20_000;  // 20k chars initially - fast load
-export const DIFF_LOAD_MORE_SIZE = 20_000;  // 20k chars per "Load More" click
+export const DIFF_INITIAL_LOAD = 5_000;  // 5k chars initially - very fast first paint
+export const DIFF_CHUNK_SIZE = 5_000;  // 5k chars per background chunk (~300-400 words, <50ms diff)
+export const DIFF_LOAD_MORE_SIZE = 20_000;  // 20k chars per manual "Load More" click
 export const DIFF_SAFE_CHAR_LIMIT = 50_000;  // 50k chars before showing warning
 export const DIFF_HARD_LIMIT = 100_000;  // 100k chars - definitely use pagination

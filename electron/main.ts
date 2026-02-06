@@ -1965,10 +1965,21 @@ function setupIpcHandlers(): void {
   // Memory-efficient: Load a single chapter's text on demand
   ipcMain.handle('diff:get-chapter', async (_event, originalPath: string, cleanedPath: string, chapterId: string) => {
     try {
+      console.log(`[diff:get-chapter] Loading chapter ${chapterId}`);
+      console.log(`[diff:get-chapter] Original: ${originalPath}`);
+      console.log(`[diff:get-chapter] Cleaned: ${cleanedPath}`);
       const { getChapterComparison } = await import('./epub-processor.js');
       const result = await getChapterComparison(originalPath, cleanedPath, chapterId);
+      console.log(`[diff:get-chapter] Result - original: ${result.originalText.length} chars, cleaned: ${result.cleanedText.length} chars`);
+      if (result.originalText.length === 0) {
+        console.log(`[diff:get-chapter] WARNING: Original text is empty!`);
+      }
+      if (result.cleanedText.length === 0) {
+        console.log(`[diff:get-chapter] WARNING: Cleaned text is empty!`);
+      }
       return { success: true, data: result };
     } catch (err) {
+      console.error(`[diff:get-chapter] ERROR for chapter ${chapterId}:`, err);
       return { success: false, error: (err as Error).message };
     }
   });

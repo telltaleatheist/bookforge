@@ -8,6 +8,7 @@ import {
   DiffChapterMeta,
   DiffWord,
   DIFF_INITIAL_LOAD,
+  DIFF_CHUNK_SIZE,
   DIFF_LOAD_MORE_SIZE
 } from '../../../core/models/diff.types';
 import { computeWordDiffAsync, countChanges, summarizeChanges, DiffOptions } from '../../../core/utils/diff-algorithm';
@@ -57,6 +58,20 @@ export class DiffService {
   private backgroundLoadingAborted = false;
   private backgroundLoadingPromise: Promise<void> | null = null;
 
+  // Streaming diff state (per-chapter incremental computation)
+  private streamingAborted = false;
+  private streamingChapterId: string | null = null;
+  private streamingGeneration = 0;  // Incremented on stop to invalidate pending setTimeout callbacks
+  private emissionsBlocked = false;  // When true, no session updates are emitted
+
+  // Web Worker for off-main-thread diff computation
+  private diffWorker: Worker | null = null;
+  private workerRequestId = 0;
+  private pendingWorkerRequests = new Map<number, {
+    resolve: (result: DiffWord[]) => void;
+    reject: (error: Error) => void;
+  }>();
+
   constructor(
     private electronService: ElectronService,
     private settingsService: SettingsService
@@ -71,37 +86,83 @@ export class DiffService {
   }
 
   /**
-   * Compute diff using system diff command (efficient) with JS fallback.
-   * System diff runs in the main process using native diff command,
-   * avoiding the massive O(n²) memory allocation of LCS in JavaScript.
+   * Initialize the diff worker if not already created.
+   */
+  private initWorker(): Worker {
+    if (!this.diffWorker) {
+      this.diffWorker = new Worker(new URL('../../../core/workers/diff.worker.ts', import.meta.url), { type: 'module' });
+      this.diffWorker.onmessage = (event) => {
+        const { id, diffWords, error } = event.data;
+        const pending = this.pendingWorkerRequests.get(id);
+        if (pending) {
+          this.pendingWorkerRequests.delete(id);
+          if (error) {
+            console.error('[DiffService] Worker error:', error);
+            pending.reject(new Error(error));
+          } else {
+            pending.resolve(diffWords);
+          }
+        }
+      };
+      this.diffWorker.onerror = (error) => {
+        console.error('[DiffService] Worker error:', error);
+      };
+    }
+    return this.diffWorker;
+  }
+
+  /**
+   * Compute diff using Web Worker ONLY (off main thread).
+   * No fallbacks - if worker fails or is stopped, returns empty result.
    */
   private async computeDiff(originalText: string, cleanedText: string): Promise<DiffWord[]> {
+    // Check if streaming was aborted before starting
+    if (this.streamingAborted) {
+      return [];
+    }
+
     const options = this.getDiffOptions();
 
-    // When ignoring whitespace, use JS algorithm directly (system diff doesn't support this mode well)
-    // The JS algorithm is efficient for this case since it compares fewer tokens (no whitespace)
-    if (options.ignoreWhitespace) {
-      console.log('[DiffService] Using JS diff with ignoreWhitespace=true');
-      return computeWordDiffAsync(originalText, cleanedText, options);
-    }
-
-    // Try system diff first (much more memory efficient)
     try {
-      const result = await this.electronService.computeSystemDiff(originalText, cleanedText);
-      if (result.success && result.segments) {
-        // Convert segments to DiffWord format
-        return result.segments.map(seg => ({
-          text: seg.text,
-          type: seg.type
-        }));
-      }
-    } catch (err) {
-      console.warn('[DiffService] System diff failed, falling back to JS:', err);
-    }
+      const worker = this.initWorker();
+      const id = ++this.workerRequestId;
+      const currentGeneration = this.streamingGeneration;
 
-    // Fallback to JavaScript algorithm (may cause OOM on very large texts)
-    console.log('[DiffService] Using JS diff algorithm as fallback');
-    return computeWordDiffAsync(originalText, cleanedText, options);
+      const result = await new Promise<DiffWord[]>((resolve, reject) => {
+        // Check abort again
+        if (this.streamingAborted || this.streamingGeneration !== currentGeneration) {
+          resolve([]);
+          return;
+        }
+
+        this.pendingWorkerRequests.set(id, { resolve, reject });
+
+        // Timeout after 30 seconds
+        const timeout = setTimeout(() => {
+          this.pendingWorkerRequests.delete(id);
+          resolve([]); // Return empty on timeout, don't block
+        }, 30000);
+
+        worker.postMessage({ id, originalText, cleanedText, options });
+
+        // Update handlers to clear timeout
+        this.pendingWorkerRequests.set(id, {
+          resolve: (result) => {
+            clearTimeout(timeout);
+            resolve(result);
+          },
+          reject: (error) => {
+            clearTimeout(timeout);
+            resolve([]); // Return empty on error, don't fallback
+          }
+        });
+      });
+
+      return result;
+    } catch (err) {
+      console.warn('[DiffService] Worker diff failed:', err);
+      return []; // No fallback - just return empty
+    }
   }
 
   /**
@@ -111,6 +172,10 @@ export class DiffService {
    */
   async loadComparison(originalPath: string, cleanedPath: string): Promise<boolean> {
     console.log('[DiffService] loadComparison called:', originalPath.slice(-40));
+
+    // Reset all streaming flags (may have been set by previous stopStreaming)
+    this.emissionsBlocked = false;
+    this.streamingAborted = false;  // CRITICAL: Reset this or computeDiff returns empty!
 
     // Abort any in-progress background loading
     this.backgroundLoadingAborted = true;
@@ -242,7 +307,9 @@ export class DiffService {
    * Load a chapter fully in the background (all chunks).
    */
   private async backgroundLoadChapterFully(chapterId: string): Promise<void> {
-    const session = this.sessionSubject.getValue();
+    // Re-fetch session at the START to get the most current state
+    // (not from a captured variable that might be stale)
+    let session = this.sessionSubject.getValue();
     if (!session || this.backgroundLoadingAborted) return;
 
     // Load initial chunk if not loaded
@@ -260,6 +327,10 @@ export class DiffService {
       const loaded = await this.loadChapter(chapterId);
       if (!loaded) return;
       chapter = loaded;
+
+      // Re-fetch session since loadChapter may have updated it
+      session = this.sessionSubject.getValue();
+      if (!session) return;
     }
 
     // Continue loading remaining chunks
@@ -310,6 +381,14 @@ export class DiffService {
       const truncatedOriginal = chapter.originalText.slice(0, newLoadedChars);
       const truncatedCleaned = chapter.cleanedText.slice(0, newLoadedChars);
       const diffWords = await this.computeDiff(truncatedOriginal, truncatedCleaned);
+
+      // CRITICAL: Never update with empty diffWords - this would corrupt the session
+      // This can happen if streaming was aborted or there was a computation error
+      if (diffWords.length === 0) {
+        console.log('[DiffService] loadMoreBackground: empty diff result, skipping update');
+        return false;
+      }
+
       const changeCount = countChanges(diffWords);
 
       // Update chapter
@@ -427,14 +506,17 @@ export class DiffService {
       // Only compute diff for initial chunk (fast load)
       const loadChars = Math.min(DIFF_INITIAL_LOAD, cleanedText.length);
       console.log('[DiffService] Computing diff for first', loadChars, 'chars...');
-      const diffStartTime = Date.now();
 
       const truncatedOriginal = originalText.slice(0, loadChars);
       const truncatedCleaned = cleanedText.slice(0, loadChars);
       const diffWords = await this.computeDiff(truncatedOriginal, truncatedCleaned);
       const changeCount = countChanges(diffWords);
 
-      console.log('[DiffService] Diff complete:', diffWords.length, 'words,', changeCount, 'changes in', Date.now() - diffStartTime, 'ms');
+      console.log('[DiffService] Diff complete:', diffWords.length, 'words,', changeCount, 'changes');
+
+      if (diffWords.length === 0 && cleanedText.length > 0) {
+        console.warn('[DiffService] Got empty diffWords for non-empty chapter - streaming may have been aborted');
+      }
 
       meta.changeCount = changeCount;
 
@@ -453,10 +535,11 @@ export class DiffService {
       const currentSession = this.sessionSubject.getValue();
       if (currentSession) {
         this.evictOldestIfNeeded(currentSession);
-        this.sessionSubject.next({
+        const newSession = {
           ...currentSession,
           chapters: [...currentSession.chapters, chapter]
-        });
+        };
+        this.sessionSubject.next(newSession);
         this.cachedChapterIds.push(chapterId);
       }
 
@@ -470,12 +553,166 @@ export class DiffService {
       this.chapterLoadingSubject.next(false);
       this.loadingProgressSubject.next(null);
 
+      // Start streaming the rest of the chapter in background
+      this.startStreamingDiff(chapterId);
+
       return chapter;
     } catch (err) {
       this.errorSubject.next((err as Error).message);
       this.chapterLoadingSubject.next(false);
       this.loadingProgressSubject.next(null);
       return null;
+    }
+  }
+
+  /**
+   * Start streaming diff computation for a chapter.
+   * Processes in small chunks, yielding to UI between each chunk.
+   * Automatically stops when streamingAborted is set or chapter is fully loaded.
+   */
+  private startStreamingDiff(chapterId: string): void {
+    // Abort any previous streaming
+    this.streamingAborted = true;
+    this.streamingGeneration++;
+    const thisGeneration = this.streamingGeneration;
+
+    // Use setTimeout to let the abort take effect
+    setTimeout(() => {
+      // Check if stopStreaming was called between scheduling and execution
+      if (this.streamingGeneration !== thisGeneration || this.emissionsBlocked) {
+        return;  // A newer stop/start happened, don't proceed
+      }
+      this.streamingAborted = false;
+      this.emissionsBlocked = false;  // Re-enable emissions for new stream
+      this.streamingChapterId = chapterId;
+      this.streamDiffChunks(chapterId);
+    }, 0);
+  }
+
+  /**
+   * Process diff chunks incrementally. Non-blocking via setTimeout yielding.
+   */
+  private async streamDiffChunks(chapterId: string): Promise<void> {
+    while (!this.streamingAborted && this.streamingChapterId === chapterId) {
+      const session = this.sessionSubject.getValue();
+      if (!session) break;
+
+      const chapter = session.chapters.find(c => c.id === chapterId);
+      if (!chapter) break;
+
+      // Check if fully loaded
+      if (chapter.loadedChars >= chapter.totalChars) {
+        console.log('[DiffService] Streaming complete for chapter:', chapterId);
+        break;
+      }
+
+      // Compute next chunk
+      const newLoadedChars = Math.min(
+        chapter.loadedChars + DIFF_CHUNK_SIZE,
+        chapter.totalChars
+      );
+
+      try {
+        // Yield to UI before heavy computation
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        if (this.streamingAborted || this.streamingChapterId !== chapterId) break;
+
+        // Check abort before expensive operations
+        if (this.streamingAborted || this.streamingChapterId !== chapterId) {
+          console.log('[DiffService] Streaming aborted before compute');
+          break;
+        }
+
+        const truncatedOriginal = chapter.originalText.slice(0, newLoadedChars);
+        const truncatedCleaned = chapter.cleanedText.slice(0, newLoadedChars);
+        const diffWords = await this.computeDiff(truncatedOriginal, truncatedCleaned);
+
+        // Check abort immediately after compute (worker may have been terminated)
+        if (this.streamingAborted || this.streamingChapterId !== chapterId) {
+          console.log('[DiffService] Streaming aborted after compute');
+          break;
+        }
+
+        // If diffWords is empty (aborted/error), skip update
+        if (diffWords.length === 0) {
+          console.log('[DiffService] Empty diff result, skipping update');
+          break;
+        }
+
+        const changeCount = countChanges(diffWords);
+
+        // Final abort check before emitting update
+        if (this.streamingAborted || this.streamingChapterId !== chapterId || this.emissionsBlocked) {
+          console.log('[DiffService] Streaming aborted before session update');
+          break;
+        }
+
+        // Update chapter in session
+        const currentSession = this.sessionSubject.getValue();
+        if (!currentSession) break;
+
+        const updatedChapter: DiffChapter = {
+          ...chapter,
+          diffWords,
+          changeCount,
+          loadedChars: newLoadedChars
+        };
+
+        const updatedChapters = currentSession.chapters.map(c =>
+          c.id === chapterId ? updatedChapter : c
+        );
+
+        // Update metadata change count
+        const meta = currentSession.chaptersMeta.find(m => m.id === chapterId);
+        if (meta) {
+          meta.changeCount = changeCount;
+        }
+
+        this.sessionSubject.next({
+          ...currentSession,
+          chapters: updatedChapters
+        });
+
+        // Longer delay between chunks to reduce main thread work
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+      } catch (err) {
+        console.error('[DiffService] Streaming chunk error:', err);
+        break;
+      }
+    }
+
+    // Clear streaming state if this was the active stream
+    if (this.streamingChapterId === chapterId) {
+      this.streamingChapterId = null;
+    }
+  }
+
+  /**
+   * Stop any active streaming diff computation.
+   * Call this when user navigates away from the diff view.
+   */
+  stopStreaming(): void {
+    console.log('[DiffService] stopStreaming called');
+
+    // Block all emissions FIRST
+    this.emissionsBlocked = true;
+
+    this.streamingAborted = true;
+    this.streamingChapterId = null;
+    this.streamingGeneration++;  // Invalidate any pending setTimeout callbacks
+
+    // Cancel any pending worker requests
+    for (const [id, pending] of this.pendingWorkerRequests) {
+      pending.reject(new Error('Streaming stopped'));
+    }
+    this.pendingWorkerRequests.clear();
+
+    // Terminate worker to free resources
+    if (this.diffWorker) {
+      this.diffWorker.terminate();
+      this.diffWorker = null;
     }
   }
 
@@ -588,7 +825,16 @@ export class DiffService {
     try {
       const result = await this.electronService.loadDiffCache(originalPath, cleanedPath, chapterId);
       if (result.success && result.data) {
-        return result.data as CachedChapterData;
+        const cached = result.data as CachedChapterData;
+
+        // CRITICAL: Reject corrupted cache entries (empty diffWords but has content)
+        // This can happen if a previous session crashed or had a race condition
+        if (cached.diffWords.length === 0 && cached.totalChars > 0) {
+          console.warn('[DiffService] Ignoring corrupted cache (empty diffWords) for chapter:', chapterId);
+          return null;
+        }
+
+        return cached;
       }
     } catch (err) {
       console.error('[DiffService] Cache load error:', err);
@@ -597,6 +843,13 @@ export class DiffService {
   }
 
   private async saveToCache(originalPath: string, cleanedPath: string, chapterId: string, data: CachedChapterData): Promise<void> {
+    // CRITICAL: Never save empty diffWords - this would corrupt the cache
+    // and cause all future loads to show "no changes"
+    if (data.diffWords.length === 0 && data.totalChars > 0) {
+      console.warn('[DiffService] Refusing to save empty diffWords to cache for chapter:', chapterId);
+      return;
+    }
+
     try {
       await this.electronService.saveDiffCache(originalPath, cleanedPath, chapterId, data);
       console.log('[DiffService] Saved chapter to cache:', chapterId);
@@ -680,6 +933,9 @@ export class DiffService {
     const meta = session.chaptersMeta.find(m => m.id === chapterId);
     if (!meta) return;
 
+    // Stop streaming the previous chapter
+    this.streamingAborted = true;
+
     // Update current chapter ID
     this.sessionSubject.next({
       ...session,
@@ -688,7 +944,15 @@ export class DiffService {
 
     // Load chapter if not already loaded
     if (!meta.isLoaded) {
+      // Reset streamingAborted before loading - we just used it to stop previous streaming
+      this.streamingAborted = false;
       await this.loadChapter(chapterId);
+    } else {
+      // Chapter is loaded, but may not be fully streamed - restart streaming
+      const chapter = session.chapters.find(c => c.id === chapterId);
+      if (chapter && chapter.loadedChars < chapter.totalChars) {
+        this.startStreamingDiff(chapterId);
+      }
     }
   }
 
@@ -863,6 +1127,8 @@ export class DiffService {
 
   clearSession(): void {
     this.backgroundLoadingAborted = true;
+    this.streamingAborted = true;
+    this.streamingChapterId = null;
     this.sessionSubject.next(null);
     this.errorSubject.next(null);
     this.cachedChapterIds = [];
