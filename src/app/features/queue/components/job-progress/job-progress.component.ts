@@ -829,12 +829,15 @@ export class JobProgressComponent implements OnDestroy {
     // This avoids issues with effect batching in parallel processing
     const chunksCompleted = job.chunksCompletedInJob || 0;
     const totalChunks = job.totalChunksInJob || job.totalChunks || 0;
+    // Use session-specific count for rate calculation (critical for resume jobs)
+    const chunksDoneInSession = job.chunksDoneInSession || chunksCompleted;
 
-    if (chunksCompleted >= 2 && totalChunks > 0) {
+    if (chunksDoneInSession >= 2 && totalChunks > 0) {
       const elapsed = this.elapsedSeconds();
       if (elapsed > 10) {
-        // Simple linear estimate based on overall progress
-        const avgTimePerChunk = elapsed / chunksCompleted;
+        // Calculate rate based on work done in THIS session only
+        const avgTimePerChunk = elapsed / chunksDoneInSession;
+        // But remaining work is based on total progress
         const remainingChunks = totalChunks - chunksCompleted;
         const remainingSeconds = Math.round(remainingChunks * avgTimePerChunk);
         return this.formatDuration(remainingSeconds);
@@ -846,7 +849,13 @@ export class JobProgressComponent implements OnDestroy {
       return this.etaFormatted();
     }
 
-    // Fall back to percentage-based ETA
+    // For resume jobs without enough session data, don't use percentage-based fallback
+    // (percentage includes previous session work, but elapsed time is only this session)
+    if (job.isResumeJob) {
+      return 'Calculating...';
+    }
+
+    // Fall back to percentage-based ETA (only for fresh jobs)
     const elapsed = this.elapsedSeconds();
     if (progress > 2 && elapsed > 10) {
       const totalEstimate = elapsed / (progress / 100);
