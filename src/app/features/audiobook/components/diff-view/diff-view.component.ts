@@ -322,9 +322,9 @@ interface EditState {
 
     .chapter-dropdown {
       padding: 0.25rem 0.5rem;
-      border: 1px solid var(--border-default);
+      border: 1px solid var(--border-input);
       border-radius: 4px;
-      background: var(--bg-default);
+      background: var(--bg-input);
       color: var(--text-primary);
       font-size: 0.75rem;
       max-width: 250px;
@@ -332,7 +332,7 @@ interface EditState {
 
       &:focus {
         outline: none;
-        border-color: var(--accent-primary);
+        border-color: var(--accent);
       }
     }
 

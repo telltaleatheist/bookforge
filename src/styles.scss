@@ -143,18 +143,22 @@ code, pre, kbd, samp {
 // FORM CONTROLS (Global select styling for dark mode)
 // =============================================================================
 
-// Force dark color scheme for native dropdowns on Windows/Chromium
-// This tells the browser to render native controls in dark mode
+// Style native select/option elements to match the app theme.
+// On Windows/Chromium, option elements don't inherit from the page theme,
+// so we must explicitly set background and color on both select and option.
 select {
-  color-scheme: dark;
-  background: var(--bg-secondary);
+  background: var(--bg-input);
   color: var(--text-primary);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-input);
   border-radius: 4px;
   cursor: pointer;
 
   option {
-    background: var(--bg-secondary);
+    background: var(--bg-input);
     color: var(--text-primary);
   }
+}
+
+[data-theme='dark'] select {
+  color-scheme: dark;
 }
