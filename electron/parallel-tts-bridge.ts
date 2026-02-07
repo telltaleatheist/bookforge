@@ -1283,10 +1283,12 @@ function startWorker(
       if (!line.trim()) continue;
       console.log(`[WORKER ${workerId}]`, line.trim());
 
-      // Parse progress: "Converting sentence {i} - {pct}%: {processed}/{total}" format
-      // Example: "Converting sentence 49 - 0.53%: 49/9248"
+      // Parse progress - support both output formats:
+      // Format 1 (Windows e2a): "Converting sentence 49 - 0.53%: 49/9248"
+      // Format 2 (Mac e2a):     "Converting sentence 996/3954 (0.1%)"
       // Each line = 1 actual conversion (skipped sentences don't print progress)
-      const progressMatch = line.match(/Converting sentence (\d+) - ([\d.]+)%: (\d+)\/(\d+)/i);
+      const progressMatch = line.match(/Converting sentence (\d+) - ([\d.]+)%: (\d+)\/(\d+)/i)
+        || line.match(/Converting sentence (\d+)\/(\d+)\s*\(([\d.]+)%\)/i);
       if (progressMatch) {
         const currentSentence = parseInt(progressMatch[1]);
         worker.currentSentence = currentSentence;
@@ -1311,8 +1313,9 @@ function startWorker(
       if (!line.trim()) continue;
       console.log(`[WORKER ${workerId} STDERR]`, line.trim());
 
-      // Parse progress from stderr too (same format)
-      const progressMatch = line.match(/Converting sentence (\d+) - ([\d.]+)%: (\d+)\/(\d+)/i);
+      // Parse progress from stderr too (both formats)
+      const progressMatch = line.match(/Converting sentence (\d+) - ([\d.]+)%: (\d+)\/(\d+)/i)
+        || line.match(/Converting sentence (\d+)\/(\d+)\s*\(([\d.]+)%\)/i);
       if (progressMatch) {
         const currentSentence = parseInt(progressMatch[1]);
         worker.currentSentence = currentSentence;
