@@ -1237,6 +1237,10 @@ export class QueueService {
             resumeCheckResult = await this.checkBfpForResumableSession(job.bfpPath, epubPathForTts);
             if (resumeCheckResult?.success && !resumeCheckResult.complete) {
               shouldResume = true;
+              // IMPORTANT: Set resume fields on job so UI can calculate worker progress correctly
+              job.isResumeJob = true;
+              job.resumeCompletedSentences = resumeCheckResult.completedSentences;
+              job.resumeMissingSentences = resumeCheckResult.missingSentences;
               console.log(`[QUEUE] Auto-resuming from BFP session: ${resumeCheckResult.completedSentences}/${resumeCheckResult.totalSentences} sentences`);
             }
           }
