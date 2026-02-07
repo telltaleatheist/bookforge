@@ -1198,6 +1198,36 @@ export interface ElectronAPI {
       cacheKey?: string;
       error?: string;
     }>;
+    // Pre-computed diff cache (created during AI cleanup)
+    loadCachedFile: (cleanedPath: string) => Promise<{
+      success: boolean;
+      data?: {
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        ignoreWhitespace: boolean;
+        completed: boolean;  // True when job finished, false if still running/interrupted
+        chapters: Array<{
+          id: string;
+          title: string;
+          originalCharCount: number;
+          cleanedCharCount: number;
+          changeCount: number;
+          changes: Array<{ pos: number; len: number; add?: string; rem?: string }>;
+        }>;
+      };
+      needsRecompute?: boolean;
+      error?: string;
+    }>;
+    hydrateChapter: (cleanedPath: string, chapterId: string, changes: Array<{ pos: number; len: number; add?: string; rem?: string }>) => Promise<{
+      success: boolean;
+      data?: {
+        diffWords: Array<{ text: string; type: 'unchanged' | 'added' | 'removed' }>;
+        cleanedText: string;
+        originalText: string;
+      };
+      error?: string;
+    }>;
   };
   ebookConvert: {
     isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
@@ -1792,6 +1822,11 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('diff:clear-cache', originalPath, cleanedPath),
     getCacheKey: (originalPath: string, cleanedPath: string) =>
       ipcRenderer.invoke('diff:get-cache-key', originalPath, cleanedPath),
+    // Pre-computed diff cache (created during AI cleanup)
+    loadCachedFile: (cleanedPath: string) =>
+      ipcRenderer.invoke('diff:load-cached-file', cleanedPath),
+    hydrateChapter: (cleanedPath: string, chapterId: string, changes: Array<{ pos: number; len: number; add?: string; rem?: string }>) =>
+      ipcRenderer.invoke('diff:hydrate-chapter', cleanedPath, chapterId, changes),
   },
   play: {
     startSession: () =>

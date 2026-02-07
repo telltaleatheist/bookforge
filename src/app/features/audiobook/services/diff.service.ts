@@ -7,6 +7,7 @@ import {
   DiffChapter,
   DiffChapterMeta,
   DiffWord,
+  DiffChange,
   DIFF_INITIAL_LOAD,
   DIFF_CHUNK_SIZE,
   DIFF_LOAD_MORE_SIZE
@@ -188,6 +189,122 @@ export class DiffService {
     this.errorSubject.next(null);
     this.cachedChapterIds = [];
 
+    // Try loading from pre-computed diff cache first (created during AI cleanup)
+    console.log('[DiffService] Trying pre-computed diff cache...');
+    const cacheResult = await this.electronService.loadCachedDiffFile(cleanedPath);
+
+    if (cacheResult.success && cacheResult.data) {
+      console.log('[DiffService] Found pre-computed cache with', cacheResult.data.chapters.length, 'chapters');
+      return this.initSessionFromCache(cacheResult.data, originalPath, cleanedPath);
+    }
+
+    console.log('[DiffService] No pre-computed cache, falling back to on-demand loading');
+    return this.loadComparisonOnDemand(originalPath, cleanedPath);
+  }
+
+  /**
+   * Initialize session from pre-computed diff cache.
+   * This is instant - no IPC calls or diff computation needed.
+   *
+   * For incomplete jobs (completed=false), we merge cached chapters with
+   * EPUB metadata to show all chapters, with uncached ones falling back
+   * to on-demand loading.
+   */
+  private async initSessionFromCache(
+    cache: {
+      version: number;
+      createdAt: string;
+      updatedAt?: string;
+      ignoreWhitespace: boolean;
+      completed?: boolean;
+      chapters: Array<{
+        id: string;
+        title: string;
+        originalCharCount: number;
+        cleanedCharCount: number;
+        changeCount: number;
+        changes: DiffChange[];
+      }>;
+    },
+    originalPath: string,
+    cleanedPath: string
+  ): Promise<boolean> {
+    const isComplete = cache.completed !== false;  // Default to true for old caches
+    console.log(`[DiffService] Initializing from cache (${isComplete ? 'complete' : 'in-progress'}, ${cache.chapters.length} chapters)...`);
+
+    // Build a map of cached chapters for quick lookup
+    const cachedChapterIds = new Set(cache.chapters.map(ch => ch.id));
+
+    // Convert cached chapters to metadata with pre-computed changes
+    let chaptersMeta: DiffChapterMeta[] = cache.chapters.map(ch => ({
+      id: ch.id,
+      title: ch.title,
+      hasOriginal: true,
+      hasCleaned: true,
+      changeCount: ch.changeCount,
+      isLoaded: false,  // Not yet hydrated
+      cachedChanges: ch.changes,  // Store for hydration on demand
+      originalCharCount: ch.originalCharCount,
+      cleanedCharCount: ch.cleanedCharCount
+    }));
+
+    // If job is incomplete, also get EPUB metadata to find chapters not yet cached
+    if (!isComplete) {
+      try {
+        const epubResult = await this.electronService.getDiffMetadata(originalPath, cleanedPath);
+        if (epubResult.success && epubResult.chapters) {
+          // Add any chapters from EPUB that aren't in cache yet
+          for (const epubCh of epubResult.chapters) {
+            if (!cachedChapterIds.has(epubCh.id)) {
+              chaptersMeta.push({
+                id: epubCh.id,
+                title: epubCh.title,
+                hasOriginal: epubCh.hasOriginal,
+                hasCleaned: epubCh.hasCleaned,
+                isLoaded: false
+                // No cachedChanges - will use on-demand loading
+              });
+            }
+          }
+          console.log(`[DiffService] Merged with EPUB metadata: ${chaptersMeta.length} total chapters`);
+        }
+      } catch (err) {
+        console.warn('[DiffService] Failed to get EPUB metadata for incomplete job:', err);
+        // Continue with just cached chapters
+      }
+    }
+
+    // Create session
+    const session: DiffSession = {
+      originalPath,
+      cleanedPath,
+      chapters: [],  // Chapters hydrated on demand
+      chaptersMeta,
+      currentChapterId: chaptersMeta.length > 0 ? chaptersMeta[0].id : ''
+    };
+
+    this.sessionSubject.next(session);
+    this.loadingSubject.next(false);
+    this.loadingProgressSubject.next(null);
+
+    // Auto-load the first chapter (will use hydration if cached)
+    if (chaptersMeta.length > 0) {
+      console.log('[DiffService] Loading first chapter from cache:', chaptersMeta[0].id);
+      const chapter = await this.loadChapter(chaptersMeta[0].id);
+      console.log('[DiffService] First chapter loaded:', chapter ? 'success' : 'failed');
+
+      // Start background loading of remaining chapters
+      this.startBackgroundLoading();
+    }
+
+    return true;
+  }
+
+  /**
+   * Load comparison with on-demand diff computation.
+   * Used as fallback when no pre-computed cache exists.
+   */
+  private async loadComparisonOnDemand(originalPath: string, cleanedPath: string): Promise<boolean> {
     this.loadingProgressSubject.next({
       phase: 'loading-metadata',
       currentChapter: 0,
@@ -452,7 +569,18 @@ export class DiffService {
       return null;
     }
 
-    // Try disk cache first
+    // Try pre-computed cache hydration first (from .diff.json created during AI cleanup)
+    if (meta.cachedChanges !== undefined) {
+      console.log('[DiffService] loadChapter: hydrating from pre-computed cache');
+      const hydrated = await this.loadChapterFromHydration(chapterId, meta, session);
+      if (hydrated) {
+        return hydrated;
+      }
+      // Hydration failed, fall through to disk cache/IPC
+      console.log('[DiffService] loadChapter: hydration failed, falling back');
+    }
+
+    // Try disk cache second (per-chapter cache from previous sessions)
     const cached = await this.loadFromCache(session.originalPath, session.cleanedPath, chapterId);
     if (cached) {
       console.log('[DiffService] loadChapter: loaded from disk cache');
@@ -559,6 +687,95 @@ export class DiffService {
       return chapter;
     } catch (err) {
       this.errorSubject.next((err as Error).message);
+      this.chapterLoadingSubject.next(false);
+      this.loadingProgressSubject.next(null);
+      return null;
+    }
+  }
+
+  /**
+   * Load chapter using hydration from pre-computed cache.
+   * This is much faster than computing diff on-demand.
+   */
+  private async loadChapterFromHydration(
+    chapterId: string,
+    meta: DiffChapterMeta,
+    session: DiffSession
+  ): Promise<DiffChapter | null> {
+    this.chapterLoadingSubject.next(true);
+    this.loadingProgressSubject.next({
+      phase: 'loading-chapter',
+      currentChapter: 0,
+      totalChapters: 1,
+      chapterTitle: meta.title,
+      percentage: 10
+    });
+
+    try {
+      // Call hydration API
+      const result = await this.electronService.hydrateChapter(
+        session.cleanedPath,
+        chapterId,
+        meta.cachedChanges || []
+      );
+
+      if (!result.success || !result.data) {
+        console.error('[DiffService] Hydration failed, falling back to on-demand loading');
+        // Clear cached changes so we don't try hydration again
+        meta.cachedChanges = undefined;
+        // Fall through to regular loading
+        this.chapterLoadingSubject.next(false);
+        this.loadingProgressSubject.next(null);
+        return null;
+      }
+
+      const { diffWords, cleanedText, originalText } = result.data;
+
+      // Update metadata
+      meta.isLoaded = true;
+      meta.isOversized = false;  // Full chapter is loaded via hydration
+      meta.changeCount = countChanges(diffWords);
+
+      console.log('[DiffService] Hydration complete:', diffWords.length, 'words,', meta.changeCount, 'changes');
+
+      const chapter: DiffChapter = {
+        id: chapterId,
+        title: meta.title,
+        originalText,
+        cleanedText,
+        diffWords,
+        changeCount: meta.changeCount,
+        loadedChars: cleanedText.length,  // Fully loaded
+        totalChars: cleanedText.length
+      };
+
+      // Add to session
+      const currentSession = this.sessionSubject.getValue();
+      if (currentSession) {
+        this.evictOldestIfNeeded(currentSession);
+        const newSession = {
+          ...currentSession,
+          chapters: [...currentSession.chapters, chapter]
+        };
+        this.sessionSubject.next(newSession);
+        this.cachedChapterIds.push(chapterId);
+      }
+
+      this.loadingProgressSubject.next({
+        phase: 'complete',
+        currentChapter: 1,
+        totalChapters: 1,
+        percentage: 100
+      });
+
+      this.chapterLoadingSubject.next(false);
+      this.loadingProgressSubject.next(null);
+
+      return chapter;
+    } catch (err) {
+      console.error('[DiffService] Hydration error:', err);
+      // Clear cached changes so we don't try hydration again
+      meta.cachedChanges = undefined;
       this.chapterLoadingSubject.next(false);
       this.loadingProgressSubject.next(null);
       return null;

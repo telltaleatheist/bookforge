@@ -1361,6 +1361,52 @@ export class ElectronService {
     return null;
   }
 
+  /**
+   * Load pre-computed diff cache file (created during AI cleanup)
+   * Returns the cached diff data if available, or null if cache needs recompute
+   */
+  async loadCachedDiffFile(cleanedPath: string): Promise<{
+    success: boolean;
+    data?: {
+      version: number;
+      createdAt: string;
+      updatedAt: string;
+      ignoreWhitespace: boolean;
+      completed: boolean;  // True when job finished, false if still running/interrupted
+      chapters: Array<{
+        id: string;
+        title: string;
+        originalCharCount: number;
+        cleanedCharCount: number;
+        changeCount: number;
+        changes: Array<{ pos: number; len: number; add?: string; rem?: string }>;
+      }>;
+    };
+    needsRecompute?: boolean;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.diff.loadCachedFile(cleanedPath);
+    }
+    return { success: false, needsRecompute: true };
+  }
+
+  /**
+   * Hydrate a chapter's compact diff changes back to full DiffWord[] for rendering
+   */
+  async hydrateChapter(cleanedPath: string, chapterId: string, changes: Array<{ pos: number; len: number; add?: string; rem?: string }>): Promise<{
+    success: boolean;
+    data?: {
+      diffWords: Array<{ text: string; type: 'unchanged' | 'added' | 'removed' }>;
+      cleanedText: string;
+      originalText: string;
+    };
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.diff.hydrateChapter(cleanedPath, chapterId, changes);
+    }
+    return { success: false };
+  }
+
   // Ebook conversion operations (Calibre CLI integration)
   async isEbookConvertAvailable(): Promise<boolean> {
     if (this.isElectron) {

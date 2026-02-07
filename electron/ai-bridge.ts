@@ -39,6 +39,12 @@ import {
   splitTextIntoParagraphs,
   rebuildChapterFromParagraphs
 } from './epub-processor.js';
+import {
+  startDiffCache,
+  addChapterDiff,
+  finalizeDiffCache,
+  clearDiffCache
+} from './diff-cache.js';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1618,6 +1624,13 @@ export async function cleanupEpub(
       // File doesn't exist, that's fine
     }
 
+    // Clear any existing diff cache and start new session
+    await clearDiffCache(outputPath);
+    await startDiffCache(outputPath);
+
+    // Track which chapters have been added to diff cache (for parallel processing)
+    const chaptersAddedToDiffCache = new Set<string>();
+
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 1: Pre-scan all chapters to calculate total chunks in job
     // Mode 'structure': Uses cheerio to extract block elements (preserves HTML)
@@ -1808,6 +1821,15 @@ export async function cleanupEpub(
               await saveModifiedEpubLocal(processor!, modifiedChapters, outputPath);
               savedChapters.add(chapterId);
               console.log(`[AI-CLEANUP] Saved chapter ${chapterId} (${chapterResults.length} chunks)`);
+
+              // Add to diff cache if not already added
+              if (!chaptersAddedToDiffCache.has(chapterId)) {
+                const chapterInfo = chapterChunks.find(cc => cc.chapter.id === chapterId);
+                const chapterTitle = chapterInfo?.chapter.title || chapterId;
+                const originalText = extractChapterAsText(originalXhtml);
+                await addChapterDiff(chapterId, chapterTitle, originalText, cleanedText);
+                chaptersAddedToDiffCache.add(chapterId);
+              }
             } catch (saveError) {
               console.error(`[AI-CLEANUP] Failed to save chapter ${chapterId}:`, saveError);
             }
@@ -2087,6 +2109,10 @@ export async function cleanupEpub(
           const paragraphs = splitTextIntoParagraphs(cleanedText);
           const rebuiltXhtml = rebuildChapterFromParagraphs(originalXhtml, paragraphs);
           modifiedChapters.set(chapter.id, rebuiltXhtml);
+
+          // Add to diff cache
+          const originalText = extractChapterAsText(originalXhtml);
+          await addChapterDiff(chapter.id, chapter.title, originalText, cleanedText);
         }
         chaptersProcessed++;
 
@@ -2115,6 +2141,9 @@ export async function cleanupEpub(
     await saveModifiedEpubLocal(processor, modifiedChapters, outputPath);
     processor.close();
     processor = null;
+
+    // Finalize diff cache (mark as complete)
+    await finalizeDiffCache();
 
     // Clean up abort controller
     activeCleanupJobs.delete(jobId);

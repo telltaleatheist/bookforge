@@ -2062,6 +2062,47 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Load pre-computed diff cache file (created during AI cleanup)
+  ipcMain.handle('diff:load-cached-file', async (_event, cleanedPath: string) => {
+    try {
+      const { loadDiffCacheFile } = await import('./diff-cache.js');
+      const cache = await loadDiffCacheFile(cleanedPath);
+      if (cache) {
+        return { success: true, data: cache };
+      }
+      return { success: false, needsRecompute: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message, needsRecompute: true };
+    }
+  });
+
+  // Hydrate a chapter's compact diff changes back to full DiffWord[] for rendering
+  ipcMain.handle('diff:hydrate-chapter', async (_event, cleanedPath: string, chapterId: string, changes: unknown[]) => {
+    try {
+      const { hydrateDiff } = await import('./diff-cache.js');
+      const { getChapterComparison } = await import('./epub-processor.js');
+
+      // Get the cleaned text for this chapter (we need it for hydration)
+      // Use cleanedPath for both since we only need the cleaned text
+      const result = await getChapterComparison(cleanedPath, cleanedPath, chapterId);
+      const cleanedText = result.cleanedText;
+
+      // Hydrate the compact changes
+      const diffWords = hydrateDiff(changes as any[], cleanedText);
+
+      return {
+        success: true,
+        data: {
+          diffWords,
+          cleanedText,
+          originalText: result.originalText // Also include original for display
+        }
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Get cache key for a book pair (used by renderer to check if cache is valid)
   ipcMain.handle('diff:get-cache-key', async (_event, originalPath: string, cleanedPath: string) => {
     try {

@@ -19,6 +19,14 @@ export interface DiffChapter {
   totalChars: number;    // Total chars in chapter
 }
 
+// Compact diff change representation (from pre-computed cache)
+export interface DiffChange {
+  pos: number;    // Position in cleaned text
+  len: number;    // Length in cleaned (0 for deletions)
+  add?: string;   // Added text
+  rem?: string;   // Removed text
+}
+
 // Lightweight chapter metadata - no text content (for lazy loading)
 export interface DiffChapterMeta {
   id: string;
@@ -29,6 +37,10 @@ export interface DiffChapterMeta {
   changeCount?: number;
   isLoaded?: boolean;
   isOversized?: boolean;  // True if chapter exceeds safe size limit
+  // Pre-computed cache data (set when loading from .diff.json)
+  cachedChanges?: DiffChange[];
+  originalCharCount?: number;
+  cleanedCharCount?: number;
 }
 
 // Session with lazy loading support
