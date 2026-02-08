@@ -19,6 +19,10 @@ import {
   TranslationJobConfig,
   ReassemblyJobConfig,
   ResembleEnhanceJobConfig,
+  LanguageLearningJobConfig,
+  LLCleanupJobConfig,
+  LLTranslationJobConfig,
+  BilingualAssemblyJobConfig,
   ResumeCheckResult,
   TtsResumeInfo
 } from '../models/queue.types';
@@ -126,6 +130,84 @@ declare global {
           replaceOriginal?: boolean;
         }) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
       };
+      languageLearning?: {
+        runJob: (jobId: string, config: {
+          projectId: string;
+          sourceUrl: string;
+          sourceLang: string;
+          targetLang: string;
+          htmlPath: string;
+          pdfPath?: string;
+          deletedBlockIds: string[];
+          title?: string;
+          aiProvider: AIProvider;
+          aiModel: string;
+          ollamaBaseUrl?: string;
+          claudeApiKey?: string;
+          openaiApiKey?: string;
+          // AI prompt settings
+          translationPrompt?: string;
+          enableCleanup?: boolean;
+          cleanupPrompt?: string;
+          // TTS settings
+          sourceVoice: string;
+          targetVoice: string;
+          ttsEngine: 'xtts' | 'orpheus';
+          sourceTtsSpeed: number;
+          targetTtsSpeed: number;
+          device: 'gpu' | 'mps' | 'cpu';
+          workerCount?: number;
+        }) => Promise<{ success: boolean; data?: any; error?: string }>;
+        onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
+      };
+      // Language Learning Split Pipeline
+      llCleanup?: {
+        run: (jobId: string, config: {
+          projectId: string;
+          projectDir: string;
+          inputText: string;
+          sourceLang: string;
+          aiProvider: AIProvider;
+          aiModel: string;
+          ollamaBaseUrl?: string;
+          claudeApiKey?: string;
+          openaiApiKey?: string;
+          cleanupPrompt?: string;
+        }) => Promise<{
+          success: boolean;
+          outputPath?: string;
+          error?: string;
+          nextJobConfig?: { cleanedTextPath?: string };
+        }>;
+        onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
+      };
+      llTranslation?: {
+        run: (jobId: string, config: {
+          projectId: string;
+          projectDir: string;
+          cleanedTextPath: string;
+          sourceLang: string;
+          targetLang: string;
+          title?: string;
+          aiProvider: AIProvider;
+          aiModel: string;
+          ollamaBaseUrl?: string;
+          claudeApiKey?: string;
+          openaiApiKey?: string;
+          translationPrompt?: string;
+        }) => Promise<{
+          success: boolean;
+          outputPath?: string;
+          error?: string;
+          nextJobConfig?: {
+            epubPath?: string;
+            sentencePairsPath?: string;
+            sourceEpubPath?: string;
+            targetEpubPath?: string;
+          };
+        }>;
+        onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
+      };
     };
   }
 }
@@ -144,6 +226,8 @@ export class QueueService {
   private unsubscribeParallelComplete: (() => void) | null = null;
   private unsubscribeParallelSessionCreated: (() => void) | null = null;
   private unsubscribeReassemblyProgress: (() => void) | null = null;
+  private unsubscribeLanguageLearningProgress: (() => void) | null = null;
+  private unsubscribeLLJobProgress: (() => void) | null = null;
 
   // State signals
   private readonly _jobs = signal<QueueJob[]>([]);
@@ -228,6 +312,12 @@ export class QueueService {
       if (this.unsubscribeReassemblyProgress) {
         this.unsubscribeReassemblyProgress();
       }
+      if (this.unsubscribeLanguageLearningProgress) {
+        this.unsubscribeLanguageLearningProgress();
+      }
+      if (this.unsubscribeLLJobProgress) {
+        this.unsubscribeLLJobProgress();
+      }
     });
   }
 
@@ -289,6 +379,50 @@ export class QueueService {
         });
       });
     }
+
+    // Listen for language learning progress updates
+    if (electron.languageLearning) {
+      this.unsubscribeLanguageLearningProgress = electron.languageLearning.onProgress((data) => {
+        this.ngZone.run(() => {
+          this.handleLanguageLearningProgressUpdate(data.jobId, data.progress);
+        });
+      });
+    }
+
+    // Listen for LL split pipeline job progress (cleanup + translation)
+    if (electron.llCleanup) {
+      this.unsubscribeLLJobProgress = electron.llCleanup.onProgress((data) => {
+        this.ngZone.run(() => {
+          this.handleLLJobProgressUpdate(data.jobId, data.progress);
+        });
+      });
+    }
+  }
+
+  private handleLLJobProgressUpdate(jobId: string, progress: any): void {
+    this._jobs.update(jobs =>
+      jobs.map(job => {
+        if (job.id !== jobId) return job;
+        const currentChunk = progress.currentChunk || progress.currentSentence || 0;
+        const totalChunks = progress.totalChunks || progress.totalSentences || 0;
+        const prevCompleted = job.chunksCompletedInJob || 0;
+        return {
+          ...job,
+          progress: progress.percentage || 0,
+          status: progress.phase === 'complete' ? 'complete' as JobStatus :
+                  progress.phase === 'error' ? 'error' as JobStatus :
+                  'processing' as JobStatus,
+          currentChunk,
+          totalChunks,
+          // Map to ETA calculation fields
+          chunksCompletedInJob: currentChunk,
+          totalChunksInJob: totalChunks,
+          chunkCompletedAt: currentChunk > prevCompleted ? Date.now() : job.chunkCompletedAt,
+          progressMessage: progress.message || progress.phase,
+          error: progress.error
+        };
+      })
+    );
   }
 
   private handleReassemblyProgressUpdate(jobId: string, progress: any): void {
@@ -303,6 +437,25 @@ export class QueueService {
                   'processing' as JobStatus,
           currentChapter: progress.currentChapter,
           totalChapters: progress.totalChapters,
+          progressMessage: progress.message || progress.phase,
+          error: progress.error
+        };
+      })
+    );
+  }
+
+  private handleLanguageLearningProgressUpdate(jobId: string, progress: any): void {
+    this._jobs.update(jobs =>
+      jobs.map(job => {
+        if (job.id !== jobId) return job;
+        return {
+          ...job,
+          progress: progress.percentage || 0,
+          status: progress.phase === 'complete' ? 'complete' as JobStatus :
+                  progress.phase === 'error' ? 'error' as JobStatus :
+                  'processing' as JobStatus,
+          currentChunk: progress.currentSentence,
+          totalChunks: progress.totalSentences,
           progressMessage: progress.message || progress.phase,
           error: progress.error
         };
@@ -607,6 +760,140 @@ export class QueueService {
       this.copyVttToBfp(completedJob.bfpPath, result.outputPath);
     }
 
+    // Handle bilingual dual-voice workflow chaining
+    const bilingualWorkflow = (completedJob?.metadata as any)?.bilingualWorkflow;
+    if (result.success && bilingualWorkflow && completedJob?.type === 'tts-conversion') {
+      if (bilingualWorkflow.role === 'source') {
+        // Source TTS complete - update existing target TTS job with chaining metadata
+        console.log('[QUEUE] Bilingual source TTS complete, updating target TTS job');
+        const sourceSentencesDir = result.outputPath; // With skipAssembly, outputPath is sentences dir
+        const targetConfig = bilingualWorkflow.targetConfig;
+        const assemblyConfig = bilingualWorkflow.assemblyConfig;
+
+        // Fallback: use assemblyConfig.audiobooksDir if targetConfig.outputDir is missing
+        const targetOutputDir = targetConfig?.outputDir || assemblyConfig?.audiobooksDir;
+
+        // Look for existing placeholder target TTS job in the same workflow
+        const existingTargetJob = this._jobs().find(j =>
+          j.workflowId === completedJob.workflowId &&
+          j.type === 'tts-conversion' &&
+          j.status === 'pending' &&
+          j.id !== completedJob.id &&
+          j.epubPath === bilingualWorkflow.targetEpubPath
+        );
+
+        if (existingTargetJob) {
+          // Update existing target TTS job with chaining metadata
+          console.log('[QUEUE] Found existing target TTS job, updating with chaining metadata:', existingTargetJob.id);
+          this._jobs.update(jobs =>
+            jobs.map(j => {
+              if (j.id === existingTargetJob.id) {
+                return {
+                  ...j,
+                  metadata: {
+                    ...j.metadata,
+                    bilingualWorkflow: {
+                      role: 'target',
+                      sourceSentencesDir, // Pass source sentences dir for assembly
+                      assemblyConfig
+                    }
+                  },
+                  config: {
+                    ...j.config as TtsConversionConfig,
+                    outputDir: targetOutputDir,
+                    outputFilename: targetConfig.outputFilename,
+                    speed: targetConfig.speed
+                  }
+                };
+              }
+              return j;
+            })
+          );
+        } else {
+          // Fallback: create new target TTS job (legacy behavior)
+          console.log('[QUEUE] No existing target TTS job found, creating new one');
+          const targetLangName = this.getLanguageName(targetConfig?.language);
+
+          this.addJob({
+            type: 'tts-conversion',
+            epubPath: bilingualWorkflow.targetEpubPath,
+            workflowId: completedJob.workflowId,
+            parentJobId: completedJob.parentJobId,
+            metadata: {
+              title: `${targetLangName} TTS`,
+              author: 'Language Learning',
+              outputFilename: targetConfig.outputFilename,
+              bilingualWorkflow: {
+                role: 'target',
+                sourceSentencesDir,
+                assemblyConfig
+              }
+            },
+            config: {
+              type: 'tts-conversion',
+              useParallel: true,
+              parallelMode: 'sentences',
+              parallelWorkers: targetConfig.workerCount,
+              device: targetConfig.device,
+              language: targetConfig.language,
+              ttsEngine: targetConfig.ttsEngine,
+              fineTuned: targetConfig.voice,
+              speed: targetConfig.speed,
+              outputDir: targetOutputDir,
+              outputFilename: targetConfig.outputFilename,
+              skipAssembly: true,
+              cleanSession: true,
+              sentencePerParagraph: true,
+              skipHeadings: true,
+              temperature: 0.75,
+              topP: 0.85,
+              topK: 50,
+              repetitionPenalty: 5.0,
+              enableTextSplitting: true
+            }
+          });
+        }
+      } else if (bilingualWorkflow.role === 'target') {
+        // Target TTS complete - chain bilingual assembly
+        console.log('[QUEUE] Bilingual target TTS complete, chaining assembly');
+        const targetSentencesDir = result.outputPath;
+        const sourceSentencesDir = bilingualWorkflow.sourceSentencesDir;
+        const assemblyConfig = bilingualWorkflow.assemblyConfig;
+
+        this.addJob({
+          type: 'bilingual-assembly',
+          workflowId: completedJob.workflowId,
+          parentJobId: completedJob.parentJobId,  // Link to master language-learning job
+          metadata: {
+            title: 'Bilingual Assembly'
+          },
+          config: {
+            type: 'bilingual-assembly',
+            projectId: assemblyConfig.projectId,
+            sourceSentencesDir,
+            targetSentencesDir,
+            sentencePairsPath: assemblyConfig.sentencePairsPath,
+            outputDir: assemblyConfig.audiobooksDir,
+            pauseDuration: assemblyConfig.pauseDuration,
+            gapDuration: assemblyConfig.gapDuration
+          }
+        });
+      }
+    }
+
+    // When bilingual-assembly completes, update the project status to 'completed'
+    if (result.success && completedJob?.type === 'bilingual-assembly') {
+      const config = completedJob.config as any;
+      if (config?.projectId) {
+        this.updateLanguageLearningProjectStatus(config.projectId, 'completed');
+      }
+    }
+
+    // Update master job progress when a child job completes
+    if (completedJob?.parentJobId && completedJob.workflowId) {
+      this.updateMasterJobProgress(completedJob.workflowId, completedJob.parentJobId);
+    }
+
     // Check if this was a standalone job
     const standaloneIds = this._standaloneJobIds();
     if (standaloneIds.has(result.jobId)) {
@@ -640,7 +927,7 @@ export class QueueService {
    * Automatically starts processing if queue is idle
    */
   async addJob(request: CreateJobRequest): Promise<QueueJob> {
-    const filename = request.epubPath.split('/').pop() || 'unknown.epub';
+    const filename = request.epubPath?.split('/').pop() || (request.type === 'bilingual-assembly' ? 'Bilingual Assembly' : 'unknown.epub');
 
     const job: QueueJob = {
       id: this.generateId(),
@@ -650,6 +937,9 @@ export class QueueService {
       status: 'pending',
       addedAt: new Date(),
       metadata: request.metadata,
+      projectDir: request.projectDir,  // For LL jobs
+      parentJobId: request.parentJobId,  // For workflow grouping
+      workflowId: request.workflowId,    // For workflow grouping
       config: this.buildJobConfig(request),
       bfpPath: request.bfpPath  // For analytics saving
     };
@@ -706,6 +996,7 @@ export class QueueService {
   /**
    * Remove a job from the queue
    * If the job is currently processing, it will be cancelled first
+   * If the job is a master job (has workflowId but no parentJobId), also removes child jobs
    */
   async removeJob(jobId: string): Promise<boolean> {
     const job = this._jobs().find(j => j.id === jobId);
@@ -720,8 +1011,128 @@ export class QueueService {
       this._currentJobId.set(null);
     }
 
-    this._jobs.update(jobs => jobs.filter(j => j.id !== jobId));
+    // Check if this is a master job (has workflowId but no parentJobId)
+    const isMasterJob = job.workflowId && !job.parentJobId;
+
+    if (isMasterJob) {
+      // Remove this job and all child jobs in the same workflow
+      this._jobs.update(jobs => jobs.filter(j =>
+        j.id !== jobId && j.workflowId !== job.workflowId
+      ));
+    } else {
+      // Just remove this single job
+      this._jobs.update(jobs => jobs.filter(j => j.id !== jobId));
+    }
+
     return true;
+  }
+
+  /**
+   * Update a job's config (for modifying settings before job runs)
+   */
+  updateJobConfig(jobId: string, configUpdate: Partial<Record<string, any>>): void {
+    this._jobs.update(jobs => jobs.map(job => {
+      if (job.id !== jobId) return job;
+      return {
+        ...job,
+        config: job.config ? { ...job.config, ...configUpdate } as typeof job.config : undefined
+      };
+    }));
+  }
+
+  /**
+   * Clean up orphaned sub-items (sub-items whose master job doesn't exist)
+   * This can happen if the app crashes or if there's a bug in job removal
+   */
+  private cleanupOrphanedSubItems(): void {
+    const jobs = this._jobs();
+    const jobIds = new Set(jobs.map(j => j.id));
+
+    // Find sub-items whose parentJobId doesn't exist in the queue
+    const orphanedIds = jobs
+      .filter(j => j.parentJobId && !jobIds.has(j.parentJobId))
+      .map(j => j.id);
+
+    if (orphanedIds.length > 0) {
+      console.log(`[QUEUE] Removing ${orphanedIds.length} orphaned sub-items:`, orphanedIds);
+      this._jobs.update(jobs => jobs.filter(j => !orphanedIds.includes(j.id)));
+    }
+  }
+
+  /**
+   * Update master job progress based on child job completion
+   */
+  private updateMasterJobProgress(workflowId: string, masterJobId: string): void {
+    const jobs = this._jobs();
+    const childJobs = jobs.filter(j => j.parentJobId === masterJobId);
+    const completedChildren = childJobs.filter(j => j.status === 'complete').length;
+    const errorChildren = childJobs.filter(j => j.status === 'error').length;
+    const totalChildren = childJobs.length;
+
+    if (totalChildren === 0) return;
+
+    // Calculate progress as percentage of completed children
+    const progress = Math.round((completedChildren / totalChildren) * 100);
+
+    // Determine master job status
+    let masterStatus: JobStatus = 'processing';
+    if (completedChildren + errorChildren === totalChildren) {
+      // All children finished - master is complete (or error if any child errored)
+      masterStatus = errorChildren > 0 ? 'error' : 'complete';
+    }
+
+    // Update master job
+    this._jobs.update(jobs =>
+      jobs.map(job => {
+        if (job.id !== masterJobId) return job;
+        return {
+          ...job,
+          status: masterStatus,
+          progress,
+          // Show progress message
+          progressMessage: `${completedChildren}/${totalChildren} steps complete`,
+          completedAt: masterStatus === 'complete' ? new Date() : job.completedAt,
+          error: masterStatus === 'error' ? 'One or more steps failed' : undefined
+        };
+      })
+    );
+
+    console.log(`[QUEUE] Master job ${masterJobId} progress: ${completedChildren}/${totalChildren} (${progress}%)`);
+  }
+
+  /**
+   * Update language learning project status after workflow completion
+   */
+  private async updateLanguageLearningProjectStatus(projectId: string, status: string): Promise<void> {
+    const electron = window.electron as any;
+    if (!electron?.languageLearning?.loadProject || !electron?.languageLearning?.saveProject) {
+      console.warn('[QUEUE] Cannot update project status: language learning API not available');
+      return;
+    }
+
+    try {
+      // Load current project
+      const loadResult = await electron.languageLearning.loadProject(projectId);
+      if (!loadResult.success || !loadResult.project) {
+        console.warn(`[QUEUE] Failed to load project ${projectId}: ${loadResult.error}`);
+        return;
+      }
+
+      // Update status
+      const project = loadResult.project;
+      project.status = status;
+      project.modifiedAt = new Date().toISOString();
+
+      // Save updated project
+      const saveResult = await electron.languageLearning.saveProject(project);
+      if (saveResult.success) {
+        console.log(`[QUEUE] Updated project ${projectId} status to '${status}'`);
+      } else {
+        console.warn(`[QUEUE] Failed to save project ${projectId}: ${saveResult.error}`);
+      }
+    } catch (err) {
+      console.error(`[QUEUE] Error updating project status: ${err}`);
+    }
   }
 
   /**
@@ -731,6 +1142,24 @@ export class QueueService {
     this._jobs.update(jobs =>
       jobs.filter(j => j.status === 'pending' || j.status === 'processing')
     );
+    // Also clean up any orphaned sub-items
+    this.cleanupOrphanedSubItems();
+  }
+
+  /**
+   * Force clear all jobs from the queue (use with caution)
+   */
+  clearAll(): void {
+    // Cancel any running job first
+    const currentId = this._currentJobId();
+    if (currentId) {
+      const electron = window.electron;
+      electron?.queue?.cancelJob(currentId);
+      this._currentJobId.set(null);
+    }
+    this._jobs.set([]);
+    this._isRunning.set(false);
+    console.log('[QUEUE] All jobs cleared');
   }
 
   /**
@@ -990,10 +1419,40 @@ export class QueueService {
   private async processNext(): Promise<void> {
     if (this._currentJobId()) return; // Already processing
 
-    const pending = this._jobs().filter(j => j.status === 'pending');
+    // Get pending jobs, but skip:
+    // - Master workflow jobs (they don't process themselves)
+    // - TTS placeholder jobs (waiting for translation to set epubPath)
+    const pending = this._jobs().filter(j => {
+      if (j.status !== 'pending') return false;
+      // Skip master workflow jobs
+      if (j.type === 'language-learning' && j.workflowId && !j.parentJobId) return false;
+      // Skip TTS placeholder jobs that are waiting for translation
+      if (j.type === 'tts-conversion' && (j.metadata as any)?.bilingualPlaceholder) return false;
+      return true;
+    });
     if (pending.length === 0) return;
 
     const nextJob = pending[0];
+
+    // If this job is part of a workflow, ensure the master job is marked as processing
+    if (nextJob.parentJobId) {
+      const masterJob = this._jobs().find(j => j.id === nextJob.parentJobId);
+      if (masterJob && masterJob.status === 'pending') {
+        this._jobs.update(jobs =>
+          jobs.map(j => {
+            if (j.id !== masterJob.id) return j;
+            return {
+              ...j,
+              status: 'processing' as JobStatus,
+              startedAt: new Date(),
+              progress: 0,
+              progressMessage: 'Starting workflow...'
+            };
+          })
+        );
+      }
+    }
+
     await this.runJob(nextJob);
   }
 
@@ -1039,6 +1498,9 @@ export class QueueService {
         const config = job.config as OcrCleanupConfig | undefined;
         if (!config) {
           throw new Error('OCR cleanup configuration required');
+        }
+        if (!job.epubPath) {
+          throw new Error('EPUB path is required for OCR cleanup');
         }
         // Build AI config from per-job settings
         const aiConfig: AIProviderConfig & {
@@ -1095,6 +1557,9 @@ export class QueueService {
         if (!config) {
           throw new Error('Translation configuration required');
         }
+        if (!job.epubPath) {
+          throw new Error('EPUB path is required for translation');
+        }
         // Build AI config from per-job settings
         const aiConfig: AIProviderConfig = {
           provider: config.aiProvider,
@@ -1144,17 +1609,18 @@ export class QueueService {
           console.log(`[QUEUE] Starting parallel TTS conversion with ${workerCount} workers in ${parallelMode} mode`);
           console.log(`[QUEUE] Output filename: ${resolvedOutputFilename}`);
           console.log(`[QUEUE] Output dir from config: '${config.outputDir}'`);
+          console.log(`[QUEUE] skipAssembly from config: ${config.skipAssembly}`);
           console.log(`[QUEUE] job.metadata:`, job.metadata);
           console.log(`[QUEUE] config.outputFilename:`, config.outputFilename);
           console.log(`[QUEUE] isResumeJob:`, job.isResumeJob);
 
           // Prefer processed epubs in order: translated+cleaned > translated > cleaned > original
-          let epubPathForTts = job.epubPath;
+          let epubPathForTts: string = job.epubPath || '';
           if (job.outputPath) {
             // Job has an explicit output path (e.g., from chained workflow)
             epubPathForTts = job.outputPath;
             console.log(`[QUEUE] Using job.outputPath for TTS: ${epubPathForTts}`);
-          } else if (electron.fs?.exists) {
+          } else if (electron.fs?.exists && job.epubPath) {
             // Check for processed EPUBs in priority order
             const basePath = job.epubPath.replace(/\.epub$/i, '');
             const epubDir = job.epubPath.substring(0, job.epubPath.lastIndexOf('/'));
@@ -1183,6 +1649,10 @@ export class QueueService {
             }
           }
 
+          if (!epubPathForTts) {
+            throw new Error('EPUB path is required for parallel TTS conversion');
+          }
+
           const parallelConfig = {
             workerCount,
             epubPath: epubPathForTts,
@@ -1198,7 +1668,11 @@ export class QueueService {
               topK: config.topK,
               repetitionPenalty: config.repetitionPenalty,
               speed: config.speed,
-              enableTextSplitting: config.enableTextSplitting
+              enableTextSplitting: config.enableTextSplitting,
+              // For language learning: preserve paragraph boundaries as sentences
+              sentencePerParagraph: config.sentencePerParagraph,
+              // For bilingual: skip reading heading tags as chapter titles
+              skipHeadings: config.skipHeadings
             },
             // Pass metadata for final audiobook (applied after assembly via m4b-tool)
             // Always pass metadata with at least the outputFilename for proper file naming
@@ -1208,7 +1682,13 @@ export class QueueService {
               year: job.metadata?.year,
               coverPath: job.metadata?.coverPath,
               outputFilename: job.metadata?.outputFilename || config.outputFilename
-            }
+            },
+            // Bilingual mode for language learning audiobooks
+            bilingual: config.bilingual,
+            // Skip assembly for dual-voice workflows (assembly happens separately)
+            skipAssembly: config.skipAssembly,
+            // Clean session for language learning (always start fresh, no resume)
+            cleanSession: config.cleanSession
           };
 
           // Check if this is a resume job (explicitly set) or if we can auto-resume from BFP
@@ -1260,10 +1740,10 @@ export class QueueService {
           }
         } else {
           // Use sequential TTS conversion (also check for translated/cleaned epub)
-          let seqEpubPath = job.epubPath;
+          let seqEpubPath = job.epubPath || '';
           if (job.outputPath) {
             seqEpubPath = job.outputPath;
-          } else if (electron.fs?.exists) {
+          } else if (electron.fs?.exists && job.epubPath) {
             const basePath = job.epubPath.replace(/\.epub$/i, '');
             const epubDir = job.epubPath.substring(0, job.epubPath.lastIndexOf('/'));
             const candidates = [
@@ -1281,6 +1761,9 @@ export class QueueService {
                 }
               } catch { /* continue checking */ }
             }
+          }
+          if (!seqEpubPath) {
+            throw new Error('EPUB path is required for TTS conversion');
           }
           await electron.queue.runTtsConversion(job.id, seqEpubPath, config);
         }
@@ -1338,6 +1821,521 @@ export class QueueService {
         }
 
         // The job completion will be handled by the onComplete callback
+      } else if (job.type === 'language-learning') {
+        // Language Learning job - bilingual audiobook generation
+        const config = job.config as LanguageLearningJobConfig | undefined;
+        if (!config) {
+          throw new Error('Language Learning configuration required');
+        }
+
+        console.log('[QUEUE] Starting language-learning job:', {
+          projectId: config.projectId,
+          targetLang: config.targetLang,
+          enableCleanup: config.enableCleanup,
+          workerCount: config.workerCount,
+          ttsEngine: config.ttsEngine,
+          voice: config.targetVoice
+        });
+
+        // Call the language learning API
+        if (!electron.languageLearning) {
+          throw new Error('Language Learning not available');
+        }
+
+        const result = await electron.languageLearning.runJob(job.id, {
+          projectId: config.projectId,
+          sourceUrl: config.sourceUrl,
+          sourceLang: config.sourceLang,
+          targetLang: config.targetLang,
+          htmlPath: config.htmlPath,
+          pdfPath: config.pdfPath,
+          deletedBlockIds: config.deletedBlockIds,
+          title: config.title,
+          aiProvider: config.aiProvider,
+          aiModel: config.aiModel,
+          ollamaBaseUrl: config.ollamaBaseUrl,
+          claudeApiKey: config.claudeApiKey,
+          openaiApiKey: config.openaiApiKey,
+          // AI prompt settings
+          translationPrompt: config.translationPrompt,
+          enableCleanup: config.enableCleanup,
+          cleanupPrompt: config.cleanupPrompt,
+          // TTS settings
+          sourceVoice: config.sourceVoice,
+          targetVoice: config.targetVoice,
+          ttsEngine: config.ttsEngine,
+          sourceTtsSpeed: config.sourceTtsSpeed,
+          targetTtsSpeed: config.targetTtsSpeed,
+          device: config.device,
+          workerCount: config.workerCount
+        });
+        if (!result.success) {
+          throw new Error(result.error || 'Language Learning job failed');
+        }
+
+        // Language learning EPUB phase complete - check for dual-voice or legacy flow
+        if (result.data?.sourceTtsConfig && result.data?.targetTtsConfig) {
+          // NEW: Dual-voice workflow for proper accent separation
+          const sourceConfig = result.data.sourceTtsConfig;
+          const targetConfig = result.data.targetTtsConfig;
+          const assemblyConfig = result.data.bilingualAssemblyConfig;
+
+          console.log('[QUEUE] Language learning EPUB complete, starting dual-voice TTS workflow:', {
+            sourceEpub: sourceConfig.epubPath,
+            targetEpub: targetConfig.epubPath,
+            sourceVoice: sourceConfig.voice,
+            targetVoice: targetConfig.voice
+          });
+
+          // Mark the language-learning job as complete
+          this._jobs.update(jobs =>
+            jobs.map(j => {
+              if (j.id !== job.id) return j;
+              return { ...j, status: 'complete' as JobStatus, progress: 100 };
+            })
+          );
+
+          // Generate workflow ID to track related jobs (same as master job)
+          const workflowId = job.workflowId || job.id;
+
+          // Store assembly config in the job for later use
+          const sentencePairsPath = result.data.sentencePairsPath;
+
+          // Get language names for display
+          const sourceLangName = this.getLanguageName(sourceConfig.language);
+          const targetLangName = this.getLanguageName(targetConfig.language);
+
+          // Add SOURCE TTS job (will be processed first)
+          await this.addJob({
+            type: 'tts-conversion',
+            epubPath: sourceConfig.epubPath,
+            workflowId,
+            parentJobId: job.id,  // Link to master language-learning job
+            metadata: {
+              title: `${sourceLangName} TTS`,
+              author: 'Language Learning',
+              // Store data for downstream jobs
+              bilingualWorkflow: {
+                role: 'source',
+                targetEpubPath: targetConfig.epubPath,
+                targetConfig,
+                assemblyConfig: {
+                  ...assemblyConfig,
+                  sentencePairsPath
+                }
+              }
+            },
+            config: {
+              type: 'tts-conversion',
+              useParallel: true,
+              parallelMode: 'sentences',
+              parallelWorkers: sourceConfig.workerCount,
+              device: sourceConfig.device,
+              language: sourceConfig.language,
+              ttsEngine: sourceConfig.ttsEngine,
+              fineTuned: sourceConfig.voice,
+              speed: sourceConfig.speed,
+              outputDir: sourceConfig.outputDir,
+              outputFilename: sourceConfig.outputFilename,
+              // Skip assembly - we'll do bilingual assembly after both TTS jobs
+              skipAssembly: true,
+              // Language learning jobs should always start fresh (no resume)
+              cleanSession: true,
+              // Preserve paragraph boundaries as sentences (don't let e2a re-split)
+              sentencePerParagraph: true,
+              // Skip reading heading tags as chapter titles (for bilingual)
+              skipHeadings: true,
+              // Standard TTS settings
+              temperature: 0.75,
+              topP: 0.85,
+              topK: 50,
+              repetitionPenalty: 5.0,
+              enableTextSplitting: true
+            }
+          });
+
+          // Clear current job and process next (the source TTS job)
+          this._currentJobId.set(null);
+          await this.processNext();
+
+        } else if (result.data?.epubPath && result.data?.ttsConfig) {
+          // LEGACY: Single bilingual EPUB flow (deprecated)
+          const ttsConfig = result.data.ttsConfig;
+          console.log('[QUEUE] Language learning EPUB complete (legacy flow), chaining TTS job:', {
+            epubPath: result.data.epubPath,
+            outputDir: ttsConfig.outputDir,
+            engine: ttsConfig.ttsEngine,
+            voice: ttsConfig.voice,
+            workers: ttsConfig.workerCount
+          });
+
+          // Mark the language-learning job as complete
+          this._jobs.update(jobs =>
+            jobs.map(j => {
+              if (j.id !== job.id) return j;
+              return { ...j, status: 'complete' as JobStatus, progress: 100 };
+            })
+          );
+
+          // Add a TTS job using the regular queue infrastructure
+          await this.addJob({
+            type: 'tts-conversion',
+            epubPath: result.data.epubPath,
+            metadata: {
+              title: ttsConfig.title,
+              author: 'Language Learning'
+            },
+            config: {
+              type: 'tts-conversion',
+              useParallel: true,
+              parallelMode: 'sentences', // Bilingual EPUBs are single-chapter
+              parallelWorkers: ttsConfig.workerCount,
+              device: ttsConfig.device,
+              language: ttsConfig.language,
+              ttsEngine: ttsConfig.ttsEngine,
+              fineTuned: ttsConfig.voice,
+              speed: ttsConfig.speed,
+              outputDir: ttsConfig.outputDir,
+              outputFilename: ttsConfig.outputFilename,
+              // Standard TTS settings
+              temperature: 0.75,
+              topP: 0.85,
+              topK: 50,
+              repetitionPenalty: 5.0,
+              enableTextSplitting: true,
+              // Language learning jobs always start fresh (no session resume)
+              cleanSession: true
+            }
+          });
+
+          // Clear current job and process next (the TTS job we just added)
+          this._currentJobId.set(null);
+          await this.processNext();
+        }
+      } else if (job.type === 'll-cleanup') {
+        // Language Learning Cleanup job
+        const config = job.config as LLCleanupJobConfig | undefined;
+        if (!config) {
+          throw new Error('LL Cleanup configuration required');
+        }
+
+        console.log('[QUEUE] Starting ll-cleanup job:', {
+          projectId: config.projectId,
+          aiProvider: config.aiProvider,
+          aiModel: config.aiModel
+        });
+
+        if (!electron.llCleanup) {
+          throw new Error('LL Cleanup not available');
+        }
+
+        const result = await electron.llCleanup.run(job.id, {
+          projectId: config.projectId,
+          projectDir: config.projectDir,
+          inputText: config.inputText,
+          sourceLang: config.sourceLang,
+          aiProvider: config.aiProvider,
+          aiModel: config.aiModel,
+          ollamaBaseUrl: config.ollamaBaseUrl,
+          claudeApiKey: config.claudeApiKey,
+          openaiApiKey: config.openaiApiKey,
+          cleanupPrompt: config.cleanupPrompt
+        });
+
+        if (!result.success) {
+          throw new Error(result.error || 'LL Cleanup failed');
+        }
+
+        // Mark cleanup job as complete
+        this._jobs.update(jobs =>
+          jobs.map(j => {
+            if (j.id !== job.id) return j;
+            return { ...j, status: 'complete' as JobStatus, progress: 100, outputPath: result.outputPath };
+          })
+        );
+
+        // Update master job progress
+        if (job.parentJobId && job.workflowId) {
+          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
+        }
+
+        // Clear current job and process next (the translation job)
+        this._currentJobId.set(null);
+        await this.processNext();
+
+      } else if (job.type === 'll-translation') {
+        // Language Learning Translation job
+        const config = job.config as LLTranslationJobConfig | undefined;
+        if (!config) {
+          throw new Error('LL Translation configuration required');
+        }
+
+        console.log('[QUEUE] Starting ll-translation job:', {
+          projectId: config.projectId,
+          targetLang: config.targetLang,
+          aiProvider: config.aiProvider,
+          aiModel: config.aiModel
+        });
+
+        if (!electron.llTranslation) {
+          throw new Error('LL Translation not available');
+        }
+
+        const result = await electron.llTranslation.run(job.id, {
+          projectId: config.projectId,
+          projectDir: config.projectDir,
+          cleanedTextPath: config.cleanedTextPath,
+          sourceLang: config.sourceLang,
+          targetLang: config.targetLang,
+          title: config.title,
+          aiProvider: config.aiProvider,
+          aiModel: config.aiModel,
+          ollamaBaseUrl: config.ollamaBaseUrl,
+          claudeApiKey: config.claudeApiKey,
+          openaiApiKey: config.openaiApiKey,
+          translationPrompt: config.translationPrompt
+        });
+
+        if (!result.success) {
+          throw new Error(result.error || 'LL Translation failed');
+        }
+
+        // Mark translation job as complete
+        this._jobs.update(jobs =>
+          jobs.map(j => {
+            if (j.id !== job.id) return j;
+            return { ...j, status: 'complete' as JobStatus, progress: 100, outputPath: result.outputPath };
+          })
+        );
+
+        // Update master job progress
+        if (job.parentJobId && job.workflowId) {
+          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
+        }
+
+        // Check if translation returned dual EPUB paths for dual-voice TTS
+        const nextConfig = (result as any).nextJobConfig;
+        if (nextConfig?.sourceEpubPath && nextConfig?.targetEpubPath && job.parentJobId) {
+          // Get TTS settings from the master job
+          const masterJob = this._jobs().find(j => j.id === job.parentJobId);
+          const masterConfig = masterJob?.config as LanguageLearningJobConfig | undefined;
+
+          if (masterConfig) {
+            console.log('[QUEUE] LL Translation complete with dual EPUBs, updating placeholder TTS jobs');
+
+            // Calculate paths
+            const projectDir = config.projectDir;
+            const projectsDir = projectDir.substring(0, projectDir.lastIndexOf('/'));
+            const languageLearningDir = projectsDir.substring(0, projectsDir.lastIndexOf('/'));
+            const audiobooksDir = `${languageLearningDir}/audiobooks`;
+
+            const workerCount = masterConfig.ttsEngine === 'orpheus' ? 1 : (masterConfig.workerCount || 4);
+
+            // Find existing placeholder TTS jobs created upfront
+            const workflowJobs = this._jobs().filter(j =>
+              j.workflowId === job.workflowId &&
+              j.type === 'tts-conversion' &&
+              j.status === 'pending'
+            );
+
+            const sourceTtsJob = workflowJobs.find(j =>
+              (j.metadata as any)?.bilingualPlaceholder?.role === 'source'
+            );
+            const targetTtsJob = workflowJobs.find(j =>
+              (j.metadata as any)?.bilingualPlaceholder?.role === 'target'
+            );
+
+            if (sourceTtsJob && targetTtsJob) {
+              console.log('[QUEUE] Found placeholder TTS jobs, updating with EPUB paths:', {
+                sourceJobId: sourceTtsJob.id,
+                targetJobId: targetTtsJob.id
+              });
+
+              // Update SOURCE TTS job with actual EPUB path and chaining metadata
+              this._jobs.update(jobs =>
+                jobs.map(j => {
+                  if (j.id === sourceTtsJob.id) {
+                    return {
+                      ...j,
+                      epubPath: nextConfig.sourceEpubPath,
+                      epubFilename: nextConfig.sourceEpubPath.split('/').pop() || 'source.epub',
+                      metadata: {
+                        ...j.metadata,
+                        bilingualPlaceholder: undefined, // Clear placeholder marker
+                        bilingualWorkflow: {
+                          role: 'source',
+                          targetEpubPath: nextConfig.targetEpubPath,
+                          targetConfig: {
+                            epubPath: nextConfig.targetEpubPath,
+                            title: (targetTtsJob.metadata as any)?.title || 'Target TTS',
+                            ttsEngine: masterConfig.ttsEngine,
+                            voice: masterConfig.targetVoice,
+                            device: masterConfig.device || 'mps',
+                            speed: masterConfig.targetTtsSpeed,
+                            workerCount,
+                            language: masterConfig.targetLang,
+                            outputDir: audiobooksDir
+                          },
+                          assemblyConfig: {
+                            projectId: masterConfig.projectId,
+                            audiobooksDir,
+                            sentencePairsPath: nextConfig.sentencePairsPath,
+                            pauseDuration: 0.3,
+                            gapDuration: 1.0
+                          }
+                        }
+                      },
+                      config: {
+                        ...j.config as TtsConversionConfig,
+                        outputDir: audiobooksDir,
+                        outputFilename: `${masterConfig.projectId}_source.m4b`
+                      }
+                    };
+                  }
+                  if (j.id === targetTtsJob.id) {
+                    // Update target TTS job with EPUB path (will be processed via chaining)
+                    return {
+                      ...j,
+                      epubPath: nextConfig.targetEpubPath,
+                      epubFilename: nextConfig.targetEpubPath.split('/').pop() || 'target.epub',
+                      metadata: {
+                        ...j.metadata,
+                        bilingualPlaceholder: undefined // Clear placeholder marker
+                      },
+                      config: {
+                        ...j.config as TtsConversionConfig,
+                        outputDir: audiobooksDir,
+                        outputFilename: `${masterConfig.projectId}_target.m4b`
+                      }
+                    };
+                  }
+                  return j;
+                })
+              );
+
+              console.log('[QUEUE] Updated placeholder TTS jobs, source TTS will process next');
+            } else {
+              // Fallback: No placeholder jobs found, create new ones (legacy behavior)
+              console.log('[QUEUE] No placeholder TTS jobs found, creating new ones');
+              const bilWorkflowId = `bilingual-${Date.now()}`;
+
+              await this.addJob({
+                type: 'tts-conversion',
+                epubPath: nextConfig.sourceEpubPath,
+                workflowId: bilWorkflowId,
+                parentJobId: job.parentJobId,
+                metadata: {
+                  title: `${masterConfig.projectId || 'LL'} Source TTS`,
+                  author: 'Language Learning',
+                  bilingualWorkflow: {
+                    role: 'source',
+                    targetEpubPath: nextConfig.targetEpubPath,
+                    targetConfig: {
+                      epubPath: nextConfig.targetEpubPath,
+                      title: `${masterConfig.projectId || 'LL'} Target TTS`,
+                      ttsEngine: masterConfig.ttsEngine,
+                      voice: masterConfig.targetVoice,
+                      device: masterConfig.device || 'mps',
+                      speed: masterConfig.targetTtsSpeed,
+                      workerCount,
+                      language: masterConfig.targetLang
+                    },
+                    assemblyConfig: {
+                      projectId: masterConfig.projectId,
+                      audiobooksDir,
+                      sentencePairsPath: nextConfig.sentencePairsPath,
+                      pauseDuration: 0.3,
+                      gapDuration: 1.0
+                    }
+                  }
+                },
+                config: {
+                  type: 'tts-conversion',
+                  useParallel: true,
+                  parallelMode: 'sentences',
+                  parallelWorkers: workerCount,
+                  device: masterConfig.device || 'mps',
+                  language: masterConfig.sourceLang,
+                  ttsEngine: masterConfig.ttsEngine,
+                  fineTuned: masterConfig.sourceVoice,
+                  speed: masterConfig.sourceTtsSpeed,
+                  outputDir: audiobooksDir,
+                  outputFilename: `${masterConfig.projectId}_source.m4b`,
+                  skipAssembly: true,
+                  temperature: 0.75,
+                  topP: 0.85,
+                  topK: 50,
+                  repetitionPenalty: 5.0,
+                  enableTextSplitting: true
+                }
+              });
+            }
+          }
+        }
+
+        // Clear current job and process next
+        this._currentJobId.set(null);
+        await this.processNext();
+
+      } else if (job.type === 'bilingual-assembly') {
+        // Bilingual Assembly job - combines source and target TTS outputs
+        const config = job.config as any;
+        if (!config) {
+          throw new Error('Bilingual Assembly configuration required');
+        }
+
+        console.log('[QUEUE] Starting bilingual-assembly job:', {
+          projectId: config.projectId,
+          sourceSentencesDir: config.sourceSentencesDir,
+          targetSentencesDir: config.targetSentencesDir
+        });
+
+        // Call the bilingual assembly API
+        const bilingualAssembly = (window.electron as any)?.bilingualAssembly;
+        if (!bilingualAssembly) {
+          throw new Error('Bilingual Assembly not available');
+        }
+
+        const result = await bilingualAssembly.run(job.id, {
+          projectId: config.projectId,
+          sourceSentencesDir: config.sourceSentencesDir,
+          targetSentencesDir: config.targetSentencesDir,
+          sentencePairsPath: config.sentencePairsPath,
+          outputDir: config.outputDir,
+          pauseDuration: config.pauseDuration,
+          gapDuration: config.gapDuration
+        });
+
+        if (!result.success) {
+          throw new Error(result.error || 'Bilingual Assembly failed');
+        }
+
+        // Mark job as complete
+        this._jobs.update(jobs =>
+          jobs.map(j => {
+            if (j.id !== job.id) return j;
+            return {
+              ...j,
+              status: 'complete' as JobStatus,
+              progress: 100,
+              outputPath: result.data?.audioPath
+            };
+          })
+        );
+
+        console.log('[QUEUE] Bilingual assembly complete:', {
+          audioPath: result.data?.audioPath,
+          vttPath: result.data?.vttPath
+        });
+
+        // Update master job progress
+        if (job.parentJobId && job.workflowId) {
+          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
+        }
+
+        // Clear current job and process next
+        this._currentJobId.set(null);
+        await this.processNext();
       }
     } catch (err) {
       // Error starting job
@@ -1370,7 +2368,7 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | undefined {
+  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | LanguageLearningJobConfig | LLCleanupJobConfig | LLTranslationJobConfig | BilingualAssemblyJobConfig | undefined {
     if (request.type === 'ocr-cleanup') {
       const config = request.config as Partial<OcrCleanupConfig>;
       if (!config?.aiProvider || !config?.aiModel) {
@@ -1427,7 +2425,15 @@ export class QueueService {
         // Parallel processing options
         parallelWorkers: config.parallelWorkers,
         useParallel: config.useParallel ?? false,
-        parallelMode: config.parallelMode
+        parallelMode: config.parallelMode,
+        // Bilingual mode and skip assembly for dual-voice workflows
+        bilingual: config.bilingual,
+        skipAssembly: config.skipAssembly,
+        cleanSession: config.cleanSession,
+        // Preserve paragraph boundaries (for language learning)
+        sentencePerParagraph: config.sentencePerParagraph,
+        // Skip reading heading tags as chapter titles (for bilingual)
+        skipHeadings: config.skipHeadings
       };
     } else if (request.type === 'reassembly') {
       const config = request.config as Partial<ReassemblyJobConfig>;
@@ -1457,12 +2463,131 @@ export class QueueService {
         bfpPath: config.bfpPath,
         replaceOriginal: config.replaceOriginal ?? true
       };
+    } else if (request.type === 'language-learning') {
+      const config = request.config as Partial<LanguageLearningJobConfig>;
+      if (!config?.projectId || !config?.aiProvider || !config?.aiModel ||
+          config.sourceTtsSpeed === undefined || config.targetTtsSpeed === undefined) {
+        return undefined; // Required fields
+      }
+      return {
+        type: 'language-learning',
+        projectId: config.projectId,
+        sourceUrl: config.sourceUrl || '',
+        sourceLang: config.sourceLang || 'en',
+        targetLang: config.targetLang || 'de',
+        htmlPath: config.htmlPath || '',
+        pdfPath: config.pdfPath,
+        deletedBlockIds: config.deletedBlockIds || [],
+        title: config.title,
+        aiProvider: config.aiProvider,
+        aiModel: config.aiModel,
+        ollamaBaseUrl: config.ollamaBaseUrl,
+        claudeApiKey: config.claudeApiKey,
+        openaiApiKey: config.openaiApiKey,
+        // AI prompt settings
+        translationPrompt: config.translationPrompt,
+        enableCleanup: config.enableCleanup,
+        cleanupPrompt: config.cleanupPrompt,
+        // TTS settings
+        sourceVoice: config.sourceVoice || 'ScarlettJohansson',
+        targetVoice: config.targetVoice || 'ScarlettJohansson',
+        ttsEngine: config.ttsEngine || 'xtts',
+        sourceTtsSpeed: config.sourceTtsSpeed,
+        targetTtsSpeed: config.targetTtsSpeed,
+        device: config.device || 'mps',
+        workerCount: config.workerCount,
+        // Alignment verification settings
+        autoAcceptResults: config.autoAcceptResults
+      };
+    } else if (request.type === 'll-cleanup') {
+      const config = request.config as Partial<LLCleanupJobConfig>;
+      if (!config?.projectId || !config?.projectDir || !config?.inputText || !config?.aiProvider || !config?.aiModel) {
+        return undefined;
+      }
+      return {
+        type: 'll-cleanup',
+        projectId: config.projectId,
+        projectDir: config.projectDir,
+        inputText: config.inputText,
+        sourceLang: config.sourceLang || 'en',
+        aiProvider: config.aiProvider,
+        aiModel: config.aiModel,
+        ollamaBaseUrl: config.ollamaBaseUrl,
+        claudeApiKey: config.claudeApiKey,
+        openaiApiKey: config.openaiApiKey,
+        cleanupPrompt: config.cleanupPrompt
+      };
+    } else if (request.type === 'll-translation') {
+      const config = request.config as Partial<LLTranslationJobConfig>;
+      if (!config?.projectId || !config?.projectDir || !config?.cleanedTextPath || !config?.aiProvider || !config?.aiModel) {
+        return undefined;
+      }
+      return {
+        type: 'll-translation',
+        projectId: config.projectId,
+        projectDir: config.projectDir,
+        cleanedTextPath: config.cleanedTextPath,
+        sourceLang: config.sourceLang || 'en',
+        targetLang: config.targetLang || 'de',
+        title: config.title,
+        aiProvider: config.aiProvider,
+        aiModel: config.aiModel,
+        ollamaBaseUrl: config.ollamaBaseUrl,
+        claudeApiKey: config.claudeApiKey,
+        openaiApiKey: config.openaiApiKey,
+        translationPrompt: config.translationPrompt
+      };
+    } else if (request.type === 'bilingual-assembly') {
+      const config = request.config as Partial<BilingualAssemblyJobConfig>;
+      if (!config?.projectId || !config?.sourceSentencesDir || !config?.targetSentencesDir || !config?.sentencePairsPath || !config?.outputDir) {
+        return undefined;
+      }
+      return {
+        type: 'bilingual-assembly',
+        projectId: config.projectId,
+        sourceSentencesDir: config.sourceSentencesDir,
+        targetSentencesDir: config.targetSentencesDir,
+        sentencePairsPath: config.sentencePairsPath,
+        outputDir: config.outputDir,
+        pauseDuration: config.pauseDuration ?? 0.3,
+        gapDuration: config.gapDuration ?? 1.0
+      };
     }
     return undefined;
   }
 
   private generateId(): string {
     return `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  /**
+   * Get human-readable language name from language code
+   */
+  private getLanguageName(code: string | undefined): string {
+    const languageNames: Record<string, string> = {
+      'en': 'English',
+      'de': 'German',
+      'es': 'Spanish',
+      'fr': 'French',
+      'it': 'Italian',
+      'pt': 'Portuguese',
+      'nl': 'Dutch',
+      'pl': 'Polish',
+      'ru': 'Russian',
+      'ja': 'Japanese',
+      'zh': 'Chinese',
+      'ko': 'Korean',
+      'ar': 'Arabic',
+      'hi': 'Hindi',
+      'tr': 'Turkish',
+      'vi': 'Vietnamese',
+      'th': 'Thai',
+      'sv': 'Swedish',
+      'da': 'Danish',
+      'no': 'Norwegian',
+      'fi': 'Finnish',
+    };
+    return code ? (languageNames[code] || code.toUpperCase()) : 'Unknown';
   }
 
   /**
@@ -1678,6 +2803,9 @@ export class QueueService {
         }));
 
         this._jobs.set(jobs);
+
+        // Clean up orphaned sub-items (sub-items whose master job doesn't exist)
+        this.cleanupOrphanedSubItems();
 
         // Don't restore isRunning - user should manually restart
         // this._isRunning.set(state.isRunning || false);

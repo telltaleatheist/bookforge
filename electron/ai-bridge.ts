@@ -753,6 +753,129 @@ async function checkOpenAIConnection(): Promise<ProviderConnectionResult> {
   };
 }
 
+/**
+ * Get available OpenAI models by querying the OpenAI API
+ * Uses the /v1/models endpoint to fetch the actual list of available models
+ */
+export async function getOpenAIModels(apiKey: string): Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }> {
+  if (!apiKey) {
+    return { success: false, error: 'No API key provided' };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch('https://api.openai.com/v1/models', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMessage = errorData.error?.message || response.statusText;
+
+      if (response.status === 401) {
+        return { success: false, error: 'Invalid API key' };
+      }
+      if (response.status === 403) {
+        return { success: false, error: 'API key does not have access' };
+      }
+
+      return { success: false, error: `API error: ${errorMessage}` };
+    }
+
+    const data = await response.json();
+
+    // Filter to only include chat models (gpt-*) and format them nicely
+    const models: { value: string; label: string }[] = [];
+
+    if (data.data && Array.isArray(data.data)) {
+      for (const model of data.data) {
+        const id = model.id;
+        // Only include GPT chat models, skip embedding, whisper, tts, dall-e, etc.
+        if (!id.startsWith('gpt-')) {
+          continue;
+        }
+        // Skip instruct and embedding variants
+        if (id.includes('instruct') || id.includes('embedding')) {
+          continue;
+        }
+
+        // Create a friendly label
+        let label = id;
+        if (id === 'gpt-4o') {
+          label = 'GPT-4o';
+        } else if (id === 'gpt-4o-mini') {
+          label = 'GPT-4o Mini';
+        } else if (id.startsWith('gpt-4o-')) {
+          // Dated versions like gpt-4o-2024-11-20
+          const dateMatch = id.match(/gpt-4o-(\d{4}-\d{2}-\d{2})/);
+          if (dateMatch) {
+            label = `GPT-4o (${dateMatch[1]})`;
+          }
+        } else if (id === 'gpt-4-turbo') {
+          label = 'GPT-4 Turbo';
+        } else if (id.startsWith('gpt-4-turbo-')) {
+          const dateMatch = id.match(/gpt-4-turbo-(\d{4}-\d{2}-\d{2})/);
+          if (dateMatch) {
+            label = `GPT-4 Turbo (${dateMatch[1]})`;
+          }
+        } else if (id === 'gpt-4') {
+          label = 'GPT-4';
+        } else if (id.startsWith('gpt-4-')) {
+          // Other GPT-4 variants
+          label = id.replace('gpt-4-', 'GPT-4 ').replace(/-/g, ' ');
+        } else if (id === 'gpt-3.5-turbo') {
+          label = 'GPT-3.5 Turbo';
+        } else if (id.startsWith('gpt-3.5-turbo-')) {
+          label = `GPT-3.5 Turbo (${id.replace('gpt-3.5-turbo-', '')})`;
+        }
+
+        models.push({ value: id, label });
+      }
+    }
+
+    // Sort models: GPT-4o first (recommended), then GPT-4 Turbo, then GPT-4, then GPT-3.5
+    models.sort((a, b) => {
+      // gpt-4o (non-mini, non-dated) first
+      if (a.value === 'gpt-4o' && b.value !== 'gpt-4o') return -1;
+      if (a.value !== 'gpt-4o' && b.value === 'gpt-4o') return 1;
+      // gpt-4o-mini second
+      if (a.value === 'gpt-4o-mini' && b.value !== 'gpt-4o-mini') return -1;
+      if (a.value !== 'gpt-4o-mini' && b.value === 'gpt-4o-mini') return 1;
+      // Other gpt-4o variants
+      if (a.value.startsWith('gpt-4o') && !b.value.startsWith('gpt-4o')) return -1;
+      if (!a.value.startsWith('gpt-4o') && b.value.startsWith('gpt-4o')) return 1;
+      // gpt-4-turbo
+      if (a.value.includes('turbo') && !b.value.includes('turbo')) return -1;
+      if (!a.value.includes('turbo') && b.value.includes('turbo')) return 1;
+      // gpt-4 before gpt-3.5
+      if (a.value.startsWith('gpt-4') && b.value.startsWith('gpt-3')) return -1;
+      if (a.value.startsWith('gpt-3') && b.value.startsWith('gpt-4')) return 1;
+      return a.label.localeCompare(b.label);
+    });
+
+    // Mark the first one as recommended
+    if (models.length > 0 && !models[0].label.includes('Recommended')) {
+      models[0].label += ' (Recommended)';
+    }
+
+    return { success: true, models };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    if (message.includes('abort')) {
+      return { success: false, error: 'Request timed out' };
+    }
+    return { success: false, error: message };
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Job Cancellation Support
 // ─────────────────────────────────────────────────────────────────────────────

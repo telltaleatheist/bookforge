@@ -50,10 +50,20 @@ import { QueueJob, JobType } from './models/queue.types';
                 <desktop-button
                   variant="ghost"
                   size="xs"
-                  title="Clear completed"
+                  title="Clear completed and errors"
                   (click)="clearCompleted()"
                 >
-                  Clear
+                  Clear Done
+                </desktop-button>
+              }
+              @if (queueService.jobs().length > 0) {
+                <desktop-button
+                  variant="ghost"
+                  size="xs"
+                  title="Clear all jobs from queue"
+                  (click)="clearAll()"
+                >
+                  Clear All
                 </desktop-button>
               }
             </div>
@@ -622,6 +632,10 @@ export class QueueComponent implements OnInit, OnDestroy {
 
   clearCompleted(): void {
     this.queueService.clearCompleted();
+  }
+
+  clearAll(): void {
+    this.queueService.clearAll();
   }
 
   startQueue(): void {

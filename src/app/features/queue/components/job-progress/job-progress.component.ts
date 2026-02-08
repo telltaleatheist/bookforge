@@ -61,6 +61,9 @@ interface ETAState {
             } @else if (currentJob.type === 'resemble-enhance') {
               <span class="type-icon">&#10024;</span>
               <span>Audio Enhancement</span>
+            } @else if (currentJob.type === 'language-learning') {
+              <span class="type-icon">&#127891;</span>
+              <span>Language Learning</span>
             }
           </div>
 
@@ -100,6 +103,17 @@ interface ETAState {
               <span class="stat-label">Phase</span>
               <span class="stat-value">{{ getReassemblyPhase() }}</span>
             </div>
+          } @else if (job()?.type === 'language-learning') {
+            <div class="stat">
+              <span class="stat-label">Phase</span>
+              <span class="stat-value">{{ getLanguageLearningPhase() }}</span>
+            </div>
+            @if (job()?.currentChunk && job()?.totalChunks) {
+              <div class="stat">
+                <span class="stat-label">Sentences</span>
+                <span class="stat-value">{{ job()!.currentChunk }}/{{ job()!.totalChunks }}</span>
+              </div>
+            }
           } @else if (job()?.totalChunksInJob) {
             <div class="stat">
               <span class="stat-label">Chunks</span>
@@ -902,6 +916,49 @@ export class JobProgressComponent implements OnDestroy {
       return 'Encoding M4B';
     } else {
       return 'Metadata';
+    }
+  }
+
+  getLanguageLearningPhase(): string {
+    const j = this.job();
+    if (!j) return '-';
+
+    const progress = j.progress || 0;
+    const message = j.progressMessage?.toLowerCase() || '';
+
+    // Use message content to determine phase
+    if (message.includes('extract')) {
+      return 'Extracting';
+    }
+    if (message.includes('clean')) {
+      return 'AI Cleanup';
+    }
+    if (message.includes('split')) {
+      return 'Splitting';
+    }
+    if (message.includes('translat')) {
+      return 'Translating';
+    }
+    if (message.includes('epub')) {
+      return 'Generating EPUB';
+    }
+    if (message.includes('tts')) {
+      return 'TTS Conversion';
+    }
+
+    // Fall back to progress-based phase
+    if (progress < 5) {
+      return 'Extracting';
+    } else if (progress < 20) {
+      return 'AI Cleanup';
+    } else if (progress < 22) {
+      return 'Splitting';
+    } else if (progress < 70) {
+      return 'Translating';
+    } else if (progress < 75) {
+      return 'Generating EPUB';
+    } else {
+      return 'TTS Conversion';
     }
   }
 }

@@ -34,6 +34,14 @@ export const routes: Routes = [
     path: 'epub-editor',
     loadComponent: () => import('./features/epub-editor/epub-editor.component').then(m => m.EpubEditorComponent)
   },
+  {
+    path: 'language-learning',
+    loadComponent: () => import('./features/language-learning/language-learning.component').then(m => m.LanguageLearningComponent)
+  },
+  {
+    path: 'alignment',
+    loadComponent: () => import('./features/language-learning/components/sentence-alignment/sentence-alignment.component').then(m => m.SentenceAlignmentComponent)
+  },
   // Legacy route for backwards compatibility
   {
     path: 'pdf-picker',

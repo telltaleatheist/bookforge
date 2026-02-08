@@ -2,15 +2,17 @@
  * Job Details Component - Displays detailed info for a selected job (when not processing)
  */
 
-import { Component, input, output, computed } from '@angular/core';
+import { Component, input, output, computed, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { QueueJob, OcrCleanupConfig, TtsConversionConfig } from '../../models/queue.types';
+import { QueueJob, OcrCleanupConfig, TtsConversionConfig, LanguageLearningJobConfig } from '../../models/queue.types';
+import { QueueService } from '../../services/queue.service';
 
 @Component({
   selector: 'app-job-details',
   standalone: true,
-  imports: [CommonModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent],
   template: `
     @if (job(); as selectedJob) {
       <div class="details-panel">
@@ -69,8 +71,36 @@ import { QueueJob, OcrCleanupConfig, TtsConversionConfig } from '../../models/qu
           } @else if (selectedJob.type === 'tts-conversion') {
             <span class="type-icon">&#127911;</span>
             <span class="type-label">TTS Conversion</span>
+          } @else if (selectedJob.type === 'language-learning') {
+            <span class="type-icon">&#127760;</span>
+            <span class="type-label">Language Learning</span>
+          } @else if (selectedJob.type === 'bilingual-assembly') {
+            <span class="type-icon">&#127925;</span>
+            <span class="type-label">Bilingual Assembly</span>
           }
         </div>
+
+        <!-- Language Learning Settings -->
+        @if (isLanguageLearningConfig(selectedJob.config)) {
+          <div class="info-section">
+            <h4>Alignment Settings</h4>
+            <div class="checkbox-row">
+              <label class="checkbox-label">
+                <input
+                  type="checkbox"
+                  [checked]="selectedJob.config.autoAcceptResults !== false"
+                  (change)="onAutoAcceptChange(selectedJob, $event)"
+                  [disabled]="selectedJob.status !== 'pending'"
+                >
+                <span class="checkbox-text">Auto-accept if aligned</span>
+              </label>
+              <span class="checkbox-hint">
+                When checked, TTS starts automatically if sentence counts match.
+                Preview window still appears for review.
+              </span>
+            </div>
+          </div>
+        }
 
         <!-- Book Info -->
         <div class="info-section">
@@ -406,9 +436,54 @@ import { QueueJob, OcrCleanupConfig, TtsConversionConfig } from '../../models/qu
       font-size: 0.75rem;
       color: var(--text-muted);
     }
+
+    .checkbox-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+      font-size: 0.875rem;
+      color: var(--text-primary);
+
+      input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--accent);
+        cursor: pointer;
+
+        &:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+      }
+
+      &:has(input:disabled) {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+    }
+
+    .checkbox-text {
+      font-weight: 500;
+    }
+
+    .checkbox-hint {
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+      line-height: 1.4;
+      padding-left: 1.5rem;
+    }
   `]
 })
 export class JobDetailsComponent {
+  private readonly queueService = inject(QueueService);
+
   // Inputs
   readonly job = input<QueueJob | null>(null);
 
@@ -425,6 +500,15 @@ export class JobDetailsComponent {
 
   isTtsConfig(config: any): config is TtsConversionConfig {
     return config?.type === 'tts-conversion';
+  }
+
+  isLanguageLearningConfig(config: any): config is LanguageLearningJobConfig {
+    return config?.type === 'language-learning';
+  }
+
+  onAutoAcceptChange(job: QueueJob, event: Event): void {
+    const checked = (event.target as HTMLInputElement).checked;
+    this.queueService.updateJobConfig(job.id, { autoAcceptResults: checked });
   }
 
   formatProvider(provider: string): string {
@@ -467,7 +551,7 @@ export class JobDetailsComponent {
   }
 
   onViewDiff(job: QueueJob): void {
-    if (job.outputPath) {
+    if (job.outputPath && job.epubPath) {
       this.viewDiff.emit({
         originalPath: job.epubPath,
         cleanedPath: job.outputPath

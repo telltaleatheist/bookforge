@@ -5,7 +5,7 @@
 import { AIProvider } from '../../../core/models/ai-config.types';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'resemble-enhance';
+export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'resemble-enhance' | 'language-learning' | 'll-cleanup' | 'll-translation' | 'bilingual-assembly';
 
 // Job status
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
@@ -32,8 +32,8 @@ export interface ParallelWorkerProgress {
 export interface QueueJob {
   id: string;
   type: JobType;
-  epubPath: string;
-  epubFilename: string;
+  epubPath?: string;      // Optional for bilingual-assembly jobs
+  epubFilename?: string;  // Optional for bilingual-assembly jobs
   status: JobStatus;
   progress?: number;          // 0-100 percentage
   error?: string;             // Error message if status is 'error'
@@ -42,6 +42,11 @@ export interface QueueJob {
   startedAt?: Date;
   completedAt?: Date;
   metadata?: AudiobookMetadata;
+  // Language learning project directory
+  projectDir?: string;
+  // Job grouping for multi-step workflows (ll-cleanup, ll-translation, tts)
+  parentJobId?: string;        // ID of the master job (first in workflow)
+  workflowId?: string;         // Shared ID for all jobs in a workflow
   // Job-specific configuration
   config?: JobConfig;
   // Standalone mode - job was started manually, doesn't trigger next job on completion
@@ -78,7 +83,7 @@ export interface QueueJob {
 }
 
 // Job configuration union type
-export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig;
+export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | LanguageLearningJobConfig | LLCleanupJobConfig | LLTranslationJobConfig | BilingualAssemblyJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -128,8 +133,25 @@ export interface TtsConversionConfig {
   parallelWorkers?: number; // undefined = auto, 1 = sequential, 2-4 = parallel workers
   useParallel?: boolean;    // Enable parallel processing (default: false for backwards compat)
   parallelMode?: 'sentences' | 'chapters'; // Division strategy (default: sentences for fine-grained)
+  // Bilingual mode for language learning audiobooks
+  bilingual?: {
+    enabled: boolean;
+    pauseDuration?: number;  // Seconds between source and target (default 0.3)
+    gapDuration?: number;    // Seconds between pairs (default 1.0)
+  };
+  // Skip assembly - for dual-voice bilingual workflows where assembly happens after
+  // both source and target TTS jobs complete
+  skipAssembly?: boolean;
   // Resume info (saved after prep for resume capability)
   resumeInfo?: TtsResumeInfo;
+  // Clean session - delete any existing e2a sessions for this epub before starting
+  // Used for language learning jobs which should always start fresh (no resume)
+  cleanSession?: boolean;
+  // Preserve paragraph boundaries as sentences (for language learning EPUBs)
+  // When true, e2a treats each <p> tag as a sentence without re-splitting
+  sentencePerParagraph?: boolean;
+  // Skip reading heading tags (h1-h4) as chapter titles (for bilingual EPUBs)
+  skipHeadings?: boolean;
 }
 
 // Translation job configuration (auto-detects source language)
@@ -178,6 +200,100 @@ export interface ResembleEnhanceJobConfig {
   projectId?: string;          // For book-based: project ID to update state
   bfpPath?: string;            // BFP path for state updates
   replaceOriginal?: boolean;   // Default: true for books, configurable for standalone
+}
+
+// Language Learning job configuration - bilingual audiobook generation
+export interface LanguageLearningJobConfig {
+  type: 'language-learning';
+  projectId: string;
+  sourceUrl: string;
+  sourceLang: string;          // e.g., 'en'
+  targetLang: string;          // e.g., 'de'
+  htmlPath: string;            // Path to source HTML
+  pdfPath?: string;            // Path to generated PDF (optional)
+  deletedBlockIds: string[];   // Blocks to exclude
+  title?: string;              // Article title
+
+  // AI settings
+  aiProvider: AIProvider;
+  aiModel: string;
+  ollamaBaseUrl?: string;
+  claudeApiKey?: string;
+  openaiApiKey?: string;
+
+  // AI prompt settings
+  translationPrompt?: string;  // Custom translation prompt template
+  enableCleanup?: boolean;     // Whether to run cleanup before translation
+  cleanupPrompt?: string;      // Custom cleanup prompt template
+
+  // TTS settings
+  sourceVoice: string;         // Voice for source language
+  targetVoice: string;         // Voice for target language
+  ttsEngine: 'xtts' | 'orpheus';
+  sourceTtsSpeed: number;      // TTS speed for source language (0.5 - 2.0)
+  targetTtsSpeed: number;      // TTS speed for target language (0.5 - 2.0)
+  device: 'gpu' | 'mps' | 'cpu';
+  workerCount?: number;        // Number of parallel TTS workers
+
+  // Alignment verification settings
+  autoAcceptResults?: boolean; // Auto-continue to TTS if sentences match (still shows preview)
+}
+
+// Language Learning Cleanup job configuration - AI cleanup of extracted text
+export interface LLCleanupJobConfig {
+  type: 'll-cleanup';
+  projectId: string;
+  projectDir: string;          // Path to project directory
+  inputText: string;           // Extracted plain text to clean
+  sourceLang: string;          // Source language code
+
+  // AI settings
+  aiProvider: AIProvider;
+  aiModel: string;
+  ollamaBaseUrl?: string;
+  claudeApiKey?: string;
+  openaiApiKey?: string;
+  cleanupPrompt?: string;      // Custom cleanup prompt template
+}
+
+// Sentence splitting granularity for language learning
+export type SplitGranularity = 'sentence' | 'paragraph';
+
+// Language Learning Translation job configuration - translate and create EPUB
+export interface LLTranslationJobConfig {
+  type: 'll-translation';
+  projectId: string;
+  projectDir: string;          // Path to project directory
+  cleanedTextPath: string;     // Path to cleaned.txt from cleanup step
+  sourceLang: string;
+  targetLang: string;
+  title?: string;
+
+  // AI settings
+  aiProvider: AIProvider;
+  aiModel: string;
+  ollamaBaseUrl?: string;
+  claudeApiKey?: string;
+  openaiApiKey?: string;
+  translationPrompt?: string;  // Custom translation prompt template
+
+  // Alignment verification
+  autoApproveAlignment?: boolean;  // Skip preview if sentence counts match (default: true)
+
+  // Sentence splitting granularity
+  splitGranularity?: SplitGranularity;  // 'punctuation' (most), 'sentence' (default), 'paragraph' (least)
+}
+
+// Bilingual Assembly job configuration - combines dual-voice TTS outputs
+export interface BilingualAssemblyJobConfig {
+  type: 'bilingual-assembly';
+  projectId: string;
+  sourceSentencesDir: string;  // Directory with source language sentence audio files
+  targetSentencesDir: string;  // Directory with target language sentence audio files
+  sentencePairsPath: string;   // Path to sentence_pairs.json
+  outputDir: string;           // Where to save M4B and VTT
+  pauseDuration?: number;      // Seconds between source and target (default 0.3)
+  gapDuration?: number;        // Seconds between pairs (default 1.0)
 }
 
 // Resume info for TTS jobs - allows resuming interrupted conversions
@@ -300,16 +416,42 @@ export interface AudiobookMetadata {
   year?: string;
   coverPath?: string;      // Path to cover image file
   outputFilename?: string; // Custom output filename (e.g., "My Book.m4b")
+  // Placeholder marker for TTS jobs that are waiting for translation to complete
+  // When set, the job is skipped during queue processing until translation sets epubPath
+  bilingualPlaceholder?: {
+    role: 'source' | 'target';
+    projectId: string;
+    targetLang?: string;  // Only for source role
+  };
+  // Bilingual workflow state (for chaining TTS jobs)
+  bilingualWorkflow?: {
+    role: 'source' | 'target';
+    targetEpubPath?: string;
+    targetConfig?: any;
+    sourceSentencesDir?: string;
+    assemblyConfig?: {
+      projectId: string;
+      audiobooksDir: string;
+      sentencePairsPath: string;
+      pauseDuration: number;
+      gapDuration: number;
+    };
+  };
 }
 
 // Create job request
 export interface CreateJobRequest {
   type: JobType;
-  epubPath: string;
-  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig>;
+  epubPath?: string;  // Optional for bilingual-assembly jobs
+  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | LanguageLearningJobConfig | LLCleanupJobConfig | LLTranslationJobConfig | BilingualAssemblyJobConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;
   // BFP project path for analytics saving
   bfpPath?: string;
+  // Language learning project directory
+  projectDir?: string;
+  // Job grouping for multi-step workflows
+  parentJobId?: string;
+  workflowId?: string;
 }

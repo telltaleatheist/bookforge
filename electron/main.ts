@@ -11,6 +11,7 @@ import { loadBuiltinPlugins } from './plugins/plugin-loader';
 import { libraryServer } from './library-server';
 import { getHeadlessOcrService } from './headless-ocr';
 import { initializeLoggers, getMainLogger, closeLoggers } from './rolling-logger';
+import { setupAlignmentIpc } from './sentence-alignment-window.js';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -132,6 +133,69 @@ function registerPageProtocol(): void {
   });
 }
 
+// Register custom protocol for serving audio files
+// This avoids file:// security restrictions
+function registerAudioProtocol(): void {
+  protocol.handle('bookforge-audio', async (request) => {
+    // URL format: bookforge-audio:///path
+    let filePath: string;
+
+    const urlStr = request.url;
+
+    // Extract path after protocol
+    if (urlStr.startsWith('bookforge-audio:///')) {
+      filePath = urlStr.substring('bookforge-audio:///'.length);
+    } else if (urlStr.startsWith('bookforge-audio://')) {
+      filePath = urlStr.substring('bookforge-audio://'.length);
+    } else {
+      filePath = urlStr.replace('bookforge-audio:', '');
+    }
+
+    filePath = decodeURIComponent(filePath);
+
+    // Handle Windows paths
+    if (process.platform === 'win32') {
+      if (/^[a-zA-Z]\/[^:]/.test(filePath)) {
+        filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+      }
+    }
+
+    // On Mac/Linux, ensure absolute path starts with /
+    if (process.platform !== 'win32' && !filePath.startsWith('/')) {
+      filePath = '/' + filePath;
+    }
+
+    // Normalize to platform-specific separators
+    filePath = filePath.split('/').join(path.sep);
+
+    console.log('[Audio Protocol] URL:', urlStr);
+    console.log('[Audio Protocol] Resolved path:', filePath);
+
+    try {
+      // Read file and determine content type based on extension
+      const data = fsSync.readFileSync(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+
+      let contentType = 'audio/mp4'; // Default for M4B/M4A
+      if (ext === '.mp3') contentType = 'audio/mpeg';
+      else if (ext === '.wav') contentType = 'audio/wav';
+      else if (ext === '.flac') contentType = 'audio/flac';
+      else if (ext === '.ogg') contentType = 'audio/ogg';
+
+      return new Response(data, {
+        headers: {
+          'Content-Type': contentType,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': String(data.length)
+        }
+      });
+    } catch (err) {
+      console.error('[Audio Protocol] Failed to load audio:', filePath, err);
+      return new Response('File not found', { status: 404 });
+    }
+  });
+}
+
 // Atomic file write - writes to temp file then renames to prevent corruption
 // Uses temp file in same directory to avoid cross-device link issues
 async function atomicWriteFile(filePath: string, content: string): Promise<void> {
@@ -171,6 +235,7 @@ function createWindow(): void {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
+      webviewTag: true,  // Enable <webview> for article preview
     },
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0a0a0a',
@@ -946,6 +1011,30 @@ function setupIpcHandlers(): void {
     }
 
     return { success: true, filePath: result.filePath };
+  });
+
+  // Native confirmation dialog
+  ipcMain.handle('dialog:confirm', async (_event, options: {
+    title: string;
+    message: string;
+    detail?: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    type?: 'none' | 'info' | 'error' | 'question' | 'warning';
+  }) => {
+    if (!mainWindow) return { confirmed: false };
+
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: options.type || 'question',
+      title: options.title,
+      message: options.message,
+      detail: options.detail,
+      buttons: [options.cancelLabel || 'Cancel', options.confirmLabel || 'OK'],
+      defaultId: 1,
+      cancelId: 0
+    });
+
+    return { confirmed: result.response === 1 };
   });
 
   // Projects folder management
@@ -2197,6 +2286,15 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('ai:get-openai-models', async (_event, apiKey: string) => {
+    try {
+      const { getOpenAIModels } = await import('./ai-bridge.js');
+      return await getOpenAIModels(apiKey);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('ai:load-skipped-chunks', async (_event, jsonPath: string) => {
     try {
       const content = await fs.readFile(jsonPath, 'utf-8');
@@ -2572,6 +2670,30 @@ function setupIpcHandlers(): void {
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
       const resumeInfo = parallelTtsBridge.buildResumeInfo(prepInfo, settings);
       return { success: true, data: resumeInfo };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Bilingual Assembly handlers (for dual-voice language learning audiobooks)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('bilingual-assembly:run', async (_event, jobId: string, config: {
+    projectId: string;
+    sourceSentencesDir: string;
+    targetSentencesDir: string;
+    sentencePairsPath: string;
+    outputDir: string;
+    pauseDuration?: number;
+    gapDuration?: number;
+    audioFormat?: string;
+  }) => {
+    try {
+      const { initBilingualAssemblyBridge, runBilingualAssembly } = await import('./bilingual-assembly-bridge.js');
+      initBilingualAssemblyBridge(mainWindow!);
+      const result = await runBilingualAssembly(jobId, config);
+      return { success: result.success, data: result, error: result.error };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -4600,9 +4722,383 @@ function setupIpcHandlers(): void {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Debug handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('debug:save-logs', async (_event, content: string, filename: string) => {
+    try {
+      const logsDir = path.join(getLibraryRoot(), 'logs');
+      await fs.mkdir(logsDir, { recursive: true });
+      const logPath = path.join(logsDir, filename);
+      await fs.writeFile(logPath, content, 'utf-8');
+      console.log('[MAIN] Saved logs to:', logPath);
+      return { success: true, path: logPath };
+    } catch (err) {
+      console.error('[MAIN] Failed to save logs:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Language Learning handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('language-learning:fetch-url', async (_event, url: string) => {
+    console.log('[MAIN] language-learning:fetch-url called with:', url);
+    try {
+      const { fetchUrlToPdf } = await import('./web-fetch-bridge.js');
+      console.log('[MAIN] Calling fetchUrlToPdf...');
+      const result = await fetchUrlToPdf(url, getLibraryRoot());
+      console.log('[MAIN] fetchUrlToPdf result:', JSON.stringify(result, null, 2));
+      return result;
+    } catch (err) {
+      console.error('[MAIN] language-learning:fetch-url error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:save-project', async (_event, project: any) => {
+    try {
+      const { saveProject } = await import('./web-fetch-bridge.js');
+      return await saveProject(project, getLibraryRoot());
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:load-project', async (_event, projectId: string) => {
+    try {
+      const { loadProject } = await import('./web-fetch-bridge.js');
+      return await loadProject(projectId, getLibraryRoot());
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:list-projects', async () => {
+    try {
+      const { listProjects } = await import('./web-fetch-bridge.js');
+      return await listProjects(getLibraryRoot());
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:delete-project', async (_event, projectId: string) => {
+    try {
+      const { deleteProject } = await import('./web-fetch-bridge.js');
+      return await deleteProject(projectId, getLibraryRoot());
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:confirm-delete', async (_event, title: string) => {
+    const { dialog } = await import('electron');
+    const result = await dialog.showMessageBox(mainWindow!, {
+      type: 'warning',
+      buttons: ['Cancel', 'Delete'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Delete Project',
+      message: `Delete "${title}"?`,
+      detail: 'This will permanently delete the project and any associated audiobook files.',
+    });
+    return { confirmed: result.response === 1 };
+  });
+
+  ipcMain.handle('language-learning:ensure-directory', async (_event, dirPath: string) => {
+    try {
+      const { ensureDirectory } = await import('./web-fetch-bridge.js');
+      return await ensureDirectory(dirPath);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:delete-audiobooks', async (_event, projectId: string) => {
+    try {
+      const { deleteProjectAudiobooks } = await import('./web-fetch-bridge.js');
+      return await deleteProjectAudiobooks(projectId, getLibraryRoot());
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:list-completed', async () => {
+    try {
+      const { listCompletedAudiobooks } = await import('./web-fetch-bridge.js');
+      return await listCompletedAudiobooks(getLibraryRoot());
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:extract-text', async (_event, htmlPath: string, deletedSelectors: string[]) => {
+    try {
+      const { extractTextFromHtml } = await import('./web-fetch-bridge.js');
+      return await extractTextFromHtml(htmlPath, deletedSelectors);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:write-file', async (_event, filePath: string, content: string) => {
+    try {
+      const fsPromises = await import('fs/promises');
+      await fsPromises.writeFile(filePath, content, 'utf-8');
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Player-related handlers for bilingual audiobooks
+  ipcMain.handle('language-learning:get-audio-path', async (_event, projectId: string) => {
+    try {
+      const path = await import('path');
+      const fsPromises = await import('fs/promises');
+      const audiobooksDir = path.join(getLibraryRoot(), 'language-learning', 'audiobooks');
+      const audioPath = path.join(audiobooksDir, `${projectId}.m4b`);
+
+      // Check if file exists
+      try {
+        await fsPromises.access(audioPath);
+        return { success: true, path: audioPath };
+      } catch {
+        return { success: false, error: 'Audio file not found' };
+      }
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Get audio as base64 data URL (more reliable than custom protocols)
+  ipcMain.handle('language-learning:get-audio-data', async (_event, projectId: string) => {
+    try {
+      const path = await import('path');
+      const fsPromises = await import('fs/promises');
+      const audiobooksDir = path.join(getLibraryRoot(), 'language-learning', 'audiobooks');
+      const audioPath = path.join(audiobooksDir, `${projectId}.m4b`);
+
+      // Read file as buffer and convert to base64
+      const buffer = await fsPromises.readFile(audioPath);
+      const base64 = buffer.toString('base64');
+      const dataUrl = `data:audio/mp4;base64,${base64}`;
+
+      console.log(`[MAIN] Loaded audio for ${projectId}: ${buffer.length} bytes`);
+      return { success: true, dataUrl, size: buffer.length };
+    } catch (err) {
+      console.error(`[MAIN] Failed to load audio for ${projectId}:`, err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Check if audio exists for a project (quick check without loading)
+  ipcMain.handle('language-learning:has-audio', async (_event, projectId: string) => {
+    try {
+      const path = await import('path');
+      const fsPromises = await import('fs/promises');
+      const audiobooksDir = path.join(getLibraryRoot(), 'language-learning', 'audiobooks');
+      const audioPath = path.join(audiobooksDir, `${projectId}.m4b`);
+
+      try {
+        await fsPromises.access(audioPath);
+        return { success: true, hasAudio: true };
+      } catch {
+        return { success: true, hasAudio: false };
+      }
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Delete audio and associated data for a project (for re-generation)
+  ipcMain.handle('language-learning:delete-audio', async (_event, projectId: string) => {
+    try {
+      const path = await import('path');
+      const fsPromises = await import('fs/promises');
+      const audiobooksDir = path.join(getLibraryRoot(), 'language-learning', 'audiobooks');
+      const projectsDir = path.join(getLibraryRoot(), 'language-learning', 'projects', projectId);
+
+      // Delete audio file
+      const audioPath = path.join(audiobooksDir, `${projectId}.m4b`);
+      try {
+        await fsPromises.unlink(audioPath);
+        console.log(`[MAIN] Deleted audio: ${audioPath}`);
+      } catch { /* File might not exist */ }
+
+      // Delete VTT file
+      const vttPath = path.join(audiobooksDir, `${projectId}.vtt`);
+      try {
+        await fsPromises.unlink(vttPath);
+        console.log(`[MAIN] Deleted VTT: ${vttPath}`);
+      } catch { /* File might not exist */ }
+
+      // Delete generated EPUBs and data from project folder
+      const sourceEpub = path.join(projectsDir, 'source.epub');
+      const targetEpub = path.join(projectsDir, 'target.epub');
+      const sentencePairs = path.join(projectsDir, 'sentence_pairs.json');
+      const cleanedTxt = path.join(projectsDir, 'cleaned.txt');
+      const analyticsJson = path.join(projectsDir, 'analytics.json');
+
+      for (const file of [sourceEpub, targetEpub, sentencePairs, cleanedTxt, analyticsJson]) {
+        try {
+          await fsPromises.unlink(file);
+          console.log(`[MAIN] Deleted: ${file}`);
+        } catch { /* File might not exist */ }
+      }
+
+      return { success: true };
+    } catch (err) {
+      console.error(`[MAIN] Failed to delete audio for ${projectId}:`, err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:read-vtt', async (_event, projectId: string) => {
+    try {
+      const path = await import('path');
+      const fsPromises = await import('fs/promises');
+      const audiobooksDir = path.join(getLibraryRoot(), 'language-learning', 'audiobooks');
+      // VTT files are stored alongside the M4B files
+      const vttPath = path.join(audiobooksDir, `${projectId}.vtt`);
+
+      const content = await fsPromises.readFile(vttPath, 'utf-8');
+      return { success: true, content };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:read-sentence-pairs', async (_event, projectId: string) => {
+    try {
+      const path = await import('path');
+      const fsPromises = await import('fs/promises');
+      const projectDir = path.join(getLibraryRoot(), 'language-learning', 'projects', projectId);
+      const pairsPath = path.join(projectDir, 'sentence_pairs.json');
+
+      const content = await fsPromises.readFile(pairsPath, 'utf-8');
+      const pairs = JSON.parse(content);
+      return { success: true, pairs };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:get-analytics', async (_event, projectId: string) => {
+    try {
+      const path = await import('path');
+      const fsPromises = await import('fs/promises');
+      const projectDir = path.join(getLibraryRoot(), 'language-learning', 'projects', projectId);
+      const analyticsPath = path.join(projectDir, 'analytics.json');
+
+      const content = await fsPromises.readFile(analyticsPath, 'utf-8');
+      const analytics = JSON.parse(content);
+      return { success: true, analytics };
+    } catch (err) {
+      // Analytics file may not exist yet - that's OK
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { success: true, analytics: null };
+      }
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:save-analytics', async (_event, projectId: string, analytics: any) => {
+    try {
+      const path = await import('path');
+      const fsPromises = await import('fs/promises');
+      const projectDir = path.join(getLibraryRoot(), 'language-learning', 'projects', projectId);
+      const analyticsPath = path.join(projectDir, 'analytics.json');
+
+      await fsPromises.writeFile(analyticsPath, JSON.stringify(analytics, null, 2), 'utf-8');
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:run-job', async (_event, jobId: string, config: {
+    projectId: string;
+    sourceUrl: string;
+    sourceLang: string;
+    targetLang: string;
+    htmlPath: string;
+    pdfPath?: string;
+    deletedBlockIds: string[];
+    title?: string;
+    aiProvider: 'ollama' | 'claude' | 'openai';
+    aiModel: string;
+    ollamaBaseUrl?: string;
+    claudeApiKey?: string;
+    openaiApiKey?: string;
+    sourceVoice: string;
+    targetVoice: string;
+    ttsEngine: 'xtts' | 'orpheus';
+    speed: number;
+    device: 'gpu' | 'mps' | 'cpu';
+  }) => {
+    try {
+      const { runLanguageLearningJob } = await import('./language-learning-jobs.js');
+      return await runLanguageLearningJob(jobId, config, mainWindow);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Language Learning Split Pipeline Jobs
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Job 1: AI Cleanup
+  ipcMain.handle('ll-cleanup:run', async (_event, jobId: string, config: {
+    projectId: string;
+    projectDir: string;
+    inputText: string;
+    sourceLang: string;
+    aiProvider: 'ollama' | 'claude' | 'openai';
+    aiModel: string;
+    ollamaBaseUrl?: string;
+    claudeApiKey?: string;
+    openaiApiKey?: string;
+    cleanupPrompt?: string;
+  }) => {
+    try {
+      const { runLLCleanup } = await import('./ll-jobs.js');
+      return await runLLCleanup(jobId, config, mainWindow);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Job 2: Translation + EPUB Generation
+  ipcMain.handle('ll-translation:run', async (_event, jobId: string, config: {
+    projectId: string;
+    projectDir: string;
+    cleanedTextPath: string;
+    sourceLang: string;
+    targetLang: string;
+    title?: string;
+    aiProvider: 'ollama' | 'claude' | 'openai';
+    aiModel: string;
+    ollamaBaseUrl?: string;
+    claudeApiKey?: string;
+    openaiApiKey?: string;
+    translationPrompt?: string;
+  }) => {
+    try {
+      const { runLLTranslation } = await import('./ll-jobs.js');
+      return await runLLTranslation(jobId, config, mainWindow);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
 }
 
-// Register custom protocol as privileged (must be done before app ready)
+// Register custom protocols as privileged (must be done before app ready)
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'bookforge-page',
@@ -4611,6 +5107,16 @@ protocol.registerSchemesAsPrivileged([
       secure: true,
       supportFetchAPI: true,
       bypassCSP: true
+    }
+  },
+  {
+    scheme: 'bookforge-audio',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      bypassCSP: true,
+      stream: true  // Enable streaming for audio
     }
   }
 ]);
@@ -4621,10 +5127,12 @@ app.whenReady().then(async () => {
   const logger = getMainLogger();
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
 
-  // Register the protocol handler
+  // Register the protocol handlers
   registerPageProtocol();
+  registerAudioProtocol();
 
   setupIpcHandlers();
+  setupAlignmentIpc();
   createWindow();
 
   // Initialize plugin system

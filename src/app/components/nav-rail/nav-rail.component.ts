@@ -3,6 +3,33 @@ import { CommonModule } from '@angular/common';
 import { Router, NavigationEnd } from '@angular/router';
 import { filter } from 'rxjs/operators';
 
+// Global log capture
+const capturedLogs: string[] = [];
+const originalConsole = {
+  log: console.log.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+  info: console.info.bind(console),
+};
+
+// Hook console methods to capture logs
+console.log = (...args: unknown[]) => {
+  capturedLogs.push(`[LOG] ${new Date().toISOString()} ${args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')}`);
+  originalConsole.log(...args);
+};
+console.warn = (...args: unknown[]) => {
+  capturedLogs.push(`[WARN] ${new Date().toISOString()} ${args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')}`);
+  originalConsole.warn(...args);
+};
+console.error = (...args: unknown[]) => {
+  capturedLogs.push(`[ERROR] ${new Date().toISOString()} ${args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')}`);
+  originalConsole.error(...args);
+};
+console.info = (...args: unknown[]) => {
+  capturedLogs.push(`[INFO] ${new Date().toISOString()} ${args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')}`);
+  originalConsole.info(...args);
+};
+
 export interface NavRailItem {
   id: string;
   icon: string;
@@ -32,6 +59,12 @@ export interface NavRailItem {
             }
           </button>
         }
+      </div>
+      <div class="nav-footer">
+        <button class="debug-btn" (click)="saveLogs()" title="Save debug logs">
+          <span class="nav-icon">🐛</span>
+          <span class="nav-label">Logs</span>
+        </button>
       </div>
     </nav>
   `,
@@ -119,6 +152,45 @@ export interface NavRailItem {
       align-items: center;
       justify-content: center;
     }
+
+    .nav-footer {
+      margin-top: auto;
+      padding-bottom: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .debug-btn {
+      width: 88px;
+      height: 52px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      background: transparent;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--text-muted);
+      transition: all 0.15s ease;
+
+      &:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+
+      .nav-icon {
+        font-size: 1.25rem;
+      }
+
+      .nav-label {
+        font-size: 0.625rem;
+        font-weight: 500;
+        text-transform: uppercase;
+      }
+    }
   `]
 })
 export class NavRailComponent {
@@ -174,6 +246,26 @@ export class NavRailComponent {
       this.router.navigate([route], { queryParams: { home: Date.now() } });
     } else {
       this.router.navigate([route]);
+    }
+  }
+
+  async saveLogs(): Promise<void> {
+    const logContent = capturedLogs.join('\n');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `bookforge-logs-${timestamp}.txt`;
+
+    // Try to save via IPC
+    if ((window as any).electron?.debug?.saveLogs) {
+      await (window as any).electron.debug.saveLogs(logContent, filename);
+    } else {
+      // Fallback: download as file in browser
+      const blob = new Blob([logContent], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
     }
   }
 }

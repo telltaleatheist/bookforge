@@ -556,7 +556,9 @@ export class AiCleanupPanelComponent implements OnInit {
   readonly selectedModel = signal<string>('');
   readonly ollamaModels = signal<{ value: string; label: string }[]>([]);
   readonly claudeModels = signal<{ value: string; label: string }[]>([]);
+  readonly openaiModels = signal<{ value: string; label: string }[]>([]);
   readonly loadingClaudeModels = signal(false);
+  readonly loadingOpenAIModels = signal(false);
 
   // Computed: check if API keys are configured
   readonly hasClaudeKey = computed(() => {
@@ -594,10 +596,14 @@ export class AiCleanupPanelComponent implements OnInit {
         { value: 'claude-sonnet-4-20250514', label: 'Loading models...' }
       ];
     } else if (provider === 'openai' && this.hasOpenAIKey()) {
+      const models = this.openaiModels();
+      // Return fetched models, or fallback while loading
+      if (models.length > 0) {
+        return models;
+      }
+      // Fallback models shown while loading
       return [
-        { value: 'gpt-4o', label: 'GPT-4o' },
-        { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
-        { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' }
+        { value: 'gpt-4o', label: 'Loading models...' }
       ];
     }
     return [];
@@ -642,6 +648,10 @@ export class AiCleanupPanelComponent implements OnInit {
       }
     } else if (config.provider === 'openai') {
       this.selectedModel.set(config.openai.model);
+      // Fetch available OpenAI models for this API key
+      if (config.openai.apiKey) {
+        this.fetchOpenAIModels(config.openai.apiKey);
+      }
     }
   }
 
@@ -699,7 +709,15 @@ export class AiCleanupPanelComponent implements OnInit {
         this.selectedModel.set(config.claude.model || 'claude-sonnet-4-20250514');
       }
     } else if (provider === 'openai') {
-      this.selectedModel.set(config.openai.model || 'gpt-4o');
+      // Fetch available OpenAI models for this API key
+      this.fetchOpenAIModels(config.openai.apiKey);
+      // Set initial model while loading
+      const currentModels = this.openaiModels();
+      if (currentModels.length > 0) {
+        this.selectedModel.set(currentModels[0].value);
+      } else {
+        this.selectedModel.set(config.openai.model || 'gpt-4o');
+      }
     }
   }
 
@@ -725,6 +743,31 @@ export class AiCleanupPanelComponent implements OnInit {
       console.error('Failed to fetch Claude models:', err);
     } finally {
       this.loadingClaudeModels.set(false);
+    }
+  }
+
+  async fetchOpenAIModels(apiKey: string): Promise<void> {
+    if (!apiKey) return;
+
+    this.loadingOpenAIModels.set(true);
+    try {
+      const result = await this.electronService.getOpenAIModels(apiKey);
+      if (result.success && result.models) {
+        this.openaiModels.set(result.models);
+        // Update selected model to first in list if current selection isn't valid
+        const currentModel = this.selectedModel();
+        const modelExists = result.models.some(m => m.value === currentModel);
+        if (!modelExists && result.models.length > 0) {
+          this.selectedModel.set(result.models[0].value);
+        }
+      } else {
+        console.error('Failed to fetch OpenAI models:', result.error);
+        // Keep fallback models on error
+      }
+    } catch (err) {
+      console.error('Failed to fetch OpenAI models:', err);
+    } finally {
+      this.loadingOpenAIModels.set(false);
     }
   }
 

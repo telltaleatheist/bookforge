@@ -485,6 +485,19 @@ export interface ParallelConversionConfig {
     coverPath?: string;  // Path to cover image file
     outputFilename?: string;  // Custom filename (without path)
   };
+  // Bilingual mode for language learning audiobooks
+  bilingual?: {
+    enabled: boolean;
+    pauseDuration?: number;  // Seconds between source and target (default 0.3)
+    gapDuration?: number;    // Seconds between pairs (default 1.0)
+  };
+  // Skip assembly phase - returns sentences directory path for external assembly
+  // Used for dual-voice bilingual workflows where assembly happens after both
+  // source and target TTS jobs complete
+  skipAssembly?: boolean;
+  // Clean session - delete any existing e2a sessions for this epub before starting
+  // Used for language learning jobs which should always start fresh (no resume)
+  cleanSession?: boolean;
 }
 
 export interface ParallelTtsSettings {
@@ -498,6 +511,10 @@ export interface ParallelTtsSettings {
   repetitionPenalty: number;
   speed: number;
   enableTextSplitting: boolean;
+  // For language learning: treat each <p> as a sentence, skip e2a's sentence splitting
+  sentencePerParagraph?: boolean;
+  // For bilingual TTS: skip reading heading tags (h1-h4) as chapter titles
+  skipHeadings?: boolean;
 }
 
 export interface AggregatedProgress {
@@ -999,6 +1016,16 @@ export async function prepareSession(
     args.push('--fine_tuned', settings.fineTuned);
   }
 
+  // Language learning mode: preserve paragraph boundaries as sentences
+  if (settings.sentencePerParagraph) {
+    args.push('--sentence_per_paragraph');
+  }
+
+  // Bilingual mode: skip reading heading tags as chapter titles
+  if (settings.skipHeadings) {
+    args.push('--skip_headings');
+  }
+
   console.log('[PARALLEL-TTS] Running prep with:', args.join(' '));
 
   // Run the prep command
@@ -1186,6 +1213,11 @@ function startWorker(
       args.push('--fine_tuned', settings.fineTuned);
     }
 
+    // Pass speed setting (XTTS only)
+    if (settings.speed !== undefined && settings.speed !== 1.0) {
+      args.push('--speed', settings.speed.toString());
+    }
+
     // Add output_dir if specified
     if (config.outputDir) {
       args.push('--output_dir', config.outputDir);
@@ -1234,6 +1266,11 @@ function startWorker(
     if (settings.enableTextSplitting) {
       args.push('--enable_text_splitting');
     }
+
+    // Pass speed setting (XTTS only)
+    if (settings.speed !== undefined && settings.speed !== 1.0) {
+      args.push('--speed', settings.speed.toString());
+    }
   }
 
   const rangeDesc = isChapterMode
@@ -1241,7 +1278,7 @@ function startWorker(
     : `sentences ${range.sentenceStart}-${range.sentenceEnd}`;
   const workerType = useLightweightWorker ? 'lightweight (worker.py)' : 'full (app.py)';
   console.log(`[PARALLEL-TTS] Worker ${workerId} starting [${workerType}]: ${rangeDesc}`);
-  console.log(`[PARALLEL-TTS] Worker ${workerId} settings: engine=${settings.ttsEngine}, voice=${settings.fineTuned}, device=${settings.device}`);
+  console.log(`[PARALLEL-TTS] Worker ${workerId} settings: engine=${settings.ttsEngine}, voice=${settings.fineTuned}, device=${settings.device}, speed=${settings.speed}`);
 
   // Log to file
   logger.log('INFO', session.jobId, `Worker ${workerId} starting`, {
@@ -1437,6 +1474,18 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       await logger.log('INFO', session.jobId, 'All workers complete, starting assembly');
     }
 
+    // Check if we should skip assembly (for dual-voice bilingual workflows)
+    console.log(`[PARALLEL-TTS] Checking skipAssembly: session.config.skipAssembly = ${session.config.skipAssembly}`);
+    if (session.config.skipAssembly) {
+      const sentencesDir = session.prepInfo?.chaptersDirSentences || session.prepInfo?.chaptersDir;
+      console.log(`[PARALLEL-TTS] skipAssembly=true, returning sentences directory: ${sentencesDir}`);
+      await logger.log('INFO', session.jobId, `skipAssembly mode - sentences at: ${sentencesDir}`);
+      // Emit completion with sentences directory as the "output path" for downstream assembly
+      emitComplete(session, true, sentencesDir);
+      activeSessions.delete(session.jobId);
+      return;
+    }
+
     try {
       const outputPath = await runAssembly(session);
       // Mark as success even with partial worker failures if assembly succeeded
@@ -1615,7 +1664,13 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--tts_engine', settings.ttsEngine,  // Required for session setup even in assembly mode
     '--assemble_only',  // Skip TTS, just combine existing sentence audio files
     '--skip_deps',      // Deps already verified during prep phase
-    '--no_split'        // Don't split into multiple parts - create single file
+    '--no_split',       // Don't split into multiple parts - create single file
+    // Bilingual mode for language learning audiobooks
+    ...(config.bilingual?.enabled ? [
+      '--bilingual',
+      '--bilingual_pause', String(config.bilingual.pauseDuration ?? 0.3),
+      '--bilingual_gap', String(config.bilingual.gapDuration ?? 1.0)
+    ] : [])
   ];
 
   console.log('[PARALLEL-TTS] Running assembly:', args.join(' '));
@@ -2459,6 +2514,7 @@ export async function startParallelConversion(
 
   console.log(`[PARALLEL-TTS] Starting conversion for job ${jobId} with ${config.workerCount} workers`);
   console.log(`[PARALLEL-TTS] Output dir from config:`, config.outputDir);
+  console.log(`[PARALLEL-TTS] skipAssembly from config:`, config.skipAssembly);
   console.log(`[PARALLEL-TTS] Metadata received:`, JSON.stringify(config.metadata, null, 2));
 
   // Prevent system sleep during conversion
@@ -2482,6 +2538,13 @@ export async function startParallelConversion(
     await logger.failJob(jobId, error);
     stopPowerBlock();
     return { success: false, error };
+  }
+
+  // Clean any existing sessions for this epub if requested
+  // Used for language learning jobs which should always start fresh
+  if (config.cleanSession) {
+    console.log(`[PARALLEL-TTS] cleanSession=true, deleting existing sessions for ${config.epubPath}`);
+    await deleteSessionsForEpub(config.epubPath);
   }
 
   // NOTE: We intentionally do NOT auto-skip to assembly for complete sessions.
@@ -3040,6 +3103,82 @@ async function findSessionForEpub(epubPath: string): Promise<string | null> {
 
   console.log(`[PARALLEL-TTS] No matching session found`);
   return null;
+}
+
+/**
+ * Delete all session folders that match a specific epub path
+ * Used for language learning jobs which should always start fresh (no resume)
+ * @param epubPath - Path to the epub file
+ * @returns Number of sessions deleted
+ */
+export async function deleteSessionsForEpub(epubPath: string): Promise<number> {
+  const tmpDir = path.join(getDefaultE2aPath(), 'tmp');
+
+  console.log(`[PARALLEL-TTS] Deleting sessions for: ${epubPath}`);
+
+  try {
+    // Check if tmp dir exists
+    try {
+      await fs.access(tmpDir);
+    } catch {
+      console.log(`[PARALLEL-TTS] No tmp directory - nothing to delete`);
+      return 0;
+    }
+
+    // List all session directories (ebook-{UUID})
+    const sessionDirs = await fs.readdir(tmpDir);
+    const ebookDirs = sessionDirs.filter(d => d.startsWith('ebook-'));
+
+    if (ebookDirs.length === 0) {
+      return 0;
+    }
+
+    let deletedCount = 0;
+
+    for (const sessionDir of ebookDirs) {
+      const sessionPath = path.join(tmpDir, sessionDir);
+
+      try {
+        const sessionStat = await fs.stat(sessionPath);
+        if (!sessionStat.isDirectory()) continue;
+
+        // List process directories (hash folders)
+        const processDirs = await fs.readdir(sessionPath);
+
+        for (const processDir of processDirs) {
+          const processPath = path.join(sessionPath, processDir);
+          const statePath = path.join(processPath, 'session-state.json');
+
+          try {
+            const stateContent = await fs.readFile(statePath, 'utf-8');
+            const state = JSON.parse(stateContent);
+
+            // Check if this session matches the epub path
+            const matchesEpub = state.epub_path === epubPath;
+            const matchesSource = state.source_epub_path === epubPath;
+
+            if (matchesEpub || matchesSource) {
+              console.log(`[PARALLEL-TTS] Deleting session: ${sessionPath}`);
+              await fs.rm(sessionPath, { recursive: true, force: true });
+              deletedCount++;
+              break; // Session folder deleted, move to next
+            }
+          } catch {
+            // No session-state.json or invalid - skip
+            continue;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    console.log(`[PARALLEL-TTS] Deleted ${deletedCount} session(s) for ${epubPath}`);
+    return deletedCount;
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Error deleting sessions:', err);
+    return 0;
+  }
 }
 
 /**

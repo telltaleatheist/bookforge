@@ -1,6 +1,6 @@
 import { Component, OnInit, inject, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { RouterOutlet } from '@angular/router';
+import { Router, RouterOutlet } from '@angular/router';
 import {
   WindowChromeComponent,
   StatusBarComponent,
@@ -41,8 +41,8 @@ import { LibraryService } from './core/services/library.service';
 
         <!-- Main content area with nav rail -->
         <div class="app-layout">
-          <!-- Navigation Rail -->
-          @if (libraryService.isConfigured()) {
+          <!-- Navigation Rail (hidden on standalone alignment window) -->
+          @if (libraryService.isConfigured() && !isStandaloneWindow()) {
             <app-nav-rail [items]="navItems" />
           }
 
@@ -108,6 +108,13 @@ import { LibraryService } from './core/services/library.service';
 export class App implements OnInit {
   readonly themeService = inject(DesktopThemeService);
   readonly libraryService = inject(LibraryService);
+  private readonly router = inject(Router);
+
+  // Hide nav rail for standalone popup windows (alignment, etc.)
+  readonly isStandaloneWindow = computed(() => {
+    const url = this.router.url;
+    return url.startsWith('/alignment');
+  });
 
   // Navigation items for the nav rail
   readonly navItems: NavRailItem[] = [
@@ -140,6 +147,12 @@ export class App implements OnInit {
       icon: '\u{1F50A}', // Speaker with sound waves
       label: 'Post-Processing',
       route: '/post-processing'
+    },
+    {
+      id: 'language-learning',
+      icon: '\u{1F310}', // Globe with meridians
+      label: 'Language Learning',
+      route: '/language-learning'
     },
     {
       id: 'settings',

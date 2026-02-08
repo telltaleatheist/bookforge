@@ -787,6 +787,43 @@ export interface LibraryServerConfig {
   port: number;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Language Learning Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface LanguageLearningProject {
+  id: string;
+  sourceUrl: string;
+  title: string;
+  sourceLang: string;           // 'en' (auto-detected or manual)
+  targetLang: string;           // 'de', 'es', 'fr', etc. (user selected)
+  status: 'fetched' | 'selected' | 'processing' | 'completed' | 'error';
+
+  // File paths
+  pdfPath: string;              // Generated PDF for viewing
+  htmlPath: string;             // Original HTML for text extraction
+  deletedBlockIds: string[];    // Blocks user removed
+
+  // Outputs
+  bilingualEpubPath?: string;
+  audiobookPath?: string;
+  vttPath?: string;
+
+  // Timestamps
+  createdAt: string;
+  modifiedAt: string;
+}
+
+export interface CompletedAudiobook {
+  id: string;
+  title: string;
+  path: string;
+  duration?: number;
+  createdAt: string;
+  sourceLang?: string;
+  targetLang?: string;
+}
+
 export interface ElectronAPI {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
@@ -846,6 +883,14 @@ export interface ElectronAPI {
     openAudio: () => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     saveEpub: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     saveText: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+    confirm: (options: {
+      title: string;
+      message: string;
+      detail?: string;
+      confirmLabel?: string;
+      cancelLabel?: string;
+      type?: 'none' | 'info' | 'error' | 'question' | 'warning';
+    }) => Promise<{ confirmed: boolean }>;
   };
   projects: {
     ensureFolder: () => Promise<{ success: boolean; path?: string; error?: string }>;
@@ -1035,6 +1080,7 @@ export interface ElectronAPI {
     checkProviderConnection: (provider: 'ollama' | 'claude' | 'openai') => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
     getModels: () => Promise<{ success: boolean; data?: OllamaModel[]; error?: string }>;
     getClaudeModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
+    getOpenAIModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
     loadSkippedChunks: (jsonPath: string) => Promise<{ success: boolean; chunks?: SkippedChunk[]; error?: string }>;
     replaceTextInEpub: (epubPath: string, oldText: string, newText: string) => Promise<{ success: boolean; chapterFound?: string; error?: string }>;
     updateSkippedChunk: (jsonPath: string, index: number, newText: string) => Promise<{ success: boolean; error?: string }>;
@@ -1268,6 +1314,20 @@ export interface ElectronAPI {
     resumeConversion: (jobId: string, config: ParallelConversionConfig, resumeInfo: ResumeCheckResult) => Promise<{ success: boolean; data?: ParallelConversionResult; error?: string }>;
     buildResumeInfo: (prepInfo: any, settings: any) => Promise<{ success: boolean; data?: TtsResumeInfo; error?: string }>;
   };
+  bilingualAssembly: {
+    run: (jobId: string, config: {
+      projectId: string;
+      sourceSentencesDir: string;
+      targetSentencesDir: string;
+      sentencePairsPath: string;
+      outputDir: string;
+      pauseDuration?: number;
+      gapDuration?: number;
+      audioFormat?: string;
+    }) => Promise<{ success: boolean; data?: { success: boolean; audioPath?: string; vttPath?: string; error?: string }; error?: string }>;
+    onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; message: string } }) => void) => () => void;
+    onComplete: (callback: (data: { jobId: string; success: boolean; audioPath?: string; vttPath?: string; error?: string }) => void) => () => void;
+  };
   reassembly: {
     scanSessions: (customTmpPath?: string) => Promise<{ success: boolean; data?: E2aSessionScanResult; error?: string }>;
     getSession: (sessionId: string, customTmpPath?: string) => Promise<{ success: boolean; data?: E2aSession; error?: string }>;
@@ -1340,6 +1400,225 @@ export interface ElectronAPI {
       chaptersApplied?: number;
       error?: string;
     }>;
+  };
+  debug: {
+    saveLogs: (content: string, filename: string) => Promise<{
+      success: boolean;
+      path?: string;
+      error?: string;
+    }>;
+  };
+  languageLearning: {
+    fetchUrl: (url: string) => Promise<{
+      success: boolean;
+      htmlPath?: string;
+      title?: string;
+      byline?: string;
+      excerpt?: string;
+      content?: string;
+      textContent?: string;
+      wordCount?: number;
+      error?: string;
+    }>;
+    saveProject: (project: LanguageLearningProject) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    loadProject: (projectId: string) => Promise<{
+      success: boolean;
+      project?: LanguageLearningProject;
+      error?: string;
+    }>;
+    listProjects: () => Promise<{
+      success: boolean;
+      projects?: LanguageLearningProject[];
+      error?: string;
+    }>;
+    deleteProject: (projectId: string) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    confirmDelete: (title: string) => Promise<{
+      confirmed: boolean;
+    }>;
+    ensureDirectory: (dirPath: string) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    deleteAudiobooks: (projectId: string) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    listCompleted: () => Promise<{
+      success: boolean;
+      audiobooks?: CompletedAudiobook[];
+      error?: string;
+    }>;
+    extractText: (htmlPath: string, deletedSelectors: string[]) => Promise<{
+      success: boolean;
+      text?: string;
+      error?: string;
+    }>;
+    writeFile: (filePath: string, content: string) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    getAudioPath: (projectId: string) => Promise<{
+      success: boolean;
+      path?: string;
+      error?: string;
+    }>;
+    getAudioData: (projectId: string) => Promise<{
+      success: boolean;
+      dataUrl?: string;
+      size?: number;
+      error?: string;
+    }>;
+    hasAudio: (projectId: string) => Promise<{
+      success: boolean;
+      hasAudio?: boolean;
+      error?: string;
+    }>;
+    deleteAudio: (projectId: string) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    readVtt: (projectId: string) => Promise<{
+      success: boolean;
+      content?: string;
+      error?: string;
+    }>;
+    readSentencePairs: (projectId: string) => Promise<{
+      success: boolean;
+      pairs?: Array<{
+        index: number;
+        source: string;
+        target: string;
+        sourceTimestamp?: number;
+        targetTimestamp?: number;
+      }>;
+      error?: string;
+    }>;
+    getAnalytics: (projectId: string) => Promise<{
+      success: boolean;
+      analytics?: any;
+      error?: string;
+    }>;
+    saveAnalytics: (projectId: string, analytics: any) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    runJob: (jobId: string, config: {
+      projectId: string;
+      sourceUrl: string;
+      sourceLang: string;
+      targetLang: string;
+      htmlPath: string;
+      pdfPath?: string;
+      deletedBlockIds: string[];
+      title?: string;
+      aiProvider: 'ollama' | 'claude' | 'openai';
+      aiModel: string;
+      ollamaBaseUrl?: string;
+      claudeApiKey?: string;
+      openaiApiKey?: string;
+      // AI prompt settings
+      translationPrompt?: string;
+      enableCleanup?: boolean;
+      cleanupPrompt?: string;
+      // TTS settings
+      sourceVoice: string;
+      targetVoice: string;
+      ttsEngine: 'xtts' | 'orpheus';
+      sourceTtsSpeed: number;
+      targetTtsSpeed: number;
+      device: 'gpu' | 'mps' | 'cpu';
+      workerCount?: number;
+    }) => Promise<{
+      success: boolean;
+      data?: {
+        epubPath?: string;
+        sentencePairsPath?: string;
+        ttsConfig?: {
+          outputDir: string;
+          outputFilename: string;
+          title: string;
+          ttsEngine: 'xtts' | 'orpheus';
+          voice: string;
+          device: 'gpu' | 'mps' | 'cpu';
+          speed: number;
+          workerCount: number;
+          language: string;
+        };
+      };
+      error?: string;
+    }>;
+    onProgress: (callback: (data: { jobId: string; progress: {
+      phase: string;
+      currentSentence: number;
+      totalSentences: number;
+      percentage: number;
+      message: string;
+    }}) => void) => () => void;
+  };
+  llCleanup: {
+    run: (jobId: string, config: {
+      projectId: string;
+      projectDir: string;
+      inputText: string;
+      sourceLang: string;
+      aiProvider: 'ollama' | 'claude' | 'openai';
+      aiModel: string;
+      ollamaBaseUrl?: string;
+      claudeApiKey?: string;
+      openaiApiKey?: string;
+      cleanupPrompt?: string;
+    }) => Promise<{
+      success: boolean;
+      outputPath?: string;
+      error?: string;
+      nextJobConfig?: { cleanedTextPath?: string };
+    }>;
+    onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
+  };
+  llTranslation: {
+    run: (jobId: string, config: {
+      projectId: string;
+      projectDir: string;
+      cleanedTextPath: string;
+      sourceLang: string;
+      targetLang: string;
+      title?: string;
+      aiProvider: 'ollama' | 'claude' | 'openai';
+      aiModel: string;
+      ollamaBaseUrl?: string;
+      claudeApiKey?: string;
+      openaiApiKey?: string;
+      translationPrompt?: string;
+    }) => Promise<{
+      success: boolean;
+      outputPath?: string;
+      error?: string;
+      nextJobConfig?: { epubPath?: string; sentencePairsPath?: string };
+    }>;
+    onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
+  };
+  alignment: {
+    getData: () => Promise<{
+      pairs: Array<{ index: number; source: string; target: string }>;
+      sourceLang: string;
+      targetLang: string;
+      blocking: boolean;
+      projectId: string;
+      jobId: string;
+    } | null>;
+    userInteracted: () => Promise<{ success: boolean }>;
+    saveResult: (result: {
+      approved: boolean;
+      pairs: Array<{ index: number; source: string; target: string }>;
+      cancelled?: boolean;
+    }) => Promise<{ success: boolean }>;
+    cancel: () => Promise<{ success: boolean }>;
   };
   platform: string;
 }
@@ -1471,6 +1750,15 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('dialog:save-epub', defaultName),
     saveText: (defaultName?: string) =>
       ipcRenderer.invoke('dialog:save-text', defaultName),
+    confirm: (options: {
+      title: string;
+      message: string;
+      detail?: string;
+      confirmLabel?: string;
+      cancelLabel?: string;
+      type?: 'none' | 'info' | 'error' | 'question' | 'warning';
+    }) =>
+      ipcRenderer.invoke('dialog:confirm', options),
   },
   projects: {
     ensureFolder: () =>
@@ -1596,6 +1884,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('ai:get-models'),
     getClaudeModels: (apiKey: string) =>
       ipcRenderer.invoke('ai:get-claude-models', apiKey),
+    getOpenAIModels: (apiKey: string) =>
+      ipcRenderer.invoke('ai:get-openai-models', apiKey),
     loadSkippedChunks: (jsonPath: string) =>
       ipcRenderer.invoke('ai:load-skipped-chunks', jsonPath),
     replaceTextInEpub: (epubPath: string, oldText: string, newText: string) =>
@@ -1926,6 +2216,37 @@ const electronAPI: ElectronAPI = {
     buildResumeInfo: (prepInfo: any, settings: any) =>
       ipcRenderer.invoke('parallel-tts:build-resume-info', prepInfo, settings),
   },
+  bilingualAssembly: {
+    run: (jobId: string, config: {
+      projectId: string;
+      sourceSentencesDir: string;
+      targetSentencesDir: string;
+      sentencePairsPath: string;
+      outputDir: string;
+      pauseDuration?: number;
+      gapDuration?: number;
+      audioFormat?: string;
+    }) =>
+      ipcRenderer.invoke('bilingual-assembly:run', jobId, config),
+    onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; message: string } }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: { phase: string; percentage: number; message: string } }) => {
+        callback(data);
+      };
+      ipcRenderer.on('bilingual-assembly:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('bilingual-assembly:progress', listener);
+      };
+    },
+    onComplete: (callback: (data: { jobId: string; success: boolean; audioPath?: string; vttPath?: string; error?: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; audioPath?: string; vttPath?: string; error?: string }) => {
+        callback(data);
+      };
+      ipcRenderer.on('bilingual-assembly:complete', listener);
+      return () => {
+        ipcRenderer.removeListener('bilingual-assembly:complete', listener);
+      };
+    },
+  },
   reassembly: {
     scanSessions: async (customTmpPath?: string) => {
       console.log('[PRELOAD] reassembly:scanSessions calling IPC with path:', customTmpPath);
@@ -2027,6 +2348,170 @@ const electronAPI: ElectronAPI = {
     applyChapters: (m4bPath: string, chapters: Array<{ title: string; timestamp: string }>) =>
       ipcRenderer.invoke('chapter-recovery:apply-chapters', m4bPath, chapters),
   },
+  debug: {
+    saveLogs: (content: string, filename: string) =>
+      ipcRenderer.invoke('debug:save-logs', content, filename),
+  },
+  languageLearning: {
+    fetchUrl: (url: string) =>
+      ipcRenderer.invoke('language-learning:fetch-url', url),
+    saveProject: (project: LanguageLearningProject) =>
+      ipcRenderer.invoke('language-learning:save-project', project),
+    loadProject: (projectId: string) =>
+      ipcRenderer.invoke('language-learning:load-project', projectId),
+    listProjects: () =>
+      ipcRenderer.invoke('language-learning:list-projects'),
+    deleteProject: (projectId: string) =>
+      ipcRenderer.invoke('language-learning:delete-project', projectId),
+    confirmDelete: (title: string) =>
+      ipcRenderer.invoke('language-learning:confirm-delete', title),
+    ensureDirectory: (dirPath: string) =>
+      ipcRenderer.invoke('language-learning:ensure-directory', dirPath),
+    deleteAudiobooks: (projectId: string) =>
+      ipcRenderer.invoke('language-learning:delete-audiobooks', projectId),
+    listCompleted: () =>
+      ipcRenderer.invoke('language-learning:list-completed'),
+    extractText: (htmlPath: string, deletedSelectors: string[]) =>
+      ipcRenderer.invoke('language-learning:extract-text', htmlPath, deletedSelectors),
+    writeFile: (filePath: string, content: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('language-learning:write-file', filePath, content),
+    getAudioPath: (projectId: string) =>
+      ipcRenderer.invoke('language-learning:get-audio-path', projectId),
+    getAudioData: (projectId: string) =>
+      ipcRenderer.invoke('language-learning:get-audio-data', projectId),
+    hasAudio: (projectId: string) =>
+      ipcRenderer.invoke('language-learning:has-audio', projectId),
+    deleteAudio: (projectId: string) =>
+      ipcRenderer.invoke('language-learning:delete-audio', projectId),
+    readVtt: (projectId: string) =>
+      ipcRenderer.invoke('language-learning:read-vtt', projectId),
+    readSentencePairs: (projectId: string) =>
+      ipcRenderer.invoke('language-learning:read-sentence-pairs', projectId),
+    getAnalytics: (projectId: string) =>
+      ipcRenderer.invoke('language-learning:get-analytics', projectId),
+    saveAnalytics: (projectId: string, analytics: any) =>
+      ipcRenderer.invoke('language-learning:save-analytics', projectId, analytics),
+    runJob: (jobId: string, config: {
+      projectId: string;
+      sourceUrl: string;
+      sourceLang: string;
+      targetLang: string;
+      htmlPath: string;
+      pdfPath?: string;
+      deletedBlockIds: string[];
+      title?: string;
+      aiProvider: 'ollama' | 'claude' | 'openai';
+      aiModel: string;
+      ollamaBaseUrl?: string;
+      claudeApiKey?: string;
+      openaiApiKey?: string;
+      // AI prompt settings
+      translationPrompt?: string;
+      enableCleanup?: boolean;
+      cleanupPrompt?: string;
+      // TTS settings
+      sourceVoice: string;
+      targetVoice: string;
+      ttsEngine: 'xtts' | 'orpheus';
+      sourceTtsSpeed: number;
+      targetTtsSpeed: number;
+      device: 'gpu' | 'mps' | 'cpu';
+      workerCount?: number;
+    }) =>
+      ipcRenderer.invoke('language-learning:run-job', jobId, config),
+    onProgress: (callback: (data: { jobId: string; progress: {
+      phase: string;
+      currentSentence: number;
+      totalSentences: number;
+      percentage: number;
+      message: string;
+    }}) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: any }) => {
+        callback(data);
+      };
+      ipcRenderer.on('language-learning:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('language-learning:progress', listener);
+      };
+    },
+  },
+
+  // Language Learning Split Pipeline Jobs
+  llCleanup: {
+    run: (jobId: string, config: {
+      projectId: string;
+      projectDir: string;
+      inputText: string;
+      sourceLang: string;
+      aiProvider: 'ollama' | 'claude' | 'openai';
+      aiModel: string;
+      ollamaBaseUrl?: string;
+      claudeApiKey?: string;
+      openaiApiKey?: string;
+      cleanupPrompt?: string;
+    }): Promise<{
+      success: boolean;
+      outputPath?: string;
+      error?: string;
+      nextJobConfig?: { cleanedTextPath?: string };
+    }> =>
+      ipcRenderer.invoke('ll-cleanup:run', jobId, config),
+    onProgress: (callback: (data: { jobId: string; progress: any }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: any }) => {
+        callback(data);
+      };
+      ipcRenderer.on('ll-job:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('ll-job:progress', listener);
+      };
+    },
+  },
+
+  llTranslation: {
+    run: (jobId: string, config: {
+      projectId: string;
+      projectDir: string;
+      cleanedTextPath: string;
+      sourceLang: string;
+      targetLang: string;
+      title?: string;
+      aiProvider: 'ollama' | 'claude' | 'openai';
+      aiModel: string;
+      ollamaBaseUrl?: string;
+      claudeApiKey?: string;
+      openaiApiKey?: string;
+      translationPrompt?: string;
+    }): Promise<{
+      success: boolean;
+      outputPath?: string;
+      error?: string;
+      nextJobConfig?: { epubPath?: string; sentencePairsPath?: string };
+    }> =>
+      ipcRenderer.invoke('ll-translation:run', jobId, config),
+    onProgress: (callback: (data: { jobId: string; progress: any }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: any }) => {
+        callback(data);
+      };
+      // Uses same progress channel as cleanup
+      ipcRenderer.on('ll-job:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('ll-job:progress', listener);
+      };
+    },
+  },
+
+  // Sentence Alignment Window
+  alignment: {
+    getData: () => ipcRenderer.invoke('alignment:get-data'),
+    userInteracted: () => ipcRenderer.invoke('alignment:user-interacted'),
+    saveResult: (result: {
+      approved: boolean;
+      pairs: Array<{ index: number; source: string; target: string }>;
+      cancelled?: boolean;
+    }) => ipcRenderer.invoke('alignment:save-result', result),
+    cancel: () => ipcRenderer.invoke('alignment:cancel'),
+  },
+
   platform: process.platform,
 };
 
