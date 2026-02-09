@@ -431,6 +431,7 @@ export interface SkippedChunk {
 // Audiobook metadata for TTS jobs
 export interface AudiobookMetadata {
   title?: string;
+  bookTitle?: string;  // Actual book title for m4b metadata (title is used for queue display)
   author?: string;
   year?: string;
   coverPath?: string;      // Path to cover image file
