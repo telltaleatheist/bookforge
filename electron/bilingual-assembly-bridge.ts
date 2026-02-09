@@ -267,7 +267,7 @@ export async function runBilingualAssembly(
       console.error('[BILINGUAL-ASSEMBLY STDERR]', data.toString().trim());
     });
 
-    proc.on('close', (code) => {
+    proc.on('close', async (code) => {
       console.log(`[BILINGUAL-ASSEMBLY] Process exited with code ${code}`);
 
       if (code !== 0) {
