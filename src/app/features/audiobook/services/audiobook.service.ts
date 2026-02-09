@@ -70,7 +70,7 @@ export class AudiobookService {
 
   // Settings
   private readonly _settings = signal<TTSSettings>({
-    device: 'mps', // Default to MPS on macOS
+    device: 'cpu', // CPU is better for XTTS on Mac - same speed, less memory pressure
     language: 'en',
     voice: 'en_default',
     temperature: 0.75,

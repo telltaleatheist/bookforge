@@ -5,7 +5,7 @@
 import { AIProvider } from '../../../core/models/ai-config.types';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'resemble-enhance' | 'language-learning' | 'll-cleanup' | 'll-translation' | 'bilingual-assembly';
+export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'resemble-enhance' | 'language-learning' | 'll-cleanup' | 'll-translation' | 'bilingual-assembly' | 'audiobook';
 
 // Job status
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
@@ -80,10 +80,17 @@ export interface QueueJob {
   bfpPath?: string;
   // Analytics data (from completed job)
   analytics?: any;
+  // TTS phase tracking (for showing TTS + Assembly as separate progress)
+  ttsPhase?: 'preparing' | 'converting' | 'assembling' | 'complete';
+  // TTS conversion progress (sentences) - separate from assembly
+  ttsConversionProgress?: number;  // 0-100 for sentence conversion only
+  // Assembly progress details
+  assemblyProgress?: number;       // 0-100 for assembly phase
+  assemblySubPhase?: 'combining' | 'vtt' | 'encoding' | 'metadata';
 }
 
 // Job configuration union type
-export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | LanguageLearningJobConfig | LLCleanupJobConfig | LLTranslationJobConfig | BilingualAssemblyJobConfig;
+export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | LanguageLearningJobConfig | LLCleanupJobConfig | LLTranslationJobConfig | BilingualAssemblyJobConfig | AudiobookJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -243,8 +250,7 @@ export interface LanguageLearningJobConfig {
 export interface LLCleanupJobConfig {
   type: 'll-cleanup';
   projectId: string;
-  projectDir: string;          // Path to project directory
-  inputText: string;           // Extracted plain text to clean
+  projectDir: string;          // Path to project directory (reads from article.epub)
   sourceLang: string;          // Source language code
 
   // AI settings
@@ -264,7 +270,7 @@ export interface LLTranslationJobConfig {
   type: 'll-translation';
   projectId: string;
   projectDir: string;          // Path to project directory
-  cleanedTextPath: string;     // Path to cleaned.txt from cleanup step
+  cleanedEpubPath: string;     // Path to cleaned.epub from cleanup step
   sourceLang: string;
   targetLang: string;
   title?: string;
@@ -294,6 +300,19 @@ export interface BilingualAssemblyJobConfig {
   outputDir: string;           // Where to save M4B and VTT
   pauseDuration?: number;      // Seconds between source and target (default 0.3)
   gapDuration?: number;        // Seconds between pairs (default 1.0)
+  // Output naming with language suffix
+  outputName?: string;         // Custom output name (e.g., "My Book [Bilingual EN-DE]")
+  sourceLang?: string;         // Source language code (e.g., 'en')
+  targetLang?: string;         // Target language code (e.g., 'de')
+  title?: string;              // Book/article title for naming
+  // BFP path for saving bilingual audio path to book project
+  bfpPath?: string;
+}
+
+// Audiobook job configuration - master container for audiobook production workflows
+// This job type doesn't run any processing itself; it groups sub-jobs (cleanup, TTS)
+export interface AudiobookJobConfig {
+  type: 'audiobook';
 }
 
 // Resume info for TTS jobs - allows resuming interrupted conversions
@@ -416,10 +435,10 @@ export interface AudiobookMetadata {
   year?: string;
   coverPath?: string;      // Path to cover image file
   outputFilename?: string; // Custom output filename (e.g., "My Book.m4b")
-  // Placeholder marker for TTS jobs that are waiting for translation to complete
-  // When set, the job is skipped during queue processing until translation sets epubPath
+  // Placeholder marker for TTS/assembly jobs that are waiting for previous step to complete
+  // When set, the job is skipped during queue processing until the previous step updates it
   bilingualPlaceholder?: {
-    role: 'source' | 'target';
+    role: 'source' | 'target' | 'assembly';
     projectId: string;
     targetLang?: string;  // Only for source role
   };
@@ -435,6 +454,11 @@ export interface AudiobookMetadata {
       sentencePairsPath: string;
       pauseDuration: number;
       gapDuration: number;
+      // Output naming with language suffix
+      title?: string;
+      sourceLang?: string;
+      targetLang?: string;
+      bfpPath?: string;
     };
   };
 }
@@ -442,8 +466,8 @@ export interface AudiobookMetadata {
 // Create job request
 export interface CreateJobRequest {
   type: JobType;
-  epubPath?: string;  // Optional for bilingual-assembly jobs
-  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | LanguageLearningJobConfig | LLCleanupJobConfig | LLTranslationJobConfig | BilingualAssemblyJobConfig>;
+  epubPath?: string;  // Optional for bilingual-assembly and audiobook jobs
+  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | LanguageLearningJobConfig | LLCleanupJobConfig | LLTranslationJobConfig | BilingualAssemblyJobConfig | AudiobookJobConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;

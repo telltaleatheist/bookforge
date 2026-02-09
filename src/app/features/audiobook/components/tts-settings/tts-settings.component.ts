@@ -854,7 +854,7 @@ export class TtsSettingsComponent implements OnInit {
 
   // Inputs
   readonly settings = input<TTSSettings>({
-    device: 'mps',
+    device: 'cpu',  // CPU is better for XTTS on Mac - similar speed, less memory pressure
     language: 'en',
     ttsEngine: 'xtts',
     fineTuned: 'ScarlettJohansson',
@@ -1210,10 +1210,12 @@ export class TtsSettingsComponent implements OnInit {
       console.log('[TTS-SETTINGS] coverPath from metadata:', meta?.coverPath);
       console.log('[TTS-SETTINGS] useResume:', useResume, 'resumeInfo:', this.resumeInfo());
 
-      // Use configured output dir, or fall back to library's audiobooks folder
-      const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
-      const outputDir = configuredDir || this.libraryService.audiobooksPath() || '';
-      console.log('[TTS-SETTINGS] Output dir - configured:', configuredDir, 'library:', this.libraryService.audiobooksPath(), 'using:', outputDir);
+      // Get external audiobooks dir for books (will be copied there after completion)
+      // For temp folder workflow, outputDir is not used - bfpPath is primary
+      const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
+      // Fall back to library's audiobooks folder if no external dir configured
+      const outputDir = externalDir || this.libraryService.audiobooksPath() || '';
+      console.log('[TTS-SETTINGS] External audiobooks dir:', externalDir, 'using outputDir:', outputDir);
 
       // Orpheus uses single worker only (MLX unified memory, vLLM built-in batching)
       // Always use parallel mode (resumability with no downside)

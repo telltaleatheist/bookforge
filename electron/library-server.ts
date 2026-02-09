@@ -77,6 +77,7 @@ export class LibraryServer {
     this.app.get('/api/books/:section', this.getBooks.bind(this));
     this.app.get('/api/cover', this.getCover.bind(this));
     this.app.get('/api/download', this.downloadFile.bind(this));
+    this.app.get('/api/audio', this.streamAudio.bind(this));
 
     // Health check
     this.app.get('/api/health', (_req: Request, res: Response) => {
@@ -396,6 +397,87 @@ export class LibraryServer {
     } catch (err) {
       console.error('[LibraryServer] Error downloading file:', err);
       res.status(500).json({ error: 'Failed to download file' });
+    }
+  }
+
+  /**
+   * Stream audio files with Range header support for seeking
+   * Accepts absolute paths (for local playback only)
+   */
+  private async streamAudio(req: Request, res: Response): Promise<void> {
+    try {
+      const filePath = req.query.path as string;
+      if (!filePath) {
+        res.status(400).json({ error: 'Missing path parameter' });
+        return;
+      }
+
+      // Security: only allow audio file extensions
+      const ext = path.extname(filePath).toLowerCase();
+      if (!['.m4b', '.m4a', '.mp3', '.wav', '.flac', '.ogg'].includes(ext)) {
+        res.status(400).json({ error: 'Invalid audio file type' });
+        return;
+      }
+
+      // Security: only allow absolute paths starting with /Volumes (Mac) or drive letter (Windows)
+      const isValidPath = filePath.startsWith('/Volumes/') ||
+                          filePath.startsWith('/Users/') ||
+                          /^[A-Z]:\\/i.test(filePath);
+      if (!isValidPath) {
+        res.status(403).json({ error: 'Invalid path' });
+        return;
+      }
+
+      // Check file exists
+      let stats: fsSync.Stats;
+      try {
+        stats = fsSync.statSync(filePath);
+      } catch {
+        res.status(404).json({ error: 'File not found' });
+        return;
+      }
+
+      const fileSize = stats.size;
+
+      // Content type based on extension
+      const contentTypes: Record<string, string> = {
+        '.m4b': 'audio/mp4',
+        '.m4a': 'audio/mp4',
+        '.mp3': 'audio/mpeg',
+        '.wav': 'audio/wav',
+        '.flac': 'audio/flac',
+        '.ogg': 'audio/ogg'
+      };
+      const contentType = contentTypes[ext] || 'audio/mp4';
+
+      // Parse Range header for seeking support
+      const range = req.headers.range;
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const chunkSize = end - start + 1;
+
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Length', chunkSize);
+        res.setHeader('Content-Type', contentType);
+
+        const stream = fsSync.createReadStream(filePath, { start, end });
+        stream.pipe(res);
+      } else {
+        // No range - send entire file
+        res.setHeader('Content-Length', fileSize);
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Accept-Ranges', 'bytes');
+
+        const stream = fsSync.createReadStream(filePath);
+        stream.pipe(res);
+      }
+    } catch (err) {
+      console.error('[LibraryServer] Error streaming audio:', err);
+      res.status(500).json({ error: 'Failed to stream audio' });
     }
   }
 

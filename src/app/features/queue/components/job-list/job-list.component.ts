@@ -64,14 +64,17 @@ interface DragState {
               </span>
               <span class="book-title">{{ job.metadata?.title || 'Untitled' }}</span>
             </div>
-            @if (job.metadata?.author) {
-              <div class="job-meta">{{ job.metadata!.author }}</div>
-            }
-            @if (job.type === 'ocr-cleanup' && getOcrModel(job)) {
-              <div class="job-meta model">&#129302; {{ getOcrModel(job) }}</div>
-            }
-            @if (job.type === 'translation' && getTranslationInfo(job)) {
-              <div class="job-meta model">&#127760; {{ getTranslationInfo(job) }}</div>
+            <!-- Hide author and model for sub-items (they're shown on master job) -->
+            @if (!job.parentJobId) {
+              @if (job.metadata?.author) {
+                <div class="job-meta">{{ job.metadata!.author }}</div>
+              }
+              @if (job.type === 'ocr-cleanup' && getOcrModel(job)) {
+                <div class="job-meta model">&#129302; {{ getOcrModel(job) }}</div>
+              }
+              @if (job.type === 'translation' && getTranslationInfo(job)) {
+                <div class="job-meta model">&#127760; {{ getTranslationInfo(job) }}</div>
+              }
             }
             @if ((job.status === 'processing' || isMasterJob(job)) && job.progress !== undefined) {
               <div class="progress-bar">
@@ -235,7 +238,7 @@ interface DragState {
       &.sub-item {
         margin-left: 1.5rem;
         position: relative;
-        opacity: 0.9;
+        padding: 0.5rem 0.75rem;
 
         // Use pseudo-element for left indicator so it's not affected by state border colors
         &::before {
@@ -249,30 +252,15 @@ interface DragState {
           border-radius: 3px 0 0 3px;
         }
 
-        &:hover {
-          opacity: 1;
-        }
-
         &.sub-item-complete {
-          opacity: 0.5;
-          background: var(--bg-muted);
+          opacity: 0.7;
 
           &::before {
             background: var(--success);
-            opacity: 0.5;
-          }
-
-          .job-type-badge {
-            background: var(--bg-elevated);
-            color: var(--text-tertiary);
-          }
-
-          .book-title {
-            color: var(--text-tertiary);
           }
 
           &:hover {
-            opacity: 0.7;
+            opacity: 0.9;
           }
         }
 
@@ -385,11 +373,20 @@ interface DragState {
         color: var(--accent);
       }
 
-      &.language-learning,
+      &.language-learning {
+        background: color-mix(in srgb, #8b5cf6 20%, transparent);
+        color: #a78bfa;
+      }
+
       &.ll-cleanup,
       &.ll-translation {
         background: color-mix(in srgb, var(--info) 15%, transparent);
         color: var(--info);
+      }
+
+      &.bilingual-assembly {
+        background: color-mix(in srgb, #10b981 20%, transparent);
+        color: #34d399;
       }
     }
 
@@ -608,6 +605,8 @@ export class JobListComponent {
         return 'LL Cleanup';
       case 'll-translation':
         return 'LL Translate';
+      case 'bilingual-assembly':
+        return 'Assembly';
       default:
         return type;
     }

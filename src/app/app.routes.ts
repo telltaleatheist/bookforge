@@ -11,8 +11,8 @@ export const routes: Routes = [
     loadComponent: () => import('./features/pdf-picker/pdf-picker.component').then(m => m.PdfPickerComponent)
   },
   {
-    path: 'audiobook',
-    loadComponent: () => import('./features/audiobook/audiobook.component').then(m => m.AudiobookComponent)
+    path: 'studio',
+    loadComponent: () => import('./features/studio/studio.component').then(m => m.StudioComponent)
   },
   {
     path: 'queue',
@@ -35,14 +35,20 @@ export const routes: Routes = [
     loadComponent: () => import('./features/epub-editor/epub-editor.component').then(m => m.EpubEditorComponent)
   },
   {
-    path: 'language-learning',
-    loadComponent: () => import('./features/language-learning/language-learning.component').then(m => m.LanguageLearningComponent)
-  },
-  {
     path: 'alignment',
     loadComponent: () => import('./features/language-learning/components/sentence-alignment/sentence-alignment.component').then(m => m.SentenceAlignmentComponent)
   },
-  // Legacy route for backwards compatibility
+  // Legacy routes - redirect to studio
+  {
+    path: 'audiobook',
+    redirectTo: 'studio',
+    pathMatch: 'full'
+  },
+  {
+    path: 'language-learning',
+    redirectTo: 'studio',
+    pathMatch: 'full'
+  },
   {
     path: 'pdf-picker',
     redirectTo: 'library',

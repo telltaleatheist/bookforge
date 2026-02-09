@@ -1221,9 +1221,9 @@ export class SessionDetailComponent {
     const session = this.session();
     if (!session) return;
 
-    // Get output directory from settings, or fall back to library's audiobooks folder
-    const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
-    const outputDir = configuredDir || this.libraryService.audiobooksPath() || '';
+    // Get external audiobooks directory from settings, or fall back to library's folder
+    const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
+    const outputDir = externalDir || this.libraryService.audiobooksPath() || '';
 
     // Get e2a tmp path from settings (passed to backend so it can derive app path)
     const e2aTmpPath = this.reassemblyService.e2aTmpPath();

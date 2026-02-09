@@ -142,6 +142,111 @@ interface ETAState {
             </div>
           </div>
         }
+
+        <!-- TTS Phases Progress (TTS Conversion + Assembly) -->
+        <!-- Only show phases for TTS jobs that have internal assembly (not skipAssembly) -->
+        @if (currentJob.type === 'tts-conversion' && currentJob.ttsPhase && !hasSkipAssembly(currentJob)) {
+          <div class="phases-section">
+            <div class="phases-header">Phases</div>
+            <div class="phases-grid">
+              <!-- TTS Conversion Phase -->
+              <div class="phase-row" [class.active]="currentJob.ttsPhase === 'converting'" [class.complete]="currentJob.ttsConversionProgress === 100">
+                <span class="phase-label">TTS Conversion</span>
+                <div class="phase-progress-bar">
+                  <div
+                    class="phase-progress-fill"
+                    [style.width.%]="currentJob.ttsConversionProgress || 0"
+                  ></div>
+                </div>
+                <span class="phase-pct">{{ currentJob.ttsConversionProgress || 0 | number:'1.0-0' }}%</span>
+              </div>
+              <!-- Assembly Phase -->
+              <div class="phase-row" [class.active]="currentJob.ttsPhase === 'assembling'" [class.complete]="currentJob.assemblyProgress === 100" [class.pending]="currentJob.ttsPhase === 'converting' || currentJob.ttsPhase === 'preparing'">
+                <span class="phase-label">Assembly</span>
+                <div class="phase-progress-bar">
+                  <div
+                    class="phase-progress-fill"
+                    [style.width.%]="currentJob.assemblyProgress || 0"
+                  ></div>
+                </div>
+                <span class="phase-pct">
+                  @if (currentJob.ttsPhase === 'assembling' || currentJob.assemblyProgress) {
+                    {{ currentJob.assemblyProgress || 0 | number:'1.0-0' }}%
+                  } @else {
+                    --
+                  }
+                </span>
+              </div>
+            </div>
+            @if (currentJob.ttsPhase === 'assembling' && currentJob.assemblySubPhase) {
+              <div class="assembly-subphase">{{ getAssemblySubPhaseLabel(currentJob.assemblySubPhase) }}</div>
+            }
+          </div>
+        }
+
+        <!-- Bilingual Assembly Phases -->
+        @if (currentJob.type === 'bilingual-assembly') {
+          <div class="phases-section">
+            <div class="phases-header">Assembly Phases</div>
+            <div class="phases-grid">
+              <!-- Combining Phase -->
+              <div class="phase-row"
+                   [class.active]="currentJob.assemblySubPhase === 'combining'"
+                   [class.complete]="isAssemblyPhaseComplete('combining', currentJob)">
+                <span class="phase-label">Combining</span>
+                <div class="phase-progress-bar">
+                  <div
+                    class="phase-progress-fill"
+                    [style.width.%]="getAssemblyPhaseProgress('combining', currentJob)"
+                  ></div>
+                </div>
+                <span class="phase-pct">{{ getAssemblyPhasePct('combining', currentJob) }}</span>
+              </div>
+              <!-- VTT Phase -->
+              <div class="phase-row"
+                   [class.active]="currentJob.assemblySubPhase === 'vtt'"
+                   [class.complete]="isAssemblyPhaseComplete('vtt', currentJob)"
+                   [class.pending]="!isAssemblyPhaseStarted('vtt', currentJob)">
+                <span class="phase-label">Subtitles</span>
+                <div class="phase-progress-bar">
+                  <div
+                    class="phase-progress-fill"
+                    [style.width.%]="getAssemblyPhaseProgress('vtt', currentJob)"
+                  ></div>
+                </div>
+                <span class="phase-pct">{{ getAssemblyPhasePct('vtt', currentJob) }}</span>
+              </div>
+              <!-- Encoding Phase -->
+              <div class="phase-row"
+                   [class.active]="currentJob.assemblySubPhase === 'encoding'"
+                   [class.complete]="isAssemblyPhaseComplete('encoding', currentJob)"
+                   [class.pending]="!isAssemblyPhaseStarted('encoding', currentJob)">
+                <span class="phase-label">Encoding M4B</span>
+                <div class="phase-progress-bar">
+                  <div
+                    class="phase-progress-fill"
+                    [style.width.%]="getAssemblyPhaseProgress('encoding', currentJob)"
+                  ></div>
+                </div>
+                <span class="phase-pct">{{ getAssemblyPhasePct('encoding', currentJob) }}</span>
+              </div>
+              <!-- Metadata Phase -->
+              <div class="phase-row"
+                   [class.active]="currentJob.assemblySubPhase === 'metadata'"
+                   [class.complete]="isAssemblyPhaseComplete('metadata', currentJob)"
+                   [class.pending]="!isAssemblyPhaseStarted('metadata', currentJob)">
+                <span class="phase-label">Metadata</span>
+                <div class="phase-progress-bar">
+                  <div
+                    class="phase-progress-fill"
+                    [style.width.%]="getAssemblyPhaseProgress('metadata', currentJob)"
+                  ></div>
+                </div>
+                <span class="phase-pct">{{ getAssemblyPhasePct('metadata', currentJob) }}</span>
+              </div>
+            </div>
+          </div>
+        }
       </div>
     } @else {
       <div class="no-job">
@@ -348,6 +453,109 @@ interface ETAState {
       width: 2.5rem;
       text-align: right;
       flex-shrink: 0;
+    }
+
+    /* TTS Phases Section */
+    .phases-section {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .phases-label {
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 0.5rem;
+    }
+
+    .phases-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .phase-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .phase-name {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      width: 5rem;
+      flex-shrink: 0;
+    }
+
+    .phase-progress-bar {
+      flex: 1;
+      height: 6px;
+      background: var(--bg-elevated);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .phase-progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 3px;
+      transition: width 0.3s ease;
+
+      .complete & {
+        background: var(--accent-success, #10b981);
+      }
+    }
+
+    .phase-row.pending {
+      opacity: 0.5;
+
+      .phase-label {
+        color: var(--text-tertiary);
+      }
+    }
+
+    .phase-row.active {
+      .phase-label {
+        color: var(--accent);
+        font-weight: 500;
+      }
+    }
+
+    .phase-row.complete {
+      .phase-label {
+        color: var(--accent-success, #10b981);
+      }
+    }
+
+    .phases-header {
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      margin-bottom: 0.5rem;
+    }
+
+    .phase-label {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      width: 6rem;
+      flex-shrink: 0;
+    }
+
+    .phase-pct {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      width: 2.5rem;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    .assembly-subphase {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-top: 0.25rem;
+      padding-left: 5.75rem;
     }
   `]
 })
@@ -960,5 +1168,74 @@ export class JobProgressComponent implements OnDestroy {
     } else {
       return 'TTS Conversion';
     }
+  }
+
+  getAssemblySubPhaseLabel(subPhase: string | undefined): string {
+    switch (subPhase) {
+      case 'combining': return 'Combining audio';
+      case 'vtt': return 'Building subtitles';
+      case 'encoding': return 'Encoding M4B';
+      case 'metadata': return 'Writing metadata';
+      default: return subPhase || '';
+    }
+  }
+
+  // Check if TTS job has skipAssembly (bilingual workflow - assembly is separate job)
+  hasSkipAssembly(job: QueueJob): boolean {
+    const config = job.config as { skipAssembly?: boolean } | undefined;
+    return config?.skipAssembly === true;
+  }
+
+  // Assembly phase order and percentage ranges (based on bilingual-assembly-bridge.ts emissions)
+  // combining: 0-70%, vtt: 70-85%, encoding: 85-100%, metadata: (not explicitly emitted, part of encoding)
+  private readonly assemblyPhaseOrder: string[] = ['combining', 'vtt', 'encoding', 'metadata'];
+  private readonly assemblyPhaseRanges: Record<string, { start: number; end: number }> = {
+    'combining': { start: 0, end: 70 },
+    'vtt': { start: 70, end: 85 },
+    'encoding': { start: 85, end: 95 },
+    'metadata': { start: 95, end: 100 }
+  };
+
+  // Check if an assembly phase is complete
+  isAssemblyPhaseComplete(phase: string, job: QueueJob): boolean {
+    const progress = job.progress || 0;
+    const range = this.assemblyPhaseRanges[phase];
+    if (!range) return false;
+
+    // Phase is complete if progress is past its end
+    return progress >= range.end || job.status === 'complete';
+  }
+
+  // Check if an assembly phase has started
+  isAssemblyPhaseStarted(phase: string, job: QueueJob): boolean {
+    const progress = job.progress || 0;
+    const range = this.assemblyPhaseRanges[phase];
+    if (!range) return false;
+
+    // Phase has started if progress is at or past its start
+    return progress >= range.start;
+  }
+
+  // Get progress percentage for an assembly phase (0-100 within the phase)
+  getAssemblyPhaseProgress(phase: string, job: QueueJob): number {
+    const progress = job.progress || 0;
+    const range = this.assemblyPhaseRanges[phase];
+    if (!range) return 0;
+
+    if (progress < range.start) return 0;
+    if (progress >= range.end) return 100;
+
+    // Map job progress to phase progress (0-100)
+    const phaseWidth = range.end - range.start;
+    return ((progress - range.start) / phaseWidth) * 100;
+  }
+
+  // Get display percentage for an assembly phase
+  getAssemblyPhasePct(phase: string, job: QueueJob): string {
+    if (!this.isAssemblyPhaseStarted(phase, job)) {
+      return '--';
+    }
+    const progress = this.getAssemblyPhaseProgress(phase, job);
+    return `${Math.round(progress)}%`;
   }
 }

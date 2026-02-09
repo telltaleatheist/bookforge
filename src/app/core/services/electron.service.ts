@@ -933,10 +933,16 @@ export class ElectronService {
       completedAt?: string;
       linkedAudioPath?: string;
       linkedAudioPathValid?: boolean;
+      vttPath?: string;
+      // Bilingual audio paths (separate from mono audiobook)
+      bilingualAudioPath?: string;
+      bilingualAudioPathValid?: boolean;
+      bilingualVttPath?: string;
       metadata?: {
         title?: string;
         author?: string;
         coverImagePath?: string;
+        outputFilename?: string;
       };
     }>;
     error?: string;
@@ -945,6 +951,36 @@ export class ElectronService {
       return (window as any).electron.audiobook.listProjectsWithAudiobook();
     }
     return { success: false, error: 'Not running in Electron', projects: [] };
+  }
+
+  /**
+   * Link an audio file to a BFP project
+   */
+  async audiobookLinkAudio(bfpPath: string, audioPath: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.audiobook.linkAudio(bfpPath, audioPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Link a bilingual audio file to a BFP project (separate from mono audiobook)
+   */
+  async audiobookLinkBilingualAudio(bfpPath: string, audioPath: string, vttPath?: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.audiobook.linkBilingualAudio(bfpPath, audioPath, vttPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Read an audio file and return as data URL for playback
+   */
+  async readAudioFile(audioPath: string): Promise<{ success: boolean; dataUrl?: string; size?: number; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.fs.readAudio(audioPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
   }
 
   /**
@@ -1029,6 +1065,38 @@ export class ElectronService {
       return (window as any).electron.media.loadImage(relativePath);
     }
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Check if a file exists at the given path
+   */
+  async fsExists(filePath: string): Promise<boolean> {
+    if (this.isElectron) {
+      try {
+        return await (window as any).electron.fs.exists(filePath);
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Read a text file and return its contents
+   */
+  async readTextFile(filePath: string): Promise<string | null> {
+    if (this.isElectron) {
+      try {
+        const result = await (window as any).electron.fs.readText(filePath);
+        if (result.success && result.content) {
+          return result.content;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
   }
 
   // OCR operations (Tesseract)
@@ -2169,9 +2237,12 @@ export class ElectronService {
 
   /**
    * Fetch a URL and extract article content for language learning
+   * @param url The URL to fetch
+   * @param projectId Optional projectId to use (if not provided, one will be generated)
    */
-  async languageLearningFetchUrl(url: string): Promise<{
+  async languageLearningFetchUrl(url: string, projectId?: string): Promise<{
     success: boolean;
+    projectId?: string;
     htmlPath?: string;
     title?: string;
     byline?: string;
@@ -2181,11 +2252,11 @@ export class ElectronService {
     wordCount?: number;
     error?: string;
   }> {
-    console.log('[ELECTRON-SERVICE] languageLearningFetchUrl called, isElectron:', this.isElectron);
+    console.log('[ELECTRON-SERVICE] languageLearningFetchUrl called, isElectron:', this.isElectron, 'projectId:', projectId);
     console.log('[ELECTRON-SERVICE] languageLearning available:', !!(window as any).electron?.languageLearning);
     if (this.isElectron && (window as any).electron.languageLearning) {
       console.log('[ELECTRON-SERVICE] Invoking IPC...');
-      const result = await (window as any).electron.languageLearning.fetchUrl(url);
+      const result = await (window as any).electron.languageLearning.fetchUrl(url, projectId);
       console.log('[ELECTRON-SERVICE] IPC result:', result);
       return result;
     }
@@ -2430,6 +2501,19 @@ export class ElectronService {
   }> {
     if (this.isElectron && (window as any).electron.languageLearning) {
       return (window as any).electron.languageLearning.saveAnalytics(projectId, analytics);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Finalize article content - saves the filtered HTML for processing
+   */
+  async languageLearningFinalizeContent(projectId: string, finalizedHtml: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.languageLearning) {
+      return (window as any).electron.languageLearning.finalizeContent(projectId, finalizedHtml);
     }
     return { success: false, error: 'Not running in Electron' };
   }

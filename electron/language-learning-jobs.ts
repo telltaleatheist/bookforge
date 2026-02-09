@@ -71,6 +71,9 @@ export interface TtsJobConfig {
   speed: number;
   workerCount: number;
   language: string;
+  // Temp folder workflow for Syncthing compatibility
+  bfpPath?: string;      // BFP project path - output goes to {bfpPath}/audiobook/
+  isArticle?: boolean;   // Articles don't copy to external audiobooks folder
 }
 
 export interface LanguageLearningJobResult {
@@ -101,7 +104,7 @@ export interface LanguageLearningJobResult {
     // Bilingual assembly config
     bilingualAssemblyConfig?: {
       projectId: string;
-      audiobooksDir: string;
+      bfpPath: string;       // BFP project path - output goes to {bfpPath}/audiobook/
       pauseDuration: number;
       gapDuration: number;
     };
@@ -349,13 +352,10 @@ export async function runLanguageLearningJob(
     const pairsPath = path.join(projectDir, 'sentence_pairs.json');
     await fs.writeFile(pairsPath, JSON.stringify(alignedPairs, null, 2));
 
-    // Prepare the audiobooks output directory
-    // Path structure: .../language-learning/projects/<projectId>/
-    // We want: .../language-learning/audiobooks/
-    const projectsDir = path.dirname(projectDir);           // .../language-learning/projects
-    const languageLearningDir = path.dirname(projectsDir);  // .../language-learning
-    const audiobooksDir = path.join(languageLearningDir, 'audiobooks');
-    await fs.mkdir(audiobooksDir, { recursive: true });
+    // Use project folder as BFP path for temp folder workflow
+    // TTS will generate to temp folder, then copy to {projectDir}/audiobook/ on completion
+    // This avoids Syncthing watching partial files during generation
+    const bfpPath = projectDir;
 
     // Calculate worker count for TTS config
     const workerCount = config.ttsEngine === 'orpheus' ? 1 : (config.workerCount || 4);
@@ -382,9 +382,10 @@ export async function runLanguageLearningJob(
         targetEpubPath,
         sentencePairsPath: pairsPath,
         // Source language TTS config
+        // Uses bfpPath for temp folder workflow (Syncthing compatibility)
         sourceTtsConfig: {
           epubPath: sourceEpubPath,
-          outputDir: audiobooksDir,
+          outputDir: '', // Not needed - using bfpPath
           outputFilename: `${config.projectId}_source.m4b`,
           title: `${title} (Source)`,
           ttsEngine: config.ttsEngine,
@@ -392,12 +393,14 @@ export async function runLanguageLearningJob(
           device: config.device || 'mps',
           speed: config.speed,
           workerCount,
-          language: config.sourceLang
+          language: config.sourceLang,
+          bfpPath,
+          isArticle: true
         },
         // Target language TTS config
         targetTtsConfig: {
           epubPath: targetEpubPath,
-          outputDir: audiobooksDir,
+          outputDir: '', // Not needed - using bfpPath
           outputFilename: `${config.projectId}_target.m4b`,
           title: `${title} (Target)`,
           ttsEngine: config.ttsEngine,
@@ -405,12 +408,14 @@ export async function runLanguageLearningJob(
           device: config.device || 'mps',
           speed: config.speed,
           workerCount,
-          language: config.targetLang
+          language: config.targetLang,
+          bfpPath,
+          isArticle: true
         },
         // Bilingual assembly config - run after both TTS jobs complete
         bilingualAssemblyConfig: {
           projectId: config.projectId,
-          audiobooksDir,
+          bfpPath, // For copying final audio to project folder
           pauseDuration: 0.3,
           gapDuration: 1.0
         }

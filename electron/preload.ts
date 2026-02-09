@@ -870,6 +870,8 @@ export interface ElectronAPI {
     exists: (filePath: string) => Promise<boolean>;
     writeText: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>;
     writeTempFile: (filename: string, data: Uint8Array) => Promise<{ success: boolean; path?: string; dataUrl?: string; error?: string }>;
+    readText: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
+    readAudio: (audioPath: string) => Promise<{ success: boolean; dataUrl?: string; size?: number; error?: string }>;
   };
   project: {
     save: (projectData: unknown, suggestedName?: string) => Promise<ProjectSaveResult>;
@@ -1059,6 +1061,8 @@ export interface ElectronAPI {
       }>;
       error?: string;
     }>;
+    linkAudio: (bfpPath: string, audioPath: string) => Promise<{ success: boolean; error?: string }>;
+    linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string) => Promise<{ success: boolean; error?: string }>;
   };
   epub: {
     parse: (epubPath: string) => Promise<{ success: boolean; data?: EpubStructure; error?: string }>;
@@ -1402,6 +1406,7 @@ export interface ElectronAPI {
     }>;
   };
   debug: {
+    log: (message: string) => Promise<void>;
     saveLogs: (content: string, filename: string) => Promise<{
       success: boolean;
       path?: string;
@@ -1409,8 +1414,9 @@ export interface ElectronAPI {
     }>;
   };
   languageLearning: {
-    fetchUrl: (url: string) => Promise<{
+    fetchUrl: (url: string, projectId?: string) => Promise<{
       success: boolean;
+      projectId?: string;
       htmlPath?: string;
       title?: string;
       byline?: string;
@@ -1438,6 +1444,10 @@ export interface ElectronAPI {
       success: boolean;
       error?: string;
     }>;
+    updateProject: (projectId: string, updates: any) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
     confirmDelete: (title: string) => Promise<{
       confirmed: boolean;
     }>;
@@ -1461,6 +1471,11 @@ export interface ElectronAPI {
     }>;
     writeFile: (filePath: string, content: string) => Promise<{
       success: boolean;
+      error?: string;
+    }>;
+    finalizeContent: (projectId: string, finalizedHtml: string) => Promise<{
+      success: boolean;
+      epubPath?: string;
       error?: string;
     }>;
     getAudioPath: (projectId: string) => Promise<{
@@ -1565,7 +1580,7 @@ export interface ElectronAPI {
     run: (jobId: string, config: {
       projectId: string;
       projectDir: string;
-      inputText: string;
+      // inputText removed - always reads from article.epub
       sourceLang: string;
       aiProvider: 'ollama' | 'claude' | 'openai';
       aiModel: string;
@@ -1577,7 +1592,7 @@ export interface ElectronAPI {
       success: boolean;
       outputPath?: string;
       error?: string;
-      nextJobConfig?: { cleanedTextPath?: string };
+      nextJobConfig?: { cleanedEpubPath?: string };
     }>;
     onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
   };
@@ -1585,7 +1600,7 @@ export interface ElectronAPI {
     run: (jobId: string, config: {
       projectId: string;
       projectDir: string;
-      cleanedTextPath: string;
+      cleanedEpubPath: string;
       sourceLang: string;
       targetLang: string;
       title?: string;
@@ -1599,7 +1614,7 @@ export interface ElectronAPI {
       success: boolean;
       outputPath?: string;
       error?: string;
-      nextJobConfig?: { epubPath?: string; sentencePairsPath?: string };
+      nextJobConfig?: { sourceEpubPath?: string; targetEpubPath?: string; sentencePairsPath?: string };
     }>;
     onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
   };
@@ -1722,6 +1737,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('fs:browse', dirPath),
     readBinary: (filePath: string) =>
       ipcRenderer.invoke('file:read-binary', filePath),
+    readText: (filePath: string) =>
+      ipcRenderer.invoke('fs:read-text', filePath),
+    readAudio: (audioPath: string) =>
+      ipcRenderer.invoke('fs:read-audio', audioPath),
     exists: (filePath: string) =>
       ipcRenderer.invoke('fs:exists', filePath),
     writeText: (filePath: string, content: string) =>
@@ -1836,6 +1855,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:get-folder', bfpPath),
     listProjectsWithAudiobook: () =>
       ipcRenderer.invoke('audiobook:list-projects-with-audiobook'),
+    linkAudio: (bfpPath: string, audioPath: string) =>
+      ipcRenderer.invoke('audiobook:link-audio', bfpPath, audioPath),
+    linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string) =>
+      ipcRenderer.invoke('audiobook:link-bilingual-audio', bfpPath, audioPath, vttPath),
   },
   epub: {
     parse: (epubPath: string) =>
@@ -2226,6 +2249,12 @@ const electronAPI: ElectronAPI = {
       pauseDuration?: number;
       gapDuration?: number;
       audioFormat?: string;
+      // Output naming with language suffix
+      outputName?: string;
+      title?: string;
+      sourceLang?: string;
+      targetLang?: string;
+      bfpPath?: string;
     }) =>
       ipcRenderer.invoke('bilingual-assembly:run', jobId, config),
     onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; message: string } }) => void) => {
@@ -2349,12 +2378,14 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('chapter-recovery:apply-chapters', m4bPath, chapters),
   },
   debug: {
+    log: (message: string) =>
+      ipcRenderer.invoke('debug:log', message),
     saveLogs: (content: string, filename: string) =>
       ipcRenderer.invoke('debug:save-logs', content, filename),
   },
   languageLearning: {
-    fetchUrl: (url: string) =>
-      ipcRenderer.invoke('language-learning:fetch-url', url),
+    fetchUrl: (url: string, projectId?: string) =>
+      ipcRenderer.invoke('language-learning:fetch-url', url, projectId),
     saveProject: (project: LanguageLearningProject) =>
       ipcRenderer.invoke('language-learning:save-project', project),
     loadProject: (projectId: string) =>
@@ -2363,6 +2394,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('language-learning:list-projects'),
     deleteProject: (projectId: string) =>
       ipcRenderer.invoke('language-learning:delete-project', projectId),
+    updateProject: (projectId: string, updates: any) =>
+      ipcRenderer.invoke('language-learning:update-project', projectId, updates),
     confirmDelete: (title: string) =>
       ipcRenderer.invoke('language-learning:confirm-delete', title),
     ensureDirectory: (dirPath: string) =>
@@ -2375,6 +2408,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('language-learning:extract-text', htmlPath, deletedSelectors),
     writeFile: (filePath: string, content: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('language-learning:write-file', filePath, content),
+    finalizeContent: (projectId: string, finalizedHtml: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('language-learning:finalize-content', projectId, finalizedHtml),
     getAudioPath: (projectId: string) =>
       ipcRenderer.invoke('language-learning:get-audio-path', projectId),
     getAudioData: (projectId: string) =>
@@ -2441,7 +2476,7 @@ const electronAPI: ElectronAPI = {
     run: (jobId: string, config: {
       projectId: string;
       projectDir: string;
-      inputText: string;
+      // inputText removed - always reads from article.epub
       sourceLang: string;
       aiProvider: 'ollama' | 'claude' | 'openai';
       aiModel: string;
@@ -2453,7 +2488,7 @@ const electronAPI: ElectronAPI = {
       success: boolean;
       outputPath?: string;
       error?: string;
-      nextJobConfig?: { cleanedTextPath?: string };
+      nextJobConfig?: { cleanedEpubPath?: string };
     }> =>
       ipcRenderer.invoke('ll-cleanup:run', jobId, config),
     onProgress: (callback: (data: { jobId: string; progress: any }) => void) => {
@@ -2471,7 +2506,7 @@ const electronAPI: ElectronAPI = {
     run: (jobId: string, config: {
       projectId: string;
       projectDir: string;
-      cleanedTextPath: string;
+      cleanedEpubPath: string;
       sourceLang: string;
       targetLang: string;
       title?: string;
@@ -2485,7 +2520,7 @@ const electronAPI: ElectronAPI = {
       success: boolean;
       outputPath?: string;
       error?: string;
-      nextJobConfig?: { epubPath?: string; sentencePairsPath?: string };
+      nextJobConfig?: { sourceEpubPath?: string; targetEpubPath?: string; sentencePairsPath?: string };
     }> =>
       ipcRenderer.invoke('ll-translation:run', jobId, config),
     onProgress: (callback: (data: { jobId: string; progress: any }) => void) => {

@@ -133,12 +133,12 @@ export class SettingsService {
         icon: '🎧',
         fields: [
           {
-            key: 'audiobookOutputDir',
+            key: 'externalAudiobooksDir',
             type: 'path',
-            label: 'Output Directory',
-            description: 'Where completed audiobooks are saved. Leave empty for default (~/Documents/BookForge/audiobooks)',
-            default: '',
-            placeholder: 'Default: ~/Documents/BookForge/audiobooks',
+            label: 'External Audiobooks Folder',
+            description: 'Where completed book audiobooks are copied (for Syncthing/media server). Articles stay in their project folder only. Leave empty to disable external copy.',
+            default: '/Volumes/Callisto/books/audiobooks',
+            placeholder: '/Volumes/Callisto/books/audiobooks',
           },
           {
             key: 'e2aPath',

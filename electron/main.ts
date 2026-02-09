@@ -133,14 +133,27 @@ function registerPageProtocol(): void {
   });
 }
 
-// Register custom protocol for serving audio files
-// This avoids file:// security restrictions
+// Register custom protocol for serving audio files with streaming support
+// This avoids file:// security restrictions and handles large files efficiently
 function registerAudioProtocol(): void {
+  console.log('[Audio Protocol] Registering bookforge-audio protocol handler');
+
   protocol.handle('bookforge-audio', async (request) => {
+    // Log to main process console AND send to renderer if window exists
+    const logToAll = (msg: string) => {
+      console.log(msg);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.executeJavaScript(`console.log('[MAIN] ${msg.replace(/'/g, "\\'")}')`).catch(() => {});
+      }
+    };
+
+    logToAll('[Audio Protocol] Request received');
+
     // URL format: bookforge-audio:///path
     let filePath: string;
 
     const urlStr = request.url;
+    logToAll(`[Audio Protocol] URL: ${urlStr}`);
 
     // Extract path after protocol
     if (urlStr.startsWith('bookforge-audio:///')) {
@@ -168,27 +181,80 @@ function registerAudioProtocol(): void {
     // Normalize to platform-specific separators
     filePath = filePath.split('/').join(path.sep);
 
-    console.log('[Audio Protocol] URL:', urlStr);
-    console.log('[Audio Protocol] Resolved path:', filePath);
+    logToAll(`[Audio Protocol] Resolved path: ${filePath}`);
 
     try {
-      // Read file and determine content type based on extension
-      const data = fsSync.readFileSync(filePath);
-      const ext = path.extname(filePath).toLowerCase();
+      // Get file stats for size and content-length
+      const stats = fsSync.statSync(filePath);
+      const fileSize = stats.size;
 
+      // Determine content type based on extension
+      const ext = path.extname(filePath).toLowerCase();
       let contentType = 'audio/mp4'; // Default for M4B/M4A
       if (ext === '.mp3') contentType = 'audio/mpeg';
       else if (ext === '.wav') contentType = 'audio/wav';
       else if (ext === '.flac') contentType = 'audio/flac';
       else if (ext === '.ogg') contentType = 'audio/ogg';
 
-      return new Response(data, {
-        headers: {
-          'Content-Type': contentType,
-          'Accept-Ranges': 'bytes',
-          'Content-Length': String(data.length)
+      // Parse Range header for partial content requests (seeking)
+      const rangeHeader = request.headers.get('Range');
+      let start = 0;
+      let end = fileSize - 1;
+      let statusCode = 200;
+
+      if (rangeHeader) {
+        const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
+        if (match) {
+          start = match[1] ? parseInt(match[1], 10) : 0;
+          end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+          statusCode = 206; // Partial Content
+          console.log(`[Audio Protocol] Range request: ${start}-${end}/${fileSize}`);
+        }
+      }
+
+      // Validate range
+      if (start >= fileSize || end >= fileSize) {
+        return new Response('Range Not Satisfiable', {
+          status: 416,
+          headers: { 'Content-Range': `bytes */${fileSize}` }
+        });
+      }
+
+      const contentLength = end - start + 1;
+
+      // Create a readable stream for the requested range
+      const stream = fsSync.createReadStream(filePath, { start, end });
+
+      // Convert Node.js stream to Web ReadableStream
+      const webStream = new ReadableStream({
+        start(controller) {
+          stream.on('data', (chunk) => {
+            controller.enqueue(new Uint8Array(Buffer.from(chunk)));
+          });
+          stream.on('end', () => {
+            controller.close();
+          });
+          stream.on('error', (err) => {
+            console.error('[Audio Protocol] Stream error:', err);
+            controller.error(err);
+          });
+        },
+        cancel() {
+          stream.destroy();
         }
       });
+
+      const headers: Record<string, string> = {
+        'Content-Type': contentType,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': String(contentLength),
+      };
+
+      if (statusCode === 206) {
+        headers['Content-Range'] = `bytes ${start}-${end}/${fileSize}`;
+      }
+
+      return new Response(webStream, { status: statusCode, headers });
     } catch (err) {
       console.error('[Audio Protocol] Failed to load audio:', filePath, err);
       return new Response('File not found', { status: 404 });
@@ -781,6 +847,33 @@ function setupIpcHandlers(): void {
     try {
       await fs.writeFile(filePath, content, 'utf-8');
       return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Read audio file and return as data URL (for playback in renderer)
+  ipcMain.handle('fs:read-audio', async (_event, audioPath: string) => {
+    try {
+      console.log('[fs:read-audio] Loading:', audioPath);
+      const buffer = await fs.readFile(audioPath);
+      const ext = audioPath.toLowerCase().split('.').pop();
+      const mimeType = ext === 'm4b' || ext === 'm4a' ? 'audio/mp4' : 'audio/mpeg';
+      const base64 = buffer.toString('base64');
+      const dataUrl = `data:${mimeType};base64,${base64}`;
+      console.log(`[fs:read-audio] Loaded ${buffer.length} bytes`);
+      return { success: true, dataUrl, size: buffer.length };
+    } catch (err) {
+      console.error('[fs:read-audio] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('fs:read-text', async (_event, filePath: string) => {
+    const fs = await import('fs/promises');
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      return { success: true, content };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -2688,6 +2781,12 @@ function setupIpcHandlers(): void {
     pauseDuration?: number;
     gapDuration?: number;
     audioFormat?: string;
+    // Output naming with language suffix
+    outputName?: string;
+    title?: string;
+    sourceLang?: string;
+    targetLang?: string;
+    bfpPath?: string;
   }) => {
     try {
       const { initBilingualAssemblyBridge, runBilingualAssembly } = await import('./bilingual-assembly-bridge.js');
@@ -3797,6 +3896,11 @@ function setupIpcHandlers(): void {
         completedAt?: string;
         linkedAudioPath?: string;
         linkedAudioPathValid?: boolean;  // True if linkedAudioPath exists on current system
+        vttPath?: string;  // VTT subtitles path from BFP
+        // Bilingual audio paths (separate from mono audiobook)
+        bilingualAudioPath?: string;
+        bilingualAudioPathValid?: boolean;
+        bilingualVttPath?: string;
         metadata?: {
           title?: string;
           author?: string;
@@ -3829,6 +3933,12 @@ function setupIpcHandlers(): void {
               linkedAudioPathValid = fsSync.existsSync(project.audiobook.linkedAudioPath);
             }
 
+            // Check if bilingual audio path exists
+            let bilingualAudioPathValid: boolean | undefined;
+            if (project.audiobook.bilingualAudioPath) {
+              bilingualAudioPathValid = fsSync.existsSync(project.audiobook.bilingualAudioPath);
+            }
+
             projects.push({
               name: projectName,
               bfpPath,
@@ -3839,6 +3949,11 @@ function setupIpcHandlers(): void {
               completedAt: project.audiobook.completedAt,
               linkedAudioPath: project.audiobook.linkedAudioPath,
               linkedAudioPathValid,
+              vttPath: project.audiobook.vttPath,  // VTT path from BFP
+              // Bilingual audio paths
+              bilingualAudioPath: project.audiobook.bilingualAudioPath,
+              bilingualAudioPathValid,
+              bilingualVttPath: project.audiobook.bilingualVttPath,
               metadata: project.metadata ? {
                 title: project.metadata.title,
                 author: project.metadata.author,
@@ -3864,6 +3979,116 @@ function setupIpcHandlers(): void {
       return { success: true, projects };
     } catch (err) {
       return { success: false, error: (err as Error).message, projects: [] };
+    }
+  });
+
+  // Link an audio file to a BFP project
+  ipcMain.handle('audiobook:link-audio', async (_event, bfpPath: string, audioPath: string) => {
+    try {
+      console.log('[audiobook:link-audio] === LINK AUDIO CALLED ===');
+      console.log('[audiobook:link-audio] bfpPath:', bfpPath);
+      console.log('[audiobook:link-audio] audioPath:', audioPath);
+
+      // Validate inputs
+      if (!bfpPath || !audioPath) {
+        console.error('[audiobook:link-audio] Missing required parameters');
+        return { success: false, error: 'Missing bfpPath or audioPath' };
+      }
+
+      // Check if BFP file exists
+      const bfpExists = fsSync.existsSync(bfpPath);
+      console.log('[audiobook:link-audio] BFP exists:', bfpExists);
+      if (!bfpExists) {
+        return { success: false, error: `BFP file not found: ${bfpPath}` };
+      }
+
+      // Read the BFP file
+      console.log('[audiobook:link-audio] Reading BFP file...');
+      const content = await fs.readFile(bfpPath, 'utf-8');
+      const project = JSON.parse(content);
+      console.log('[audiobook:link-audio] Current linkedAudioPath:', project.audiobook?.linkedAudioPath);
+
+      // Ensure audiobook state exists
+      if (!project.audiobook) {
+        project.audiobook = {};
+      }
+
+      // Set the linked audio path
+      project.audiobook.linkedAudioPath = audioPath;
+      console.log('[audiobook:link-audio] New linkedAudioPath:', project.audiobook.linkedAudioPath);
+
+      // Save the BFP file
+      console.log('[audiobook:link-audio] Writing BFP file...');
+      const jsonContent = JSON.stringify(project, null, 2);
+      await fs.writeFile(bfpPath, jsonContent);
+      console.log('[audiobook:link-audio] Write complete, bytes:', jsonContent.length);
+
+      // Verify the write
+      const verifyContent = await fs.readFile(bfpPath, 'utf-8');
+      const verifyProject = JSON.parse(verifyContent);
+      console.log('[audiobook:link-audio] Verified linkedAudioPath:', verifyProject.audiobook?.linkedAudioPath);
+
+      console.log('[audiobook:link-audio] === SUCCESS ===');
+      return { success: true };
+    } catch (err) {
+      console.error('[audiobook:link-audio] === ERROR ===');
+      console.error('[audiobook:link-audio] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Link bilingual audio file to BFP project (separate from mono audiobook)
+  ipcMain.handle('audiobook:link-bilingual-audio', async (_event, bfpPath: string, audioPath: string, vttPath?: string) => {
+    try {
+      console.log('[audiobook:link-bilingual-audio] === LINK BILINGUAL AUDIO CALLED ===');
+      console.log('[audiobook:link-bilingual-audio] bfpPath:', bfpPath);
+      console.log('[audiobook:link-bilingual-audio] audioPath:', audioPath);
+      console.log('[audiobook:link-bilingual-audio] vttPath:', vttPath);
+
+      // Validate inputs
+      if (!bfpPath || !audioPath) {
+        console.error('[audiobook:link-bilingual-audio] Missing required parameters');
+        return { success: false, error: 'Missing bfpPath or audioPath' };
+      }
+
+      // Check if BFP file exists
+      const bfpExists = fsSync.existsSync(bfpPath);
+      console.log('[audiobook:link-bilingual-audio] BFP exists:', bfpExists);
+      if (!bfpExists) {
+        return { success: false, error: `BFP file not found: ${bfpPath}` };
+      }
+
+      // Read the BFP file
+      console.log('[audiobook:link-bilingual-audio] Reading BFP file...');
+      const content = await fs.readFile(bfpPath, 'utf-8');
+      const project = JSON.parse(content);
+      console.log('[audiobook:link-bilingual-audio] Current bilingualAudioPath:', project.audiobook?.bilingualAudioPath);
+
+      // Ensure audiobook state exists
+      if (!project.audiobook) {
+        project.audiobook = {};
+      }
+
+      // Set the bilingual audio and VTT paths
+      project.audiobook.bilingualAudioPath = audioPath;
+      if (vttPath) {
+        project.audiobook.bilingualVttPath = vttPath;
+      }
+      console.log('[audiobook:link-bilingual-audio] New bilingualAudioPath:', project.audiobook.bilingualAudioPath);
+      console.log('[audiobook:link-bilingual-audio] New bilingualVttPath:', project.audiobook.bilingualVttPath);
+
+      // Save the BFP file
+      console.log('[audiobook:link-bilingual-audio] Writing BFP file...');
+      const jsonContent = JSON.stringify(project, null, 2);
+      await fs.writeFile(bfpPath, jsonContent);
+      console.log('[audiobook:link-bilingual-audio] Write complete, bytes:', jsonContent.length);
+
+      console.log('[audiobook:link-bilingual-audio] === SUCCESS ===');
+      return { success: true };
+    } catch (err) {
+      console.error('[audiobook:link-bilingual-audio] === ERROR ===');
+      console.error('[audiobook:link-bilingual-audio] Error:', err);
+      return { success: false, error: (err as Error).message };
     }
   });
 
@@ -4727,6 +4952,10 @@ function setupIpcHandlers(): void {
   // Debug handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
+  ipcMain.handle('debug:log', async (_event, message: string) => {
+    console.log('[RENDERER]', message);
+  });
+
   ipcMain.handle('debug:save-logs', async (_event, content: string, filename: string) => {
     try {
       const logsDir = path.join(getLibraryRoot(), 'logs');
@@ -4745,12 +4974,12 @@ function setupIpcHandlers(): void {
   // Language Learning handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  ipcMain.handle('language-learning:fetch-url', async (_event, url: string) => {
-    console.log('[MAIN] language-learning:fetch-url called with:', url);
+  ipcMain.handle('language-learning:fetch-url', async (_event, url: string, projectId?: string) => {
+    console.log('[MAIN] language-learning:fetch-url called with:', url, 'projectId:', projectId);
     try {
       const { fetchUrlToPdf } = await import('./web-fetch-bridge.js');
       console.log('[MAIN] Calling fetchUrlToPdf...');
-      const result = await fetchUrlToPdf(url, getLibraryRoot());
+      const result = await fetchUrlToPdf(url, getLibraryRoot(), projectId);
       console.log('[MAIN] fetchUrlToPdf result:', JSON.stringify(result, null, 2));
       return result;
     } catch (err) {
@@ -4790,6 +5019,15 @@ function setupIpcHandlers(): void {
     try {
       const { deleteProject } = await import('./web-fetch-bridge.js');
       return await deleteProject(projectId, getLibraryRoot());
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('language-learning:update-project', async (_event, projectId: string, updates: any) => {
+    try {
+      const { updateProject } = await import('./web-fetch-bridge.js');
+      return await updateProject(projectId, updates, getLibraryRoot());
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -4851,6 +5089,173 @@ function setupIpcHandlers(): void {
       await fsPromises.writeFile(filePath, content, 'utf-8');
       return { success: true };
     } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Finalize article content - filters HTML using deletedSelectors, generates EPUB
+  // NOTE: We ignore the passed finalizedHtml and filter on the backend for reliability
+  ipcMain.handle('language-learning:finalize-content', async (_event, projectId: string, _finalizedHtml: string) => {
+    try {
+      const pathMod = await import('path');
+      const fsPromises = await import('fs/promises');
+      const { execSync } = await import('child_process');
+      const os = await import('os');
+      const cheerio = await import('cheerio');
+
+      const projectDir = pathMod.join(getLibraryRoot(), 'language-learning', 'projects', projectId);
+      const projectFile = pathMod.join(projectDir, 'project.json');
+      const finalizedFile = pathMod.join(projectDir, 'finalized.html');
+      const epubPath = pathMod.join(projectDir, 'article.epub');
+
+      // Load project data
+      const projectData = JSON.parse(await fsPromises.readFile(projectFile, 'utf-8'));
+      const title = projectData.title || 'Untitled Article';
+      const lang = projectData.sourceLang || 'en';
+      const deletedSelectors: string[] = projectData.deletedSelectors || [];
+      const htmlPath = projectData.htmlPath;
+
+      if (!htmlPath) {
+        return { success: false, error: 'No htmlPath in project.json' };
+      }
+
+      console.log(`[MAIN] Finalize: projectId=${projectId}, deletedSelectors=${deletedSelectors.length}, htmlPath=${htmlPath}`);
+
+      // Read the original HTML from htmlPath
+      const sourceHtml = await fsPromises.readFile(htmlPath, 'utf-8');
+      console.log(`[MAIN] Read source HTML: ${sourceHtml.length} chars from ${htmlPath}`);
+
+      // Parse HTML and filter out deleted elements using cheerio
+      const $ = cheerio.load(sourceHtml);
+
+      // IMPORTANT: Collect all elements FIRST before removing any.
+      // Removing elements shifts nth-of-type indices, breaking later selectors.
+      const elementsToRemove: any[] = [];
+      let matchedSelectors = 0;
+      for (const selector of deletedSelectors) {
+        try {
+          const elements = $(selector);
+          if (elements.length > 0) {
+            matchedSelectors++;
+            elements.each((_i: number, el: any) => {
+              elementsToRemove.push(el);
+            });
+          }
+        } catch (err) {
+          console.warn(`[MAIN] Failed to match selector "${selector}":`, err);
+        }
+      }
+
+      // Now remove all collected elements
+      elementsToRemove.forEach(el => $(el).remove());
+      console.log(`[MAIN] Removed ${elementsToRemove.length} elements from ${matchedSelectors}/${deletedSelectors.length} matched selectors`);
+
+      // Get the filtered body content
+      const filteredHtml = $('body').html() || '';
+      console.log(`[MAIN] Filtered HTML: ${filteredHtml.length} chars`);
+
+      // Write finalized HTML
+      await fsPromises.writeFile(finalizedFile, filteredHtml, 'utf-8');
+      console.log(`[MAIN] Wrote finalized HTML: ${finalizedFile} (${filteredHtml.length} bytes)`);
+
+      // Generate EPUB from the finalized HTML
+      const tempDir = pathMod.join(os.tmpdir(), `bookforge-epub-${projectId}`);
+      await fsPromises.mkdir(tempDir, { recursive: true });
+      await fsPromises.mkdir(pathMod.join(tempDir, 'META-INF'), { recursive: true });
+      await fsPromises.mkdir(pathMod.join(tempDir, 'OEBPS'), { recursive: true });
+
+      // Write mimetype (must be first, uncompressed)
+      await fsPromises.writeFile(pathMod.join(tempDir, 'mimetype'), 'application/epub+zip');
+
+      // Write container.xml
+      await fsPromises.writeFile(
+        pathMod.join(tempDir, 'META-INF', 'container.xml'),
+        `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`
+      );
+
+      // Write content.opf
+      const escapeXml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      await fsPromises.writeFile(
+        pathMod.join(tempDir, 'OEBPS', 'content.opf'),
+        `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">${projectId}</dc:identifier>
+    <dc:title>${escapeXml(title)}</dc:title>
+    <dc:language>${lang}</dc:language>
+    <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')}</meta>
+  </metadata>
+  <manifest>
+    <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter1"/>
+  </spine>
+</package>`
+      );
+
+      // Write nav.xhtml
+      await fsPromises.writeFile(
+        pathMod.join(tempDir, 'OEBPS', 'nav.xhtml'),
+        `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="${lang}">
+<head><title>Navigation</title></head>
+<body>
+  <nav epub:type="toc">
+    <ol><li><a href="chapter1.xhtml">${escapeXml(title)}</a></li></ol>
+  </nav>
+</body>
+</html>`
+      );
+
+      // Write chapter1.xhtml with the filtered HTML content
+      await fsPromises.writeFile(
+        pathMod.join(tempDir, 'OEBPS', 'chapter1.xhtml'),
+        `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${lang}">
+<head>
+  <meta charset="UTF-8"/>
+  <title>${escapeXml(title)}</title>
+  <style>
+    body { font-family: Georgia, serif; line-height: 1.6; margin: 2em; }
+    p { margin-bottom: 1em; }
+    h1, h2, h3, h4, h5, h6 { margin-top: 1.5em; margin-bottom: 0.5em; }
+  </style>
+</head>
+<body>
+  ${filteredHtml}
+</body>
+</html>`
+      );
+
+      // Create EPUB ZIP
+      try { await fsPromises.unlink(epubPath); } catch { /* ignore */ }
+      execSync(`zip -0 -X "${epubPath}" mimetype`, { cwd: tempDir, stdio: 'pipe' });
+      execSync(`zip -r "${epubPath}" META-INF OEBPS -x mimetype`, { cwd: tempDir, stdio: 'pipe' });
+
+      // Cleanup temp dir
+      await fsPromises.rm(tempDir, { recursive: true, force: true });
+
+      console.log(`[MAIN] Generated EPUB: ${epubPath}`);
+
+      // Update project.json with contentFinalized flag and EPUB path
+      projectData.contentFinalized = true;
+      projectData.epubPath = epubPath;
+      projectData.modifiedAt = new Date().toISOString();
+      await fsPromises.writeFile(projectFile, JSON.stringify(projectData, null, 2), 'utf-8');
+
+      console.log(`[MAIN] Finalized content for project ${projectId}`);
+      return { success: true, epubPath };
+    } catch (err) {
+      console.error(`[MAIN] Failed to finalize content for ${projectId}:`, err);
       return { success: false, error: (err as Error).message };
     }
   });
@@ -5053,11 +5458,11 @@ function setupIpcHandlers(): void {
   // Language Learning Split Pipeline Jobs
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // Job 1: AI Cleanup
+  // Job 1: AI Cleanup - reads from article.epub, writes to cleaned.epub
   ipcMain.handle('ll-cleanup:run', async (_event, jobId: string, config: {
     projectId: string;
     projectDir: string;
-    inputText: string;
+    // inputText removed - always reads from article.epub
     sourceLang: string;
     aiProvider: 'ollama' | 'claude' | 'openai';
     aiModel: string;
@@ -5074,11 +5479,11 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Job 2: Translation + EPUB Generation
+  // Job 2: Translation - reads from cleaned.epub, writes translated.epub
   ipcMain.handle('ll-translation:run', async (_event, jobId: string, config: {
     projectId: string;
     projectDir: string;
-    cleanedTextPath: string;
+    cleanedEpubPath: string;
     sourceLang: string;
     targetLang: string;
     title?: string;
@@ -5126,6 +5531,15 @@ app.whenReady().then(async () => {
   await initializeLoggers();
   const logger = getMainLogger();
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
+
+  // Clean up stale temp folders from previous sessions (Syncthing compatibility)
+  try {
+    const { cleanupStaleTempFolders } = await import('./parallel-tts-bridge.js');
+    await cleanupStaleTempFolders(24); // Clean folders older than 24 hours
+    logger.info('Cleaned up stale TTS temp folders');
+  } catch (err) {
+    logger.warn('Failed to cleanup stale temp folders', { error: (err as Error).message });
+  }
 
   // Register the protocol handlers
   registerPageProtocol();

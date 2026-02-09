@@ -696,12 +696,14 @@ export async function generateMonolingualEpub(
   sentences: string[],
   title: string,
   lang: string,
-  outputPath: string
+  outputPath: string,
+  options?: { includeBookforgeMarker?: boolean }
 ): Promise<string> {
-  // Prepend "bookforge." as sentence 0 - e2a uses first sentence as chapter title fallback,
-  // so we add a marker that bilingual assembly will skip (starts from sentence 1)
-  // The period ensures e2a treats it as a complete sentence and doesn't merge it with the next text
-  const allSentences = ['bookforge.', ...sentences];
+  // Only add bookforge marker for TTS EPUBs, not for intermediate cleaned.epub
+  // e2a uses first sentence as chapter title fallback, so we add a marker that
+  // bilingual assembly will skip (starts from sentence 1)
+  const includeMarker = options?.includeBookforgeMarker ?? true;
+  const allSentences = includeMarker ? ['bookforge.', ...sentences] : sentences;
 
   // Generate HTML content - one paragraph per sentence
   const sentencesHtml = allSentences.map((sentence, index) =>

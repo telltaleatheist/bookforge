@@ -2479,5 +2479,60 @@ export function splitTextIntoParagraphs(text: string): string[] {
     .filter(p => p.length > 0);
 }
 
+/**
+ * Extract all text from an EPUB file.
+ * Parses the EPUB and concatenates text from all chapters.
+ *
+ * @param epubPath Path to the EPUB file
+ * @returns Object with success flag and extracted text
+ */
+export async function extractTextFromEpub(
+  epubPath: string
+): Promise<{ success: boolean; text?: string; error?: string }> {
+  try {
+    // Parse the EPUB
+    console.log(`[EPUB] extractTextFromEpub: parsing ${epubPath}`);
+    await parseEpub(epubPath);
+
+    // Get all chapters
+    const chapters = getChapters();
+    console.log(`[EPUB] Found ${chapters.length} chapters:`, chapters.map(c => c.id));
+    if (!chapters || chapters.length === 0) {
+      closeEpub();
+      return { success: false, error: 'No chapters found in EPUB' };
+    }
+
+    // Extract text from each chapter
+    // Note: getChapterText already extracts plain text from XHTML, so we use it directly
+    const textParts: string[] = [];
+    for (const chapter of chapters) {
+      try {
+        const chapterText = await getChapterText(chapter.id);
+        console.log(`[EPUB] Chapter ${chapter.id}: ${chapterText ? chapterText.length : 0} chars`);
+        if (chapterText && chapterText.trim()) {
+          textParts.push(chapterText.trim());
+        }
+      } catch (err) {
+        console.warn(`[EPUB] Failed to extract chapter ${chapter.id}: ${(err as Error).message}`);
+      }
+    }
+
+    closeEpub();
+
+    console.log(`[EPUB] Total text parts: ${textParts.length}`);
+    if (textParts.length === 0) {
+      return { success: false, error: 'No text content found in EPUB' };
+    }
+
+    return {
+      success: true,
+      text: textParts.join('\n\n')
+    };
+  } catch (err) {
+    console.error(`[EPUB] extractTextFromEpub error:`, err);
+    return { success: false, error: (err as Error).message };
+  }
+}
+
 // Export the processor and ZipWriter for direct use if needed
 export { EpubProcessor, ZipWriter };

@@ -21,7 +21,6 @@ import {
 import { UrlInputComponent } from './components/url-input/url-input.component';
 import { ArticlePreviewComponent } from './components/article-preview/article-preview.component';
 import { LanguageSelectorComponent } from './components/language-selector/language-selector.component';
-import { CompletedListComponent } from './components/completed-list/completed-list.component';
 import { BilingualPlayerComponent } from './components/bilingual-player/bilingual-player.component';
 
 @Component({
@@ -34,7 +33,6 @@ import { BilingualPlayerComponent } from './components/bilingual-player/bilingua
     UrlInputComponent,
     ArticlePreviewComponent,
     LanguageSelectorComponent,
-    CompletedListComponent,
     BilingualPlayerComponent
   ],
   template: `
@@ -1968,7 +1966,7 @@ export class LanguageLearningComponent implements OnInit, OnDestroy {
 
   // TTS Settings
   readonly selectedEngine = signal<'xtts' | 'orpheus'>('xtts');
-  readonly selectedDevice = signal<'mps' | 'gpu' | 'cpu'>('mps');
+  readonly selectedDevice = signal<'mps' | 'gpu' | 'cpu'>('cpu');  // CPU is better for XTTS on Mac
   readonly selectedWorkers = signal<number>(4);
   readonly sourceTtsSpeed = signal<number>(1.0);
   readonly targetTtsSpeed = signal<number>(0.75);
@@ -2480,9 +2478,9 @@ Start your response with the first word of the text. No introduction.`);
       const extractedText = extractResult.text;
       console.log(`[LL] Extracted ${extractedText.length} chars of text`);
 
-      // Prepare output paths
-      const cleanedTextPath = `${projectDir}/cleaned.txt`;
-      // Note: EPUBs (source.epub, target.epub) are created dynamically by ll-translation
+      // Prepare output paths - cleanup creates cleaned.epub, translation creates translated.epub
+      const cleanedEpubPath = `${projectDir}/cleaned.epub`;
+      const articleEpubPath = `${projectDir}/article.epub`;
 
       // Get audiobooks output directory (sibling to projects)
       const projectsDir = projectDir.substring(0, projectDir.lastIndexOf('/'));
@@ -2548,14 +2546,14 @@ Start your response with the first word of the text. No introduction.`);
             type: 'll-cleanup',
             projectId: project.id,
             projectDir,
-            inputText: extractedText,
+            // inputText removed - ll-cleanup reads from article.epub
             sourceLang: project.sourceLang,
             ...aiCommonConfig,
             cleanupPrompt: this.cleanupPrompt()
           }
         });
 
-        // Job 2: Translation (child of master)
+        // Job 2: Translation (child of master) - uses cleaned.epub from cleanup
         await this.queueService.addJob({
           type: 'll-translation',
           epubPath: project.htmlPath,
@@ -2569,7 +2567,7 @@ Start your response with the first word of the text. No introduction.`);
             type: 'll-translation',
             projectId: project.id,
             projectDir,
-            cleanedTextPath,
+            cleanedEpubPath,  // Uses cleaned.epub created by cleanup
             sourceLang: project.sourceLang,
             targetLang: project.targetLang,
             title: project.title,
@@ -2580,9 +2578,7 @@ Start your response with the first word of the text. No introduction.`);
           }
         });
       } else {
-        // No cleanup - save extracted text as cleaned.txt and skip to translation
-        await this.electronService.languageLearningWriteFile(cleanedTextPath, extractedText);
-
+        // No cleanup - translation reads directly from article.epub
         // Job 1: Translation only (child of master)
         await this.queueService.addJob({
           type: 'll-translation',
@@ -2597,7 +2593,7 @@ Start your response with the first word of the text. No introduction.`);
             type: 'll-translation',
             projectId: project.id,
             projectDir,
-            cleanedTextPath,
+            cleanedEpubPath: articleEpubPath,  // Uses article.epub directly when cleanup skipped
             sourceLang: project.sourceLang,
             targetLang: project.targetLang,
             title: project.title,
@@ -2649,7 +2645,6 @@ Start your response with the first word of the text. No introduction.`);
           parallelMode: 'sentences',
           parallelWorkers: workerCount,
           skipAssembly: true,
-          cleanSession: true,
           sentencePerParagraph: true,
           skipHeadings: true,
           temperature: 0.75,
@@ -2686,7 +2681,6 @@ Start your response with the first word of the text. No introduction.`);
           parallelMode: 'sentences',
           parallelWorkers: workerCount,
           skipAssembly: true,
-          cleanSession: true,
           sentencePerParagraph: true,
           skipHeadings: true,
           temperature: 0.75,

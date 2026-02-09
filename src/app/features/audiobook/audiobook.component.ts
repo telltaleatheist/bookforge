@@ -620,7 +620,7 @@ export class AudiobookComponent implements OnInit {
   private getDefaultDevice(): 'mps' | 'gpu' | 'cpu' {
     const platform = this.electronService.platform;
     if (platform === 'darwin') {
-      return 'mps';  // macOS uses Metal Performance Shaders
+      return 'cpu';  // CPU is better for XTTS on Mac - same speed, less memory pressure
     } else if (platform === 'win32' || platform === 'linux') {
       return 'gpu';  // Windows/Linux use CUDA
     }
@@ -986,8 +986,9 @@ export class AudiobookComponent implements OnInit {
 
     try {
       // Use configured output dir, or fall back to library's audiobooks folder
-      const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
-      const outputDir = configuredDir || this.libraryService.audiobooksPath() || '';
+      // Check external audiobooks dir and library's default folder for completed audiobooks
+      const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
+      const outputDir = externalDir || this.libraryService.audiobooksPath() || '';
       const result = await this.electron.library.listCompleted(outputDir || undefined);
 
       if (result.success && result.files) {
@@ -1351,13 +1352,13 @@ export class AudiobookComponent implements OnInit {
   }
 
   async onShowInFinder(): Promise<void> {
-    // Open the configured audiobooks output folder
+    // Open the external audiobooks folder
     if (!this.electron) return;
 
     try {
-      // Use configured output dir, or fall back to library's audiobooks folder
-      const configuredDir = this.settingsService.get<string>('audiobookOutputDir');
-      const outputDir = configuredDir || this.libraryService.audiobooksPath();
+      // Use external audiobooks dir, or fall back to library's audiobooks folder
+      const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
+      const outputDir = externalDir || this.libraryService.audiobooksPath();
       if (outputDir) {
         await this.electron.shell.openPath(outputDir);
       }

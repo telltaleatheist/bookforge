@@ -21,6 +21,27 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
 import { getTTSLogger } from './rolling-logger';
+
+// Worker log file for debugging - captures ALL worker output
+let workerLogPath: string | null = null;
+let workerLogStream: fsSync.WriteStream | null = null;
+
+function initWorkerLog(libraryPath: string): void {
+  if (!workerLogStream) {
+    const logsDir = path.join(os.homedir(), 'Library', 'Logs', 'BookForgeApp');
+    fsSync.mkdirSync(logsDir, { recursive: true });
+    workerLogPath = path.join(logsDir, 'worker-output.log');
+    // Truncate on start
+    workerLogStream = fsSync.createWriteStream(workerLogPath, { flags: 'w' });
+    workerLogStream.write(`=== Worker Log Started ${new Date().toISOString()} ===\n`);
+  }
+}
+
+function writeWorkerLog(line: string): void {
+  if (workerLogStream) {
+    workerLogStream.write(`${new Date().toISOString()} ${line}\n`);
+  }
+}
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import { checkResembleAvailable, enhanceFile, initResembleBridge } from './resemble-bridge';
 
@@ -165,6 +186,142 @@ export function forceKillAllE2aProcesses(): void {
   // Also clean up WSL processes if applicable
   if (os.platform() === 'win32') {
     cleanupWslOrphanedProcesses();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Temp Folder Management
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TEMP_TTS_BASE_DIR = 'bookforge-tts';
+
+/**
+ * Get temp output directory for a TTS job
+ * Uses /tmp/bookforge-tts/{jobId}/ on Unix, %TEMP%\bookforge-tts\{jobId}\ on Windows
+ */
+export function getTempOutputDir(jobId: string): string {
+  return path.join(os.tmpdir(), TEMP_TTS_BASE_DIR, jobId);
+}
+
+/**
+ * Copy completed TTS output to final destinations
+ *
+ * @param tempDir - Temp folder containing m4b and vtt files
+ * @param bfpPath - BFP project folder (copies to {bfp}/audiobook/)
+ * @param externalAudiobooksDir - External folder for books (optional, not used for articles)
+ * @param isArticle - If true, skip external copy (articles stay in BFP only)
+ * @returns Final paths for audio and VTT
+ */
+export async function copyToFinalDestination(
+  tempDir: string,
+  bfpPath: string | undefined,
+  externalAudiobooksDir: string | undefined,
+  isArticle: boolean = false
+): Promise<{ audioPath: string; vttPath: string | undefined }> {
+  console.log('[PARALLEL-TTS] copyToFinalDestination:', { tempDir, bfpPath, externalAudiobooksDir, isArticle });
+
+  // Find m4b and vtt files in temp dir
+  const files = await fs.readdir(tempDir);
+  const m4bFile = files.find(f => f.endsWith('.m4b') && !f.startsWith('._'));
+  const vttFile = files.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
+
+  if (!m4bFile) {
+    throw new Error(`No m4b file found in temp directory: ${tempDir}`);
+  }
+
+  const tempM4bPath = path.join(tempDir, m4bFile);
+  const tempVttPath = vttFile ? path.join(tempDir, vttFile) : undefined;
+
+  let finalAudioPath: string;
+  let finalVttPath: string | undefined;
+
+  // Step 1: Copy to BFP audiobook/ folder (always, for both books and articles)
+  if (bfpPath) {
+    const bfpAudiobookDir = path.join(bfpPath, 'audiobook');
+    await fs.mkdir(bfpAudiobookDir, { recursive: true });
+
+    finalAudioPath = path.join(bfpAudiobookDir, 'output.m4b');
+    await fs.copyFile(tempM4bPath, finalAudioPath);
+    console.log(`[PARALLEL-TTS] Copied m4b to BFP: ${finalAudioPath}`);
+
+    if (tempVttPath) {
+      finalVttPath = path.join(bfpAudiobookDir, 'subtitles.vtt');
+      await fs.copyFile(tempVttPath, finalVttPath);
+      console.log(`[PARALLEL-TTS] Copied vtt to BFP: ${finalVttPath}`);
+    }
+  } else {
+    // No BFP path - just use temp path (will be cleaned up separately)
+    finalAudioPath = tempM4bPath;
+    finalVttPath = tempVttPath;
+    console.log('[PARALLEL-TTS] No bfpPath provided, keeping files in temp location');
+  }
+
+  // Step 2: Copy to external audiobooks folder (for books only, not articles)
+  if (!isArticle && externalAudiobooksDir && bfpPath) {
+    try {
+      await fs.mkdir(externalAudiobooksDir, { recursive: true });
+      const externalPath = path.join(externalAudiobooksDir, m4bFile);
+      await fs.copyFile(tempM4bPath, externalPath);
+      console.log(`[PARALLEL-TTS] Copied m4b to external: ${externalPath}`);
+    } catch (err) {
+      // Don't fail the job if external copy fails (e.g., network drive unavailable)
+      console.error('[PARALLEL-TTS] Failed to copy to external audiobooks folder:', err);
+    }
+  }
+
+  // Step 3: Clean up temp folder
+  if (bfpPath) {
+    try {
+      await fs.rm(tempDir, { recursive: true, force: true });
+      console.log(`[PARALLEL-TTS] Cleaned up temp folder: ${tempDir}`);
+    } catch (err) {
+      console.error('[PARALLEL-TTS] Failed to clean up temp folder:', err);
+    }
+  }
+
+  return { audioPath: finalAudioPath, vttPath: finalVttPath };
+}
+
+/**
+ * Clean up stale temp folders older than maxAgeHours
+ * Called on app startup to prevent tmp folder buildup
+ */
+export async function cleanupStaleTempFolders(maxAgeHours: number = 24): Promise<void> {
+  const baseTempDir = path.join(os.tmpdir(), TEMP_TTS_BASE_DIR);
+
+  try {
+    await fs.access(baseTempDir);
+  } catch {
+    // Directory doesn't exist, nothing to clean
+    return;
+  }
+
+  console.log(`[PARALLEL-TTS] Checking for stale temp folders in ${baseTempDir}...`);
+
+  const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
+  const now = Date.now();
+
+  try {
+    const entries = await fs.readdir(baseTempDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const folderPath = path.join(baseTempDir, entry.name);
+      try {
+        const stat = await fs.stat(folderPath);
+        const age = now - stat.mtimeMs;
+
+        if (age > maxAgeMs) {
+          console.log(`[PARALLEL-TTS] Removing stale temp folder: ${entry.name} (age: ${Math.round(age / 3600000)}h)`);
+          await fs.rm(folderPath, { recursive: true, force: true });
+        }
+      } catch (err) {
+        console.error(`[PARALLEL-TTS] Failed to check/remove folder ${entry.name}:`, err);
+      }
+    }
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Failed to scan temp directory:', err);
   }
 }
 
@@ -498,6 +655,14 @@ export interface ParallelConversionConfig {
   // Clean session - delete any existing e2a sessions for this epub before starting
   // Used for language learning jobs which should always start fresh (no resume)
   cleanSession?: boolean;
+  // BFP project path - for copying final audio to {bfp}/audiobook/ folder
+  bfpPath?: string;
+  // Is this an article (language learning) vs a book?
+  // Articles: copy to BFP audiobook/ only
+  // Books: also copy to externalAudiobooksDir
+  isArticle?: boolean;
+  // External audiobooks directory - for books, final m4b is also copied here
+  externalAudiobooksDir?: string;
 }
 
 export interface ParallelTtsSettings {
@@ -601,6 +766,7 @@ const WORKER_PROGRESS_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes without progress 
 export async function initializeLogger(libraryPath: string): Promise<void> {
   if (!loggerInitialized) {
     await logger.initializeLogger(libraryPath);
+    initWorkerLog(libraryPath);
     loggerInitialized = true;
     await logger.log('INFO', 'system', 'Parallel TTS bridge logger initialized');
   }
@@ -630,6 +796,8 @@ interface ConversionSession {
   persistentState?: PersistentSessionState;
   // State save timer
   stateSaveTimer?: NodeJS.Timeout;
+  // Temp output directory - used when bfpPath is set, for Syncthing compatibility
+  tempOutputDir?: string;
 }
 
 // Persistent session state - saved to disk for resume capability
@@ -1016,14 +1184,31 @@ export async function prepareSession(
     args.push('--fine_tuned', settings.fineTuned);
   }
 
+  // Pass XTTS settings explicitly (stored in session-state.json for workers)
+  if (settings.ttsEngine === 'xtts') {
+    if (settings.temperature !== undefined) {
+      args.push('--temperature', settings.temperature.toString());
+    }
+    if (settings.topP !== undefined) {
+      args.push('--top_p', settings.topP.toString());
+    }
+    if (settings.topK !== undefined) {
+      args.push('--top_k', settings.topK.toString());
+    }
+    if (settings.repetitionPenalty !== undefined) {
+      args.push('--repetition_penalty', settings.repetitionPenalty.toString());
+    }
+    if (settings.speed !== undefined) {
+      args.push('--speed', settings.speed.toString());
+    }
+    if (settings.enableTextSplitting) {
+      args.push('--enable_text_splitting');
+    }
+  }
+
   // Language learning mode: preserve paragraph boundaries as sentences
   if (settings.sentencePerParagraph) {
     args.push('--sentence_per_paragraph');
-  }
-
-  // Bilingual mode: skip reading heading tags as chapter titles
-  if (settings.skipHeadings) {
-    args.push('--skip_headings');
   }
 
   console.log('[PARALLEL-TTS] Running prep with:', args.join(' '));
@@ -1049,7 +1234,9 @@ export async function prepareSession(
       if (text) {
         // Only log non-JSON lines (skip the massive prep info JSON)
         if (!text.startsWith('{') && !text.startsWith('[') && !text.startsWith('"')) {
+          const logLine = `[PREP] ${text.substring(0, 500)}`;
           console.log('[PARALLEL-TTS] Prep:', text.substring(0, 200));
+          writeWorkerLog(logLine);
         }
       }
     });
@@ -1059,7 +1246,9 @@ export async function prepareSession(
       // Log stderr for visibility
       const text = data.toString().trim();
       if (text && !text.includes('━')) {  // Skip progress bars
+        const logLine = `[PREP STDERR] ${text.substring(0, 500)}`;
         console.log('[PARALLEL-TTS] Prep stderr:', text.substring(0, 200));
+        writeWorkerLog(logLine);
       }
     });
 
@@ -1277,8 +1466,12 @@ function startWorker(
     ? `chapters ${range.chapterStart}-${range.chapterEnd}`
     : `sentences ${range.sentenceStart}-${range.sentenceEnd}`;
   const workerType = useLightweightWorker ? 'lightweight (worker.py)' : 'full (app.py)';
-  console.log(`[PARALLEL-TTS] Worker ${workerId} starting [${workerType}]: ${rangeDesc}`);
-  console.log(`[PARALLEL-TTS] Worker ${workerId} settings: engine=${settings.ttsEngine}, voice=${settings.fineTuned}, device=${settings.device}, speed=${settings.speed}`);
+  const startMsg = `[PARALLEL-TTS] Worker ${workerId} starting [${workerType}]: ${rangeDesc}`;
+  const settingsMsg = `[PARALLEL-TTS] Worker ${workerId} settings: engine=${settings.ttsEngine}, voice=${settings.fineTuned}, device=${settings.device}, speed=${settings.speed}`;
+  console.log(startMsg);
+  console.log(settingsMsg);
+  writeWorkerLog(startMsg);
+  writeWorkerLog(settingsMsg);
 
   // Log to file
   logger.log('INFO', session.jobId, `Worker ${workerId} starting`, {
@@ -1318,7 +1511,9 @@ function startWorker(
     const lines = data.toString().split('\n');
     for (const line of lines) {
       if (!line.trim()) continue;
-      console.log(`[WORKER ${workerId}]`, line.trim());
+      const logLine = `[WORKER ${workerId}] ${line.trim()}`;
+      console.log(logLine);
+      writeWorkerLog(logLine);
 
       // Parse progress - support both output formats:
       // Format 1 (Windows e2a): "Converting sentence 49 - 0.53%: 49/9248"
@@ -1348,7 +1543,9 @@ function startWorker(
     const lines = data.toString().split('\n');
     for (const line of lines) {
       if (!line.trim()) continue;
-      console.log(`[WORKER ${workerId} STDERR]`, line.trim());
+      const logLine = `[WORKER ${workerId} STDERR] ${line.trim()}`;
+      console.log(logLine);
+      writeWorkerLog(logLine);
 
       // Parse progress from stderr too (both formats)
       const progressMatch = line.match(/Converting sentence (\d+) - ([\d.]+)%: (\d+)\/(\d+)/i)
@@ -1371,7 +1568,9 @@ function startWorker(
 
   workerProcess.on('close', (code) => {
     const duration = worker.startedAt ? Math.round((Date.now() - worker.startedAt) / 1000) : 0;
-    console.log(`[PARALLEL-TTS] Worker ${workerId} exited with code ${code} after ${duration}s`);
+    const exitMsg = `[PARALLEL-TTS] Worker ${workerId} exited with code ${code} after ${duration}s`;
+    console.log(exitMsg);
+    writeWorkerLog(exitMsg);
     worker.process = null;
 
     if (session.cancelled) {
@@ -1619,6 +1818,41 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
 // ─────────────────────────────────────────────────────────────────────────────
 // Assembly
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Finalize output path by copying to final destinations if using temp folder
+ *
+ * @param processedPath - The path to the processed m4b file (in temp or output dir)
+ * @param session - The conversion session
+ * @returns The final output path (BFP audiobook path if using temp, otherwise processedPath)
+ */
+async function finalizeOutputPath(processedPath: string, session: ConversionSession): Promise<string> {
+  // If not using temp folder, return the processed path as-is
+  if (!session.tempOutputDir) {
+    return processedPath;
+  }
+
+  const config = session.config;
+  console.log('[PARALLEL-TTS] Finalizing output from temp folder to destinations...');
+
+  try {
+    const result = await copyToFinalDestination(
+      session.tempOutputDir,
+      config.bfpPath,
+      config.externalAudiobooksDir,
+      config.isArticle || false
+    );
+
+    console.log('[PARALLEL-TTS] Files copied to final destinations:', result);
+    return result.audioPath;
+  } catch (err) {
+    // If copy fails, log the error but don't fail the job
+    // The files are still in the temp folder
+    console.error('[PARALLEL-TTS] Failed to copy to final destinations:', err);
+    console.log('[PARALLEL-TTS] Files remain in temp folder:', session.tempOutputDir);
+    return processedPath;
+  }
+}
 
 /**
  * Run the final assembly phase to combine all sentence audio into the final audiobook
@@ -1881,10 +2115,10 @@ async function runAssembly(session: ConversionSession): Promise<string> {
             // Run Resemble Enhance for Orpheus TTS output (removes reverb)
             processedPath = await runResembleEnhance(processedPath, settings.ttsEngine, session.jobId);
             console.log('[PARALLEL-TTS] Final processed path:', processedPath);
-            resolve(processedPath);
+            resolve(await finalizeOutputPath(processedPath, session));
           } catch (metaErr) {
             console.error('[PARALLEL-TTS] Metadata processing failed, using original file:', metaErr);
-            resolve(finalPath);
+            resolve(await finalizeOutputPath(finalPath, session));
           }
         } else {
           if (!config.outputDir) {
@@ -1899,7 +2133,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
           } catch (err) {
             console.error('[PARALLEL-TTS] Resemble Enhance failed:', err);
           }
-          resolve(resultPath);
+          resolve(await finalizeOutputPath(resultPath, session));
         }
       } else {
         // Even if e2a exited with error, the m4b file might have been created
@@ -1931,11 +2165,11 @@ async function runAssembly(session: ConversionSession): Promise<string> {
                 // Run Resemble Enhance for Orpheus
                 processedPath = await runResembleEnhance(processedPath, settings.ttsEngine, session.jobId);
                 console.log('[PARALLEL-TTS] Post-processing succeeded:', processedPath);
-                resolve(processedPath);
+                resolve(await finalizeOutputPath(processedPath, session));
                 return;
               } catch (metaErr) {
                 console.error('[PARALLEL-TTS] Post-processing failed:', metaErr);
-                resolve(foundPath);
+                resolve(await finalizeOutputPath(foundPath, session));
                 return;
               }
             }
@@ -1943,9 +2177,9 @@ async function runAssembly(session: ConversionSession): Promise<string> {
             // Still run Resemble Enhance for Orpheus even without metadata
             try {
               const enhancedPath = await runResembleEnhance(foundPath, settings.ttsEngine, session.jobId);
-              resolve(enhancedPath);
+              resolve(await finalizeOutputPath(enhancedPath, session));
             } catch (err) {
-              resolve(foundPath);
+              resolve(await finalizeOutputPath(foundPath, session));
             }
             return;
           }
@@ -2531,8 +2765,26 @@ export async function startParallelConversion(
     device: config.settings.device
   });
 
-  // Ensure we have a valid output directory
-  if (!config.outputDir || config.outputDir.trim() === '') {
+  // Determine effective output directory:
+  // - If bfpPath is set, use temp folder (for Syncthing compatibility)
+  // - Otherwise, require outputDir to be set
+  let effectiveOutputDir: string;
+  let tempOutputDir: string | undefined;
+
+  if (config.bfpPath) {
+    // Use temp folder - files will be copied to BFP on completion
+    tempOutputDir = getTempOutputDir(jobId);
+    await fs.mkdir(tempOutputDir, { recursive: true });
+    effectiveOutputDir = tempOutputDir;
+    console.log(`[PARALLEL-TTS] Using temp folder for output: ${tempOutputDir}`);
+    console.log(`[PARALLEL-TTS] Will copy to BFP on completion: ${config.bfpPath}`);
+    if (config.externalAudiobooksDir && !config.isArticle) {
+      console.log(`[PARALLEL-TTS] Will also copy to external: ${config.externalAudiobooksDir}`);
+    }
+  } else if (config.outputDir && config.outputDir.trim() !== '') {
+    // Legacy mode: output directly to outputDir
+    effectiveOutputDir = config.outputDir;
+  } else {
     const error = 'Output directory not configured. Please set the audiobook output folder in Settings.';
     console.error('[PARALLEL-TTS]', error);
     await logger.failJob(jobId, error);
@@ -2614,15 +2866,22 @@ export async function startParallelConversion(
     }));
   }
 
+  // Create internal config with effective output directory
+  const internalConfig: ParallelConversionConfig = {
+    ...config,
+    outputDir: effectiveOutputDir
+  };
+
   // Create session
   const session: ConversionSession = {
     jobId,
-    config,
+    config: internalConfig,
     prepInfo,
     workers,
     startTime: Date.now(),
     cancelled: false,
-    assemblyProcess: null
+    assemblyProcess: null,
+    tempOutputDir
   };
 
   activeSessions.set(jobId, session);
@@ -3632,17 +3891,34 @@ export async function resumeParallelConversion(
     console.log(`[PARALLEL-TTS] Re-fetched: sessionId=${resumeInfo.sessionId}, missingIndices=${resumeInfo.missingIndices?.length}`);
   }
 
-  if (resumeInfo.complete) {
-    console.log('[PARALLEL-TTS] All sentences already complete, proceeding to assembly');
-    // Go directly to assembly
-    return runAssemblyOnly(jobId, config, resumeInfo.sessionId!);
-  }
+  // Determine effective output directory (same logic as startParallelConversion)
+  // Do this BEFORE the complete check so runAssemblyOnly also gets temp folder support
+  let effectiveOutputDir: string;
+  let tempOutputDir: string | undefined;
 
-  // Ensure we have a valid output directory
-  if (!config.outputDir || config.outputDir.trim() === '') {
+  if (config.bfpPath) {
+    tempOutputDir = getTempOutputDir(jobId);
+    await fs.mkdir(tempOutputDir, { recursive: true });
+    effectiveOutputDir = tempOutputDir;
+    console.log(`[PARALLEL-TTS] Resume: Using temp folder for output: ${tempOutputDir}`);
+  } else if (config.outputDir && config.outputDir.trim() !== '') {
+    effectiveOutputDir = config.outputDir;
+  } else {
     const error = 'Output directory not configured. Please set the audiobook output folder in Settings.';
     console.error('[PARALLEL-TTS]', error);
     return { success: false, error };
+  }
+
+  // Create internal config with effective output directory
+  const internalConfig: ParallelConversionConfig = {
+    ...config,
+    outputDir: effectiveOutputDir
+  };
+
+  if (resumeInfo.complete) {
+    console.log('[PARALLEL-TTS] All sentences already complete, proceeding to assembly');
+    // Go directly to assembly - pass internalConfig and tempOutputDir for Syncthing compatibility
+    return runAssemblyOnly(jobId, internalConfig, resumeInfo.sessionId!, tempOutputDir);
   }
 
   // Create PrepInfo-like structure from resume info
@@ -3715,7 +3991,7 @@ export async function resumeParallelConversion(
   // Create session with resume tracking info
   const session: ConversionSession = {
     jobId,
-    config,
+    config: internalConfig,
     prepInfo,
     workers,
     startTime: Date.now(),
@@ -3724,7 +4000,8 @@ export async function resumeParallelConversion(
     // Resume job tracking
     isResumeJob: true,
     baselineCompleted: resumeInfo.completedSentences || 0,
-    totalMissing: resumeInfo.missingSentences || 0
+    totalMissing: resumeInfo.missingSentences || 0,
+    tempOutputDir
   };
 
   activeSessions.set(jobId, session);
@@ -3800,7 +4077,8 @@ export async function resumeParallelConversion(
 async function runAssemblyOnly(
   jobId: string,
   config: ParallelConversionConfig,
-  sessionId: string
+  sessionId: string,
+  tempOutputDir?: string
 ): Promise<ParallelConversionResult> {
   console.log(`[PARALLEL-TTS] Running assembly only for session ${sessionId}`);
 
@@ -3824,7 +4102,8 @@ async function runAssemblyOnly(
     workers: [],
     startTime: Date.now(),
     cancelled: false,
-    assemblyProcess: null
+    assemblyProcess: null,
+    tempOutputDir
   };
 
   activeSessions.set(jobId, session);
@@ -3945,5 +4224,8 @@ export const parallelTtsBridge = {
   checkResumeStatusFromProcessDir,
   listResumableSessions,
   resumeParallelConversion,
-  buildResumeInfo
+  buildResumeInfo,
+  // Temp folder management
+  getTempOutputDir,
+  cleanupStaleTempFolders
 };

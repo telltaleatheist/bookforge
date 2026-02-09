@@ -12,7 +12,69 @@ import { spawn } from 'child_process';
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import { getCondaRunArgs, getCondaPath, getDefaultE2aPath } from './e2a-paths';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Temp Folder Management (for Syncthing compatibility)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TEMP_BILINGUAL_BASE_DIR = 'bookforge-bilingual';
+
+/**
+ * Get temp output directory for a bilingual assembly job
+ */
+function getTempOutputDir(jobId: string): string {
+  return path.join(os.tmpdir(), TEMP_BILINGUAL_BASE_DIR, jobId);
+}
+
+/**
+ * Copy completed bilingual assembly output to final destination
+ */
+async function copyToFinalDestination(
+  tempDir: string,
+  bfpPath: string
+): Promise<{ audioPath: string; vttPath: string | undefined }> {
+  console.log('[BILINGUAL-ASSEMBLY] Copying to final destination:', { tempDir, bfpPath });
+
+  // Find m4b and vtt files in temp dir
+  const files = await fs.readdir(tempDir);
+  const m4bFile = files.find(f => f.endsWith('.m4b') && !f.startsWith('._'));
+  const vttFile = files.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
+
+  if (!m4bFile) {
+    throw new Error(`No m4b file found in temp directory: ${tempDir}`);
+  }
+
+  const tempM4bPath = path.join(tempDir, m4bFile);
+  const tempVttPath = vttFile ? path.join(tempDir, vttFile) : undefined;
+
+  // Create audiobook/ subfolder in BFP
+  const bfpAudiobookDir = path.join(bfpPath, 'audiobook');
+  await fs.mkdir(bfpAudiobookDir, { recursive: true });
+
+  // Copy to BFP audiobook folder
+  const finalAudioPath = path.join(bfpAudiobookDir, 'output.m4b');
+  await fs.copyFile(tempM4bPath, finalAudioPath);
+  console.log(`[BILINGUAL-ASSEMBLY] Copied m4b to BFP: ${finalAudioPath}`);
+
+  let finalVttPath: string | undefined;
+  if (tempVttPath) {
+    finalVttPath = path.join(bfpAudiobookDir, 'subtitles.vtt');
+    await fs.copyFile(tempVttPath, finalVttPath);
+    console.log(`[BILINGUAL-ASSEMBLY] Copied vtt to BFP: ${finalVttPath}`);
+  }
+
+  // Clean up temp folder
+  try {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    console.log(`[BILINGUAL-ASSEMBLY] Cleaned up temp folder: ${tempDir}`);
+  } catch (err) {
+    console.error('[BILINGUAL-ASSEMBLY] Failed to clean up temp folder:', err);
+  }
+
+  return { audioPath: finalAudioPath, vttPath: finalVttPath };
+}
 
 export interface BilingualAssemblyConfig {
   projectId: string;
@@ -23,6 +85,13 @@ export interface BilingualAssemblyConfig {
   pauseDuration?: number;      // Seconds between source and target (default 0.3)
   gapDuration?: number;        // Seconds between pairs (default 1.0)
   audioFormat?: string;        // Audio file format (default 'flac')
+  // Custom output naming with language suffix
+  outputName?: string;         // Custom filename (e.g., "My Book [Bilingual EN-DE]")
+  title?: string;              // Book/article title
+  sourceLang?: string;         // Source language code (e.g., 'en')
+  targetLang?: string;         // Target language code (e.g., 'de')
+  // BFP path for saving bilingual audio path
+  bfpPath?: string;
 }
 
 export interface BilingualAssemblyResult {
@@ -68,7 +137,8 @@ export async function runBilingualAssembly(
     projectId: config.projectId,
     sourceSentencesDir: config.sourceSentencesDir,
     targetSentencesDir: config.targetSentencesDir,
-    outputDir: config.outputDir
+    outputDir: config.outputDir,
+    bfpPath: config.bfpPath
   });
 
   emitProgress(jobId, {
@@ -89,8 +159,23 @@ export async function runBilingualAssembly(
     return { success: false, error };
   }
 
+  // Determine effective output directory - use temp folder for Syncthing compatibility
+  let effectiveOutputDir: string;
+  let tempOutputDir: string | undefined;
+
+  if (config.bfpPath) {
+    // Use temp folder, will copy to BFP on completion
+    tempOutputDir = getTempOutputDir(jobId);
+    effectiveOutputDir = tempOutputDir;
+    console.log(`[BILINGUAL-ASSEMBLY] Using temp folder: ${tempOutputDir}`);
+    console.log(`[BILINGUAL-ASSEMBLY] Will copy to BFP on completion: ${config.bfpPath}`);
+  } else {
+    // Legacy mode: output directly to specified dir
+    effectiveOutputDir = config.outputDir;
+  }
+
   // Ensure output directory exists
-  await fs.mkdir(config.outputDir, { recursive: true });
+  await fs.mkdir(effectiveOutputDir, { recursive: true });
 
   // Build Python script path
   const e2aPath = getDefaultE2aPath();
@@ -117,7 +202,17 @@ export async function runBilingualAssembly(
   });
 
   return new Promise((resolve) => {
-    // Build command arguments
+    // Generate output name with language suffix if not explicitly provided
+    let outputName = config.outputName;
+    if (!outputName) {
+      // Build output name from title and languages
+      const baseTitle = config.title || config.projectId;
+      const sourceLang = (config.sourceLang || 'en').toUpperCase();
+      const targetLang = (config.targetLang || 'de').toUpperCase();
+      outputName = `${baseTitle} [Bilingual ${sourceLang}-${targetLang}]`;
+    }
+
+    // Build command arguments - use effectiveOutputDir for Syncthing compatibility
     const args = [
       'run', '-n', condaEnv, '--no-capture-output',
       'python', scriptPath,
@@ -125,8 +220,8 @@ export async function runBilingualAssembly(
       '--source-dir', config.sourceSentencesDir,
       '--target-dir', config.targetSentencesDir,
       '--pairs', config.sentencePairsPath,
-      '--output-dir', config.outputDir,
-      '--output-name', config.projectId,
+      '--output-dir', effectiveOutputDir,
+      '--output-name', outputName,
       '--pause', String(config.pauseDuration ?? 0.3),
       '--gap', String(config.gapDuration ?? 1.0),
       '--format', config.audioFormat ?? 'flac'
@@ -194,9 +289,34 @@ export async function runBilingualAssembly(
 
       try {
         const jsonStr = stdout.slice(jsonStart + jsonMarker.length).trim();
-        const result = JSON.parse(jsonStr) as BilingualAssemblyResult;
+        const rawResult = JSON.parse(jsonStr);
 
-        console.log('[BILINGUAL-ASSEMBLY] Result:', result);
+        // Convert snake_case from Python to camelCase for TypeScript
+        let result: BilingualAssemblyResult = {
+          success: rawResult.success,
+          audioPath: rawResult.audio_path || rawResult.audioPath,
+          vttPath: rawResult.vtt_path || rawResult.vttPath,
+          error: rawResult.error
+        };
+
+        console.log('[BILINGUAL-ASSEMBLY] Raw result:', result);
+
+        // If using temp folder, copy to final destination
+        if (tempOutputDir && config.bfpPath && result.success) {
+          try {
+            const finalPaths = await copyToFinalDestination(tempOutputDir, config.bfpPath);
+            result = {
+              success: true,
+              audioPath: finalPaths.audioPath,
+              vttPath: finalPaths.vttPath
+            };
+            console.log('[BILINGUAL-ASSEMBLY] Final result after copy:', result);
+          } catch (copyErr) {
+            console.error('[BILINGUAL-ASSEMBLY] Failed to copy to final destination:', copyErr);
+            // Keep the temp paths as fallback
+          }
+        }
+
         emitProgress(jobId, { phase: 'complete', percentage: 100, message: 'Assembly complete!' });
         emitComplete(jobId, result);
         resolve(result);

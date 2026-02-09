@@ -71,6 +71,16 @@ export class LibraryService {
     return lib ? `${lib}/cache` : null;
   });
 
+  readonly languageLearningPath = computed(() => {
+    const lib = this._libraryPath();
+    return lib ? `${lib}/language-learning` : null;
+  });
+
+  readonly articlesPath = computed(() => {
+    const lib = this._libraryPath();
+    return lib ? `${lib}/language-learning/projects` : null;
+  });
+
   private readonly STORAGE_KEY = 'bookforge_library_settings';
 
   constructor() {
@@ -93,44 +103,60 @@ export class LibraryService {
     this._loading.set(true);
     try {
       const stored = localStorage.getItem(this.STORAGE_KEY);
+      this.logToMain(`[LibraryService] localStorage raw value: ${stored}`);
+
       if (stored) {
         const settings: LibrarySettings = JSON.parse(stored);
-        console.log('[LibraryService] Loaded settings from localStorage:', settings);
+        this.logToMain(`[LibraryService] Parsed settings: libraryPath=${settings.libraryPath}, onboardingComplete=${settings.onboardingComplete}`);
 
         // Validate and sync library path to main process
         if (settings.libraryPath) {
           await this.validateAndSyncPath(settings);
         } else {
+          this.logToMain('[LibraryService] No libraryPath in settings');
           this._libraryPath.set(null);
           this._onboardingComplete.set(settings.onboardingComplete);
         }
+      } else {
+        this.logToMain('[LibraryService] No settings in localStorage');
       }
     } catch (e) {
-      console.error('Failed to load library settings:', e);
+      this.logToMain(`[LibraryService] Error loading settings: ${(e as Error).message}`);
     }
     this._loading.set(false);
     this._ready.set(true);
+  }
+
+  private logToMain(message: string): void {
+    // Log to renderer console
+    console.log(message);
+    // Also log to main process via IPC
+    if (this.electronService.isRunningInElectron) {
+      (window as any).electron?.debug?.log?.(message);
+    }
   }
 
   /**
    * Validate stored path exists on current system, reset if not
    */
   private async validateAndSyncPath(settings: LibrarySettings): Promise<void> {
+    this.logToMain(`[LibraryService] Validating path: ${settings.libraryPath}`);
     try {
       const result = await this.electronService.setLibraryRoot(settings.libraryPath);
+      this.logToMain(`[LibraryService] setLibraryRoot result: ${JSON.stringify(result)}`);
       if (result.success) {
         this._libraryPath.set(settings.libraryPath);
         this._onboardingComplete.set(settings.onboardingComplete);
-        console.log('[LibraryService] Library path validated:', settings.libraryPath);
+        this.logToMain(`[LibraryService] Path validated successfully`);
       } else {
         // Path doesn't exist (e.g., Mac path on Windows) - reset settings
-        console.warn('[LibraryService] Stored path invalid, resetting:', result.error);
+        this.logToMain(`[LibraryService] Path invalid, resetting: ${result.error}`);
         this._libraryPath.set(null);
         this._onboardingComplete.set(false);
         this.saveSettings();
       }
     } catch (e) {
-      console.error('[LibraryService] Failed to validate path:', e);
+      this.logToMain(`[LibraryService] Exception during validation: ${(e as Error).message}`);
       this._libraryPath.set(null);
       this._onboardingComplete.set(false);
       this.saveSettings();
@@ -157,17 +183,25 @@ export class LibraryService {
       libraryPath: this._libraryPath(),
       onboardingComplete: this._onboardingComplete()
     };
-    localStorage.setItem(this.STORAGE_KEY, JSON.stringify(settings));
+    const json = JSON.stringify(settings);
+    localStorage.setItem(this.STORAGE_KEY, json);
+    this.logToMain(`[LibraryService] Saved settings: ${json}`);
+
+    // Verify it was saved
+    const verify = localStorage.getItem(this.STORAGE_KEY);
+    this.logToMain(`[LibraryService] Verify saved: ${verify}`);
   }
 
   /**
    * Set the library path and mark onboarding as complete
    */
   async setLibraryPath(path: string): Promise<{ success: boolean; error?: string }> {
+    this.logToMain(`[LibraryService] setLibraryPath called with: ${path}`);
     try {
       // Ensure the path is valid and create folders if needed
       const result = await this.ensureLibraryFolders(path);
       if (!result.success) {
+        this.logToMain(`[LibraryService] ensureLibraryFolders failed: ${result.error}`);
         return { success: false, error: result.error };
       }
 
@@ -178,8 +212,10 @@ export class LibraryService {
       // Sync to main process
       await this.syncLibraryPathToMain(path);
 
+      this.logToMain(`[LibraryService] setLibraryPath complete`);
       return { success: true };
     } catch (e) {
+      this.logToMain(`[LibraryService] setLibraryPath error: ${(e as Error).message}`);
       return { success: false, error: (e as Error).message };
     }
   }

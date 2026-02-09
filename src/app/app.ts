@@ -125,10 +125,10 @@ export class App implements OnInit {
       route: '/library'
     },
     {
-      id: 'audiobook',
+      id: 'studio',
       icon: '\u{1F3A7}', // Headphones emoji
-      label: 'Audiobook Producer',
-      route: '/audiobook'
+      label: 'Studio',
+      route: '/studio'
     },
     {
       id: 'queue',
@@ -147,12 +147,6 @@ export class App implements OnInit {
       icon: '\u{1F50A}', // Speaker with sound waves
       label: 'Post-Processing',
       route: '/post-processing'
-    },
-    {
-      id: 'language-learning',
-      icon: '\u{1F310}', // Globe with meridians
-      label: 'Language Learning',
-      route: '/language-learning'
     },
     {
       id: 'settings',

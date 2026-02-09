@@ -121,7 +121,7 @@ function completeStage(
 export interface LLCleanupConfig {
   projectId: string;
   projectDir: string;
-  inputText: string;
+  // inputText removed - always reads from article.epub in projectDir
   sourceLang: string;
   aiProvider: 'ollama' | 'claude' | 'openai';
   aiModel: string;
@@ -134,7 +134,7 @@ export interface LLCleanupConfig {
 export interface LLTranslationConfig {
   projectId: string;
   projectDir: string;
-  cleanedTextPath: string;
+  cleanedEpubPath: string;  // Path to cleaned.epub (output from cleanup job)
   sourceLang: string;
   targetLang: string;
   title?: string;
@@ -156,7 +156,7 @@ export interface LLJobResult {
   error?: string;
   // For chaining to next job
   nextJobConfig?: {
-    cleanedTextPath?: string;     // From cleanup -> translation
+    cleanedEpubPath?: string;     // From cleanup -> translation
     epubPath?: string;            // From translation -> TTS (legacy single EPUB)
     sentencePairsPath?: string;
     // Dual-EPUB flow for proper accent separation
@@ -188,7 +188,7 @@ function sendProgress(
 
 /**
  * Run AI cleanup on extracted text
- * Saves cleaned text to projectDir/cleaned.txt
+ * Reads from article.epub, writes cleaned content to cleaned.epub
  */
 export async function runLLCleanup(
   jobId: string,
@@ -196,11 +196,35 @@ export async function runLLCleanup(
   mainWindow: BrowserWindow | null
 ): Promise<LLJobResult> {
   console.log(`[LL-CLEANUP] Starting job ${jobId}`);
+
+  // Always load text from article.epub
+  const articleEpubPath = path.join(config.projectDir, 'article.epub');
+  console.log(`[LL-CLEANUP] Loading text from article.epub: ${articleEpubPath}`);
+
+  let inputText: string;
+  try {
+    const { extractTextFromEpub } = await import('./epub-processor.js');
+    const result = await extractTextFromEpub(articleEpubPath);
+    if (result.success && result.text) {
+      inputText = result.text;
+      console.log(`[LL-CLEANUP] Extracted ${inputText.length} chars from article.epub`);
+    } else {
+      throw new Error(result.error || 'Failed to extract text from EPUB');
+    }
+  } catch (err) {
+    const errorMsg = `Failed to load text from article.epub: ${(err as Error).message}`;
+    console.error(`[LL-CLEANUP] ${errorMsg}`);
+    return {
+      success: false,
+      error: errorMsg
+    };
+  }
+
   console.log(`[LL-CLEANUP] Config:`, {
     projectId: config.projectId,
     aiProvider: config.aiProvider,
     aiModel: config.aiModel,
-    textLength: config.inputText.length
+    textLength: inputText.length
   });
 
   // Load analytics
@@ -220,7 +244,7 @@ export async function runLLCleanup(
     // Build the bilingual config for the cleanup function
     const bilingualConfig: BilingualProcessingConfig = {
       projectId: config.projectId,
-      sourceText: config.inputText,
+      sourceText: inputText,
       sourceLang: config.sourceLang,
       targetLang: 'en', // Not used for cleanup
       aiProvider: config.aiProvider,
@@ -233,7 +257,7 @@ export async function runLLCleanup(
     };
 
     // Run cleanup
-    const cleanedText = await cleanupText(config.inputText, bilingualConfig, (progress) => {
+    const cleanedText = await cleanupText(inputText, bilingualConfig, (progress) => {
       sendProgress(mainWindow, jobId, {
         phase: 'cleanup',
         currentChunk: progress.currentChunk,
@@ -245,14 +269,26 @@ export async function runLLCleanup(
       });
     });
 
-    // Save cleaned text
-    const cleanedTextPath = path.join(config.projectDir, 'cleaned.txt');
-    await fs.writeFile(cleanedTextPath, cleanedText, 'utf-8');
-    console.log(`[LL-CLEANUP] Saved cleaned text to ${cleanedTextPath} (${cleanedText.length} chars)`);
+    // Generate cleaned.epub from the cleaned text
+    // Split by double newlines to get paragraphs, then create EPUB
+    const paragraphs = cleanedText.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 0);
+    const cleanedEpubPath = path.join(config.projectDir, 'cleaned.epub');
+
+    const { generateMonolingualEpub } = await import('./bilingual-processor.js');
+    // Don't add bookforge marker to cleaned.epub - it's an intermediate format
+    // The marker is only needed for TTS EPUBs (source.epub, target.epub)
+    await generateMonolingualEpub(
+      paragraphs,
+      'Cleaned Article',
+      config.sourceLang,
+      cleanedEpubPath,
+      { includeBookforgeMarker: false }
+    );
+    console.log(`[LL-CLEANUP] Generated cleaned.epub with ${paragraphs.length} paragraphs (${cleanedText.length} chars)`);
 
     // Update analytics
     completeStage(analytics, 'cleanup', {
-      inputChars: config.inputText.length,
+      inputChars: inputText.length,
       outputChars: cleanedText.length
     });
     await saveAnalytics(config.projectDir, analytics);
@@ -267,9 +303,9 @@ export async function runLLCleanup(
 
     return {
       success: true,
-      outputPath: cleanedTextPath,
+      outputPath: cleanedEpubPath,
       nextJobConfig: {
-        cleanedTextPath
+        cleanedEpubPath
       }
     };
 
@@ -302,7 +338,7 @@ export async function runLLCleanup(
 
 /**
  * Translate cleaned text and generate bilingual EPUB
- * Reads from cleanedTextPath, saves to projectDir/bilingual.epub
+ * Reads from cleaned.epub, saves to source.epub + target.epub
  */
 export async function runLLTranslation(
   jobId: string,
@@ -312,6 +348,7 @@ export async function runLLTranslation(
   console.log(`[LL-TRANSLATION] Starting job ${jobId}`);
   console.log(`[LL-TRANSLATION] Config:`, {
     projectId: config.projectId,
+    cleanedEpubPath: config.cleanedEpubPath,
     sourceLang: config.sourceLang,
     targetLang: config.targetLang,
     aiProvider: config.aiProvider,
@@ -324,9 +361,14 @@ export async function runLLTranslation(
   await saveAnalytics(config.projectDir, analytics);
 
   try {
-    // Read cleaned text
-    const cleanedText = await fs.readFile(config.cleanedTextPath, 'utf-8');
-    console.log(`[LL-TRANSLATION] Loaded cleaned text: ${cleanedText.length} chars`);
+    // Read cleaned text from the cleaned EPUB
+    const { extractTextFromEpub } = await import('./epub-processor.js');
+    const extractResult = await extractTextFromEpub(config.cleanedEpubPath);
+    if (!extractResult.success || !extractResult.text) {
+      throw new Error(extractResult.error || 'Failed to extract text from cleaned.epub');
+    }
+    const cleanedText = extractResult.text;
+    console.log(`[LL-TRANSLATION] Loaded cleaned text from EPUB: ${cleanedText.length} chars`);
 
     // Phase 1: Split into sentences (respecting user's granularity preference)
     const granularity = config.splitGranularity || 'sentence';
@@ -401,25 +443,45 @@ export async function runLLTranslation(
       console.log(`[LL-TRANSLATION] Alignment approved with ${pairs.length} pairs`);
     }
 
-    // Phase 4: Generate SEPARATE source/target EPUBs for dual-voice TTS
+    // Phase 4: Generate source.epub and target.epub for TTS
+    // Each EPUB has one paragraph per sentence for proper alignment
     sendProgress(mainWindow, jobId, {
       phase: 'epub',
       currentSentence: pairs.length,
       totalSentences: pairs.length,
       percentage: 85,
-      message: 'Generating source/target EPUBs...'
+      message: 'Generating EPUBs for TTS...'
     });
 
-    const { sourceEpubPath, targetEpubPath } = await generateSeparateEpubs(
-      pairs,
-      config.title || 'Bilingual Article',
+    // Extract sentences and generate separate EPUBs
+    // No need to filter - pairs contain only real sentences (bookforge marker is not in sentence_pairs)
+    // generateMonolingualEpub will add the bookforge marker for TTS
+    const sourceSentences = pairs.map((p: any) => p.source);
+    const targetSentences = pairs.map((p: any) => p.target);
+    const sourceEpubPath = path.join(config.projectDir, 'source.epub');
+    const targetEpubPath = path.join(config.projectDir, 'target.epub');
+    const { generateMonolingualEpub } = await import('./bilingual-processor.js');
+
+    // Generate source.epub (one paragraph per source sentence)
+    // Don't add bookforge marker - audio files will be numbered 0, 1, 2... matching sentence pairs
+    await generateMonolingualEpub(
+      sourceSentences,
+      `${config.title || 'Article'} (${config.sourceLang})`,
       config.sourceLang,
-      config.targetLang,
-      config.projectDir
+      sourceEpubPath,
+      { includeBookforgeMarker: false }
     );
 
-    console.log(`[LL-TRANSLATION] Generated source EPUB at ${sourceEpubPath}`);
-    console.log(`[LL-TRANSLATION] Generated target EPUB at ${targetEpubPath}`);
+    // Generate target.epub (one paragraph per target sentence)
+    await generateMonolingualEpub(
+      targetSentences,
+      `${config.title || 'Article'} (${config.targetLang})`,
+      config.targetLang,
+      targetEpubPath,
+      { includeBookforgeMarker: false }
+    );
+
+    console.log(`[LL-TRANSLATION] Generated source.epub and target.epub`);
 
     // Save sentence pairs for reference and assembly
     const pairsPath = path.join(config.projectDir, 'sentence_pairs.json');
@@ -440,15 +502,16 @@ export async function runLLTranslation(
       currentSentence: pairs.length,
       totalSentences: pairs.length,
       percentage: 100,
-      message: 'Translation complete - EPUBs ready for dual-voice TTS'
+      message: 'Translation complete - ready for TTS'
     });
 
+    // Both EPUBs are generated with one paragraph per sentence for proper TTS alignment
     return {
       success: true,
-      outputPath: sourceEpubPath,  // Primary output for backwards compatibility
+      outputPath: targetEpubPath,
       nextJobConfig: {
-        sourceEpubPath,
-        targetEpubPath,
+        sourceEpubPath,   // source.epub - one paragraph per source sentence
+        targetEpubPath,   // target.epub - one paragraph per target sentence
         sentencePairsPath: pairsPath
       }
     };

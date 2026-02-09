@@ -181,11 +181,15 @@ function buildExtractionScript(readabilityLib: string): string {
 
 /**
  * Fetch a URL and extract article content using Readability
+ * @param url The URL to fetch
+ * @param libraryRoot The library root path
+ * @param providedProjectId Optional projectId - if not provided, one will be generated
  */
 export async function fetchUrlToPdf(
   url: string,
-  libraryRoot: string
-): Promise<FetchUrlResult> {
+  libraryRoot: string,
+  providedProjectId?: string
+): Promise<FetchUrlResult & { projectId?: string }> {
   console.log('[WEB-FETCH] Starting URL fetch:', url);
 
   // Use a persistent session so cookies (including captcha solutions) persist
@@ -458,8 +462,9 @@ export async function fetchUrlToPdf(
       excerpt: article.excerpt?.substring(0, 100) + '...',
     });
 
-    // Generate unique ID for this project
-    const projectId = crypto.randomBytes(8).toString('hex');
+    // Use provided projectId or generate a new one
+    const projectId = providedProjectId || crypto.randomBytes(8).toString('hex');
+    console.log('[WEB-FETCH] Using projectId:', projectId);
 
     // Create project directory
     const projectDir = path.join(libraryRoot, 'language-learning', 'projects', projectId);
@@ -513,6 +518,7 @@ export async function fetchUrlToPdf(
 
     return {
       success: true,
+      projectId,  // Return the projectId so caller can use the same one
       htmlPath: cleanHtmlPath,  // Point to clean HTML, not original
       title: article.title || 'Untitled',
       byline: article.byline || undefined,
@@ -572,6 +578,46 @@ export async function saveProject(
     return { success: true };
   } catch (error) {
     console.error('[WEB-FETCH] Failed to save project:', error);
+    return { success: false, error: (error as Error).message };
+  }
+}
+
+/**
+ * Update specific fields of a language learning project
+ * Loads the existing project, merges updates, and saves it back
+ */
+export async function updateProject(
+  projectId: string,
+  updates: Partial<LanguageLearningProject>,
+  libraryRoot: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const projectPath = path.join(
+      libraryRoot,
+      'language-learning',
+      'projects',
+      projectId,
+      'project.json'
+    );
+
+    // Load existing project
+    const content = await fs.readFile(projectPath, 'utf-8');
+    const project = JSON.parse(content) as LanguageLearningProject;
+
+    // Merge updates
+    const updatedProject = {
+      ...project,
+      ...updates,
+      modifiedAt: new Date().toISOString()
+    };
+
+    // Save back
+    await fs.writeFile(projectPath, JSON.stringify(updatedProject, null, 2), 'utf-8');
+    console.log('[WEB-FETCH] Project updated:', projectPath, updates);
+
+    return { success: true };
+  } catch (error) {
+    console.error('[WEB-FETCH] Failed to update project:', error);
     return { success: false, error: (error as Error).message };
   }
 }

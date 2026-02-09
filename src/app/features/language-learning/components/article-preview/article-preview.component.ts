@@ -1131,44 +1131,63 @@ export class ArticlePreviewComponent implements OnInit, AfterViewInit, OnDestroy
 
   /**
    * Get the filtered HTML content with deleted elements removed
+   * Returns only the body innerHTML (not full document with html/head tags)
    */
   async getFilteredHtml(): Promise<string> {
     if (!this.webview || !this.webviewReady) {
+      console.warn('[ArticlePreview] getFilteredHtml called but webview not ready');
       return '';
     }
 
     const selectors = Array.from(this.deletedSelectors());
+    console.log('[ArticlePreview] getFilteredHtml: removing', selectors.length, 'deleted elements');
 
     // Execute in webview to get HTML with deleted elements removed
     const html = await this.webview.executeJavaScript(`
       (function() {
-        // Clone the document
-        const clone = document.documentElement.cloneNode(true);
+        // Clone the body (not full document to avoid nested html/head/body)
+        const clone = document.body.cloneNode(true);
 
         // Remove deleted elements
         const selectors = ${JSON.stringify(selectors)};
+        let removedCount = 0;
         selectors.forEach(selector => {
           try {
-            const el = clone.querySelector(selector);
+            // Try the selector as-is first
+            let el = clone.querySelector(selector);
+            // If not found, try adjusting for body context (remove html > body > prefix if present)
+            if (!el) {
+              const adjustedSelector = selector.replace(/^html\\s*>\\s*body\\s*>\\s*/i, '');
+              el = clone.querySelector(adjustedSelector);
+            }
             if (el) {
               el.remove();
+              removedCount++;
             }
-          } catch (err) {}
+          } catch (err) {
+            console.error('[ArticlePreview] Failed to remove element:', selector, err);
+          }
         });
+        console.log('[ArticlePreview] Removed ' + removedCount + ' of ' + selectors.length + ' elements');
 
         // Remove our injected styles and classes
-        clone.querySelectorAll('.bf-hover-highlight, .bf-deleted').forEach(el => {
-          el.classList.remove('bf-hover-highlight', 'bf-deleted');
+        clone.querySelectorAll('.bf-hover-highlight, .bf-deleted, .bf-selected').forEach(el => {
+          el.classList.remove('bf-hover-highlight', 'bf-deleted', 'bf-selected');
         });
-        const injectedStyle = clone.querySelector('style');
-        if (injectedStyle && injectedStyle.textContent.includes('bf-hover-highlight')) {
-          injectedStyle.remove();
-        }
 
-        return clone.outerHTML;
+        // Remove ALL style tags we may have injected
+        clone.querySelectorAll('style').forEach(style => {
+          if (style.textContent && style.textContent.includes('bf-')) {
+            style.remove();
+          }
+        });
+
+        // Return body innerHTML only (not full document structure)
+        return clone.innerHTML;
       })();
     `) as string;
 
+    console.log('[ArticlePreview] getFilteredHtml: returning', html.length, 'chars');
     return html;
   }
 

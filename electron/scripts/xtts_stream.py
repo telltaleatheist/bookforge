@@ -20,9 +20,27 @@ from contextlib import nullcontext
 import numpy as np
 import torch
 import warnings
+import psutil
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
+
+
+def log_memory(label: str):
+    """Log current memory usage for debugging."""
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    rss_gb = mem_info.rss / (1024 ** 3)
+    # Also log MPS memory if available
+    mps_info = ""
+    if torch.backends.mps.is_available():
+        try:
+            # Get MPS memory stats
+            allocated = torch.mps.current_allocated_memory() / (1024 ** 3)
+            mps_info = f", MPS allocated: {allocated:.2f} GB"
+        except:
+            pass
+    print(f"[STREAM-MEMORY] {label}: {rss_gb:.2f} GB RSS{mps_info}", file=sys.stderr, flush=True)
 
 # Add ebook2audiobook to path
 # Use environment variable if set, otherwise detect based on platform
@@ -51,30 +69,37 @@ VOICES_DIR = os.path.join(E2A_PATH, 'voices')
 DEFAULT_SAMPLERATE = 24000
 
 # Fine-tuned models available on HuggingFace (these are actual model checkpoints)
+# 'voice_path' is the local voice file for conditioning latents (relative to VOICES_DIR)
 FINE_TUNED_MODELS = {
     'ScarlettJohansson': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/ScarlettJohansson/',
+        'voice_path': 'eng/adult/female/ScarlettJohansson.wav',
     },
     'DavidAttenborough': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/DavidAttenborough/',
+        'voice_path': 'eng/adult/male/DavidAttenborough.wav',
     },
     'MorganFreeman': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/MorganFreeman/',
+        'voice_path': 'eng/adult/male/MorganFreeman.wav',
     },
     'NeilGaiman': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/NeilGaiman/',
+        'voice_path': 'eng/adult/male/NeilGaiman.wav',
     },
     'RayPorter': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/RayPorter/',
+        'voice_path': 'eng/adult/male/RayPorter.wav',
     },
     'RosamundPike': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/RosamundPike/',
+        'voice_path': 'eng/adult/female/RosamundPike.wav',
     },
 }
 
@@ -123,7 +148,9 @@ class XTTSStreamServer:
         self.current_voice = None
         self.gpt_cond_latent = None
         self.speaker_embedding = None
-        self.device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
+        # Use CPU on Mac - MPS causes memory pressure without speed benefits for XTTS
+        # CUDA still preferred on Linux/Windows where it provides real speedup
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.speakers_dict = None
 
     def _cleanup_memory(self):
@@ -139,11 +166,14 @@ class XTTSStreamServer:
     def load_model(self, voice_name: str = 'ScarlettJohansson'):
         """Load fine-tuned XTTS model for the specified voice"""
         try:
+            log_memory("Before load_model cleanup")
             # Clean up before loading
             self._cleanup_memory()
+            log_memory("After load_model cleanup")
 
             from TTS.tts.configs.xtts_config import XttsConfig
             from TTS.tts.models.xtts import Xtts
+            log_memory("After TTS imports")
 
             # Only fine-tuned models are supported
             if voice_name not in FINE_TUNED_MODELS:
@@ -170,35 +200,45 @@ class XTTSStreamServer:
                 cache_dir=TTS_DIR
             )
 
-            # Download ref.wav for conditioning latents
-            ref_path = hf_hub_download(
-                repo_id=hf_repo,
-                filename=f"{hf_sub}ref.wav",
-                cache_dir=TTS_DIR
-            )
+            # Use local voice file for conditioning latents
+            voice_rel_path = model_info.get('voice_path')
+            if voice_rel_path:
+                ref_path = os.path.join(VOICES_DIR, voice_rel_path)
+                if not os.path.exists(ref_path):
+                    raise FileNotFoundError(f"Voice file not found: {ref_path}")
+            else:
+                raise ValueError(f"No voice_path configured for {voice_name}")
 
             # Load model if not already loaded (or reload if switching voices)
             # Fine-tuned models need their specific checkpoint, so reload when switching
             if self.tts is None or self.current_voice != voice_name:
                 send_response('status', {'message': f'Loading XTTS model ({self.device})...'})
+                log_memory("Before model load")
 
                 # Clean up old model if switching
                 if self.tts is not None:
                     del self.tts
                     self.tts = None
                     self._cleanup_memory()
+                    log_memory("After cleanup old model")
 
                 config = XttsConfig()
                 config.load_json(config_path)
+                log_memory("After config load")
 
                 self.tts = Xtts.init_from_config(config)
+                log_memory("After init_from_config")
+
                 self.tts.load_checkpoint(
                     config,
                     checkpoint_path=checkpoint_path,
                     vocab_path=vocab_path,
                     eval=True
                 )
+                log_memory("After load_checkpoint")
+
                 self.tts.to(self.device)
+                log_memory(f"After to({self.device})")
 
                 send_response('status', {'message': 'Model loaded'})
 
@@ -207,6 +247,7 @@ class XTTSStreamServer:
                 self.gpt_cond_latent, self.speaker_embedding = self.tts.get_conditioning_latents(
                     audio_path=[ref_path]
                 )
+                log_memory("After get_conditioning_latents")
                 self.current_voice = voice_name
                 send_response('status', {'message': f'Voice loaded: {voice_name}'})
 

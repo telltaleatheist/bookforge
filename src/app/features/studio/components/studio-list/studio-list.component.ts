@@ -1,0 +1,327 @@
+import { Component, input, output, signal, computed } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { StudioItem } from '../../models/studio.types';
+
+/**
+ * StudioListComponent - Accordion list for books and articles
+ *
+ * Features:
+ * - Collapsible sections for Articles and Books
+ * - Selection highlighting
+ * - Status badges
+ * - Context menu support
+ */
+@Component({
+  selector: 'app-studio-list',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div class="studio-list">
+      <!-- Articles Accordion -->
+      <div class="accordion-section">
+        <button
+          class="accordion-header"
+          [class.expanded]="articlesExpanded()"
+          (click)="articlesExpanded.set(!articlesExpanded())"
+        >
+          <span class="accordion-icon">{{ articlesExpanded() ? '▼' : '▶' }}</span>
+          <span class="accordion-title">Articles</span>
+          <span class="accordion-count">({{ articles().length }})</span>
+        </button>
+
+        @if (articlesExpanded()) {
+          <div class="accordion-content">
+            @for (item of articles(); track item.id) {
+              <div
+                class="list-item"
+                [class.selected]="selectedId() === item.id"
+                (click)="select.emit(item)"
+                (contextmenu)="onContextMenu($event, item)"
+              >
+                <div class="item-icon">📄</div>
+                <div class="item-content">
+                  <div class="item-title">{{ item.title || 'Untitled' }}</div>
+                  <div class="item-meta">
+                    <span class="status-badge" [class]="item.status">{{ item.status }}</span>
+                    @if (item.targetLang) {
+                      <span class="lang-badge">{{ item.targetLang | uppercase }}</span>
+                    }
+                  </div>
+                </div>
+              </div>
+            } @empty {
+              <div class="empty-section">
+                <p>No articles yet</p>
+              </div>
+            }
+          </div>
+        }
+      </div>
+
+      <!-- Books Accordion -->
+      <div class="accordion-section">
+        <button
+          class="accordion-header"
+          [class.expanded]="booksExpanded()"
+          (click)="booksExpanded.set(!booksExpanded())"
+        >
+          <span class="accordion-icon">{{ booksExpanded() ? '▼' : '▶' }}</span>
+          <span class="accordion-title">Books</span>
+          <span class="accordion-count">({{ books().length }})</span>
+        </button>
+
+        @if (booksExpanded()) {
+          <div class="accordion-content">
+            @for (item of books(); track item.id) {
+              <div
+                class="list-item"
+                [class.selected]="selectedId() === item.id"
+                (click)="select.emit(item)"
+                (contextmenu)="onContextMenu($event, item)"
+              >
+                <div class="item-cover">
+                  @if (item.coverData) {
+                    <img [src]="item.coverData" alt="">
+                  } @else {
+                    <div class="cover-placeholder">📚</div>
+                  }
+                </div>
+                <div class="item-content">
+                  <div class="item-title">{{ item.title || 'Untitled' }}</div>
+                  <div class="item-meta">
+                    <span class="status-badge" [class]="item.status">{{ item.status }}</span>
+                    @if (item.author) {
+                      <span class="author">{{ item.author }}</span>
+                    }
+                  </div>
+                </div>
+              </div>
+            } @empty {
+              <div class="empty-section">
+                <p>No books yet</p>
+              </div>
+            }
+          </div>
+        }
+      </div>
+    </div>
+  `,
+  styles: [`
+    .studio-list {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow-y: auto;
+    }
+
+    .accordion-section {
+      border-bottom: 1px solid var(--border-subtle);
+
+      &:last-child {
+        border-bottom: none;
+      }
+    }
+
+    .accordion-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 12px 16px;
+      background: var(--bg-elevated);
+      border: none;
+      cursor: pointer;
+      text-align: left;
+      transition: background 0.15s ease;
+
+      &:hover {
+        background: var(--bg-hover);
+      }
+
+      &.expanded {
+        border-bottom: 1px solid var(--border-subtle);
+      }
+    }
+
+    .accordion-icon {
+      font-size: 10px;
+      color: var(--text-secondary);
+      width: 12px;
+    }
+
+    .accordion-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      flex: 1;
+    }
+
+    .accordion-count {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .accordion-content {
+      background: var(--bg-surface);
+    }
+
+    .list-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+      border-bottom: 1px solid var(--border-subtle);
+
+      &:last-child {
+        border-bottom: none;
+      }
+
+      &:hover {
+        background: var(--bg-hover);
+      }
+
+      &.selected {
+        background: rgba(6, 182, 212, 0.12);
+        border-left: 3px solid var(--color-primary);
+        padding-left: 13px;
+      }
+    }
+
+    .item-icon {
+      font-size: 24px;
+      width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .item-cover {
+      width: 36px;
+      height: 48px;
+      border-radius: 3px;
+      overflow: hidden;
+      flex-shrink: 0;
+
+      img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+    }
+
+    .cover-placeholder {
+      width: 100%;
+      height: 100%;
+      background: var(--bg-elevated);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+    }
+
+    .item-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .item-title {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 4px;
+    }
+
+    .item-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+    }
+
+    .status-badge {
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-weight: 500;
+      text-transform: uppercase;
+      font-size: 9px;
+      letter-spacing: 0.5px;
+
+      &.draft {
+        background: var(--bg-elevated);
+        color: var(--text-secondary);
+      }
+
+      &.ready {
+        background: rgba(34, 197, 94, 0.15);
+        color: #22c55e;
+      }
+
+      &.processing {
+        background: rgba(234, 179, 8, 0.15);
+        color: #eab308;
+      }
+
+      &.completed {
+        background: rgba(6, 182, 212, 0.15);
+        color: #06b6d4;
+      }
+
+      &.error {
+        background: rgba(239, 68, 68, 0.15);
+        color: #ef4444;
+      }
+    }
+
+    .lang-badge {
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: rgba(139, 92, 246, 0.15);
+      color: #8b5cf6;
+      font-weight: 600;
+      font-size: 9px;
+    }
+
+    .author {
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .empty-section {
+      padding: 24px 16px;
+      text-align: center;
+
+      p {
+        margin: 0;
+        font-size: 13px;
+        color: var(--text-muted);
+      }
+    }
+  `]
+})
+export class StudioListComponent {
+  // Inputs
+  readonly articles = input<StudioItem[]>([]);
+  readonly books = input<StudioItem[]>([]);
+  readonly selectedId = input<string | null>(null);
+
+  // Outputs
+  readonly select = output<StudioItem>();
+  readonly contextMenu = output<{ event: MouseEvent; item: StudioItem }>();
+
+  // State
+  readonly articlesExpanded = signal<boolean>(true);
+  readonly booksExpanded = signal<boolean>(true);
+
+  onContextMenu(event: MouseEvent, item: StudioItem): void {
+    event.preventDefault();
+    this.contextMenu.emit({ event, item });
+  }
+}
