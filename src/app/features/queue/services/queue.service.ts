@@ -29,6 +29,7 @@ import {
 } from '../models/queue.types';
 import { AIProvider } from '../../../core/models/ai-config.types';
 import { StudioService } from '../../studio/services/studio.service';
+import { SettingsService } from '../../../core/services/settings.service';
 
 // AI Provider config for IPC
 interface AIProviderConfig {
@@ -221,6 +222,7 @@ export class QueueService {
   private readonly destroyRef = inject(DestroyRef);
   private readonly ngZone = inject(NgZone);
   private readonly studioService = inject(StudioService);
+  private readonly settingsService = inject(SettingsService);
 
   // Progress listener cleanup
   private unsubscribeProgress: (() => void) | null = null;
@@ -1017,7 +1019,7 @@ export class QueueService {
    */
   async addJob(request: CreateJobRequest): Promise<QueueJob> {
     // Determine filename based on job type
-    let filename = request.epubPath?.split('/').pop();
+    let filename = request.epubPath?.replace(/\\/g, '/').split('/').pop();
     if (!filename) {
       if (request.type === 'bilingual-assembly') {
         filename = 'Bilingual Assembly';
@@ -1730,8 +1732,9 @@ export class QueueService {
             console.log(`[QUEUE] Bilingual TTS job, using explicit epubPath: ${epubPathForTts}`);
           } else if (electron.fs?.exists && job.epubPath) {
             // Check for processed EPUBs in priority order
-            const basePath = job.epubPath.replace(/\.epub$/i, '');
-            const epubDir = job.epubPath.substring(0, job.epubPath.lastIndexOf('/'));
+            const epubPathNorm = job.epubPath.replace(/\\/g, '/');
+            const basePath = epubPathNorm.replace(/\.epub$/i, '');
+            const epubDir = epubPathNorm.substring(0, epubPathNorm.lastIndexOf('/'));
             const candidates = [
               `${basePath}_translated_cleaned.epub`,  // Translated + cleaned (best)
               `${basePath}_translated.epub`,           // Translated only
@@ -1797,8 +1800,8 @@ export class QueueService {
             skipAssembly: config.skipAssembly,
             // Temp folder workflow for Syncthing compatibility
             bfpPath: job.bfpPath,
-            isArticle: false, // TODO: Set based on job type (true for language learning)
-            externalAudiobooksDir: '' // TODO: Get from settings
+            isArticle: !!(job.projectDir && job.projectDir.replace(/\\/g, '/').includes('/language-learning/projects/')),
+            externalAudiobooksDir: this.settingsService.get<string>('externalAudiobooksDir')
             // Never use cleanSession - we want to preserve session contents
           };
 
@@ -1855,8 +1858,9 @@ export class QueueService {
           if (job.outputPath) {
             seqEpubPath = job.outputPath;
           } else if (electron.fs?.exists && job.epubPath) {
-            const basePath = job.epubPath.replace(/\.epub$/i, '');
-            const epubDir = job.epubPath.substring(0, job.epubPath.lastIndexOf('/'));
+            const epubPathNorm = job.epubPath.replace(/\\/g, '/');
+            const basePath = epubPathNorm.replace(/\.epub$/i, '');
+            const epubDir = epubPathNorm.substring(0, epubPathNorm.lastIndexOf('/'));
             const candidates = [
               `${basePath}_translated_cleaned.epub`,
               `${basePath}_translated.epub`,
@@ -2247,7 +2251,8 @@ export class QueueService {
             console.log('[QUEUE] LL Translation complete with dual EPUBs, updating placeholder TTS jobs');
 
             // Calculate paths - handle both article and book project structures
-            const projectDir = config.projectDir;
+            // Normalize backslashes for cross-platform path manipulation
+            const projectDir = config.projectDir.replace(/\\/g, '/');
             let audiobooksDir: string;
 
             // Check if this is a book (projectDir is already in audiobooks folder)
@@ -2296,7 +2301,7 @@ export class QueueService {
                     return {
                       ...j,
                       epubPath: nextConfig.sourceEpubPath,
-                      epubFilename: nextConfig.sourceEpubPath.split('/').pop() || 'source.epub',
+                      epubFilename: nextConfig.sourceEpubPath.replace(/\\/g, '/').split('/').pop() || 'source.epub',
                       metadata: {
                         ...j.metadata,
                         bilingualPlaceholder: undefined, // Clear placeholder marker
@@ -2316,6 +2321,7 @@ export class QueueService {
                           },
                           assemblyConfig: {
                             projectId: masterConfig.projectId,
+                            audiobooksDir,
                             bfpPath: projectDir, // Use project dir as BFP for temp folder workflow
                             sentencePairsPath: nextConfig.sentencePairsPath,
                             pauseDuration: 0.3,
@@ -2340,7 +2346,7 @@ export class QueueService {
                     return {
                       ...j,
                       epubPath: nextConfig.targetEpubPath,
-                      epubFilename: nextConfig.targetEpubPath.split('/').pop() || 'target.epub',
+                      epubFilename: nextConfig.targetEpubPath.replace(/\\/g, '/').split('/').pop() || 'target.epub',
                       metadata: {
                         ...j.metadata,
                         bilingualPlaceholder: undefined // Clear placeholder marker
@@ -2387,6 +2393,7 @@ export class QueueService {
                     },
                     assemblyConfig: {
                       projectId: masterConfig.projectId,
+                      audiobooksDir,
                       bfpPath: projectDir, // Use project dir as BFP for temp folder workflow
                       sentencePairsPath: nextConfig.sentencePairsPath,
                       pauseDuration: 0.3,
@@ -2867,7 +2874,7 @@ export class QueueService {
           console.log(`[QUEUE] Updated existing job ${session.jobId} with progress ${session.progress.percentage}%`);
         } else {
           // Create a placeholder job for the orphaned session
-          const filename = session.epubPath.split('/').pop() || 'Unknown';
+          const filename = session.epubPath.replace(/\\/g, '/').split('/').pop() || 'Unknown';
           const newJob: QueueJob = {
             id: session.jobId,
             type: 'tts-conversion',

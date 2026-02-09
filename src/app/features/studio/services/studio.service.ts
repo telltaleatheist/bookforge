@@ -106,7 +106,7 @@ export class StudioService {
 
           // 3. Check for file in completed folder using outputFilename
           if (!audiobookPath && p.audiobookFolder && p.metadata?.outputFilename) {
-            const basePath = p.audiobookFolder.replace(/\/[^/]+$/, '');
+            const basePath = p.audiobookFolder.replace(/\\/g, '/').replace(/\/[^/]+$/, '');
             const completedPath = `${basePath}/completed/${p.metadata.outputFilename}`;
             const completedExists = await this.electronService.fsExists(completedPath);
             console.log(`[StudioService]   -> Checking completed: ${completedPath} exists=${completedExists}`);
@@ -291,7 +291,7 @@ export class StudioService {
 
     try {
       // Extract filename from path
-      const filename = epubPath.split('/').pop() || 'unknown.epub';
+      const filename = epubPath.replace(/\\/g, '/').split('/').pop() || 'unknown.epub';
 
       // Copy EPUB to queue folder
       const result = await this.electronService.copyToAudiobookQueue(epubPath, filename);

@@ -1020,7 +1020,7 @@ export class EpubEditorComponent implements OnInit, OnDestroy {
   async loadEpubFromPath(filePath: string): Promise<void> {
     try {
       let effectivePath = filePath;
-      const originalFilename = filePath.split('/').pop() || 'Untitled';
+      const originalFilename = filePath.replace(/\\/g, '/').split('/').pop() || 'Untitled';
 
       // Check if file needs conversion (AZW3, MOBI, KFX, etc.)
       const ext = filePath.toLowerCase().split('.').pop() || '';

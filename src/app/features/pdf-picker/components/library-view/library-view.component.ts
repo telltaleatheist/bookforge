@@ -961,7 +961,7 @@ export class LibraryViewComponent implements OnInit {
       // Report any failures
       if (result.failed && result.failed.length > 0) {
         const failedNames = result.failed.map((f: { path: string; error: string }) =>
-          f.path.split('/').pop() || f.path
+          f.path.replace(/\\/g, '/').split('/').pop() || f.path
         );
         this.error.emit(`Failed to delete: ${failedNames.join(', ')}`);
       }

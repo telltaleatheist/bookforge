@@ -768,9 +768,10 @@ export class PostProcessingComponent implements OnInit, OnDestroy {
 
         if (mode === 'same-folder') {
           // Add _enhanced suffix before extension
-          const dir = file.path.substring(0, file.path.lastIndexOf('/'));
-          const ext = file.path.substring(file.path.lastIndexOf('.'));
-          const basename = file.path.substring(file.path.lastIndexOf('/') + 1, file.path.lastIndexOf('.'));
+          const filePathNorm = file.path.replace(/\\/g, '/');
+          const dir = filePathNorm.substring(0, filePathNorm.lastIndexOf('/'));
+          const ext = filePathNorm.substring(filePathNorm.lastIndexOf('.'));
+          const basename = filePathNorm.substring(filePathNorm.lastIndexOf('/') + 1, filePathNorm.lastIndexOf('.'));
           outputPath = `${dir}/${basename}_enhanced${ext}`;
         } else if (mode === 'custom') {
           const customDir = this.customOutputPath();

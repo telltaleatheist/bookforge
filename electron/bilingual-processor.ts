@@ -11,7 +11,8 @@
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
-import { execSync } from 'child_process';
+import * as zlib from 'zlib';
+import { promisify } from 'util';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -942,6 +943,33 @@ export async function generateBilingualEpub(
 /**
  * Create EPUB ZIP file from directory
  */
+const deflateRawAsync = promisify(zlib.deflateRaw);
+
+function crc32(data: Buffer): number {
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < data.length; i++) {
+    crc ^= data[i];
+    for (let j = 0; j < 8; j++) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+    }
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+async function collectFiles(dir: string, base: string): Promise<string[]> {
+  const results: string[] = [];
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const relative = base ? `${base}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      results.push(...await collectFiles(path.join(dir, entry.name), relative));
+    } else {
+      results.push(relative);
+    }
+  }
+  return results;
+}
+
 async function createEpubZip(sourceDir: string, outputPath: string): Promise<void> {
   try {
     await fs.unlink(outputPath);
@@ -949,13 +977,103 @@ async function createEpubZip(sourceDir: string, outputPath: string): Promise<voi
     // File doesn't exist, that's fine
   }
 
-  const cwd = sourceDir;
+  // Build file list: mimetype first (uncompressed), then META-INF and OEBPS (compressed)
+  const zipEntries: Array<{ name: string; data: Buffer; compress: boolean }> = [];
 
-  // First add mimetype uncompressed (required by EPUB spec)
-  execSync(`zip -0 -X "${outputPath}" mimetype`, { cwd, stdio: 'pipe' });
+  // mimetype must be first entry, stored uncompressed (EPUB spec)
+  const mimetypeData = await fs.readFile(path.join(sourceDir, 'mimetype'));
+  zipEntries.push({ name: 'mimetype', data: mimetypeData, compress: false });
 
-  // Then add everything else with compression
-  execSync(`zip -r -9 -X "${outputPath}" META-INF OEBPS`, { cwd, stdio: 'pipe' });
+  // Add META-INF and OEBPS recursively
+  for (const subdir of ['META-INF', 'OEBPS']) {
+    const subdirPath = path.join(sourceDir, subdir);
+    try {
+      const files = await collectFiles(subdirPath, subdir);
+      for (const file of files) {
+        const data = await fs.readFile(path.join(sourceDir, file));
+        zipEntries.push({ name: file, data, compress: true });
+      }
+    } catch {
+      // Directory doesn't exist, skip
+    }
+  }
+
+  // Write ZIP using the same format as epub-processor.ts ZipWriter
+  const centralDirectory: Buffer[] = [];
+  const fileData: Buffer[] = [];
+  let offset = 0;
+
+  for (const entry of zipEntries) {
+    const nameBuffer = Buffer.from(entry.name, 'utf8');
+    let compressedData: Buffer;
+    let compressionMethod: number;
+
+    if (entry.compress && entry.data.length > 0) {
+      compressedData = await deflateRawAsync(entry.data) as Buffer;
+      compressionMethod = 8; // Deflate
+    } else {
+      compressedData = entry.data;
+      compressionMethod = 0; // Store
+    }
+
+    const crc = crc32(entry.data);
+
+    // Local file header
+    const localHeader = Buffer.alloc(30 + nameBuffer.length);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(compressionMethod, 8);
+    localHeader.writeUInt16LE(0, 10);
+    localHeader.writeUInt16LE(0, 12);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(compressedData.length, 18);
+    localHeader.writeUInt32LE(entry.data.length, 22);
+    localHeader.writeUInt16LE(nameBuffer.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+    nameBuffer.copy(localHeader, 30);
+
+    fileData.push(localHeader, compressedData);
+
+    // Central directory entry
+    const centralEntry = Buffer.alloc(46 + nameBuffer.length);
+    centralEntry.writeUInt32LE(0x02014b50, 0);
+    centralEntry.writeUInt16LE(20, 4);
+    centralEntry.writeUInt16LE(20, 6);
+    centralEntry.writeUInt16LE(0, 8);
+    centralEntry.writeUInt16LE(compressionMethod, 10);
+    centralEntry.writeUInt16LE(0, 12);
+    centralEntry.writeUInt16LE(0, 14);
+    centralEntry.writeUInt32LE(crc, 16);
+    centralEntry.writeUInt32LE(compressedData.length, 20);
+    centralEntry.writeUInt32LE(entry.data.length, 24);
+    centralEntry.writeUInt16LE(nameBuffer.length, 28);
+    centralEntry.writeUInt16LE(0, 30);
+    centralEntry.writeUInt16LE(0, 32);
+    centralEntry.writeUInt16LE(0, 34);
+    centralEntry.writeUInt16LE(0, 36);
+    centralEntry.writeUInt32LE(0, 38);
+    centralEntry.writeUInt32LE(offset, 42);
+    nameBuffer.copy(centralEntry, 46);
+
+    centralDirectory.push(centralEntry);
+    offset += localHeader.length + compressedData.length;
+  }
+
+  // End of central directory
+  const centralDirSize = centralDirectory.reduce((sum, b) => sum + b.length, 0);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(zipEntries.length, 8);
+  eocd.writeUInt16LE(zipEntries.length, 10);
+  eocd.writeUInt32LE(centralDirSize, 12);
+  eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  const output = Buffer.concat([...fileData, ...centralDirectory, eocd]);
+  await fs.writeFile(outputPath, output);
 
   console.log(`[BILINGUAL] Created EPUB: ${outputPath}`);
 }

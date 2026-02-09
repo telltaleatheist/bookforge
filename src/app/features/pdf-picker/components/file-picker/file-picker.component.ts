@@ -402,7 +402,7 @@ export class FilePickerComponent implements OnInit {
 
   browseParent(): void {
     const current = this.currentPath();
-    const parts = current.split('/').filter(p => p);
+    const parts = current.replace(/\\/g, '/').split('/').filter(p => p);
     if (parts.length > 0) {
       parts.pop();
       this.browse('/' + parts.join('/') || '/');

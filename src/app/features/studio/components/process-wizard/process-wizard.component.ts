@@ -1204,7 +1204,7 @@ export class ProcessWizardComponent implements OnInit {
 
   readonly epubFilename = computed(() => {
     const path = this.epubPath();
-    return path.split('/').pop() || path;
+    return path.replace(/\\/g, '/').split('/').pop() || path;
   });
 
   // Computed: check if API keys are configured
@@ -1750,7 +1750,8 @@ export class ProcessWizardComponent implements OnInit {
             // Bilingual book translation uses ll-translation to generate separate source/target EPUBs
             // Use the directory where the cleaned EPUB is located (e.g., .../audiobooks/book_name/)
             // This ensures the project dir matches where the EPUB actually is
-            const bookProjectDir = currentEpubPath.substring(0, currentEpubPath.lastIndexOf('/'));
+            const epubPathNorm = currentEpubPath.replace(/\\/g, '/');
+            const bookProjectDir = epubPathNorm.substring(0, epubPathNorm.lastIndexOf('/'));
 
             const translationJob = await this.queueService.addJob({
               type: 'll-translation',

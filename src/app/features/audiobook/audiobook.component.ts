@@ -673,7 +673,8 @@ export class AudiobookComponent implements OnInit {
 
     // For TTS, prefer the cleaned version if it exists
     if (item.hasCleaned && item.projectId) {
-      const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
+      const pathNorm = item.path.replace(/\\/g, '/');
+      const originalDir = pathNorm.substring(0, pathNorm.lastIndexOf('/'));
       const cleanedName = item.cleanedFilename || 'exported_cleaned.epub';
       return `${originalDir}/${cleanedName}`;
     }
@@ -1216,7 +1217,8 @@ export class AudiobookComponent implements OnInit {
       const item = this.selectedItem();
       console.log('[Audiobook] setWorkflowState(diff) - item:', item?.id, 'hasCleaned:', item?.hasCleaned, 'path:', item?.path);
       if (item?.hasCleaned) {
-        const originalDir = item.path.substring(0, item.path.lastIndexOf('/'));
+        const pathNorm = item.path.replace(/\\/g, '/');
+        const originalDir = pathNorm.substring(0, pathNorm.lastIndexOf('/'));
         const cleanedName = item.cleanedFilename || 'exported_cleaned.epub';
         const paths = {
           originalPath: `${originalDir}/exported.epub`,

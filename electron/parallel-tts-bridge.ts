@@ -28,7 +28,16 @@ let workerLogStream: fsSync.WriteStream | null = null;
 
 function initWorkerLog(libraryPath: string): void {
   if (!workerLogStream) {
-    const logsDir = path.join(os.homedir(), 'Library', 'Logs', 'BookForgeApp');
+    let logsDir: string;
+    const platform = os.platform();
+    if (platform === 'darwin') {
+      logsDir = path.join(os.homedir(), 'Library', 'Logs', 'BookForgeApp');
+    } else if (platform === 'win32') {
+      const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+      logsDir = path.join(appData, 'BookForgeApp', 'logs');
+    } else {
+      logsDir = path.join(os.homedir(), '.local', 'share', 'BookForgeApp', 'logs');
+    }
     fsSync.mkdirSync(logsDir, { recursive: true });
     workerLogPath = path.join(logsDir, 'worker-output.log');
     // Truncate on start

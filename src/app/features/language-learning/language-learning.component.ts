@@ -2115,7 +2115,7 @@ Start your response with the first word of the text. No introduction.`);
 
       if (result.success && result.htmlPath) {
         // Extract project ID from path: .../projects/<id>/article.html
-        const pathParts = result.htmlPath.split('/');
+        const pathParts = result.htmlPath.replace(/\\/g, '/').split('/');
         const projectId = pathParts[pathParts.length - 2];
 
         // Create new project
@@ -2462,7 +2462,9 @@ Start your response with the first word of the text. No introduction.`);
       // Use local settings
       const provider = this.selectedProvider();
       const aiConfig = this.settingsService.getAIConfig();
-      const projectDir = project.htmlPath.substring(0, project.htmlPath.lastIndexOf('/'));
+      // Normalize backslashes for cross-platform path manipulation
+      const htmlPathNorm = project.htmlPath.replace(/\\/g, '/');
+      const projectDir = htmlPathNorm.substring(0, htmlPathNorm.lastIndexOf('/'));
 
       // Step 1: Extract text from HTML (applying user deletions)
       console.log('[LL] Extracting text from HTML with deletions:', project.deletedSelectors);

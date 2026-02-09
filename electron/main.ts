@@ -5099,7 +5099,8 @@ function setupIpcHandlers(): void {
     try {
       const pathMod = await import('path');
       const fsPromises = await import('fs/promises');
-      const { execSync } = await import('child_process');
+      const zlibMod = await import('zlib');
+      const { promisify: promisifyUtil } = await import('util');
       const os = await import('os');
       const cheerio = await import('cheerio');
 
@@ -5236,10 +5237,73 @@ function setupIpcHandlers(): void {
 </html>`
       );
 
-      // Create EPUB ZIP
+      // Create EPUB ZIP (cross-platform, no external zip command needed)
       try { await fsPromises.unlink(epubPath); } catch { /* ignore */ }
-      execSync(`zip -0 -X "${epubPath}" mimetype`, { cwd: tempDir, stdio: 'pipe' });
-      execSync(`zip -r "${epubPath}" META-INF OEBPS -x mimetype`, { cwd: tempDir, stdio: 'pipe' });
+
+      const deflateRawFn = promisifyUtil(zlibMod.deflateRaw);
+      const epubCrc32 = (data: Buffer): number => {
+        let crc = 0xFFFFFFFF;
+        for (let i = 0; i < data.length; i++) {
+          crc ^= data[i];
+          for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+        }
+        return (crc ^ 0xFFFFFFFF) >>> 0;
+      };
+
+      const collectEpubFiles = async (dir: string, base: string): Promise<string[]> => {
+        const results: string[] = [];
+        const dirEntries = await fsPromises.readdir(dir, { withFileTypes: true });
+        for (const ent of dirEntries) {
+          const rel = base ? `${base}/${ent.name}` : ent.name;
+          if (ent.isDirectory()) results.push(...await collectEpubFiles(pathMod.join(dir, ent.name), rel));
+          else results.push(rel);
+        }
+        return results;
+      };
+
+      // mimetype must be first, stored uncompressed (EPUB spec)
+      const epubEntries: Array<{ name: string; data: Buffer; compress: boolean }> = [];
+      epubEntries.push({ name: 'mimetype', data: await fsPromises.readFile(pathMod.join(tempDir, 'mimetype')), compress: false });
+      for (const sub of ['META-INF', 'OEBPS']) {
+        const subPath = pathMod.join(tempDir, sub);
+        try {
+          const files = await collectEpubFiles(subPath, sub);
+          for (const f of files) epubEntries.push({ name: f, data: await fsPromises.readFile(pathMod.join(tempDir, f)), compress: true });
+        } catch { /* skip */ }
+      }
+
+      const centralDir: Buffer[] = [];
+      const fileChunks: Buffer[] = [];
+      let zipOffset = 0;
+      for (const entry of epubEntries) {
+        const nameBuf = Buffer.from(entry.name, 'utf8');
+        const compressed = entry.compress && entry.data.length > 0 ? await deflateRawFn(entry.data) as Buffer : entry.data;
+        const method = entry.compress && entry.data.length > 0 ? 8 : 0;
+        const crc = epubCrc32(entry.data);
+        const lh = Buffer.alloc(30 + nameBuf.length);
+        lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0, 6);
+        lh.writeUInt16LE(method, 8); lh.writeUInt16LE(0, 10); lh.writeUInt16LE(0, 12);
+        lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(compressed.length, 18);
+        lh.writeUInt32LE(entry.data.length, 22); lh.writeUInt16LE(nameBuf.length, 26);
+        lh.writeUInt16LE(0, 28); nameBuf.copy(lh, 30);
+        fileChunks.push(lh, compressed);
+        const ce = Buffer.alloc(46 + nameBuf.length);
+        ce.writeUInt32LE(0x02014b50, 0); ce.writeUInt16LE(20, 4); ce.writeUInt16LE(20, 6);
+        ce.writeUInt16LE(0, 8); ce.writeUInt16LE(method, 10); ce.writeUInt16LE(0, 12);
+        ce.writeUInt16LE(0, 14); ce.writeUInt32LE(crc, 16); ce.writeUInt32LE(compressed.length, 20);
+        ce.writeUInt32LE(entry.data.length, 24); ce.writeUInt16LE(nameBuf.length, 28);
+        ce.writeUInt16LE(0, 30); ce.writeUInt16LE(0, 32); ce.writeUInt16LE(0, 34);
+        ce.writeUInt16LE(0, 36); ce.writeUInt32LE(0, 38); ce.writeUInt32LE(zipOffset, 42);
+        nameBuf.copy(ce, 46);
+        centralDir.push(ce);
+        zipOffset += lh.length + compressed.length;
+      }
+      const cdSize = centralDir.reduce((s, b) => s + b.length, 0);
+      const eocd = Buffer.alloc(22);
+      eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(0, 4); eocd.writeUInt16LE(0, 6);
+      eocd.writeUInt16LE(epubEntries.length, 8); eocd.writeUInt16LE(epubEntries.length, 10);
+      eocd.writeUInt32LE(cdSize, 12); eocd.writeUInt32LE(zipOffset, 16); eocd.writeUInt16LE(0, 20);
+      await fsPromises.writeFile(epubPath, Buffer.concat([...fileChunks, ...centralDir, eocd]));
 
       // Cleanup temp dir
       await fsPromises.rm(tempDir, { recursive: true, force: true });
