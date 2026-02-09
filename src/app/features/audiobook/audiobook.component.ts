@@ -1354,18 +1354,19 @@ export class AudiobookComponent implements OnInit {
   }
 
   async onShowInFinder(): Promise<void> {
-    // Open the external audiobooks folder
     if (!this.electron) return;
 
     try {
-      // Use external audiobooks dir, or fall back to library's audiobooks folder
-      const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
-      const outputDir = externalDir || this.libraryService.audiobooksPath();
-      if (outputDir) {
-        await this.electron.shell.openPath(outputDir);
+      const item = this.selectedItem();
+
+      // Show the specific audiobook file in its BFP folder
+      if (item?.linkedAudioPath) {
+        await this.electron.shell.showItemInFolder(item.linkedAudioPath);
+      } else if (item?.audiobookFolder) {
+        await this.electron.shell.openPath(item.audiobookFolder);
       }
     } catch (err) {
-      console.error('Error opening audiobooks folder:', err);
+      console.error('Error opening audiobook location:', err);
     }
   }
 

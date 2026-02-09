@@ -153,13 +153,13 @@ export interface EpubMetadata {
           </desktop-button>
         </div>
 
-        <!-- Show in Finder button for completed audiobooks -->
+        <!-- Show audiobook file in its BFP project folder -->
         <div class="output-section">
           <desktop-button
             variant="secondary"
             (click)="onShowInFinder()"
           >
-            Open Audiobooks Folder
+            Show Audiobook File
           </desktop-button>
         </div>
 
