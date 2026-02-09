@@ -20,7 +20,7 @@ import { SUPPORTED_LANGUAGES, SupportedLanguage } from '../../models/language-le
             [class.selected]="selectedLang() === lang.code"
             (click)="selectLanguage(lang.code)"
           >
-            <span class="lang-flag">{{ getFlag(lang.code) }}</span>
+            <span class="lang-flag" [style.background]="getFlagCss(lang.code)"></span>
             <span class="lang-name">{{ lang.name }}</span>
           </button>
         }
@@ -84,7 +84,12 @@ import { SUPPORTED_LANGUAGES, SupportedLanguage } from '../../models/language-le
     }
 
     .lang-flag {
-      font-size: 24px;
+      display: inline-block;
+      width: 28px;
+      height: 18px;
+      border-radius: 3px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      flex-shrink: 0;
     }
 
     .lang-name {
@@ -135,20 +140,20 @@ export class LanguageSelectorComponent {
     this.valueChange.emit(code);
   }
 
-  getFlag(code: string): string {
+  getFlagCss(code: string): string {
     const flags: Record<string, string> = {
-      'de': '🇩🇪',
-      'es': '🇪🇸',
-      'fr': '🇫🇷',
-      'it': '🇮🇹',
-      'pt': '🇵🇹',
-      'nl': '🇳🇱',
-      'pl': '🇵🇱',
-      'ru': '🇷🇺',
-      'ja': '🇯🇵',
-      'zh': '🇨🇳',
-      'ko': '🇰🇷',
+      'de': 'linear-gradient(to bottom, #000 33.3%, #DD0000 33.3% 66.6%, #FFCE00 66.6%)',
+      'es': 'linear-gradient(to bottom, #AA151B 25%, #F1BF00 25% 75%, #AA151B 75%)',
+      'fr': 'linear-gradient(to right, #002395 33.3%, #FFF 33.3% 66.6%, #ED2939 66.6%)',
+      'it': 'linear-gradient(to right, #008C45 33.3%, #F4F5F0 33.3% 66.6%, #CD212A 66.6%)',
+      'pt': 'linear-gradient(to right, #006600 40%, #FF0000 40%)',
+      'nl': 'linear-gradient(to bottom, #AE1C28 33.3%, #FFF 33.3% 66.6%, #21468B 66.6%)',
+      'pl': 'linear-gradient(to bottom, #FFF 50%, #DC143C 50%)',
+      'ru': 'linear-gradient(to bottom, #FFF 33.3%, #0039A6 33.3% 66.6%, #D52B1E 66.6%)',
+      'ja': 'radial-gradient(circle, #BC002D 25%, #FFF 25%)',
+      'zh': 'radial-gradient(circle at 28% 35%, #FFDE00 8%, #DE2910 8%)',
+      'ko': 'radial-gradient(circle at 50% 40%, #CD2E3A 18%, transparent 18%), radial-gradient(circle at 50% 60%, #0047A0 18%, transparent 18%), linear-gradient(#FFF, #FFF)',
     };
-    return flags[code] || '🌐';
+    return flags[code] || 'linear-gradient(#666, #666)';
   }
 }

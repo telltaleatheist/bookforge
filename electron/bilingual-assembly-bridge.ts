@@ -13,7 +13,17 @@ import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
-import { getCondaRunArgs, getCondaPath, getDefaultE2aPath } from './e2a-paths';
+import {
+  getCondaRunArgs,
+  getCondaPath,
+  getDefaultE2aPath,
+  shouldUseWsl2ForAllTts,
+  shouldUseWsl2ForOrpheus,
+  getWslDistro,
+  getWslCondaPath,
+  getWslE2aPath,
+  windowsToWslPath,
+} from './e2a-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Temp Folder Management (for Syncthing compatibility)
@@ -107,6 +117,24 @@ export interface BilingualAssemblyProgress {
   message: string;
 }
 
+/**
+ * Convert UNC WSL paths (\\wsl$\Ubuntu\...) back to native WSL paths (/...).
+ * Also handles Windows paths by converting via windowsToWslPath.
+ */
+function uncToWslPath(p: string): string {
+  // \\wsl$\Ubuntu\home\... → /home/...
+  // \\wsl.localhost\Ubuntu\home\... → /home/...
+  const uncMatch = p.replace(/\\/g, '/').match(/^\/\/wsl[\$.](?:localhost)?\/[^/]+\/(.*)/);
+  if (uncMatch) {
+    return '/' + uncMatch[1];
+  }
+  // Regular Windows path (C:\...) → /mnt/c/...
+  if (/^[A-Za-z]:[\\/]/.test(p)) {
+    return windowsToWslPath(p);
+  }
+  return p;
+}
+
 let mainWindow: BrowserWindow | null = null;
 
 export function initBilingualAssemblyBridge(window: BrowserWindow): void {
@@ -191,9 +219,8 @@ export async function runBilingualAssembly(
     return { success: false, error };
   }
 
-  // Get conda environment
-  const condaPath = getCondaPath();
-  const condaEnv = 'ebook2audiobook';
+  // Determine if we should use WSL (same logic as parallel-tts-bridge)
+  const useWsl = os.platform() === 'win32' && (shouldUseWsl2ForAllTts() || shouldUseWsl2ForOrpheus());
 
   emitProgress(jobId, {
     phase: 'combining',
@@ -212,27 +239,65 @@ export async function runBilingualAssembly(
       outputName = `${baseTitle} [Bilingual ${sourceLang}-${targetLang}]`;
     }
 
-    // Build command arguments - use effectiveOutputDir for Syncthing compatibility
-    const args = [
-      'run', '-n', condaEnv, '--no-capture-output',
-      'python', scriptPath,
-      '--mode', 'dual',
-      '--source-dir', config.sourceSentencesDir,
-      '--target-dir', config.targetSentencesDir,
-      '--pairs', config.sentencePairsPath,
-      '--output-dir', effectiveOutputDir,
-      '--output-name', outputName,
-      '--pause', String(config.pauseDuration ?? 0.3),
-      '--gap', String(config.gapDuration ?? 1.0),
-      '--format', config.audioFormat ?? 'flac'
-    ];
+    let proc;
 
-    console.log(`[BILINGUAL-ASSEMBLY] Running: ${condaPath} ${args.join(' ')}`);
+    if (useWsl) {
+      // WSL mode: sentences are in WSL filesystem, assembly must also run in WSL
+      const wslE2aPath = getWslE2aPath();
+      const wslCondaPath = getWslCondaPath();
+      const wslScriptPath = `${wslE2aPath}/bookforge_ext/parallel/bilingual.py`;
 
-    const proc = spawn(condaPath, args, {
-      cwd: e2aPath,
-      env: { ...process.env }
-    });
+      // Convert paths: UNC \\wsl$ paths → native WSL paths, Windows paths → /mnt/ paths
+      const wslSourceDir = uncToWslPath(config.sourceSentencesDir);
+      const wslTargetDir = uncToWslPath(config.targetSentencesDir);
+      const wslPairsPath = uncToWslPath(config.sentencePairsPath);
+      const wslOutputDir = windowsToWslPath(effectiveOutputDir);
+
+      // Shell-quote helper for values that may contain spaces/brackets
+      const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+
+      const bashCommand = [
+        `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8`,
+        `cd "${wslE2aPath}"`,
+        `"${wslCondaPath}" run --no-capture-output -p ${q(`${wslE2aPath}/python_env`)} python ${q(wslScriptPath)} --mode dual --source-dir ${q(wslSourceDir)} --target-dir ${q(wslTargetDir)} --pairs ${q(wslPairsPath)} --output-dir ${q(wslOutputDir)} --output-name ${q(outputName)} --pause ${config.pauseDuration ?? 0.3} --gap ${config.gapDuration ?? 1.0} --format ${config.audioFormat ?? 'flac'}`
+      ].join(' && ');
+      console.log(`[BILINGUAL-ASSEMBLY] Running via WSL: ${bashCommand}`);
+
+      const distro = getWslDistro();
+      const wslSpawnArgs = distro
+        ? ['-d', distro, 'bash', '-c', bashCommand]
+        : ['bash', '-c', bashCommand];
+
+      proc = spawn('wsl.exe', wslSpawnArgs, {
+        env: process.env,
+        shell: false,
+      });
+    } else {
+      // Native mode: use local conda environment
+      const condaPath = getCondaPath();
+      const condaRunArgs = getCondaRunArgs();
+
+      const args = [
+        ...condaRunArgs,
+        scriptPath,
+        '--mode', 'dual',
+        '--source-dir', config.sourceSentencesDir,
+        '--target-dir', config.targetSentencesDir,
+        '--pairs', config.sentencePairsPath,
+        '--output-dir', effectiveOutputDir,
+        '--output-name', outputName,
+        '--pause', String(config.pauseDuration ?? 0.3),
+        '--gap', String(config.gapDuration ?? 1.0),
+        '--format', config.audioFormat ?? 'flac'
+      ];
+
+      console.log(`[BILINGUAL-ASSEMBLY] Running: ${condaPath} ${args.join(' ')}`);
+
+      proc = spawn(condaPath, args, {
+        cwd: e2aPath,
+        env: { ...process.env }
+      });
+    }
 
     let stdout = '';
     let stderr = '';

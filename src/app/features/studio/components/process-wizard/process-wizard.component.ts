@@ -261,7 +261,8 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
                       [class.selected]="targetLang === lang.code"
                       (click)="targetLang = lang.code"
                     >
-                      <span class="lang-flag">{{ lang.flag }}</span>
+                      <span class="lang-flag" [style.background]="lang.flagCss"></span>
+                      <span class="lang-code">{{ lang.code.toUpperCase() }}</span>
                       <span class="lang-name">{{ lang.name }}</span>
                     </button>
                   }
@@ -876,12 +877,23 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
       transition: all 0.15s ease;
 
       .lang-flag {
-        font-size: 24px;
+        display: block;
+        width: 32px;
+        height: 20px;
+        border-radius: 3px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        flex-shrink: 0;
+      }
+
+      .lang-code {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
       }
 
       .lang-name {
         font-size: 11px;
-        color: var(--text-secondary);
+        color: var(--text-primary);
       }
 
       &:hover {
@@ -1139,23 +1151,23 @@ export class ProcessWizardComponent implements OnInit {
   translationMode: TranslationMode = 'bilingual';
   targetLang = 'de';
 
-  // Available languages with flags
+  // Available languages with CSS gradient flags (works on all platforms including Windows)
   readonly availableLanguages = [
-    { code: 'de', name: 'German', flag: '🇩🇪' },
-    { code: 'es', name: 'Spanish', flag: '🇪🇸' },
-    { code: 'fr', name: 'French', flag: '🇫🇷' },
-    { code: 'it', name: 'Italian', flag: '🇮🇹' },
-    { code: 'pt', name: 'Portuguese', flag: '🇵🇹' },
-    { code: 'nl', name: 'Dutch', flag: '🇳🇱' },
-    { code: 'pl', name: 'Polish', flag: '🇵🇱' },
-    { code: 'ru', name: 'Russian', flag: '🇷🇺' },
-    { code: 'ja', name: 'Japanese', flag: '🇯🇵' },
-    { code: 'zh', name: 'Chinese', flag: '🇨🇳' },
-    { code: 'ko', name: 'Korean', flag: '🇰🇷' },
+    { code: 'de', name: 'German', flagCss: 'linear-gradient(to bottom, #000 33.3%, #DD0000 33.3% 66.6%, #FFCE00 66.6%)' },
+    { code: 'es', name: 'Spanish', flagCss: 'linear-gradient(to bottom, #AA151B 25%, #F1BF00 25% 75%, #AA151B 75%)' },
+    { code: 'fr', name: 'French', flagCss: 'linear-gradient(to right, #002395 33.3%, #FFF 33.3% 66.6%, #ED2939 66.6%)' },
+    { code: 'it', name: 'Italian', flagCss: 'linear-gradient(to right, #008C45 33.3%, #F4F5F0 33.3% 66.6%, #CD212A 66.6%)' },
+    { code: 'pt', name: 'Portuguese', flagCss: 'linear-gradient(to right, #006600 40%, #FF0000 40%)' },
+    { code: 'nl', name: 'Dutch', flagCss: 'linear-gradient(to bottom, #AE1C28 33.3%, #FFF 33.3% 66.6%, #21468B 66.6%)' },
+    { code: 'pl', name: 'Polish', flagCss: 'linear-gradient(to bottom, #FFF 50%, #DC143C 50%)' },
+    { code: 'ru', name: 'Russian', flagCss: 'linear-gradient(to bottom, #FFF 33.3%, #0039A6 33.3% 66.6%, #D52B1E 66.6%)' },
+    { code: 'ja', name: 'Japanese', flagCss: 'radial-gradient(circle, #BC002D 25%, #FFF 25%)' },
+    { code: 'zh', name: 'Chinese', flagCss: 'radial-gradient(circle at 28% 35%, #FFDE00 8%, #DE2910 8%)' },
+    { code: 'ko', name: 'Korean', flagCss: 'radial-gradient(circle at 50% 40%, #CD2E3A 18%, transparent 18%), radial-gradient(circle at 50% 60%, #0047A0 18%, transparent 18%), linear-gradient(#FFF, #FFF)' },
   ];
 
   // TTS config
-  ttsDevice: 'gpu' | 'mps' | 'cpu' = 'cpu';  // CPU is better for XTTS on Mac
+  ttsDevice: 'gpu' | 'mps' | 'cpu' = 'cpu';
   ttsEngine: 'xtts' | 'orpheus' = 'xtts';
   ttsLanguage = 'en';
   ttsVoice = 'ScarlettJohansson';
@@ -1164,7 +1176,7 @@ export class ProcessWizardComponent implements OnInit {
   ttsSpeed = 1.25;
   sourceSpeed = 1.25;
   targetSpeed = 1.0;
-  parallelWorkers = 4; // Default for MPS
+  parallelWorkers = 4;
   ttsTemperature = 0.7;
   ttsTopP = 0.9;
   readonly advancedTtsOpen = signal(false);
@@ -1246,31 +1258,34 @@ export class ProcessWizardComponent implements OnInit {
 
   ngOnInit(): void {
     this.initializeFromSettings();
+    this.initializeTtsDefaults();
     this.checkOllamaConnection();
     this.loadPrompt();
   }
 
   private initializeFromSettings(): void {
     const config = this.settingsService.getAIConfig();
-    this.cleanupProvider.set(config.provider);
-    this.translationProvider.set(config.provider);
 
-    // Set initial model based on provider
-    if (config.provider === 'ollama') {
-      this.cleanupModel.set(config.ollama.model || 'llama3.2');
-      this.translationModel.set(config.ollama.model || 'llama3.2');
-    } else if (config.provider === 'claude') {
-      this.cleanupModel.set(config.claude.model || 'claude-sonnet-4-20250514');
-      this.translationModel.set(config.claude.model || 'claude-sonnet-4-20250514');
-      if (config.claude.apiKey) {
-        this.fetchClaudeModels(config.claude.apiKey);
-      }
-    } else if (config.provider === 'openai') {
-      this.cleanupModel.set(config.openai.model || 'gpt-4o');
-      this.translationModel.set(config.openai.model || 'gpt-4o');
-      if (config.openai.apiKey) {
-        this.fetchOpenAIModels(config.openai.apiKey);
-      }
+    // Default to Ollama for cleanup and translation in this pipeline
+    this.cleanupProvider.set('ollama');
+    this.translationProvider.set('ollama');
+    this.cleanupModel.set(config.ollama.model || 'llama3.2');
+    this.translationModel.set(config.ollama.model || 'llama3.2');
+
+    // Pre-fetch other providers' models so they're ready if the user switches
+    if (config.claude.apiKey) {
+      this.fetchClaudeModels(config.claude.apiKey);
+    }
+    if (config.openai.apiKey) {
+      this.fetchOpenAIModels(config.openai.apiKey);
+    }
+  }
+
+  private initializeTtsDefaults(): void {
+    const isWindows = navigator.platform.startsWith('Win');
+    if (isWindows) {
+      this.ttsDevice = 'gpu';
+      this.parallelWorkers = 1;
     }
   }
 
@@ -1650,8 +1665,7 @@ export class ProcessWizardComponent implements OnInit {
             epubPath: currentEpubPath,
             projectDir: this.projectDir(),
             metadata: {
-              title: isBilingual ? 'AI Cleanup' : this.title(),
-              author: isBilingual ? undefined : this.author(),
+              title: 'AI Cleanup',
             },
             config: {
               type: 'll-cleanup',
@@ -1687,8 +1701,7 @@ export class ProcessWizardComponent implements OnInit {
             type: 'ocr-cleanup',
             epubPath: currentEpubPath,
             metadata: {
-              title: isBilingual ? 'AI Cleanup' : this.title(),
-              author: isBilingual ? undefined : this.author(),
+              title: 'AI Cleanup',
             },
             config: cleanupConfig,
             workflowId,
@@ -1720,8 +1733,7 @@ export class ProcessWizardComponent implements OnInit {
             epubPath: currentEpubPath,
             projectDir: this.projectDir(),
             metadata: {
-              title: isBilingual ? 'Translation' : this.title(),
-              author: isBilingual ? undefined : this.author(),
+              title: 'Translation',
             },
             config: {
               type: 'll-translation',
@@ -1797,8 +1809,7 @@ export class ProcessWizardComponent implements OnInit {
               type: 'translation',
               epubPath: currentEpubPath,
               metadata: {
-                title: this.title(),
-                author: this.author(),
+                title: 'Translation',
               },
               config: translationConfig,
               workflowId,
@@ -1943,7 +1954,10 @@ export class ProcessWizardComponent implements OnInit {
             repetitionPenalty: 1.0,
             speed: this.ttsSpeed,
             enableTextSplitting: true,
-            useParallel: this.ttsEngine === 'xtts' && this.parallelWorkers > 1,
+            // ALWAYS use parallel TTS to avoid memory leak from app.py
+            // and to ensure WSL routing works for CUDA support on Windows
+            useParallel: true,
+            parallelMode: 'sentences',
             parallelWorkers: this.ttsEngine === 'xtts' ? this.parallelWorkers : 1,
             outputDir,
           };
@@ -1954,8 +1968,7 @@ export class ProcessWizardComponent implements OnInit {
             projectDir: isArticle ? this.projectDir() : undefined,
             bfpPath: isArticle ? undefined : this.bfpPath(),  // For copying VTT to project folder
             metadata: {
-              title: this.title(),
-              author: this.author(),
+              title: 'TTS',
               outputFilename: `${this.title() || 'audiobook'}.m4b`,
             },
             config: ttsConfig,
