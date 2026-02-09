@@ -1969,6 +1969,8 @@ export class ProcessWizardComponent implements OnInit {
             bfpPath: isArticle ? undefined : this.bfpPath(),  // For copying VTT to project folder
             metadata: {
               title: 'TTS',
+              bookTitle: this.title(),
+              author: this.author(),
               outputFilename: `${this.title() || 'audiobook'}.m4b`,
             },
             config: ttsConfig,

@@ -244,14 +244,25 @@ export async function copyToFinalDestination(
   let finalAudioPath: string;
   let finalVttPath: string | undefined;
 
-  // Step 1: Copy to BFP audiobook/ folder (always, for both books and articles)
+  // Step 1: Copy to library audiobooks/ folder (always, for both books and articles)
   if (bfpPath) {
-    const bfpAudiobookDir = path.join(bfpPath, 'audiobook');
+    // Derive audiobook output dir from bfpPath
+    // BFP files: E:\Shared\BookForge\projects\occult_test.bfp → E:\Shared\BookForge\audiobooks\occult_test\
+    // Project dirs (articles): E:\Shared\BookForge\language-learning\projects\myproject\ → myproject\audiobook\
+    let bfpAudiobookDir: string;
+    if (bfpPath.endsWith('.bfp')) {
+      const libraryRoot = path.dirname(path.dirname(bfpPath)); // projects/ → library root
+      const projectName = path.basename(bfpPath, '.bfp');
+      bfpAudiobookDir = path.join(libraryRoot, 'audiobooks', projectName);
+    } else {
+      // Directory-based project (articles) - use audiobook/ subfolder
+      bfpAudiobookDir = path.join(bfpPath, 'audiobook');
+    }
     await fs.mkdir(bfpAudiobookDir, { recursive: true });
 
-    finalAudioPath = path.join(bfpAudiobookDir, 'output.m4b');
+    finalAudioPath = path.join(bfpAudiobookDir, m4bFile);
     await fs.copyFile(tempM4bPath, finalAudioPath);
-    console.log(`[PARALLEL-TTS] Copied m4b to BFP: ${finalAudioPath}`);
+    console.log(`[PARALLEL-TTS] Copied m4b to audiobooks: ${finalAudioPath}`);
 
     if (tempVttPath) {
       finalVttPath = path.join(bfpAudiobookDir, 'subtitles.vtt');

@@ -1786,9 +1786,9 @@ export class QueueService {
               skipHeadings: config.skipHeadings
             },
             // Pass metadata for final audiobook (applied after assembly via m4b-tool)
-            // Always pass metadata with at least the outputFilename for proper file naming
+            // Use bookTitle/author for m4b tags (metadata.title is the queue display label)
             metadata: {
-              title: job.metadata?.title,
+              title: job.metadata?.bookTitle || job.metadata?.title,
               author: job.metadata?.author,
               year: job.metadata?.year,
               coverPath: job.metadata?.coverPath,

@@ -59,8 +59,17 @@ async function copyToFinalDestination(
   const tempM4bPath = path.join(tempDir, m4bFile);
   const tempVttPath = vttFile ? path.join(tempDir, vttFile) : undefined;
 
-  // Create audiobook/ subfolder in BFP
-  const bfpAudiobookDir = path.join(bfpPath, 'audiobook');
+  // Derive audiobook output dir from bfpPath
+  // BFP files: E:\Shared\BookForge\projects\occult_test.bfp → E:\Shared\BookForge\audiobooks\occult_test\
+  // Project dirs (articles): .../language-learning/projects/myproject/ → myproject/audiobook/
+  let bfpAudiobookDir: string;
+  if (bfpPath.endsWith('.bfp')) {
+    const libraryRoot = path.dirname(path.dirname(bfpPath));
+    const projectName = path.basename(bfpPath, '.bfp');
+    bfpAudiobookDir = path.join(libraryRoot, 'audiobooks', projectName);
+  } else {
+    bfpAudiobookDir = path.join(bfpPath, 'audiobook');
+  }
   await fs.mkdir(bfpAudiobookDir, { recursive: true });
 
   // Copy to BFP audiobook folder
