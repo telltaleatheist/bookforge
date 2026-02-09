@@ -566,9 +566,9 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
    */
   selectVersion(version: AudioVersion): void {
     if (this.selectedVersion() !== version) {
+      this.pause();
       this.selectedVersion.set(version);
-      // Use skipLoadingState=true to avoid destroying the audio element
-      this.loadAudioData(true);
+      this.loadAudioData();
     }
   }
 
@@ -583,7 +583,7 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
   // Store loaded audio data URL to set after component renders
   private pendingAudioDataUrl: string | null = null;
 
-  async loadAudioData(skipLoadingState = false): Promise<void> {
+  async loadAudioData(): Promise<void> {
     const book = this.audiobook();
     if (!book) return;
 
@@ -592,11 +592,7 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
     const vttPath = this.currentVttPath();
     const version = this.selectedVersion();
 
-    // Only show loading state for initial load, not version switches
-    // (showing loading destroys the audio element which breaks playback)
-    if (!skipLoadingState) {
-      this.isLoading.set(true);
-    }
+    this.isLoading.set(true);
     this.error.set(null);
     this.pendingAudioDataUrl = null;
 
@@ -632,46 +628,31 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
       }
       console.log(`[AudiobookPlayer] Loaded ${version} audio: ${audioResult.size} bytes`);
 
-      // For version switches, set the source directly since audio element exists
-      if (skipLoadingState) {
-        const audio = this.audioElementRef?.nativeElement;
-        if (audio) {
-          // Pause current playback before switching
-          audio.pause();
-          console.log(`[AudiobookPlayer] Switching to ${version} audio...`);
-          audio.src = audioResult.dataUrl;
-          audio.load();
-          // Reset to beginning of new audio
-          this.currentTime.set(0);
-          this.currentCueIndex.set(0);
-          console.log('[AudiobookPlayer] Version switch complete');
-        }
-      } else {
-        // Store the data URL to set after isLoading becomes false and element renders
-        this.pendingAudioDataUrl = audioResult.dataUrl;
-      }
+      // Store the data URL to set after isLoading becomes false and element renders
+      this.pendingAudioDataUrl = audioResult.dataUrl;
+      // Reset position for version switches
+      this.currentTime.set(0);
+      this.currentCueIndex.set(0);
 
     } catch (err) {
       console.error('Failed to load audiobook:', err);
       this.error.set((err as Error).message);
     } finally {
-      if (!skipLoadingState) {
-        this.isLoading.set(false);
+      this.isLoading.set(false);
 
-        // Wait for Angular to render the audio element, then set the source
-        if (this.pendingAudioDataUrl) {
-          setTimeout(() => {
-            const audio = this.audioElementRef?.nativeElement;
-            if (audio) {
-              console.log('[AudiobookPlayer] Setting audio source...');
-              audio.src = this.pendingAudioDataUrl!;
-              audio.load();
-              console.log('[AudiobookPlayer] Audio load() called');
-            } else {
-              console.error('[AudiobookPlayer] Audio element not found!');
-            }
-          }, 50); // Give Angular time to render
-        }
+      // Wait for Angular to render the audio element, then set the source
+      if (this.pendingAudioDataUrl) {
+        setTimeout(() => {
+          const audio = this.audioElementRef?.nativeElement;
+          if (audio) {
+            console.log('[AudiobookPlayer] Setting audio source...');
+            audio.src = this.pendingAudioDataUrl!;
+            audio.load();
+            console.log('[AudiobookPlayer] Audio load() called');
+          } else {
+            console.error('[AudiobookPlayer] Audio element not found!');
+          }
+        }, 50); // Give Angular time to render
       }
     }
   }
