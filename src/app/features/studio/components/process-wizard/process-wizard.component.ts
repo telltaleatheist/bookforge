@@ -287,17 +287,20 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
                   </button>
                 </div>
 
-                <label class="field-label">Target Language</label>
+                <label class="field-label">Target Languages (select multiple)</label>
                 <div class="language-grid">
                   @for (lang of availableLanguages; track lang.code) {
                     <button
                       class="language-btn"
-                      [class.selected]="targetLang === lang.code"
-                      (click)="targetLang = lang.code"
+                      [class.selected]="targetLangs.has(lang.code)"
+                      (click)="toggleTargetLang(lang.code)"
                     >
                       <span class="lang-flag" [style.background]="lang.flagCss"></span>
                       <span class="lang-code">{{ lang.code.toUpperCase() }}</span>
                       <span class="lang-name">{{ lang.name }}</span>
+                      @if (targetLangs.has(lang.code)) {
+                        <span class="lang-check">✓</span>
+                      }
                     </button>
                   }
                 </div>
@@ -464,9 +467,9 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
                     @if (translationMode === 'skip' || isStepSkipped('translation')) {
                       Skipped
                     } @else if (translationMode === 'bilingual') {
-                      Bilingual → {{ getLanguageName(targetLang) }}
+                      Bilingual → {{ getSelectedLanguagesDisplay() }}
                     } @else {
-                      Translate → {{ getLanguageName(targetLang) }}
+                      Translate → {{ getSelectedLanguagesDisplay() }}
                     }
                   </span>
                 </div>
@@ -972,6 +975,17 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
           color: #06b6d4;
         }
       }
+
+      .lang-check {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        font-size: 12px;
+        color: #06b6d4;
+        font-weight: bold;
+      }
+
+      position: relative;
     }
 
     /* Worker Options */
@@ -1215,7 +1229,27 @@ export class ProcessWizardComponent implements OnInit {
   readonly translationProvider = signal<AIProvider>('ollama');
   readonly translationModel = signal<string>('');
   translationMode: TranslationMode = 'bilingual';
-  targetLang = 'de';
+  targetLangs = new Set<string>(['de']);  // Multi-select target languages
+
+  // Helper to toggle a language in/out of selection
+  toggleTargetLang(code: string): void {
+    if (this.targetLangs.has(code)) {
+      // Don't allow deselecting the last language
+      if (this.targetLangs.size > 1) {
+        this.targetLangs.delete(code);
+        this.targetLangs = new Set(this.targetLangs);  // Trigger change detection
+      }
+    } else {
+      this.targetLangs.add(code);
+      this.targetLangs = new Set(this.targetLangs);  // Trigger change detection
+    }
+  }
+
+  // Get formatted list of selected languages for display
+  getSelectedLanguagesDisplay(): string {
+    const names = Array.from(this.targetLangs).map(code => this.getLanguageName(code));
+    return names.join(', ');
+  }
 
   // Available languages with CSS gradient flags (works on all platforms including Windows)
   readonly availableLanguages = [
@@ -1695,7 +1729,7 @@ export class ProcessWizardComponent implements OnInit {
             projectId: this.projectId() || '',
             sourceUrl: '',  // Not needed for config lookup
             sourceLang: this.sourceLang(),
-            targetLang: this.targetLang,
+            targetLangs: Array.from(this.targetLangs),  // All selected languages
             htmlPath: '',   // Not needed for config lookup
             deletedBlockIds: [],
             title: this.title(),
@@ -1809,59 +1843,24 @@ export class ProcessWizardComponent implements OnInit {
             ? `${this.projectDir()}/article.epub`
             : `${this.projectDir()}/cleaned.epub`;
 
-          // Article translation uses ll-translation type
-          const translationJob = await this.queueService.addJob({
-            type: 'll-translation',
-            epubPath: currentEpubPath,
-            projectDir: this.projectDir(),
-            metadata: {
-              title: 'Translation',
-            },
-            config: {
-              type: 'll-translation',
-              projectId: this.projectId(),
-              projectDir: this.projectDir(),
-              cleanedEpubPath: sourceEpubForTranslation,
-              sourceLang: this.sourceLang(),
-              targetLang: this.targetLang,
-              title: this.title(),
-              aiProvider: this.translationProvider(),
-              aiModel: this.translationModel(),
-              ollamaBaseUrl: aiConfig.ollama?.baseUrl,
-              claudeApiKey: aiConfig.claude?.apiKey,
-              openaiApiKey: aiConfig.openai?.apiKey,
-            },
-            workflowId,
-            parentJobId: masterJobId,
-          });
-
-          if (!masterJobId) {
-            masterJobId = translationJob.id;
-          }
-        } else {
-          // Book translation
-          if (isBilingual) {
-            // Bilingual book translation uses ll-translation to generate separate source/target EPUBs
-            // Use the directory where the cleaned EPUB is located (e.g., .../audiobooks/book_name/)
-            // This ensures the project dir matches where the EPUB actually is
-            const epubPathNorm = currentEpubPath.replace(/\\/g, '/');
-            const bookProjectDir = epubPathNorm.substring(0, epubPathNorm.lastIndexOf('/'));
-
+          // Create translation jobs for each target language
+          const targetLangArray = Array.from(this.targetLangs);
+          for (const targetLang of targetLangArray) {
+            // Article translation uses ll-translation type
             const translationJob = await this.queueService.addJob({
               type: 'll-translation',
               epubPath: currentEpubPath,
-              projectDir: bookProjectDir,
-              bfpPath: this.bfpPath(),  // Pass bfpPath for bilingual audio path updates
+              projectDir: this.projectDir(),
               metadata: {
-                title: 'Translation',
+                title: `Translation (${this.getLanguageName(targetLang)})`,
               },
               config: {
                 type: 'll-translation',
-                projectId: workflowId,  // Use workflow ID as project ID for books
-                projectDir: bookProjectDir,
-                cleanedEpubPath: currentEpubPath,
+                projectId: this.projectId(),
+                projectDir: this.projectDir(),
+                cleanedEpubPath: sourceEpubForTranslation,
                 sourceLang: this.sourceLang(),
-                targetLang: this.targetLang,
+                targetLang,
                 title: this.title(),
                 aiProvider: this.translationProvider(),
                 aiModel: this.translationModel(),
@@ -1875,6 +1874,49 @@ export class ProcessWizardComponent implements OnInit {
 
             if (!masterJobId) {
               masterJobId = translationJob.id;
+            }
+          }
+        } else {
+          // Book translation
+          if (isBilingual) {
+            // Bilingual book translation uses ll-translation to generate separate source/target EPUBs
+            // Use the directory where the cleaned EPUB is located (e.g., .../audiobooks/book_name/)
+            // This ensures the project dir matches where the EPUB actually is
+            const epubPathNorm = currentEpubPath.replace(/\\/g, '/');
+            const bookProjectDir = epubPathNorm.substring(0, epubPathNorm.lastIndexOf('/'));
+
+            // Create translation jobs for each target language
+            const targetLangArray = Array.from(this.targetLangs);
+            for (const targetLang of targetLangArray) {
+              const translationJob = await this.queueService.addJob({
+                type: 'll-translation',
+                epubPath: currentEpubPath,
+                projectDir: bookProjectDir,
+                bfpPath: this.bfpPath(),  // Pass bfpPath for bilingual audio path updates
+                metadata: {
+                  title: `Translation (${this.getLanguageName(targetLang)})`,
+                },
+                config: {
+                  type: 'll-translation',
+                  projectId: workflowId,  // Use workflow ID as project ID for books
+                  projectDir: bookProjectDir,
+                  cleanedEpubPath: currentEpubPath,
+                  sourceLang: this.sourceLang(),
+                  targetLang,
+                  title: this.title(),
+                  aiProvider: this.translationProvider(),
+                  aiModel: this.translationModel(),
+                  ollamaBaseUrl: aiConfig.ollama?.baseUrl,
+                  claudeApiKey: aiConfig.claude?.apiKey,
+                  openaiApiKey: aiConfig.openai?.apiKey,
+                },
+                workflowId,
+                parentJobId: masterJobId,
+              });
+
+              if (!masterJobId) {
+                masterJobId = translationJob.id;
+              }
             }
           } else {
             // Non-bilingual book translation uses regular translation type
@@ -1905,17 +1947,21 @@ export class ProcessWizardComponent implements OnInit {
         }
       }
 
-      // 3. TTS job(s) - TWO jobs for bilingual (source + target), ONE for mono
+      // 3. TTS job(s) - Multiple jobs for bilingual (source + target per language), ONE for mono
       if (!this.skippedSteps.has('tts')) {
         if (isBilingual) {
           // For bilingual, create placeholder TTS jobs that will be updated
           // when translation completes with the correct source/target EPUB paths
           const projectIdForPlaceholder = isArticle ? this.projectId() : workflowId;
 
-          // Source language TTS job (e.g., "EN TTS") - placeholder
           // Worker count - Orpheus uses single worker, XTTS can use multiple
           const workerCount = this.ttsEngine === 'orpheus' ? 1 : this.parallelWorkers;
 
+          // Convert Set to Array for iteration
+          const targetLangArray = Array.from(this.targetLangs);
+
+          // Source language TTS job (e.g., "EN TTS") - only ONE, shared by all languages
+          // We associate it with the first target language for placeholder matching
           const sourceTtsConfig: Partial<TtsConversionConfig> = {
             type: 'tts-conversion',
             device: this.ttsDevice,
@@ -1937,8 +1983,6 @@ export class ProcessWizardComponent implements OnInit {
             skipHeadings: true,
             // Bilingual: skip assembly, sentences dir returned for bilingual-assembly job
             skipAssembly: true,
-            // Don't use cleanSession for bilingual - we need source sentences to persist
-            // until bilingual assembly completes
           };
 
           await this.queueService.addJob({
@@ -1951,7 +1995,7 @@ export class ProcessWizardComponent implements OnInit {
               bilingualPlaceholder: {
                 role: 'source',
                 projectId: projectIdForPlaceholder,
-                targetLang: this.targetLang,
+                targetLang: targetLangArray[0],  // Associate with first language for matching
               },
             },
             config: sourceTtsConfig,
@@ -1959,71 +2003,75 @@ export class ProcessWizardComponent implements OnInit {
             parentJobId: masterJobId,
           });
 
-          // Target language TTS job (e.g., "German TTS") - placeholder
-          const targetTtsConfig: Partial<TtsConversionConfig> = {
-            type: 'tts-conversion',
-            device: this.ttsDevice,
-            language: this.targetLang,
-            ttsEngine: this.ttsEngine,
-            fineTuned: this.targetVoice,
-            temperature: this.ttsTemperature,
-            topP: this.ttsTopP,
-            topK: 50,
-            repetitionPenalty: 5.0,
-            speed: this.targetSpeed,
-            enableTextSplitting: true,
-            // ALWAYS use parallel TTS to avoid memory leak from app.py
-            useParallel: true,
-            parallelMode: 'sentences',
-            parallelWorkers: workerCount,
-            outputDir,
-            sentencePerParagraph: true,
-            skipHeadings: true,
-            // Bilingual: skip assembly, sentences dir returned for bilingual-assembly job
-            skipAssembly: true,
-            // Don't use cleanSession for bilingual - we need sentences to persist
-            // until bilingual assembly completes
-          };
-
-          await this.queueService.addJob({
-            type: 'tts-conversion',
-            // No epubPath - will be set when translation completes
-            projectDir: isArticle ? this.projectDir() : undefined,
-            metadata: {
-              title: `${this.getLanguageName(this.targetLang)} TTS`,
-              // Placeholder marker - queue will skip this until translation updates it
-              bilingualPlaceholder: {
-                role: 'target',
-                projectId: projectIdForPlaceholder,
-              },
-            },
-            config: targetTtsConfig,
-            workflowId,
-            parentJobId: masterJobId,
-          });
-
-          // Assembly job placeholder - shows user the full workflow upfront
-          await this.queueService.addJob({
-            type: 'bilingual-assembly',
-            projectDir: isArticle ? this.projectDir() : undefined,
-            bfpPath: isArticle ? undefined : this.bfpPath(),  // Pass bfpPath for books to save audio paths
-            metadata: {
-              title: 'Assembly',
-              // Placeholder marker - queue will skip this until target TTS completes
-              bilingualPlaceholder: {
-                role: 'assembly',
-                projectId: projectIdForPlaceholder,
-              },
-            },
-            config: {
-              type: 'bilingual-assembly',
-              projectId: projectIdForPlaceholder,
+          // Create target TTS + assembly jobs for EACH target language
+          for (const targetLang of targetLangArray) {
+            // Target language TTS job (e.g., "German TTS") - placeholder
+            const targetTtsConfig: Partial<TtsConversionConfig> = {
+              type: 'tts-conversion',
+              device: this.ttsDevice,
+              language: targetLang,
+              ttsEngine: this.ttsEngine,
+              fineTuned: this.targetVoice,
+              temperature: this.ttsTemperature,
+              topP: this.ttsTopP,
+              topK: 50,
+              repetitionPenalty: 5.0,
+              speed: this.targetSpeed,
+              enableTextSplitting: true,
+              // ALWAYS use parallel TTS to avoid memory leak from app.py
+              useParallel: true,
+              parallelMode: 'sentences',
+              parallelWorkers: workerCount,
               outputDir,
-              bfpPath: isArticle ? undefined : this.bfpPath(),  // Also in config for queue handler
-            },
-            workflowId,
-            parentJobId: masterJobId,
-          });
+              sentencePerParagraph: true,
+              skipHeadings: true,
+              // Bilingual: skip assembly, sentences dir returned for bilingual-assembly job
+              skipAssembly: true,
+            };
+
+            await this.queueService.addJob({
+              type: 'tts-conversion',
+              // No epubPath - will be set when translation completes
+              projectDir: isArticle ? this.projectDir() : undefined,
+              metadata: {
+                title: `${this.getLanguageName(targetLang)} TTS`,
+                // Placeholder marker - queue will skip this until translation updates it
+                bilingualPlaceholder: {
+                  role: 'target',
+                  projectId: projectIdForPlaceholder,
+                  targetLang,  // Track which language this job is for
+                },
+              },
+              config: targetTtsConfig,
+              workflowId,
+              parentJobId: masterJobId,
+            });
+
+            // Assembly job placeholder for this language
+            await this.queueService.addJob({
+              type: 'bilingual-assembly',
+              projectDir: isArticle ? this.projectDir() : undefined,
+              bfpPath: isArticle ? undefined : this.bfpPath(),
+              metadata: {
+                title: `Assembly (${this.getLanguageName(targetLang)})`,
+                // Placeholder marker - queue will skip this until target TTS completes
+                bilingualPlaceholder: {
+                  role: 'assembly',
+                  projectId: projectIdForPlaceholder,
+                  targetLang,  // Track which language this assembly is for
+                },
+              },
+              config: {
+                type: 'bilingual-assembly',
+                projectId: projectIdForPlaceholder,
+                targetLang,  // Include language in config for output naming
+                outputDir,
+                bfpPath: isArticle ? undefined : this.bfpPath(),
+              },
+              workflowId,
+              parentJobId: masterJobId,
+            });
+          }
         } else {
           // Single TTS job for mono/translate mode
           const ttsConfig: Partial<TtsConversionConfig> = {

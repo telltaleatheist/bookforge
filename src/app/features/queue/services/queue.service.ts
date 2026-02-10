@@ -139,7 +139,8 @@ declare global {
           projectId: string;
           sourceUrl: string;
           sourceLang: string;
-          targetLang: string;
+          targetLang?: string;      // Legacy single language
+          targetLangs?: string[];   // Multi-language support
           htmlPath: string;
           pdfPath?: string;
           deletedBlockIds: string[];
@@ -1965,7 +1966,8 @@ export class QueueService {
           projectId: config.projectId,
           sourceUrl: config.sourceUrl,
           sourceLang: config.sourceLang,
-          targetLang: config.targetLang,
+          targetLang: config.targetLang,    // Legacy single language
+          targetLangs: config.targetLangs,  // Multi-language support
           htmlPath: config.htmlPath,
           pdfPath: config.pdfPath,
           deletedBlockIds: config.deletedBlockIds,

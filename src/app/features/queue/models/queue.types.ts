@@ -217,7 +217,8 @@ export interface LanguageLearningJobConfig {
   projectId: string;
   sourceUrl: string;
   sourceLang: string;          // e.g., 'en'
-  targetLang: string;          // e.g., 'de'
+  targetLang?: string;         // e.g., 'de' (legacy single language)
+  targetLangs?: string[];      // e.g., ['de', 'ko'] (multi-language support)
   htmlPath: string;            // Path to source HTML
   pdfPath?: string;            // Path to generated PDF (optional)
   deletedBlockIds: string[];   // Blocks to exclude
