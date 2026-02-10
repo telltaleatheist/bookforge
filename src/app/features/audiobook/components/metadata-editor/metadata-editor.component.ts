@@ -195,6 +195,24 @@ export interface EpubMetadata {
             <span class="hint">Link an audiobook file to enable enhancement features</span>
           }
         </div>
+
+        <!-- EPUB File Section -->
+        @if (latestEpubPath()) {
+          <div class="epub-link-section">
+            <label>{{ latestEpubLabel() }}</label>
+            <div class="epub-file-row">
+              <span class="epub-file-path" [title]="latestEpubPath()">{{ getFilename(latestEpubPath()) }}</span>
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                (click)="openEpubInFinder()"
+                title="Show in Finder"
+              >
+                Show
+              </desktop-button>
+            </div>
+          </div>
+        }
       </div>
 
       <!-- Hidden file input for cover selection -->
@@ -414,6 +432,41 @@ export interface EpubMetadata {
       font-size: 0.875rem;
       color: var(--text-muted);
     }
+
+    .epub-link-section {
+      margin-top: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+
+      > label {
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+      }
+    }
+
+    .epub-file-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg-subtle);
+      border-radius: 6px;
+      border: 1px solid var(--border-default);
+    }
+
+    .epub-file-path {
+      flex: 1;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
   `]
 })
 export class MetadataEditorComponent {
@@ -422,6 +475,8 @@ export class MetadataEditorComponent {
   readonly saving = input<boolean>(false);
   readonly audioFilePath = input<string>('');
   readonly audioFilePathValid = input<boolean>(true);  // Cross-platform path validation
+  readonly epubPath = input<string>('');  // Original exported EPUB
+  readonly cleanedEpubPath = input<string>('');  // Cleaned EPUB (if AI cleanup was run)
 
   // Outputs
   readonly metadataChange = output<EpubMetadata>();
@@ -429,6 +484,18 @@ export class MetadataEditorComponent {
   readonly save = output<EpubMetadata>();
   readonly showInFinder = output<void>();
   readonly linkAudio = output<string>();
+  readonly showEpubInFinder = output<string>();  // Emit the path to show
+
+  // Computed: latest EPUB path (prefer cleaned if exists)
+  readonly latestEpubPath = computed(() => {
+    return this.cleanedEpubPath() || this.epubPath();
+  });
+
+  readonly latestEpubLabel = computed(() => {
+    if (this.cleanedEpubPath()) return 'Cleaned EPUB';
+    if (this.epubPath()) return 'Exported EPUB';
+    return '';
+  });
 
   // Electron access
   private get electron(): any {
@@ -657,6 +724,13 @@ export class MetadataEditorComponent {
       }
     } catch (err) {
       console.error('[MetadataEditor] Error opening file dialog:', err);
+    }
+  }
+
+  openEpubInFinder(): void {
+    const path = this.latestEpubPath();
+    if (path) {
+      this.showEpubInFinder.emit(path);
     }
   }
 

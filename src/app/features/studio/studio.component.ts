@@ -209,11 +209,14 @@ import { SettingsService } from '../../core/services/settings.service';
                     [saving]="savingMetadata()"
                     [audioFilePath]="audioFilePath() || ''"
                     [audioFilePathValid]="audioFilePathValid()"
+                    [epubPath]="selectedItem()?.epubPath || ''"
+                    [cleanedEpubPath]="selectedItem()?.cleanedEpubPath || ''"
                     (metadataChange)="onMetadataChange($event)"
                     (coverChange)="onCoverChange($event)"
                     (save)="onSaveMetadata($event)"
                     (showInFinder)="onShowInFinder()"
                     (linkAudio)="onLinkAudio($event)"
+                    (showEpubInFinder)="onShowEpubInFinder($event)"
                   />
                 }
                 @case ('process') {
@@ -1050,6 +1053,11 @@ export class StudioComponent implements OnInit {
     if (!item?.audiobookPath) return;
 
     (window as any).electron?.shell?.showItemInFolder?.(item.audiobookPath);
+  }
+
+  onShowEpubInFinder(path: string): void {
+    if (!path) return;
+    (window as any).electron?.shell?.showItemInFolder?.(path);
   }
 
   async onLinkAudio(path: string): Promise<void> {
