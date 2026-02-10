@@ -2006,6 +2006,7 @@ export class ProcessWizardComponent implements OnInit {
           await this.queueService.addJob({
             type: 'bilingual-assembly',
             projectDir: isArticle ? this.projectDir() : undefined,
+            bfpPath: isArticle ? undefined : this.bfpPath(),  // Pass bfpPath for books to save audio paths
             metadata: {
               title: 'Assembly',
               // Placeholder marker - queue will skip this until target TTS completes
@@ -2018,6 +2019,7 @@ export class ProcessWizardComponent implements OnInit {
               type: 'bilingual-assembly',
               projectId: projectIdForPlaceholder,
               outputDir,
+              bfpPath: isArticle ? undefined : this.bfpPath(),  // Also in config for queue handler
             },
             workflowId,
             parentJobId: masterJobId,
