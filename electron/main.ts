@@ -4146,6 +4146,8 @@ function setupIpcHandlers(): void {
       cleanupMode?: 'structure' | 'full';
       // Test mode: only process first 5 chunks
       testMode?: boolean;
+      // Simplify for children: rewrite archaic language for young readers
+      simplifyForChildren?: boolean;
     }
   ) => {
     console.log('[IPC] queue:run-ocr-cleanup received:', {
@@ -4205,6 +4207,7 @@ function setupIpcHandlers(): void {
         parallelWorkers?: number;
         cleanupMode?: 'structure' | 'full';
         testMode?: boolean;
+        simplifyForChildren?: boolean;
       } = {};
 
       // Set cleanup mode (default to 'structure' for backwards compatibility)
@@ -4213,6 +4216,12 @@ function setupIpcHandlers(): void {
       // Set test mode
       cleanupOptions.testMode = aiConfig.testMode || false;
       console.log('[IPC] Test mode:', aiConfig.testMode, '-> cleanupOptions.testMode:', cleanupOptions.testMode);
+
+      // Set simplify for children mode
+      cleanupOptions.simplifyForChildren = aiConfig.simplifyForChildren || false;
+      if (cleanupOptions.simplifyForChildren) {
+        console.log('[IPC] Simplify for children mode: ENABLED');
+      }
 
       if (aiConfig.useDetailedCleanup) {
         cleanupOptions.useDetailedCleanup = true;

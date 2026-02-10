@@ -125,24 +125,22 @@ import { SettingsService } from '../../core/services/settings.service';
                 >
                   Stream
                 </button>
-                @if (hasAudioToPlay()) {
-                  <button
-                    class="tab"
-                    [class.active]="workflowState() === 'play'"
-                    (click)="setWorkflowState('play')"
-                  >
-                    Play
-                  </button>
-                }
-                @if (selectedItem()!.hasCleaned) {
-                  <button
-                    class="tab"
-                    [class.active]="workflowState() === 'diff'"
-                    (click)="setWorkflowState('diff')"
-                  >
-                    Review
-                  </button>
-                }
+                <button
+                  class="tab"
+                  [class.active]="workflowState() === 'play'"
+                  [class.disabled]="!hasAudioToPlay()"
+                  (click)="handleTabClick('play', hasAudioToPlay(), 'No audiobook yet. Run TTS conversion first.')"
+                >
+                  Play
+                </button>
+                <button
+                  class="tab"
+                  [class.active]="workflowState() === 'diff'"
+                  [class.disabled]="!selectedItem()!.hasCleaned"
+                  (click)="handleTabClick('diff', selectedItem()!.hasCleaned, 'No cleaned version yet. Run AI Cleanup first.')"
+                >
+                  Review
+                </button>
                 @if (selectedItem()!.skippedChunksPath) {
                   <button
                     class="tab warning"
@@ -152,24 +150,22 @@ import { SettingsService } from '../../core/services/settings.service';
                     Skipped
                   </button>
                 }
-                @if (selectedItem()!.audiobookPath) {
-                  <button
-                    class="tab"
-                    [class.active]="workflowState() === 'enhance'"
-                    (click)="setWorkflowState('enhance')"
-                  >
-                    Enhance
-                  </button>
-                }
-                @if (selectedItem()!.vttPath) {
-                  <button
-                    class="tab"
-                    [class.active]="workflowState() === 'chapters'"
-                    (click)="setWorkflowState('chapters')"
-                  >
-                    Chapters
-                  </button>
-                }
+                <button
+                  class="tab"
+                  [class.active]="workflowState() === 'enhance'"
+                  [class.disabled]="!selectedItem()!.audiobookPath"
+                  (click)="handleTabClick('enhance', !!selectedItem()!.audiobookPath, 'No audiobook yet. Run TTS conversion first.')"
+                >
+                  Enhance
+                </button>
+                <button
+                  class="tab"
+                  [class.active]="workflowState() === 'chapters'"
+                  [class.disabled]="!selectedItem()!.vttPath"
+                  (click)="handleTabClick('chapters', !!selectedItem()!.vttPath, 'No chapter data yet. Run TTS conversion first.')"
+                >
+                  Chapters
+                </button>
 
                 <!-- Finalize button for articles on Content tab only -->
                 @if (selectedItem()!.type === 'article' && workflowState() === 'content') {
@@ -189,6 +185,13 @@ import { SettingsService } from '../../core/services/settings.service';
                   </button>
                 }
               </div>
+
+              <!-- Disabled tab message -->
+              @if (disabledTabMessage()) {
+                <div class="disabled-tab-message">
+                  {{ disabledTabMessage() }}
+                </div>
+              }
             </div>
 
             <!-- Tab Content -->
@@ -217,6 +220,7 @@ import { SettingsService } from '../../core/services/settings.service';
                   @if (currentEpubPath()) {
                     <app-process-wizard
                       [epubPath]="currentEpubPath()"
+                      [originalEpubPath]="selectedItem()?.epubPath || ''"
                       [title]="selectedMetadata()?.title || ''"
                       [author]="selectedMetadata()?.author || ''"
                       [itemType]="selectedItem()?.type || 'book'"
@@ -459,6 +463,32 @@ import { SettingsService } from '../../core/services/settings.service';
           border-bottom-color: #eab308;
         }
       }
+
+      &.disabled {
+        color: var(--text-muted);
+        opacity: 0.5;
+        cursor: not-allowed;
+
+        &:hover {
+          color: var(--text-muted);
+        }
+      }
+    }
+
+    .disabled-tab-message {
+      padding: 8px 16px;
+      background: rgba(234, 179, 8, 0.15);
+      border: 1px solid rgba(234, 179, 8, 0.3);
+      border-radius: 6px;
+      color: #eab308;
+      font-size: 13px;
+      margin-left: auto;
+      animation: fadeIn 0.2s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
     .btn-finalize {
@@ -777,6 +807,7 @@ export class StudioComponent implements OnInit {
   readonly processStep = signal<ProcessStep>('cleanup');
   readonly savingMetadata = signal<boolean>(false);
   readonly finalizingContent = signal<'idle' | 'saving' | 'done'>('idle');
+  readonly disabledTabMessage = signal<string | null>(null);
 
   // Context menu
   readonly contextMenuVisible = signal<boolean>(false);
@@ -798,7 +829,9 @@ export class StudioComponent implements OnInit {
       title: item.title,
       author: item.author || '',
       year: undefined,
-      language: item.sourceLang || 'en'
+      language: item.sourceLang || 'en',
+      coverPath: item.coverPath,
+      coverData: item.coverData
     };
   });
 
@@ -926,6 +959,22 @@ export class StudioComponent implements OnInit {
     // Reset process step when entering process tab
     if (state === 'process') {
       this.processStep.set('cleanup');
+    }
+  }
+
+  // Handle clicking on tabs that may be disabled
+  handleTabClick(state: StudioWorkflowState, isEnabled: boolean | undefined, disabledMessage: string): void {
+    if (isEnabled) {
+      this.setWorkflowState(state);
+      this.disabledTabMessage.set(null);
+    } else {
+      this.disabledTabMessage.set(disabledMessage);
+      // Auto-clear message after 3 seconds
+      setTimeout(() => {
+        if (this.disabledTabMessage() === disabledMessage) {
+          this.disabledTabMessage.set(null);
+        }
+      }, 3000);
     }
   }
 

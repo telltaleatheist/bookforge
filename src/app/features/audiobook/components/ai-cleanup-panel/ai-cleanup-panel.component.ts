@@ -179,6 +179,24 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
         </div>
       }
 
+      <!-- Simplify for Children Option -->
+      <div class="simplify-section">
+        <label class="checkbox-option">
+          <input
+            type="checkbox"
+            [checked]="simplifyForChildren()"
+            (change)="toggleSimplifyForChildren($event)"
+          >
+          <span class="checkbox-label">
+            Simplify for modern audience (children's reading level)
+          </span>
+        </label>
+        <p class="option-hint">
+          Rewrite archaic or complex language into simple, modern English suitable for young readers.
+          E.g., "perpetually quarreling" → "always fighting".
+        </p>
+      </div>
+
       <!-- Test Mode Option -->
       <div class="test-mode-section">
         <label class="checkbox-option">
@@ -381,7 +399,8 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
     }
 
     .detailed-cleanup-section,
-    .test-mode-section {
+    .test-mode-section,
+    .simplify-section {
       padding: 0.75rem;
       background: var(--bg-subtle);
       border: 1px solid var(--border-subtle);
@@ -544,6 +563,9 @@ export class AiCleanupPanelComponent implements OnInit {
 
   // Test mode state (only process first 5 chunks)
   readonly testMode = signal(false);
+
+  // Simplify for children state (rewrite archaic language for young readers)
+  readonly simplifyForChildren = signal(false);
 
   // Computed: check if provider supports parallel processing
   readonly supportsParallel = computed(() => {
@@ -817,7 +839,8 @@ export class AiCleanupPanelComponent implements OnInit {
           useParallel,
           parallelWorkers: workers,
           cleanupMode: this.cleanupMode(),
-          testMode: this.testMode()
+          testMode: this.testMode(),
+          simplifyForChildren: this.simplifyForChildren()
         }
       });
       this.addedToQueue.set(true);
@@ -877,6 +900,11 @@ export class AiCleanupPanelComponent implements OnInit {
   toggleTestMode(event: Event): void {
     const checkbox = event.target as HTMLInputElement;
     this.testMode.set(checkbox.checked);
+  }
+
+  toggleSimplifyForChildren(event: Event): void {
+    const checkbox = event.target as HTMLInputElement;
+    this.simplifyForChildren.set(checkbox.checked);
   }
 
   /**

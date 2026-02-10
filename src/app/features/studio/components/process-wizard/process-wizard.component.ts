@@ -153,6 +153,40 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
                 }
               </div>
 
+              <!-- Simplify for Children Option -->
+              <div class="checkbox-section">
+                <label class="checkbox-option">
+                  <input
+                    type="checkbox"
+                    [checked]="simplifyForChildren()"
+                    (change)="toggleSimplifyForChildren($event)"
+                  >
+                  <span class="checkbox-label">
+                    Simplify for modern audience (children's reading level)
+                  </span>
+                </label>
+                <span class="hint">
+                  Rewrite archaic language into simple modern English. E.g., "perpetually quarreling" → "always fighting"
+                </span>
+              </div>
+
+              <!-- Test Mode Option -->
+              <div class="checkbox-section">
+                <label class="checkbox-option">
+                  <input
+                    type="checkbox"
+                    [checked]="testMode()"
+                    (change)="toggleTestMode($event)"
+                  >
+                  <span class="checkbox-label">
+                    Test mode (first 5 chunks only)
+                  </span>
+                </label>
+                <span class="hint">
+                  Process only the first 5 chunks to preview results before running the full job.
+                </span>
+              </div>
+
               <!-- Prompt Accordion -->
               <div class="accordion" [class.open]="promptAccordionOpen()">
                 <button class="accordion-header" (click)="promptAccordionOpen.set(!promptAccordionOpen())">
@@ -765,6 +799,35 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
       color: var(--text-tertiary);
     }
 
+    /* Checkbox Section */
+    .checkbox-section {
+      margin-top: 16px;
+      padding: 12px 16px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+    }
+
+    .checkbox-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+
+      input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        accent-color: #06b6d4;
+        cursor: pointer;
+      }
+
+      .checkbox-label {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+    }
+
     /* Accordion */
     .accordion {
       margin-top: 16px;
@@ -1112,7 +1175,8 @@ export class ProcessWizardComponent implements OnInit {
   private readonly router = inject(Router);
 
   // Inputs
-  readonly epubPath = input.required<string>();
+  readonly epubPath = input.required<string>();  // Current EPUB (may be cleaned version for TTS)
+  readonly originalEpubPath = input<string>('');  // Always the original exported.epub for AI cleanup
   readonly title = input<string>('');
   readonly author = input<string>('');
   readonly itemType = input<'book' | 'article'>('book');
@@ -1144,6 +1208,8 @@ export class ProcessWizardComponent implements OnInit {
   // Cleanup config (signals for reactivity)
   readonly cleanupProvider = signal<AIProvider>('ollama');
   readonly cleanupModel = signal<string>('');
+  readonly simplifyForChildren = signal(false);
+  readonly testMode = signal(false);
 
   // Translation config (signals for provider/model)
   readonly translationProvider = signal<AIProvider>('ollama');
@@ -1432,6 +1498,16 @@ export class ProcessWizardComponent implements OnInit {
     this.promptText.set(textarea.value);
   }
 
+  toggleSimplifyForChildren(event: Event): void {
+    const checkbox = event.target as HTMLInputElement;
+    this.simplifyForChildren.set(checkbox.checked);
+  }
+
+  toggleTestMode(event: Event): void {
+    const checkbox = event.target as HTMLInputElement;
+    this.testMode.set(checkbox.checked);
+  }
+
   async savePrompt(): Promise<void> {
     this.savingPrompt.set(true);
     try {
@@ -1594,6 +1670,9 @@ export class ProcessWizardComponent implements OnInit {
       const isBilingual = this.translationMode === 'bilingual';
       const isArticle = this.itemType() === 'article';
       let masterJobId: string | undefined;
+      // For cleanup: always use original exported.epub, not a previously cleaned version
+      const cleanupSourcePath = this.originalEpubPath() || this.epubPath();
+      // For TTS: start with epubPath, will be updated to cleaned version after cleanup
       let currentEpubPath = this.epubPath();
 
       // Get external audiobooks directory for TTS jobs (books only, not articles)
@@ -1662,7 +1741,7 @@ export class ProcessWizardComponent implements OnInit {
           // Article cleanup uses ll-cleanup type
           const cleanupJob = await this.queueService.addJob({
             type: 'll-cleanup',
-            epubPath: currentEpubPath,
+            epubPath: cleanupSourcePath,
             projectDir: this.projectDir(),
             metadata: {
               title: 'AI Cleanup',
@@ -1695,11 +1774,14 @@ export class ProcessWizardComponent implements OnInit {
             ollamaBaseUrl: aiConfig.ollama?.baseUrl,
             claudeApiKey: aiConfig.claude?.apiKey,
             openaiApiKey: aiConfig.openai?.apiKey,
+            simplifyForChildren: this.simplifyForChildren(),
+            testMode: this.testMode(),
           };
 
           const cleanupJob = await this.queueService.addJob({
             type: 'ocr-cleanup',
-            epubPath: currentEpubPath,
+            epubPath: cleanupSourcePath,  // Always use original, not previously cleaned
+            bfpPath: this.bfpPath(),  // For saving cleanedAt timestamp
             metadata: {
               title: 'AI Cleanup',
             },
@@ -1711,8 +1793,8 @@ export class ProcessWizardComponent implements OnInit {
           if (!masterJobId) {
             masterJobId = cleanupJob.id;
           }
-          // Cleanup produces _cleaned.epub
-          currentEpubPath = currentEpubPath.replace('.epub', '_cleaned.epub');
+          // Cleanup produces _cleaned.epub from the original source
+          currentEpubPath = cleanupSourcePath.replace('.epub', '_cleaned.epub');
         }
       }
 

@@ -522,6 +522,59 @@ function buildExamplesSection(examples: DeletedBlockExample[]): string {
   return lines.join('\n');
 }
 
+/**
+ * Build the "Simplify for Children" prompt section.
+ * This instructs the AI to rewrite archaic or complex language
+ * into simple, modern English suitable for young readers (3rd grade level).
+ */
+function buildSimplifyForChildrenSection(): string {
+  const lines: string[] = [
+    '',
+    '═══════════════════════════════════════════════════════════════════════════════',
+    'SIMPLIFY FOR MODERN YOUNG AUDIENCE',
+    '═══════════════════════════════════════════════════════════════════════════════',
+    '',
+    'IMPORTANT: Rewrite this text so a child (around 8-9 years old, 3rd grade reading level) can easily understand it.',
+    '',
+    'SIMPLIFICATION RULES:',
+    '',
+    '1. VOCABULARY: Replace old-fashioned or complex words with simple modern equivalents:',
+    '   - "perpetually quarreling" → "always fighting"',
+    '   - "wrathful" → "angry"',
+    '   - "tyrannical" → "mean" or "cruel"',
+    '   - "proclamation" → "announcement"',
+    '   - "amity" → "friendship"',
+    '   - "impunity" → "safely" or "without fear"',
+    '   - "hitherto" → "until now"',
+    '   - "whence" → "from where"',
+    '   - "thereof" → "of it"',
+    '',
+    '2. SENTENCE STRUCTURE: Break long, complex sentences into shorter ones:',
+    '   - Aim for 10-15 words per sentence maximum',
+    '   - One idea per sentence',
+    '   - Use simple subject-verb-object structure',
+    '',
+    '3. KEEP THE STORY: Preserve ALL plot points, characters, dialogue, and the moral/lesson.',
+    '   Do NOT remove any story content - just make it easier to read.',
+    '',
+    '4. MAINTAIN TONE: Keep the storytelling voice. It should still sound like a fable or story,',
+    '   just in modern, accessible language.',
+    '',
+    'EXAMPLE TRANSFORMATION:',
+    '',
+    'BEFORE: "The Beasts of the field and forest had a Lion as their king. He was neither',
+    'wrathful, cruel, nor tyrannical, but just and gentle as a king could be."',
+    '',
+    'AFTER: "All the animals in the fields and forest had a Lion as their king. He was not',
+    'angry or mean. He was fair and kind—the best king there ever was."',
+    '',
+    'Remember: A third-grader should be able to read this aloud easily and understand it.',
+    ''
+  ];
+
+  return lines.join('\n');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // API Functions
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1558,6 +1611,7 @@ export async function cleanupEpub(
     parallelWorkers?: number;
     cleanupMode?: 'structure' | 'full';
     testMode?: boolean;
+    simplifyForChildren?: boolean;
   }
 ): Promise<EpubCleanupResult> {
   // Debug logging to trace provider selection
@@ -1709,6 +1763,13 @@ export async function cleanupEpub(
       const examplesSection = buildExamplesSection(options.deletedBlockExamples);
       systemPrompt = systemPrompt + examplesSection;
       console.log(`[AI-BRIDGE] Added ${options.deletedBlockExamples.length} deletion examples to system prompt`);
+    }
+
+    // Add simplify for children section if enabled
+    if (options?.simplifyForChildren) {
+      const simplifySection = buildSimplifyForChildrenSection();
+      systemPrompt = systemPrompt + simplifySection;
+      console.log('[AI-BRIDGE] Simplify for children mode ENABLED - added simplification instructions to prompt');
     }
 
     let chaptersProcessed = 0;

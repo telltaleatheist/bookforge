@@ -119,6 +119,8 @@ export interface OcrCleanupConfig {
   cleanupMode?: 'structure' | 'full';
   // Test mode: only process first 5 chunks
   testMode?: boolean;
+  // Simplify for children: rewrite archaic language for young readers
+  simplifyForChildren?: boolean;
 }
 
 // TTS Conversion job configuration
