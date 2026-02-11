@@ -22,6 +22,7 @@ import { UrlInputComponent } from './components/url-input/url-input.component';
 import { ArticlePreviewComponent } from './components/article-preview/article-preview.component';
 import { LanguageSelectorComponent } from './components/language-selector/language-selector.component';
 import { BilingualPlayerComponent } from './components/bilingual-player/bilingual-player.component';
+import { LLWizardComponent } from './components/ll-wizard/ll-wizard.component';
 
 @Component({
   selector: 'app-language-learning',
@@ -33,7 +34,8 @@ import { BilingualPlayerComponent } from './components/bilingual-player/bilingua
     UrlInputComponent,
     ArticlePreviewComponent,
     LanguageSelectorComponent,
-    BilingualPlayerComponent
+    BilingualPlayerComponent,
+    LLWizardComponent
   ],
   template: `
     <!-- Toolbar -->
@@ -573,6 +575,18 @@ import { BilingualPlayerComponent } from './components/bilingual-player/bilingua
                 />
               </div>
             </div>
+          }
+
+          @if (workflowState() === 'wizard') {
+            <!-- LL Wizard - 4-step pipeline -->
+            <app-ll-wizard
+              [projectId]="selectedProject()!.id"
+              [projectDir]="getProjectDir(selectedProject()!.id)"
+              [projectTitle]="selectedProject()!.title"
+              [initialSourceLang]="selectedProject()!.sourceLang"
+              (queued)="onWizardQueued()"
+              (back)="workflowState.set('select')"
+            />
           }
         </div>
       </desktop-split-pane>
@@ -2322,7 +2336,7 @@ Start your response with the first word of the text. No introduction.`);
     }
   }
 
-  // Save deleted blocks and continue to settings
+  // Save deleted blocks and continue to wizard
   async saveAndContinue(): Promise<void> {
     const project = this.selectedProject();
     if (project) {
@@ -2330,7 +2344,7 @@ Start your response with the first word of the text. No introduction.`);
       project.modifiedAt = new Date().toISOString();
       await this.electronService.languageLearningSaveProject(project);
       await this.loadProjects();
-      this.workflowState.set('settings');
+      this.workflowState.set('wizard');
     }
   }
 
@@ -3082,5 +3096,31 @@ Start your response with the first word of the text. No introduction.`);
   formatDate(dateStr: string): string {
     const date = new Date(dateStr);
     return date.toLocaleDateString();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Wizard Integration
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Get the project directory path for a project ID
+   */
+  getProjectDir(projectId: string): string {
+    const project = this.projects().find(p => p.id === projectId);
+    if (project?.htmlPath) {
+      // Normalize and extract directory from htmlPath
+      const htmlPathNorm = project.htmlPath.replace(/\\/g, '/');
+      return htmlPathNorm.substring(0, htmlPathNorm.lastIndexOf('/'));
+    }
+    // Fallback: construct from library path
+    return `${this.libraryService.libraryPath()}/language-learning/projects/${projectId}`;
+  }
+
+  /**
+   * Called when wizard has queued jobs
+   */
+  async onWizardQueued(): Promise<void> {
+    // Navigate to queue to see progress
+    this.router.navigate(['/queue']);
   }
 }

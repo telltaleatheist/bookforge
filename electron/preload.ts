@@ -872,6 +872,7 @@ export interface ElectronAPI {
     writeTempFile: (filename: string, data: Uint8Array) => Promise<{ success: boolean; path?: string; dataUrl?: string; error?: string }>;
     readText: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
     readAudio: (audioPath: string) => Promise<{ success: boolean; dataUrl?: string; size?: number; error?: string }>;
+    listDirectory: (dirPath: string) => Promise<string[]>;
   };
   project: {
     save: (projectData: unknown, suggestedName?: string) => Promise<ProjectSaveResult>;
@@ -1970,6 +1971,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('fs:write-text', filePath, content),
     writeTempFile: (filename: string, data: Uint8Array) =>
       ipcRenderer.invoke('fs:write-temp-file', filename, data),
+    listDirectory: (dirPath: string) =>
+      ipcRenderer.invoke('fs:list-directory', dirPath),
   },
   project: {
     save: (projectData: unknown, suggestedName?: string) =>

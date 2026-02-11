@@ -137,7 +137,21 @@ export interface CompletedAudiobook {
 // Workflow State
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type WorkflowState = 'projects' | 'fetch' | 'select' | 'settings' | 'processing' | 'player';
+export type WorkflowState = 'projects' | 'fetch' | 'select' | 'settings' | 'processing' | 'player' | 'wizard';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Available EPUB for Wizard
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AvailableEpub {
+  path: string;
+  filename: string;
+  lang: string;
+  isSource: boolean;
+  isTranslated: boolean;
+  isCleaned: boolean;
+  modifiedAt?: string;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Analytics Types

@@ -854,6 +854,17 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // List files in a directory
+  ipcMain.handle('fs:list-directory', async (_event, dirPath: string): Promise<string[]> => {
+    const fsPromises = await import('fs/promises');
+    try {
+      const entries = await fsPromises.readdir(dirPath);
+      return entries;
+    } catch {
+      return [];
+    }
+  });
+
   // Read audio file and return as data URL (for playback in renderer)
   // For large files (>100MB), returns a streaming URL via LibraryServer instead
   ipcMain.handle('fs:read-audio', async (_event, audioPath: string) => {

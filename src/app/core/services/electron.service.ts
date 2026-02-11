@@ -2703,6 +2703,16 @@ export class ElectronService {
   }
 
   /**
+   * List files in a directory
+   */
+  async listDirectory(dirPath: string): Promise<string[]> {
+    if (this.isElectron && (window as any).electron.fs) {
+      return (window as any).electron.fs.listDirectory(dirPath);
+    }
+    return [];
+  }
+
+  /**
    * Show a file in the system file manager
    */
   async showInFolder(path: string): Promise<void> {
