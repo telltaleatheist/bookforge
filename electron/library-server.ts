@@ -72,6 +72,15 @@ export class LibraryServer {
     const uiPath = path.join(__dirname, 'library-ui');
     console.log('[LibraryServer] UI path:', uiPath);
 
+    // CORS preflight for audio streaming
+    this.app.options('/api/audio', (_req: Request, res: Response) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Range');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
+      res.status(204).end();
+    });
+
     // API Routes
     this.app.get('/api/sections', this.getSections.bind(this));
     this.app.get('/api/books/:section', this.getBooks.bind(this));
@@ -449,6 +458,12 @@ export class LibraryServer {
         '.ogg': 'audio/ogg'
       };
       const contentType = contentTypes[ext] || 'audio/mp4';
+
+      // CORS headers for Electron renderer
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Range');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
 
       // Parse Range header for seeking support
       const range = req.headers.range;

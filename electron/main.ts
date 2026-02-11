@@ -873,7 +873,7 @@ function setupIpcHandlers(): void {
 
       // Check file size first
       const stats = await fs.stat(audioPath);
-      const MAX_SIZE_FOR_BASE64 = 100 * 1024 * 1024; // 100MB
+      const MAX_SIZE_FOR_BASE64 = 500 * 1024 * 1024; // 500MB - streaming has issues in Electron
 
       const ext = audioPath.toLowerCase().split('.').pop();
       const mimeType = ext === 'm4b' || ext === 'm4a' ? 'audio/mp4' : 'audio/mpeg';

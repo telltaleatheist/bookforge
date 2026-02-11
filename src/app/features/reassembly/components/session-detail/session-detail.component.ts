@@ -1221,9 +1221,20 @@ export class SessionDetailComponent {
     const session = this.session();
     if (!session) return;
 
-    // Get external audiobooks directory from settings, or fall back to library's folder
-    const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
-    const outputDir = externalDir || this.libraryService.audiobooksPath() || '';
+    // Determine output directory:
+    // 1. If session is linked to a BFP project, use the BFP folder (parent of project.json)
+    // 2. Otherwise, use external audiobooks dir from settings or library's audiobooks path
+    let outputDir = '';
+    if (session.bfpPath) {
+      // Extract the BFP folder from the project.json path
+      // bfpPath is like: /path/to/audiobooks/Book_Name/project.json
+      const bfpFolder = session.bfpPath.replace(/[/\\]project\.json$/i, '');
+      outputDir = bfpFolder;
+      console.log('[REASSEMBLY] Using BFP folder as output:', outputDir);
+    } else {
+      const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
+      outputDir = externalDir || this.libraryService.audiobooksPath() || '';
+    }
 
     // Get e2a tmp path from settings (passed to backend so it can derive app path)
     const e2aTmpPath = this.reassemblyService.e2aTmpPath();

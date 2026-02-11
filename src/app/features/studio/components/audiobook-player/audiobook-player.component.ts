@@ -794,8 +794,33 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
   }
 
   onAudioError(event: Event): void {
+    const audio = event.target as HTMLAudioElement;
+    const error = audio?.error;
     console.error('Audio error:', event);
-    this.error.set('Failed to load audio file. Make sure the file exists.');
+    console.error('Audio error code:', error?.code);
+    console.error('Audio error message:', error?.message);
+    console.error('Audio src:', audio?.src?.substring(0, 100));
+    console.error('Audio networkState:', audio?.networkState);
+    console.error('Audio readyState:', audio?.readyState);
+
+    let errorMsg = 'Failed to load audio file.';
+    if (error) {
+      switch (error.code) {
+        case MediaError.MEDIA_ERR_ABORTED:
+          errorMsg = 'Audio loading aborted.';
+          break;
+        case MediaError.MEDIA_ERR_NETWORK:
+          errorMsg = 'Network error loading audio.';
+          break;
+        case MediaError.MEDIA_ERR_DECODE:
+          errorMsg = 'Audio format not supported or file corrupted.';
+          break;
+        case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+          errorMsg = 'Audio source not supported.';
+          break;
+      }
+    }
+    this.error.set(errorMsg);
   }
 
   onSeek(event: Event): void {

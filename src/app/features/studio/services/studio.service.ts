@@ -73,10 +73,21 @@ export class StudioService {
           console.log(`[StudioService]   vttPath from BFP: ${p.vttPath}`);
           console.log(`[StudioService]   outputFilename: ${p.metadata?.outputFilename}`);
 
-          // Determine audio path - check internal audiobook folder
+          // Determine audio path - prioritize linkedAudioPath from BFP, then check for output.m4b
           let audiobookPath: string | undefined;
 
-          if (p.audiobookFolder) {
+          // First check linkedAudioPath from BFP (supports custom filenames)
+          if (p.linkedAudioPath && p.linkedAudioPathValid !== false) {
+            const translatedPath = this.translatePath(p.linkedAudioPath);
+            const linkedExists = await this.electronService.fsExists(translatedPath);
+            if (linkedExists) {
+              audiobookPath = translatedPath;
+              console.log(`[StudioService]   -> Using linkedAudioPath: ${audiobookPath}`);
+            }
+          }
+
+          // Fall back to output.m4b in audiobook folder
+          if (!audiobookPath && p.audiobookFolder) {
             // Translate path for cross-platform compatibility (Syncthing shared library)
             const folder = this.translatePath(p.audiobookFolder);
             const outputM4b = `${folder}/output.m4b`;
