@@ -788,6 +788,146 @@ export async function generateMonolingualEpub(
 }
 
 /**
+ * Chapter with sentences for EPUB generation
+ */
+export interface ChapterSentences {
+  title: string;
+  sentences: string[];
+}
+
+/**
+ * Generate EPUB with multiple chapters, each containing sentences
+ */
+export async function generateChapteredEpub(
+  chapters: ChapterSentences[],
+  bookTitle: string,
+  lang: string,
+  outputPath: string,
+  options?: { includeBookforgeMarker?: boolean }
+): Promise<string> {
+  const includeMarker = options?.includeBookforgeMarker ?? true;
+  const epubDir = path.dirname(outputPath);
+  const tempDir = path.join(epubDir, '.epub-temp-' + crypto.randomBytes(4).toString('hex'));
+
+  try {
+    await fs.mkdir(path.join(tempDir, 'META-INF'), { recursive: true });
+    await fs.mkdir(path.join(tempDir, 'OEBPS'), { recursive: true });
+
+    await fs.writeFile(path.join(tempDir, 'mimetype'), 'application/epub+zip');
+
+    await fs.writeFile(
+      path.join(tempDir, 'META-INF', 'container.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`
+    );
+
+    // Generate manifest items and spine entries for each chapter
+    const manifestItems: string[] = [];
+    const spineItems: string[] = [];
+    const navPoints: string[] = [];
+    let globalSentenceIndex = 0;
+
+    for (let i = 0; i < chapters.length; i++) {
+      const chapter = chapters[i];
+      const chapterId = `chapter${i + 1}`;
+      const chapterFile = `${chapterId}.xhtml`;
+
+      manifestItems.push(`    <item id="${chapterId}" href="${chapterFile}" media-type="application/xhtml+xml"/>`);
+      spineItems.push(`    <itemref idref="${chapterId}"/>`);
+      navPoints.push(`    <navPoint id="${chapterId}" playOrder="${i + 1}">
+      <navLabel>
+        <text>${escapeHtml(chapter.title)}</text>
+      </navLabel>
+      <content src="${chapterFile}"/>
+    </navPoint>`);
+
+      // Generate chapter HTML - one paragraph per sentence with global index
+      const chapterSentences = includeMarker && i === 0
+        ? ['bookforge.', ...chapter.sentences]
+        : chapter.sentences;
+
+      const sentencesHtml = chapterSentences.map((sentence) => {
+        const html = `<p id="s${globalSentenceIndex}">${escapeHtml(sentence)}</p>`;
+        globalSentenceIndex++;
+        return html;
+      }).join('\n');
+
+      const chapterHtml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${lang}">
+<head>
+  <meta charset="UTF-8"/>
+  <title>${escapeHtml(chapter.title)}</title>
+  <style>
+    body { font-family: Georgia, serif; line-height: 1.6; margin: 2em; }
+    p { margin-bottom: 1em; }
+    h1 { margin-bottom: 1.5em; }
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(ensureTitleEndsWithPunctuation(chapter.title))}</h1>
+  ${sentencesHtml}
+</body>
+</html>`;
+
+      await fs.writeFile(path.join(tempDir, 'OEBPS', chapterFile), chapterHtml);
+    }
+
+    const uuid = crypto.randomUUID();
+    await fs.writeFile(
+      path.join(tempDir, 'OEBPS', 'content.opf'),
+      `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">urn:uuid:${uuid}</dc:identifier>
+    <dc:title>${escapeHtml(bookTitle)}</dc:title>
+    <dc:language>${lang}</dc:language>
+    <meta property="dcterms:modified">${new Date().toISOString().slice(0, 19)}Z</meta>
+  </metadata>
+  <manifest>
+${manifestItems.join('\n')}
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+${spineItems.join('\n')}
+  </spine>
+</package>`
+    );
+
+    await fs.writeFile(
+      path.join(tempDir, 'OEBPS', 'toc.ncx'),
+      `<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta name="dtb:depth" content="1"/>
+  </head>
+  <docTitle>
+    <text>${escapeHtml(bookTitle)}</text>
+  </docTitle>
+  <navMap>
+${navPoints.join('\n')}
+  </navMap>
+</ncx>`
+    );
+
+    await createEpubZip(tempDir, outputPath);
+    const totalSentences = chapters.reduce((sum, ch) => sum + ch.sentences.length, 0);
+    console.log(`[BILINGUAL] Created chaptered EPUB with ${chapters.length} chapters, ${totalSentences} sentences: ${outputPath}`);
+    return outputPath;
+  } finally {
+    try {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
+
+/**
  * Generate separate source and target EPUBs for dual-voice TTS
  * Returns paths to both EPUBs
  */
@@ -812,8 +952,9 @@ export async function generateSeparateEpubs(
   const sourceSentences = pairs.map(p => p.source);
   const targetSentences = pairs.map(p => p.target);
 
-  const sourceEpubPath = path.join(projectDir, 'source.epub');
-  const targetEpubPath = path.join(projectDir, 'target.epub');
+  // Name EPUBs by language code (e.g., en.epub, de.epub)
+  const sourceEpubPath = path.join(projectDir, `${sourceLang}.epub`);
+  const targetEpubPath = path.join(projectDir, `${targetLang}.epub`);
 
   // Generate both EPUBs
   await generateMonolingualEpub(
@@ -1209,6 +1350,20 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+/**
+ * Ensure a chapter title ends with a period for TTS readability.
+ * TTS engines often run headings into the following text without punctuation.
+ */
+function ensureTitleEndsWithPunctuation(title: string): string {
+  const trimmed = title.trim();
+  if (!trimmed) return trimmed;
+  const lastChar = trimmed[trimmed.length - 1];
+  if (['.', '!', '?', ':', ';'].includes(lastChar)) {
+    return trimmed;
+  }
+  return trimmed + '.';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

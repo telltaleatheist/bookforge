@@ -243,8 +243,6 @@ interface ModeInfo {
                 [detecting]="detectingChapters()"
                 [finalizing]="finalizingChapters()"
                 [selectedChapterId]="editorState.selectedChapterId()"
-                [metadata]="editorState.metadata()"
-                [sourceName]="editorState.epubName()"
                 (cancel)="setMode('select')"
                 (autoDetect)="autoDetectChapters()"
                 (clearChapters)="clearChapters()"
@@ -252,8 +250,6 @@ interface ModeInfo {
                 (removeChapter)="removeChapter($event)"
                 (finalizeChapters)="finalizeChapters()"
                 (renameChapter)="renameChapter($event)"
-                (metadataChange)="onMetadataChange($event)"
-                (saveMetadata)="saveMetadata()"
               ></app-chapters-panel>
             } @else {
               <!-- Categories Panel (for select/search modes) -->

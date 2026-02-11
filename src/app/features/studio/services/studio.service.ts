@@ -73,61 +73,25 @@ export class StudioService {
           console.log(`[StudioService]   vttPath from BFP: ${p.vttPath}`);
           console.log(`[StudioService]   outputFilename: ${p.metadata?.outputFilename}`);
 
-          // Determine audio path - check multiple locations
+          // Determine audio path - check internal audiobook folder
           let audiobookPath: string | undefined;
 
-          // 1. First check linkedAudioPath (manually linked by user)
-          if (p.linkedAudioPath && p.linkedAudioPathValid !== false) {
-            audiobookPath = p.linkedAudioPath;
-            console.log(`[StudioService]   -> Found linkedAudioPath: ${audiobookPath}`);
-          }
-
-          // 1b. Try translating Windows path to Mac path
-          if (!audiobookPath && p.linkedAudioPath) {
-            const translatedPath = this.translateWindowsToMacPath(p.linkedAudioPath);
-            if (translatedPath) {
-              const translatedExists = await this.electronService.fsExists(translatedPath);
-              console.log(`[StudioService]   -> Checking translated path: ${translatedPath} exists=${translatedExists}`);
-              if (translatedExists) {
-                audiobookPath = translatedPath;
-              }
-            }
-          }
-
-          // 2. Check for output.m4b in the audiobook folder
-          if (!audiobookPath && p.audiobookFolder) {
-            const outputM4b = `${p.audiobookFolder}/output.m4b`;
+          if (p.audiobookFolder) {
+            // Translate path for cross-platform compatibility (Syncthing shared library)
+            const folder = this.translatePath(p.audiobookFolder);
+            const outputM4b = `${folder}/output.m4b`;
             const outputExists = await this.electronService.fsExists(outputM4b);
-            console.log(`[StudioService]   -> Checking output.m4b: ${outputM4b} exists=${outputExists}`);
             if (outputExists) {
               audiobookPath = outputM4b;
             }
           }
 
-          // 3. Check for file in completed folder using outputFilename
-          if (!audiobookPath && p.audiobookFolder && p.metadata?.outputFilename) {
-            const basePath = p.audiobookFolder.replace(/\\/g, '/').replace(/\/[^/]+$/, '');
-            const completedPath = `${basePath}/completed/${p.metadata.outputFilename}`;
-            const completedExists = await this.electronService.fsExists(completedPath);
-            console.log(`[StudioService]   -> Checking completed: ${completedPath} exists=${completedExists}`);
-            if (completedExists) {
-              audiobookPath = completedPath;
-            }
-          }
-
-          // VTT file - use path from BFP if available, otherwise check audiobook folder
+          // VTT file - check audiobook folder
           let vttPath: string | undefined;
-          if (p.vttPath) {
-            const vttExists = await this.electronService.fsExists(p.vttPath);
-            console.log(`[StudioService]   -> Checking BFP vttPath: ${p.vttPath} exists=${vttExists}`);
-            if (vttExists) {
-              vttPath = p.vttPath;
-            }
-          }
-          if (!vttPath && p.audiobookFolder) {
-            const vttFile = `${p.audiobookFolder}/subtitles.vtt`;
+          if (p.audiobookFolder) {
+            const folder = this.translatePath(p.audiobookFolder);
+            const vttFile = `${folder}/subtitles.vtt`;
             const vttExists = await this.electronService.fsExists(vttFile);
-            console.log(`[StudioService]   -> Checking folder vtt: ${vttFile} exists=${vttExists}`);
             if (vttExists) {
               vttPath = vttFile;
             }
@@ -165,7 +129,9 @@ export class StudioService {
             type: 'book' as StudioItemType,
             title: p.metadata?.title || p.name || 'Untitled',
             author: p.metadata?.author,
-            status: this.mapBookStatus(p),
+            year: p.metadata?.year,
+            language: p.metadata?.language,
+            status: this.mapBookStatus(audiobookPath, !!p.cleanedAt),
             createdAt: p.exportedAt || new Date().toISOString(),
             modifiedAt: p.cleanedAt || p.exportedAt || new Date().toISOString(),
             epubPath: p.audiobookFolder ? `${p.audiobookFolder}/exported.epub` : undefined,
@@ -253,10 +219,12 @@ export class StudioService {
 
   /**
    * Map book project state to unified status
+   * @param audiobookPath - The resolved audiobook path (computed during loading)
+   * @param hasCleaned - Whether the book has been through AI cleanup
    */
-  private mapBookStatus(project: any): StudioItem['status'] {
-    if (project.audiobookPath) return 'completed';
-    if (project.hasCleaned) return 'ready';
+  private mapBookStatus(audiobookPath?: string, hasCleaned?: boolean): StudioItem['status'] {
+    if (audiobookPath) return 'completed';
+    if (hasCleaned) return 'ready';
     return 'draft';
   }
 
@@ -284,6 +252,7 @@ export class StudioService {
 
   /**
    * Add book from EPUB file
+   * Creates a BFP project file and audiobook folder for the EPUB
    */
   async addBook(epubPath: string): Promise<{ success: boolean; item?: StudioItem; error?: string }> {
     if (!this.electronService.isRunningInElectron) {
@@ -291,11 +260,8 @@ export class StudioService {
     }
 
     try {
-      // Extract filename from path
-      const filename = epubPath.replace(/\\/g, '/').split('/').pop() || 'unknown.epub';
-
-      // Copy EPUB to queue folder
-      const result = await this.electronService.copyToAudiobookQueue(epubPath, filename);
+      // Import EPUB - this creates both a BFP file and audiobook folder
+      const result = await this.electronService.audiobookImportEpub(epubPath);
 
       if (!result.success) {
         return { success: false, error: result.error || 'Failed to import EPUB' };
@@ -304,10 +270,8 @@ export class StudioService {
       // Reload books to get the new item
       await this.loadBooks();
 
-      // Find the newly added book (by filename match)
-      const newBook = this._books().find(b =>
-        b.epubPath?.endsWith(filename) || b.title === filename.replace('.epub', '')
-      );
+      // Find the newly added book by BFP path
+      const newBook = this._books().find(b => b.bfpPath === result.bfpPath);
 
       if (newBook) {
         return { success: true, item: newBook };
@@ -449,7 +413,9 @@ export class StudioService {
   }
 
   /**
-   * Delete an item
+   * Delete an item (book or article)
+   * For books: deletes BFP file, audiobook folder, backup file, and clears cache
+   * For articles: deletes project folder
    */
   async deleteItem(id: string): Promise<{ success: boolean; error?: string }> {
     const book = this._books().find(b => b.id === id);
@@ -457,12 +423,13 @@ export class StudioService {
 
     if (book && book.bfpPath) {
       try {
-        // Delete book project using ElectronService
-        const result = await this.electronService.deleteAudiobookProject(book.bfpPath);
+        // Delete book project using projects:delete handler
+        // This properly deletes: BFP file, audiobook folder, .bak file, and clears cache
+        const result = await this.electronService.projectsDelete([book.bfpPath]);
         if (result.success) {
           this._books.update(books => books.filter(b => b.id !== id));
         }
-        return result;
+        return { success: result.success, error: result.error };
       } catch (e) {
         return { success: false, error: (e as Error).message };
       }
@@ -495,6 +462,52 @@ export class StudioService {
       await this.loadBooks();
     } else if (article) {
       await this.loadArticles();
+    }
+  }
+
+  /**
+   * Update book metadata (saves to BFP file and updates local state)
+   */
+  async updateBookMetadata(
+    id: string,
+    metadata: {
+      title?: string;
+      author?: string;
+      year?: string;
+      language?: string;
+      coverPath?: string;
+      coverData?: string;
+    }
+  ): Promise<{ success: boolean; error?: string }> {
+    const book = this._books().find(b => b.id === id);
+    if (!book || !book.bfpPath) {
+      return { success: false, error: 'Book not found' };
+    }
+
+    try {
+      // Save to BFP file
+      const result = await this.electronService.projectUpdateMetadata(book.bfpPath, metadata);
+
+      if (!result.success) {
+        return result;
+      }
+
+      // Update local state immediately with all metadata fields
+      this._books.update(books =>
+        books.map(b => b.id === id ? {
+          ...b,
+          title: metadata.title ?? b.title,
+          author: metadata.author ?? b.author,
+          year: metadata.year ?? b.year,
+          language: metadata.language ?? b.language,
+          coverData: metadata.coverData ?? b.coverData,
+          modifiedAt: new Date().toISOString()
+        } : b)
+      );
+
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: (e as Error).message };
     }
   }
 
@@ -538,23 +551,24 @@ export class StudioService {
   }
 
   /**
-   * Translate Windows path to Mac path
-   * E:\books\... -> /Volumes/Callisto/books/...
-   * E:\Shared\... -> /Volumes/Callisto/Shared/...
+   * Translate path for cross-platform compatibility (Syncthing shared library)
+   * Windows: E:\Shared\BookForge\... <-> Mac: /Volumes/Callisto/Shared/BookForge/...
    */
-  private translateWindowsToMacPath(windowsPath: string): string | null {
-    if (!windowsPath) return null;
+  private translatePath(inputPath: string): string {
+    if (!inputPath) return inputPath;
 
-    // Check if it's a Windows path (starts with drive letter)
-    const driveMatch = windowsPath.match(/^([A-Z]):\\/i);
-    if (!driveMatch) return null;
+    const isMac = navigator.platform.toLowerCase().includes('mac');
+    const isWindowsPath = /^[A-Z]:\\/i.test(inputPath);
+    const isMacPath = inputPath.startsWith('/Volumes/');
 
-    // Convert backslashes to forward slashes and remove drive letter
-    // E:\books\file.m4b -> /Volumes/Callisto/books/file.m4b
-    const pathWithoutDrive = windowsPath.substring(2).replace(/\\/g, '/');
-    const macPath = `/Volumes/Callisto${pathWithoutDrive}`;
+    if (isMac && isWindowsPath) {
+      // Windows path on Mac: E:\Shared\... -> /Volumes/Callisto/Shared/...
+      return `/Volumes/Callisto${inputPath.substring(2).replace(/\\/g, '/')}`;
+    } else if (!isMac && isMacPath) {
+      // Mac path on Windows: /Volumes/Callisto/Shared/... -> E:\Shared\...
+      return `E:${inputPath.replace('/Volumes/Callisto', '').replace(/\//g, '\\')}`;
+    }
 
-    console.log(`[StudioService] Translated path: ${windowsPath} -> ${macPath}`);
-    return macPath;
+    return inputPath;
   }
 }

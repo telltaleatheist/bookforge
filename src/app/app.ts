@@ -110,20 +110,16 @@ export class App implements OnInit {
   readonly libraryService = inject(LibraryService);
   private readonly router = inject(Router);
 
-  // Hide nav rail for standalone popup windows (alignment, etc.)
+  // Hide nav rail for standalone popup windows (alignment, editor, etc.)
+  // Use window.location.pathname for immediate check on window load
   readonly isStandaloneWindow = computed(() => {
-    const url = this.router.url;
-    return url.startsWith('/alignment');
+    const pathname = window.location.pathname;
+    return pathname.startsWith('/alignment') || pathname.startsWith('/editor');
   });
 
   // Navigation items for the nav rail
+  // Library was removed (Feb 2025) - Studio is now the main entry point
   readonly navItems: NavRailItem[] = [
-    {
-      id: 'library',
-      icon: '\u{1F4DA}', // Books emoji
-      label: 'Library',
-      route: '/library'
-    },
     {
       id: 'studio',
       icon: '\u{1F3A7}', // Headphones emoji

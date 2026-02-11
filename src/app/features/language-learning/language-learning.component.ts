@@ -510,12 +510,49 @@ import { BilingualPlayerComponent } from './components/bilingual-player/bilingua
                   </div>
                 </div>
 
+                <!-- Test Mode Section -->
+                <div class="settings-section">
+                  <h3>Test Mode</h3>
+                  <button
+                    class="option-toggle"
+                    [class.active]="testMode()"
+                    (click)="testMode.set(!testMode())"
+                  >
+                    <span class="toggle-icon">🧪</span>
+                    <span class="toggle-label">Test mode</span>
+                    <span class="toggle-sublabel">First {{ testModeChunks() }} sentences only</span>
+                  </button>
+                  @if (testMode()) {
+                    <div class="test-mode-config">
+                      <label>Sentences to process:</label>
+                      <div class="chunk-options">
+                        @for (count of [3, 5, 10, 20]; track count) {
+                          <button
+                            class="chunk-option"
+                            [class.selected]="testModeChunks() === count"
+                            (click)="testModeChunks.set(count)"
+                          >
+                            {{ count }}
+                          </button>
+                        }
+                      </div>
+                    </div>
+                  }
+                  <p class="settings-hint">
+                    Process only a few sentences to test translation and voice quality.
+                  </p>
+                </div>
+
                 <div class="action-bar settings-actions">
                   <button class="btn-secondary" (click)="setWorkflowState('select')">
                     Back
                   </button>
                   <button class="btn-primary" (click)="startProcessing()">
-                    Add to Queue
+                    @if (testMode()) {
+                      Add Test Job ({{ testModeChunks() }} sentences)
+                    } @else {
+                      Add to Queue
+                    }
                   </button>
                 </div>
               </div>
@@ -1096,6 +1133,102 @@ import { BilingualPlayerComponent } from './components/bilingual-player/bilingua
       .settings-note {
         font-size: 13px;
         margin-bottom: 12px;
+      }
+
+      .settings-hint {
+        font-size: 12px;
+        color: var(--text-tertiary);
+        margin-top: 8px;
+      }
+    }
+
+    .option-toggle {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      width: 100%;
+      padding: 16px;
+      background: var(--bg-subtle);
+      border: 2px solid var(--border-subtle);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s;
+
+      .toggle-icon {
+        font-size: 24px;
+      }
+
+      .toggle-label {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-secondary);
+      }
+
+      .toggle-sublabel {
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      &:hover:not(.active) {
+        border-color: var(--border-default);
+        background: var(--bg-hover);
+      }
+
+      &.active {
+        border-color: #06b6d4;
+        background: color-mix(in srgb, #06b6d4 10%, var(--bg-subtle));
+
+        .toggle-label {
+          color: #06b6d4;
+        }
+
+        .toggle-sublabel {
+          color: #06b6d4;
+          opacity: 0.8;
+        }
+      }
+    }
+
+    .test-mode-config {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 12px;
+      padding: 12px;
+      background: var(--bg-subtle);
+      border-radius: 6px;
+
+      label {
+        font-size: 12px;
+        color: var(--text-secondary);
+        white-space: nowrap;
+      }
+    }
+
+    .chunk-options {
+      display: flex;
+      gap: 6px;
+    }
+
+    .chunk-option {
+      padding: 6px 10px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.15s;
+
+      &:hover {
+        border-color: var(--border-hover);
+      }
+
+      &.selected {
+        border-color: #06b6d4;
+        background: color-mix(in srgb, #06b6d4 15%, var(--bg-elevated));
+        color: #06b6d4;
       }
     }
 
@@ -1974,6 +2107,10 @@ export class LanguageLearningComponent implements OnInit, OnDestroy {
   // Alignment Settings
   readonly autoApproveAlignment = signal<boolean>(true); // Skip preview if counts match
 
+  // Test Mode Settings (only process first X sentences)
+  readonly testMode = signal<boolean>(false);
+  readonly testModeChunks = signal<number>(5);
+
   // Sentence Splitting Settings
   readonly splitGranularity = signal<'sentence' | 'paragraph'>('sentence');
 
@@ -2506,28 +2643,15 @@ Start your response with the first word of the text. No introduction.`);
 
       // Create master workflow job first (container for all steps)
       const masterJob = await this.queueService.addJob({
-        type: 'language-learning',
+        type: 'audiobook',
         epubPath: project.htmlPath,
         projectDir,
         workflowId,
         metadata: {
-          title: project.title
+          title: `${project.title} [Bilingual]`
         },
         config: {
-          type: 'language-learning',
-          projectId: project.id,
-          sourceUrl: project.sourceUrl,
-          sourceLang: project.sourceLang,
-          targetLang: project.targetLang,
-          htmlPath: project.htmlPath,
-          deletedBlockIds: project.deletedSelectors || [],
-          ...aiCommonConfig,
-          sourceVoice: this.selectedVoice,
-          targetVoice: this.selectedVoice,
-          ttsEngine: this.selectedEngine(),
-          sourceTtsSpeed: this.sourceTtsSpeed(),
-          targetTtsSpeed: this.targetTtsSpeed(),
-          device: this.selectedDevice()
+          type: 'audiobook'
         }
       });
       const masterJobId = masterJob.id;
@@ -2536,7 +2660,7 @@ Start your response with the first word of the text. No introduction.`);
       if (this.enableCleanup()) {
         // Job 1: AI Cleanup (child of master)
         await this.queueService.addJob({
-          type: 'll-cleanup',
+          type: 'bilingual-cleanup',
           epubPath: project.htmlPath,
           projectDir,
           workflowId,
@@ -2545,10 +2669,9 @@ Start your response with the first word of the text. No introduction.`);
             title: 'AI Cleanup'
           },
           config: {
-            type: 'll-cleanup',
+            type: 'bilingual-cleanup',
             projectId: project.id,
             projectDir,
-            // inputText removed - ll-cleanup reads from article.epub
             sourceLang: project.sourceLang,
             ...aiCommonConfig,
             cleanupPrompt: this.cleanupPrompt()
@@ -2557,7 +2680,7 @@ Start your response with the first word of the text. No introduction.`);
 
         // Job 2: Translation (child of master) - uses cleaned.epub from cleanup
         await this.queueService.addJob({
-          type: 'll-translation',
+          type: 'bilingual-translation',
           epubPath: project.htmlPath,
           projectDir,
           workflowId,
@@ -2566,7 +2689,7 @@ Start your response with the first word of the text. No introduction.`);
             title: 'Translation'
           },
           config: {
-            type: 'll-translation',
+            type: 'bilingual-translation',
             projectId: project.id,
             projectDir,
             cleanedEpubPath,  // Uses cleaned.epub created by cleanup
@@ -2576,14 +2699,17 @@ Start your response with the first word of the text. No introduction.`);
             ...aiCommonConfig,
             translationPrompt: this.translationPrompt(),
             autoApproveAlignment: this.autoApproveAlignment(),
-            splitGranularity: this.splitGranularity()
+            splitGranularity: this.splitGranularity(),
+            // Test mode options
+            testMode: this.testMode(),
+            testModeChunks: this.testMode() ? this.testModeChunks() : undefined
           }
         });
       } else {
         // No cleanup - translation reads directly from article.epub
         // Job 1: Translation only (child of master)
         await this.queueService.addJob({
-          type: 'll-translation',
+          type: 'bilingual-translation',
           epubPath: project.htmlPath,
           projectDir,
           workflowId,
@@ -2592,7 +2718,7 @@ Start your response with the first word of the text. No introduction.`);
             title: 'Translation'
           },
           config: {
-            type: 'll-translation',
+            type: 'bilingual-translation',
             projectId: project.id,
             projectDir,
             cleanedEpubPath: articleEpubPath,  // Uses article.epub directly when cleanup skipped
@@ -2602,7 +2728,10 @@ Start your response with the first word of the text. No introduction.`);
             ...aiCommonConfig,
             translationPrompt: this.translationPrompt(),
             autoApproveAlignment: this.autoApproveAlignment(),
-            splitGranularity: this.splitGranularity()
+            splitGranularity: this.splitGranularity(),
+            // Test mode options
+            testMode: this.testMode(),
+            testModeChunks: this.testMode() ? this.testModeChunks() : undefined
           }
         });
       }

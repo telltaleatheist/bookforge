@@ -5,7 +5,7 @@
 import { AIProvider } from '../../../core/models/ai-config.types';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'resemble-enhance' | 'language-learning' | 'll-cleanup' | 'll-translation' | 'bilingual-assembly' | 'audiobook';
+export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'resemble-enhance' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'audiobook';
 
 // Job status
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
@@ -90,7 +90,7 @@ export interface QueueJob {
 }
 
 // Job configuration union type
-export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | LanguageLearningJobConfig | LLCleanupJobConfig | LLTranslationJobConfig | BilingualAssemblyJobConfig | AudiobookJobConfig;
+export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | AudiobookJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -119,7 +119,9 @@ export interface OcrCleanupConfig {
   cleanupMode?: 'structure' | 'full';
   // Test mode: only process first 5 chunks
   testMode?: boolean;
-  // Simplify for children: rewrite archaic language for young readers
+  // Enable standard AI cleanup (OCR fixes, formatting)
+  enableAiCleanup?: boolean;
+  // Simplify for modern audience: rewrite archaic language for young readers
   simplifyForChildren?: boolean;
 }
 
@@ -161,6 +163,11 @@ export interface TtsConversionConfig {
   sentencePerParagraph?: boolean;
   // Skip reading heading tags (h1-h4) as chapter titles (for bilingual EPUBs)
   skipHeadings?: boolean;
+  // Audio caching for cached-language TTS (bilingual tab)
+  // When set, audio files are copied to this folder after TTS completes
+  cacheAudioTo?: string;  // e.g., 'audiobooks/book/audio/en'
+  // Language code for cache metadata (needed for updating sentence cache JSON)
+  cacheLanguage?: string;  // e.g., 'en'
 }
 
 // Translation job configuration (auto-detects source language)
@@ -211,47 +218,9 @@ export interface ResembleEnhanceJobConfig {
   replaceOriginal?: boolean;   // Default: true for books, configurable for standalone
 }
 
-// Language Learning job configuration - bilingual audiobook generation
-export interface LanguageLearningJobConfig {
-  type: 'language-learning';
-  projectId: string;
-  sourceUrl: string;
-  sourceLang: string;          // e.g., 'en'
-  targetLang?: string;         // e.g., 'de' (legacy single language)
-  targetLangs?: string[];      // e.g., ['de', 'ko'] (multi-language support)
-  htmlPath: string;            // Path to source HTML
-  pdfPath?: string;            // Path to generated PDF (optional)
-  deletedBlockIds: string[];   // Blocks to exclude
-  title?: string;              // Article title
-
-  // AI settings
-  aiProvider: AIProvider;
-  aiModel: string;
-  ollamaBaseUrl?: string;
-  claudeApiKey?: string;
-  openaiApiKey?: string;
-
-  // AI prompt settings
-  translationPrompt?: string;  // Custom translation prompt template
-  enableCleanup?: boolean;     // Whether to run cleanup before translation
-  cleanupPrompt?: string;      // Custom cleanup prompt template
-
-  // TTS settings
-  sourceVoice: string;         // Voice for source language
-  targetVoice: string;         // Voice for target language
-  ttsEngine: 'xtts' | 'orpheus';
-  sourceTtsSpeed: number;      // TTS speed for source language (0.5 - 2.0)
-  targetTtsSpeed: number;      // TTS speed for target language (0.5 - 2.0)
-  device: 'gpu' | 'mps' | 'cpu';
-  workerCount?: number;        // Number of parallel TTS workers
-
-  // Alignment verification settings
-  autoAcceptResults?: boolean; // Auto-continue to TTS if sentences match (still shows preview)
-}
-
-// Language Learning Cleanup job configuration - AI cleanup of extracted text
-export interface LLCleanupJobConfig {
-  type: 'll-cleanup';
+// Bilingual Cleanup job configuration - AI cleanup of extracted text
+export interface BilingualCleanupJobConfig {
+  type: 'bilingual-cleanup';
   projectId: string;
   projectDir: string;          // Path to project directory (reads from article.epub)
   sourceLang: string;          // Source language code
@@ -265,15 +234,15 @@ export interface LLCleanupJobConfig {
   cleanupPrompt?: string;      // Custom cleanup prompt template
 }
 
-// Sentence splitting granularity for language learning
+// Sentence splitting granularity for bilingual processing
 export type SplitGranularity = 'sentence' | 'paragraph';
 
-// Language Learning Translation job configuration - translate and create EPUB
-export interface LLTranslationJobConfig {
-  type: 'll-translation';
-  projectId: string;
-  projectDir: string;          // Path to project directory
-  cleanedEpubPath: string;     // Path to cleaned.epub from cleanup step
+// Bilingual Translation job configuration - translate and create EPUB
+export interface BilingualTranslationJobConfig {
+  type: 'bilingual-translation';
+  projectId?: string;           // Optional for mono translation
+  projectDir?: string;          // Path to project directory (optional for mono)
+  cleanedEpubPath?: string;     // Path to cleaned.epub from cleanup step (optional - uses epubPath if not set)
   sourceLang: string;
   targetLang: string;
   title?: string;
@@ -290,7 +259,15 @@ export interface LLTranslationJobConfig {
   autoApproveAlignment?: boolean;  // Skip preview if sentence counts match (default: true)
 
   // Sentence splitting granularity
-  splitGranularity?: SplitGranularity;  // 'punctuation' (most), 'sentence' (default), 'paragraph' (least)
+  splitGranularity?: SplitGranularity;  // 'sentence' (default), 'paragraph' (fewer segments)
+
+  // Test mode - limit sentences for faster testing
+  testMode?: boolean;
+  testModeChunks?: number;  // Number of chunks to process in test mode
+
+  // Mono translation - full book translation to single language (not bilingual interleave)
+  // When true, translates entire book and outputs _translated.epub
+  monoTranslation?: boolean;
 }
 
 // Bilingual Assembly job configuration - combines dual-voice TTS outputs
@@ -310,6 +287,12 @@ export interface BilingualAssemblyJobConfig {
   title?: string;              // Book/article title for naming
   // BFP path for saving bilingual audio path to book project
   bfpPath?: string;
+  // Assembly pattern for cached audio (interleaved or sequential)
+  pattern?: 'interleaved' | 'sequential';
+  // Use cached audio directories (from audiobooks/{book}/audio/{lang}/)
+  useCachedAudio?: boolean;
+  // Audiobook folder for cached audio lookup
+  audiobookFolder?: string;
 }
 
 // Audiobook job configuration - master container for audiobook production workflows
@@ -471,13 +454,13 @@ export interface AudiobookMetadata {
 export interface CreateJobRequest {
   type: JobType;
   epubPath?: string;  // Optional for bilingual-assembly and audiobook jobs
-  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | LanguageLearningJobConfig | LLCleanupJobConfig | LLTranslationJobConfig | BilingualAssemblyJobConfig | AudiobookJobConfig>;
+  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | AudiobookJobConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;
   // BFP project path for analytics saving
   bfpPath?: string;
-  // Language learning project directory
+  // Bilingual project directory
   projectDir?: string;
   // Job grouping for multi-step workflows
   parentJobId?: string;

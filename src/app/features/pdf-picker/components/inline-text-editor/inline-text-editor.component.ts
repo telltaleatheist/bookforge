@@ -1,6 +1,8 @@
-import { Component, Input, Output, EventEmitter, ElementRef, ViewChild, AfterViewInit, OnDestroy, HostListener } from '@angular/core';
+import { Component, Input, Output, EventEmitter, ElementRef, ViewChild, AfterViewInit, OnDestroy, HostListener, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { Subject, fromEvent, merge } from 'rxjs';
+import { takeUntil, filter } from 'rxjs/operators';
 
 export interface TextEditResult {
   blockId: string;
@@ -269,9 +271,15 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
   private resizeStartLeft: number = 0;
   private resizeStartTop: number = 0;
 
+  // RxJS subjects for cleanup
+  private destroy$ = new Subject<void>();
+  private resizeStop$ = new Subject<void>();
+
   // Minimum dimensions
   private readonly MIN_WIDTH = 100;
   private readonly MIN_HEIGHT = 40;
+
+  constructor(private cdr: ChangeDetectorRef) {}
 
   get hasCorrection(): boolean {
     return this.correctedText !== null && this.correctedText !== this.originalText;
@@ -345,8 +353,10 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
     if (!this.isClosing) {
       this.cancel();
     }
-    // Clean up any lingering event listeners
+    // Clean up RxJS subscriptions
     this.stopResize();
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 
   @HostListener('document:keydown', ['$event'])
@@ -377,7 +387,7 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
     }, 200);
   }
 
-  // Resize handling
+  // Resize handling using RxJS
   startResize(event: MouseEvent, handle: ResizeHandle): void {
     event.preventDefault();
     event.stopPropagation();
@@ -390,54 +400,69 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
     this.resizeStartLeft = this.currentX;
     this.resizeStartTop = this.currentY;
 
-    // Add global listeners
-    document.addEventListener('mousemove', this.onResizeMove);
-    document.addEventListener('mouseup', this.onResizeEnd);
+    // Mouse move - track position
+    fromEvent<MouseEvent>(document, 'mousemove')
+      .pipe(takeUntil(this.resizeStop$))
+      .subscribe((e) => {
+        if (!this.resizing) return;
+
+        const deltaX = e.clientX - this.resizeStartX;
+        const deltaY = e.clientY - this.resizeStartY;
+
+        let newWidth = this.resizeStartWidth;
+        let newHeight = this.resizeStartHeight;
+        let newX = this.resizeStartLeft;
+        let newY = this.resizeStartTop;
+
+        // Handle horizontal resize
+        if (this.resizing!.includes('e')) {
+          newWidth = Math.max(this.MIN_WIDTH, this.resizeStartWidth + deltaX);
+        } else if (this.resizing!.includes('w')) {
+          const widthChange = Math.min(deltaX, this.resizeStartWidth - this.MIN_WIDTH);
+          newWidth = this.resizeStartWidth - widthChange;
+          newX = this.resizeStartLeft + widthChange;
+        }
+
+        // Handle vertical resize
+        if (this.resizing!.includes('s')) {
+          newHeight = Math.max(this.MIN_HEIGHT, this.resizeStartHeight + deltaY);
+        } else if (this.resizing!.includes('n')) {
+          const heightChange = Math.min(deltaY, this.resizeStartHeight - this.MIN_HEIGHT);
+          newHeight = this.resizeStartHeight - heightChange;
+          newY = this.resizeStartTop + heightChange;
+        }
+
+        this.currentWidth = newWidth;
+        this.currentHeight = newHeight;
+        this.currentX = newX;
+        this.currentY = newY;
+        this.cdr.detectChanges();
+      });
+
+    // All the ways resizing can end
+    merge(
+      fromEvent(document, 'mouseup'),
+      fromEvent(document, 'pointerup'),
+      fromEvent(window, 'blur'),
+      fromEvent(document, 'visibilitychange').pipe(
+        filter(() => document.hidden)
+      ),
+      fromEvent<MouseEvent>(document, 'mouseleave').pipe(
+        filter((e) => e.relatedTarget === null)
+      )
+    )
+      .pipe(takeUntil(this.resizeStop$))
+      .subscribe(() => {
+        this.stopResize();
+      });
   }
 
-  private onResizeMove = (event: MouseEvent): void => {
-    if (!this.resizing) return;
-
-    const deltaX = event.clientX - this.resizeStartX;
-    const deltaY = event.clientY - this.resizeStartY;
-
-    let newWidth = this.resizeStartWidth;
-    let newHeight = this.resizeStartHeight;
-    let newX = this.resizeStartLeft;
-    let newY = this.resizeStartTop;
-
-    // Handle horizontal resize
-    if (this.resizing.includes('e')) {
-      newWidth = Math.max(this.MIN_WIDTH, this.resizeStartWidth + deltaX);
-    } else if (this.resizing.includes('w')) {
-      const widthChange = Math.min(deltaX, this.resizeStartWidth - this.MIN_WIDTH);
-      newWidth = this.resizeStartWidth - widthChange;
-      newX = this.resizeStartLeft + widthChange;
-    }
-
-    // Handle vertical resize
-    if (this.resizing.includes('s')) {
-      newHeight = Math.max(this.MIN_HEIGHT, this.resizeStartHeight + deltaY);
-    } else if (this.resizing.includes('n')) {
-      const heightChange = Math.min(deltaY, this.resizeStartHeight - this.MIN_HEIGHT);
-      newHeight = this.resizeStartHeight - heightChange;
-      newY = this.resizeStartTop + heightChange;
-    }
-
-    this.currentWidth = newWidth;
-    this.currentHeight = newHeight;
-    this.currentX = newX;
-    this.currentY = newY;
-  };
-
-  private onResizeEnd = (): void => {
-    this.stopResize();
-  };
-
   private stopResize(): void {
-    this.resizing = null;
-    document.removeEventListener('mousemove', this.onResizeMove);
-    document.removeEventListener('mouseup', this.onResizeEnd);
+    if (this.resizing) {
+      this.resizing = null;
+      this.resizeStop$.next();
+      this.cdr.detectChanges();
+    }
   }
 
   resetSize(): void {

@@ -493,6 +493,12 @@ interface EditState {
 
       // Use ::ng-deep to style innerHTML content (not scoped by Angular)
       ::ng-deep {
+        .text-editable,
+        .text-change {
+          // Ensure whitespace is preserved within spans
+          white-space: pre-wrap;
+        }
+
         .text-editable {
           cursor: text;
           border-radius: 2px;
@@ -727,12 +733,12 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
         // Editing state - will be replaced by overlay
         html += `<span class="text-editing-placeholder" data-segment-id="${this.escapeHtml(segment.id)}">...</span>`;
       } else if (segment.type === 'unchanged') {
-        html += `<span class="text-editable" data-segment-id="${this.escapeHtml(segment.id)}">${this.escapeHtml(segment.text)}</span>`;
+        html += `<span class="text-editable" data-segment-id="${this.escapeHtml(segment.id)}">${this.escapeHtml(segment.text, true)}</span>`;
       } else {
         const deletionClass = segment.text === '(deleted)' ? ' is-deletion' : '';
         const displayText = segment.text === '(deleted)'
           ? '<span class="deletion-marker">&#9003;</span>'
-          : this.escapeHtml(segment.text);
+          : this.escapeHtml(segment.text, true);
         // Store original text in data attribute for hover box
         const originalAttr = segment.originalText
           ? ` data-original="${this.escapeAttr(segment.originalText)}" data-new-text="${this.escapeAttr(segment.text)}"`
@@ -750,12 +756,19 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
     return this.sanitizer.bypassSecurityTrustHtml(html);
   });
 
-  private escapeHtml(text: string): string {
-    return text
+  private escapeHtml(text: string, preserveNewlines = false): string {
+    let escaped = text
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+
+    // Convert newlines to <br> for proper HTML rendering
+    if (preserveNewlines) {
+      escaped = escaped.replace(/\n/g, '<br>');
+    }
+
+    return escaped;
   }
 
   private escapeAttr(text: string): string {

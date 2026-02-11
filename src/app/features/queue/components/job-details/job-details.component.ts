@@ -6,7 +6,7 @@ import { Component, input, output, computed, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { QueueJob, OcrCleanupConfig, TtsConversionConfig, LanguageLearningJobConfig } from '../../models/queue.types';
+import { QueueJob, OcrCleanupConfig, TtsConversionConfig, BilingualTranslationJobConfig } from '../../models/queue.types';
 import { QueueService } from '../../services/queue.service';
 
 @Component({
@@ -71,28 +71,31 @@ import { QueueService } from '../../services/queue.service';
           } @else if (selectedJob.type === 'tts-conversion') {
             <span class="type-icon">&#127911;</span>
             <span class="type-label">TTS Conversion</span>
-          } @else if (selectedJob.type === 'language-learning') {
+          } @else if (selectedJob.type === 'bilingual-cleanup') {
+            <span class="type-icon">&#128221;</span>
+            <span class="type-label">Bilingual Cleanup</span>
+          } @else if (selectedJob.type === 'bilingual-translation') {
             <span class="type-icon">&#127760;</span>
-            <span class="type-label">Language Learning</span>
+            <span class="type-label">Bilingual Translation</span>
           } @else if (selectedJob.type === 'bilingual-assembly') {
             <span class="type-icon">&#127925;</span>
             <span class="type-label">Bilingual Assembly</span>
           }
         </div>
 
-        <!-- Language Learning Settings -->
-        @if (isLanguageLearningConfig(selectedJob.config)) {
+        <!-- Bilingual Translation Settings -->
+        @if (isBilingualTranslationConfig(selectedJob.config)) {
           <div class="info-section">
             <h4>Alignment Settings</h4>
             <div class="checkbox-row">
               <label class="checkbox-label">
                 <input
                   type="checkbox"
-                  [checked]="selectedJob.config.autoAcceptResults !== false"
-                  (change)="onAutoAcceptChange(selectedJob, $event)"
+                  [checked]="selectedJob.config.autoApproveAlignment !== false"
+                  (change)="onAutoApproveAlignmentChange(selectedJob, $event)"
                   [disabled]="selectedJob.status !== 'pending'"
                 >
-                <span class="checkbox-text">Auto-accept if aligned</span>
+                <span class="checkbox-text">Auto-approve if aligned</span>
               </label>
               <span class="checkbox-hint">
                 When checked, TTS starts automatically if sentence counts match.
@@ -502,13 +505,13 @@ export class JobDetailsComponent {
     return config?.type === 'tts-conversion';
   }
 
-  isLanguageLearningConfig(config: any): config is LanguageLearningJobConfig {
-    return config?.type === 'language-learning';
+  isBilingualTranslationConfig(config: any): config is BilingualTranslationJobConfig {
+    return config?.type === 'bilingual-translation';
   }
 
-  onAutoAcceptChange(job: QueueJob, event: Event): void {
+  onAutoApproveAlignmentChange(job: QueueJob, event: Event): void {
     const checked = (event.target as HTMLInputElement).checked;
-    this.queueService.updateJobConfig(job.id, { autoAcceptResults: checked });
+    this.queueService.updateJobConfig(job.id, { autoApproveAlignment: checked });
   }
 
   formatProvider(provider: string): string {

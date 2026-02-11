@@ -373,13 +373,8 @@ interface DragState {
         color: var(--accent);
       }
 
-      &.language-learning {
-        background: color-mix(in srgb, #8b5cf6 20%, transparent);
-        color: #a78bfa;
-      }
-
-      &.ll-cleanup,
-      &.ll-translation {
+      &.bilingual-cleanup,
+      &.bilingual-translation {
         background: color-mix(in srgb, var(--info) 15%, transparent);
         color: var(--info);
       }
@@ -599,14 +594,12 @@ export class JobListComponent {
         return 'Reassembly';
       case 'resemble-enhance':
         return 'Enhance';
-      case 'language-learning':
-        return 'LL';
-      case 'll-cleanup':
-        return 'LL Cleanup';
-      case 'll-translation':
-        return 'LL Translate';
+      case 'bilingual-cleanup':
+        return 'Bilingual Cleanup';
+      case 'bilingual-translation':
+        return 'Bilingual Translate';
       case 'bilingual-assembly':
-        return 'Assembly';
+        return 'Bilingual Assembly';
       default:
         return type;
     }

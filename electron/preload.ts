@@ -903,6 +903,14 @@ export interface ElectronAPI {
     import: () => Promise<ProjectsImportResult>;
     export: (projectPath: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     loadFromPath: (filePath: string) => Promise<ProjectLoadResult>;
+    finalize: (bfpPath: string) => Promise<{ success: boolean; epubPath?: string; error?: string }>;
+    migrateAll: () => Promise<{
+      success: boolean;
+      migrated: string[];
+      skipped: string[];
+      failed: Array<{ name: string; error: string }>;
+      error?: string;
+    }>;
   };
   library: {
     importFile: (sourcePath: string) => Promise<{
@@ -1022,6 +1030,15 @@ export interface ElectronAPI {
       success: boolean;
       audiobookFolder?: string;
       epubPath?: string;
+      error?: string;
+    }>;
+    // Import EPUB directly (creates BFP + audiobook folder)
+    importEpub: (epubSourcePath: string) => Promise<{
+      success: boolean;
+      bfpPath?: string;
+      audiobookFolder?: string;
+      epubPath?: string;
+      projectName?: string;
       error?: string;
     }>;
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) => Promise<{
@@ -1181,6 +1198,7 @@ export interface ElectronAPI {
       parallelWorkers?: number;
       cleanupMode?: 'structure' | 'full';
       testMode?: boolean;
+      enableAiCleanup?: boolean;
       simplifyForChildren?: boolean;
     }) => Promise<{ success: boolean; data?: any; error?: string }>;
     runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
@@ -1577,11 +1595,10 @@ export interface ElectronAPI {
       message: string;
     }}) => void) => () => void;
   };
-  llCleanup: {
+  bilingualCleanup: {
     run: (jobId: string, config: {
       projectId: string;
       projectDir: string;
-      // inputText removed - always reads from article.epub
       sourceLang: string;
       aiProvider: 'ollama' | 'claude' | 'openai';
       aiModel: string;
@@ -1597,11 +1614,11 @@ export interface ElectronAPI {
     }>;
     onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
   };
-  llTranslation: {
+  bilingualTranslation: {
     run: (jobId: string, config: {
-      projectId: string;
-      projectDir: string;
-      cleanedEpubPath: string;
+      projectId?: string;
+      projectDir?: string;
+      cleanedEpubPath?: string;
       sourceLang: string;
       targetLang: string;
       title?: string;
@@ -1611,9 +1628,11 @@ export interface ElectronAPI {
       claudeApiKey?: string;
       openaiApiKey?: string;
       translationPrompt?: string;
+      monoTranslation?: boolean;  // Full book translation (not bilingual interleave)
     }) => Promise<{
       success: boolean;
       outputPath?: string;
+      translatedEpubPath?: string;  // For mono translation, path to translated EPUB
       error?: string;
       nextJobConfig?: { sourceEpubPath?: string; targetEpubPath?: string; sentencePairsPath?: string };
     }>;
@@ -1635,6 +1654,209 @@ export interface ElectronAPI {
       cancelled?: boolean;
     }) => Promise<{ success: boolean }>;
     cancel: () => Promise<{ success: boolean }>;
+  };
+  sentenceCache: {
+    list: (audiobookFolder: string) => Promise<{
+      success: boolean;
+      languages: Array<{
+        code: string;
+        name: string;
+        sentenceCount: number;
+        sourceLanguage: string | null;
+        createdAt: string;
+        hasAudio: boolean;
+        ttsSettings?: {
+          engine: 'xtts' | 'orpheus';
+          voice: string;
+          speed: number;
+          temperature?: number;
+          topP?: number;
+        };
+      }>;
+      error?: string;
+    }>;
+    get: (audiobookFolder: string, language: string) => Promise<{
+      success: boolean;
+      cache?: {
+        language: string;
+        sourceLanguage: string | null;
+        createdAt: string;
+        sentenceCount: number;
+        sentences: string[] | Array<{ source: string; target: string }>;
+        hasAudio?: boolean;
+        audioDir?: string;
+        ttsSettings?: {
+          engine: 'xtts' | 'orpheus';
+          voice: string;
+          speed: number;
+          temperature?: number;
+          topP?: number;
+        };
+      };
+      error?: string;
+    }>;
+    save: (audiobookFolder: string, language: string, data: {
+      language: string;
+      sourceLanguage: string | null;
+      sentences: string[] | Array<{ source: string; target: string }>;
+      hasAudio?: boolean;
+      audioDir?: string;
+      ttsSettings?: {
+        engine: 'xtts' | 'orpheus';
+        voice: string;
+        speed: number;
+        temperature?: number;
+        topP?: number;
+      };
+    }) => Promise<{ success: boolean; error?: string }>;
+    clear: (audiobookFolder: string, languages?: string[]) => Promise<{
+      success: boolean;
+      cleared: string[];
+      error?: string;
+    }>;
+    runTts: (config: {
+      audiobookFolder: string;
+      language: string;
+      ttsConfig: {
+        engine: 'xtts' | 'orpheus';
+        voice: string;
+        speed: number;
+        device: 'cpu' | 'mps' | 'gpu';
+        workers: number;
+      };
+    }) => Promise<{
+      success: boolean;
+      jobId?: string;
+      message?: string;
+      sentencesDir?: string;
+      error?: string;
+    }>;
+    cacheAudio: (config: {
+      audiobookFolder: string;
+      language: string;
+      sentencesDir: string;
+      ttsSettings: {
+        engine: 'xtts' | 'orpheus';
+        voice: string;
+        speed: number;
+      };
+    }) => Promise<{
+      success: boolean;
+      audioDir?: string;
+      fileCount?: number;
+      error?: string;
+    }>;
+    runAssembly: (config: {
+      audiobookFolder: string;
+      languages: string[];
+      pattern: 'interleaved' | 'sequential';
+      pauseBetweenLanguages: number;
+      outputFormat: 'm4b' | 'mp3';
+    }) => Promise<{
+      success: boolean;
+      audioPath?: string;
+      vttPath?: string;
+      error?: string;
+    }>;
+  };
+  manifest: {
+    create: (
+      projectType: 'book' | 'article',
+      source: Record<string, unknown>,
+      metadata: Record<string, unknown>
+    ) => Promise<{
+      success: boolean;
+      projectId?: string;
+      projectPath?: string;
+      manifestPath?: string;
+      error?: string;
+    }>;
+    get: (projectId: string) => Promise<{
+      success: boolean;
+      manifest?: Record<string, unknown>;
+      projectPath?: string;
+      error?: string;
+    }>;
+    save: (manifest: Record<string, unknown>) => Promise<{
+      success: boolean;
+      manifestPath?: string;
+      error?: string;
+    }>;
+    update: (update: {
+      projectId: string;
+      source?: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+      chapters?: unknown[];
+      pipeline?: Record<string, unknown>;
+      outputs?: Record<string, unknown>;
+      editor?: Record<string, unknown>;
+    }) => Promise<{
+      success: boolean;
+      manifestPath?: string;
+      error?: string;
+    }>;
+    list: (filter?: { type?: 'book' | 'article' }) => Promise<{
+      success: boolean;
+      projects?: Record<string, unknown>[];
+      error?: string;
+    }>;
+    listSummaries: (filter?: { type?: 'book' | 'article' }) => Promise<{
+      success: boolean;
+      summaries?: Record<string, unknown>[];
+      error?: string;
+    }>;
+    delete: (projectId: string) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    importSource: (projectId: string, sourcePath: string, targetFilename?: string) => Promise<{
+      success: boolean;
+      relativePath?: string;
+      error?: string;
+    }>;
+    resolvePath: (projectId: string, relativePath: string) => Promise<{ path: string }>;
+    getProjectPath: (projectId: string) => Promise<{ path: string }>;
+    exists: (projectId: string) => Promise<{ exists: boolean }>;
+    scanLegacy: () => Promise<{
+      success: boolean;
+      bfpCount: number;
+      audiobookCount: number;
+      articleCount: number;
+      total: number;
+    }>;
+    needsMigration: () => Promise<{ needsMigration: boolean }>;
+    migrateAll: () => Promise<{
+      success: boolean;
+      migrated: string[];
+      failed: Array<{ path: string; error: string }>;
+    }>;
+    onMigrationProgress: (callback: (progress: Record<string, unknown>) => void) => void;
+    offMigrationProgress: () => void;
+  };
+  editor: {
+    openWindow: (projectPath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
+    openWindowWithBfp: (bfpPath: string, sourcePath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
+    closeWindow: (projectPath: string) => Promise<{ success: boolean }>;
+    getVersions: (bfpPath: string) => Promise<{
+      success: boolean;
+      error?: string;
+      versions?: Array<{
+        id: string;
+        type: string;
+        label: string;
+        description: string;
+        path: string;
+        extension: string;
+        language?: string;
+        modifiedAt?: string;
+        fileSize?: number;
+        editable: boolean;
+        icon: string;
+      }>;
+    }>;
+    onWindowClosed: (callback: (projectPath: string) => void) => void;
+    offWindowClosed: () => void;
+    saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) => Promise<{ success: boolean; error?: string }>;
   };
   platform: string;
 }
@@ -1797,6 +2019,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('projects:export', projectPath),
     loadFromPath: (filePath: string) =>
       ipcRenderer.invoke('projects:load-from-path', filePath),
+    finalize: (bfpPath: string) =>
+      ipcRenderer.invoke('projects:finalize', bfpPath),
+    migrateAll: () =>
+      ipcRenderer.invoke('projects:migrate-all'),
   },
   library: {
     importFile: (sourcePath: string) =>
@@ -1846,6 +2072,9 @@ const electronAPI: ElectronAPI = {
     // Unified audiobook export (saves to BFP project folder)
     exportFromProject: (bfpPath: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>) =>
       ipcRenderer.invoke('audiobook:export-from-project', bfpPath, epubData, deletedBlockExamples),
+    // Import EPUB directly (creates BFP + audiobook folder)
+    importEpub: (epubSourcePath: string) =>
+      ipcRenderer.invoke('audiobook:import-epub', epubSourcePath),
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) =>
       ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
     appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup', analytics: { jobId: string; [key: string]: unknown }) =>
@@ -2064,6 +2293,7 @@ const electronAPI: ElectronAPI = {
       parallelWorkers?: number;
       cleanupMode?: 'structure' | 'full';
       testMode?: boolean;
+      enableAiCleanup?: boolean;
       simplifyForChildren?: boolean;
     }) =>
       ipcRenderer.invoke('queue:run-ocr-cleanup', jobId, epubPath, model, aiConfig),
@@ -2473,12 +2703,11 @@ const electronAPI: ElectronAPI = {
     },
   },
 
-  // Language Learning Split Pipeline Jobs
-  llCleanup: {
+  // Bilingual Processing Pipeline Jobs
+  bilingualCleanup: {
     run: (jobId: string, config: {
       projectId: string;
       projectDir: string;
-      // inputText removed - always reads from article.epub
       sourceLang: string;
       aiProvider: 'ollama' | 'claude' | 'openai';
       aiModel: string;
@@ -2492,7 +2721,7 @@ const electronAPI: ElectronAPI = {
       error?: string;
       nextJobConfig?: { cleanedEpubPath?: string };
     }> =>
-      ipcRenderer.invoke('ll-cleanup:run', jobId, config),
+      ipcRenderer.invoke('bilingual-cleanup:run', jobId, config),
     onProgress: (callback: (data: { jobId: string; progress: any }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: any }) => {
         callback(data);
@@ -2504,11 +2733,11 @@ const electronAPI: ElectronAPI = {
     },
   },
 
-  llTranslation: {
+  bilingualTranslation: {
     run: (jobId: string, config: {
-      projectId: string;
-      projectDir: string;
-      cleanedEpubPath: string;
+      projectId?: string;
+      projectDir?: string;
+      cleanedEpubPath?: string;
       sourceLang: string;
       targetLang: string;
       title?: string;
@@ -2518,13 +2747,15 @@ const electronAPI: ElectronAPI = {
       claudeApiKey?: string;
       openaiApiKey?: string;
       translationPrompt?: string;
+      monoTranslation?: boolean;
     }): Promise<{
       success: boolean;
       outputPath?: string;
+      translatedEpubPath?: string;
       error?: string;
       nextJobConfig?: { sourceEpubPath?: string; targetEpubPath?: string; sentencePairsPath?: string };
     }> =>
-      ipcRenderer.invoke('ll-translation:run', jobId, config),
+      ipcRenderer.invoke('bilingual-translation:run', jobId, config),
     onProgress: (callback: (data: { jobId: string; progress: any }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: any }) => {
         callback(data);
@@ -2547,6 +2778,287 @@ const electronAPI: ElectronAPI = {
       cancelled?: boolean;
     }) => ipcRenderer.invoke('alignment:save-result', result),
     cancel: () => ipcRenderer.invoke('alignment:cancel'),
+  },
+
+  // Sentence Cache for Bilingual TTS
+  sentenceCache: {
+    list: (audiobookFolder: string): Promise<{
+      success: boolean;
+      languages: Array<{
+        code: string;
+        name: string;
+        sentenceCount: number;
+        sourceLanguage: string | null;
+        createdAt: string;
+        hasAudio: boolean;
+        ttsSettings?: {
+          engine: 'xtts' | 'orpheus';
+          voice: string;
+          speed: number;
+          temperature?: number;
+          topP?: number;
+        };
+      }>;
+      error?: string;
+    }> => ipcRenderer.invoke('sentence-cache:list', audiobookFolder),
+
+    get: (audiobookFolder: string, language: string): Promise<{
+      success: boolean;
+      cache?: {
+        language: string;
+        sourceLanguage: string | null;
+        createdAt: string;
+        sentenceCount: number;
+        sentences: string[] | Array<{ source: string; target: string }>;
+        hasAudio?: boolean;
+        audioDir?: string;
+        ttsSettings?: {
+          engine: 'xtts' | 'orpheus';
+          voice: string;
+          speed: number;
+          temperature?: number;
+          topP?: number;
+        };
+      };
+      error?: string;
+    }> => ipcRenderer.invoke('sentence-cache:get', audiobookFolder, language),
+
+    save: (audiobookFolder: string, language: string, data: {
+      language: string;
+      sourceLanguage: string | null;
+      sentences: string[] | Array<{ source: string; target: string }>;
+      hasAudio?: boolean;
+      audioDir?: string;
+      ttsSettings?: {
+        engine: 'xtts' | 'orpheus';
+        voice: string;
+        speed: number;
+        temperature?: number;
+        topP?: number;
+      };
+    }): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('sentence-cache:save', audiobookFolder, language, data),
+
+    clear: (audiobookFolder: string, languages?: string[]): Promise<{
+      success: boolean;
+      cleared: string[];
+      error?: string;
+    }> => ipcRenderer.invoke('sentence-cache:clear', audiobookFolder, languages),
+
+    runTts: (config: {
+      audiobookFolder: string;
+      language: string;
+      ttsConfig: {
+        engine: 'xtts' | 'orpheus';
+        voice: string;
+        speed: number;
+        device: 'cpu' | 'mps' | 'gpu';
+        workers: number;
+      };
+    }): Promise<{
+      success: boolean;
+      jobId?: string;
+      message?: string;
+      sentencesDir?: string;
+      error?: string;
+    }> => ipcRenderer.invoke('sentence-cache:run-tts', config),
+
+    cacheAudio: (config: {
+      audiobookFolder: string;
+      language: string;
+      sentencesDir: string;
+      ttsSettings: {
+        engine: 'xtts' | 'orpheus';
+        voice: string;
+        speed: number;
+      };
+    }): Promise<{
+      success: boolean;
+      audioDir?: string;
+      fileCount?: number;
+      error?: string;
+    }> => ipcRenderer.invoke('sentence-cache:cache-audio', config),
+
+    runAssembly: (config: {
+      audiobookFolder: string;
+      languages: string[];
+      pattern: 'interleaved' | 'sequential';
+      pauseBetweenLanguages: number;
+      outputFormat: 'm4b' | 'mp3';
+    }): Promise<{
+      success: boolean;
+      audioPath?: string;
+      vttPath?: string;
+      error?: string;
+    }> => ipcRenderer.invoke('sentence-cache:run-assembly', config),
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Manifest Service (Unified Project Management)
+  // ─────────────────────────────────────────────────────────────────────────────
+  manifest: {
+    // Create a new project
+    create: (
+      projectType: 'book' | 'article',
+      source: {
+        type?: 'pdf' | 'epub' | 'url';
+        originalFilename?: string;
+        fileHash?: string;
+        url?: string;
+        fetchedAt?: string;
+        deletedBlockIds?: string[];
+        pageOrder?: number[];
+      },
+      metadata: {
+        title?: string;
+        author?: string;
+        authorFileAs?: string;
+        year?: string;
+        language?: string;
+        publisher?: string;
+        description?: string;
+        coverPath?: string;
+        byline?: string;
+        excerpt?: string;
+        wordCount?: number;
+        narrator?: string;
+        series?: string;
+        seriesPosition?: number;
+        outputFilename?: string;
+      }
+    ): Promise<{
+      success: boolean;
+      projectId?: string;
+      projectPath?: string;
+      manifestPath?: string;
+      error?: string;
+    }> => ipcRenderer.invoke('manifest:create', projectType, source, metadata),
+
+    // Get a project manifest
+    get: (projectId: string): Promise<{
+      success: boolean;
+      manifest?: any;
+      projectPath?: string;
+      error?: string;
+    }> => ipcRenderer.invoke('manifest:get', projectId),
+
+    // Save (update) a manifest
+    save: (manifest: any): Promise<{
+      success: boolean;
+      manifestPath?: string;
+      error?: string;
+    }> => ipcRenderer.invoke('manifest:save', manifest),
+
+    // Update specific fields in a manifest
+    update: (update: {
+      projectId: string;
+      source?: any;
+      metadata?: any;
+      chapters?: any[];
+      pipeline?: any;
+      outputs?: any;
+      editor?: any;
+    }): Promise<{
+      success: boolean;
+      manifestPath?: string;
+      error?: string;
+    }> => ipcRenderer.invoke('manifest:update', update),
+
+    // List all projects
+    list: (filter?: { type?: 'book' | 'article' }): Promise<{
+      success: boolean;
+      projects?: any[];
+      error?: string;
+    }> => ipcRenderer.invoke('manifest:list', filter),
+
+    // List project summaries (lightweight)
+    listSummaries: (filter?: { type?: 'book' | 'article' }): Promise<{
+      success: boolean;
+      summaries?: any[];
+      error?: string;
+    }> => ipcRenderer.invoke('manifest:list-summaries', filter),
+
+    // Delete a project
+    delete: (projectId: string): Promise<{
+      success: boolean;
+      error?: string;
+    }> => ipcRenderer.invoke('manifest:delete', projectId),
+
+    // Import a source file into a project
+    importSource: (projectId: string, sourcePath: string, targetFilename?: string): Promise<{
+      success: boolean;
+      relativePath?: string;
+      error?: string;
+    }> => ipcRenderer.invoke('manifest:import-source', projectId, sourcePath, targetFilename),
+
+    // Resolve a relative manifest path to absolute OS path
+    resolvePath: (projectId: string, relativePath: string): Promise<{
+      path: string;
+    }> => ipcRenderer.invoke('manifest:resolve-path', projectId, relativePath),
+
+    // Get project folder path
+    getProjectPath: (projectId: string): Promise<{
+      path: string;
+    }> => ipcRenderer.invoke('manifest:get-project-path', projectId),
+
+    // Check if project exists
+    exists: (projectId: string): Promise<{
+      exists: boolean;
+    }> => ipcRenderer.invoke('manifest:exists', projectId),
+
+    // Migration methods
+    scanLegacy: (): Promise<{
+      success: boolean;
+      bfpCount: number;
+      audiobookCount: number;
+      articleCount: number;
+      total: number;
+    }> => ipcRenderer.invoke('manifest:scan-legacy'),
+
+    needsMigration: (): Promise<{
+      needsMigration: boolean;
+    }> => ipcRenderer.invoke('manifest:needs-migration'),
+
+    migrateAll: (): Promise<{
+      success: boolean;
+      migrated: string[];
+      failed: Array<{ path: string; error: string }>;
+    }> => ipcRenderer.invoke('manifest:migrate-all'),
+
+    // Listen for migration progress updates
+    onMigrationProgress: (callback: (progress: {
+      phase: 'scanning' | 'migrating' | 'complete' | 'error';
+      current: number;
+      total: number;
+      currentProject?: string;
+      migratedProjects: string[];
+      failedProjects: Array<{ id: string; error: string }>;
+    }) => void) => {
+      ipcRenderer.on('manifest:migration-progress', (_event, progress) => callback(progress));
+    },
+
+    offMigrationProgress: () => {
+      ipcRenderer.removeAllListeners('manifest:migration-progress');
+    },
+  },
+
+  editor: {
+    openWindow: (projectPath: string) =>
+      ipcRenderer.invoke('editor:open-window', projectPath),
+    openWindowWithBfp: (bfpPath: string, sourcePath: string) =>
+      ipcRenderer.invoke('editor:open-window-with-bfp', bfpPath, sourcePath),
+    closeWindow: (projectPath: string) =>
+      ipcRenderer.invoke('editor:close-window', projectPath),
+    getVersions: (bfpPath: string) =>
+      ipcRenderer.invoke('editor:get-versions', bfpPath),
+    onWindowClosed: (callback: (projectPath: string) => void) => {
+      ipcRenderer.on('editor:window-closed', (_event, projectPath) => callback(projectPath));
+    },
+    offWindowClosed: () => {
+      ipcRenderer.removeAllListeners('editor:window-closed');
+    },
+    saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) =>
+      ipcRenderer.invoke('editor:save-epub', epubPath, epubData),
   },
 
   platform: process.platform,

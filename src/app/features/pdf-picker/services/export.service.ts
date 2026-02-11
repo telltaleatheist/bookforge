@@ -542,6 +542,81 @@ export class ExportService {
   }
 
   /**
+   * Save edited content directly to an EPUB file.
+   * Used when editing an EPUB directly (not via BFP project).
+   * Generates EPUB with chapters and writes to the specified path.
+   */
+  async saveToEpub(
+    blocks: ExportableBlock[],
+    deletedIds: Set<string>,
+    chapters: Chapter[],
+    pdfName: string,
+    epubPath: string,  // Absolute path to save the EPUB
+    textCorrections?: Map<string, string>,
+    deletedPages?: Set<number>,
+    deletedHighlights?: DeletedHighlight[],
+    metadata?: BookMetadata
+  ): Promise<ExportResult> {
+    if (!this.electron) {
+      return {
+        success: false,
+        message: 'Saving EPUB is only available in Electron'
+      };
+    }
+
+    // Generate EPUB using the shared internal method
+    const epubResult = this.generateEpubBlobInternal(
+      blocks,
+      deletedIds,
+      chapters,
+      pdfName,
+      textCorrections,
+      deletedPages,
+      deletedHighlights,
+      metadata
+    );
+
+    if (!epubResult.success || !epubResult.blob) {
+      return {
+        success: false,
+        message: epubResult.message || 'Failed to generate EPUB'
+      };
+    }
+
+    const arrayBuffer = await epubResult.blob.arrayBuffer();
+
+    try {
+      // Save directly to the specified path
+      const saveResult = await this.electronService.saveEpubToPath(
+        epubPath,
+        arrayBuffer
+      );
+
+      if (!saveResult.success) {
+        return {
+          success: false,
+          message: saveResult.error || 'Failed to save EPUB file'
+        };
+      }
+
+      return {
+        success: true,
+        message: `Saved EPUB with ${epubResult.chapterCount} chapters.`,
+        filename: epubPath,
+        chapterCount: epubResult.chapterCount,
+        blockCount: epubResult.blockCount,
+        warning: epubResult.warning
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      return {
+        success: false,
+        message: `Failed to save EPUB: ${message}`
+      };
+    }
+  }
+
+  /**
    * Export content to EPUB and save to audiobook folder within the BFP project.
    * Uses generateEpubBlobInternal to create the EPUB, then saves to project's audiobook folder.
    * Optionally collects deleted block examples for detailed AI cleanup.
@@ -757,9 +832,16 @@ export class ExportService {
     deletedHighlights?: DeletedHighlight[],
     metadata?: BookMetadata
   ): { success: boolean; blob?: Blob; message?: string; chapterCount?: number; blockCount?: number; warning?: string } {
+    console.log('[generateEpubBlobInternal] Input blocks:', blocks.length);
+    console.log('[generateEpubBlobInternal] Deleted IDs:', deletedIds.size);
+    console.log('[generateEpubBlobInternal] Deleted pages:', deletedPages?.size || 0);
+
     const exportBlocks = blocks
       .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
       .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
+
+    console.log('[generateEpubBlobInternal] Export blocks after filtering:', exportBlocks.length);
+    console.log('[generateEpubBlobInternal] Blocks filtered out:', blocks.length - exportBlocks.length);
 
     const exportChapters = chapters.filter(c => !deletedPages?.has(c.page));
 
@@ -774,7 +856,10 @@ export class ExportService {
       return (a.y || 0) - (b.y || 0);
     });
 
-    const chapterSections: { title: string; level: number; content: string[] }[] = [];
+    // Track whether user defined chapters - if not, we won't render headings
+    const userDefinedChapters = sortedChapters.length > 0;
+
+    const chapterSections: { title: string; level: number; content: string[]; showHeading: boolean }[] = [];
     let currentChapterIndex = 0;
     let currentContent: string[] = [];
     let currentTitle = 'Introduction';
@@ -793,7 +878,8 @@ export class ExportService {
           chapterSections.push({
             title: currentTitle,
             level: currentChapterIndex === 0 ? 1 : (sortedChapters[currentChapterIndex - 1]?.level || 1),
-            content: currentContent
+            content: currentContent,
+            showHeading: userDefinedChapters
           });
         }
         currentTitle = sortedChapters[currentChapterIndex].title;
@@ -829,7 +915,8 @@ export class ExportService {
       chapterSections.push({
         title: currentTitle,
         level: sortedChapters.length > 0 ? (sortedChapters[sortedChapters.length - 1]?.level || 1) : 1,
-        content: currentContent
+        content: currentContent,
+        showHeading: userDefinedChapters
       });
     }
 
@@ -1003,6 +1090,22 @@ export class ExportService {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  /**
+   * Ensure a chapter title ends with a period for TTS readability.
+   * TTS engines often run headings into the following text without punctuation,
+   * so we add a period to create a natural pause.
+   */
+  private ensureTitleEndsWithPunctuation(title: string): string {
+    const trimmed = title.trim();
+    if (!trimmed) return trimmed;
+    // Check if title already ends with sentence-ending punctuation
+    const lastChar = trimmed[trimmed.length - 1];
+    if (['.', '!', '?', ':', ';'].includes(lastChar)) {
+      return trimmed;
+    }
+    return trimmed + '.';
   }
 
   private generateUuid(): string {
@@ -1197,7 +1300,7 @@ ${s.content}
    */
   private generateEpubBlobWithChapters(
     title: string,
-    chapters: { title: string; level: number; content: string[] }[],
+    chapters: { title: string; level: number; content: string[]; showHeading?: boolean }[],
     metadata?: BookMetadata
   ): Blob {
     const uuid = 'urn:uuid:' + this.generateUuid();
@@ -1279,9 +1382,15 @@ ${navItems}
 </body>
 </html>`;
 
-    const chapterXhtmls = chapters.map((chapter, i) => ({
-      index: i + 1,
-      xhtml: `<?xml version="1.0" encoding="UTF-8"?>
+    const chapterXhtmls = chapters.map((chapter, i) => {
+      // Only show chapter heading if user defined chapters (showHeading flag)
+      const headingHtml = chapter.showHeading !== false
+        ? `  <h${Math.min(chapter.level, 3)}>${this.escapeHtml(this.ensureTitleEndsWithPunctuation(chapter.title))}</h${Math.min(chapter.level, 3)}>\n`
+        : '';
+
+      return {
+        index: i + 1,
+        xhtml: `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -1295,11 +1404,11 @@ ${navItems}
   </style>
 </head>
 <body>
-  <h${Math.min(chapter.level, 3)}>${this.escapeHtml(chapter.title)}</h${Math.min(chapter.level, 3)}>
-${chapter.content.join('\n')}
+${headingHtml}${chapter.content.join('\n')}
 </body>
 </html>`
-    }));
+      };
+    });
 
     const files: { name: string; content: string }[] = [
       { name: 'mimetype', content: 'application/epub+zip' },

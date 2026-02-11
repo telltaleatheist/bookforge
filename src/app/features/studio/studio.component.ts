@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, OnInit, ViewChild } from '@angular/core';
+import { Component, inject, signal, computed, OnInit, OnDestroy, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
   SplitPaneComponent,
@@ -6,15 +6,16 @@ import {
   ToolbarItem
 } from '../../creamsicle-desktop';
 import { StudioService } from './services/studio.service';
-import { StudioItem, StudioWorkflowState, ProcessStep } from './models/studio.types';
+import { StudioItem, MainTab, AudiobookSubTab, LanguageLearningSubTab, ProcessStep } from './models/studio.types';
 import { StudioListComponent } from './components/studio-list/studio-list.component';
 import { AddModalComponent } from './components/add-modal/add-modal.component';
 import { ContentEditorComponent } from './components/content-editor/content-editor.component';
-import { ProcessWizardComponent } from './components/process-wizard/process-wizard.component';
+import { ProcessWizardComponent, SourceOption } from './components/process-wizard/process-wizard.component';
+import { BilingualWizardComponent } from './components/bilingual-wizard/bilingual-wizard.component';
 
 // Import existing audiobook components
 import { MetadataEditorComponent, EpubMetadata } from '../audiobook/components/metadata-editor/metadata-editor.component';
-import { TTSSettings } from '../audiobook/components/tts-settings/tts-settings.component';
+import { TTSSettings } from './models/tts.types';
 import { DiffViewComponent } from '../audiobook/components/diff-view/diff-view.component';
 import { PlayViewComponent } from '../audiobook/components/play-view/play-view.component';
 import { SkippedChunksPanelComponent } from '../audiobook/components/skipped-chunks-panel/skipped-chunks-panel.component';
@@ -22,25 +23,23 @@ import { PostProcessingPanelComponent } from '../audiobook/components/post-proce
 import { ChapterRecoveryComponent } from '../audiobook/components/chapter-recovery/chapter-recovery.component';
 import { BilingualPlayerComponent } from '../language-learning/components/bilingual-player/bilingual-player.component';
 import { AudiobookPlayerComponent } from './components/audiobook-player/audiobook-player.component';
-// Note: AnalyticsPanelComponent not used yet - will add in future iteration
+import { VersionPickerDialogComponent, VersionPickerDialogData } from './components/version-picker-dialog/version-picker-dialog.component';
+import { ProjectVersion } from './models/project-version.types';
 
 import { EpubService } from '../audiobook/services/epub.service';
 import { AudiobookService } from '../audiobook/services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { SettingsService } from '../../core/services/settings.service';
+import { QueueService } from '../queue/services/queue.service';
 
 /**
  * StudioComponent - Unified workspace for books and articles
  *
- * Combines the functionality of:
- * - Audiobook Producer (books)
- * - Language Learning (articles)
- *
- * Features:
- * - Single "+" button to add EPUBs or URLs
- * - Accordion list for Articles and Books
- * - Unified workflow tabs
+ * Navigation Structure:
+ * - Main Tabs: Metadata | Content (articles) | Audiobook | Language Learning
+ * - Audiobook Sub-tabs: Process | Stream | Play | Review | Skipped | Enhance | Chapters
+ * - Language Learning Sub-tabs: Process | Play | Review
  */
 @Component({
   selector: 'app-studio',
@@ -53,6 +52,7 @@ import { SettingsService } from '../../core/services/settings.service';
     AddModalComponent,
     ContentEditorComponent,
     ProcessWizardComponent,
+    BilingualWizardComponent,
     MetadataEditorComponent,
     DiffViewComponent,
     PlayViewComponent,
@@ -60,7 +60,8 @@ import { SettingsService } from '../../core/services/settings.service';
     PostProcessingPanelComponent,
     ChapterRecoveryComponent,
     BilingualPlayerComponent,
-    AudiobookPlayerComponent
+    AudiobookPlayerComponent,
+    VersionPickerDialogComponent
   ],
   template: `
     <!-- Toolbar -->
@@ -92,83 +93,53 @@ import { SettingsService } from '../../core/services/settings.service';
         <!-- Right Panel: Workflow -->
         <div pane-secondary class="workflow-panel">
           @if (selectedItem()) {
-            <!-- Workflow Tabs -->
-            <div class="workflow-tabs-container">
-              <div class="workflow-tabs">
+            <!-- Main Tabs -->
+            <div class="main-tabs-container">
+              <div class="main-tabs">
                 <button
-                  class="tab"
-                  [class.active]="workflowState() === 'metadata'"
-                  (click)="setWorkflowState('metadata')"
+                  class="main-tab"
+                  [class.active]="mainTab() === 'metadata'"
+                  (click)="setMainTab('metadata')"
                 >
                   Metadata
                 </button>
                 @if (selectedItem()!.type === 'article') {
                   <button
-                    class="tab"
-                    [class.active]="workflowState() === 'content'"
-                    (click)="setWorkflowState('content')"
+                    class="main-tab"
+                    [class.active]="mainTab() === 'content'"
+                    (click)="setMainTab('content')"
                   >
                     Content
                   </button>
                 }
                 <button
-                  class="tab"
-                  [class.active]="workflowState() === 'process'"
-                  (click)="setWorkflowState('process')"
+                  class="main-tab"
+                  [class.active]="mainTab() === 'audiobook'"
+                  (click)="setMainTab('audiobook')"
                 >
-                  Process
+                  Audiobook
                 </button>
                 <button
-                  class="tab"
-                  [class.active]="workflowState() === 'stream'"
-                  (click)="setWorkflowState('stream')"
+                  class="main-tab"
+                  [class.active]="mainTab() === 'language-learning'"
+                  (click)="setMainTab('language-learning')"
                 >
-                  Stream
-                </button>
-                <button
-                  class="tab"
-                  [class.active]="workflowState() === 'play'"
-                  [class.disabled]="!hasAudioToPlay()"
-                  (click)="handleTabClick('play', hasAudioToPlay(), 'No audiobook yet. Run TTS conversion first.')"
-                >
-                  Play
-                </button>
-                <button
-                  class="tab"
-                  [class.active]="workflowState() === 'diff'"
-                  [class.disabled]="!selectedItem()!.hasCleaned"
-                  (click)="handleTabClick('diff', selectedItem()!.hasCleaned, 'No cleaned version yet. Run AI Cleanup first.')"
-                >
-                  Review
-                </button>
-                @if (selectedItem()!.skippedChunksPath) {
-                  <button
-                    class="tab warning"
-                    [class.active]="workflowState() === 'skipped'"
-                    (click)="setWorkflowState('skipped')"
-                  >
-                    Skipped
-                  </button>
-                }
-                <button
-                  class="tab"
-                  [class.active]="workflowState() === 'enhance'"
-                  [class.disabled]="!selectedItem()!.audiobookPath"
-                  (click)="handleTabClick('enhance', !!selectedItem()!.audiobookPath, 'No audiobook yet. Run TTS conversion first.')"
-                >
-                  Enhance
-                </button>
-                <button
-                  class="tab"
-                  [class.active]="workflowState() === 'chapters'"
-                  [class.disabled]="!selectedItem()!.vttPath"
-                  (click)="handleTabClick('chapters', !!selectedItem()!.vttPath, 'No chapter data yet. Run TTS conversion first.')"
-                >
-                  Chapters
+                  Language Learning
                 </button>
 
+                <!-- Edit Source button for books (positioned on the right) -->
+                @if (selectedItem()!.type === 'book' && getEditorPath()) {
+                  <button
+                    class="btn-edit-source"
+                    (click)="openEditor()"
+                    title="Edit source document in a new window"
+                  >
+                    Edit Source
+                  </button>
+                }
+
                 <!-- Finalize button for articles on Content tab only -->
-                @if (selectedItem()!.type === 'article' && workflowState() === 'content') {
+                @if (selectedItem()!.type === 'article' && mainTab() === 'content') {
                   <button
                     class="btn-finalize"
                     [class.saving]="finalizingContent() === 'saving'"
@@ -186,6 +157,96 @@ import { SettingsService } from '../../core/services/settings.service';
                 }
               </div>
 
+              <!-- Sub-tabs for Audiobook -->
+              @if (mainTab() === 'audiobook') {
+                <div class="sub-tabs">
+                  <button
+                    class="sub-tab"
+                    [class.active]="audiobookSubTab() === 'process'"
+                    (click)="setAudiobookSubTab('process')"
+                  >
+                    Process
+                  </button>
+                  <button
+                    class="sub-tab"
+                    [class.active]="audiobookSubTab() === 'stream'"
+                    (click)="setAudiobookSubTab('stream')"
+                  >
+                    Stream
+                  </button>
+                  <button
+                    class="sub-tab"
+                    [class.active]="audiobookSubTab() === 'play'"
+                    [class.disabled]="!hasMonoAudio()"
+                    (click)="handleSubTabClick('audiobook', 'play', hasMonoAudio(), 'No audiobook yet. Run TTS first.')"
+                  >
+                    Play
+                  </button>
+                  <button
+                    class="sub-tab"
+                    [class.active]="audiobookSubTab() === 'review'"
+                    [class.disabled]="!selectedItem()!.hasCleaned"
+                    (click)="handleSubTabClick('audiobook', 'review', selectedItem()!.hasCleaned, 'No cleaned version. Run AI Cleanup first.')"
+                  >
+                    Review
+                  </button>
+                  @if (selectedItem()!.skippedChunksPath) {
+                    <button
+                      class="sub-tab warning"
+                      [class.active]="audiobookSubTab() === 'skipped'"
+                      (click)="setAudiobookSubTab('skipped')"
+                    >
+                      Skipped
+                    </button>
+                  }
+                  <button
+                    class="sub-tab"
+                    [class.active]="audiobookSubTab() === 'enhance'"
+                    [class.disabled]="!selectedItem()!.audiobookPath"
+                    (click)="handleSubTabClick('audiobook', 'enhance', !!selectedItem()!.audiobookPath, 'No audiobook yet.')"
+                  >
+                    Enhance
+                  </button>
+                  <button
+                    class="sub-tab"
+                    [class.active]="audiobookSubTab() === 'chapters'"
+                    [class.disabled]="!selectedItem()!.vttPath"
+                    (click)="handleSubTabClick('audiobook', 'chapters', !!selectedItem()!.vttPath, 'No chapter data yet.')"
+                  >
+                    Chapters
+                  </button>
+                </div>
+              }
+
+              <!-- Sub-tabs for Language Learning -->
+              @if (mainTab() === 'language-learning') {
+                <div class="sub-tabs">
+                  <button
+                    class="sub-tab"
+                    [class.active]="llSubTab() === 'process'"
+                    (click)="setLLSubTab('process')"
+                  >
+                    Process
+                  </button>
+                  <button
+                    class="sub-tab"
+                    [class.active]="llSubTab() === 'play'"
+                    [class.disabled]="!hasBilingualAudio()"
+                    (click)="handleSubTabClick('language-learning', 'play', hasBilingualAudio(), 'No bilingual audiobook yet.')"
+                  >
+                    Play
+                  </button>
+                  <button
+                    class="sub-tab"
+                    [class.active]="llSubTab() === 'review'"
+                    [class.disabled]="!selectedItem()!.hasCleaned"
+                    (click)="handleSubTabClick('language-learning', 'review', selectedItem()!.hasCleaned, 'No cleaned version.')"
+                  >
+                    Review
+                  </button>
+                </div>
+              }
+
               <!-- Disabled tab message -->
               @if (disabledTabMessage()) {
                 <div class="disabled-tab-message">
@@ -195,112 +256,157 @@ import { SettingsService } from '../../core/services/settings.service';
             </div>
 
             <!-- Tab Content -->
-            <div class="tab-content" [class.content-tab]="workflowState() === 'content'" [class.play-tab]="workflowState() === 'play'" [class.process-tab]="workflowState() === 'process'">
-              @switch (workflowState()) {
-                @case ('content') {
-                  <app-content-editor
-                    [item]="selectedItem()"
-                    (itemChanged)="onItemChanged()"
-                  />
-                }
-                @case ('metadata') {
-                  <app-metadata-editor
-                    [metadata]="selectedMetadata()"
-                    [saving]="savingMetadata()"
-                    [audioFilePath]="audioFilePath() || ''"
-                    [audioFilePathValid]="audioFilePathValid()"
-                    [epubPath]="selectedItem()?.epubPath || ''"
-                    [cleanedEpubPath]="selectedItem()?.cleanedEpubPath || ''"
-                    (metadataChange)="onMetadataChange($event)"
-                    (coverChange)="onCoverChange($event)"
-                    (save)="onSaveMetadata($event)"
-                    (showInFinder)="onShowInFinder()"
-                    (linkAudio)="onLinkAudio($event)"
-                    (showEpubInFinder)="onShowEpubInFinder($event)"
-                  />
-                }
-                @case ('process') {
-                  @if (currentEpubPath()) {
-                    <app-process-wizard
-                      [epubPath]="currentEpubPath()"
-                      [originalEpubPath]="selectedItem()?.epubPath || ''"
-                      [title]="selectedMetadata()?.title || ''"
-                      [author]="selectedMetadata()?.author || ''"
-                      [itemType]="selectedItem()?.type || 'book'"
+            <div class="tab-content" [class.full-height]="isFullHeightTab()">
+              <!-- Metadata Tab -->
+              @if (mainTab() === 'metadata') {
+                <app-metadata-editor
+                  [metadata]="selectedMetadata()"
+                  [saving]="savingMetadata()"
+                  [audioFilePath]="audioFilePath() || ''"
+                  [audioFilePathValid]="audioFilePathValid()"
+                  [epubPath]="selectedItem()?.epubPath || ''"
+                  [cleanedEpubPath]="selectedItem()?.cleanedEpubPath || ''"
+                  (metadataChange)="onMetadataChange($event)"
+                  (coverChange)="onCoverChange($event)"
+                  (save)="onSaveMetadata($event)"
+                  (showInFinder)="onShowInFinder()"
+                  (linkAudio)="onLinkAudio($event)"
+                  (showEpubInFinder)="onShowEpubInFinder($event)"
+                />
+              }
+
+              <!-- Content Tab (Articles only) -->
+              @if (mainTab() === 'content') {
+                <app-content-editor
+                  [item]="selectedItem()"
+                  (itemChanged)="onItemChanged()"
+                />
+              }
+
+              <!-- Audiobook Tab Content -->
+              @if (mainTab() === 'audiobook') {
+                @switch (audiobookSubTab()) {
+                  @case ('process') {
+                    @if (currentEpubPath()) {
+                      <app-process-wizard
+                        [epubPath]="currentEpubPath()"
+                        [originalEpubPath]="selectedItem()?.epubPath || ''"
+                        [availableSources]="availableSources()"
+                        [title]="selectedMetadata()?.title || ''"
+                        [author]="selectedMetadata()?.author || ''"
+                        [itemType]="selectedItem()?.type || 'book'"
+                        [bfpPath]="selectedItem()?.bfpPath || ''"
+                        [projectId]="selectedItem()?.id || ''"
+                        [projectDir]="getProjectDir()"
+                        [sourceLang]="selectedItem()?.sourceLang || 'en'"
+                        [textContent]="selectedItem()?.textContent || ''"
+                        (queued)="onProcessQueued()"
+                      />
+                    } @else {
+                      <div class="empty-state-panel">
+                        <div class="icon">📄</div>
+                        <p>No EPUB available for processing.</p>
+                        @if (selectedItem()?.type === 'article') {
+                          <p class="hint">Click "Finalize" on the Content tab to generate an EPUB.</p>
+                        }
+                      </div>
+                    }
+                  }
+                  @case ('stream') {
+                    @if (currentEpubPath()) {
+                      <app-play-view [epubPath]="currentEpubPath()" />
+                    } @else {
+                      <div class="empty-state-panel">
+                        <div class="icon">🎧</div>
+                        <p>No EPUB available for streaming.</p>
+                      </div>
+                    }
+                  }
+                  @case ('play') {
+                    @if (bookAudioData()) {
+                      <app-audiobook-player [audiobook]="bookAudioData()" />
+                    } @else {
+                      <div class="empty-state-panel">
+                        <div class="icon">🎧</div>
+                        <p>No audiobook available. Run TTS conversion first.</p>
+                      </div>
+                    }
+                  }
+                  @case ('review') {
+                    <app-diff-view
+                      [originalPath]="selectedItem()?.epubPath || ''"
+                      [cleanedPath]="selectedItem()?.cleanedEpubPath || ''"
+                    />
+                  }
+                  @case ('skipped') {
+                    <app-skipped-chunks-panel
+                      [skippedChunksPath]="selectedItem()?.skippedChunksPath ?? null"
+                      [cleanedEpubPath]="selectedItem()?.cleanedEpubPath ?? null"
+                      [originalEpubPath]="selectedItem()?.epubPath ?? null"
+                    />
+                  }
+                  @case ('enhance') {
+                    <app-post-processing-panel
+                      [audioFilePath]="selectedItem()?.audiobookPath || ''"
                       [bfpPath]="selectedItem()?.bfpPath || ''"
-                      [projectId]="selectedItem()?.id || ''"
-                      [projectDir]="getProjectDir()"
-                      [sourceLang]="selectedItem()?.sourceLang || 'en'"
-                      [textContent]="selectedItem()?.textContent || ''"
-                      (queued)="onProcessQueued()"
+                      [bookTitle]="selectedMetadata()?.title || ''"
+                      [bookAuthor]="selectedMetadata()?.author || ''"
                     />
-                  } @else {
-                    <div class="empty-process">
-                      <div class="icon">📄</div>
-                      <p>No EPUB available for processing.</p>
-                      @if (selectedItem()?.type === 'article') {
-                        <p class="hint">Click "Finalize" on the Content tab to generate an EPUB.</p>
-                      }
-                    </div>
+                  }
+                  @case ('chapters') {
+                    @if (selectedItem()?.audiobookPath && selectedItem()?.vttPath) {
+                      <app-chapter-recovery
+                        [epubPath]="currentEpubPath()"
+                        [vttPath]="selectedItem()!.vttPath!"
+                        [m4bPath]="selectedItem()!.audiobookPath!"
+                      />
+                    }
                   }
                 }
-                @case ('stream') {
-                  <!-- Live TTS streaming -->
-                  @if (currentEpubPath()) {
-                    <app-play-view
-                      [epubPath]="currentEpubPath()"
-                    />
-                  } @else {
-                    <div class="empty-player">
-                      <div class="icon">🎧</div>
-                      <p>No EPUB available for streaming.</p>
-                    </div>
+              }
+
+              <!-- Language Learning Tab Content -->
+              @if (mainTab() === 'language-learning') {
+                @switch (llSubTab()) {
+                  @case ('process') {
+                    @if (currentEpubPath()) {
+                      <app-bilingual-wizard
+                        [epubPath]="currentEpubPath()"
+                        [originalEpubPath]="selectedItem()?.epubPath || ''"
+                        [title]="selectedMetadata()?.title || ''"
+                        [author]="selectedMetadata()?.author || ''"
+                        [itemType]="selectedItem()?.type || 'book'"
+                        [bfpPath]="selectedItem()?.bfpPath || ''"
+                        [projectId]="selectedItem()?.id || ''"
+                        [projectDir]="getProjectDir()"
+                        [audiobookFolder]="getAudiobookFolder()"
+                        (queued)="onProcessQueued()"
+                      />
+                    } @else {
+                      <div class="empty-state-panel">
+                        <div class="icon">📄</div>
+                        <p>No EPUB available for processing.</p>
+                        @if (selectedItem()?.type === 'article') {
+                          <p class="hint">Click "Finalize" on the Content tab to generate an EPUB.</p>
+                        }
+                      </div>
+                    }
                   }
-                }
-                @case ('play') {
-                  <!-- Play existing audiobook with VTT sync -->
-                  @if (selectedItem()?.type === 'article') {
-                    <app-bilingual-player
-                      [audiobook]="audiobookData()"
-                    />
-                  } @else if (bookAudioData()) {
-                    <app-audiobook-player
-                      [audiobook]="bookAudioData()"
-                    />
-                  } @else {
-                    <div class="empty-player">
-                      <div class="icon">🎧</div>
-                      <p>No audiobook available. Link an audio file in Metadata tab.</p>
-                    </div>
+                  @case ('play') {
+                    @if (bilingualAudioData()) {
+                      <app-bilingual-player [audiobook]="bilingualAudioData()" />
+                    } @else {
+                      <div class="empty-state-panel">
+                        <div class="icon">🎧</div>
+                        <p>No bilingual audiobook available.</p>
+                        <p class="hint">Complete the Language Learning process to generate one.</p>
+                      </div>
+                    }
                   }
-                }
-                @case ('diff') {
-                  <app-diff-view
-                    [originalPath]="selectedItem()?.epubPath || ''"
-                    [cleanedPath]="selectedItem()?.cleanedEpubPath || ''"
-                  />
-                }
-                @case ('skipped') {
-                  <app-skipped-chunks-panel
-                    [skippedChunksPath]="selectedItem()?.skippedChunksPath ?? null"
-                    [cleanedEpubPath]="selectedItem()?.cleanedEpubPath ?? null"
-                    [originalEpubPath]="selectedItem()?.epubPath ?? null"
-                  />
-                }
-                @case ('enhance') {
-                  <app-post-processing-panel
-                    [audioFilePath]="selectedItem()?.audiobookPath || ''"
-                    [bfpPath]="selectedItem()?.bfpPath || ''"
-                    [bookTitle]="selectedMetadata()?.title || ''"
-                    [bookAuthor]="selectedMetadata()?.author || ''"
-                  />
-                }
-                @case ('chapters') {
-                  @if (selectedItem()?.audiobookPath && selectedItem()?.vttPath) {
-                    <app-chapter-recovery
-                      [epubPath]="currentEpubPath()"
-                      [vttPath]="selectedItem()!.vttPath!"
-                      [m4bPath]="selectedItem()!.audiobookPath!"
+                  @case ('review') {
+                    <app-diff-view
+                      [originalPath]="selectedItem()?.epubPath || ''"
+                      [cleanedPath]="selectedItem()?.cleanedEpubPath || ''"
                     />
                   }
                 }
@@ -342,6 +448,13 @@ import { SettingsService } from '../../core/services/settings.service';
         </button>
       </div>
     }
+
+    <!-- Version Picker Dialog -->
+    @if (showVersionPicker()) {
+      <app-version-picker-dialog
+        [data]="versionPickerData()"
+      />
+    }
   `,
   styles: [`
     :host {
@@ -365,7 +478,7 @@ import { SettingsService } from '../../core/services/settings.service';
       app-studio-list {
         flex: 1;
         overflow-y: auto;
-        min-height: 0;  /* Important for flex children to scroll */
+        min-height: 0;
       }
     }
 
@@ -414,66 +527,85 @@ import { SettingsService } from '../../core/services/settings.service';
       background: var(--bg-base);
     }
 
-    .workflow-tabs-container {
-      overflow-x: auto;
+    /* Main Tabs */
+    .main-tabs-container {
+      flex-shrink: 0;
       background: var(--bg-surface);
       border-bottom: 1px solid var(--border-subtle);
-      flex-shrink: 0;
-
-      &::-webkit-scrollbar {
-        height: 4px;
-      }
-      &::-webkit-scrollbar-thumb {
-        background: var(--border-default);
-        border-radius: 2px;
-      }
     }
 
-    .workflow-tabs {
+    .main-tabs {
       display: flex;
+      align-items: center;
       gap: 2px;
-      padding: 12px 16px 0;
-      white-space: nowrap;
-      min-width: max-content;
+      padding: 8px 16px;
     }
 
-    .tab {
+    .main-tab {
       padding: 8px 16px;
       background: transparent;
       border: none;
-      border-bottom: 2px solid transparent;
+      border-radius: 6px;
       color: var(--text-secondary);
-      font-size: 13px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+
+      &:hover {
+        color: var(--text-primary);
+        background: var(--hover-bg);
+      }
+
+      &.active {
+        color: var(--accent);
+        background: var(--accent-subtle);
+      }
+    }
+
+    /* Sub Tabs */
+    .sub-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 8px 16px;
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .sub-tab {
+      padding: 6px 14px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 12px;
       font-weight: 500;
       cursor: pointer;
       transition: all 0.15s ease;
-      margin-bottom: -1px;
-      flex-shrink: 0;
 
-      &:hover {
+      &:hover:not(.disabled) {
+        background: var(--bg-hover);
         color: var(--text-primary);
       }
 
       &.active {
-        color: var(--color-primary);
-        border-bottom-color: var(--color-primary);
-      }
-
-      &.warning {
-        color: #eab308;
-
-        &.active {
-          border-bottom-color: #eab308;
-        }
+        background: var(--color-primary);
+        color: white;
+        border-color: var(--color-primary);
       }
 
       &.disabled {
         color: var(--text-muted);
         opacity: 0.5;
         cursor: not-allowed;
+      }
 
-        &:hover {
-          color: var(--text-muted);
+      &.warning {
+        color: #eab308;
+
+        &.active {
+          background: #eab308;
+          color: white;
         }
       }
     }
@@ -484,14 +616,31 @@ import { SettingsService } from '../../core/services/settings.service';
       border: 1px solid rgba(234, 179, 8, 0.3);
       border-radius: 6px;
       color: #eab308;
-      font-size: 13px;
-      margin-left: auto;
+      font-size: 12px;
+      margin: 8px 16px;
       animation: fadeIn 0.2s ease;
     }
 
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(-4px); }
       to { opacity: 1; transform: translateY(0); }
+    }
+
+    .btn-edit-source {
+      margin-left: auto;
+      padding: 8px 16px;
+      background: var(--accent);
+      border: none;
+      border-radius: 6px;
+      color: white;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+
+      &:hover {
+        background: var(--accent-hover);
+      }
     }
 
     .btn-finalize {
@@ -505,8 +654,6 @@ import { SettingsService } from '../../core/services/settings.service';
       font-weight: 500;
       cursor: pointer;
       transition: all 0.15s ease;
-      flex-shrink: 0;
-      min-width: 80px;
 
       &:hover {
         background: #0891b2;
@@ -526,165 +673,20 @@ import { SettingsService } from '../../core/services/settings.service';
       }
     }
 
+    /* Tab Content */
     .tab-content {
       flex: 1;
       overflow-y: auto;
       min-height: 0;
       padding: 16px;
 
-      &.content-tab,
-      &.play-tab {
+      &.full-height {
         padding: 0;
-        overflow: hidden;  /* These handle their own scrolling */
-      }
-
-      &.process-tab {
-        padding: 0;
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;  /* Process container handles scrolling */
+        overflow: hidden;
       }
     }
 
-    /* Process Pipeline Styles */
-    .process-container {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-    }
-
-    .process-steps {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px 24px;
-      background: var(--bg-surface);
-      border-bottom: 1px solid var(--border-subtle);
-      gap: 8px;
-    }
-
-    .step {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 16px;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      border-radius: 20px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-
-      &:hover {
-        background: var(--bg-hover);
-      }
-
-      &.active {
-        background: rgba(6, 182, 212, 0.15);
-        border-color: var(--color-primary);
-
-        .step-number {
-          background: var(--color-primary);
-          color: white;
-        }
-
-        .step-label {
-          color: var(--color-primary);
-          font-weight: 600;
-        }
-      }
-
-      &.completed {
-        .step-number {
-          background: #22c55e;
-          color: white;
-
-          &::after {
-            content: '✓';
-            position: absolute;
-            font-size: 10px;
-          }
-        }
-      }
-
-      &.completed .step-number span {
-        visibility: hidden;
-      }
-    }
-
-    .step-number {
-      width: 24px;
-      height: 24px;
-      border-radius: 50%;
-      background: var(--bg-base);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-secondary);
-      position: relative;
-    }
-
-    .step-label {
-      font-size: 13px;
-      color: var(--text-primary);
-    }
-
-    .step-connector {
-      width: 32px;
-      height: 2px;
-      background: var(--border-default);
-    }
-
-    .process-content {
-      flex: 1;
-      overflow-y: auto;
-      padding: 16px;
-      position: relative;
-    }
-
-    .step-actions {
-      display: flex;
-      justify-content: space-between;
-      padding: 16px 0 0;
-      margin-top: 16px;
-      border-top: 1px solid var(--border-subtle);
-    }
-
-    .btn-back,
-    .btn-skip {
-      padding: 8px 16px;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-
-    .btn-back {
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      color: var(--text-secondary);
-
-      &:hover {
-        background: var(--bg-hover);
-        color: var(--text-primary);
-      }
-    }
-
-    .btn-skip {
-      background: transparent;
-      border: 1px solid var(--color-primary);
-      color: var(--color-primary);
-      margin-left: auto;
-
-      &:hover {
-        background: rgba(6, 182, 212, 0.1);
-      }
-    }
-
-    .empty-player,
-    .empty-process {
+    .empty-state-panel {
       height: 100%;
       display: flex;
       flex-direction: column;
@@ -786,31 +788,40 @@ import { SettingsService } from '../../core/services/settings.service';
       &:hover {
         background: var(--bg-hover);
       }
-
-      &.danger {
-        color: var(--color-error);
-      }
     }
   `]
 })
-export class StudioComponent implements OnInit {
+export class StudioComponent implements OnInit, OnDestroy {
   readonly studioService = inject(StudioService);
   private readonly epubService = inject(EpubService);
   private readonly audiobookService = inject(AudiobookService);
   private readonly electronService = inject(ElectronService);
   private readonly libraryService = inject(LibraryService);
   private readonly settingsService = inject(SettingsService);
+  private readonly queueService = inject(QueueService);
 
   @ViewChild(ContentEditorComponent) contentEditor?: ContentEditorComponent;
 
+  // ─────────────────────────────────────────────────────────────────────────
   // State
+  // ─────────────────────────────────────────────────────────────────────────
+
   readonly showAddModal = signal<boolean>(false);
   readonly selectedItemId = signal<string | null>(null);
-  readonly workflowState = signal<StudioWorkflowState>('empty');
+
+  // Tab navigation
+  readonly mainTab = signal<MainTab>('metadata');
+  readonly audiobookSubTab = signal<AudiobookSubTab>('process');
+  readonly llSubTab = signal<LanguageLearningSubTab>('process');
+
   readonly processStep = signal<ProcessStep>('cleanup');
   readonly savingMetadata = signal<boolean>(false);
   readonly finalizingContent = signal<'idle' | 'saving' | 'done'>('idle');
   readonly disabledTabMessage = signal<string | null>(null);
+
+  // Version picker dialog
+  readonly showVersionPicker = signal<boolean>(false);
+  readonly versionPickerData = signal<VersionPickerDialogData | null>(null);
 
   // Context menu
   readonly contextMenuVisible = signal<boolean>(false);
@@ -818,7 +829,10 @@ export class StudioComponent implements OnInit {
   readonly contextMenuY = signal<number>(0);
   private contextMenuItem: StudioItem | null = null;
 
+  // ─────────────────────────────────────────────────────────────────────────
   // Computed
+  // ─────────────────────────────────────────────────────────────────────────
+
   readonly selectedItem = computed<StudioItem | null>(() => {
     const id = this.selectedItemId();
     if (!id) return null;
@@ -831,8 +845,8 @@ export class StudioComponent implements OnInit {
     return {
       title: item.title,
       author: item.author || '',
-      year: undefined,
-      language: item.sourceLang || 'en',
+      year: item.year,
+      language: item.language || item.sourceLang || 'en',
       coverPath: item.coverPath,
       coverData: item.coverData
     };
@@ -841,63 +855,129 @@ export class StudioComponent implements OnInit {
   readonly currentEpubPath = computed<string>(() => {
     const item = this.selectedItem();
     if (!item) return '';
-    // Use cleaned EPUB if available, otherwise original
     return item.cleanedEpubPath || item.epubPath || '';
+  });
+
+  // Build list of available source EPUBs for the process wizard
+  readonly availableSources = computed<SourceOption[]>(() => {
+    const item = this.selectedItem();
+    if (!item) return [];
+
+    const sources: SourceOption[] = [];
+
+    // Original/Finalized EPUB (from editor export)
+    if (item.epubPath) {
+      sources.push({
+        path: item.epubPath,
+        label: 'Finalized',
+        description: 'From editor export',
+      });
+    }
+
+    // AI Cleaned EPUB
+    if (item.cleanedEpubPath) {
+      sources.push({
+        path: item.cleanedEpubPath,
+        label: 'AI Cleaned',
+        description: 'OCR/formatting fixed',
+      });
+    }
+
+    // Mark the default (cleaned if available, otherwise finalized)
+    // This matches the currentEpubPath logic
+    if (sources.length > 0) {
+      const defaultPath = item.cleanedEpubPath || item.epubPath;
+      const defaultSource = sources.find(s => s.path === defaultPath);
+      if (defaultSource) {
+        defaultSource.isDefault = true;
+      }
+    }
+
+    return sources;
   });
 
   readonly audioFilePath = computed<string | undefined>(() => {
     return this.selectedItem()?.audiobookPath;
   });
 
-  // Data for bilingual player (articles with VTT)
-  readonly audiobookData = computed(() => {
-    const item = this.selectedItem();
-    if (!item || item.type !== 'article') return null;
-    // Only return data if audiobook actually exists
-    if (!item.audiobookPath || !item.vttPath) return null;
-    return {
-      id: item.id,
-      title: item.title,
-      sourceLang: item.sourceLang,
-      targetLang: item.targetLang,
-      audiobookPath: item.audiobookPath,
-      vttPath: item.vttPath
-    };
+  readonly audioFilePathValid = computed(() => {
+    return !!this.selectedItem()?.audiobookPath;
   });
 
-  // Data for book audio player (books with VTT)
+  // Check if mono audiobook exists
+  readonly hasMonoAudio = computed(() => {
+    const item = this.selectedItem();
+    return !!item?.audiobookPath && !!item?.vttPath;
+  });
+
+  // Check if bilingual audiobook exists
+  readonly hasBilingualAudio = computed(() => {
+    const item = this.selectedItem();
+    return !!item?.bilingualAudioPath && !!item?.bilingualVttPath;
+  });
+
+  // Data for mono audiobook player
   readonly bookAudioData = computed(() => {
     const item = this.selectedItem();
-    if (!item || item.type !== 'book') return null;
-    // Must have at least mono OR bilingual audio with VTT
-    const hasMono = !!item.audiobookPath && !!item.vttPath;
-    const hasBilingual = !!item.bilingualAudioPath && !!item.bilingualVttPath;
-    if (!hasMono && !hasBilingual) return null;
+    if (!item || !item.audiobookPath || !item.vttPath) return null;
     return {
       id: item.id,
       title: item.title,
       author: item.author,
       audiobookPath: item.audiobookPath,
       vttPath: item.vttPath,
-      // Bilingual audio paths (separate from mono)
-      bilingualAudioPath: item.bilingualAudioPath,
-      bilingualVttPath: item.bilingualVttPath
     };
   });
 
-  // Check if any item (book or article) has audio ready to play
-  readonly hasAudioToPlay = computed(() => {
-    return !!this.bookAudioData() || !!this.audiobookData();
+  // Data for bilingual player
+  readonly bilingualAudioData = computed(() => {
+    const item = this.selectedItem();
+    if (!item) return null;
+
+    // Check for bilingual audio first
+    if (item.bilingualAudioPath && item.bilingualVttPath) {
+      return {
+        id: item.id,
+        title: item.title,
+        sourceLang: item.sourceLang,
+        targetLang: item.targetLang,
+        audiobookPath: item.bilingualAudioPath,
+        vttPath: item.bilingualVttPath
+      };
+    }
+
+    // Fallback for articles with regular audio
+    if (item.type === 'article' && item.audiobookPath && item.vttPath) {
+      return {
+        id: item.id,
+        title: item.title,
+        sourceLang: item.sourceLang,
+        targetLang: item.targetLang,
+        audiobookPath: item.audiobookPath,
+        vttPath: item.vttPath
+      };
+    }
+
+    return null;
   });
 
-  readonly audioFilePathValid = computed(() => {
-    const item = this.selectedItem();
-    // The audiobookPath is only set if the file exists (checked in StudioService)
-    return !!item?.audiobookPath;
+  // Determine if current tab should use full height (no padding)
+  readonly isFullHeightTab = computed(() => {
+    const main = this.mainTab();
+    if (main === 'content') return true;
+    if (main === 'audiobook') {
+      const sub = this.audiobookSubTab();
+      return sub === 'process' || sub === 'stream' || sub === 'play';
+    }
+    if (main === 'language-learning') {
+      const sub = this.llSubTab();
+      return sub === 'process' || sub === 'play';
+    }
+    return false;
   });
 
   readonly ttsSettings = signal<TTSSettings>({
-    device: 'cpu',  // CPU is better for XTTS on Mac
+    device: 'cpu',
     language: 'en',
     ttsEngine: 'orpheus',
     fineTuned: 'tara',
@@ -920,59 +1000,62 @@ export class StudioComponent implements OnInit {
     }
   ]);
 
-  /**
-   * Get the project directory for the currently selected article
-   */
-  getProjectDir(): string {
-    const item = this.selectedItem();
-    if (!item || item.type !== 'article') return '';
-    const articlesPath = this.libraryService.articlesPath();
-    if (!articlesPath) return '';
-    return `${articlesPath}/${item.id}`;
-  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // Lifecycle
+  // ─────────────────────────────────────────────────────────────────────────
 
   async ngOnInit(): Promise<void> {
     await this.libraryService.whenReady();
     await this.studioService.loadAll();
-
-    // Hide context menu on click outside
     document.addEventListener('click', () => this.hideContextMenu());
+
+    // Listen for editor window close events to refresh the item
+    this.electronService.onEditorWindowClosed((projectPath: string) => {
+      // Find the item that matches this project path and reload it
+      const item = this.selectedItem();
+      if (item?.bfpPath === projectPath || item?.epubPath === projectPath) {
+        this.onItemChanged();
+      }
+    });
   }
 
-  onToolbarAction(item: ToolbarItem): void {
-    switch (item.id) {
-      case 'refresh':
-        this.studioService.loadAll();
-        break;
-    }
+  ngOnDestroy(): void {
+    this.electronService.offEditorWindowClosed();
   }
 
-  selectItem(item: StudioItem): void {
-    this.selectedItemId.set(item.id);
+  // ─────────────────────────────────────────────────────────────────────────
+  // Navigation
+  // ─────────────────────────────────────────────────────────────────────────
 
-    // Always start on metadata tab
-    this.setWorkflowState('metadata');
-
-    // Reset finalize state when selecting new item
-    this.finalizingContent.set('idle');
+  setMainTab(tab: MainTab): void {
+    this.mainTab.set(tab);
+    this.disabledTabMessage.set(null);
   }
 
-  setWorkflowState(state: StudioWorkflowState): void {
-    this.workflowState.set(state);
-    // Reset process step when entering process tab
-    if (state === 'process') {
-      this.processStep.set('cleanup');
-    }
+  setAudiobookSubTab(tab: AudiobookSubTab): void {
+    this.audiobookSubTab.set(tab);
+    this.disabledTabMessage.set(null);
   }
 
-  // Handle clicking on tabs that may be disabled
-  handleTabClick(state: StudioWorkflowState, isEnabled: boolean | undefined, disabledMessage: string): void {
+  setLLSubTab(tab: LanguageLearningSubTab): void {
+    this.llSubTab.set(tab);
+    this.disabledTabMessage.set(null);
+  }
+
+  handleSubTabClick(
+    mainTab: 'audiobook' | 'language-learning',
+    subTab: AudiobookSubTab | LanguageLearningSubTab,
+    isEnabled: boolean | undefined,
+    disabledMessage: string
+  ): void {
     if (isEnabled) {
-      this.setWorkflowState(state);
-      this.disabledTabMessage.set(null);
+      if (mainTab === 'audiobook') {
+        this.setAudiobookSubTab(subTab as AudiobookSubTab);
+      } else {
+        this.setLLSubTab(subTab as LanguageLearningSubTab);
+      }
     } else {
       this.disabledTabMessage.set(disabledMessage);
-      // Auto-clear message after 3 seconds
       setTimeout(() => {
         if (this.disabledTabMessage() === disabledMessage) {
           this.disabledTabMessage.set(null);
@@ -981,20 +1064,57 @@ export class StudioComponent implements OnInit {
     }
   }
 
-  setProcessStep(step: ProcessStep): void {
-    this.processStep.set(step);
+  // ─────────────────────────────────────────────────────────────────────────
+  // Item Selection
+  // ─────────────────────────────────────────────────────────────────────────
+
+  selectItem(item: StudioItem): void {
+    this.selectedItemId.set(item.id);
+    this.mainTab.set('metadata');
+    this.audiobookSubTab.set('process');
+    this.llSubTab.set('process');
+    this.finalizingContent.set('idle');
+  }
+
+  onToolbarAction(item: ToolbarItem): void {
+    if (item.id === 'refresh') {
+      this.studioService.loadAll();
+    }
   }
 
   onItemAdded(item: StudioItem): void {
-    // Select the newly added item
     this.selectItem(item);
   }
 
   onItemChanged(): void {
-    // Item was modified, could trigger reload
+    // Item was modified
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Helper Methods
+  // ─────────────────────────────────────────────────────────────────────────
+
+  getProjectDir(): string {
+    const item = this.selectedItem();
+    if (!item || item.type !== 'article') return '';
+    const articlesPath = this.libraryService.articlesPath();
+    if (!articlesPath) return '';
+    return `${articlesPath}/${item.id}`;
+  }
+
+  getAudiobookFolder(): string {
+    const item = this.selectedItem();
+    if (!item || item.type !== 'book') return '';
+    if (item.epubPath) {
+      return item.epubPath.substring(0, item.epubPath.lastIndexOf('/'));
+    }
+    return '';
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Context Menu
+  // ─────────────────────────────────────────────────────────────────────────
+
   onContextMenu(event: { event: MouseEvent; item: StudioItem }): void {
     event.event.preventDefault();
     this.contextMenuItem = event.item;
@@ -1011,18 +1131,16 @@ export class StudioComponent implements OnInit {
     if (!this.contextMenuItem) return;
 
     const result = await this.studioService.deleteItem(this.contextMenuItem.id);
-    if (result.success) {
-      // Clear selection if deleted item was selected
-      if (this.selectedItemId() === this.contextMenuItem.id) {
-        this.selectedItemId.set(null);
-        this.workflowState.set('empty');
-      }
+    if (result.success && this.selectedItemId() === this.contextMenuItem.id) {
+      this.selectedItemId.set(null);
     }
-
     this.hideContextMenu();
   }
 
-  // Metadata handlers
+  // ─────────────────────────────────────────────────────────────────────────
+  // Metadata
+  // ─────────────────────────────────────────────────────────────────────────
+
   onMetadataChange(metadata: EpubMetadata): void {
     // Handle metadata changes
   }
@@ -1037,7 +1155,22 @@ export class StudioComponent implements OnInit {
 
     this.savingMetadata.set(true);
     try {
-      // Save metadata via epub service
+      if (item.type === 'book') {
+        // Update BFP file and local state
+        const result = await this.studioService.updateBookMetadata(item.id, {
+          title: metadata.title,
+          author: metadata.author,
+          year: metadata.year,
+          language: metadata.language,
+          coverData: metadata.coverData
+        });
+
+        if (!result.success) {
+          console.error('[Studio] Failed to save metadata:', result.error);
+        }
+      }
+
+      // Also update the EPUB file if it exists
       if (item.epubPath) {
         await this.epubService.open(item.epubPath);
         await this.epubService.setMetadata(metadata);
@@ -1051,7 +1184,6 @@ export class StudioComponent implements OnInit {
   onShowInFinder(): void {
     const item = this.selectedItem();
     if (!item?.audiobookPath) return;
-
     (window as any).electron?.shell?.showItemInFolder?.(item.audiobookPath);
   }
 
@@ -1061,59 +1193,105 @@ export class StudioComponent implements OnInit {
   }
 
   async onLinkAudio(path: string): Promise<void> {
-    console.log('[Studio] === onLinkAudio CALLED ===');
-    console.log('[Studio] Received path:', path);
-
     const item = this.selectedItem();
-    console.log('[Studio] Selected item:', item?.id, item?.title);
-    console.log('[Studio] Item bfpPath:', item?.bfpPath);
+    if (!item?.bfpPath) return;
 
-    if (!item?.bfpPath) {
-      console.error('[Studio] Cannot link audio: no BFP path');
-      return;
-    }
-
-    console.log('[Studio] Calling audiobookLinkAudio...');
     const result = await this.electronService.audiobookLinkAudio(item.bfpPath, path);
-    console.log('[Studio] audiobookLinkAudio result:', result);
-
     if (result.success) {
-      console.log('[Studio] Audio linked successfully, reloading...');
-      // Reload the books to pick up the new linked audio path
       await this.studioService.loadBooks();
-      console.log('[Studio] Books reloaded');
-    } else {
-      console.error('[Studio] Failed to link audio:', result.error);
     }
   }
 
-  // Translation handlers
-  onTranslationQueued(): void {
-    this.studioService.reloadItem(this.selectedItemId()!);
+  // ─────────────────────────────────────────────────────────────────────────
+  // Editor Window
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Get the path to use for the editor.
+   * Prefers bfpPath (existing project), falls back to epubPath (source file).
+   */
+  getEditorPath(): string | null {
+    const item = this.selectedItem();
+    if (!item) return null;
+
+    // Prefer BFP project file if available
+    if (item.bfpPath) {
+      return item.bfpPath;
+    }
+
+    // Fall back to source EPUB/PDF path
+    if (item.epubPath) {
+      return item.epubPath;
+    }
+
+    return null;
   }
 
-  // Cleanup handlers
-  onCleanupComplete(): void {
-    this.studioService.reloadItem(this.selectedItemId()!);
+  /**
+   * Open the editor - shows version picker if multiple versions exist
+   */
+  async openEditor(): Promise<void> {
+    const item = this.selectedItem();
+    if (!item) return;
+
+    // If we have a BFP path, show version picker to let user choose which version to edit
+    if (item.bfpPath) {
+      this.versionPickerData.set({
+        bfpPath: item.bfpPath,
+        onSelect: (version: ProjectVersion) => {
+          this.showVersionPicker.set(false);
+          // Pass BFP path to editor so project state is preserved
+          // The editor will load the BFP and use the selected version as source
+          this.openEditorWithBfp(item.bfpPath!, version.path);
+        },
+        onCancel: () => {
+          this.showVersionPicker.set(false);
+        }
+      });
+      this.showVersionPicker.set(true);
+    } else if (item.epubPath) {
+      // No BFP, just open the source file directly
+      this.openEditorWithVersion(item.epubPath);
+    }
   }
 
-  // TTS handlers
-  onTtsSettingsChange(settings: TTSSettings): void {
-    this.ttsSettings.set(settings);
+  /**
+   * Open the editor window with a specific version (no BFP - direct file editing)
+   */
+  private async openEditorWithVersion(versionPath: string): Promise<void> {
+    const result = await this.electronService.editorOpenWindow(versionPath);
+    if (!result.success) {
+      console.error('[Studio] Failed to open editor window:', result.error);
+    }
   }
 
-  onTtsQueued(): void {
-    this.studioService.reloadItem(this.selectedItemId()!);
+  /**
+   * Open the editor window with a BFP project and specific source version
+   * This ensures project state (deletions, chapters) is preserved
+   */
+  private async openEditorWithBfp(bfpPath: string, sourcePath: string): Promise<void> {
+    const result = await this.electronService.editorOpenWindowWithBfp(bfpPath, sourcePath);
+    if (!result.success) {
+      console.error('[Studio] Failed to open editor window:', result.error);
+    }
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Processing
+  // ─────────────────────────────────────────────────────────────────────────
 
   onProcessQueued(): void {
     this.studioService.reloadItem(this.selectedItemId()!);
   }
 
-  /**
-   * Finalize article content for processing
-   * This saves the current deleted selectors and marks content as finalized
-   */
+  onTtsSettingsChange(settings: TTSSettings): void {
+    this.ttsSettings.set(settings);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Content Finalization (Articles)
+  // ─────────────────────────────────────────────────────────────────────────
+
   async finalizeContent(): Promise<void> {
     const item = this.selectedItem();
     if (!item || item.type !== 'article') return;
@@ -1121,25 +1299,20 @@ export class StudioComponent implements OnInit {
     this.finalizingContent.set('saving');
 
     try {
-      // Get the filtered HTML from the content editor (applies deleted selectors)
       let finalizedHtml = '';
       if (this.contentEditor) {
         finalizedHtml = await this.contentEditor.getFilteredHtml();
       }
 
-      // Save the finalized content
       await this.studioService.finalizeArticleContent(item.id, finalizedHtml);
-
-      // Reload to pick up changes
       await this.studioService.reloadItem(item.id);
 
-      // Show success state
       this.finalizingContent.set('done');
 
-      // Navigate to Process tab after successful finalize
-      this.setWorkflowState('process');
+      // Navigate to Audiobook → Process
+      this.mainTab.set('audiobook');
+      this.audiobookSubTab.set('process');
 
-      // Reset finalize button state
       setTimeout(() => {
         this.finalizingContent.set('idle');
       }, 500);

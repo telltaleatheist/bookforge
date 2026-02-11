@@ -1,5 +1,7 @@
-import { Component, Input, Output, EventEmitter, signal } from '@angular/core';
+import { Component, Input, Output, EventEmitter, signal, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Subject, fromEvent, merge } from 'rxjs';
+import { takeUntil, filter } from 'rxjs/operators';
 
 export interface SidebarSection {
   id: string;
@@ -22,7 +24,7 @@ export interface SidebarItem {
   standalone: true,
   imports: [CommonModule],
   template: `
-    <aside class="sidebar" [style.width.px]="width">
+    <aside class="sidebar" [style.width.px]="width" [class.resizing]="resizing">
       <!-- Search (optional) -->
       @if (showSearch) {
         <div class="sidebar-search">
@@ -93,14 +95,14 @@ export interface SidebarItem {
       @if (resizable) {
         <div
           class="resize-handle"
-          (mousedown)="startResize($event)"
+          (mousedown)="onResizeHandleMouseDown($event)"
         ></div>
       }
     </aside>
   `,
   styleUrl: './sidebar.component.scss'
 })
-export class SidebarComponent {
+export class SidebarComponent implements OnDestroy {
   @Input() sections: SidebarSection[] = [];
   @Input() width = 220;
   @Input() minWidth = 150;
@@ -117,9 +119,20 @@ export class SidebarComponent {
   searchQuery = signal('');
   collapsedSections = signal<Set<string>>(new Set());
 
-  private resizing = false;
+  resizing = false;
   private startX = 0;
   private startWidth = 0;
+
+  private destroy$ = new Subject<void>();
+  private resizeStop$ = new Subject<void>();
+
+  constructor(private cdr: ChangeDetectorRef) {}
+
+  ngOnDestroy(): void {
+    this.stopResize();
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
 
   selectItem(item: SidebarItem) {
     if (item.disabled) return;
@@ -149,26 +162,46 @@ export class SidebarComponent {
     return this.collapsedSections().has(sectionId);
   }
 
-  startResize(event: MouseEvent) {
+  onResizeHandleMouseDown(event: MouseEvent): void {
+    event.preventDefault();
     this.resizing = true;
     this.startX = event.clientX;
     this.startWidth = this.width;
 
-    const onMouseMove = (e: MouseEvent) => {
-      if (!this.resizing) return;
-      const delta = e.clientX - this.startX;
-      const newWidth = Math.min(this.maxWidth, Math.max(this.minWidth, this.startWidth + delta));
-      this.width = newWidth;
-      this.widthChanged.emit(newWidth);
-    };
+    // Mouse move - track position
+    fromEvent<MouseEvent>(document, 'mousemove')
+      .pipe(takeUntil(this.resizeStop$))
+      .subscribe((e) => {
+        const delta = e.clientX - this.startX;
+        const newWidth = Math.min(this.maxWidth, Math.max(this.minWidth, this.startWidth + delta));
+        this.width = newWidth;
+        this.widthChanged.emit(newWidth);
+        this.cdr.detectChanges();
+      });
 
-    const onMouseUp = () => {
+    // All the ways resizing can end
+    merge(
+      fromEvent(document, 'mouseup'),
+      fromEvent(document, 'pointerup'),
+      fromEvent(window, 'blur'),
+      fromEvent(document, 'visibilitychange').pipe(
+        filter(() => document.hidden)
+      ),
+      fromEvent<MouseEvent>(document, 'mouseleave').pipe(
+        filter((e) => e.relatedTarget === null)
+      )
+    )
+      .pipe(takeUntil(this.resizeStop$))
+      .subscribe(() => {
+        this.stopResize();
+      });
+  }
+
+  private stopResize(): void {
+    if (this.resizing) {
       this.resizing = false;
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
+      this.resizeStop$.next();
+      this.cdr.detectChanges();
+    }
   }
 }

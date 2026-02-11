@@ -8,9 +8,9 @@ import {
 } from '../../creamsicle-desktop';
 import { AudiobookQueueComponent, QueueItem, QueueItemStatus } from './components/audiobook-queue/audiobook-queue.component';
 import { MetadataEditorComponent, EpubMetadata } from './components/metadata-editor/metadata-editor.component';
-import { AiCleanupPanelComponent } from './components/ai-cleanup-panel/ai-cleanup-panel.component';
 import { TranslationPanelComponent } from './components/translation-panel/translation-panel.component';
-import { TtsSettingsComponent, TTSSettings } from './components/tts-settings/tts-settings.component';
+// TTSSettings type moved to studio/models/tts.types.ts
+import { TTSSettings } from '../studio/models/tts.types';
 import { DiffViewComponent } from './components/diff-view/diff-view.component';
 import { PlayViewComponent } from './components/play-view/play-view.component';
 import { SkippedChunksPanelComponent } from './components/skipped-chunks-panel/skipped-chunks-panel.component';
@@ -38,8 +38,8 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
     AudiobookQueueComponent,
     MetadataEditorComponent,
     TranslationPanelComponent,
-    AiCleanupPanelComponent,
-    TtsSettingsComponent,
+    // AiCleanupPanelComponent - REMOVED (deprecated, use process-wizard)
+    // TtsSettingsComponent - REMOVED (deprecated, use process-wizard)
     DiffViewComponent,
     PlayViewComponent,
     SkippedChunksPanelComponent,
@@ -182,28 +182,18 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                   />
                 }
                 @case ('cleanup') {
-                  <app-ai-cleanup-panel
-                    [epubPath]="originalEpubPath()"
-                    [bfpPath]="selectedItem()?.bfpPath"
-                    [metadata]="{ title: selectedMetadata()?.title, author: selectedMetadata()?.author }"
-                    (cleanupComplete)="onCleanupComplete()"
-                  />
+                  <!-- DEPRECATED: Use Studio > Process tab instead -->
+                  <div class="deprecated-panel">
+                    <p>This feature has moved to Studio.</p>
+                    <p>Use the Process tab in Studio for AI Cleanup.</p>
+                  </div>
                 }
                 @case ('convert') {
-                  <app-tts-settings
-                    [settings]="ttsSettings()"
-                    [epubPath]="currentEpubPath()"
-                    [bfpPath]="selectedItem()?.bfpPath"
-                    [metadata]="{
-                      title: selectedMetadata()?.title,
-                      author: selectedMetadata()?.author,
-                      year: selectedMetadata()?.year,
-                      coverPath: getSelectedCoverPath(),
-                      outputFilename: selectedMetadata()?.outputFilename || generatedFilename()
-                    }"
-                    [preloadedResumeInfo]="preloadedResumeInfo()"
-                    (settingsChange)="onTtsSettingsChange($event)"
-                  />
+                  <!-- DEPRECATED: Use Studio > Process tab instead -->
+                  <div class="deprecated-panel">
+                    <p>This feature has moved to Studio.</p>
+                    <p>Use the Process tab in Studio for TTS conversion.</p>
+                  </div>
                 }
                 @case ('play') {
                   <app-play-view
@@ -301,11 +291,11 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
               </div>
             </div>
             <div class="tab-content">
-              <app-tts-settings
-                [settings]="ttsSettings()"
-                [preloadedResumeInfo]="preloadedResumeInfo()"
-                (settingsChange)="onTtsSettingsChange($event)"
-              />
+              <!-- DEPRECATED: Use Studio > Process tab instead -->
+              <div class="deprecated-panel">
+                <p>This feature has moved to Studio.</p>
+                <p>Use the Process tab in Studio for TTS conversion.</p>
+              </div>
             </div>
           } @else {
             <!-- Empty state -->

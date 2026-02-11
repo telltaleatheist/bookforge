@@ -374,7 +374,6 @@ function computeCompactDiff(
       // Collect all consecutive changes (removed + added)
       let removed = '';
       let added = '';
-      const changeStartPos = cleanedPos;
 
       while (i < ops.length && ops[i].type !== 'unchanged') {
         if (ops[i].type === 'removed') {
@@ -386,10 +385,15 @@ function computeCompactDiff(
       }
 
       // Find the added text position in cleaned text
+      // IMPORTANT: pos should be where the added text ACTUALLY starts (after any whitespace)
+      // This ensures unchanged text before the change includes the whitespace
+      let actualPos = cleanedPos;
       let addedLen = 0;
       if (added) {
-        const addedStart = cleanedText.indexOf(added.split(' ')[0], cleanedPos);
+        const firstWord = added.split(' ')[0];
+        const addedStart = cleanedText.indexOf(firstWord, cleanedPos);
         if (addedStart >= 0) {
+          actualPos = addedStart;  // Start at the actual first word, not after previous word
           // Find the end of all added words
           let endPos = addedStart;
           const addedWords = added.split(' ');
@@ -399,13 +403,13 @@ function computeCompactDiff(
               endPos = wordPos + word.length;
             }
           }
-          addedLen = endPos - cleanedPos;
+          addedLen = endPos - addedStart;  // Length is just the added words, not including leading space
           cleanedPos = endPos;
         }
       }
 
       changes.push({
-        pos: changeStartPos,
+        pos: actualPos,
         len: addedLen,
         add: added || undefined,
         rem: removed || undefined

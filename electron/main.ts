@@ -12,6 +12,8 @@ import { libraryServer } from './library-server';
 import { getHeadlessOcrService } from './headless-ocr';
 import { initializeLoggers, getMainLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
+import * as manifestService from './manifest-service';
+import * as manifestMigration from './manifest-migration';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -853,12 +855,27 @@ function setupIpcHandlers(): void {
   });
 
   // Read audio file and return as data URL (for playback in renderer)
+  // For large files (>100MB), returns a streaming URL via LibraryServer instead
   ipcMain.handle('fs:read-audio', async (_event, audioPath: string) => {
     try {
       console.log('[fs:read-audio] Loading:', audioPath);
-      const buffer = await fs.readFile(audioPath);
+
+      // Check file size first
+      const stats = await fs.stat(audioPath);
+      const MAX_SIZE_FOR_BASE64 = 100 * 1024 * 1024; // 100MB
+
       const ext = audioPath.toLowerCase().split('.').pop();
       const mimeType = ext === 'm4b' || ext === 'm4a' ? 'audio/mp4' : 'audio/mpeg';
+
+      if (stats.size > MAX_SIZE_FOR_BASE64) {
+        // For large files, use LibraryServer's streaming endpoint
+        const streamUrl = `http://localhost:8765/api/audio?path=${encodeURIComponent(audioPath)}`;
+        console.log(`[fs:read-audio] File too large (${stats.size} bytes), using streaming URL`);
+        return { success: true, dataUrl: streamUrl, size: stats.size, isStreamUrl: true };
+      }
+
+      // For smaller files, load and convert to base64
+      const buffer = await fs.readFile(audioPath);
       const base64 = buffer.toString('base64');
       const dataUrl = `data:${mimeType};base64,${base64}`;
       console.log(`[fs:read-audio] Loaded ${buffer.length} bytes`);
@@ -974,12 +991,50 @@ function setupIpcHandlers(): void {
   });
 
   // Save to specific path (for "Save" vs "Save As")
+  // IMPORTANT: This merges with existing data to preserve fields like 'audiobook' that the editor doesn't manage
   ipcMain.handle('project:save-to-path', async (_event, filePath: string, projectData: unknown) => {
     try {
-      // Extract any embedded images to external files
-      await extractEmbeddedImages(projectData as Record<string, unknown>);
+      let mergedData = projectData as Record<string, unknown>;
 
-      await atomicWriteFile(filePath, JSON.stringify(projectData, null, 2));
+      // If BFP file exists, merge with existing data to preserve fields we don't manage
+      if (filePath.endsWith('.bfp') && fsSync.existsSync(filePath)) {
+        const stat = await fs.stat(filePath);
+
+        // Only backup if file has meaningful content (>500 bytes = has edits/chapters)
+        if (stat.size > 500) {
+          const backupPath = filePath + '.bak';
+          await fs.copyFile(filePath, backupPath);
+          console.log(`[project:save-to-path] Created backup: ${backupPath}`);
+        }
+
+        // Load existing data and merge to preserve fields like 'audiobook', 'metadata', etc.
+        try {
+          const existingContent = await fs.readFile(filePath, 'utf-8');
+          const existingData = JSON.parse(existingContent) as Record<string, unknown>;
+
+          // Fields that should be preserved from existing file if not in new data
+          const preserveFields = ['audiobook', 'audiobookFolder'];
+
+          for (const field of preserveFields) {
+            if (existingData[field] !== undefined && mergedData[field] === undefined) {
+              mergedData[field] = existingData[field];
+              console.log(`[project:save-to-path] Preserved field: ${field}`);
+            }
+          }
+
+          // Keep original created_at if it exists
+          if (existingData.created_at) {
+            mergedData.created_at = existingData.created_at;
+          }
+        } catch (parseErr) {
+          console.warn(`[project:save-to-path] Could not parse existing file for merge:`, parseErr);
+        }
+      }
+
+      // Extract any embedded images to external files
+      await extractEmbeddedImages(mergedData);
+
+      await atomicWriteFile(filePath, JSON.stringify(mergedData, null, 2));
       return { success: true, filePath };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -1148,6 +1203,8 @@ function setupIpcHandlers(): void {
     }
 
     customLibraryRoot = libraryPath;
+    // Sync to manifest service
+    manifestService.setLibraryBasePath(libraryPath);
     return { success: true };
   });
 
@@ -1530,9 +1587,42 @@ function setupIpcHandlers(): void {
 
       // Use existing path or create new one
       let filePath: string;
+      let mergedData = projectData as Record<string, unknown>;
+
       if (existingPath) {
         filePath = existingPath;
         console.log(`Updating existing project: ${filePath}`);
+
+        // Safety: backup existing BFP before overwriting if it has significant content
+        const stat = await fs.stat(filePath);
+        if (stat.size > 500) {
+          const backupPath = filePath + '.bak';
+          await fs.copyFile(filePath, backupPath);
+          console.log(`[projects:save] Created backup: ${backupPath}`);
+        }
+
+        // Merge with existing data to preserve fields like 'audiobook' that the editor doesn't manage
+        try {
+          const existingContent = await fs.readFile(filePath, 'utf-8');
+          const existingData = JSON.parse(existingContent) as Record<string, unknown>;
+
+          // Fields that should be preserved from existing file if not in new data
+          const preserveFields = ['audiobook', 'audiobookFolder'];
+
+          for (const field of preserveFields) {
+            if (existingData[field] !== undefined && mergedData[field] === undefined) {
+              mergedData[field] = existingData[field];
+              console.log(`[projects:save] Preserved field: ${field}`);
+            }
+          }
+
+          // Keep original created_at if it exists
+          if (existingData.created_at) {
+            mergedData.created_at = existingData.created_at;
+          }
+        } catch (parseErr) {
+          console.warn(`[projects:save] Could not parse existing file for merge:`, parseErr);
+        }
       } else {
         const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
         filePath = path.join(folder, `${safeName}.bfp`);
@@ -1540,9 +1630,9 @@ function setupIpcHandlers(): void {
       }
 
       // Extract any embedded images to external files
-      await extractEmbeddedImages(projectData as Record<string, unknown>);
+      await extractEmbeddedImages(mergedData);
 
-      await atomicWriteFile(filePath, JSON.stringify(projectData, null, 2));
+      await atomicWriteFile(filePath, JSON.stringify(mergedData, null, 2));
       return { success: true, filePath };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -1553,72 +1643,90 @@ function setupIpcHandlers(): void {
   ipcMain.handle('projects:delete', async (_event, filePaths: string[]) => {
     try {
       const libraryRoot = getLibraryRoot();
+      const audiobooksFolder = getAudiobooksBasePath();
       const projectsFolder = getProjectsFolder();
-      const filesFolder = getFilesFolder();
       const deleted: string[] = [];
       const failed: Array<{ path: string; error: string }> = [];
 
-      // Collect all library file hashes that might need deletion
-      const libraryFilesToDelete: Array<{ hash: string; libraryPath: string }> = [];
+      console.log(`[projects:delete] Starting deletion of ${filePaths.length} project(s)`);
+      console.log(`[projects:delete] Library root: ${libraryRoot}`);
+      console.log(`[projects:delete] Audiobooks folder: ${audiobooksFolder}`);
 
       for (const filePath of filePaths) {
+        console.log(`[projects:delete] Processing: ${filePath}`);
+
         // Security: only allow deleting files from within the BookForge library root
-        // This covers both ~/Documents/BookForge/ and ~/Documents/BookForge/projects/
         if (!filePath.startsWith(libraryRoot)) {
+          console.log(`[projects:delete] REJECTED - outside library folder`);
           failed.push({ path: filePath, error: 'Invalid path - outside library folder' });
           continue;
         }
 
         try {
-          // Read the project file to get library_path and file_hash before deleting
-          const content = await fs.readFile(filePath, 'utf-8');
-          const projectData = JSON.parse(content);
+          // Read the project file to get file_hash before deleting
+          let fileHash = '';
+          try {
+            const content = await fs.readFile(filePath, 'utf-8');
+            const projectData = JSON.parse(content);
+            fileHash = projectData.file_hash || '';
+          } catch {
+            console.log(`[projects:delete] Could not read BFP file, continuing with deletion`);
+          }
 
-          // Track library file for potential deletion
-          if (projectData.library_path && projectData.file_hash) {
-            libraryFilesToDelete.push({
-              hash: projectData.file_hash,
-              libraryPath: projectData.library_path
-            });
+          // Derive audiobook folder name from BFP filename
+          // e.g., "Aesop_s_Fables__Aesopus___2011_.bfp" -> "Aesop_s_Fables__Aesopus___2011_"
+          const bfpFilename = path.basename(filePath);
+          const projectName = bfpFilename.replace(/\.bfp$/, '');
+          const audiobookFolder = path.join(audiobooksFolder, projectName);
+
+          console.log(`[projects:delete] Derived audiobook folder: ${audiobookFolder}`);
+
+          // Delete the audiobook folder if it exists
+          try {
+            const folderExists = await fs.access(audiobookFolder).then(() => true).catch(() => false);
+            if (folderExists) {
+              await fs.rm(audiobookFolder, { recursive: true, force: true });
+              console.log(`[projects:delete] Deleted audiobook folder: ${audiobookFolder}`);
+            } else {
+              console.log(`[projects:delete] Audiobook folder does not exist: ${audiobookFolder}`);
+            }
+          } catch (e) {
+            console.log(`[projects:delete] Error deleting audiobook folder: ${(e as Error).message}`);
           }
 
           // Delete the .bfp project file
           await fs.unlink(filePath);
+          console.log(`[projects:delete] Deleted BFP file: ${filePath}`);
           deleted.push(filePath);
+
+          // Delete any .bfp.bak backup file
+          const backupPath = filePath + '.bak';
+          try {
+            await fs.unlink(backupPath);
+            console.log(`[projects:delete] Deleted backup file: ${backupPath}`);
+          } catch {
+            // Backup doesn't exist, that's fine
+          }
+
+          // Clear cache for this project
+          if (fileHash) {
+            try {
+              pdfAnalyzer.clearCache(fileHash);
+              console.log(`[projects:delete] Cache cleared for hash: ${fileHash}`);
+            } catch (e) {
+              console.log(`[projects:delete] Could not clear cache: ${(e as Error).message}`);
+            }
+          }
         } catch (e) {
+          console.log(`[projects:delete] FAILED: ${(e as Error).message}`);
           failed.push({ path: filePath, error: (e as Error).message });
         }
       }
 
-      // Delete library files and cache for deleted projects
-      for (const { hash, libraryPath } of libraryFilesToDelete) {
-        console.log(`[projects:delete] Clearing cache for hash: ${hash}`);
-
-        // Delete the source file from library
-        if (libraryPath.startsWith(filesFolder)) {
-          try {
-            await fs.unlink(libraryPath);
-            console.log(`[projects:delete] Deleted library file: ${libraryPath}`);
-          } catch (e) {
-            console.log(`[projects:delete] Could not delete library file: ${(e as Error).message}`);
-          }
-        }
-
-        // Clear all cache (render + analysis) for this file
-        try {
-          pdfAnalyzer.clearCache(hash);
-          console.log(`[projects:delete] Cache cleared for hash: ${hash}`);
-        } catch (e) {
-          console.log(`[projects:delete] Could not clear cache: ${(e as Error).message}`);
-        }
-      }
-
-      if (libraryFilesToDelete.length === 0) {
-        console.log(`[projects:delete] WARNING: No library files to delete - projects may not have file_hash set`);
-      }
-
+      console.log(`[projects:delete] Complete. Deleted: ${deleted.length}, Failed: ${failed.length}`);
       return { success: true, deleted, failed };
     } catch (err) {
+      console.error(`[projects:delete] Fatal error:`, err);
       return { success: false, error: (err as Error).message };
     }
   });
@@ -1987,8 +2095,25 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // SAFETY: Only allows writes to files inside the library folder
   ipcMain.handle('epub:save-modified', async (_event, outputPath: string) => {
     try {
+      // SAFETY CHECK: Only allow writes inside the library folder
+      const libraryRoot = getLibraryRoot();
+      const normalizedOutputPath = path.normalize(outputPath);
+      const normalizedLibraryRoot = path.normalize(libraryRoot);
+
+      if (!normalizedOutputPath.startsWith(normalizedLibraryRoot + path.sep) &&
+          normalizedOutputPath !== normalizedLibraryRoot) {
+        console.error(`[epub:save-modified] BLOCKED: Attempted write outside library folder`);
+        console.error(`[epub:save-modified]   outputPath: ${outputPath}`);
+        console.error(`[epub:save-modified]   libraryRoot: ${libraryRoot}`);
+        return {
+          success: false,
+          error: `Cannot write to files outside the library folder. Attempted path: ${outputPath}`
+        };
+      }
+
       const { saveModifiedEpub } = await import('./epub-processor.js');
       await saveModifiedEpub(outputPath);
       return { success: true, data: { outputPath } };
@@ -1997,8 +2122,25 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // SAFETY: Only allows writes to files inside the library folder
   ipcMain.handle('epub:edit-text', async (_event, epubPath: string, chapterId: string, oldText: string, newText: string) => {
     try {
+      // SAFETY CHECK: Only allow writes inside the library folder
+      const libraryRoot = getLibraryRoot();
+      const normalizedEpubPath = path.normalize(epubPath);
+      const normalizedLibraryRoot = path.normalize(libraryRoot);
+
+      if (!normalizedEpubPath.startsWith(normalizedLibraryRoot + path.sep) &&
+          normalizedEpubPath !== normalizedLibraryRoot) {
+        console.error(`[epub:edit-text] BLOCKED: Attempted write outside library folder`);
+        console.error(`[epub:edit-text]   epubPath: ${epubPath}`);
+        console.error(`[epub:edit-text]   libraryRoot: ${libraryRoot}`);
+        return {
+          success: false,
+          error: `Cannot write to files outside the library folder. Attempted path: ${epubPath}`
+        };
+      }
+
       const { editEpubText } = await import('./epub-processor.js');
       const result = await editEpubText(epubPath, chapterId, oldText, newText);
       return result;
@@ -2008,6 +2150,7 @@ function setupIpcHandlers(): void {
   });
 
   // EPUB export with text removals (for EPUB editor)
+  // SAFETY: Only allows writes to files inside the library folder
   ipcMain.handle('epub:export-with-removals', async (_event, inputPath: string, removals: Record<string, Array<{ chapterId: string; text: string; cfi: string }>>, outputPath?: string) => {
     try {
       const { exportEpubWithRemovals } = await import('./epub-processor.js');
@@ -2021,6 +2164,22 @@ function setupIpcHandlers(): void {
       // Determine output path
       const finalOutputPath = outputPath || inputPath.replace(/\.epub$/i, '_edited.epub');
 
+      // SAFETY CHECK: Only allow writes inside the library folder
+      const libraryRoot = getLibraryRoot();
+      const normalizedOutputPath = path.normalize(finalOutputPath);
+      const normalizedLibraryRoot = path.normalize(libraryRoot);
+
+      if (!normalizedOutputPath.startsWith(normalizedLibraryRoot + path.sep) &&
+          normalizedOutputPath !== normalizedLibraryRoot) {
+        console.error(`[epub:export-with-removals] BLOCKED: Attempted write outside library folder`);
+        console.error(`[epub:export-with-removals]   outputPath: ${finalOutputPath}`);
+        console.error(`[epub:export-with-removals]   libraryRoot: ${libraryRoot}`);
+        return {
+          success: false,
+          error: `Cannot write to files outside the library folder. Attempted path: ${finalOutputPath}`
+        };
+      }
+
       const result = await exportEpubWithRemovals(inputPath, removalsMap, finalOutputPath);
       return result;
     } catch (err) {
@@ -2029,8 +2188,25 @@ function setupIpcHandlers(): void {
   });
 
   // Copy EPUB file
+  // SAFETY: Only allows writes to files inside the library folder
   ipcMain.handle('epub:copy-file', async (_event, inputPath: string, outputPath: string) => {
     try {
+      // SAFETY CHECK: Only allow writes inside the library folder
+      const libraryRoot = getLibraryRoot();
+      const normalizedOutputPath = path.normalize(outputPath);
+      const normalizedLibraryRoot = path.normalize(libraryRoot);
+
+      if (!normalizedOutputPath.startsWith(normalizedLibraryRoot + path.sep) &&
+          normalizedOutputPath !== normalizedLibraryRoot) {
+        console.error(`[epub:copy-file] BLOCKED: Attempted write outside library folder`);
+        console.error(`[epub:copy-file]   outputPath: ${outputPath}`);
+        console.error(`[epub:copy-file]   libraryRoot: ${libraryRoot}`);
+        return {
+          success: false,
+          error: `Cannot write to files outside the library folder. Attempted path: ${outputPath}`
+        };
+      }
+
       const { copyEpubFile } = await import('./epub-processor.js');
       const result = await copyEpubFile(inputPath, outputPath);
       return result;
@@ -2399,8 +2575,25 @@ function setupIpcHandlers(): void {
   });
 
   // Replace text in EPUB - used for editing skipped chunks
+  // SAFETY: Only allows writes to files inside the library folder
   ipcMain.handle('ai:replace-text-in-epub', async (_event, epubPath: string, oldText: string, newText: string) => {
     try {
+      // SAFETY CHECK: Only allow writes inside the library folder
+      const libraryRoot = getLibraryRoot();
+      const normalizedEpubPath = path.normalize(epubPath);
+      const normalizedLibraryRoot = path.normalize(libraryRoot);
+
+      if (!normalizedEpubPath.startsWith(normalizedLibraryRoot + path.sep) &&
+          normalizedEpubPath !== normalizedLibraryRoot) {
+        console.error(`[ai:replace-text-in-epub] BLOCKED: Attempted write outside library folder`);
+        console.error(`[ai:replace-text-in-epub]   epubPath: ${epubPath}`);
+        console.error(`[ai:replace-text-in-epub]   libraryRoot: ${libraryRoot}`);
+        return {
+          success: false,
+          error: `Cannot write to files outside the library folder. Attempted path: ${epubPath}`
+        };
+      }
+
       const { replaceTextInEpub } = await import('./epub-processor.js');
       const result = await replaceTextInEpub(epubPath, oldText, newText);
       return result;
@@ -3704,6 +3897,253 @@ function setupIpcHandlers(): void {
     } catch (err) {
       console.error('[audiobook:export-from-project] Error:', err);
       return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Import an EPUB file directly - creates both BFP and audiobook folder
+  // This is for adding EPUBs via drag/drop without going through the PDF editor
+  ipcMain.handle('audiobook:import-epub', async (
+    _event,
+    epubSourcePath: string
+  ) => {
+    try {
+      const filename = path.basename(epubSourcePath);
+      const projectName = filename.replace(/\.epub$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+
+      // Create BFP file in projects folder
+      const projectsFolder = getProjectsFolder();
+      await fs.mkdir(projectsFolder, { recursive: true });
+
+      const bfpPath = path.join(projectsFolder, `${projectName}.bfp`);
+      const now = new Date().toISOString();
+
+      // Check if BFP already exists
+      let bfpProject: Record<string, unknown>;
+      let isReplacing = false;
+
+      try {
+        const existingContent = await fs.readFile(bfpPath, 'utf-8');
+        bfpProject = JSON.parse(existingContent);
+        isReplacing = true;
+        console.log(`[audiobook:import-epub] Updating existing BFP: ${bfpPath}`);
+      } catch {
+        // Create new BFP
+        bfpProject = {
+          version: 1,
+          source_path: epubSourcePath,
+          source_name: filename,
+          library_path: epubSourcePath,
+          file_hash: '',
+          deleted_block_ids: [],
+          created_at: now,
+          modified_at: now,
+          metadata: {
+            title: filename.replace(/\.epub$/i, '').replace(/[._]/g, ' ')
+          }
+        };
+        console.log(`[audiobook:import-epub] Creating new BFP: ${bfpPath}`);
+      }
+
+      // Create audiobook folder
+      const audiobookFolder = getAudiobookFolderForProject(projectName);
+      await fs.mkdir(audiobookFolder, { recursive: true });
+
+      // Copy original EPUB to audiobook folder as source.epub (immutable original)
+      const sourceCopyPath = path.join(audiobookFolder, 'source.epub');
+      await fs.copyFile(epubSourcePath, sourceCopyPath);
+      console.log(`[audiobook:import-epub] Copied original to: ${sourceCopyPath}`);
+
+      // Also create exported.epub as the working copy for the pipeline
+      const epubPath = path.join(audiobookFolder, 'exported.epub');
+      await fs.copyFile(epubSourcePath, epubPath);
+
+      // Create project.json in audiobook folder
+      const projectJsonPath = path.join(audiobookFolder, 'project.json');
+      const projectJson = {
+        id: projectName,
+        version: 1,
+        metadata: bfpProject.metadata || {},
+        state: { step: 'exported' },
+        createdAt: now
+      };
+      await fs.writeFile(projectJsonPath, JSON.stringify(projectJson, null, 2));
+
+      // Update BFP paths to point to copied source (self-contained project)
+      bfpProject.source_path = sourceCopyPath;
+      bfpProject.library_path = sourceCopyPath;
+      bfpProject.original_source_path = epubSourcePath; // Keep reference to where it came from
+
+      // Update BFP with audiobook state
+      bfpProject.audiobook = {
+        status: 'pending',
+        exportedEpubPath: epubPath,
+        exportedAt: now
+      };
+      bfpProject.audiobookFolder = audiobookFolder;
+      bfpProject.modified_at = now;
+
+      // Save BFP
+      await atomicWriteFile(bfpPath, JSON.stringify(bfpProject, null, 2));
+
+      console.log(`[audiobook:import-epub] ${isReplacing ? 'Updated' : 'Created'} project: ${bfpPath}`);
+
+      return {
+        success: true,
+        bfpPath,
+        audiobookFolder,
+        epubPath,
+        projectName
+      };
+    } catch (err) {
+      console.error('[audiobook:import-epub] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Migrate all projects to current BFP format/structure
+  // This ensures all projects are self-contained with source files copied locally
+  ipcMain.handle('projects:migrate-all', async () => {
+    const results: {
+      total: number;
+      migrated: number;
+      skipped: number;
+      failed: Array<{ name: string; error: string }>;
+      details: Array<{ name: string; action: string }>;
+    } = {
+      total: 0,
+      migrated: 0,
+      skipped: 0,
+      failed: [],
+      details: []
+    };
+
+    try {
+      const projectsFolder = getProjectsFolder();
+      const audiobooksFolder = getAudiobooksBasePath();
+
+      // Ensure folders exist
+      await fs.mkdir(projectsFolder, { recursive: true });
+      await fs.mkdir(audiobooksFolder, { recursive: true });
+
+      // Get all BFP files
+      const entries = await fs.readdir(projectsFolder, { withFileTypes: true });
+      const bfpFiles = entries.filter(e => e.isFile() && e.name.endsWith('.bfp'));
+
+      results.total = bfpFiles.length;
+      console.log(`[projects:migrate-all] Found ${bfpFiles.length} BFP files to check`);
+
+      for (const entry of bfpFiles) {
+        const bfpPath = path.join(projectsFolder, entry.name);
+        const projectName = entry.name.replace('.bfp', '');
+
+        try {
+          // Read BFP file
+          const content = await fs.readFile(bfpPath, 'utf-8');
+          const bfp = JSON.parse(content) as Record<string, unknown>;
+
+          // Create backup
+          const backupPath = bfpPath + '.migration-backup';
+          await fs.copyFile(bfpPath, backupPath);
+
+          // Determine audiobook folder
+          let audiobookFolder = bfp.audiobookFolder as string | undefined;
+          if (!audiobookFolder) {
+            audiobookFolder = path.join(audiobooksFolder, projectName);
+          }
+
+          // Check if migration is needed
+          const sourcePath = bfp.source_path as string | undefined;
+          const needsMigration = sourcePath && !sourcePath.includes('/audiobooks/') && !sourcePath.includes('/source.epub');
+
+          if (!needsMigration) {
+            // Already migrated or no source to migrate
+            results.skipped++;
+            results.details.push({ name: projectName, action: 'skipped - already migrated or no source' });
+            continue;
+          }
+
+          // Ensure audiobook folder exists
+          await fs.mkdir(audiobookFolder, { recursive: true });
+
+          // Copy source file to audiobook folder
+          const sourceExt = path.extname(sourcePath).toLowerCase();
+          const sourceDestName = sourceExt === '.pdf' ? 'source.pdf' : 'source.epub';
+          const sourceDestPath = path.join(audiobookFolder, sourceDestName);
+
+          if (fsSync.existsSync(sourcePath)) {
+            // Copy the source file
+            await fs.copyFile(sourcePath, sourceDestPath);
+            console.log(`[projects:migrate-all] Copied source: ${sourcePath} -> ${sourceDestPath}`);
+
+            // Update BFP
+            bfp.original_source_path = sourcePath;  // Keep reference to original location
+            bfp.source_path = sourceDestPath;
+            bfp.library_path = sourceDestPath;
+            bfp.audiobookFolder = audiobookFolder;
+
+            // Ensure audiobook property exists if there's an exported.epub
+            const exportedPath = path.join(audiobookFolder, 'exported.epub');
+            if (fsSync.existsSync(exportedPath) && !bfp.audiobook) {
+              bfp.audiobook = {
+                status: 'pending',
+                exportedEpubPath: exportedPath,
+                exportedAt: new Date().toISOString()
+              };
+            }
+
+            bfp.modified_at = new Date().toISOString();
+
+            // Save updated BFP
+            await atomicWriteFile(bfpPath, JSON.stringify(bfp, null, 2));
+
+            results.migrated++;
+            results.details.push({ name: projectName, action: 'migrated - source copied to project folder' });
+          } else {
+            // Source file doesn't exist - check if there's an exported.epub we can use
+            const exportedPath = path.join(audiobookFolder, 'exported.epub');
+            if (fsSync.existsSync(exportedPath)) {
+              // Use exported.epub as the source
+              const sourceDestPath2 = path.join(audiobookFolder, 'source.epub');
+              await fs.copyFile(exportedPath, sourceDestPath2);
+
+              bfp.original_source_path = sourcePath;
+              bfp.source_path = sourceDestPath2;
+              bfp.library_path = sourceDestPath2;
+              bfp.audiobookFolder = audiobookFolder;
+
+              if (!bfp.audiobook) {
+                bfp.audiobook = {
+                  status: 'pending',
+                  exportedEpubPath: exportedPath,
+                  exportedAt: new Date().toISOString()
+                };
+              }
+
+              bfp.modified_at = new Date().toISOString();
+              await atomicWriteFile(bfpPath, JSON.stringify(bfp, null, 2));
+
+              results.migrated++;
+              results.details.push({ name: projectName, action: 'migrated - used exported.epub as source' });
+            } else {
+              results.failed.push({ name: projectName, error: 'Source file not found and no exported.epub available' });
+            }
+          }
+        } catch (err) {
+          console.error(`[projects:migrate-all] Failed to migrate ${projectName}:`, err);
+          results.failed.push({ name: projectName, error: (err as Error).message });
+        }
+      }
+
+      console.log(`[projects:migrate-all] Migration complete:`, results);
+      return {
+        success: true,
+        migrated: results.details.filter(d => d.action.startsWith('migrated')).map(d => d.name),
+        skipped: results.details.filter(d => d.action.startsWith('skipped')).map(d => d.name),
+        failed: results.failed
+      };
+    } catch (err) {
+      console.error('[projects:migrate-all] Migration failed:', err);
+      return { success: false, error: (err as Error).message, migrated: [], skipped: [], failed: [] };
     }
   });
 
@@ -5416,18 +5856,30 @@ function setupIpcHandlers(): void {
       } catch { /* File might not exist */ }
 
       // Delete generated EPUBs and data from project folder
-      const sourceEpub = path.join(projectsDir, 'source.epub');
-      const targetEpub = path.join(projectsDir, 'target.epub');
+      // EPUBs are named by language (e.g., en.epub, de.epub) - delete all .epub files
       const sentencePairs = path.join(projectsDir, 'sentence_pairs.json');
       const cleanedTxt = path.join(projectsDir, 'cleaned.txt');
       const analyticsJson = path.join(projectsDir, 'analytics.json');
 
-      for (const file of [sourceEpub, targetEpub, sentencePairs, cleanedTxt, analyticsJson]) {
+      // Delete known data files
+      for (const file of [sentencePairs, cleanedTxt, analyticsJson]) {
         try {
           await fsPromises.unlink(file);
           console.log(`[MAIN] Deleted: ${file}`);
         } catch { /* File might not exist */ }
       }
+
+      // Delete all language-named EPUBs (en.epub, de.epub, etc.)
+      try {
+        const files = await fsPromises.readdir(projectsDir);
+        for (const file of files) {
+          if (file.endsWith('.epub') && file.length <= 7) { // e.g., "en.epub" = 7 chars
+            const epubPath = path.join(projectsDir, file);
+            await fsPromises.unlink(epubPath);
+            console.log(`[MAIN] Deleted: ${epubPath}`);
+          }
+        }
+      } catch { /* Directory might not exist */ }
 
       return { success: true };
     } catch (err) {
@@ -5528,14 +5980,13 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Language Learning Split Pipeline Jobs
+  // Bilingual Processing Pipeline Jobs
   // ─────────────────────────────────────────────────────────────────────────────
 
   // Job 1: AI Cleanup - reads from article.epub, writes to cleaned.epub
-  ipcMain.handle('ll-cleanup:run', async (_event, jobId: string, config: {
+  ipcMain.handle('bilingual-cleanup:run', async (_event, jobId: string, config: {
     projectId: string;
     projectDir: string;
-    // inputText removed - always reads from article.epub
     sourceLang: string;
     aiProvider: 'ollama' | 'claude' | 'openai';
     aiModel: string;
@@ -5553,10 +6004,11 @@ function setupIpcHandlers(): void {
   });
 
   // Job 2: Translation - reads from cleaned.epub, writes translated.epub
-  ipcMain.handle('ll-translation:run', async (_event, jobId: string, config: {
-    projectId: string;
-    projectDir: string;
-    cleanedEpubPath: string;
+  // Also supports mono translation (full book translation to single language)
+  ipcMain.handle('bilingual-translation:run', async (_event, jobId: string, config: {
+    projectId?: string;
+    projectDir?: string;
+    cleanedEpubPath?: string;
     sourceLang: string;
     targetLang: string;
     title?: string;
@@ -5566,11 +6018,768 @@ function setupIpcHandlers(): void {
     claudeApiKey?: string;
     openaiApiKey?: string;
     translationPrompt?: string;
+    monoTranslation?: boolean;
   }) => {
     try {
-      const { runLLTranslation } = await import('./ll-jobs.js');
+      const { runLLTranslation, runMonoTranslation } = await import('./ll-jobs.js');
+
+      // For mono translation, use dedicated handler
+      if (config.monoTranslation) {
+        return await runMonoTranslation(jobId, config, mainWindow);
+      }
+
       return await runLLTranslation(jobId, config, mainWindow);
     } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Sentence Cache IPC Handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Language name mapping for display
+  const LANGUAGE_NAMES: Record<string, string> = {
+    'en': 'English', 'de': 'German', 'es': 'Spanish', 'fr': 'French',
+    'it': 'Italian', 'pt': 'Portuguese', 'nl': 'Dutch', 'pl': 'Polish',
+    'ru': 'Russian', 'ja': 'Japanese', 'zh': 'Chinese', 'ko': 'Korean',
+  };
+
+  // List cached languages for a project
+  ipcMain.handle('sentence-cache:list', async (_event, audiobookFolder: string) => {
+    try {
+      const sentencesDir = path.join(audiobookFolder, 'sentences');
+
+      // Check if sentences folder exists
+      if (!fsSync.existsSync(sentencesDir)) {
+        return { success: true, languages: [] };
+      }
+
+      const files = await fs.readdir(sentencesDir);
+      const languages: Array<{
+        code: string;
+        name: string;
+        sentenceCount: number;
+        sourceLanguage: string | null;
+        createdAt: string;
+        hasAudio: boolean;
+        ttsSettings?: { engine: string; voice: string; speed: number };
+      }> = [];
+
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+
+        const code = file.replace('.json', '');
+        const filePath = path.join(sentencesDir, file);
+
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+          const cache = JSON.parse(content);
+          languages.push({
+            code,
+            name: LANGUAGE_NAMES[code] || code.toUpperCase(),
+            sentenceCount: cache.sentenceCount || 0,
+            sourceLanguage: cache.sourceLanguage,
+            createdAt: cache.createdAt || new Date().toISOString(),
+            hasAudio: cache.hasAudio || false,
+            ttsSettings: cache.ttsSettings,
+          });
+        } catch {
+          // Skip invalid JSON files
+        }
+      }
+
+      // Sort by createdAt (newest first)
+      languages.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      return { success: true, languages };
+    } catch (err) {
+      return { success: false, languages: [], error: (err as Error).message };
+    }
+  });
+
+  // Get sentences for a specific language
+  ipcMain.handle('sentence-cache:get', async (_event, audiobookFolder: string, language: string) => {
+    try {
+      const filePath = path.join(audiobookFolder, 'sentences', `${language}.json`);
+
+      if (!fsSync.existsSync(filePath)) {
+        return { success: false, error: `No cache found for language: ${language}` };
+      }
+
+      const content = await fs.readFile(filePath, 'utf-8');
+      const cache = JSON.parse(content);
+
+      return { success: true, cache };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Save sentences for a language
+  ipcMain.handle('sentence-cache:save', async (_event, audiobookFolder: string, language: string, data: {
+    language: string;
+    sourceLanguage: string | null;
+    sentences: string[] | Array<{ source: string; target: string }>;
+  }) => {
+    try {
+      const sentencesDir = path.join(audiobookFolder, 'sentences');
+
+      // Ensure directory exists
+      if (!fsSync.existsSync(sentencesDir)) {
+        await fs.mkdir(sentencesDir, { recursive: true });
+      }
+
+      const filePath = path.join(sentencesDir, `${language}.json`);
+
+      // Build cache object
+      const cache = {
+        language: data.language,
+        sourceLanguage: data.sourceLanguage,
+        createdAt: new Date().toISOString(),
+        sentenceCount: data.sentences.length,
+        sentences: data.sentences,
+      };
+
+      await fs.writeFile(filePath, JSON.stringify(cache, null, 2));
+
+      console.log(`[SENTENCE-CACHE] Saved ${cache.sentenceCount} sentences for ${language} to ${filePath}`);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Clear cache for specific languages or all
+  ipcMain.handle('sentence-cache:clear', async (_event, audiobookFolder: string, languages?: string[]) => {
+    try {
+      const sentencesDir = path.join(audiobookFolder, 'sentences');
+      const cleared: string[] = [];
+
+      if (!fsSync.existsSync(sentencesDir)) {
+        return { success: true, cleared };
+      }
+
+      if (languages && languages.length > 0) {
+        // Clear specific languages
+        for (const lang of languages) {
+          const filePath = path.join(sentencesDir, `${lang}.json`);
+          if (fsSync.existsSync(filePath)) {
+            await fs.unlink(filePath);
+            cleared.push(lang);
+          }
+        }
+      } else {
+        // Clear all
+        const files = await fs.readdir(sentencesDir);
+        for (const file of files) {
+          if (file.endsWith('.json')) {
+            await fs.unlink(path.join(sentencesDir, file));
+            cleared.push(file.replace('.json', ''));
+          }
+        }
+      }
+
+      console.log(`[SENTENCE-CACHE] Cleared cache for: ${cleared.join(', ')}`);
+      return { success: true, cleared };
+    } catch (err) {
+      return { success: false, cleared: [], error: (err as Error).message };
+    }
+  });
+
+  // Run TTS on a cached language's EPUB and cache the audio
+  ipcMain.handle('sentence-cache:run-tts', async (_event, config: {
+    audiobookFolder: string;
+    language: string;
+    ttsConfig: {
+      engine: 'xtts' | 'orpheus';
+      voice: string;
+      speed: number;
+      device: 'cpu' | 'mps' | 'gpu';
+      workers: number;
+    };
+  }) => {
+    const { audiobookFolder, language, ttsConfig } = config;
+    console.log(`[SENTENCE-CACHE] Running TTS for ${language}`, { audiobookFolder, ttsConfig });
+
+    try {
+      // Check if the EPUB exists
+      const epubPath = path.join(audiobookFolder, `${language}.epub`);
+      if (!fsSync.existsSync(epubPath)) {
+        return { success: false, error: `EPUB not found: ${epubPath}` };
+      }
+
+      // Generate a job ID
+      const jobId = `cache-tts-${language}-${Date.now()}`;
+
+      // Import parallel TTS bridge
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      parallelTtsBridge.setMainWindow(mainWindow);
+      await parallelTtsBridge.initializeLogger(getLibraryRoot());
+
+      // Map engine to ttsEngine name
+      const ttsEngine = ttsConfig.engine === 'orpheus' ? 'orpheus' : 'xtts';
+
+      // Build conversion config
+      const conversionConfig = {
+        workerCount: ttsConfig.workers,
+        epubPath,
+        outputDir: path.join(audiobookFolder, 'audiobook'),  // Temp, won't be used with skipAssembly
+        settings: {
+          device: ttsConfig.device,
+          language: language,
+          ttsEngine,
+          fineTuned: ttsConfig.voice,
+          temperature: 0.75,
+          topP: 0.85,
+          topK: 50,
+          repetitionPenalty: 5.0,
+          speed: ttsConfig.speed,
+          enableTextSplitting: false,
+          sentencePerParagraph: true,  // Important for chaptered EPUBs
+          skipHeadings: true,
+        },
+        parallelMode: 'sentences' as const,
+        skipAssembly: true,  // Get sentence audio, not final M4B
+        cleanSession: true,  // Start fresh for cached language TTS
+        metadata: {
+          title: `${path.basename(audiobookFolder)} (${language})`,
+        },
+      };
+
+      // Start conversion - this runs in the background
+      const result = await parallelTtsBridge.startParallelConversion(jobId, conversionConfig);
+
+      if (!result.success) {
+        return { success: false, error: result.error || 'Failed to start TTS conversion' };
+      }
+
+      // Return immediately - the TTS runs in background
+      // Frontend will listen for parallel-tts:complete events
+      return {
+        success: true,
+        jobId,
+        message: `TTS started for ${language}`,
+        // The sentencesDir will be in the completion event outputPath
+      };
+    } catch (err) {
+      console.error('[SENTENCE-CACHE] TTS error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Update sentence cache after TTS completes - copies audio to cache and updates JSON
+  ipcMain.handle('sentence-cache:cache-audio', async (_event, config: {
+    audiobookFolder: string;
+    language: string;
+    sentencesDir: string;  // Source directory from TTS job
+    ttsSettings: {
+      engine: 'xtts' | 'orpheus';
+      voice: string;
+      speed: number;
+    };
+  }) => {
+    const { audiobookFolder, language, sentencesDir, ttsSettings } = config;
+    console.log(`[SENTENCE-CACHE] Caching audio for ${language}`, { audiobookFolder, sentencesDir });
+
+    try {
+      // Create audio cache directory
+      const audioDir = path.join(audiobookFolder, 'audio', language);
+      await fs.mkdir(audioDir, { recursive: true });
+
+      // Copy all .flac files from sentencesDir to audioDir
+      const files = await fs.readdir(sentencesDir);
+      const audioFiles = files.filter(f => f.endsWith('.flac'));
+
+      for (const file of audioFiles) {
+        const src = path.join(sentencesDir, file);
+        const dst = path.join(audioDir, file);
+        await fs.copyFile(src, dst);
+      }
+
+      console.log(`[SENTENCE-CACHE] Copied ${audioFiles.length} audio files to ${audioDir}`);
+
+      // Update the sentence cache JSON
+      const cacheFile = path.join(audiobookFolder, 'sentences', `${language}.json`);
+      if (fsSync.existsSync(cacheFile)) {
+        const cacheContent = await fs.readFile(cacheFile, 'utf-8');
+        const cache = JSON.parse(cacheContent);
+        cache.hasAudio = true;
+        cache.audioDir = audioDir;
+        cache.ttsSettings = ttsSettings;
+        await fs.writeFile(cacheFile, JSON.stringify(cache, null, 2));
+        console.log(`[SENTENCE-CACHE] Updated cache JSON with hasAudio=true`);
+      }
+
+      return { success: true, audioDir, fileCount: audioFiles.length };
+    } catch (err) {
+      console.error('[SENTENCE-CACHE] Cache audio error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Run bilingual assembly from cached audio
+  ipcMain.handle('sentence-cache:run-assembly', async (_event, config: {
+    audiobookFolder: string;
+    languages: string[];  // e.g., ['en', 'de'] - first is source, second is target
+    pattern: 'interleaved' | 'sequential';
+    pauseBetweenLanguages: number;  // milliseconds
+    outputFormat: 'm4b' | 'mp3';
+  }) => {
+    const { audiobookFolder, languages, pattern, pauseBetweenLanguages, outputFormat } = config;
+    console.log(`[SENTENCE-CACHE] Running assembly`, { audiobookFolder, languages, pattern });
+
+    if (languages.length < 2) {
+      return { success: false, error: 'Need at least 2 languages for assembly' };
+    }
+
+    try {
+      // Verify all languages have cached audio
+      for (const lang of languages) {
+        const audioDir = path.join(audiobookFolder, 'audio', lang);
+        if (!fsSync.existsSync(audioDir)) {
+          return { success: false, error: `No cached audio for language: ${lang}` };
+        }
+      }
+
+      // For now, use the bilingual assembly with first two languages
+      // TODO: Support multi-language assembly patterns
+      const [sourceLang, targetLang] = languages;
+      const sourceAudioDir = path.join(audiobookFolder, 'audio', sourceLang);
+      const targetAudioDir = path.join(audiobookFolder, 'audio', targetLang);
+      const sentencePairsPath = path.join(audiobookFolder, 'sentence_pairs.json');
+
+      // Generate job ID
+      const jobId = `cache-assembly-${Date.now()}`;
+
+      // Import bilingual assembly bridge
+      const { runBilingualAssembly } = await import('./bilingual-assembly-bridge.js');
+
+      // Run assembly
+      const result = await runBilingualAssembly(jobId, {
+        projectId: path.basename(audiobookFolder),
+        sourceSentencesDir: sourceAudioDir,
+        targetSentencesDir: targetAudioDir,
+        sentencePairsPath,
+        outputDir: path.join(audiobookFolder, 'audiobook'),
+        pauseDuration: pauseBetweenLanguages / 1000,  // Convert ms to seconds
+        gapDuration: pattern === 'interleaved' ? 1.0 : 0.5,
+        sourceLang,
+        targetLang,
+        bfpPath: audiobookFolder,  // For saving output to BFP audiobook folder
+      });
+
+      return {
+        success: result.success,
+        audioPath: result.audioPath,
+        vttPath: result.vttPath,
+        error: result.error,
+      };
+    } catch (err) {
+      console.error('[SENTENCE-CACHE] Assembly error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Manifest Service IPC Handlers (Unified Project Management)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Create a new project
+  ipcMain.handle('manifest:create', async (_event, projectType: 'book' | 'article', source: any, metadata: any) => {
+    console.log('[manifest:create] Creating project:', projectType);
+    return manifestService.createProject(projectType, source, metadata);
+  });
+
+  // Get a project manifest
+  ipcMain.handle('manifest:get', async (_event, projectId: string) => {
+    return manifestService.getManifest(projectId);
+  });
+
+  // Save (update) a manifest
+  ipcMain.handle('manifest:save', async (_event, manifest: any) => {
+    return manifestService.saveManifest(manifest);
+  });
+
+  // Update specific fields in a manifest
+  ipcMain.handle('manifest:update', async (_event, update: any) => {
+    return manifestService.updateManifest(update);
+  });
+
+  // List all projects
+  ipcMain.handle('manifest:list', async (_event, filter?: { type?: 'book' | 'article' }) => {
+    return manifestService.listProjects(filter);
+  });
+
+  // List project summaries (lightweight)
+  ipcMain.handle('manifest:list-summaries', async (_event, filter?: { type?: 'book' | 'article' }) => {
+    return manifestService.listProjectSummaries(filter);
+  });
+
+  // Delete a project
+  ipcMain.handle('manifest:delete', async (_event, projectId: string) => {
+    return manifestService.deleteProject(projectId);
+  });
+
+  // Import a source file into a project
+  ipcMain.handle('manifest:import-source', async (_event, projectId: string, sourcePath: string, targetFilename?: string) => {
+    return manifestService.importSourceFile(projectId, sourcePath, targetFilename);
+  });
+
+  // Resolve a relative manifest path to absolute OS path
+  ipcMain.handle('manifest:resolve-path', async (_event, projectId: string, relativePath: string) => {
+    return { path: manifestService.resolveManifestPath(projectId, relativePath) };
+  });
+
+  // Get project folder path
+  ipcMain.handle('manifest:get-project-path', async (_event, projectId: string) => {
+    return { path: manifestService.getProjectPath(projectId) };
+  });
+
+  // Check if project exists
+  ipcMain.handle('manifest:exists', async (_event, projectId: string) => {
+    return { exists: manifestService.projectExists(projectId) };
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Migration IPC Handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Scan for legacy projects that need migration
+  ipcMain.handle('manifest:scan-legacy', async () => {
+    const result = await manifestMigration.scanLegacyProjects();
+    return {
+      success: true,
+      bfpCount: result.bfpFiles.length,
+      audiobookCount: result.audiobookFolders.length,
+      articleCount: result.articleFolders.length,
+      total: result.bfpFiles.length + result.audiobookFolders.length + result.articleFolders.length,
+    };
+  });
+
+  // Check if migration is needed
+  ipcMain.handle('manifest:needs-migration', async () => {
+    const needsMigration = await manifestMigration.needsMigration();
+    return { needsMigration };
+  });
+
+  // Migrate all legacy projects
+  ipcMain.handle('manifest:migrate-all', async (_event) => {
+    return manifestMigration.migrateAllProjects((progress) => {
+      // Send progress updates to renderer
+      mainWindow?.webContents.send('manifest:migration-progress', progress);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Editor Window - Opens PDF picker in a new window for editing a project
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Track open editor windows by project path
+  const editorWindows = new Map<string, BrowserWindow>();
+
+  ipcMain.handle('editor:open-window', async (_event, projectPath: string) => {
+    // Check if window already open for this project
+    const existingWindow = editorWindows.get(projectPath);
+    if (existingWindow && !existingWindow.isDestroyed()) {
+      existingWindow.focus();
+      return { success: true, alreadyOpen: true };
+    }
+
+    // Get icon path
+    const iconPath = isDev
+      ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
+      : path.join(app.getAppPath(), 'bookforge-icon.png');
+
+    // Create new editor window
+    const editorWindow = new BrowserWindow({
+      width: 1600,
+      height: 1000,
+      minWidth: 800,
+      minHeight: 600,
+      icon: iconPath,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, 'preload.js'),
+      },
+      titleBarStyle: 'hiddenInset',
+      backgroundColor: '#0a0a0a',
+    });
+
+    // Track the window
+    editorWindows.set(projectPath, editorWindow);
+
+    // Clean up when window closes
+    editorWindow.on('closed', () => {
+      editorWindows.delete(projectPath);
+      // Notify main window that editor closed (for refresh)
+      mainWindow?.webContents.send('editor:window-closed', projectPath);
+    });
+
+    // Load the editor route with project path as query param
+    const encodedPath = encodeURIComponent(projectPath);
+    if (isDev) {
+      editorWindow.loadURL(`http://localhost:4250/editor?project=${encodedPath}`);
+    } else {
+      const appPath = app.getAppPath();
+      const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
+      editorWindow.loadFile(indexPath, {
+        hash: `/editor?project=${encodedPath}`
+      });
+    }
+
+    return { success: true };
+  });
+
+  // Open editor window with BFP project and specific source version
+  // This ensures project state (deletions, chapters) is preserved
+  ipcMain.handle('editor:open-window-with-bfp', async (_event, bfpPath: string, sourcePath: string) => {
+    // Use BFP path as the window key so we track by project, not by source file
+    const existingWindow = editorWindows.get(bfpPath);
+    if (existingWindow && !existingWindow.isDestroyed()) {
+      existingWindow.focus();
+      return { success: true, alreadyOpen: true };
+    }
+
+    // Get icon path
+    const iconPath = isDev
+      ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
+      : path.join(app.getAppPath(), 'bookforge-icon.png');
+
+    // Create new editor window
+    const editorWindow = new BrowserWindow({
+      width: 1600,
+      height: 1000,
+      minWidth: 800,
+      minHeight: 600,
+      icon: iconPath,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, 'preload.js'),
+      },
+      titleBarStyle: 'hiddenInset',
+      backgroundColor: '#0a0a0a',
+    });
+
+    // Track the window by BFP path
+    editorWindows.set(bfpPath, editorWindow);
+
+    // Clean up when window closes
+    editorWindow.on('closed', () => {
+      editorWindows.delete(bfpPath);
+      // Notify main window that editor closed (for refresh)
+      mainWindow?.webContents.send('editor:window-closed', bfpPath);
+    });
+
+    // Load the editor route with both BFP path and source path as query params
+    const encodedBfp = encodeURIComponent(bfpPath);
+    const encodedSource = encodeURIComponent(sourcePath);
+    if (isDev) {
+      editorWindow.loadURL(`http://localhost:4250/editor?project=${encodedBfp}&source=${encodedSource}`);
+    } else {
+      const appPath = app.getAppPath();
+      const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
+      editorWindow.loadFile(indexPath, {
+        hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
+      });
+    }
+
+    return { success: true };
+  });
+
+  ipcMain.handle('editor:close-window', async (_event, projectPath: string) => {
+    const window = editorWindows.get(projectPath);
+    if (window && !window.isDestroyed()) {
+      window.close();
+    }
+    return { success: true };
+  });
+
+  // Get available versions for a project
+  ipcMain.handle('editor:get-versions', async (_event, bfpPath: string) => {
+    try {
+      // Read the BFP project file
+      if (!bfpPath || !fsSync.existsSync(bfpPath)) {
+        return { success: false, error: 'BFP file not found' };
+      }
+
+      const bfpContent = await fs.readFile(bfpPath, 'utf-8');
+      const bfp = JSON.parse(bfpContent);
+      const bfpDir = path.dirname(bfpPath);
+
+      const versions: Array<{
+        id: string;
+        type: string;
+        label: string;
+        description: string;
+        path: string;
+        extension: string;
+        language?: string;
+        modifiedAt?: string;
+        fileSize?: number;
+        editable: boolean;
+        icon: string;
+      }> = [];
+
+      // Helper to add a version if the file exists
+      const addVersion = async (
+        id: string,
+        type: string,
+        label: string,
+        description: string,
+        filePath: string,
+        icon: string,
+        editable: boolean,
+        language?: string
+      ) => {
+        if (filePath && fsSync.existsSync(filePath)) {
+          const stats = await fs.stat(filePath);
+          const ext = path.extname(filePath).toLowerCase().replace('.', '');
+          versions.push({
+            id,
+            type,
+            label,
+            description,
+            path: filePath,
+            extension: ext,
+            language,
+            modifiedAt: stats.mtime.toISOString(),
+            fileSize: stats.size,
+            editable: editable && (ext === 'epub' || ext === 'pdf'),
+            icon
+          });
+        }
+      };
+
+      // 1. Original source file
+      const sourcePath = bfp.source_path || bfp.sourcePath;
+      if (sourcePath) {
+        const sourceExt = path.extname(sourcePath).toLowerCase();
+        await addVersion(
+          'original',
+          'original',
+          'Original Source',
+          `The original ${sourceExt.toUpperCase().replace('.', '')} file you imported`,
+          sourcePath,
+          sourceExt === '.pdf' ? '📄' : '📘',
+          true
+        );
+      }
+
+      // 2. Finalized/Exported EPUB
+      // Only show if:
+      // - User has made edits in the editor (deleted_block_ids or deleted_pages), OR
+      // - Original source is a PDF (EPUB must have been created via editor), OR
+      // - BFP has explicit editorExported flag
+      const exportedPath = bfp.audiobook?.exportedEpubPath;
+      const hasDeletedBlocks = bfp.deleted_block_ids && bfp.deleted_block_ids.length > 0;
+      const hasDeletedPages = bfp.deleted_pages && bfp.deleted_pages.length > 0;
+      const hasUserEdits = hasDeletedBlocks || hasDeletedPages || bfp.editorExported;
+      const sourceIsPdf = sourcePath && sourcePath.toLowerCase().endsWith('.pdf');
+
+      if (exportedPath) {
+        const resolvedExportedPath = path.isAbsolute(exportedPath)
+          ? exportedPath
+          : path.join(bfpDir, exportedPath);
+
+        // Only show finalized version if user actually edited or source is PDF
+        const showFinalizedVersion = hasUserEdits || sourceIsPdf;
+
+        if (showFinalizedVersion && fsSync.existsSync(resolvedExportedPath)) {
+          await addVersion(
+            'finalized',
+            'finalized',
+            'Finalized EPUB',
+            'The exported EPUB with all your edits applied',
+            resolvedExportedPath,
+            '✅',
+            true
+          );
+        }
+      }
+
+      // 3. Cleaned EPUB (after AI cleanup)
+      // Check audiobook folder for cleaned version
+      const audiobookFolder = bfp.audiobookFolder || bfp.audiobook?.folder;
+      if (audiobookFolder && fsSync.existsSync(audiobookFolder)) {
+        const cleanedPath = path.join(audiobookFolder, 'exported_cleaned.epub');
+        await addVersion(
+          'cleaned',
+          'cleaned',
+          'Cleaned EPUB',
+          'After AI cleanup - typos fixed, formatting improved',
+          cleanedPath,
+          '🧹',
+          true
+        );
+
+        // 4. Translated EPUBs - look for *_translated.epub files
+        const files = await fs.readdir(audiobookFolder);
+        for (const file of files) {
+          if (file.endsWith('_translated.epub')) {
+            // Extract language from filename (e.g., "exported_de_translated.epub")
+            const match = file.match(/exported_([a-z]{2})_translated\.epub/);
+            const lang = match ? match[1] : 'unknown';
+            const langName = new Intl.DisplayNames(['en'], { type: 'language' }).of(lang) || lang;
+            await addVersion(
+              `translated-${lang}`,
+              'translated',
+              `Translated (${langName})`,
+              `Translated to ${langName}`,
+              path.join(audiobookFolder, file),
+              '🌍',
+              true,
+              lang
+            );
+          }
+        }
+      }
+
+      return { success: true, versions };
+    } catch (err) {
+      console.error('[EDITOR:GET-VERSIONS] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Save EPUB data directly to a file path
+  // SAFETY: Only allows writes to files inside the library folder
+  ipcMain.handle('editor:save-epub', async (_event, epubPath: string, epubData: ArrayBuffer) => {
+    try {
+      if (!epubPath) {
+        return { success: false, error: 'No EPUB path provided' };
+      }
+
+      // SAFETY CHECK: Only allow writes inside the library folder
+      const libraryRoot = getLibraryRoot();
+      const normalizedEpubPath = path.normalize(epubPath);
+      const normalizedLibraryRoot = path.normalize(libraryRoot);
+
+      if (!normalizedEpubPath.startsWith(normalizedLibraryRoot + path.sep) &&
+          normalizedEpubPath !== normalizedLibraryRoot) {
+        console.error(`[EDITOR:SAVE-EPUB] BLOCKED: Attempted write outside library folder`);
+        console.error(`[EDITOR:SAVE-EPUB]   epubPath: ${epubPath}`);
+        console.error(`[EDITOR:SAVE-EPUB]   libraryRoot: ${libraryRoot}`);
+        return {
+          success: false,
+          error: `Cannot write to files outside the library folder. Attempted path: ${epubPath}`
+        };
+      }
+
+      // Ensure the directory exists
+      const epubDir = path.dirname(epubPath);
+      await fs.mkdir(epubDir, { recursive: true });
+
+      // Write the EPUB data to the file
+      const buffer = Buffer.from(epubData);
+      await fs.writeFile(epubPath, buffer);
+
+      console.log(`[EDITOR:SAVE-EPUB] Saved EPUB to ${epubPath} (${buffer.length} bytes)`);
+      return { success: true };
+    } catch (err) {
+      console.error('[EDITOR:SAVE-EPUB] Error:', err);
       return { success: false, error: (err as Error).message };
     }
   });
@@ -5612,6 +6821,14 @@ app.whenReady().then(async () => {
     logger.info('Cleaned up stale TTS temp folders');
   } catch (err) {
     logger.warn('Failed to cleanup stale temp folders', { error: (err as Error).message });
+  }
+
+  // Clean up stale manifest staging files (Syncthing atomic write compatibility)
+  try {
+    await manifestService.cleanupStagingDir(24 * 60 * 60 * 1000); // 24 hours
+    logger.info('Cleaned up stale manifest staging files');
+  } catch (err) {
+    logger.warn('Failed to cleanup manifest staging dir', { error: (err as Error).message });
   }
 
   // Register the protocol handlers

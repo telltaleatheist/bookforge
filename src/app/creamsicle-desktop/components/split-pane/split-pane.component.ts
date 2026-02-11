@@ -1,5 +1,14 @@
-import { Component, Input, Output, EventEmitter, ElementRef, ViewChild, AfterViewInit, OnDestroy, NgZone } from '@angular/core';
+import {
+  Component,
+  Input,
+  Output,
+  EventEmitter,
+  OnDestroy,
+  ChangeDetectorRef
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Subject, fromEvent, merge } from 'rxjs';
+import { takeUntil, filter } from 'rxjs/operators';
 
 @Component({
   selector: 'desktop-split-pane',
@@ -11,7 +20,6 @@ import { CommonModule } from '@angular/common';
       [class.horizontal]="direction === 'horizontal'"
       [class.vertical]="direction === 'vertical'"
       [class.resizing]="isResizing"
-      #container
     >
       <div
         class="pane primary"
@@ -24,7 +32,7 @@ import { CommonModule } from '@angular/common';
 
       <div
         class="splitter"
-        (mousedown)="startResize($event)"
+        (mousedown)="onSplitterMouseDown($event)"
         [title]="'Drag to resize'"
       >
         <div class="splitter-line"></div>
@@ -161,9 +169,7 @@ import { CommonModule } from '@angular/common';
     }
   `]
 })
-export class SplitPaneComponent implements AfterViewInit, OnDestroy {
-  @ViewChild('container') containerRef!: ElementRef<HTMLElement>;
-
+export class SplitPaneComponent implements OnDestroy {
   @Input() direction: 'horizontal' | 'vertical' = 'horizontal';
   @Input() primarySize = 250;
   @Input() minSize = 100;
@@ -172,23 +178,21 @@ export class SplitPaneComponent implements AfterViewInit, OnDestroy {
   @Output() sizeChanged = new EventEmitter<number>();
 
   isResizing = false;
+
+  private destroy$ = new Subject<void>();
+  private resizeStop$ = new Subject<void>();
   private startPos = 0;
   private startSize = 0;
-  private cleanupFn: (() => void) | null = null;
 
-  constructor(private ngZone: NgZone) {}
+  constructor(private cdr: ChangeDetectorRef) {}
 
-  ngAfterViewInit() {
-    // Initialization if needed
-  }
-
-  ngOnDestroy() {
-    // Ensure cleanup if component is destroyed while resizing
+  ngOnDestroy(): void {
     this.stopResize();
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 
-  startResize(event: MouseEvent) {
-    // Prevent default to avoid text selection and other drag behaviors
+  onSplitterMouseDown(event: MouseEvent): void {
     event.preventDefault();
     event.stopPropagation();
 
@@ -196,54 +200,43 @@ export class SplitPaneComponent implements AfterViewInit, OnDestroy {
     this.startPos = this.direction === 'horizontal' ? event.clientX : event.clientY;
     this.startSize = this.primarySize;
 
-    const onMouseMove = (e: MouseEvent) => {
-      if (!this.isResizing) return;
-      e.preventDefault();
+    // Mouse move - track position
+    fromEvent<MouseEvent>(document, 'mousemove')
+      .pipe(takeUntil(this.resizeStop$))
+      .subscribe((e) => {
+        e.preventDefault();
+        const currentPos = this.direction === 'horizontal' ? e.clientX : e.clientY;
+        const delta = currentPos - this.startPos;
+        const newSize = Math.min(this.maxSize, Math.max(this.minSize, this.startSize + delta));
 
-      const currentPos = this.direction === 'horizontal' ? e.clientX : e.clientY;
-      const delta = currentPos - this.startPos;
-      const newSize = Math.min(this.maxSize, Math.max(this.minSize, this.startSize + delta));
-
-      // Run inside Angular zone to trigger change detection
-      this.ngZone.run(() => {
         this.primarySize = newSize;
         this.sizeChanged.emit(newSize);
+        this.cdr.detectChanges();
       });
-    };
 
-    const onMouseUp = () => {
-      this.stopResize();
-    };
-
-    // Also stop if window loses focus (e.g., alt-tab, click outside browser)
-    const onWindowBlur = () => {
-      this.stopResize();
-    };
-
-    // Store cleanup function
-    this.cleanupFn = () => {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      window.removeEventListener('blur', onWindowBlur);
-    };
-
-    // Run event listeners outside Angular zone for performance
-    this.ngZone.runOutsideAngular(() => {
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-      window.addEventListener('blur', onWindowBlur);
-    });
+    // All the ways resizing can end
+    merge(
+      fromEvent(document, 'mouseup'),
+      fromEvent(document, 'pointerup'),
+      fromEvent(window, 'blur'),
+      fromEvent(document, 'visibilitychange').pipe(
+        filter(() => document.hidden)
+      ),
+      fromEvent<MouseEvent>(document, 'mouseleave').pipe(
+        filter((e) => e.relatedTarget === null)
+      )
+    )
+      .pipe(takeUntil(this.resizeStop$))
+      .subscribe(() => {
+        this.stopResize();
+      });
   }
 
-  private stopResize() {
-    if (this.cleanupFn) {
-      this.cleanupFn();
-      this.cleanupFn = null;
-    }
+  private stopResize(): void {
     if (this.isResizing) {
-      this.ngZone.run(() => {
-        this.isResizing = false;
-      });
+      this.isResizing = false;
+      this.resizeStop$.next();
+      this.cdr.detectChanges();
     }
   }
 }

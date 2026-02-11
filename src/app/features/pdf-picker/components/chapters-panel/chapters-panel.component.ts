@@ -1,9 +1,8 @@
-import { Component, input, output, signal, ChangeDetectionStrategy, ElementRef, ViewChild, effect, untracked, inject, computed } from '@angular/core';
+import { Component, input, output, signal, ChangeDetectionStrategy, ElementRef, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { Chapter, ElectronService } from '../../../../core/services/electron.service';
-import { BookMetadata } from '../../pdf-picker.component';
+import { Chapter } from '../../../../core/services/electron.service';
 
 @Component({
   selector: 'app-chapters-panel',
@@ -12,156 +11,39 @@ import { BookMetadata } from '../../pdf-picker.component';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="panel-header">
-      <h3 class="panel-title">Chapters & Metadata</h3>
+      <h3 class="panel-title">Chapters</h3>
       <desktop-button variant="ghost" size="xs" (click)="cancel.emit()">Done</desktop-button>
     </div>
 
     <div class="panel-content">
-      <!-- Metadata Section -->
-      <div class="section-header" (click)="metadataExpanded.set(!metadataExpanded())">
-        <span class="section-toggle">{{ metadataExpanded() ? '▼' : '▶' }}</span>
-        <span class="section-title">Book Metadata</span>
-      </div>
-      @if (metadataExpanded()) {
-        <div class="metadata-section">
-          <div class="metadata-field">
-            <label>Title</label>
-            <input
-              type="text"
-              [value]="localMetadata().title || ''"
-              (input)="updateMetadataField('title', $event)"
-              placeholder="Book title"
-            />
-          </div>
-          <div class="metadata-field">
-            <label>Author</label>
-            <input
-              type="text"
-              [value]="localMetadata().author || ''"
-              (input)="updateMetadataField('author', $event)"
-              placeholder="Author name"
-            />
-          </div>
-          <div class="metadata-field">
-            <label>Author (Sort)</label>
-            <input
-              type="text"
-              [value]="localMetadata().authorFileAs || ''"
-              (input)="updateMetadataField('authorFileAs', $event)"
-              placeholder="Last, First"
-            />
-          </div>
-          <div class="metadata-row">
-            <div class="metadata-field">
-              <label>Year</label>
-              <input
-                type="text"
-                [value]="localMetadata().year || ''"
-                (input)="updateMetadataField('year', $event)"
-                placeholder="2024"
-              />
+      <!-- Source Info -->
+      <div class="source-info">
+        @switch (chaptersSource()) {
+          @case ('toc') {
+            <div class="info-box toc">
+              Loaded from document outline
             </div>
-            <div class="metadata-field">
-              <label>Language</label>
-              <input
-                type="text"
-                [value]="localMetadata().language || ''"
-                (input)="updateMetadataField('language', $event)"
-                placeholder="en"
-              />
-            </div>
-          </div>
-          <div class="metadata-field">
-            <label>Publisher</label>
-            <input
-              type="text"
-              [value]="localMetadata().publisher || ''"
-              (input)="updateMetadataField('publisher', $event)"
-              placeholder="Publisher name"
-            />
-          </div>
-          <div class="metadata-field">
-            <label>Description</label>
-            <textarea
-              [value]="localMetadata().description || ''"
-              (input)="updateMetadataField('description', $event)"
-              placeholder="Book description or synopsis"
-              rows="3"
-            ></textarea>
-          </div>
-          <div class="metadata-field">
-            <label>Cover Image</label>
-            <div
-              class="cover-paste-box"
-              [class.has-image]="coverImageUrl()"
-              tabindex="0"
-              (paste)="onCoverPaste($event)"
-              (click)="coverPasteBox?.focus()"
-              #coverPasteBox
-            >
-              @if (coverImageUrl()) {
-                <img [src]="coverImageUrl()" alt="Cover" />
-                <button class="remove-cover" (click)="removeCover($event)" title="Remove cover">×</button>
-              } @else {
-                <div class="paste-hint">
-                  <span class="paste-icon">📋</span>
-                  <span>Click here and press ⌘V to paste cover image</span>
-                </div>
-              }
-            </div>
-          </div>
-          <div class="save-row">
-            <desktop-button
-              variant="primary"
-              size="sm"
-              [fullWidth]="true"
-              (click)="onSaveClick()"
-            >
-              Save Metadata
-            </desktop-button>
-            @if (showSavedIndicator()) {
-              <span class="saved-indicator">✓ Saved</span>
-            }
-          </div>
-        </div>
-      }
-
-      <!-- Chapters Section -->
-      <div class="section-header" (click)="chaptersExpanded.set(!chaptersExpanded())">
-        <span class="section-toggle">{{ chaptersExpanded() ? '▼' : '▶' }}</span>
-        <span class="section-title">Chapters</span>
-        <span class="section-count">{{ chapters().length }}</span>
-      </div>
-
-      @if (chaptersExpanded()) {
-        <!-- Source Info -->
-        <div class="source-info">
-          @switch (chaptersSource()) {
-            @case ('toc') {
-              <div class="info-box toc">
-                Loaded from document outline
-              </div>
-            }
-            @case ('heuristic') {
-              <div class="info-box heuristic">
-                Auto-detected from content
-              </div>
-            }
-            @case ('manual') {
-              <div class="info-box manual">
-                Click anywhere to add chapters
-              </div>
-            }
-            @case ('mixed') {
-              <div class="info-box mixed">
-                Combined from multiple sources
-              </div>
-            }
           }
-        </div>
+          @case ('heuristic') {
+            <div class="info-box heuristic">
+              Auto-detected from content
+            </div>
+          }
+          @case ('manual') {
+            <div class="info-box manual">
+              Click anywhere to add chapters
+            </div>
+          }
+          @case ('mixed') {
+            <div class="info-box mixed">
+              Combined from multiple sources
+            </div>
+          }
+        }
+      </div>
 
-        <!-- Actions -->
-        <div class="action-buttons">
+      <!-- Actions -->
+      <div class="action-buttons">
         <desktop-button
           variant="secondary"
           size="sm"
@@ -247,7 +129,6 @@ import { BookMetadata } from '../../pdf-picker.component';
           }
         }
       </div>
-      }
     </div>
 
     <div class="panel-footer">
@@ -310,195 +191,6 @@ import { BookMetadata } from '../../pdf-picker.component';
       display: flex;
       flex-direction: column;
       gap: var(--ui-spacing-md);
-    }
-
-    .section-header {
-      display: flex;
-      align-items: center;
-      gap: var(--ui-spacing-sm);
-      padding: var(--ui-spacing-sm) 0;
-      cursor: pointer;
-      user-select: none;
-
-      &:hover {
-        .section-title {
-          color: var(--accent);
-        }
-      }
-    }
-
-    .section-toggle {
-      font-size: var(--ui-font-xs);
-      color: var(--text-tertiary);
-      width: 12px;
-    }
-
-    .section-title {
-      font-size: var(--ui-font-sm);
-      font-weight: $font-weight-semibold;
-      color: var(--text-primary);
-      transition: color 0.15s ease;
-    }
-
-    .section-count {
-      font-size: var(--ui-font-xs);
-      color: var(--text-tertiary);
-      background: var(--bg-elevated);
-      padding: 2px 6px;
-      border-radius: 10px;
-      margin-left: auto;
-    }
-
-    .metadata-section {
-      display: flex;
-      flex-direction: column;
-      gap: var(--ui-spacing-sm);
-      padding: var(--ui-spacing-sm) 0;
-      border-bottom: 1px solid var(--border-subtle);
-      margin-bottom: var(--ui-spacing-sm);
-    }
-
-    .metadata-field {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-
-      label {
-        font-size: var(--ui-font-xs);
-        color: var(--text-secondary);
-        font-weight: $font-weight-medium;
-      }
-
-      input, textarea {
-        width: 100%;
-        padding: var(--ui-spacing-sm) var(--ui-spacing-md);
-        font-size: var(--ui-font-sm);
-        color: var(--text-primary);
-        background: var(--bg-elevated);
-        border: 1px solid var(--border-default);
-        border-radius: $radius-sm;
-        outline: none;
-        transition: border-color 0.15s ease, box-shadow 0.15s ease;
-
-        &:focus {
-          border-color: var(--accent);
-          box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.15);
-        }
-
-        &::placeholder {
-          color: var(--text-tertiary);
-        }
-      }
-
-      textarea {
-        resize: vertical;
-        min-height: 60px;
-      }
-    }
-
-    .metadata-row {
-      display: flex;
-      gap: var(--ui-spacing-sm);
-
-      .metadata-field {
-        flex: 1;
-      }
-    }
-
-    .cover-paste-box {
-      width: 100%;
-      min-height: 120px;
-      border: 2px dashed var(--border-default);
-      border-radius: $radius-md;
-      background: var(--bg-elevated);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      transition: border-color 0.15s ease, background 0.15s ease;
-      position: relative;
-      overflow: hidden;
-
-      &:hover, &:focus {
-        border-color: var(--accent);
-        background: rgba(255, 107, 53, 0.05);
-        outline: none;
-      }
-
-      &.has-image {
-        border-style: solid;
-        padding: var(--ui-spacing-sm);
-
-        img {
-          max-width: 100%;
-          max-height: 200px;
-          object-fit: contain;
-          border-radius: $radius-sm;
-        }
-      }
-
-      .paste-hint {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: var(--ui-spacing-sm);
-        color: var(--text-tertiary);
-        font-size: var(--ui-font-sm);
-        text-align: center;
-        padding: var(--ui-spacing-md);
-
-        .paste-icon {
-          font-size: 1.5rem;
-        }
-      }
-
-      .remove-cover {
-        position: absolute;
-        top: var(--ui-spacing-sm);
-        right: var(--ui-spacing-sm);
-        width: 24px;
-        height: 24px;
-        border-radius: 50%;
-        border: none;
-        background: rgba(0, 0, 0, 0.6);
-        color: white;
-        font-size: 1rem;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        opacity: 0;
-        transition: opacity 0.15s ease;
-
-        &:hover {
-          background: rgba(255, 0, 0, 0.8);
-        }
-      }
-
-      &:hover .remove-cover {
-        opacity: 1;
-      }
-    }
-
-    .save-row {
-      display: flex;
-      align-items: center;
-      gap: var(--ui-spacing-sm);
-      margin-top: var(--ui-spacing-sm);
-    }
-
-    .saved-indicator {
-      font-size: var(--ui-font-sm);
-      color: #4CAF50;
-      font-weight: $font-weight-medium;
-      animation: fadeInOut 2s ease-in-out;
-    }
-
-    @keyframes fadeInOut {
-      0% { opacity: 0; transform: translateX(-4px); }
-      15% { opacity: 1; transform: translateX(0); }
-      85% { opacity: 1; transform: translateX(0); }
-      100% { opacity: 0; transform: translateX(0); }
     }
 
     .source-info {
@@ -705,17 +397,12 @@ import { BookMetadata } from '../../pdf-picker.component';
 })
 export class ChaptersPanelComponent {
   @ViewChild('editInput') editInput?: ElementRef<HTMLInputElement>;
-  @ViewChild('coverPasteBox') coverPasteBox?: ElementRef<HTMLDivElement>;
-
-  private readonly electronService = inject(ElectronService);
 
   chapters = input.required<Chapter[]>();
   chaptersSource = input.required<'toc' | 'heuristic' | 'manual' | 'mixed'>();
   detecting = input<boolean>(false);
   finalizing = input<boolean>(false);
   selectedChapterId = input<string | null>(null);
-  metadata = input<BookMetadata>({});
-  sourceName = input<string>('');
 
   cancel = output<void>();
   autoDetect = output<void>();
@@ -724,144 +411,11 @@ export class ChaptersPanelComponent {
   removeChapter = output<string>();
   finalizeChapters = output<void>();
   renameChapter = output<{ chapterId: string; newTitle: string }>();
-  metadataChange = output<BookMetadata>();
-  saveMetadata = output<void>();
-
-  // Section expansion state
-  readonly metadataExpanded = signal(true);
-  readonly chaptersExpanded = signal(true);
-
-  // Local metadata for editing (synced from input)
-  readonly localMetadata = signal<BookMetadata>({});
-
-  // Cover image loaded from external path (for new format)
-  readonly loadedCoverImage = signal<string | null>(null);
-
-  // Computed cover URL - uses old format or loads from path
-  readonly coverImageUrl = computed(() => {
-    const meta = this.localMetadata();
-    // Old format - embedded base64
-    if (meta.coverImage) return meta.coverImage;
-    // New format - loaded from path
-    return this.loadedCoverImage();
-  });
-
-  // Save indicator state
-  readonly showSavedIndicator = signal(false);
-  private savedTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Editing state
   readonly editingChapterId = signal<string | null>(null);
   readonly editingTitle = signal<string>('');
   private saveOnBlur = true;
-
-  constructor() {
-    // Sync metadata input to local state (only when input changes)
-    effect(() => {
-      const meta = this.metadata();
-      // Use untracked to avoid dependency on localMetadata - prevents infinite loop
-      const local = untracked(() => this.localMetadata());
-      if (JSON.stringify(meta) !== JSON.stringify(local)) {
-        this.localMetadata.set({ ...meta });
-      }
-    }, { allowSignalWrites: true });
-
-    // Initialize title from source name if not set (only when sourceName changes)
-    effect(() => {
-      const name = this.sourceName();
-      // Use untracked to avoid dependency on localMetadata - prevents infinite loop
-      const meta = untracked(() => this.localMetadata());
-      if (name && !meta.title) {
-        // Extract title from filename (remove extension)
-        const title = name.replace(/\.[^/.]+$/, '');
-        this.localMetadata.update(m => ({ ...m, title }));
-        this.metadataChange.emit({ ...this.localMetadata() });
-      }
-    }, { allowSignalWrites: true });
-
-    // Load cover image from external path when coverImagePath changes
-    effect(() => {
-      const meta = this.localMetadata();
-      if (meta.coverImagePath && !meta.coverImage) {
-        // Load from external file
-        this.electronService.mediaLoadImage(meta.coverImagePath).then(result => {
-          if (result.success && result.data) {
-            this.loadedCoverImage.set(result.data);
-          }
-        });
-      } else if (!meta.coverImagePath) {
-        this.loadedCoverImage.set(null);
-      }
-    }, { allowSignalWrites: true });
-  }
-
-  updateMetadataField(field: keyof BookMetadata, event: Event): void {
-    const value = (event.target as HTMLInputElement | HTMLTextAreaElement).value;
-    this.localMetadata.update(m => ({ ...m, [field]: value }));
-    this.metadataChange.emit({ ...this.localMetadata() });
-  }
-
-  onCoverPaste(event: ClipboardEvent): void {
-    event.preventDefault();
-    const items = event.clipboardData?.items;
-    if (!items) return;
-
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      if (item.type.startsWith('image/')) {
-        const file = item.getAsFile();
-        if (file) {
-          const reader = new FileReader();
-          reader.onload = async (e) => {
-            const dataUrl = e.target?.result as string;
-            if (dataUrl) {
-              // Save to media folder and store path instead of embedding
-              const result = await this.electronService.mediaSaveImage(dataUrl, 'cover');
-              if (result.success && result.path) {
-                // Remove old coverImage, set new coverImagePath
-                this.localMetadata.update(m => {
-                  const { coverImage, ...rest } = m;
-                  return { ...rest, coverImagePath: result.path };
-                });
-                // Also update the loaded image for display
-                this.loadedCoverImage.set(dataUrl);
-                this.metadataChange.emit({ ...this.localMetadata() });
-              } else {
-                // Fallback to old behavior if save fails
-                this.localMetadata.update(m => ({ ...m, coverImage: dataUrl }));
-                this.metadataChange.emit({ ...this.localMetadata() });
-              }
-            }
-          };
-          reader.readAsDataURL(file);
-        }
-        break;
-      }
-    }
-  }
-
-  removeCover(event: Event): void {
-    event.stopPropagation();
-    this.localMetadata.update(m => {
-      // Remove both old and new format fields
-      const { coverImage, coverImagePath, ...rest } = m;
-      return rest;
-    });
-    this.loadedCoverImage.set(null);
-    this.metadataChange.emit({ ...this.localMetadata() });
-  }
-
-  onSaveClick(): void {
-    this.saveMetadata.emit();
-    // Show saved indicator
-    if (this.savedTimeout) {
-      clearTimeout(this.savedTimeout);
-    }
-    this.showSavedIndicator.set(true);
-    this.savedTimeout = setTimeout(() => {
-      this.showSavedIndicator.set(false);
-    }, 2000);
-  }
 
   onChapterClick(event: Event, chapterId: string): void {
     // Don't select if we're editing

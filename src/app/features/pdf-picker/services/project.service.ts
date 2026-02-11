@@ -238,4 +238,39 @@ export class ProjectService {
       modified_at: new Date().toISOString()
     };
   }
+
+  /**
+   * Finalize the project for audiobook processing.
+   * Exports EPUB to the project folder and updates BFP with exportedEpubPath.
+   *
+   * @param bfpPath - Path to the BFP project file
+   * @returns Result object with success status, EPUB path, and optional error
+   */
+  async finalizeProject(bfpPath: string): Promise<{ success: boolean; epubPath?: string; error?: string }> {
+    try {
+      // Call the electron service to finalize the project
+      // This will:
+      // 1. Export the EPUB using the current editor state
+      // 2. Save it to the project folder as 'exported.epub'
+      // 3. Update the BFP project file with audiobook.exportedEpubPath
+      const result = await this.electronService.projectFinalize(bfpPath);
+
+      if (result.success && result.epubPath) {
+        return {
+          success: true,
+          epubPath: result.epubPath
+        };
+      }
+
+      return {
+        success: false,
+        error: result.error || 'Failed to finalize project'
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error during finalization'
+      };
+    }
+  }
 }

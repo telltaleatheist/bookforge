@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, HostListener, ViewChild, ElementRef, effect, DestroyRef, ChangeDetectionStrategy } from '@angular/core';
+import { Component, inject, signal, computed, HostListener, ViewChild, ElementRef, effect, DestroyRef, ChangeDetectionStrategy, input, output, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
@@ -258,14 +258,16 @@ interface AlertModal {
       </div>
     }
 
-    <!-- Tab Bar for open documents -->
-    <app-tab-bar
-      [tabs]="documentTabs()"
-      [activeTabId]="activeTabId()"
-      (tabSelected)="onTabSelected($event)"
-      (tabClosed)="onTabClosed($event)"
-      (newTab)="showFilePicker.set(true)"
-    />
+    <!-- Tab Bar for open documents (hidden in embedded mode) -->
+    @if (!embedded()) {
+      <app-tab-bar
+        [tabs]="documentTabs()"
+        [activeTabId]="activeTabId()"
+        (tabSelected)="onTabSelected($event)"
+        (tabClosed)="onTabClosed($event)"
+        (newTab)="showFilePicker.set(true)"
+      />
+    }
 
     <!-- Main Layout -->
     @if (pdfLoaded()) {
@@ -289,9 +291,9 @@ interface AlertModal {
                 <button
                   class="menu-item"
                   [class.active]="currentMode() === mode.id"
-                  [class.disabled]="lightweightMode() && mode.id !== 'ocr'"
-                  [title]="lightweightMode() && mode.id !== 'ocr' ? 'Not available in lightweight mode' : mode.tooltip"
-                  [disabled]="lightweightMode() && mode.id !== 'ocr'"
+                  [class.disabled]="(lightweightMode() && mode.id !== 'ocr') || isModeDisabledForDocType(mode.id)"
+                  [title]="getModeTooltip(mode)"
+                  [disabled]="(lightweightMode() && mode.id !== 'ocr') || isModeDisabledForDocType(mode.id)"
                   (click)="setMode(mode.id)"
                 >
                   <span class="menu-icon">{{ mode.icon }}</span>
@@ -503,8 +505,6 @@ interface AlertModal {
             [detecting]="detectingChapters()"
             [finalizing]="finalizingChapters()"
             [selectedChapterId]="selectedChapterId()"
-            [metadata]="metadata()"
-            [sourceName]="pdfName()"
             (cancel)="exitChaptersMode()"
             (autoDetect)="autoDetectChapters()"
             (clearChapters)="clearAllChapters()"
@@ -512,8 +512,6 @@ interface AlertModal {
             (removeChapter)="removeChapter($event)"
             (renameChapter)="renameChapter($event)"
             (finalizeChapters)="finalizeChapters()"
-            (metadataChange)="onMetadataChange($event)"
-            (saveMetadata)="onSaveMetadata()"
           />
         } @else {
           <app-categories-panel
@@ -567,8 +565,14 @@ interface AlertModal {
           />
         }
       </desktop-split-pane>
+    } @else if (embedded()) {
+      <!-- Loading state for embedded mode -->
+      <div class="embedded-loading">
+        <div class="loading-spinner"></div>
+        <p>Loading project...</p>
+      </div>
     } @else {
-      <!-- Library View when no PDF loaded -->
+      <!-- Library View when no PDF loaded (not in embedded mode) -->
       <div class="library-container">
         <app-library-view
           (openFile)="showFilePicker.set(true)"
@@ -592,8 +596,8 @@ interface AlertModal {
       (cancel)="onCancelBackgroundJob($event)"
     />
 
-    <!-- File Picker Modal -->
-    @if (showFilePicker()) {
+    <!-- File Picker Modal (not shown in embedded mode) -->
+    @if (showFilePicker() && !embedded()) {
       <app-file-picker
         (fileSelected)="loadPdf($event)"
         (close)="showFilePicker.set(false)"
@@ -1088,6 +1092,17 @@ interface AlertModal {
       position: relative;  /* For absolute positioning of progress indicator */
       display: flex;
       flex-direction: column;
+    }
+
+    .embedded-loading {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      color: var(--text-secondary);
+      font-size: 0.875rem;
     }
 
     .viewer-timeline-wrapper {
@@ -1877,7 +1892,41 @@ interface AlertModal {
 
   `],
 })
-export class PdfPickerComponent {
+export class PdfPickerComponent implements OnInit {
+  // ─────────────────────────────────────────────────────────────────────────
+  // Inputs & Outputs for embedded mode
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** When true, runs in embedded mode (inside Studio Editor tab) */
+  readonly embedded = input<boolean>(false);
+
+  /** BFP project path to auto-load when embedded */
+  readonly bfpPath = input<string>('');
+
+  /**
+   * Optional: Override the source file to load when loading a BFP project.
+   * This allows loading a BFP (for saved state like deletions, chapters) but
+   * using a different source file (e.g., original vs exported vs cleaned EPUB).
+   * When set, the BFP's source_path is ignored in favor of this path.
+   */
+  readonly overrideSourcePath = input<string | null>(null);
+
+  /** Emitted when Finalize is clicked in embedded mode */
+  readonly finalized = output<{ success: boolean; epubPath?: string; error?: string }>();
+
+  /**
+   * Tracks the source file being edited (EPUB/PDF path, not BFP).
+   * When set, "Save" will write back to this file instead of creating a new export.
+   */
+  readonly sourceFilePath = signal<string | null>(null);
+
+  /** Emitted when the user wants to exit embedded mode */
+  readonly exitRequested = output<void>();
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Services
+  // ─────────────────────────────────────────────────────────────────────────
+
   private readonly pdfService = inject(PdfService);
   private readonly electronService = inject(ElectronService);
   private readonly exportService = inject(ExportService);
@@ -1905,7 +1954,13 @@ export class PdfPickerComponent {
   private readonly ACTIVE_TAB_KEY = 'bookforge-active-tab';
 
   // Tab persistence - save open document paths to localStorage
+  // Only runs in non-embedded mode to avoid corrupting main window state
   private readonly tabPersistenceEffect = effect(() => {
+    // Skip in embedded mode - editor window shouldn't affect main window's tabs
+    if (this.embedded()) {
+      return;
+    }
+
     const docs = this.openDocuments();
     const activeId = this.activeDocumentId();
 
@@ -1932,11 +1987,8 @@ export class PdfPickerComponent {
     }
   });
 
-  // Tab restoration - restore open documents from localStorage on init
-  private readonly tabRestoration = (() => {
-    // Use setTimeout to ensure this runs after component is fully initialized
-    setTimeout(() => this.restoreOpenTabs(), 0);
-  })();
+  // Tab restoration is now handled in ngOnInit() to ensure inputs are properly bound
+  // This prevents race conditions where embedded() returns false before Angular sets the input
 
   // Nav-rail "home" button handler - when clicking library while already on library
   private readonly navHomeHandler = (() => {
@@ -1983,6 +2035,30 @@ export class PdfPickerComponent {
   get pdfName() { return this.editorState.pdfName; }
   get pdfPath() { return this.editorState.pdfPath; }
   get libraryPath() { return this.editorState.libraryPath; }
+
+  // Computed: Check if current document is an EPUB (not a PDF)
+  readonly isCurrentDocumentEpub = computed(() => {
+    const name = this.pdfName();
+    return name.toLowerCase().endsWith('.epub');
+  });
+
+  // Computed: Check if a mode is disabled based on document type
+  // Crop, Split, and OCR only work on PDFs, not EPUBs
+  isModeDisabledForDocType(modeId: string): boolean {
+    const pdfOnlyModes = ['crop', 'split', 'ocr'];
+    return this.isCurrentDocumentEpub() && pdfOnlyModes.includes(modeId);
+  }
+
+  // Get tooltip message for a mode (includes reason if disabled)
+  getModeTooltip(mode: { id: string; tooltip: string }): string {
+    if (this.isModeDisabledForDocType(mode.id)) {
+      return `${mode.tooltip} (PDF only - not available for EPUB)`;
+    }
+    if (this.lightweightMode() && mode.id !== 'ocr') {
+      return 'Not available in lightweight mode';
+    }
+    return mode.tooltip;
+  }
   get effectivePath() { return this.editorState.effectivePath; }
   get fileHash() { return this.editorState.fileHash; }
   get pdfLoaded() { return this.editorState.pdfLoaded; }
@@ -2051,6 +2127,40 @@ export class PdfPickerComponent {
   private readonly GRID_GAP = 16; // Gap between thumbnails in px
   private readonly GRID_PADDING = 32; // Padding around grid container
   private readonly DEFAULT_PAGES_ACROSS = 4; // Target pages across in grid
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Lifecycle Hooks
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Initialize component - handles embedded mode auto-loading and tab restoration
+   */
+  ngOnInit(): void {
+    if (this.embedded() && this.bfpPath()) {
+      // Embedded mode - load the specified project
+      const filePath = this.bfpPath();
+      const lowerPath = filePath.toLowerCase();
+
+      // Determine how to load based on file extension
+      if (lowerPath.endsWith('.bfp')) {
+        // BFP project file - load as existing project
+        setTimeout(() => this.loadProjectFromPath(filePath), 0);
+      } else {
+        // Any other file type (EPUB, PDF, etc.) - import to library and load
+        // Do NOT set sourceFilePath - we never want to modify the original file
+        // All changes go through the BFP project flow
+        setTimeout(() => this.loadPdf(filePath), 0);
+      }
+    } else if (!this.embedded()) {
+      // Non-embedded mode - restore open tabs from localStorage
+      // This must be in ngOnInit to ensure embedded() input is properly bound
+      setTimeout(() => this.restoreOpenTabs(), 0);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Zoom & Layout
+  // ─────────────────────────────────────────────────────────────────────────
 
   /**
    * Calculate optimal zoom level to fit N pages across in grid mode
@@ -2238,17 +2348,33 @@ export class PdfPickerComponent {
   }
 
   // Tools sidebar resize handlers
+  private sidebarResizeCleanup: (() => void) | null = null;
+
   onSidebarResizeStart(event: MouseEvent): void {
     event.preventDefault();
     this.isResizingSidebar = true;
     this.sidebarResizeStartX = event.clientX;
     this.sidebarResizeStartWidth = this.toolsSidebarWidth();
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+
+    // Cleanup function
+    this.sidebarResizeCleanup = () => {
+      document.removeEventListener('mousemove', this.onSidebarResizeMove);
+      document.removeEventListener('mouseup', this.onSidebarResizeEnd);
+      document.removeEventListener('pointerup', this.onSidebarResizeEnd);
+      document.removeEventListener('mouseleave', this.onSidebarMouseLeave);
+      document.removeEventListener('visibilitychange', this.onSidebarVisibilityChange);
+      window.removeEventListener('blur', this.onSidebarResizeEnd);
+    };
 
     // Add document-level listeners for smooth dragging
     document.addEventListener('mousemove', this.onSidebarResizeMove);
     document.addEventListener('mouseup', this.onSidebarResizeEnd);
-    document.body.style.cursor = 'ew-resize';
-    document.body.style.userSelect = 'none';
+    document.addEventListener('pointerup', this.onSidebarResizeEnd);
+    document.addEventListener('mouseleave', this.onSidebarMouseLeave);
+    document.addEventListener('visibilitychange', this.onSidebarVisibilityChange);
+    window.addEventListener('blur', this.onSidebarResizeEnd);
   }
 
   private onSidebarResizeMove = (event: MouseEvent): void => {
@@ -2260,11 +2386,21 @@ export class PdfPickerComponent {
   };
 
   private onSidebarResizeEnd = (): void => {
+    if (this.sidebarResizeCleanup) {
+      this.sidebarResizeCleanup();
+      this.sidebarResizeCleanup = null;
+    }
     this.isResizingSidebar = false;
-    document.removeEventListener('mousemove', this.onSidebarResizeMove);
-    document.removeEventListener('mouseup', this.onSidebarResizeEnd);
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+  };
+
+  private onSidebarMouseLeave = (e: MouseEvent): void => {
+    if (e.relatedTarget === null) this.onSidebarResizeEnd();
+  };
+
+  private onSidebarVisibilityChange = (): void => {
+    if (document.hidden) this.onSidebarResizeEnd();
   };
 
   readonly showFilePicker = signal(false);
@@ -2516,7 +2652,7 @@ export class PdfPickerComponent {
     { id: 'crop', icon: '✂️', label: 'Crop', tooltip: 'Draw rectangle to crop (C)' },
     { id: 'split', icon: '📖', label: 'Split', tooltip: 'Split scanned pages (P)' },
     { id: 'ocr', icon: '👁️', label: 'OCR', tooltip: 'OCR scanned pages (O)' },
-    { id: 'chapters', icon: '📚', label: 'Chapters & Metadata', tooltip: 'Chapters and book metadata (H)' }
+    { id: 'chapters', icon: '📚', label: 'Chapters', tooltip: 'Manage chapters (H)' }
   ];
 
   // Crop mode state (derived from currentMode)
@@ -2588,21 +2724,35 @@ export class PdfPickerComponent {
     const lightweight = this.lightweightMode();
 
     // Base items always shown
-    const baseItems: ToolbarItem[] = [
+    const isEmbedded = this.embedded();
+
+    // In embedded mode, don't show "Open File" button
+    const baseItems: ToolbarItem[] = isEmbedded ? [] : [
       { id: 'open', type: 'button', icon: '📂', label: 'Open File', tooltip: 'Open PDF file' },
     ];
 
     // Items only shown when PDF is open
     if (pdfIsOpen) {
+      // In embedded mode, show Finalize instead of Export
+      const exportOrFinalize: ToolbarItem = isEmbedded
+        ? {
+            id: 'finalize',
+            type: 'button',
+            icon: '✓',
+            label: 'Finalize',
+            tooltip: 'Finalize project for audiobook processing'
+          }
+        : {
+            id: 'export',
+            type: 'button',
+            icon: '📤',
+            label: 'Export',
+            tooltip: 'Export document (Ctrl+E)'
+          };
+
       return [
         ...baseItems,
-        {
-          id: 'export',
-          type: 'button',
-          icon: '📤',
-          label: 'Export',
-          tooltip: 'Export document (Ctrl+E)'
-        },
+        exportOrFinalize,
         {
           id: 'search',
           type: 'button',
@@ -2723,6 +2873,9 @@ export class PdfPickerComponent {
         break;
       case 'export':
         this.showExportSettings.set(true);
+        break;
+      case 'finalize':
+        this.finalizeProject();
         break;
       case 'search':
         this.toggleSearch();
@@ -3049,13 +3202,15 @@ export class PdfPickerComponent {
     }
   }
 
-  onZoomChange(direction: 'in' | 'out'): void {
-    // Reuse toolbar zoom logic
-    if (direction === 'in') {
-      this.onToolbarAction({ id: 'zoom-in', type: 'button' });
-    } else {
-      this.onToolbarAction({ id: 'zoom-out', type: 'button' });
-    }
+  onZoomChange(delta: number): void {
+    // Apply zoom delta directly for smooth, responsive zooming
+    this.userAdjustedZoom = true;
+    const currentZoom = this.zoom();
+    // Scale delta based on current zoom for consistent feel
+    // At higher zoom levels, same scroll should change more absolute pixels
+    const scaledDelta = delta * (currentZoom / 100);
+    const newZoom = Math.max(10, Math.min(2000, Math.round(currentZoom + scaledDelta)));
+    this.zoom.set(newZoom);
   }
 
   // Delegate to PageRenderService
@@ -3321,28 +3476,40 @@ export class PdfPickerComponent {
     this.saveCurrentDocumentState();
 
     this.loading.set(true);
-    this.loadingText.set('Importing to library...');
+
+    let libraryPath: string;
+    let fileHash = '';
 
     try {
-      // Import file to library (copies file and deduplicates by hash)
-      const importResult = await this.electronService.libraryImportFile(effectivePath);
-      if (!importResult.success || !importResult.libraryPath) {
-        throw new Error(importResult.error || 'Failed to import file to library');
+      // In embedded mode, skip library import - just use the file directly
+      // The file is already part of a BFP project
+      if (this.embedded()) {
+        this.loadingText.set('Analyzing document...');
+        libraryPath = effectivePath;
+      } else {
+        this.loadingText.set('Importing to library...');
+
+        // Import file to library (copies file and deduplicates by hash)
+        const importResult = await this.electronService.libraryImportFile(effectivePath);
+        if (!importResult.success || !importResult.libraryPath) {
+          throw new Error(importResult.error || 'Failed to import file to library');
+        }
+
+        libraryPath = importResult.libraryPath;
+        fileHash = importResult.hash || '';
+
+        // Check if already open by hash (same file, different path)
+        const existingByHash = this.openDocuments().find(d => d.fileHash === fileHash && fileHash);
+        if (existingByHash) {
+          this.saveCurrentDocumentState();
+          this.restoreDocumentState(existingByHash.id);
+          this.loading.set(false);
+          return;
+        }
+
+        this.loadingText.set('Analyzing document...');
       }
 
-      const libraryPath = importResult.libraryPath;
-      const fileHash = importResult.hash || '';
-
-      // Check if already open by hash (same file, different path)
-      const existingByHash = this.openDocuments().find(d => d.fileHash === fileHash && fileHash);
-      if (existingByHash) {
-        this.saveCurrentDocumentState();
-        this.restoreDocumentState(existingByHash.id);
-        this.loading.set(false);
-        return;
-      }
-
-      this.loadingText.set('Analyzing PDF...');
       const result = await this.pdfService.analyzePdf(libraryPath);
 
       // Create new document
@@ -3413,7 +3580,17 @@ export class PdfPickerComponent {
       }
 
       // Auto-create project file for this document
-      await this.autoCreateProject(path, result.pdf_name);
+      // Only auto-create project in non-embedded mode
+      // In embedded mode, the project already exists (we're editing a version of it)
+      if (!this.embedded()) {
+        await this.autoCreateProject(path, result.pdf_name);
+      }
+
+      // Auto-extract chapters from EPUBs (they have nav.xhtml with TOC)
+      // PDFs may or may not have outlines, so we only auto-load for EPUBs
+      if (libraryPath.toLowerCase().endsWith('.epub')) {
+        this.tryLoadOutline();
+      }
 
       // Start page rendering in background (non-blocking)
       // Pages will appear as they complete via the pageRenderService signals
@@ -4599,6 +4776,165 @@ export class PdfPickerComponent {
   }
 
   /**
+   * Finalize the project for audiobook processing (embedded mode).
+   *
+   * Finalize the project by exporting an EPUB to the audiobook folder.
+   * The original source file is NEVER modified - a new EPUB is generated from the blocks.
+   */
+  async finalizeProject(): Promise<void> {
+    const projectPath = this.projectPath();
+
+    // Finalize requires a BFP project - we never modify original source files
+    if (!projectPath) {
+      this.finalized.emit({
+        success: false,
+        error: 'Please save the project first before finalizing'
+      });
+      return;
+    }
+
+    this.loading.set(true);
+    this.loadingText.set('Finalizing project...');
+
+    try {
+      const chapters = this.chapters();
+      const deletedHighlights = this.getDeletedHighlights();
+
+      // Export to audiobook folder - NEVER modifies the original source file
+      const result = await this.exportService.exportToAudiobook(
+        this.blocks(),
+        this.deletedBlockIds(),
+        chapters,
+        this.pdfName(),
+        projectPath,
+        this.editorState.textCorrections(),
+        this.deletedPages(),
+        deletedHighlights,
+        this.metadata(),
+        false // Don't navigate to audiobook producer
+      );
+
+      if (result.success) {
+        this.finalized.emit({
+          success: true,
+          epubPath: result.filename  // 'exported.epub' - the filename in the audiobook folder
+        });
+
+        if (result.warning) {
+          this.showAlert({
+            title: 'Finalized with Warning',
+            message: result.warning,
+            type: 'warning'
+          });
+        } else {
+          this.showAlert({
+            title: 'Project Finalized',
+            message: 'EPUB exported and ready for audiobook processing.',
+            type: 'success'
+          });
+        }
+      } else {
+        this.finalized.emit({
+          success: false,
+          error: result.message || 'Failed to finalize project'
+        });
+
+        this.showAlert({
+          title: 'Finalize Failed',
+          message: result.message || 'Failed to export EPUB',
+          type: 'error'
+        });
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.finalized.emit({
+        success: false,
+        error: errorMessage
+      });
+
+      this.showAlert({
+        title: 'Finalize Failed',
+        message: errorMessage,
+        type: 'error'
+      });
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  /**
+   * Save changes back to the source EPUB file.
+   * Used when editing an EPUB directly (not via BFP project).
+   */
+  private async saveToSourceEpub(epubPath: string): Promise<void> {
+    try {
+      const chapters = this.chapters();
+      const deletedHighlights = this.getDeletedHighlights();
+      const blocks = this.blocks();
+      const deletedBlockIds = this.deletedBlockIds();
+      const deletedPages = this.deletedPages();
+
+      console.log('[saveToSourceEpub] Starting save to:', epubPath);
+      console.log('[saveToSourceEpub] Total blocks:', blocks.length);
+      console.log('[saveToSourceEpub] Deleted block IDs:', deletedBlockIds.size);
+      console.log('[saveToSourceEpub] Deleted pages:', deletedPages.size);
+      console.log('[saveToSourceEpub] Chapters:', chapters.length);
+
+      // Generate the EPUB with the same logic as export, but write to the source path
+      const result = await this.exportService.saveToEpub(
+        blocks,
+        deletedBlockIds,
+        chapters,
+        this.pdfName(),
+        epubPath, // Save back to the source file
+        this.editorState.textCorrections(),
+        deletedPages,
+        deletedHighlights,
+        this.metadata()
+      );
+
+      if (result.success) {
+        this.finalized.emit({
+          success: true,
+          epubPath: epubPath
+        });
+
+        this.showAlert({
+          title: 'Changes Saved',
+          message: `EPUB updated successfully.`,
+          type: 'success'
+        });
+
+        // Clear unsaved changes flag
+        this.editorState.hasUnsavedChanges.set(false);
+      } else {
+        this.finalized.emit({
+          success: false,
+          error: result.message || 'Failed to save changes'
+        });
+
+        this.showAlert({
+          title: 'Save Failed',
+          message: result.message || 'Failed to save changes to EPUB',
+          type: 'error'
+        });
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.finalized.emit({
+        success: false,
+        error: errorMessage
+      });
+
+      this.showAlert({
+        title: 'Save Failed',
+        message: errorMessage,
+        type: 'error'
+      });
+    }
+  }
+
+  /**
    * Export as PDF format (with optional background removal)
    *
    * Image deletion now uses object-level removal (preserves fonts perfectly).
@@ -4876,10 +5212,13 @@ export class PdfPickerComponent {
       this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
     }
 
-    // Restore chapters
+    // Restore chapters (or auto-extract from EPUB if none saved)
     if (project.chapters && project.chapters.length > 0) {
       this.chapters.set(project.chapters);
       this.chaptersSource.set(project.chapters_source || 'manual');
+    } else if (project.source_path?.toLowerCase().endsWith('.epub')) {
+      // No chapters in project, but it's an EPUB - try to extract from nav.xhtml
+      this.tryLoadOutline();
     }
 
     // Restore deleted pages
@@ -5191,39 +5530,76 @@ export class PdfPickerComponent {
 
     const project = result.data as BookForgeProject;
 
+    // Normalize field names (handle legacy camelCase variants)
+    const sourcePath = project.source_path || (project as any).sourcePath;
+    const sourceName = project.source_name || (project as any).sourceName;
+    const libraryPath = project.library_path || (project as any).libraryPath;
+    const fileHash = project.file_hash || (project as any).fileHash;
+
     // Validate project data
-    if (!project.version || !project.source_path) {
+    if (!project.version || !sourcePath) {
+      console.error('[openProject] Invalid project data:', {
+        version: project.version,
+        source_path: project.source_path,
+        sourcePath: (project as any).sourcePath,
+        keys: Object.keys(project)
+      });
       this.showAlert({
         title: 'Invalid Project',
-        message: 'This file does not appear to be a valid BookForge project.',
+        message: `This file does not appear to be a valid BookForge project.\n\nMissing: ${!project.version ? 'version' : ''} ${!sourcePath ? 'source_path' : ''}`.trim(),
         type: 'error'
       });
       return;
     }
 
-    // Load the source PDF - resolve path for current system
+    // Apply normalized values back
+    project.source_path = sourcePath;
+    project.source_name = sourceName;
+    project.library_path = libraryPath;
+    project.file_hash = fileHash;
+
+    // Load the source file - try original first, fall back to exported EPUB
     this.loading.set(true);
     this.loadingText.set('Loading project...');
 
-    // Resolve the source file path - handles cross-machine portability
-    const resolveResult = await this.electronService.libraryResolveSource({
-      libraryPath: project.library_path,
-      sourcePath: project.source_path,
-      fileHash: project.file_hash,
-      sourceName: project.source_name
-    });
+    let pdfPathToLoad: string | undefined;
 
-    if (!resolveResult.success || !resolveResult.resolvedPath) {
+    // First, try to resolve the original source file
+    if (sourcePath) {
+      const resolveResult = await this.electronService.libraryResolveSource({
+        libraryPath: libraryPath,
+        sourcePath: sourcePath,
+        fileHash: fileHash,
+        sourceName: sourceName
+      });
+
+      if (resolveResult.success && resolveResult.resolvedPath) {
+        pdfPathToLoad = resolveResult.resolvedPath;
+      }
+    }
+
+    // If original source not found, fall back to exported EPUB (single source of truth)
+    if (!pdfPathToLoad) {
+      const exportedEpubPath = (project as any).audiobook?.exportedEpubPath;
+      if (exportedEpubPath) {
+        const exists = await this.electronService.fsExists(exportedEpubPath);
+        if (exists) {
+          pdfPathToLoad = exportedEpubPath;
+          console.log('[openProject] Using exported EPUB as source:', exportedEpubPath);
+        }
+      }
+    }
+
+    if (!pdfPathToLoad) {
       this.loading.set(false);
+      const exportedPath = (project as any).audiobook?.exportedEpubPath;
       this.showAlert({
         title: 'Source File Not Found',
-        message: `Could not find the source file for this project.\n\nExpected: ${project.source_name || project.source_path}\n\nThe file may need to be imported to your library on this machine.`,
+        message: `Could not find any source file for this project.\n\nOriginal: ${sourceName || sourcePath || 'not set'}\nExported: ${exportedPath || 'not set'}\n\nThe file may need to be imported to your library on this machine.`,
         type: 'error'
       });
       return;
     }
-
-    const pdfPathToLoad = resolveResult.resolvedPath;
 
     try {
       const pdfResult = await this.pdfService.analyzePdf(pdfPathToLoad);
@@ -5247,9 +5623,9 @@ export class PdfPickerComponent {
         pageDimensions: pdfResult.page_dimensions,
         totalPages: pdfResult.page_count,
         pdfName: pdfResult.pdf_name,
-        pdfPath: project.source_path,
-        libraryPath: resolveResult.resolvedPath,
-        fileHash: project.file_hash || '',
+        pdfPath: sourcePath || pdfPathToLoad,
+        libraryPath: pdfPathToLoad,
+        fileHash: fileHash || '',
         deletedBlockIds: new Set(project.deleted_block_ids || []),
         pageOrder: project.page_order || [],
         blockEdits: blockEditsMap
@@ -5273,10 +5649,13 @@ export class PdfPickerComponent {
         this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
       }
 
-      // Restore chapters
+      // Restore chapters (or auto-extract from EPUB if none saved)
       if (project.chapters && project.chapters.length > 0) {
         this.chapters.set(project.chapters);
         this.chaptersSource.set(project.chapters_source || 'manual');
+      } else if (pdfPathToLoad.toLowerCase().endsWith('.epub')) {
+        // No chapters in project, but it's an EPUB - try to extract from nav.xhtml
+        this.tryLoadOutline();
       }
 
       // Restore deleted pages
@@ -5310,6 +5689,9 @@ export class PdfPickerComponent {
   }
 
   async loadProjectFromPath(filePath: string, lightweight: boolean = false): Promise<void> {
+    // Clear sourceFilePath when loading via BFP - we want finalize to use the BFP export flow
+    this.sourceFilePath.set(null);
+
     // Check if this project is already open
     const existingDoc = this.openDocuments().find(d => d.projectPath === filePath);
     if (existingDoc) {
@@ -5336,15 +5718,33 @@ export class PdfPickerComponent {
     // Use the returned filePath - may be different if project was imported to library
     const actualProjectPath = result.filePath || filePath;
 
+    // Normalize field names (handle legacy camelCase variants)
+    const sourcePath = project.source_path || (project as any).sourcePath;
+    const sourceName = project.source_name || (project as any).sourceName;
+    const libraryPath = project.library_path || (project as any).libraryPath;
+    const fileHash = project.file_hash || (project as any).fileHash;
+
     // Validate project data
-    if (!project.version || !project.source_path) {
+    if (!project.version || !sourcePath) {
+      console.error('[loadProjectFromPath] Invalid project data:', {
+        version: project.version,
+        source_path: project.source_path,
+        sourcePath: (project as any).sourcePath,
+        keys: Object.keys(project)
+      });
       this.showAlert({
         title: 'Invalid Project',
-        message: 'This file does not appear to be a valid BookForge project.',
+        message: `This file does not appear to be a valid BookForge project.\n\nMissing: ${!project.version ? 'version' : ''} ${!sourcePath ? 'source_path' : ''}`.trim(),
         type: 'error'
       });
       return;
     }
+
+    // Apply normalized values back
+    project.source_path = sourcePath;
+    project.source_name = sourceName;
+    project.library_path = libraryPath;
+    project.file_hash = fileHash;
 
     // EPUBs are now handled by the PDF picker via mupdf (renders them as pages)
     // No special routing needed - both PDFs and EPUBs load the same way
@@ -5352,42 +5752,95 @@ export class PdfPickerComponent {
     // Save current document state before loading new one
     this.saveCurrentDocumentState();
 
-    // Load the source PDF - resolve path for current system
+    // Load the source file - check override, then original, then fall back to exported EPUB
     this.loading.set(true);
     this.loadingText.set('Loading project...');
 
-    // Resolve the source file path - handles cross-machine portability
-    const resolveResult = await this.electronService.libraryResolveSource({
-      libraryPath: project.library_path,
-      sourcePath: project.source_path,
-      fileHash: project.file_hash,
-      sourceName: project.source_name
-    });
+    let pdfPathToLoad: string | undefined;
+    let usingExportedEpub = false;
 
-    if (!resolveResult.success || !resolveResult.resolvedPath) {
+    // First, check if an override source path was provided (from version picker)
+    const overridePath = this.overrideSourcePath();
+    if (overridePath) {
+      const exists = await this.electronService.fsExists(overridePath);
+      if (exists) {
+        pdfPathToLoad = overridePath;
+        console.log('[loadProjectFromPath] Using override source path:', overridePath);
+      }
+    }
+
+    // Second, try to resolve the original source file
+    if (!pdfPathToLoad && project.source_path) {
+      const resolveResult = await this.electronService.libraryResolveSource({
+        libraryPath: project.library_path,
+        sourcePath: project.source_path,
+        fileHash: project.file_hash,
+        sourceName: project.source_name
+      });
+
+      if (resolveResult.success && resolveResult.resolvedPath) {
+        pdfPathToLoad = resolveResult.resolvedPath;
+      }
+    }
+
+    // Third, fall back to exported EPUB (single source of truth)
+    if (!pdfPathToLoad) {
+      const exportedEpubPath = (project as any).audiobook?.exportedEpubPath;
+      if (exportedEpubPath) {
+        // Check if the exported EPUB exists
+        const exists = await this.electronService.fsExists(exportedEpubPath);
+        if (exists) {
+          pdfPathToLoad = exportedEpubPath;
+          usingExportedEpub = true;
+          console.log('[loadProjectFromPath] Using exported EPUB as source:', exportedEpubPath);
+        }
+      }
+    }
+
+    if (!pdfPathToLoad) {
       this.loading.set(false);
+      const exportedPath = (project as any).audiobook?.exportedEpubPath;
       this.showAlert({
         title: 'Source File Not Found',
-        message: `Could not find the source file for this project.\n\nExpected: ${project.source_name || project.source_path}\n\nThe file may need to be imported to your library on this machine.`,
+        message: `Could not find any source file for this project.\n\nOriginal: ${project.source_name || project.source_path || 'not set'}\nExported: ${exportedPath || 'not set'}\n\nThe file may need to be imported to your library on this machine.`,
         type: 'error'
       });
       return;
     }
-
-    const pdfPathToLoad = resolveResult.resolvedPath;
 
     try {
       const pdfResult = await this.pdfService.analyzePdf(pdfPathToLoad);
 
       // Create new document for tabs
       const docId = this.generateDocumentId();
-      const deletedBlockIds = new Set<string>(project.deleted_block_ids || []);
-      const pageOrder = project.page_order || [];
+
+      // Determine if we're loading the original source or a derived version (exported/cleaned)
+      // Derived versions have deletions baked in, so we shouldn't load deletion state for them
+      // Original = library_path or resolved from source_path
+      // Derived = exported.epub, cleaned.epub, or any file in the audiobook folder
+      const resolvedOriginalPath = project.library_path || project.source_path;
+      const isLoadingOriginal = !usingExportedEpub && (
+        !this.overrideSourcePath() ||  // No override = loading original
+        pdfPathToLoad === resolvedOriginalPath ||  // Override matches original
+        pdfPathToLoad === project.library_path  // Override is the library copy
+      );
+
+      console.log('[loadProjectFromPath] isLoadingOriginal:', isLoadingOriginal);
+      console.log('[loadProjectFromPath] pdfPathToLoad:', pdfPathToLoad);
+      console.log('[loadProjectFromPath] library_path:', project.library_path);
+
+      const deletedBlockIds = isLoadingOriginal
+        ? new Set<string>(project.deleted_block_ids || [])
+        : new Set<string>();
+      const deletedPages = isLoadingOriginal
+        ? new Set<number>(project.deleted_pages || [])
+        : new Set<number>();
+      const pageOrder = isLoadingOriginal ? (project.page_order || []) : [];
 
       const newDoc: OpenDocument = {
         id: docId,
-        path: project.source_path,
-        libraryPath: resolveResult.resolvedPath,
+        path: project.source_path || pdfPathToLoad,
+        libraryPath: pdfPathToLoad,
         fileHash: project.file_hash || '',
         name: project.source_name || pdfResult.pdf_name,
         blocks: pdfResult.blocks,
@@ -5395,7 +5848,7 @@ export class PdfPickerComponent {
         pageDimensions: pdfResult.page_dimensions,
         totalPages: pdfResult.page_count,
         deletedBlockIds: deletedBlockIds,
-        deletedPages: new Set(project.deleted_pages || []),
+        deletedPages: deletedPages,
         selectedBlockIds: [],
         pageOrder: pageOrder,
         pageImages: new Map(),
@@ -5411,15 +5864,18 @@ export class PdfPickerComponent {
       this.activeDocumentId.set(docId);
 
       // Convert block edits Record to Map if present, fall back to text_corrections for legacy
+      // Only load block edits when loading the original - edits are baked into exported versions
       let blockEditsMap: Map<string, BlockEdit> | undefined;
-      if (project.block_edits) {
-        blockEditsMap = new Map(Object.entries(project.block_edits));
-      } else if (project.text_corrections) {
-        // Legacy: convert text_corrections to blockEdits
-        blockEditsMap = new Map();
-        Object.entries(project.text_corrections).forEach(([blockId, text]) => {
-          blockEditsMap!.set(blockId, { text });
-        });
+      if (isLoadingOriginal) {
+        if (project.block_edits) {
+          blockEditsMap = new Map(Object.entries(project.block_edits));
+        } else if (project.text_corrections) {
+          // Legacy: convert text_corrections to blockEdits
+          blockEditsMap = new Map();
+          Object.entries(project.text_corrections).forEach(([blockId, text]) => {
+            blockEditsMap!.set(blockId, { text });
+          });
+        }
       }
 
       // Load document state via service
@@ -5429,8 +5885,8 @@ export class PdfPickerComponent {
         pageDimensions: pdfResult.page_dimensions,
         totalPages: pdfResult.page_count,
         pdfName: project.source_name || pdfResult.pdf_name,
-        pdfPath: project.source_path,
-        libraryPath: resolveResult.resolvedPath,
+        pdfPath: project.source_path || pdfPathToLoad,
+        libraryPath: pdfPathToLoad,
         fileHash: project.file_hash || '',
         deletedBlockIds: deletedBlockIds,
         pageOrder: pageOrder,
@@ -5438,32 +5894,38 @@ export class PdfPickerComponent {
       });
 
       // Restore undo/redo history from project (loadDocument clears it)
-      if (project.undo_stack || project.redo_stack) {
+      // Only load history when loading the original - it's not relevant for exported versions
+      if (isLoadingOriginal && (project.undo_stack || project.redo_stack)) {
         this.editorState.setHistory({
           undoStack: project.undo_stack || [],
           redoStack: project.redo_stack || []
         });
       }
 
-      // Restore custom categories
+      // Restore custom categories - keep these for non-original versions too
+      // as they define patterns that might still be useful
       if (project.custom_categories && project.custom_categories.length > 0) {
         this.restoreCustomCategories(project.custom_categories);
       }
 
-      // Restore deleted highlight IDs
-      if (project.deleted_highlight_ids && project.deleted_highlight_ids.length > 0) {
+      // Restore deleted highlight IDs - only for original, baked into exported
+      if (isLoadingOriginal && project.deleted_highlight_ids && project.deleted_highlight_ids.length > 0) {
         this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
       }
 
-      // Restore chapters
-      if (project.chapters && project.chapters.length > 0) {
+      // Restore chapters - for non-original EPUBs, always extract from the file's TOC
+      // since the exported version has its own structure
+      if (isLoadingOriginal && project.chapters && project.chapters.length > 0) {
         this.chapters.set(project.chapters);
         this.chaptersSource.set(project.chapters_source || 'manual');
+      } else if (pdfPathToLoad.toLowerCase().endsWith('.epub')) {
+        // Extract chapters from EPUB's nav.xhtml
+        this.tryLoadOutline();
       }
 
-      // Restore deleted pages
-      if (project.deleted_pages && project.deleted_pages.length > 0) {
-        this.deletedPages.set(new Set(project.deleted_pages));
+      // Set deleted pages signal (already computed above based on isLoadingOriginal)
+      if (deletedPages.size > 0) {
+        this.deletedPages.set(deletedPages);
       }
 
       // Restore metadata
@@ -7376,6 +7838,12 @@ export class PdfPickerComponent {
   }
 
   closeCurrentTabOrHideWindow(): void {
+    // In embedded mode, Cmd+W should emit exit request (let parent handle it)
+    if (this.embedded()) {
+      this.exitRequested.emit();
+      return;
+    }
+
     const activeId = this.activeDocumentId();
 
     // If in library view (no active document), hide the window

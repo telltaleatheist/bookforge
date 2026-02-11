@@ -1604,7 +1604,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   deleteBlock = output<string>();
   highlightClick = output<{ catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();  // Click on category highlight
   revertBlock = output<string>();  // Revert text correction
-  zoomChange = output<'in' | 'out'>();
+  zoomChange = output<number>();  // Emits zoom delta (e.g., +5 for zoom in, -5 for zoom out)
   selectAllOnPage = output<number>();
   deselectAllOnPage = output<number>();
   cropComplete = output<CropRect>();
@@ -2962,9 +2962,8 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     }
   }
 
-  // Accumulated scroll delta for smoother zoom
-  private scrollDeltaAccumulator = 0;
-  private readonly SCROLL_THRESHOLD = 300; // Pixels of scroll needed to trigger zoom (higher = less sensitive)
+  // Zoom sensitivity - higher = faster zoom per scroll
+  private readonly ZOOM_SENSITIVITY = 0.15; // 15% of deltaY converted to zoom change
 
   onWheel(event: WheelEvent): void {
     // Cmd/Ctrl + scroll for zoom
@@ -2973,14 +2972,6 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       event.stopPropagation();
 
       if (!this.viewport?.nativeElement) return;
-
-      // Accumulate scroll delta
-      this.scrollDeltaAccumulator += event.deltaY;
-
-      // Only zoom when accumulated delta exceeds threshold
-      if (Math.abs(this.scrollDeltaAccumulator) < this.SCROLL_THRESHOLD) {
-        return;
-      }
 
       const vp = this.viewport.nativeElement;
       const rect = vp.getBoundingClientRect();
@@ -2998,13 +2989,13 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
         cursorY
       };
 
-      // Emit zoom direction to parent and reset accumulator
-      if (this.scrollDeltaAccumulator < 0) {
-        this.zoomChange.emit('in');
-      } else {
-        this.zoomChange.emit('out');
-      }
-      this.scrollDeltaAccumulator = 0;
+      // Calculate zoom delta based on scroll amount
+      // deltaY is typically ~100 per "notch" on a mouse wheel, less for trackpad
+      // Negative deltaY = scroll up = zoom in, positive = scroll down = zoom out
+      const zoomDelta = -event.deltaY * this.ZOOM_SENSITIVITY;
+
+      // Emit the zoom delta to parent
+      this.zoomChange.emit(zoomDelta);
     }
   }
 

@@ -3,12 +3,14 @@ import { Routes } from '@angular/router';
 export const routes: Routes = [
   {
     path: '',
-    redirectTo: 'library',
+    redirectTo: 'studio',
     pathMatch: 'full'
   },
   {
+    // Library route now redirects to studio (merged in Feb 2025)
     path: 'library',
-    loadComponent: () => import('./features/pdf-picker/pdf-picker.component').then(m => m.PdfPickerComponent)
+    redirectTo: 'studio',
+    pathMatch: 'full'
   },
   {
     path: 'studio',
@@ -31,8 +33,15 @@ export const routes: Routes = [
     loadComponent: () => import('./features/post-processing/post-processing.component').then(m => m.PostProcessingComponent)
   },
   {
+    // Editor window - opens in separate Electron window
+    path: 'editor',
+    loadComponent: () => import('./features/studio/components/editor-window/editor-window.component').then(m => m.EditorWindowComponent)
+  },
+  {
+    // Legacy epub-editor route
     path: 'epub-editor',
-    loadComponent: () => import('./features/epub-editor/epub-editor.component').then(m => m.EpubEditorComponent)
+    redirectTo: 'studio',
+    pathMatch: 'full'
   },
   {
     path: 'alignment',

@@ -132,9 +132,9 @@ export interface LLCleanupConfig {
 }
 
 export interface LLTranslationConfig {
-  projectId: string;
-  projectDir: string;
-  cleanedEpubPath: string;  // Path to cleaned.epub (output from cleanup job)
+  projectId?: string;          // Required for bilingual workflow, optional for mono
+  projectDir?: string;         // Required for bilingual workflow, optional for mono
+  cleanedEpubPath?: string;    // Path to cleaned.epub (output from cleanup job)
   sourceLang: string;
   targetLang: string;
   title?: string;
@@ -153,6 +153,7 @@ export interface LLTranslationConfig {
 export interface LLJobResult {
   success: boolean;
   outputPath?: string;
+  translatedEpubPath?: string;  // For mono translation - path to translated EPUB
   error?: string;
   // For chaining to next job
   nextJobConfig?: {
@@ -276,7 +277,7 @@ export async function runLLCleanup(
 
     const { generateMonolingualEpub } = await import('./bilingual-processor.js');
     // Don't add bookforge marker to cleaned.epub - it's an intermediate format
-    // The marker is only needed for TTS EPUBs (source.epub, target.epub)
+    // The marker is only needed for TTS EPUBs (e.g., en.epub, de.epub)
     await generateMonolingualEpub(
       paragraphs,
       'Cleaned Article',
@@ -338,7 +339,7 @@ export async function runLLCleanup(
 
 /**
  * Translate cleaned text and generate bilingual EPUB
- * Reads from cleaned.epub, saves to source.epub + target.epub
+ * Reads from cleaned.epub, saves to {sourceLang}.epub + {targetLang}.epub
  */
 export async function runLLTranslation(
   jobId: string,
@@ -355,62 +356,170 @@ export async function runLLTranslation(
     aiModel: config.aiModel
   });
 
+  // Validate required fields for bilingual translation
+  if (!config.projectId || !config.projectDir || !config.cleanedEpubPath) {
+    return {
+      success: false,
+      error: 'Bilingual translation requires projectId, projectDir, and cleanedEpubPath'
+    };
+  }
+
   // Load analytics
   const analytics = await loadAnalytics(config.projectDir, config.projectId, config.title || 'Project');
   startStage(analytics, 'translation');
   await saveAnalytics(config.projectDir, analytics);
 
   try {
-    // Read cleaned text from the cleaned EPUB
-    const { extractTextFromEpub } = await import('./epub-processor.js');
-    const extractResult = await extractTextFromEpub(config.cleanedEpubPath);
-    if (!extractResult.success || !extractResult.text) {
-      throw new Error(extractResult.error || 'Failed to extract text from cleaned.epub');
+    // Types for chapter-aware processing
+    interface ChapterWithSentences {
+      title: string;
+      sourceSentences: string[];
+      translatedSentences: string[];
     }
-    const cleanedText = extractResult.text;
-    console.log(`[LL-TRANSLATION] Loaded cleaned text from EPUB: ${cleanedText.length} chars`);
 
-    // Phase 1: Split into sentences (respecting user's granularity preference)
-    const granularity = config.splitGranularity || 'sentence';
-    const granularityLabel = granularity === 'paragraph' ? 'paragraphs' : 'sentences';
-    sendProgress(mainWindow, jobId, {
-      phase: 'splitting',
-      currentSentence: 0,
-      totalSentences: 0,
-      percentage: 5,
-      message: `Splitting text into ${granularityLabel}...`
-    });
+    // Check for cached translation first
+    const sentencesCacheDir = path.join(config.projectDir, 'sentences');
+    const targetCachePath = path.join(sentencesCacheDir, `${config.targetLang}.json`);
+    let chapters: ChapterWithSentences[] = [];
+    let pairs: SentencePair[] = [];
+    let usedCache = false;
 
-    const sentences = splitIntoSentences(cleanedText, config.sourceLang, granularity);
-    console.log(`[LL-TRANSLATION] Split into ${sentences.length} ${granularityLabel} (granularity=${granularity})`);
+    try {
+      const cachedContent = await fs.readFile(targetCachePath, 'utf-8');
+      const cachedData = JSON.parse(cachedContent);
 
-    // Phase 2: Translate
-    const bilingualConfig: BilingualProcessingConfig = {
-      projectId: config.projectId,
-      sourceText: cleanedText,
-      sourceLang: config.sourceLang,
-      targetLang: config.targetLang,
-      aiProvider: config.aiProvider,
-      aiModel: config.aiModel,
-      ollamaBaseUrl: config.ollamaBaseUrl,
-      claudeApiKey: config.claudeApiKey,
-      openaiApiKey: config.openaiApiKey,
-      translationPrompt: config.translationPrompt
-    };
+      // Verify cache is for correct source language
+      if (cachedData.sourceLanguage === config.sourceLang) {
+        // Check for chaptered cache (new format)
+        if (cachedData.chapters?.length > 0) {
+          console.log(`[LL-TRANSLATION] Found cached chaptered translation: ${cachedData.chapters.length} chapters`);
+          chapters = cachedData.chapters.map((ch: any) => ({
+            title: ch.title,
+            sourceSentences: ch.sentences.map((s: any) => s.source),
+            translatedSentences: ch.sentences.map((s: any) => s.target)
+          }));
+          // Flatten for alignment validation
+          let idx = 0;
+          for (const ch of cachedData.chapters) {
+            for (const s of ch.sentences) {
+              pairs.push({ index: idx++, source: s.source, target: s.target });
+            }
+          }
+          usedCache = true;
+        }
+        // Check for flat cache (legacy format)
+        else if (cachedData.sentences?.length > 0) {
+          console.log(`[LL-TRANSLATION] Found cached flat translation: ${cachedData.sentences.length} pairs`);
+          // Convert flat to single chapter
+          chapters = [{
+            title: config.title || 'Content',
+            sourceSentences: cachedData.sentences.map((s: any) => s.source),
+            translatedSentences: cachedData.sentences.map((s: any) => s.target)
+          }];
+          pairs = cachedData.sentences.map((s: { source: string; target: string }, i: number) => ({
+            index: i,
+            source: s.source,
+            target: s.target
+          }));
+          usedCache = true;
+        }
 
-    let pairs = await translateSentences(sentences, bilingualConfig, (progress) => {
-      // Map translation progress to 10-70%
-      const overallPercentage = 10 + Math.round((progress.percentage / 100) * 60);
+        if (usedCache) {
+          sendProgress(mainWindow, jobId, {
+            phase: 'translating',
+            currentSentence: pairs.length,
+            totalSentences: pairs.length,
+            percentage: 70,
+            message: `Using cached translation: ${pairs.length} sentences in ${chapters.length} chapters`
+          });
+        }
+      }
+    } catch {
+      // No cache or invalid cache - proceed with translation
+    }
+
+    // If no cache, extract chapters and translate
+    if (!usedCache) {
+      // Extract chapters from the cleaned EPUB
+      const { extractChaptersFromEpub } = await import('./epub-processor.js');
+      const extractResult = await extractChaptersFromEpub(config.cleanedEpubPath);
+      if (!extractResult.success || !extractResult.chapters) {
+        throw new Error(extractResult.error || 'Failed to extract chapters from EPUB');
+      }
+      console.log(`[LL-TRANSLATION] Extracted ${extractResult.chapters.length} chapters from EPUB`);
+
+      // Phase 1: Split each chapter into sentences
+      const granularity = config.splitGranularity || 'sentence';
+      const granularityLabel = granularity === 'paragraph' ? 'paragraphs' : 'sentences';
       sendProgress(mainWindow, jobId, {
-        phase: 'translating',
-        currentSentence: progress.currentSentence,
-        totalSentences: progress.totalSentences,
-        percentage: overallPercentage,
-        message: `Translating: ${progress.currentSentence}/${progress.totalSentences} sentences`
+        phase: 'splitting',
+        currentSentence: 0,
+        totalSentences: 0,
+        percentage: 5,
+        message: `Splitting ${extractResult.chapters.length} chapters into ${granularityLabel}...`
       });
-    });
 
-    console.log(`[LL-TRANSLATION] Translated ${pairs.length} sentence pairs`);
+      // Track chapter boundaries for reconstruction after translation
+      interface ChapterBoundary {
+        title: string;
+        startIndex: number;
+        endIndex: number;
+      }
+      const chapterBoundaries: ChapterBoundary[] = [];
+      const allSentences: string[] = [];
+
+      for (const chapter of extractResult.chapters) {
+        const chapterSentences = splitIntoSentences(chapter.text, config.sourceLang, granularity);
+        if (chapterSentences.length > 0) {
+          chapterBoundaries.push({
+            title: chapter.title,
+            startIndex: allSentences.length,
+            endIndex: allSentences.length + chapterSentences.length
+          });
+          allSentences.push(...chapterSentences);
+        }
+      }
+
+      console.log(`[LL-TRANSLATION] Split into ${allSentences.length} ${granularityLabel} across ${chapterBoundaries.length} chapters`);
+
+      // Phase 2: Translate all sentences (batched for efficiency)
+      const bilingualConfig: BilingualProcessingConfig = {
+        projectId: config.projectId,
+        sourceText: '',  // Not used - we pass sentences directly
+        sourceLang: config.sourceLang,
+        targetLang: config.targetLang,
+        aiProvider: config.aiProvider,
+        aiModel: config.aiModel,
+        ollamaBaseUrl: config.ollamaBaseUrl,
+        claudeApiKey: config.claudeApiKey,
+        openaiApiKey: config.openaiApiKey,
+        translationPrompt: config.translationPrompt
+      };
+
+      pairs = await translateSentences(allSentences, bilingualConfig, (progress) => {
+        // Map translation progress to 10-70%
+        const overallPercentage = 10 + Math.round((progress.percentage / 100) * 60);
+        sendProgress(mainWindow, jobId, {
+          phase: 'translating',
+          currentSentence: progress.currentSentence,
+          totalSentences: progress.totalSentences,
+          percentage: overallPercentage,
+          message: `Translating: ${progress.currentSentence}/${progress.totalSentences} sentences`
+        });
+      });
+
+      console.log(`[LL-TRANSLATION] Translated ${pairs.length} sentence pairs`);
+
+      // Reconstruct chapter structure from flat pairs
+      for (const boundary of chapterBoundaries) {
+        const chapterPairs = pairs.slice(boundary.startIndex, boundary.endIndex);
+        chapters.push({
+          title: boundary.title,
+          sourceSentences: chapterPairs.map(p => p.source),
+          translatedSentences: chapterPairs.map(p => p.target)
+        });
+      }
+    }
 
     // Phase 3: Validate sentence alignment
     sendProgress(mainWindow, jobId, {
@@ -443,49 +552,100 @@ export async function runLLTranslation(
       console.log(`[LL-TRANSLATION] Alignment approved with ${pairs.length} pairs`);
     }
 
-    // Phase 4: Generate source.epub and target.epub for TTS
-    // Each EPUB has one paragraph per sentence for proper alignment
+    // Phase 4: Generate language EPUBs for TTS (e.g., en.epub, de.epub)
+    // Each EPUB has chapters with one paragraph per sentence for proper alignment
     sendProgress(mainWindow, jobId, {
       phase: 'epub',
       currentSentence: pairs.length,
       totalSentences: pairs.length,
       percentage: 85,
-      message: 'Generating EPUBs for TTS...'
+      message: `Generating chaptered EPUBs for TTS (${chapters.length} chapters)...`
     });
 
-    // Extract sentences and generate separate EPUBs
-    // No need to filter - pairs contain only real sentences (bookforge marker is not in sentence_pairs)
-    // generateMonolingualEpub will add the bookforge marker for TTS
-    const sourceSentences = pairs.map((p: any) => p.source);
-    const targetSentences = pairs.map((p: any) => p.target);
-    const sourceEpubPath = path.join(config.projectDir, 'source.epub');
-    const targetEpubPath = path.join(config.projectDir, 'target.epub');
-    const { generateMonolingualEpub } = await import('./bilingual-processor.js');
+    // Name EPUBs by language code (e.g., en.epub, de.epub) for clarity with multiple translations
+    const sourceEpubPath = path.join(config.projectDir, `${config.sourceLang}.epub`);
+    const targetEpubPath = path.join(config.projectDir, `${config.targetLang}.epub`);
+    const { generateChapteredEpub } = await import('./bilingual-processor.js');
 
-    // Generate source.epub (one paragraph per source sentence)
-    // Don't add bookforge marker - audio files will be numbered 0, 1, 2... matching sentence pairs
-    await generateMonolingualEpub(
-      sourceSentences,
-      `${config.title || 'Article'} (${config.sourceLang})`,
+    // Prepare chapter data for EPUB generation
+    const sourceChapters = chapters.map(ch => ({
+      title: ch.title,
+      sentences: ch.sourceSentences
+    }));
+    const targetChapters = chapters.map(ch => ({
+      title: ch.translatedSentences[0]?.toUpperCase() === ch.translatedSentences[0]
+        ? ch.translatedSentences[0]  // Use first sentence if it looks like a title (all caps start)
+        : ch.title,  // Otherwise keep original title
+      sentences: ch.translatedSentences
+    }));
+
+    // Generate source language EPUB with chapters
+    await generateChapteredEpub(
+      sourceChapters,
+      `${config.title || 'Book'} (${config.sourceLang})`,
       config.sourceLang,
       sourceEpubPath,
       { includeBookforgeMarker: false }
     );
 
-    // Generate target.epub (one paragraph per target sentence)
-    await generateMonolingualEpub(
-      targetSentences,
-      `${config.title || 'Article'} (${config.targetLang})`,
+    // Generate target language EPUB with chapters
+    await generateChapteredEpub(
+      targetChapters,
+      `${config.title || 'Book'} (${config.targetLang})`,
       config.targetLang,
       targetEpubPath,
       { includeBookforgeMarker: false }
     );
 
-    console.log(`[LL-TRANSLATION] Generated source.epub and target.epub`);
+    console.log(`[LL-TRANSLATION] Generated ${config.sourceLang}.epub and ${config.targetLang}.epub with ${chapters.length} chapters`);
 
-    // Save sentence pairs for reference and assembly
+    // Save sentence pairs for reference and assembly (flat format for compatibility)
     const pairsPath = path.join(config.projectDir, 'sentence_pairs.json');
     await fs.writeFile(pairsPath, JSON.stringify(pairs, null, 2));
+
+    // Save to sentence cache for reuse (chaptered format)
+    const sentencesDir = path.join(config.projectDir, 'sentences');
+    await fs.mkdir(sentencesDir, { recursive: true });
+
+    // Save source language cache with chapters
+    const sourceCache = {
+      language: config.sourceLang,
+      sourceLanguage: null,
+      createdAt: new Date().toISOString(),
+      sentenceCount: pairs.length,
+      chapters: chapters.map(ch => ({
+        title: ch.title,
+        sentences: ch.sourceSentences
+      }))
+    };
+    await fs.writeFile(
+      path.join(sentencesDir, `${config.sourceLang}.json`),
+      JSON.stringify(sourceCache, null, 2)
+    );
+
+    // Save target language cache with chapters (with source pairs for reference)
+    const targetCache = {
+      language: config.targetLang,
+      sourceLanguage: config.sourceLang,
+      createdAt: new Date().toISOString(),
+      sentenceCount: pairs.length,
+      chapters: chapters.map(ch => ({
+        title: ch.title,
+        translatedTitle: ch.translatedSentences[0]?.toUpperCase() === ch.translatedSentences[0]
+          ? ch.translatedSentences[0]
+          : ch.title,
+        sentences: ch.sourceSentences.map((src, i) => ({
+          source: src,
+          target: ch.translatedSentences[i] || ''
+        }))
+      }))
+    };
+    await fs.writeFile(
+      path.join(sentencesDir, `${config.targetLang}.json`),
+      JSON.stringify(targetCache, null, 2)
+    );
+
+    console.log(`[LL-TRANSLATION] Saved chaptered cache: ${config.sourceLang}.json, ${config.targetLang}.json`);
 
     // Update analytics
     completeStage(analytics, 'translation', {
@@ -510,8 +670,8 @@ export async function runLLTranslation(
       success: true,
       outputPath: targetEpubPath,
       nextJobConfig: {
-        sourceEpubPath,   // source.epub - one paragraph per source sentence
-        targetEpubPath,   // target.epub - one paragraph per target sentence
+        sourceEpubPath,   // e.g., en.epub - one paragraph per source sentence
+        targetEpubPath,   // e.g., de.epub - one paragraph per target sentence
         sentencePairsPath: pairsPath
       }
     };
@@ -523,6 +683,204 @@ export async function runLLTranslation(
     completeStage(analytics, 'translation', undefined, (err as Error).message);
     analytics.status = 'error';
     await saveAnalytics(config.projectDir, analytics);
+
+    sendProgress(mainWindow, jobId, {
+      phase: 'error',
+      currentSentence: 0,
+      totalSentences: 0,
+      percentage: 0,
+      message: (err as Error).message
+    });
+
+    return {
+      success: false,
+      error: (err as Error).message
+    };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mono Translation - Full book translation to single language
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface MonoTranslationConfig {
+  cleanedEpubPath?: string;  // Input EPUB path (from job.epubPath if not provided)
+  sourceLang: string;        // Source language of the book
+  targetLang: string;        // Target language (usually 'en')
+  title?: string;
+  aiProvider: 'ollama' | 'claude' | 'openai';
+  aiModel: string;
+  ollamaBaseUrl?: string;
+  claudeApiKey?: string;
+  openaiApiKey?: string;
+  translationPrompt?: string;
+}
+
+/**
+ * Mono Translation - Translates entire book to target language
+ * Unlike bilingual translation, this produces a single translated EPUB
+ * suitable for standard TTS processing.
+ */
+export async function runMonoTranslation(
+  jobId: string,
+  config: MonoTranslationConfig,
+  mainWindow: BrowserWindow | null
+): Promise<LLJobResult> {
+  console.log(`[MONO-TRANSLATION] Starting job ${jobId}`);
+  console.log(`[MONO-TRANSLATION] Config:`, {
+    cleanedEpubPath: config.cleanedEpubPath,
+    sourceLang: config.sourceLang,
+    targetLang: config.targetLang,
+    aiProvider: config.aiProvider,
+    aiModel: config.aiModel
+  });
+
+  const inputEpubPath = config.cleanedEpubPath;
+  if (!inputEpubPath) {
+    return { success: false, error: 'No input EPUB path provided' };
+  }
+
+  // Output path: same directory as input, with _translated suffix
+  const outputEpubPath = inputEpubPath.replace('.epub', '_translated.epub');
+
+  try {
+    // Extract chapters from the input EPUB
+    const { extractChaptersFromEpub } = await import('./epub-processor.js');
+    const extractResult = await extractChaptersFromEpub(inputEpubPath);
+
+    if (!extractResult.success || !extractResult.chapters) {
+      throw new Error(extractResult.error || 'Failed to extract chapters from EPUB');
+    }
+
+    const chapters = extractResult.chapters;
+    console.log(`[MONO-TRANSLATION] Extracted ${chapters.length} chapters from EPUB`);
+
+    sendProgress(mainWindow, jobId, {
+      phase: 'splitting',
+      currentSentence: 0,
+      totalSentences: 0,
+      percentage: 5,
+      message: `Processing ${chapters.length} chapters for translation...`
+    });
+
+    // Split each chapter into sentences and collect all for translation
+    interface ChapterWithSentences {
+      title: string;
+      sentences: string[];
+      translatedSentences?: string[];
+    }
+    const chaptersWithSentences: ChapterWithSentences[] = [];
+    const allSentences: string[] = [];
+    const chapterBoundaries: { title: string; startIndex: number; endIndex: number }[] = [];
+
+    for (const chapter of chapters) {
+      const sentences = splitIntoSentences(chapter.text, config.sourceLang, 'sentence');
+      if (sentences.length > 0) {
+        chapterBoundaries.push({
+          title: chapter.title,
+          startIndex: allSentences.length,
+          endIndex: allSentences.length + sentences.length
+        });
+        allSentences.push(...sentences);
+        chaptersWithSentences.push({
+          title: chapter.title,
+          sentences
+        });
+      }
+    }
+
+    console.log(`[MONO-TRANSLATION] Split into ${allSentences.length} sentences across ${chapterBoundaries.length} chapters`);
+
+    sendProgress(mainWindow, jobId, {
+      phase: 'translating',
+      currentSentence: 0,
+      totalSentences: allSentences.length,
+      percentage: 10,
+      message: `Translating ${allSentences.length} sentences...`
+    });
+
+    // Translate all sentences
+    const bilingualConfig: BilingualProcessingConfig = {
+      projectId: jobId,  // Use jobId as project ID for mono translation
+      sourceText: '',    // Not used - we pass sentences directly
+      sourceLang: config.sourceLang,
+      targetLang: config.targetLang,
+      aiProvider: config.aiProvider,
+      aiModel: config.aiModel,
+      ollamaBaseUrl: config.ollamaBaseUrl,
+      claudeApiKey: config.claudeApiKey,
+      openaiApiKey: config.openaiApiKey,
+      translationPrompt: config.translationPrompt
+    };
+
+    const pairs = await translateSentences(allSentences, bilingualConfig, (progress) => {
+      // Map translation progress to 10-80%
+      const overallPercentage = 10 + Math.round((progress.percentage / 100) * 70);
+      sendProgress(mainWindow, jobId, {
+        phase: 'translating',
+        currentSentence: progress.currentSentence,
+        totalSentences: progress.totalSentences,
+        percentage: overallPercentage,
+        message: `Translating: ${progress.currentSentence}/${progress.totalSentences} sentences`
+      });
+    });
+
+    console.log(`[MONO-TRANSLATION] Translated ${pairs.length} sentences`);
+
+    // Reconstruct translated chapters
+    for (const boundary of chapterBoundaries) {
+      const chapter = chaptersWithSentences.find(ch => ch.title === boundary.title);
+      if (chapter) {
+        const chapterPairs = pairs.slice(boundary.startIndex, boundary.endIndex);
+        chapter.translatedSentences = chapterPairs.map(p => p.target);
+      }
+    }
+
+    sendProgress(mainWindow, jobId, {
+      phase: 'epub',
+      currentSentence: pairs.length,
+      totalSentences: pairs.length,
+      percentage: 85,
+      message: 'Generating translated EPUB...'
+    });
+
+    // Generate translated EPUB using the chaptered format
+    const { generateChapteredEpub } = await import('./bilingual-processor.js');
+
+    // Prepare translated chapters for EPUB generation
+    // For mono translation, we want natural paragraphs, so we join sentences
+    // with proper paragraph breaks
+    const translatedChapters = chaptersWithSentences.map(ch => ({
+      title: ch.title,
+      sentences: ch.translatedSentences || []
+    }));
+
+    await generateChapteredEpub(
+      translatedChapters,
+      `${config.title || 'Book'} (Translated)`,
+      config.targetLang,
+      outputEpubPath,
+      { includeBookforgeMarker: true }  // Mark as processed by BookForge
+    );
+
+    console.log(`[MONO-TRANSLATION] Generated translated EPUB: ${outputEpubPath}`);
+
+    sendProgress(mainWindow, jobId, {
+      phase: 'complete',
+      currentSentence: pairs.length,
+      totalSentences: pairs.length,
+      percentage: 100,
+      message: 'Translation complete'
+    });
+
+    return {
+      success: true,
+      outputPath: outputEpubPath,
+      translatedEpubPath: outputEpubPath
+    };
+
+  } catch (err) {
+    console.error(`[MONO-TRANSLATION] Job ${jobId} failed:`, err);
 
     sendProgress(mainWindow, jobId, {
       phase: 'error',

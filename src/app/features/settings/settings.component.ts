@@ -1963,7 +1963,7 @@ export class SettingsComponent implements OnInit {
   }
 
   goBack(): void {
-    this.router.navigate(['/pdf-picker']);
+    this.router.navigate(['/studio']);
   }
 
   selectSection(sectionId: string): void {

@@ -61,9 +61,15 @@ interface ETAState {
             } @else if (currentJob.type === 'resemble-enhance') {
               <span class="type-icon">&#10024;</span>
               <span>Audio Enhancement</span>
-            } @else if (currentJob.type === 'language-learning') {
+            } @else if (currentJob.type === 'bilingual-cleanup') {
+              <span class="type-icon">&#128221;</span>
+              <span>Bilingual Cleanup</span>
+            } @else if (currentJob.type === 'bilingual-translation') {
               <span class="type-icon">&#127891;</span>
-              <span>Language Learning</span>
+              <span>Bilingual Translation</span>
+            } @else if (currentJob.type === 'bilingual-assembly') {
+              <span class="type-icon">&#127925;</span>
+              <span>Bilingual Assembly</span>
             }
           </div>
 
@@ -103,10 +109,10 @@ interface ETAState {
               <span class="stat-label">Phase</span>
               <span class="stat-value">{{ getReassemblyPhase() }}</span>
             </div>
-          } @else if (job()?.type === 'language-learning') {
+          } @else if (job()?.type === 'bilingual-cleanup' || job()?.type === 'bilingual-translation') {
             <div class="stat">
               <span class="stat-label">Phase</span>
-              <span class="stat-value">{{ getLanguageLearningPhase() }}</span>
+              <span class="stat-value">{{ getBilingualPhase() }}</span>
             </div>
             @if (job()?.currentChunk && job()?.totalChunks) {
               <div class="stat">
@@ -1127,7 +1133,7 @@ export class JobProgressComponent implements OnDestroy {
     }
   }
 
-  getLanguageLearningPhase(): string {
+  getBilingualPhase(): string {
     const j = this.job();
     if (!j) return '-';
 

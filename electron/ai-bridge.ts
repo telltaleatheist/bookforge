@@ -305,7 +305,15 @@ EXPAND ABBREVIATIONS:
 
 FIX OCR ERRORS: broken words, character misreads (rn→m, cl→d).
 FIX STYLISTIC SPACING: collapse decorative letter/word spacing into normal readable text.
-REMOVE: footnote numbers in sentences, page numbers, stray artifacts.
+
+REMOVE REFERENCE NUMBERS:
+- Stray numbers at the end of sentences or paragraphs (footnote/endnote references)
+- Numbers that appear after punctuation and don't fit the prose context
+- Superscript-style reference markers that got flattened into text
+- Pattern: sentence ending with punctuation followed by a bare number (e.g., "...the end." 5 or "...was true." 12)
+- These are citation markers, not part of the narrative - remove them entirely
+
+REMOVE: page numbers, running headers/footers, stray artifacts.
 
 Start your response with the first word of the book text. No introduction.`;
 
@@ -531,45 +539,121 @@ function buildSimplifyForChildrenSection(): string {
   const lines: string[] = [
     '',
     '═══════════════════════════════════════════════════════════════════════════════',
-    'SIMPLIFY FOR MODERN YOUNG AUDIENCE',
+    'SIMPLIFY FOR LANGUAGE LEARNING',
     '═══════════════════════════════════════════════════════════════════════════════',
     '',
-    'IMPORTANT: Rewrite this text so a child (around 8-9 years old, 3rd grade reading level) can easily understand it.',
+    'IMPORTANT: This text will be used for language learning audiobooks. Rewrite it so:',
+    '- A child (8-9 years old, 3rd grade reading level) can easily understand it',
+    '- It flows naturally when read aloud by text-to-speech',
+    '- It uses clean, modern American English',
     '',
     'SIMPLIFICATION RULES:',
     '',
-    '1. VOCABULARY: Replace old-fashioned or complex words with simple modern equivalents:',
+    '1. VOCABULARY: Replace old-fashioned or complex words with simple modern American English:',
     '   - "perpetually quarreling" → "always fighting"',
     '   - "wrathful" → "angry"',
     '   - "tyrannical" → "mean" or "cruel"',
     '   - "proclamation" → "announcement"',
     '   - "amity" → "friendship"',
-    '   - "impunity" → "safely" or "without fear"',
+    '   - "impunity" → "without getting in trouble"',
     '   - "hitherto" → "until now"',
-    '   - "whence" → "from where"',
+    '   - "whence" → "where"',
     '   - "thereof" → "of it"',
+    '   - "whilst" → "while"',
+    '   - "amongst" → "among"',
     '',
-    '2. SENTENCE STRUCTURE: Break long, complex sentences into shorter ones:',
+    '2. NATURAL FLOW - Every sentence MUST sound like something a native speaker would actually say:',
     '   - Aim for 10-15 words per sentence maximum',
     '   - One idea per sentence',
-    '   - Use simple subject-verb-object structure',
+    '   - Use contractions naturally ("don\'t", "wasn\'t", "they\'re")',
+    '   - Say each sentence out loud in your head - if it sounds stilted, robotic, or "off", rewrite it',
     '',
-    '3. KEEP THE STORY: Preserve ALL plot points, characters, dialogue, and the moral/lesson.',
-    '   Do NOT remove any story content - just make it easier to read.',
+    '3. STRICT GRAMMAR - Use correct, natural English tenses and phrasing:',
+    '   - "never" + verb → use present perfect: "I\'ve never done X" NOT "I never did X"',
+    '   - Statements about ongoing states → use present tense: "I don\'t eat meat" NOT "I didn\'t eat meat"',
+    '   - Avoid awkward inversions: "I only drink milk" NOT "Milk is all I drink"',
+    '   - Keep pronouns clear - avoid ambiguous "he/she/it" references',
+    '   - Prefer active voice: "The wolf grabbed him" NOT "He was grabbed by the wolf"',
     '',
-    '4. MAINTAIN TONE: Keep the storytelling voice. It should still sound like a fable or story,',
-    '   just in modern, accessible language.',
+    '   PATTERN TO AVOID: Sentences that are technically grammatical but sound unnatural or robotic.',
+    '   Test: Would a 10-year-old American kid phrase it this way? If not, rewrite it.',
     '',
-    'EXAMPLE TRANSFORMATION:',
+    '4. KEEP THE STORY: Preserve ALL plot points, characters, dialogue, and the moral/lesson.',
+    '   Do NOT remove any story content - just make it easier to understand.',
     '',
-    'BEFORE: "The Beasts of the field and forest had a Lion as their king. He was neither',
-    'wrathful, cruel, nor tyrannical, but just and gentle as a king could be."',
+    '5. MAINTAIN TONE: Keep the storytelling voice. It should still sound like a story,',
+    '   just in natural, conversational American English.',
     '',
-    'AFTER: "All the animals in the fields and forest had a Lion as their king. He was not',
-    'angry or mean. He was fair and kind—the best king there ever was."',
-    '',
-    'Remember: A third-grader should be able to read this aloud easily and understand it.',
+    'Remember: This will be converted to speech for language learners. Every sentence must',
+    'flow naturally and sound like something a real person would say. If ANY sentence sounds',
+    '"off", awkward, or robotic when read aloud, rewrite it until it sounds completely natural.',
     ''
+  ];
+
+  return lines.join('\n');
+}
+
+/**
+ * Build a standalone "Simplify Only" system prompt.
+ * Used when enableAiCleanup is false but simplifyForChildren is true.
+ * This is a simpler prompt that focuses solely on language simplification.
+ */
+function getSimplifyOnlySystemPrompt(): string {
+  const lines: string[] = [
+    'You are an expert at simplifying text for language learning audiobooks.',
+    '',
+    'Your task is to rewrite text so that:',
+    '- A child (8-9 years old, 3rd grade reading level) can easily understand it',
+    '- It flows naturally when read aloud by text-to-speech',
+    '- It uses clean, modern American English that native speakers actually use',
+    '',
+    '═══════════════════════════════════════════════════════════════════════════════',
+    'SIMPLIFICATION RULES',
+    '═══════════════════════════════════════════════════════════════════════════════',
+    '',
+    '1. VOCABULARY: Replace old-fashioned or complex words with simple modern American English:',
+    '   - "perpetually quarreling" → "always fighting"',
+    '   - "wrathful" → "angry"',
+    '   - "tyrannical" → "mean" or "cruel"',
+    '   - "proclamation" → "announcement"',
+    '   - "amity" → "friendship"',
+    '   - "impunity" → "without getting in trouble"',
+    '   - "hitherto" → "until now"',
+    '   - "whence" → "where"',
+    '   - "thereof" → "of it"',
+    '   - "whilst" → "while"',
+    '   - "amongst" → "among"',
+    '',
+    '2. NATURAL FLOW - Every sentence MUST sound like something a native speaker would actually say:',
+    '   - Aim for 10-15 words per sentence maximum',
+    '   - One idea per sentence',
+    '   - Use contractions naturally ("don\'t", "wasn\'t", "they\'re")',
+    '   - Say each sentence out loud in your head - if it sounds stilted, robotic, or "off", rewrite it',
+    '',
+    '3. STRICT GRAMMAR - Use correct, natural English tenses and phrasing:',
+    '   - "never" + verb → use present perfect: "I\'ve never done X" NOT "I never did X"',
+    '   - Statements about ongoing states → use present tense: "I don\'t eat meat" NOT "I didn\'t eat meat"',
+    '   - Avoid awkward inversions: "I only drink milk" NOT "Milk is all I drink"',
+    '   - Keep pronouns clear - avoid ambiguous "he/she/it" references',
+    '   - Prefer active voice: "The wolf grabbed him" NOT "He was grabbed by the wolf"',
+    '',
+    '   PATTERN TO AVOID: Sentences that are technically grammatical but sound unnatural or robotic.',
+    '   Test: Would a 10-year-old American kid phrase it this way? If not, rewrite it.',
+    '',
+    '4. KEEP THE STORY: Preserve ALL plot points, characters, dialogue, and the moral/lesson.',
+    '   Do NOT remove any story content - just make it easier to understand.',
+    '',
+    '5. MAINTAIN TONE: Keep the storytelling voice. It should still sound like a story,',
+    '   just in natural, conversational American English.',
+    '',
+    '6. PRESERVE FORMATTING: Keep paragraph breaks, chapters, and structure intact.',
+    '   Only change the words themselves, not the layout.',
+    '',
+    'Remember: This will be converted to speech for language learners. Every sentence must',
+    'flow naturally and sound like something a real person would say. If ANY sentence sounds',
+    '"off", awkward, or robotic when read aloud, rewrite it until it sounds completely natural.',
+    '',
+    'Return ONLY the simplified text, no explanations or commentary.'
   ];
 
   return lines.join('\n');
@@ -982,6 +1066,8 @@ async function cleanChunkWithClaude(
   abortSignal?: AbortSignal,
   chunkMeta?: ChunkMeta
 ): Promise<string> {
+  // Detect simplification mode from prompt - expect shorter output
+  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING');
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -1048,9 +1134,10 @@ async function cleanChunkWithClaude(
       return text;
     }
 
-    // Safeguard 2: if AI returns significantly less text (less than 70%),
-    // check if it's a copyright refusal - if so, retry with smaller chunks
-    if (cleaned.length < text.length * 0.7) {
+    // Safeguard 2: if AI returns significantly less text, check if it's a copyright refusal.
+    // When simplifying, we expect shorter output (use 30% threshold instead of 70%).
+    const lengthThreshold = isSimplifying ? 0.3 : 0.7;
+    if (cleaned.length < text.length * lengthThreshold) {
       const lowerCleaned = cleaned.toLowerCase();
       const isCopyrightRefusal =
         lowerCleaned.includes('copyright') ||
@@ -1123,6 +1210,8 @@ async function cleanChunkWithOpenAI(
   abortSignal?: AbortSignal,
   chunkMeta?: ChunkMeta
 ): Promise<string> {
+  // Detect simplification mode from prompt - expect shorter output
+  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING');
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -1185,9 +1274,10 @@ async function cleanChunkWithOpenAI(
       return text;
     }
 
-    // Safeguard 2: if AI returns significantly less text (less than 70%),
-    // check if it's a copyright refusal - if so, retry with smaller chunks
-    if (cleaned.length < text.length * 0.7) {
+    // Safeguard 2: if AI returns significantly less text, check if it's a copyright refusal.
+    // When simplifying, we expect shorter output (use 30% threshold instead of 70%).
+    const lengthThreshold = isSimplifying ? 0.3 : 0.7;
+    if (cleaned.length < text.length * lengthThreshold) {
       const lowerCleaned = cleaned.toLowerCase();
       const isCopyrightRefusal =
         lowerCleaned.includes('copyright') ||
@@ -1274,7 +1364,7 @@ async function cleanChunkWithProvider(
           if (!config.ollama?.model) {
             throw new Error('Ollama model not configured');
           }
-          cleanedText = await cleanChunk(text, systemPrompt, config.ollama.model, abortSignal);
+          cleanedText = await cleanChunk(text, systemPrompt, config.ollama.model, abortSignal, chunkMeta);
           break;
         case 'claude':
           if (!config.claude?.apiKey) {
@@ -1335,9 +1425,13 @@ async function cleanChunk(
   text: string,
   systemPrompt: string,
   model: string = DEFAULT_MODEL,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  chunkMeta?: ChunkMeta
 ): Promise<string> {
   console.log('[AI-BRIDGE] cleanChunk using model:', model);
+
+  // Detect simplification mode from prompt - expect shorter output
+  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING');
 
   // Use AbortController for cancellation support
   const controller = new AbortController();
@@ -1375,13 +1469,42 @@ async function cleanChunk(
   const outputCheck = checkAIOutput(cleaned, text);
   if (outputCheck.skip) {
     console.warn(`[Ollama] ${outputCheck.reason} - using original text`);
+    // Track if AI returned [SKIP] for non-trivial content
+    if (text.length > 1000 && chunkMeta) {
+      skipFallbackCount++;
+      console.warn(`[Ollama] Suspicious skip: ${text.length} chars is too large for legitimate skip`);
+      skippedChunks.push({
+        chapterTitle: chunkMeta.chapterTitle,
+        chunkIndex: chunkMeta.chunkIndex,
+        overallChunkNumber: chunkMeta.overallChunkNumber,
+        totalChunks: chunkMeta.totalChunks,
+        reason: 'content-skip',
+        text: text,
+        aiResponse: cleaned.substring(0, 500)
+      });
+    }
     return text;
   }
 
-  // Safeguard 2: if AI returns significantly less text (less than 70%),
-  // it's likely truncating/removing content incorrectly - use original
-  if (cleaned.length < text.length * 0.7) {
+  // Safeguard 2: if AI returns significantly less text, it's likely truncating/removing content.
+  // When simplifying, we expect shorter output (use 30% threshold instead of 70%).
+  const lengthThreshold = isSimplifying ? 0.3 : 0.7;
+  if (cleaned.length < text.length * lengthThreshold) {
     console.warn(`Ollama returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
+    console.warn(`[OLLAMA RESPONSE START]\n${cleaned.substring(0, 500)}...\n[OLLAMA RESPONSE END]`);
+    // Track truncation fallback
+    if (chunkMeta) {
+      truncatedFallbackCount++;
+      skippedChunks.push({
+        chapterTitle: chunkMeta.chapterTitle,
+        chunkIndex: chunkMeta.chunkIndex,
+        overallChunkNumber: chunkMeta.overallChunkNumber,
+        totalChunks: chunkMeta.totalChunks,
+        reason: 'truncated',
+        text: text,
+        aiResponse: cleaned.substring(0, 500)
+      });
+    }
     return text;
   }
 
@@ -1445,8 +1568,16 @@ export async function cleanupText(
       mainWindow.webContents.send('ai:cleanup-progress', progress);
     }
 
+    // Build chunk metadata for skipped chunk tracking
+    const chunkMeta: ChunkMeta = {
+      chapterTitle,
+      chunkIndex: i,
+      overallChunkNumber: i + 1,
+      totalChunks: uniqueChunks.length
+    };
+
     try {
-      const cleaned = await cleanChunk(uniqueChunks[i], systemPrompt, model);
+      const cleaned = await cleanChunk(uniqueChunks[i], systemPrompt, model, undefined, chunkMeta);
       cleanedChunks.push(cleaned);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -1611,7 +1742,8 @@ export async function cleanupEpub(
     parallelWorkers?: number;
     cleanupMode?: 'structure' | 'full';
     testMode?: boolean;
-    simplifyForChildren?: boolean;
+    enableAiCleanup?: boolean;  // Standard OCR/formatting cleanup (default: true)
+    simplifyForChildren?: boolean;  // Simplify archaic language
   }
 ): Promise<EpubCleanupResult> {
   // Debug logging to trace provider selection
@@ -1757,19 +1889,37 @@ export async function cleanupEpub(
       return { success: false, error: 'No chapters found in EPUB' };
     }
 
-    // Build system prompt with optional detailed cleanup examples
-    let systemPrompt = getOcrCleanupSystemPrompt(cleanupMode);
-    if (options?.useDetailedCleanup && options.deletedBlockExamples && options.deletedBlockExamples.length > 0) {
-      const examplesSection = buildExamplesSection(options.deletedBlockExamples);
-      systemPrompt = systemPrompt + examplesSection;
-      console.log(`[AI-BRIDGE] Added ${options.deletedBlockExamples.length} deletion examples to system prompt`);
-    }
+    // Build system prompt based on processing options
+    // Default: enableAiCleanup is true for backwards compatibility
+    const enableAiCleanup = options?.enableAiCleanup !== false;
+    const simplifyForChildren = options?.simplifyForChildren === true;
 
-    // Add simplify for children section if enabled
-    if (options?.simplifyForChildren) {
+    let systemPrompt: string;
+
+    if (enableAiCleanup && simplifyForChildren) {
+      // BOTH: Standard cleanup + simplification
+      systemPrompt = getOcrCleanupSystemPrompt(cleanupMode);
+      if (options?.useDetailedCleanup && options.deletedBlockExamples && options.deletedBlockExamples.length > 0) {
+        const examplesSection = buildExamplesSection(options.deletedBlockExamples);
+        systemPrompt = systemPrompt + examplesSection;
+        console.log(`[AI-BRIDGE] Added ${options.deletedBlockExamples.length} deletion examples to system prompt`);
+      }
       const simplifySection = buildSimplifyForChildrenSection();
       systemPrompt = systemPrompt + simplifySection;
-      console.log('[AI-BRIDGE] Simplify for children mode ENABLED - added simplification instructions to prompt');
+      console.log('[AI-BRIDGE] Mode: AI Cleanup + Simplify for modern audience');
+    } else if (simplifyForChildren && !enableAiCleanup) {
+      // SIMPLIFY ONLY: Use dedicated simplify-only prompt (no OCR/formatting instructions)
+      systemPrompt = getSimplifyOnlySystemPrompt();
+      console.log('[AI-BRIDGE] Mode: Simplify for modern audience ONLY (no AI cleanup)');
+    } else {
+      // CLEANUP ONLY: Standard cleanup without simplification
+      systemPrompt = getOcrCleanupSystemPrompt(cleanupMode);
+      if (options?.useDetailedCleanup && options.deletedBlockExamples && options.deletedBlockExamples.length > 0) {
+        const examplesSection = buildExamplesSection(options.deletedBlockExamples);
+        systemPrompt = systemPrompt + examplesSection;
+        console.log(`[AI-BRIDGE] Added ${options.deletedBlockExamples.length} deletion examples to system prompt`);
+      }
+      console.log('[AI-BRIDGE] Mode: AI Cleanup ONLY (no simplification)');
     }
 
     let chaptersProcessed = 0;
@@ -2011,7 +2161,11 @@ export async function cleanupEpub(
                 const chapterInfo = chapterChunks.find(cc => cc.chapter.id === chapterId);
                 const chapterTitle = chapterInfo?.chapter.title || chapterId;
                 const originalText = extractChapterAsText(originalXhtml);
-                await addChapterDiff(chapterId, chapterTitle, originalText, cleanedText);
+                // IMPORTANT: Extract cleaned text from the rebuilt XHTML, not raw AI text.
+                // This ensures diff positions match what hydration will extract from the EPUB.
+                const rebuiltXhtml = modifiedChapters.get(chapterId);
+                const cleanedTextForDiff = rebuiltXhtml ? extractChapterAsText(rebuiltXhtml) : cleanedText;
+                await addChapterDiff(chapterId, chapterTitle, originalText, cleanedTextForDiff);
                 chaptersAddedToDiffCache.add(chapterId);
               }
             } catch (saveError) {
@@ -2129,6 +2283,16 @@ export async function cleanupEpub(
         const rebuiltXhtml = rebuildChapterFromParagraphs(originalXhtml, paragraphs);
 
         modifiedChapters.set(chapterId, rebuiltXhtml);
+
+        // Add to diff cache (these chapters weren't saved incrementally)
+        if (!chaptersAddedToDiffCache.has(chapterId)) {
+          const chapterInfo = chapterChunks.find(cc => cc.chapter.id === chapterId);
+          const chapterTitle = chapterInfo?.chapter.title || chapterId;
+          const originalText = extractChapterAsText(originalXhtml);
+          const cleanedTextForDiff = extractChapterAsText(rebuiltXhtml);
+          await addChapterDiff(chapterId, chapterTitle, originalText, cleanedTextForDiff);
+          chaptersAddedToDiffCache.add(chapterId);
+        }
       }
       chaptersProcessed = savedChapters.size + chapterResultsMap.size;
 
@@ -2295,8 +2459,11 @@ export async function cleanupEpub(
           modifiedChapters.set(chapter.id, rebuiltXhtml);
 
           // Add to diff cache
+          // IMPORTANT: Extract cleaned text from the rebuilt XHTML, not raw AI text.
+          // This ensures diff positions match what hydration will extract from the EPUB.
           const originalText = extractChapterAsText(originalXhtml);
-          await addChapterDiff(chapter.id, chapter.title, originalText, cleanedText);
+          const cleanedTextForDiff = extractChapterAsText(rebuiltXhtml);
+          await addChapterDiff(chapter.id, chapter.title, originalText, cleanedTextForDiff);
         }
         chaptersProcessed++;
 

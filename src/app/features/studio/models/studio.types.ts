@@ -28,6 +28,8 @@ export interface StudioItem {
   // Common fields
   title: string;
   author?: string;
+  year?: string;
+  language?: string;
   status: StudioItemStatus;
   createdAt: string;
   modifiedAt: string;
@@ -70,9 +72,29 @@ export interface StudioItem {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Workflow State
+// Workflow State - Hierarchical Navigation
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Main tabs: top-level navigation
+ * Editor is now a button that opens a new window, not a tab.
+ */
+export type MainTab = 'metadata' | 'content' | 'audiobook' | 'language-learning';
+
+/**
+ * Sub-tabs under Audiobook main tab
+ */
+export type AudiobookSubTab = 'process' | 'stream' | 'play' | 'review' | 'skipped' | 'enhance' | 'chapters';
+
+/**
+ * Sub-tabs under Language Learning main tab
+ */
+export type LanguageLearningSubTab = 'process' | 'play' | 'review';
+
+/**
+ * Legacy workflow state - kept for backwards compatibility during refactor
+ * @deprecated Use MainTab + sub-tab combinations instead
+ */
 export type StudioWorkflowState =
   | 'empty'      // No item selected
   | 'content'    // Article content editing (element selection)
@@ -84,7 +106,8 @@ export type StudioWorkflowState =
   | 'skipped'    // Skipped chunks review
   | 'enhance'    // Audio post-processing
   | 'chapters'   // Chapter recovery
-  | 'analytics'; // Processing analytics
+  | 'analytics'  // Processing analytics
+  | 'bilingual'; // Bilingual sentence cache management
 
 // Steps within the Process workflow
 export type ProcessStep = 'cleanup' | 'translate' | 'tts';

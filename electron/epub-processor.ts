@@ -2534,5 +2534,61 @@ export async function extractTextFromEpub(
   }
 }
 
+/**
+ * Chapter data with text content
+ */
+export interface ChapterData {
+  id: string;
+  title: string;
+  text: string;
+}
+
+/**
+ * Extract text from EPUB preserving chapter structure
+ */
+export async function extractChaptersFromEpub(
+  epubPath: string
+): Promise<{ success: boolean; chapters?: ChapterData[]; error?: string }> {
+  try {
+    console.log(`[EPUB] extractChaptersFromEpub: parsing ${epubPath}`);
+    await parseEpub(epubPath);
+
+    const chapters = getChapters();
+    console.log(`[EPUB] Found ${chapters.length} chapters`);
+    if (!chapters || chapters.length === 0) {
+      closeEpub();
+      return { success: false, error: 'No chapters found in EPUB' };
+    }
+
+    const chapterData: ChapterData[] = [];
+    for (const chapter of chapters) {
+      try {
+        const chapterText = await getChapterText(chapter.id);
+        if (chapterText && chapterText.trim()) {
+          chapterData.push({
+            id: chapter.id,
+            title: chapter.title || chapter.id,
+            text: chapterText.trim()
+          });
+        }
+      } catch (err) {
+        console.warn(`[EPUB] Failed to extract chapter ${chapter.id}: ${(err as Error).message}`);
+      }
+    }
+
+    closeEpub();
+
+    console.log(`[EPUB] Extracted ${chapterData.length} chapters with content`);
+    if (chapterData.length === 0) {
+      return { success: false, error: 'No text content found in EPUB' };
+    }
+
+    return { success: true, chapters: chapterData };
+  } catch (err) {
+    console.error(`[EPUB] extractChaptersFromEpub error:`, err);
+    return { success: false, error: (err as Error).message };
+  }
+}
+
 // Export the processor and ZipWriter for direct use if needed
 export { EpubProcessor, ZipWriter };

@@ -399,8 +399,10 @@ export class AddModalComponent {
     try {
       const result = await this.studioService.addBook(path);
 
-      if (result.success && result.item) {
-        this.added.emit(result.item);
+      if (result.success) {
+        if (result.item) {
+          this.added.emit(result.item);
+        }
         this.close.emit();
       } else {
         // Show error in some way (could add error state)

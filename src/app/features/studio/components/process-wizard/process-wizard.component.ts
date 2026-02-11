@@ -1,11 +1,12 @@
 /**
- * ProcessWizard - Pipeline wizard for processing EPUBs into audiobooks
+ * ProcessWizard - Pipeline wizard for processing EPUBs into mono audiobooks
  *
  * Steps:
  * 1. AI Cleanup - Configure AI provider/model for text cleanup
- * 2. Translation - Skip, Bilingual (interleaved), or Full Translation
- * 3. TTS - Configure voice/engine settings
- * 4. Review - Summary of all settings, Add to Queue button
+ * 2. TTS - Configure voice/engine settings
+ * 3. Review - Summary of all settings, Add to Queue button
+ *
+ * Note: Translation and bilingual features are handled in the Bilingual tab.
  */
 
 import { Component, input, output, signal, computed, inject, OnInit } from '@angular/core';
@@ -16,15 +17,22 @@ import { SettingsService } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { QueueService } from '../../../queue/services/queue.service';
-import { OcrCleanupConfig, TtsConversionConfig, TranslationJobConfig, LLCleanupJobConfig, LLTranslationJobConfig } from '../../../queue/models/queue.types';
+import { OcrCleanupConfig, TtsConversionConfig, BilingualCleanupJobConfig, BilingualTranslationJobConfig } from '../../../queue/models/queue.types';
 import { AIProvider } from '../../../../core/models/ai-config.types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-type WizardStep = 'cleanup' | 'translation' | 'tts' | 'review';
-type TranslationMode = 'skip' | 'bilingual' | 'translate';
+type WizardStep = 'cleanup' | 'translate' | 'tts' | 'review';
+
+export interface SourceOption {
+  path: string;
+  label: string;
+  description?: string;
+  modifiedAt?: string;
+  isDefault?: boolean;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Component
@@ -36,6 +44,30 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
   imports: [CommonModule, FormsModule],
   template: `
     <div class="wizard">
+      <!-- Source Selection -->
+      @if (availableSources().length > 1) {
+        <div class="source-selector">
+          <label class="source-label">Source EPUB</label>
+          <div class="source-options">
+            @for (source of availableSources(); track source.path) {
+              <button
+                class="source-btn"
+                [class.selected]="selectedSourcePath() === source.path"
+                (click)="selectSource(source.path)"
+              >
+                <span class="source-name">{{ source.label }}</span>
+                @if (source.description) {
+                  <span class="source-desc">{{ source.description }}</span>
+                }
+                @if (source.isDefault) {
+                  <span class="source-badge">Latest</span>
+                }
+              </button>
+            }
+          </div>
+        </div>
+      }
+
       <!-- Step Indicator -->
       <div class="step-indicator">
         <div class="step" [class.active]="currentStep() === 'cleanup'" [class.completed]="isStepCompleted('cleanup')" [class.skipped]="isStepSkipped('cleanup')">
@@ -43,9 +75,9 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
           <span class="step-label">AI Cleanup</span>
         </div>
         <div class="step-connector"></div>
-        <div class="step" [class.active]="currentStep() === 'translation'" [class.completed]="isStepCompleted('translation')" [class.skipped]="isStepSkipped('translation')">
+        <div class="step" [class.active]="currentStep() === 'translate'" [class.completed]="isStepCompleted('translate')" [class.skipped]="isStepSkipped('translate')">
           <span class="step-num">2</span>
-          <span class="step-label">Translation</span>
+          <span class="step-label">Translate</span>
         </div>
         <div class="step-connector"></div>
         <div class="step" [class.active]="currentStep() === 'tts'" [class.completed]="isStepCompleted('tts')" [class.skipped]="isStepSkipped('tts')">
@@ -153,37 +185,95 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
                 }
               </div>
 
-              <!-- Simplify for Children Option -->
-              <div class="checkbox-section">
-                <label class="checkbox-option">
-                  <input
-                    type="checkbox"
-                    [checked]="simplifyForChildren()"
-                    (change)="toggleSimplifyForChildren($event)"
-                  >
-                  <span class="checkbox-label">
-                    Simplify for modern audience (children's reading level)
+              <!-- Parallel Workers (Claude/OpenAI only) -->
+              @if (cleanupProvider() !== 'ollama') {
+                <div class="config-section">
+                  <label class="field-label">Parallel Workers</label>
+                  <div class="worker-options">
+                    @for (count of [1, 2, 3, 4, 5]; track count) {
+                      <button class="worker-btn" [class.selected]="cleanupParallelWorkers() === count" (click)="cleanupParallelWorkers.set(count)">
+                        {{ count }}
+                      </button>
+                    }
+                  </div>
+                  <span class="hint">
+                    More workers = faster processing but higher API costs per minute.
                   </span>
-                </label>
-                <span class="hint">
-                  Rewrite archaic language into simple modern English. E.g., "perpetually quarreling" → "always fighting"
-                </span>
+                </div>
+              }
+
+              <!-- Processing Options -->
+              <div class="processing-options">
+                <label class="field-label">Processing Options</label>
+
+                <!-- AI Cleanup Option -->
+                <div class="toggle-section">
+                  <button
+                    class="option-toggle"
+                    [class.active]="enableAiCleanup()"
+                    (click)="enableAiCleanup.set(!enableAiCleanup())"
+                  >
+                    <span class="toggle-icon">🔧</span>
+                    <span class="toggle-label">AI Cleanup</span>
+                    <span class="toggle-sublabel">Fix OCR errors & formatting</span>
+                  </button>
+                  <span class="hint">
+                    Fix OCR errors, remove headers/footers, clean up formatting issues
+                  </span>
+                </div>
+
+                <!-- Simplify for Language Learning Option -->
+                <div class="toggle-section">
+                  <button
+                    class="option-toggle"
+                    [class.active]="simplifyForChildren()"
+                    (click)="simplifyForChildren.set(!simplifyForChildren())"
+                  >
+                    <span class="toggle-icon">📖</span>
+                    <span class="toggle-label">Simplify for language learning</span>
+                    <span class="toggle-sublabel">Natural American English, 3rd grade level</span>
+                  </button>
+                  <span class="hint">
+                    Rewrite into clean, natural American English that flows well when spoken aloud. Ideal for language learners.
+                  </span>
+                </div>
+
+                @if (!enableAiCleanup() && !simplifyForChildren()) {
+                  <div class="warning-banner">
+                    No processing selected. Enable at least one option or skip this step.
+                  </div>
+                }
               </div>
 
               <!-- Test Mode Option -->
-              <div class="checkbox-section">
-                <label class="checkbox-option">
-                  <input
-                    type="checkbox"
-                    [checked]="testMode()"
-                    (change)="toggleTestMode($event)"
-                  >
-                  <span class="checkbox-label">
-                    Test mode (first 5 chunks only)
-                  </span>
-                </label>
+              <div class="toggle-section">
+                <button
+                  class="option-toggle"
+                  [class.active]="testMode()"
+                  (click)="testMode.set(!testMode())"
+                >
+                  <span class="toggle-icon">🧪</span>
+                  <span class="toggle-label">Test mode</span>
+                  <span class="toggle-sublabel">First {{ testModeChunks() }} chunks only</span>
+                </button>
+                @if (testMode()) {
+                  <div class="test-mode-config">
+                    <label>Chunks to process:</label>
+                    <div class="chunk-options">
+                      @for (count of [3, 5, 10, 20]; track count) {
+                        <button
+                          class="chunk-option"
+                          [class.selected]="testModeChunks() === count"
+                          (click)="testModeChunks.set(count)"
+                        >
+                          {{ count }}
+                        </button>
+                      }
+                    </div>
+                  </div>
+                }
                 <span class="hint">
-                  Process only the first 5 chunks to preview results before running the full job.
+                  Process only the first few chunks to preview results before running the full job.
                 </span>
               </div>
 
@@ -218,93 +308,122 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
             </div>
           }
 
-          @case ('translation') {
-            <div class="step-panel scrollable">
+          @case ('translate') {
+            <div class="step-panel">
               <h3>Translation</h3>
-              <p class="step-desc">Translate the content or create a bilingual version.</p>
+              <p class="step-desc">Translate foreign language books to English before TTS.</p>
 
-              <div class="config-section">
-                <label class="field-label">AI Provider</label>
-                <div class="provider-buttons">
-                  <button
-                    class="provider-btn"
-                    [class.selected]="translationProvider() === 'ollama'"
-                    (click)="selectTranslationProvider('ollama')"
-                  >
-                    <span class="provider-icon">🦙</span>
-                    <span class="provider-name">Ollama</span>
-                  </button>
-                  <button
-                    class="provider-btn"
-                    [class.selected]="translationProvider() === 'claude'"
-                    [class.disabled]="!hasClaudeKey()"
-                    (click)="selectTranslationProvider('claude')"
-                  >
-                    <span class="provider-icon">🧠</span>
-                    <span class="provider-name">Claude</span>
-                    @if (!hasClaudeKey()) {
-                      <span class="provider-status">No API key</span>
-                    }
-                  </button>
-                  <button
-                    class="provider-btn"
-                    [class.selected]="translationProvider() === 'openai'"
-                    [class.disabled]="!hasOpenAIKey()"
-                    (click)="selectTranslationProvider('openai')"
-                  >
-                    <span class="provider-icon">🤖</span>
-                    <span class="provider-name">OpenAI</span>
-                    @if (!hasOpenAIKey()) {
-                      <span class="provider-status">No API key</span>
-                    }
-                  </button>
-                </div>
-
-                <label class="field-label">Model</label>
-                <select class="select-input" [value]="translationModel()" (change)="translationModel.set($any($event.target).value)">
-                  @for (model of translationModels(); track model.value) {
-                    <option [value]="model.value" [selected]="model.value === translationModel()">{{ model.label }}</option>
-                  }
-                </select>
+              <!-- Enable Translation Toggle -->
+              <div class="toggle-section">
+                <button
+                  class="option-toggle"
+                  [class.active]="enableTranslation()"
+                  (click)="enableTranslation.set(!enableTranslation())"
+                >
+                  <span class="toggle-icon">🌐</span>
+                  <span class="toggle-label">Enable Translation</span>
+                  <span class="toggle-sublabel">Translate to English before TTS</span>
+                </button>
+                <span class="hint">
+                  Use this for foreign language books you want narrated in English.
+                </span>
               </div>
 
-              <div class="config-section">
-                <label class="field-label">Translation Mode</label>
-                <div class="provider-buttons">
-                  <button
-                    class="provider-btn"
-                    [class.selected]="translationMode === 'bilingual'"
-                    (click)="translationMode = 'bilingual'"
-                  >
-                    <span class="provider-name">Bilingual</span>
-                  </button>
-                  <button
-                    class="provider-btn"
-                    [class.selected]="translationMode === 'translate'"
-                    (click)="translationMode = 'translate'"
-                  >
-                    <span class="provider-name">Full Translation</span>
-                  </button>
+              @if (enableTranslation()) {
+                <!-- Source Language -->
+                <div class="config-section">
+                  <label class="field-label">Source Language (book's language)</label>
+                  <div class="language-grid">
+                    @for (lang of translationLanguages; track lang.code) {
+                      <button
+                        class="language-btn"
+                        [class.selected]="translateSourceLang() === lang.code"
+                        (click)="translateSourceLang.set(lang.code)"
+                      >
+                        <span class="lang-code">{{ lang.code.toUpperCase() }}</span>
+                        <span class="lang-name">{{ lang.name }}</span>
+                      </button>
+                    }
+                  </div>
                 </div>
 
-                <label class="field-label">Target Languages (select multiple)</label>
-                <div class="language-grid">
-                  @for (lang of availableLanguages; track lang.code) {
+                <!-- AI Provider for Translation -->
+                <div class="config-section">
+                  <label class="field-label">AI Provider</label>
+                  <div class="provider-buttons">
                     <button
-                      class="language-btn"
-                      [class.selected]="targetLangs.has(lang.code)"
-                      (click)="toggleTargetLang(lang.code)"
+                      class="provider-btn"
+                      [class.selected]="translateProvider() === 'ollama'"
+                      [class.connected]="translateProvider() === 'ollama' && ollamaConnected()"
+                      (click)="selectTranslateProvider('ollama')"
                     >
-                      <span class="lang-flag" [style.background]="lang.flagCss"></span>
-                      <span class="lang-code">{{ lang.code.toUpperCase() }}</span>
-                      <span class="lang-name">{{ lang.name }}</span>
-                      @if (targetLangs.has(lang.code)) {
-                        <span class="lang-check">✓</span>
+                      <span class="provider-icon">🦙</span>
+                      <span class="provider-name">Ollama</span>
+                      @if (translateProvider() === 'ollama') {
+                        <span class="provider-status" [class.connected]="ollamaConnected()">
+                          {{ ollamaConnected() ? 'Connected' : 'Not connected' }}
+                        </span>
                       }
                     </button>
+                    <button
+                      class="provider-btn"
+                      [class.selected]="translateProvider() === 'claude'"
+                      [class.disabled]="!hasClaudeKey()"
+                      (click)="selectTranslateProvider('claude')"
+                    >
+                      <span class="provider-icon">🧠</span>
+                      <span class="provider-name">Claude</span>
+                      @if (!hasClaudeKey()) {
+                        <span class="provider-status">No API key</span>
+                      }
+                    </button>
+                    <button
+                      class="provider-btn"
+                      [class.selected]="translateProvider() === 'openai'"
+                      [class.disabled]="!hasOpenAIKey()"
+                      (click)="selectTranslateProvider('openai')"
+                    >
+                      <span class="provider-icon">🤖</span>
+                      <span class="provider-name">OpenAI</span>
+                      @if (!hasOpenAIKey()) {
+                        <span class="provider-status">No API key</span>
+                      }
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Model Selection -->
+                <div class="config-section">
+                  <label class="field-label">Model</label>
+                  @if (translateModels().length > 0) {
+                    <select
+                      class="select-input"
+                      [value]="translateModel()"
+                      (change)="translateModel.set($any($event.target).value)"
+                    >
+                      @for (model of translateModels(); track model.value) {
+                        <option [value]="model.value" [selected]="model.value === translateModel()">{{ model.label }}</option>
+                      }
+                    </select>
+                  } @else {
+                    <div class="no-models">
+                      @if (translateProvider() === 'ollama') {
+                        @if (!ollamaConnected()) {
+                          <span class="error-text">Ollama not running.</span>
+                        } @else {
+                          No models found.
+                        }
+                      } @else {
+                        Configure API key in Settings
+                      }
+                    </div>
                   }
                 </div>
-              </div>
+
+                <div class="translation-note">
+                  Translation will create a new EPUB with English text, which will then be used for TTS.
+                </div>
+              }
             </div>
           }
 
@@ -314,87 +433,60 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
               <p class="step-desc">Configure voice synthesis settings.</p>
 
               <div class="config-section">
-                <!-- Device Selection -->
-                <label class="field-label">Processing Device</label>
-                <div class="provider-buttons">
-                  <button class="provider-btn" [class.selected]="ttsDevice === 'mps'" (click)="selectTtsDevice('mps')">
-                    <span class="provider-name">MPS</span>
-                    <span class="provider-status">Apple Silicon</span>
-                  </button>
-                  <button class="provider-btn" [class.selected]="ttsDevice === 'gpu'" (click)="selectTtsDevice('gpu')">
-                    <span class="provider-name">GPU</span>
-                    <span class="provider-status">CUDA</span>
-                  </button>
-                  <button class="provider-btn" [class.selected]="ttsDevice === 'cpu'" (click)="selectTtsDevice('cpu')">
-                    <span class="provider-name">CPU</span>
-                    <span class="provider-status">Slower</span>
-                  </button>
-                </div>
-
-                <!-- Engine Selection -->
-                <label class="field-label">TTS Engine</label>
-                <div class="provider-buttons">
-                  <button
-                    class="provider-btn"
-                    [class.selected]="ttsEngine === 'xtts'"
-                    (click)="selectTtsEngine('xtts')"
-                  >
-                    <span class="provider-name">XTTS</span>
-                    <span class="provider-status">Multi-language</span>
-                  </button>
-                  <button
-                    class="provider-btn"
-                    [class.selected]="ttsEngine === 'orpheus'"
-                    (click)="selectTtsEngine('orpheus')"
-                  >
-                    <span class="provider-name">Orpheus</span>
-                    <span class="provider-status">Better prosody</span>
-                  </button>
-                </div>
-
-                <!-- Language (only for XTTS) -->
-                @if (ttsEngine === 'xtts') {
-                  <label class="field-label">Language</label>
-                  <select [(ngModel)]="ttsLanguage" class="select-input">
-                    <option value="en">English</option>
-                    <option value="es">Spanish</option>
-                    <option value="fr">French</option>
-                    <option value="de">German</option>
-                    <option value="it">Italian</option>
-                    <option value="pt">Portuguese</option>
-                    <option value="ja">Japanese</option>
-                    <option value="zh">Chinese</option>
-                  </select>
-                }
-
-                <!-- Voice Selection: dual voices for bilingual, single voice otherwise -->
-                @if (translationMode === 'bilingual' && !isStepSkipped('translation')) {
-                  <label class="field-label">Source Voice</label>
-                  <select [(ngModel)]="sourceVoice" class="select-input">
-                    @for (voice of getVoicesForEngine(ttsEngine); track voice.value) {
-                      <option [value]="voice.value">{{ voice.label }}</option>
-                    }
-                  </select>
-
-                  <label class="field-label">Source Speed: {{ sourceSpeed }}x</label>
-                  <div class="speed-control">
-                    <input type="range" min="0.5" max="2" step="0.05" [(ngModel)]="sourceSpeed">
-                    <span class="speed-value">{{ sourceSpeed }}x</span>
+                  <!-- Device Selection -->
+                  <label class="field-label">Processing Device</label>
+                  <div class="provider-buttons">
+                    <button class="provider-btn" [class.selected]="ttsDevice === 'mps'" (click)="selectTtsDevice('mps')">
+                      <span class="provider-name">MPS</span>
+                      <span class="provider-status">Apple Silicon</span>
+                    </button>
+                    <button class="provider-btn" [class.selected]="ttsDevice === 'gpu'" (click)="selectTtsDevice('gpu')">
+                      <span class="provider-name">GPU</span>
+                      <span class="provider-status">CUDA</span>
+                    </button>
+                    <button class="provider-btn" [class.selected]="ttsDevice === 'cpu'" (click)="selectTtsDevice('cpu')">
+                      <span class="provider-name">CPU</span>
+                      <span class="provider-status">Slower</span>
+                    </button>
                   </div>
 
-                  <label class="field-label">Target Voice</label>
-                  <select [(ngModel)]="targetVoice" class="select-input">
-                    @for (voice of getVoicesForEngine(ttsEngine); track voice.value) {
-                      <option [value]="voice.value">{{ voice.label }}</option>
-                    }
-                  </select>
-
-                  <label class="field-label">Target Speed: {{ targetSpeed }}x</label>
-                  <div class="speed-control">
-                    <input type="range" min="0.5" max="2" step="0.05" [(ngModel)]="targetSpeed">
-                    <span class="speed-value">{{ targetSpeed }}x</span>
+                  <!-- Engine Selection -->
+                  <label class="field-label">TTS Engine</label>
+                  <div class="provider-buttons">
+                    <button
+                      class="provider-btn"
+                      [class.selected]="ttsEngine === 'xtts'"
+                      (click)="selectTtsEngine('xtts')"
+                    >
+                      <span class="provider-name">XTTS</span>
+                      <span class="provider-status">Multi-language</span>
+                    </button>
+                    <button
+                      class="provider-btn"
+                      [class.selected]="ttsEngine === 'orpheus'"
+                      (click)="selectTtsEngine('orpheus')"
+                    >
+                      <span class="provider-name">Orpheus</span>
+                      <span class="provider-status">Better prosody</span>
+                    </button>
                   </div>
-                } @else {
+
+                  <!-- Language (only for XTTS) -->
+                  @if (ttsEngine === 'xtts') {
+                    <label class="field-label">Language</label>
+                    <select [(ngModel)]="ttsLanguage" class="select-input">
+                      <option value="en">English</option>
+                      <option value="es">Spanish</option>
+                      <option value="fr">French</option>
+                      <option value="de">German</option>
+                      <option value="it">Italian</option>
+                      <option value="pt">Portuguese</option>
+                      <option value="ja">Japanese</option>
+                      <option value="zh">Chinese</option>
+                    </select>
+                  }
+
+                  <!-- Voice Selection -->
                   <label class="field-label">Voice</label>
                   <select [(ngModel)]="ttsVoice" class="select-input">
                     @for (voice of getVoicesForEngine(ttsEngine); track voice.value) {
@@ -407,38 +499,69 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
                     <input type="range" min="0.5" max="2" step="0.05" [(ngModel)]="ttsSpeed">
                     <span class="speed-value">{{ ttsSpeed }}x</span>
                   </div>
-                }
 
-                <!-- Parallel Workers (only for XTTS) -->
-                @if (ttsEngine === 'xtts') {
-                  <label class="field-label">Parallel Workers</label>
-                  <div class="worker-options">
-                    @for (count of [1, 2, 3, 4]; track count) {
-                      <button class="worker-btn" [class.selected]="parallelWorkers === count" (click)="parallelWorkers = count">
-                        {{ count }}
-                      </button>
+                  <!-- Parallel Workers (only for XTTS) -->
+                  @if (ttsEngine === 'xtts') {
+                    <label class="field-label">Parallel Workers</label>
+                    <div class="worker-options">
+                      @for (count of [1, 2, 3, 4]; track count) {
+                        <button class="worker-btn" [class.selected]="parallelWorkers === count" (click)="parallelWorkers = count">
+                          {{ count }}
+                        </button>
+                      }
+                    </div>
+                    <span class="hint">More workers = faster, but uses ~3GB RAM each</span>
+                  }
+
+                  <!-- Advanced Settings Accordion -->
+                  <div class="accordion" [class.open]="advancedTtsOpen()">
+                    <button class="accordion-header" (click)="advancedTtsOpen.set(!advancedTtsOpen())">
+                      <span class="accordion-title">Advanced Settings</span>
+                      <span class="accordion-icon">{{ advancedTtsOpen() ? '▼' : '▶' }}</span>
+                    </button>
+                    @if (advancedTtsOpen()) {
+                      <div class="accordion-content">
+                        <label class="field-label">Temperature: {{ ttsTemperature }}</label>
+                        <input type="range" min="0.1" max="1.0" step="0.05" [(ngModel)]="ttsTemperature" class="full-width-slider">
+                        <span class="hint">Higher = more expressive but less consistent</span>
+
+                        <label class="field-label">Top P: {{ ttsTopP }}</label>
+                        <input type="range" min="0.1" max="1.0" step="0.05" [(ngModel)]="ttsTopP" class="full-width-slider">
+                      </div>
                     }
                   </div>
-                  <span class="hint">More workers = faster, but uses ~3GB RAM each</span>
-                }
 
-                <!-- Advanced Settings Accordion -->
-                <div class="accordion" [class.open]="advancedTtsOpen()">
-                  <button class="accordion-header" (click)="advancedTtsOpen.set(!advancedTtsOpen())">
-                    <span class="accordion-title">Advanced Settings</span>
-                    <span class="accordion-icon">{{ advancedTtsOpen() ? '▼' : '▶' }}</span>
-                  </button>
-                  @if (advancedTtsOpen()) {
-                    <div class="accordion-content">
-                      <label class="field-label">Temperature: {{ ttsTemperature }}</label>
-                      <input type="range" min="0.1" max="1.0" step="0.05" [(ngModel)]="ttsTemperature" class="full-width-slider">
-                      <span class="hint">Higher = more expressive but less consistent</span>
-
-                      <label class="field-label">Top P: {{ ttsTopP }}</label>
-                      <input type="range" min="0.1" max="1.0" step="0.05" [(ngModel)]="ttsTopP" class="full-width-slider">
-                    </div>
-                  }
-                </div>
+                  <!-- TTS Test Mode -->
+                  <div class="toggle-section">
+                    <button
+                      class="option-toggle"
+                      [class.active]="ttsTestMode()"
+                      (click)="ttsTestMode.set(!ttsTestMode())"
+                    >
+                      <span class="toggle-icon">🧪</span>
+                      <span class="toggle-label">Test mode</span>
+                      <span class="toggle-sublabel">First {{ ttsTestModeChunks() }} sentences only</span>
+                    </button>
+                    @if (ttsTestMode()) {
+                      <div class="test-mode-config">
+                        <label>Sentences to process:</label>
+                        <div class="chunk-options">
+                          @for (count of [5, 10, 20, 50]; track count) {
+                            <button
+                              class="chunk-option"
+                              [class.selected]="ttsTestModeChunks() === count"
+                              (click)="ttsTestModeChunks.set(count)"
+                            >
+                              {{ count }}
+                            </button>
+                          }
+                        </div>
+                      </div>
+                    }
+                    <span class="hint">
+                      Process only the first few sentences to test voice quality before running the full conversion.
+                    </span>
+                  </div>
               </div>
             </div>
           }
@@ -463,13 +586,11 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
 
                 <div class="review-item">
                   <span class="review-label">Translation:</span>
-                  <span class="review-value" [class.disabled]="translationMode === 'skip' || isStepSkipped('translation')">
-                    @if (translationMode === 'skip' || isStepSkipped('translation')) {
+                  <span class="review-value" [class.disabled]="isStepSkipped('translate') || !enableTranslation()">
+                    @if (isStepSkipped('translate') || !enableTranslation()) {
                       Skipped
-                    } @else if (translationMode === 'bilingual') {
-                      Bilingual → {{ getSelectedLanguagesDisplay() }}
                     } @else {
-                      Translate → {{ getSelectedLanguagesDisplay() }}
+                      {{ getLanguageName(translateSourceLang()) }} → English ({{ translateProvider() }} / {{ translateModel() }})
                     }
                   </span>
                 </div>
@@ -480,12 +601,7 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
                     @if (isStepSkipped('tts')) {
                       Skipped
                     } @else {
-                      {{ ttsEngine }} /
-                      @if (translationMode === 'bilingual' && !isStepSkipped('translation')) {
-                        {{ sourceVoice }} + {{ targetVoice }}
-                      } @else {
-                        {{ ttsVoice }}
-                      }
+                      {{ ttsEngine }} / {{ ttsVoice }} @ {{ ttsSpeed }}x
                     }
                   </span>
                 </div>
@@ -552,6 +668,82 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
       height: 100%;
       padding: 16px;
       overflow: hidden;
+    }
+
+    /* Source Selector */
+    .source-selector {
+      background: var(--bg-surface);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 12px;
+    }
+
+    .source-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-tertiary);
+      margin-bottom: 8px;
+    }
+
+    .source-options {
+      display: flex;
+      gap: 8px;
+    }
+
+    .source-btn {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      padding: 10px 12px;
+      background: var(--bg-elevated);
+      border: 2px solid var(--border-subtle);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      position: relative;
+
+      .source-name {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+
+      .source-desc {
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      .source-badge {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        padding: 2px 6px;
+        background: #22c55e;
+        color: white;
+        font-size: 9px;
+        font-weight: 600;
+        border-radius: 10px;
+        text-transform: uppercase;
+      }
+
+      &:hover:not(.selected) {
+        background: var(--bg-hover);
+        border-color: var(--border-default);
+      }
+
+      &.selected {
+        background: rgba(6, 182, 212, 0.15);
+        border-color: #06b6d4;
+
+        .source-name {
+          color: #06b6d4;
+        }
+      }
     }
 
     /* Step Indicator */
@@ -831,6 +1023,144 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
       }
     }
 
+    /* Processing Options Group */
+    .processing-options {
+      margin-top: 16px;
+
+      > .field-label {
+        margin-bottom: 12px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--text-muted);
+      }
+
+      .toggle-section {
+        display: inline-block;
+        width: calc(50% - 6px);
+        margin-top: 0;
+        vertical-align: top;
+
+        &:first-of-type {
+          margin-right: 12px;
+        }
+
+        .option-toggle {
+          height: 100%;
+        }
+      }
+    }
+
+    /* Warning Banner */
+    .warning-banner {
+      display: block;
+      width: 100%;
+      margin-top: 12px;
+      padding: 10px 12px;
+      background: color-mix(in srgb, var(--warning) 10%, transparent);
+      border: 1px solid var(--warning);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--warning);
+      text-align: center;
+    }
+
+    /* Toggle Section */
+    .toggle-section {
+      margin-top: 16px;
+    }
+
+    .option-toggle {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      width: 100%;
+      padding: 16px;
+      background: var(--bg-elevated);
+      border: 2px solid var(--border-subtle);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s;
+
+      .toggle-icon {
+        font-size: 24px;
+      }
+
+      .toggle-label {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-secondary);
+      }
+
+      .toggle-sublabel {
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      &:hover:not(.active) {
+        border-color: var(--border-default);
+        background: var(--bg-hover);
+      }
+
+      &.active {
+        border-color: #06b6d4;
+        background: color-mix(in srgb, #06b6d4 10%, var(--bg-elevated));
+
+        .toggle-label {
+          color: #06b6d4;
+        }
+
+        .toggle-sublabel {
+          color: #06b6d4;
+          opacity: 0.8;
+        }
+      }
+    }
+
+    .test-mode-config {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 12px;
+      padding: 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+
+      label {
+        font-size: 12px;
+        color: var(--text-secondary);
+        white-space: nowrap;
+      }
+    }
+
+    .chunk-options {
+      display: flex;
+      gap: 6px;
+    }
+
+    .chunk-option {
+      padding: 6px 10px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-default);
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.15s;
+
+      &:hover {
+        border-color: var(--border-hover);
+      }
+
+      &.selected {
+        border-color: #06b6d4;
+        background: color-mix(in srgb, #06b6d4 15%, var(--bg-subtle));
+        color: #06b6d4;
+      }
+    }
+
     /* Accordion */
     .accordion {
       margin-top: 16px;
@@ -988,6 +1318,17 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
       position: relative;
     }
 
+    /* Translation Note */
+    .translation-note {
+      margin-top: 16px;
+      padding: 12px 16px;
+      background: color-mix(in srgb, #06b6d4 10%, transparent);
+      border: 1px solid rgba(6, 182, 212, 0.3);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
     /* Worker Options */
     .worker-options {
       display: flex;
@@ -1021,6 +1362,144 @@ type TranslationMode = 'skip' | 'bilingual' | 'translate';
       margin-top: 6px;
       font-size: 11px;
       color: var(--text-tertiary);
+    }
+
+    /* Bilingual Mode Styles */
+    .loading-cache {
+      padding: 16px;
+      text-align: center;
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    .language-select-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .lang-select-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 12px 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      position: relative;
+
+      .lang-flag {
+        width: 24px;
+        height: 16px;
+        border-radius: 2px;
+      }
+
+      .lang-code {
+        font-weight: 600;
+        font-size: 14px;
+        color: var(--text-primary);
+      }
+
+      .lang-name {
+        font-size: 11px;
+        color: var(--text-secondary);
+      }
+
+      .cache-info {
+        font-size: 10px;
+        color: var(--text-muted);
+      }
+
+      .audio-badge,
+      .cache-badge {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        font-size: 9px;
+        padding: 2px 6px;
+        background: rgba(34, 197, 94, 0.15);
+        color: #22c55e;
+        border-radius: 10px;
+      }
+
+      &:hover:not(:disabled) {
+        border-color: var(--color-primary);
+        background: rgba(6, 182, 212, 0.05);
+      }
+
+      &.selected {
+        border-color: var(--color-primary);
+        background: rgba(6, 182, 212, 0.1);
+
+        .lang-code {
+          color: var(--color-primary);
+        }
+      }
+
+      &.cached {
+        border-color: rgba(34, 197, 94, 0.3);
+      }
+
+      &.has-audio {
+        border-color: rgba(34, 197, 94, 0.5);
+      }
+
+      &:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+    }
+
+    .no-source-hint {
+      grid-column: 1 / -1;
+      padding: 16px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+      background: var(--bg-subtle);
+      border-radius: 8px;
+    }
+
+    .bilingual-voice-settings {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px;
+      background: var(--bg-elevated);
+      border-radius: 8px;
+    }
+
+    .voice-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+
+      .voice-lang {
+        width: 32px;
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--text-primary);
+      }
+
+      .voice-select {
+        flex: 1;
+        min-width: 120px;
+      }
+
+      .speed-slider {
+        width: 80px;
+      }
+
+      .speed-label {
+        width: 48px;
+        font-size: 12px;
+        color: var(--text-secondary);
+        text-align: right;
+      }
     }
 
     /* Full width slider */
@@ -1191,6 +1670,7 @@ export class ProcessWizardComponent implements OnInit {
   // Inputs
   readonly epubPath = input.required<string>();  // Current EPUB (may be cleaned version for TTS)
   readonly originalEpubPath = input<string>('');  // Always the original exported.epub for AI cleanup
+  readonly availableSources = input<SourceOption[]>([]);  // Available source EPUBs to choose from
   readonly title = input<string>('');
   readonly author = input<string>('');
   readonly itemType = input<'book' | 'article'>('book');
@@ -1200,6 +1680,7 @@ export class ProcessWizardComponent implements OnInit {
   readonly projectDir = input<string>('');
   readonly sourceLang = input<string>('en');
   readonly textContent = input<string>('');  // Plain text content for article cleanup
+  // Book-specific inputs for bilingual cache
 
   // Outputs
   readonly queued = output<void>();
@@ -1208,6 +1689,9 @@ export class ProcessWizardComponent implements OnInit {
   readonly currentStep = signal<WizardStep>('cleanup');
   readonly addingToQueue = signal(false);
   readonly addedToQueue = signal(false);
+
+  // Source selection - defaults to the epubPath input, can be changed by user
+  readonly selectedSourcePath = signal<string>('');
 
   // Connection state
   readonly ollamaConnected = signal(false);
@@ -1222,64 +1706,31 @@ export class ProcessWizardComponent implements OnInit {
   // Cleanup config (signals for reactivity)
   readonly cleanupProvider = signal<AIProvider>('ollama');
   readonly cleanupModel = signal<string>('');
-  readonly simplifyForChildren = signal(false);
+  readonly enableAiCleanup = signal(true);  // Standard OCR/formatting cleanup
+  readonly simplifyForChildren = signal(false);  // Simplify archaic language
   readonly testMode = signal(false);
+  readonly testModeChunks = signal(5);
+  readonly cleanupParallelWorkers = signal(4);  // Parallel workers for Claude/OpenAI
 
-  // Translation config (signals for provider/model)
-  readonly translationProvider = signal<AIProvider>('ollama');
-  readonly translationModel = signal<string>('');
-  translationMode: TranslationMode = 'bilingual';
-  targetLangs = new Set<string>(['de']);  // Multi-select target languages
-
-  // Helper to toggle a language in/out of selection
-  toggleTargetLang(code: string): void {
-    if (this.targetLangs.has(code)) {
-      // Don't allow deselecting the last language
-      if (this.targetLangs.size > 1) {
-        this.targetLangs.delete(code);
-        this.targetLangs = new Set(this.targetLangs);  // Trigger change detection
-      }
-    } else {
-      this.targetLangs.add(code);
-      this.targetLangs = new Set(this.targetLangs);  // Trigger change detection
-    }
-  }
-
-  // Get formatted list of selected languages for display
-  getSelectedLanguagesDisplay(): string {
-    const names = Array.from(this.targetLangs).map(code => this.getLanguageName(code));
-    return names.join(', ');
-  }
-
-  // Available languages with CSS gradient flags (works on all platforms including Windows)
-  readonly availableLanguages = [
-    { code: 'de', name: 'German', flagCss: 'linear-gradient(to bottom, #000 33.3%, #DD0000 33.3% 66.6%, #FFCE00 66.6%)' },
-    { code: 'es', name: 'Spanish', flagCss: 'linear-gradient(to bottom, #AA151B 25%, #F1BF00 25% 75%, #AA151B 75%)' },
-    { code: 'fr', name: 'French', flagCss: 'linear-gradient(to right, #002395 33.3%, #FFF 33.3% 66.6%, #ED2939 66.6%)' },
-    { code: 'it', name: 'Italian', flagCss: 'linear-gradient(to right, #008C45 33.3%, #F4F5F0 33.3% 66.6%, #CD212A 66.6%)' },
-    { code: 'pt', name: 'Portuguese', flagCss: 'linear-gradient(to right, #006600 40%, #FF0000 40%)' },
-    { code: 'nl', name: 'Dutch', flagCss: 'linear-gradient(to bottom, #AE1C28 33.3%, #FFF 33.3% 66.6%, #21468B 66.6%)' },
-    { code: 'pl', name: 'Polish', flagCss: 'linear-gradient(to bottom, #FFF 50%, #DC143C 50%)' },
-    { code: 'ru', name: 'Russian', flagCss: 'linear-gradient(to bottom, #FFF 33.3%, #0039A6 33.3% 66.6%, #D52B1E 66.6%)' },
-    { code: 'ja', name: 'Japanese', flagCss: 'radial-gradient(circle, #BC002D 25%, #FFF 25%)' },
-    { code: 'zh', name: 'Chinese', flagCss: 'radial-gradient(circle at 28% 35%, #FFDE00 8%, #DE2910 8%)' },
-    { code: 'ko', name: 'Korean', flagCss: 'radial-gradient(circle at 50% 40%, #CD2E3A 18%, transparent 18%), radial-gradient(circle at 50% 60%, #0047A0 18%, transparent 18%), linear-gradient(#FFF, #FFF)' },
-  ];
+  // Translation config
+  readonly enableTranslation = signal(false);  // Whether to translate before TTS
+  readonly translateSourceLang = signal('de');  // Source language to translate from
+  readonly translateTargetLang = signal('en');  // Target language (usually English)
+  readonly translateProvider = signal<AIProvider>('ollama');
+  readonly translateModel = signal<string>('');
 
   // TTS config
   ttsDevice: 'gpu' | 'mps' | 'cpu' = 'cpu';
   ttsEngine: 'xtts' | 'orpheus' = 'xtts';
   ttsLanguage = 'en';
   ttsVoice = 'ScarlettJohansson';
-  sourceVoice = 'ScarlettJohansson';
-  targetVoice = 'ScarlettJohansson';
   ttsSpeed = 1.25;
-  sourceSpeed = 1.25;
-  targetSpeed = 1.0;
   parallelWorkers = 4;
   ttsTemperature = 0.7;
   ttsTopP = 0.9;
   readonly advancedTtsOpen = signal(false);
+  readonly ttsTestMode = signal(false);
+  readonly ttsTestModeChunks = signal(10);
 
   // XTTS voice models
   readonly xttsVoices = [
@@ -1302,6 +1753,20 @@ export class ProcessWizardComponent implements OnInit {
     { value: 'zac', label: 'Zac (Male)', desc: '' },
   ];
 
+  // Languages available for translation source
+  readonly translationLanguages = [
+    { code: 'de', name: 'German' },
+    { code: 'fr', name: 'French' },
+    { code: 'es', name: 'Spanish' },
+    { code: 'it', name: 'Italian' },
+    { code: 'pt', name: 'Portuguese' },
+    { code: 'nl', name: 'Dutch' },
+    { code: 'ru', name: 'Russian' },
+    { code: 'ja', name: 'Japanese' },
+    { code: 'zh', name: 'Chinese' },
+    { code: 'ko', name: 'Korean' },
+  ];
+
   // Prompt state
   readonly promptAccordionOpen = signal(false);
   readonly loadingPrompt = signal(false);
@@ -1315,8 +1780,13 @@ export class ProcessWizardComponent implements OnInit {
   private skippedSteps = new Set<WizardStep>();
 
   readonly epubFilename = computed(() => {
-    const path = this.epubPath();
+    const path = this.selectedSourcePath() || this.epubPath();
     return path.replace(/\\/g, '/').split('/').pop() || path;
+  });
+
+  // Get the effective EPUB path to use for the pipeline
+  readonly effectiveEpubPath = computed(() => {
+    return this.selectedSourcePath() || this.epubPath();
   });
 
   // Computed: check if API keys are configured
@@ -1347,9 +1817,9 @@ export class ProcessWizardComponent implements OnInit {
     return [];
   });
 
-  // Computed: available models based on translation provider
-  readonly translationModels = computed(() => {
-    const provider = this.translationProvider();
+  // Computed: available models based on translate provider
+  readonly translateModels = computed(() => {
+    const provider = this.translateProvider();
     if (provider === 'ollama') return this.ollamaModels();
     if (provider === 'claude') return this.claudeModels();
     if (provider === 'openai') return this.openaiModels();
@@ -1359,18 +1829,33 @@ export class ProcessWizardComponent implements OnInit {
   ngOnInit(): void {
     this.initializeFromSettings();
     this.initializeTtsDefaults();
+    this.initializeSourceSelection();
     this.checkOllamaConnection();
     this.loadPrompt();
+  }
+
+  private initializeSourceSelection(): void {
+    // If sources are provided, find the default (most recently modified)
+    const sources = this.availableSources();
+    if (sources.length > 0) {
+      const defaultSource = sources.find(s => s.isDefault) || sources[0];
+      this.selectedSourcePath.set(defaultSource.path);
+    } else {
+      // Fall back to epubPath input
+      this.selectedSourcePath.set(this.epubPath());
+    }
+  }
+
+  selectSource(path: string): void {
+    this.selectedSourcePath.set(path);
   }
 
   private initializeFromSettings(): void {
     const config = this.settingsService.getAIConfig();
 
-    // Default to Ollama for cleanup and translation in this pipeline
+    // Default to Ollama for cleanup
     this.cleanupProvider.set('ollama');
-    this.translationProvider.set('ollama');
     this.cleanupModel.set(config.ollama.model || 'llama3.2');
-    this.translationModel.set(config.ollama.model || 'llama3.2');
 
     // Pre-fetch other providers' models so they're ready if the user switches
     if (config.claude.apiKey) {
@@ -1407,7 +1892,6 @@ export class ProcessWizardComponent implements OnInit {
         const modelExists = models.some((m: { value: string }) => m.value === currentModel);
         if ((!currentModel || !modelExists) && models.length > 0) {
           this.cleanupModel.set(models[0].value);
-          this.translationModel.set(models[0].value);
         }
       } else {
         this.ollamaConnected.set(false);
@@ -1486,28 +1970,28 @@ export class ProcessWizardComponent implements OnInit {
     }
   }
 
-  selectTranslationProvider(provider: AIProvider): void {
+  selectTranslateProvider(provider: AIProvider): void {
     if (provider === 'claude' && !this.hasClaudeKey()) return;
     if (provider === 'openai' && !this.hasOpenAIKey()) return;
 
-    this.translationProvider.set(provider);
+    this.translateProvider.set(provider);
     const config = this.settingsService.getAIConfig();
 
     if (provider === 'ollama') {
       const models = this.ollamaModels();
-      this.translationModel.set(models.length > 0 ? models[0].value : config.ollama.model);
+      this.translateModel.set(models.length > 0 ? models[0].value : config.ollama.model);
     } else if (provider === 'claude') {
       if (this.claudeModels().length === 0) {
         this.fetchClaudeModels(config.claude.apiKey);
       }
       const models = this.claudeModels();
-      this.translationModel.set(models.length > 0 ? models[0].value : config.claude.model);
+      this.translateModel.set(models.length > 0 ? models[0].value : config.claude.model);
     } else if (provider === 'openai') {
       if (this.openaiModels().length === 0) {
         this.fetchOpenAIModels(config.openai.apiKey);
       }
       const models = this.openaiModels();
-      this.translationModel.set(models.length > 0 ? models[0].value : config.openai.model);
+      this.translateModel.set(models.length > 0 ? models[0].value : config.openai.model);
     }
   }
 
@@ -1568,19 +2052,20 @@ export class ProcessWizardComponent implements OnInit {
     }
   }
 
+  getLanguageName(code: string): string {
+    const lang = this.translationLanguages.find(l => l.code === code);
+    return lang?.name || code.toUpperCase();
+  }
+
   selectTtsEngine(engine: 'xtts' | 'orpheus'): void {
     this.ttsEngine = engine;
     // Reset voice to default for the engine
     if (engine === 'xtts') {
       this.ttsVoice = 'ScarlettJohansson';
-      this.sourceVoice = 'ScarlettJohansson';
-      this.targetVoice = 'ScarlettJohansson';
       // Restore parallel workers based on device
       this.updateParallelWorkersForDevice();
     } else {
       this.ttsVoice = 'tara';
-      this.sourceVoice = 'tara';
-      this.targetVoice = 'leah';
       this.ttsLanguage = 'en';
       // Orpheus doesn't benefit from parallel workers
       this.parallelWorkers = 1;
@@ -1606,23 +2091,6 @@ export class ProcessWizardComponent implements OnInit {
     }
   }
 
-  getLanguageName(code: string): string {
-    const names: Record<string, string> = {
-      de: 'German',
-      es: 'Spanish',
-      fr: 'French',
-      it: 'Italian',
-      pt: 'Portuguese',
-      nl: 'Dutch',
-      pl: 'Polish',
-      ru: 'Russian',
-      ja: 'Japanese',
-      zh: 'Chinese',
-      ko: 'Korean',
-    };
-    return names[code] || code;
-  }
-
   isStepCompleted(step: WizardStep): boolean {
     return this.completedSteps.has(step);
   }
@@ -1638,16 +2106,27 @@ export class ProcessWizardComponent implements OnInit {
       if (provider === 'ollama') return this.ollamaConnected() && !!this.cleanupModel();
       return this.hasApiKeyForCleanupProvider() && !!this.cleanupModel();
     }
+    if (step === 'translate') {
+      // Can always proceed from translate - either skip or configure
+      if (!this.enableTranslation()) return true;
+      const provider = this.translateProvider();
+      if (provider === 'ollama') return this.ollamaConnected() && !!this.translateModel();
+      return this.hasApiKeyForTranslateProvider() && !!this.translateModel();
+    }
     return true;
+  }
+
+  private hasApiKeyForTranslateProvider(): boolean {
+    const provider = this.translateProvider();
+    if (provider === 'ollama') return true;
+    if (provider === 'claude') return this.hasClaudeKey();
+    if (provider === 'openai') return this.hasOpenAIKey();
+    return false;
   }
 
   skipStep(): void {
     const step = this.currentStep();
     this.skippedSteps.add(step);
-    // If skipping translation, set mode to 'skip' so the normal TTS pipeline is used
-    if (step === 'translation') {
-      this.translationMode = 'skip';
-    }
     this.goNext();
   }
 
@@ -1659,9 +2138,13 @@ export class ProcessWizardComponent implements OnInit {
 
     switch (step) {
       case 'cleanup':
-        this.currentStep.set('translation');
+        this.currentStep.set('translate');
         break;
-      case 'translation':
+      case 'translate':
+        // If translation is not enabled, mark it as skipped
+        if (!this.enableTranslation()) {
+          this.skippedSteps.add('translate');
+        }
         this.currentStep.set('tts');
         break;
       case 'tts':
@@ -1674,11 +2157,11 @@ export class ProcessWizardComponent implements OnInit {
     const step = this.currentStep();
 
     switch (step) {
-      case 'translation':
+      case 'translate':
         this.currentStep.set('cleanup');
         break;
       case 'tts':
-        this.currentStep.set('translation');
+        this.currentStep.set('translate');
         break;
       case 'review':
         this.currentStep.set('tts');
@@ -1688,9 +2171,9 @@ export class ProcessWizardComponent implements OnInit {
 
   hasAnyTask(): boolean {
     const hasCleanup = !this.skippedSteps.has('cleanup');
-    const hasTranslation = this.translationMode !== 'skip';
+    const hasTranslate = !this.skippedSteps.has('translate') && this.enableTranslation();
     const hasTts = !this.skippedSteps.has('tts');
-    return hasCleanup || hasTranslation || hasTts;
+    return hasCleanup || hasTranslate || hasTts;
   }
 
   async addToQueue(): Promise<void> {
@@ -1701,90 +2184,51 @@ export class ProcessWizardComponent implements OnInit {
     try {
       const workflowId = this.generateWorkflowId();
       const aiConfig = this.settingsService.getAIConfig();
-      const isBilingual = this.translationMode === 'bilingual';
       const isArticle = this.itemType() === 'article';
       let masterJobId: string | undefined;
-      // For cleanup: always use original exported.epub, not a previously cleaned version
-      const cleanupSourcePath = this.originalEpubPath() || this.epubPath();
-      // For TTS: start with epubPath, will be updated to cleaned version after cleanup
-      let currentEpubPath = this.epubPath();
+      // Use user-selected source, or fall back to epubPath
+      const selectedSource = this.effectiveEpubPath();
+      // For cleanup: ALWAYS use the original finalized EPUB (not any existing cleaned version)
+      // This ensures we don't create _cleaned_cleaned.epub files - cleanup replaces the old cleaned version
+      const cleanupSourcePath = this.originalEpubPath() || selectedSource;
+      // For TTS: start with selected source, will be updated to cleaned version after cleanup
+      let currentEpubPath = selectedSource;
 
       // Get external audiobooks directory for TTS jobs (books only, not articles)
       const externalDir = this.settingsService.get('externalAudiobooksDir') as string | undefined;
       const outputDir = externalDir || this.libraryService.audiobooksPath() || '';
 
-      // Always create a master job to group sub-tasks
-      if (isBilingual) {
-        // Bilingual workflow master
-        const masterJob = await this.queueService.addJob({
-          type: 'language-learning',
-          epubPath: currentEpubPath,
-          projectDir: isArticle ? this.projectDir() : undefined,
-          metadata: {
-            title: this.title(),
-            author: this.author(),
-          },
-          config: {
-            type: 'language-learning',
-            projectId: this.projectId() || '',
-            sourceUrl: '',  // Not needed for config lookup
-            sourceLang: this.sourceLang(),
-            targetLangs: Array.from(this.targetLangs),  // All selected languages
-            htmlPath: '',   // Not needed for config lookup
-            deletedBlockIds: [],
-            title: this.title(),
-            // AI settings
-            aiProvider: this.translationProvider(),
-            aiModel: this.translationModel(),
-            // TTS settings - these are used when translation completes
-            sourceVoice: this.sourceVoice,
-            targetVoice: this.targetVoice,
-            ttsEngine: this.ttsEngine,
-            sourceTtsSpeed: this.sourceSpeed,
-            targetTtsSpeed: this.targetSpeed,
-            device: this.ttsDevice,
-            workerCount: this.parallelWorkers,
-          },
-          workflowId,
-        });
-        masterJobId = masterJob.id;
-      } else {
-        // Non-bilingual workflow master (audiobook production)
-        const masterJob = await this.queueService.addJob({
+      // Create master job for audiobook production
+      const masterJob = await this.queueService.addJob({
+        type: 'audiobook',
+        epubPath: currentEpubPath,
+        projectDir: isArticle ? this.projectDir() : undefined,
+        metadata: {
+          title: this.title(),
+          author: this.author(),
+        },
+        config: {
           type: 'audiobook',
-          epubPath: currentEpubPath,
-          projectDir: isArticle ? this.projectDir() : undefined,
-          metadata: {
-            title: this.title(),
-            author: this.author(),
-          },
-          config: {
-            type: 'audiobook',
-          },
-          workflowId,
-        });
-        masterJobId = masterJob.id;
-      }
-
-      // Create sub-jobs in order: cleanup → translation → tts (→ tts for bilingual)
-      // Each sub-job links to master via parentJobId and shares workflowId
+        },
+        workflowId,
+      });
+      masterJobId = masterJob.id;
 
       // 1. AI Cleanup job (if not skipped)
       if (!this.skippedSteps.has('cleanup')) {
         if (isArticle) {
-          // Article cleanup uses ll-cleanup type
-          const cleanupJob = await this.queueService.addJob({
-            type: 'll-cleanup',
+          // Article cleanup uses bilingual-cleanup type
+          await this.queueService.addJob({
+            type: 'bilingual-cleanup',
             epubPath: cleanupSourcePath,
             projectDir: this.projectDir(),
             metadata: {
               title: 'AI Cleanup',
             },
             config: {
-              type: 'll-cleanup',
+              type: 'bilingual-cleanup',
               projectId: this.projectId(),
               projectDir: this.projectDir(),
-              // inputText removed - ll-cleanup always reads from article.epub
               sourceLang: this.sourceLang(),
               aiProvider: this.cleanupProvider(),
               aiModel: this.cleanupModel(),
@@ -1795,10 +2239,6 @@ export class ProcessWizardComponent implements OnInit {
             workflowId,
             parentJobId: masterJobId,
           });
-
-          if (!masterJobId) {
-            masterJobId = cleanupJob.id;
-          }
         } else {
           // Book cleanup uses ocr-cleanup type
           const cleanupConfig: Partial<OcrCleanupConfig> = {
@@ -1808,14 +2248,18 @@ export class ProcessWizardComponent implements OnInit {
             ollamaBaseUrl: aiConfig.ollama?.baseUrl,
             claudeApiKey: aiConfig.claude?.apiKey,
             openaiApiKey: aiConfig.openai?.apiKey,
+            enableAiCleanup: this.enableAiCleanup(),
             simplifyForChildren: this.simplifyForChildren(),
             testMode: this.testMode(),
+            // Parallel processing for Claude/OpenAI
+            useParallel: this.cleanupProvider() !== 'ollama',
+            parallelWorkers: this.cleanupParallelWorkers(),
           };
 
-          const cleanupJob = await this.queueService.addJob({
+          await this.queueService.addJob({
             type: 'ocr-cleanup',
-            epubPath: cleanupSourcePath,  // Always use original, not previously cleaned
-            bfpPath: this.bfpPath(),  // For saving cleanedAt timestamp
+            epubPath: cleanupSourcePath,
+            bfpPath: this.bfpPath(),
             metadata: {
               title: 'AI Cleanup',
             },
@@ -1824,301 +2268,86 @@ export class ProcessWizardComponent implements OnInit {
             parentJobId: masterJobId,
           });
 
-          if (!masterJobId) {
-            masterJobId = cleanupJob.id;
-          }
           // Cleanup produces _cleaned.epub from the original source
           currentEpubPath = cleanupSourcePath.replace('.epub', '_cleaned.epub');
         }
       }
 
-      // 2. Translation job (if not skipped)
-      if (this.translationMode !== 'skip') {
-        if (isArticle) {
-          // Determine source EPUB for translation:
-          // - If cleanup ran: use cleaned.epub (created by cleanup)
-          // - If cleanup skipped: use article.epub directly
-          const cleanupWasSkipped = this.skippedSteps.has('cleanup');
-          const sourceEpubForTranslation = cleanupWasSkipped
-            ? `${this.projectDir()}/article.epub`
-            : `${this.projectDir()}/cleaned.epub`;
+      // 2. Translation job (if enabled and not skipped)
+      if (!this.skippedSteps.has('translate') && this.enableTranslation()) {
+        await this.queueService.addJob({
+          type: 'bilingual-translation',
+          epubPath: currentEpubPath,
+          bfpPath: isArticle ? undefined : this.bfpPath(),
+          projectDir: isArticle ? this.projectDir() : undefined,
+          metadata: {
+            title: 'Translation',
+          },
+          config: {
+            type: 'bilingual-translation',
+            projectId: isArticle ? this.projectId() : undefined,
+            projectDir: isArticle ? this.projectDir() : undefined,
+            sourceLang: this.translateSourceLang(),
+            targetLang: this.translateTargetLang(),
+            aiProvider: this.translateProvider(),
+            aiModel: this.translateModel(),
+            ollamaBaseUrl: aiConfig.ollama?.baseUrl,
+            claudeApiKey: aiConfig.claude?.apiKey,
+            openaiApiKey: aiConfig.openai?.apiKey,
+            monoTranslation: true,  // Flag to indicate full book translation (not bilingual interleave)
+          },
+          workflowId,
+          parentJobId: masterJobId,
+        });
 
-          // Create translation jobs for each target language
-          const targetLangArray = Array.from(this.targetLangs);
-          for (const targetLang of targetLangArray) {
-            // Article translation uses ll-translation type
-            const translationJob = await this.queueService.addJob({
-              type: 'll-translation',
-              epubPath: currentEpubPath,
-              projectDir: this.projectDir(),
-              metadata: {
-                title: `Translation (${this.getLanguageName(targetLang)})`,
-              },
-              config: {
-                type: 'll-translation',
-                projectId: this.projectId(),
-                projectDir: this.projectDir(),
-                cleanedEpubPath: sourceEpubForTranslation,
-                sourceLang: this.sourceLang(),
-                targetLang,
-                title: this.title(),
-                aiProvider: this.translationProvider(),
-                aiModel: this.translationModel(),
-                ollamaBaseUrl: aiConfig.ollama?.baseUrl,
-                claudeApiKey: aiConfig.claude?.apiKey,
-                openaiApiKey: aiConfig.openai?.apiKey,
-              },
-              workflowId,
-              parentJobId: masterJobId,
-            });
-
-            if (!masterJobId) {
-              masterJobId = translationJob.id;
-            }
-          }
-        } else {
-          // Book translation
-          if (isBilingual) {
-            // Bilingual book translation uses ll-translation to generate separate source/target EPUBs
-            // Use the directory where the cleaned EPUB is located (e.g., .../audiobooks/book_name/)
-            // This ensures the project dir matches where the EPUB actually is
-            const epubPathNorm = currentEpubPath.replace(/\\/g, '/');
-            const bookProjectDir = epubPathNorm.substring(0, epubPathNorm.lastIndexOf('/'));
-
-            // Create translation jobs for each target language
-            const targetLangArray = Array.from(this.targetLangs);
-            for (const targetLang of targetLangArray) {
-              const translationJob = await this.queueService.addJob({
-                type: 'll-translation',
-                epubPath: currentEpubPath,
-                projectDir: bookProjectDir,
-                bfpPath: this.bfpPath(),  // Pass bfpPath for bilingual audio path updates
-                metadata: {
-                  title: `Translation (${this.getLanguageName(targetLang)})`,
-                },
-                config: {
-                  type: 'll-translation',
-                  projectId: workflowId,  // Use workflow ID as project ID for books
-                  projectDir: bookProjectDir,
-                  cleanedEpubPath: currentEpubPath,
-                  sourceLang: this.sourceLang(),
-                  targetLang,
-                  title: this.title(),
-                  aiProvider: this.translationProvider(),
-                  aiModel: this.translationModel(),
-                  ollamaBaseUrl: aiConfig.ollama?.baseUrl,
-                  claudeApiKey: aiConfig.claude?.apiKey,
-                  openaiApiKey: aiConfig.openai?.apiKey,
-                },
-                workflowId,
-                parentJobId: masterJobId,
-              });
-
-              if (!masterJobId) {
-                masterJobId = translationJob.id;
-              }
-            }
-          } else {
-            // Non-bilingual book translation uses regular translation type
-            const translationConfig: Partial<TranslationJobConfig> = {
-              type: 'translation',
-              aiProvider: this.translationProvider(),
-              aiModel: this.translationModel(),
-              ollamaBaseUrl: aiConfig.ollama?.baseUrl,
-              claudeApiKey: aiConfig.claude?.apiKey,
-              openaiApiKey: aiConfig.openai?.apiKey,
-            };
-
-            const translationJob = await this.queueService.addJob({
-              type: 'translation',
-              epubPath: currentEpubPath,
-              metadata: {
-                title: 'Translation',
-              },
-              config: translationConfig,
-              workflowId,
-              parentJobId: masterJobId,
-            });
-
-            if (!masterJobId) {
-              masterJobId = translationJob.id;
-            }
-          }
-        }
+        // Translation produces _translated.epub
+        currentEpubPath = currentEpubPath.replace('.epub', '_translated.epub');
       }
 
-      // 3. TTS job(s) - Multiple jobs for bilingual (source + target per language), ONE for mono
+      // 3. TTS job (if not skipped)
       if (!this.skippedSteps.has('tts')) {
-        if (isBilingual) {
-          // For bilingual, create placeholder TTS jobs that will be updated
-          // when translation completes with the correct source/target EPUB paths
-          const projectIdForPlaceholder = isArticle ? this.projectId() : workflowId;
+        const ttsConfig: Partial<TtsConversionConfig> = {
+          type: 'tts-conversion',
+          device: this.ttsDevice,
+          language: this.ttsLanguage,
+          ttsEngine: this.ttsEngine,
+          fineTuned: this.ttsVoice,
+          temperature: this.ttsTemperature,
+          topP: this.ttsTopP,
+          topK: 50,
+          repetitionPenalty: 1.0,
+          speed: this.ttsSpeed,
+          enableTextSplitting: true,
+          // Use parallel TTS for better performance
+          useParallel: true,
+          parallelMode: 'sentences',
+          parallelWorkers: this.ttsEngine === 'xtts' ? this.parallelWorkers : 1,
+          outputDir,
+        };
 
-          // Worker count - Orpheus uses single worker, XTTS can use multiple
-          const workerCount = this.ttsEngine === 'orpheus' ? 1 : this.parallelWorkers;
-
-          // Convert Set to Array for iteration
-          const targetLangArray = Array.from(this.targetLangs);
-
-          // Source language TTS job (e.g., "EN TTS") - only ONE, shared by all languages
-          // We associate it with the first target language for placeholder matching
-          const sourceTtsConfig: Partial<TtsConversionConfig> = {
-            type: 'tts-conversion',
-            device: this.ttsDevice,
-            language: 'en', // Source is always English for now
-            ttsEngine: this.ttsEngine,
-            fineTuned: this.sourceVoice,
-            temperature: this.ttsTemperature,
-            topP: this.ttsTopP,
-            topK: 50,
-            repetitionPenalty: 5.0,
-            speed: this.sourceSpeed,
-            enableTextSplitting: true,
-            // ALWAYS use parallel TTS to avoid memory leak from app.py
-            useParallel: true,
-            parallelMode: 'sentences',
-            parallelWorkers: workerCount,
-            outputDir,
-            sentencePerParagraph: true,
-            skipHeadings: true,
-            // Bilingual: skip assembly, sentences dir returned for bilingual-assembly job
-            skipAssembly: true,
-          };
-
-          await this.queueService.addJob({
-            type: 'tts-conversion',
-            // No epubPath - will be set when translation completes
-            projectDir: isArticle ? this.projectDir() : undefined,
-            metadata: {
-              title: 'EN TTS',
-              // Placeholder marker - queue will skip this until translation updates it
-              bilingualPlaceholder: {
-                role: 'source',
-                projectId: projectIdForPlaceholder,
-                targetLang: targetLangArray[0],  // Associate with first language for matching
-              },
-            },
-            config: sourceTtsConfig,
-            workflowId,
-            parentJobId: masterJobId,
-          });
-
-          // Create target TTS + assembly jobs for EACH target language
-          for (const targetLang of targetLangArray) {
-            // Target language TTS job (e.g., "German TTS") - placeholder
-            const targetTtsConfig: Partial<TtsConversionConfig> = {
-              type: 'tts-conversion',
-              device: this.ttsDevice,
-              language: targetLang,
-              ttsEngine: this.ttsEngine,
-              fineTuned: this.targetVoice,
-              temperature: this.ttsTemperature,
-              topP: this.ttsTopP,
-              topK: 50,
-              repetitionPenalty: 5.0,
-              speed: this.targetSpeed,
-              enableTextSplitting: true,
-              // ALWAYS use parallel TTS to avoid memory leak from app.py
-              useParallel: true,
-              parallelMode: 'sentences',
-              parallelWorkers: workerCount,
-              outputDir,
-              sentencePerParagraph: true,
-              skipHeadings: true,
-              // Bilingual: skip assembly, sentences dir returned for bilingual-assembly job
-              skipAssembly: true,
-            };
-
-            await this.queueService.addJob({
-              type: 'tts-conversion',
-              // No epubPath - will be set when translation completes
-              projectDir: isArticle ? this.projectDir() : undefined,
-              metadata: {
-                title: `${this.getLanguageName(targetLang)} TTS`,
-                // Placeholder marker - queue will skip this until translation updates it
-                bilingualPlaceholder: {
-                  role: 'target',
-                  projectId: projectIdForPlaceholder,
-                  targetLang,  // Track which language this job is for
-                },
-              },
-              config: targetTtsConfig,
-              workflowId,
-              parentJobId: masterJobId,
-            });
-
-            // Assembly job placeholder for this language
-            await this.queueService.addJob({
-              type: 'bilingual-assembly',
-              projectDir: isArticle ? this.projectDir() : undefined,
-              bfpPath: isArticle ? undefined : this.bfpPath(),
-              metadata: {
-                title: `Assembly (${this.getLanguageName(targetLang)})`,
-                // Placeholder marker - queue will skip this until target TTS completes
-                bilingualPlaceholder: {
-                  role: 'assembly',
-                  projectId: projectIdForPlaceholder,
-                  targetLang,  // Track which language this assembly is for
-                },
-              },
-              config: {
-                type: 'bilingual-assembly',
-                projectId: projectIdForPlaceholder,
-                targetLang,  // Include language in config for output naming
-                outputDir,
-                bfpPath: isArticle ? undefined : this.bfpPath(),
-              },
-              workflowId,
-              parentJobId: masterJobId,
-            });
-          }
-        } else {
-          // Single TTS job for mono/translate mode
-          const ttsConfig: Partial<TtsConversionConfig> = {
-            type: 'tts-conversion',
-            device: this.ttsDevice,
-            language: this.ttsLanguage,
-            ttsEngine: this.ttsEngine,
-            fineTuned: this.ttsVoice,
-            temperature: this.ttsTemperature,
-            topP: this.ttsTopP,
-            topK: 50,
-            repetitionPenalty: 1.0,
-            speed: this.ttsSpeed,
-            enableTextSplitting: true,
-            // ALWAYS use parallel TTS to avoid memory leak from app.py
-            // and to ensure WSL routing works for CUDA support on Windows
-            useParallel: true,
-            parallelMode: 'sentences',
-            parallelWorkers: this.ttsEngine === 'xtts' ? this.parallelWorkers : 1,
-            outputDir,
-          };
-
-          await this.queueService.addJob({
-            type: 'tts-conversion',
-            epubPath: currentEpubPath,
-            projectDir: isArticle ? this.projectDir() : undefined,
-            bfpPath: isArticle ? undefined : this.bfpPath(),  // For copying VTT to project folder
-            metadata: {
-              title: 'TTS',
-              bookTitle: this.title(),
-              author: this.author(),
-              outputFilename: `${this.title() || 'audiobook'}.m4b`,
-            },
-            config: ttsConfig,
-            workflowId,
-            parentJobId: masterJobId,
-          });
-        }
+        await this.queueService.addJob({
+          type: 'tts-conversion',
+          epubPath: currentEpubPath,
+          projectDir: isArticle ? this.projectDir() : undefined,
+          bfpPath: isArticle ? undefined : this.bfpPath(),
+          metadata: {
+            title: 'TTS',
+            bookTitle: this.title(),
+            author: this.author(),
+            outputFilename: `${this.title() || 'audiobook'}.m4b`,
+          },
+          config: ttsConfig,
+          workflowId,
+          parentJobId: masterJobId,
+        });
       }
 
       console.log('[ProcessWizard] Jobs added to queue:', {
         workflowId,
         masterJobId,
-        isBilingual,
         isArticle,
         cleanup: !this.skippedSteps.has('cleanup'),
-        translation: this.translationMode,
+        translate: !this.skippedSteps.has('translate') && this.enableTranslation(),
         tts: !this.skippedSteps.has('tts'),
       });
 

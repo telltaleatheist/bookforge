@@ -821,6 +821,132 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Finalize a project for audiobook processing.
+   * Exports EPUB to the project folder and updates the BFP with audiobook state.
+   *
+   * @param bfpPath - Path to the BFP project file
+   * @returns Result with success status, EPUB path, or error
+   */
+  async projectFinalize(bfpPath: string): Promise<{
+    success: boolean;
+    epubPath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.projects.finalize(bfpPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Migrate all legacy BFP projects to the current format.
+   * - Copies source files into project folders
+   * - Adds audiobook property if missing
+   * - Creates backups before modifying
+   *
+   * @returns Result with migrated projects and any failures
+   */
+  async projectsMigrateAll(): Promise<{
+    success: boolean;
+    migrated: string[];
+    skipped: string[];
+    failed: Array<{ name: string; error: string }>;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.projects.migrateAll();
+    }
+    return { success: false, migrated: [], skipped: [], failed: [] };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Editor Window - Opens PDF picker in a separate window for editing
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Open the editor window for a project
+   */
+  async editorOpenWindow(projectPath: string): Promise<{
+    success: boolean;
+    alreadyOpen?: boolean;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.editor.openWindow(projectPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Open the editor window with a BFP project and specific source version
+   * This ensures project state (deletions, chapters) is preserved
+   */
+  async editorOpenWindowWithBfp(bfpPath: string, sourcePath: string): Promise<{
+    success: boolean;
+    alreadyOpen?: boolean;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.editor.openWindowWithBfp(bfpPath, sourcePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Close the editor window for a project
+   */
+  async editorCloseWindow(projectPath: string): Promise<{ success: boolean }> {
+    if (this.isElectron) {
+      return (window as any).electron.editor.closeWindow(projectPath);
+    }
+    return { success: true };
+  }
+
+  /**
+   * Get available versions for a project
+   * Returns all versions of the source document at different pipeline stages
+   */
+  async editorGetVersions(bfpPath: string): Promise<{
+    success: boolean;
+    error?: string;
+    versions?: Array<{
+      id: string;
+      type: string;
+      label: string;
+      description: string;
+      path: string;
+      extension: string;
+      language?: string;
+      modifiedAt?: string;
+      fileSize?: number;
+      editable: boolean;
+      icon: string;
+    }>;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.editor.getVersions(bfpPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Subscribe to editor window closed events
+   */
+  onEditorWindowClosed(callback: (projectPath: string) => void): void {
+    if (this.isElectron) {
+      (window as any).electron.editor.onWindowClosed(callback);
+    }
+  }
+
+  /**
+   * Unsubscribe from editor window closed events
+   */
+  offEditorWindowClosed(): void {
+    if (this.isElectron) {
+      (window as any).electron.editor.offWindowClosed();
+    }
+  }
+
   // Library operations - copy files to library folder
   async libraryImportFile(sourcePath: string): Promise<{
     success: boolean;
@@ -892,6 +1018,45 @@ export class ElectronService {
   }
 
   /**
+   * Import an EPUB file directly, creating both a BFP file and audiobook folder.
+   * Used for drag/drop import without going through the PDF editor.
+   */
+  async audiobookImportEpub(epubSourcePath: string): Promise<{
+    success: boolean;
+    bfpPath?: string;
+    audiobookFolder?: string;
+    epubPath?: string;
+    projectName?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.audiobook.importEpub(epubSourcePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Direct EPUB Save (saves edited EPUB back to source file)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Save EPUB data directly to a file path.
+   * Used when editing an EPUB file directly (not via BFP project).
+   */
+  async saveEpubToPath(
+    epubPath: string,
+    epubData: ArrayBuffer
+  ): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.editor.saveEpubToPath(epubPath, epubData);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * Update audiobook state in BFP project (status, paths, progress, etc.)
    */
   async audiobookUpdateState(
@@ -941,6 +1106,8 @@ export class ElectronService {
       metadata?: {
         title?: string;
         author?: string;
+        year?: string;
+        language?: string;
         coverImagePath?: string;
         outputFilename?: string;
       };
@@ -969,6 +1136,23 @@ export class ElectronService {
   async audiobookLinkBilingualAudio(bfpPath: string, audioPath: string, vttPath?: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.audiobook.linkBilingualAudio(bfpPath, audioPath, vttPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Update project metadata in a BFP file
+   */
+  async projectUpdateMetadata(bfpPath: string, metadata: {
+    title?: string;
+    author?: string;
+    year?: string;
+    language?: string;
+    coverPath?: string;
+    coverData?: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.project.updateMetadata(bfpPath, metadata);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -2525,5 +2709,205 @@ export class ElectronService {
     if (this.isElectron && (window as any).electron.shell) {
       await (window as any).electron.shell.showItemInFolder(path);
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Manifest Service (Unified Project Management)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Create a new unified project
+   */
+  async manifestCreate(
+    projectType: 'book' | 'article',
+    source: any,
+    metadata: any
+  ): Promise<{
+    success: boolean;
+    projectId?: string;
+    projectPath?: string;
+    manifestPath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      return (window as any).electron.manifest.create(projectType, source, metadata);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Get a project manifest
+   */
+  async manifestGet(projectId: string): Promise<{
+    success: boolean;
+    manifest?: any;
+    projectPath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      return (window as any).electron.manifest.get(projectId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Save (update) a project manifest
+   */
+  async manifestSave(manifest: any): Promise<{
+    success: boolean;
+    manifestPath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      return (window as any).electron.manifest.save(manifest);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Update specific fields in a manifest
+   */
+  async manifestUpdate(update: any): Promise<{
+    success: boolean;
+    manifestPath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      return (window as any).electron.manifest.update(update);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * List all unified projects
+   */
+  async manifestList(filter?: { type?: 'book' | 'article' }): Promise<{
+    success: boolean;
+    projects?: any[];
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      return (window as any).electron.manifest.list(filter);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * List project summaries (lightweight)
+   */
+  async manifestListSummaries(filter?: { type?: 'book' | 'article' }): Promise<{
+    success: boolean;
+    summaries?: any[];
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      return (window as any).electron.manifest.listSummaries(filter);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Delete a unified project
+   */
+  async manifestDelete(projectId: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      return (window as any).electron.manifest.delete(projectId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Import a source file into a project
+   */
+  async manifestImportSource(
+    projectId: string,
+    sourcePath: string,
+    targetFilename?: string
+  ): Promise<{
+    success: boolean;
+    relativePath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      return (window as any).electron.manifest.importSource(projectId, sourcePath, targetFilename);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Resolve a relative manifest path to absolute OS path
+   */
+  async manifestResolvePath(projectId: string, relativePath: string): Promise<string | null> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      const result = await (window as any).electron.manifest.resolvePath(projectId, relativePath);
+      return result?.path || null;
+    }
+    return null;
+  }
+
+  /**
+   * Get project folder path
+   */
+  async manifestGetProjectPath(projectId: string): Promise<string | null> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      const result = await (window as any).electron.manifest.getProjectPath(projectId);
+      return result?.path || null;
+    }
+    return null;
+  }
+
+  /**
+   * Check if project exists
+   */
+  async manifestExists(projectId: string): Promise<boolean> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      const result = await (window as any).electron.manifest.exists(projectId);
+      return result?.exists || false;
+    }
+    return false;
+  }
+
+  /**
+   * Check if migration is needed
+   */
+  async manifestNeedsMigration(): Promise<boolean> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      const result = await (window as any).electron.manifest.needsMigration();
+      return result?.needsMigration || false;
+    }
+    return false;
+  }
+
+  /**
+   * Scan for legacy projects
+   */
+  async manifestScanLegacy(): Promise<{
+    success: boolean;
+    bfpCount: number;
+    audiobookCount: number;
+    articleCount: number;
+    total: number;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      return (window as any).electron.manifest.scanLegacy();
+    }
+    return { success: false, bfpCount: 0, audiobookCount: 0, articleCount: 0, total: 0 };
+  }
+
+  /**
+   * Migrate all legacy projects
+   */
+  async manifestMigrateAll(): Promise<{
+    success: boolean;
+    migrated: string[];
+    failed: Array<{ path: string; error: string }>;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      return (window as any).electron.manifest.migrateAll();
+    }
+    return { success: false, migrated: [], failed: [] };
   }
 }

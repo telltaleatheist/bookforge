@@ -19,9 +19,8 @@ import {
   TranslationJobConfig,
   ReassemblyJobConfig,
   ResembleEnhanceJobConfig,
-  LanguageLearningJobConfig,
-  LLCleanupJobConfig,
-  LLTranslationJobConfig,
+  BilingualCleanupJobConfig,
+  BilingualTranslationJobConfig,
   BilingualAssemblyJobConfig,
   AudiobookJobConfig,
   ResumeCheckResult,
@@ -166,7 +165,7 @@ declare global {
         onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
       };
       // Language Learning Split Pipeline
-      llCleanup?: {
+      bilingualCleanup?: {
         run: (jobId: string, config: {
           projectId: string;
           projectDir: string;
@@ -186,11 +185,11 @@ declare global {
         }>;
         onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
       };
-      llTranslation?: {
+      bilingualTranslation?: {
         run: (jobId: string, config: {
-          projectId: string;
-          projectDir: string;
-          cleanedEpubPath: string;
+          projectId?: string;
+          projectDir?: string;
+          cleanedEpubPath?: string;
           sourceLang: string;
           targetLang: string;
           title?: string;
@@ -200,6 +199,7 @@ declare global {
           claudeApiKey?: string;
           openaiApiKey?: string;
           translationPrompt?: string;
+          monoTranslation?: boolean;  // Full book translation (not bilingual interleave)
         }) => Promise<{
           success: boolean;
           outputPath?: string;
@@ -397,8 +397,8 @@ export class QueueService {
     }
 
     // Listen for LL split pipeline job progress (cleanup + translation)
-    if (electron.llCleanup) {
-      this.unsubscribeLLJobProgress = electron.llCleanup.onProgress((data) => {
+    if (electron.bilingualCleanup) {
+      this.unsubscribeLLJobProgress = electron.bilingualCleanup.onProgress((data) => {
         this.ngZone.run(() => {
           this.handleLLJobProgressUpdate(data.jobId, data.progress);
         });
@@ -777,6 +777,24 @@ export class QueueService {
     if (result.success && result.outputPath && completedJob?.bfpPath &&
         (completedJob.type === 'tts-conversion' || completedJob.type === 'reassembly')) {
       this.copyVttToBfp(completedJob.bfpPath, result.outputPath);
+    }
+
+    // Cache audio files for cached-language TTS jobs (bilingual tab)
+    if (result.success && result.outputPath && completedJob?.type === 'tts-conversion') {
+      const ttsConfig = completedJob.config as TtsConversionConfig;
+      if (ttsConfig?.cacheAudioTo && ttsConfig?.cacheLanguage) {
+        console.log(`[QUEUE] Caching audio for ${ttsConfig.cacheLanguage} to ${ttsConfig.cacheAudioTo}`);
+        this.cacheAudioAfterTts(
+          result.outputPath,  // sentencesDir from TTS
+          ttsConfig.cacheAudioTo,
+          ttsConfig.cacheLanguage,
+          {
+            engine: ttsConfig.ttsEngine as 'xtts' | 'orpheus',
+            voice: ttsConfig.fineTuned,
+            speed: ttsConfig.speed,
+          }
+        );
+      }
     }
 
     // Handle bilingual dual-voice workflow chaining
@@ -1527,8 +1545,8 @@ export class QueueService {
     // - TTS placeholder jobs (waiting for translation to set epubPath)
     const pending = this._jobs().filter(j => {
       if (j.status !== 'pending') return false;
-      // Skip master workflow jobs (both bilingual 'language-learning' and mono 'audiobook')
-      if ((j.type === 'language-learning' || j.type === 'audiobook') && j.workflowId && !j.parentJobId) return false;
+      // Skip master workflow jobs (audiobook containers)
+      if (j.type === 'audiobook' && j.workflowId && !j.parentJobId) return false;
       // Skip TTS placeholder jobs that are waiting for translation
       if (j.type === 'tts-conversion' && (j.metadata as any)?.bilingualPlaceholder) return false;
       // Skip assembly placeholder jobs that are waiting for TTS to complete
@@ -1615,6 +1633,7 @@ export class QueueService {
           parallelWorkers?: number;
           cleanupMode?: 'structure' | 'full';
           testMode?: boolean;
+          enableAiCleanup?: boolean;
           simplifyForChildren?: boolean;
         } = {
           provider: config.aiProvider,
@@ -1640,10 +1659,11 @@ export class QueueService {
           cleanupMode: config.cleanupMode || 'structure',
           // Test mode
           testMode: config.testMode,
-          // Simplify for children
+          // Processing options
+          enableAiCleanup: config.enableAiCleanup,
           simplifyForChildren: config.simplifyForChildren
         };
-        console.log('[QUEUE] Job config from storage:', { testMode: config.testMode, cleanupMode: config.cleanupMode, simplifyForChildren: config.simplifyForChildren, fullConfig: JSON.stringify(config) });
+        console.log('[QUEUE] Job config from storage:', { testMode: config.testMode, cleanupMode: config.cleanupMode, enableAiCleanup: config.enableAiCleanup, simplifyForChildren: config.simplifyForChildren, fullConfig: JSON.stringify(config) });
         console.log('[QUEUE] Built aiConfig:', { testMode: aiConfig.testMode, cleanupMode: aiConfig.cleanupMode });
         console.log('[QUEUE] Calling runOcrCleanup with:', {
           jobId: job.id,
@@ -1941,217 +1961,27 @@ export class QueueService {
         }
 
         // The job completion will be handled by the onComplete callback
-      } else if (job.type === 'language-learning') {
-        // Language Learning job - bilingual audiobook generation
-        const config = job.config as LanguageLearningJobConfig | undefined;
-        if (!config) {
-          throw new Error('Language Learning configuration required');
-        }
-
-        console.log('[QUEUE] Starting language-learning job:', {
-          projectId: config.projectId,
-          targetLang: config.targetLang,
-          enableCleanup: config.enableCleanup,
-          workerCount: config.workerCount,
-          ttsEngine: config.ttsEngine,
-          voice: config.targetVoice
-        });
-
-        // Call the language learning API
-        if (!electron.languageLearning) {
-          throw new Error('Language Learning not available');
-        }
-
-        const result = await electron.languageLearning.runJob(job.id, {
-          projectId: config.projectId,
-          sourceUrl: config.sourceUrl,
-          sourceLang: config.sourceLang,
-          targetLang: config.targetLang,    // Legacy single language
-          targetLangs: config.targetLangs,  // Multi-language support
-          htmlPath: config.htmlPath,
-          pdfPath: config.pdfPath,
-          deletedBlockIds: config.deletedBlockIds,
-          title: config.title,
-          aiProvider: config.aiProvider,
-          aiModel: config.aiModel,
-          ollamaBaseUrl: config.ollamaBaseUrl,
-          claudeApiKey: config.claudeApiKey,
-          openaiApiKey: config.openaiApiKey,
-          // AI prompt settings
-          translationPrompt: config.translationPrompt,
-          enableCleanup: config.enableCleanup,
-          cleanupPrompt: config.cleanupPrompt,
-          // TTS settings
-          sourceVoice: config.sourceVoice,
-          targetVoice: config.targetVoice,
-          ttsEngine: config.ttsEngine,
-          sourceTtsSpeed: config.sourceTtsSpeed,
-          targetTtsSpeed: config.targetTtsSpeed,
-          device: config.device,
-          workerCount: config.workerCount
-        });
-        if (!result.success) {
-          throw new Error(result.error || 'Language Learning job failed');
-        }
-
-        // Language learning EPUB phase complete - check for dual-voice or legacy flow
-        if (result.data?.sourceTtsConfig && result.data?.targetTtsConfig) {
-          // NEW: Dual-voice workflow for proper accent separation
-          const sourceConfig = result.data.sourceTtsConfig;
-          const targetConfig = result.data.targetTtsConfig;
-          const assemblyConfig = result.data.bilingualAssemblyConfig;
-
-          console.log('[QUEUE] Language learning EPUB complete, starting dual-voice TTS workflow:', {
-            sourceEpub: sourceConfig.epubPath,
-            targetEpub: targetConfig.epubPath,
-            sourceVoice: sourceConfig.voice,
-            targetVoice: targetConfig.voice
-          });
-
-          // Mark the language-learning job as complete
-          this._jobs.update(jobs =>
-            jobs.map(j => {
-              if (j.id !== job.id) return j;
-              return { ...j, status: 'complete' as JobStatus, progress: 100 };
-            })
-          );
-
-          // Generate workflow ID to track related jobs (same as master job)
-          const workflowId = job.workflowId || job.id;
-
-          // Store assembly config in the job for later use
-          const sentencePairsPath = result.data.sentencePairsPath;
-
-          // Get language names for display
-          const sourceLangName = this.getLanguageName(sourceConfig.language);
-          const targetLangName = this.getLanguageName(targetConfig.language);
-
-          // Add SOURCE TTS job (will be processed first)
-          await this.addJob({
-            type: 'tts-conversion',
-            epubPath: sourceConfig.epubPath,
-            workflowId,
-            parentJobId: job.id,  // Link to master language-learning job
-            metadata: {
-              title: `${sourceLangName} TTS`,
-              author: 'Language Learning',
-              // Store data for downstream jobs
-              bilingualWorkflow: {
-                role: 'source',
-                targetEpubPath: targetConfig.epubPath,
-                targetConfig,
-                assemblyConfig: {
-                  ...assemblyConfig,
-                  sentencePairsPath
-                }
-              }
-            },
-            config: {
-              type: 'tts-conversion',
-              useParallel: true,
-              parallelMode: 'sentences',
-              parallelWorkers: sourceConfig.workerCount,
-              device: sourceConfig.device,
-              language: sourceConfig.language,
-              ttsEngine: sourceConfig.ttsEngine,
-              fineTuned: sourceConfig.voice,
-              speed: sourceConfig.speed,
-              outputDir: sourceConfig.outputDir,
-              outputFilename: sourceConfig.outputFilename,
-              // Skip assembly - we'll do bilingual assembly after both TTS jobs
-              skipAssembly: true,
-              // Preserve paragraph boundaries as sentences (don't let e2a re-split)
-              sentencePerParagraph: true,
-              // Skip reading heading tags as chapter titles (for bilingual)
-              skipHeadings: true,
-              // Standard TTS settings
-              temperature: 0.75,
-              topP: 0.85,
-              topK: 50,
-              repetitionPenalty: 5.0,
-              enableTextSplitting: true
-            },
-            // BFP path for temp folder workflow (Syncthing compatibility)
-            bfpPath: (sourceConfig as any).bfpPath
-          });
-
-          // Clear current job and process next (the source TTS job)
-          this._currentJobId.set(null);
-          await this.processNext();
-
-        } else if (result.data?.epubPath && result.data?.ttsConfig) {
-          // LEGACY: Single bilingual EPUB flow (deprecated)
-          const ttsConfig = result.data.ttsConfig;
-          console.log('[QUEUE] Language learning EPUB complete (legacy flow), chaining TTS job:', {
-            epubPath: result.data.epubPath,
-            outputDir: ttsConfig.outputDir,
-            engine: ttsConfig.ttsEngine,
-            voice: ttsConfig.voice,
-            workers: ttsConfig.workerCount
-          });
-
-          // Mark the language-learning job as complete
-          this._jobs.update(jobs =>
-            jobs.map(j => {
-              if (j.id !== job.id) return j;
-              return { ...j, status: 'complete' as JobStatus, progress: 100 };
-            })
-          );
-
-          // Add a TTS job using the regular queue infrastructure
-          await this.addJob({
-            type: 'tts-conversion',
-            epubPath: result.data.epubPath,
-            metadata: {
-              title: ttsConfig.title,
-              author: 'Language Learning'
-            },
-            config: {
-              type: 'tts-conversion',
-              useParallel: true,
-              parallelMode: 'sentences', // Bilingual EPUBs are single-chapter
-              parallelWorkers: ttsConfig.workerCount,
-              device: ttsConfig.device,
-              language: ttsConfig.language,
-              ttsEngine: ttsConfig.ttsEngine,
-              fineTuned: ttsConfig.voice,
-              speed: ttsConfig.speed,
-              outputDir: ttsConfig.outputDir,
-              outputFilename: ttsConfig.outputFilename,
-              // Standard TTS settings
-              temperature: 0.75,
-              topP: 0.85,
-              topK: 50,
-              repetitionPenalty: 5.0,
-              enableTextSplitting: true
-            }
-          });
-
-          // Clear current job and process next (the TTS job we just added)
-          this._currentJobId.set(null);
-          await this.processNext();
-        }
-      } else if (job.type === 'll-cleanup') {
+      } else if (job.type === 'bilingual-cleanup') {
         // Language Learning Cleanup job
-        const config = job.config as LLCleanupJobConfig | undefined;
+        const config = job.config as BilingualCleanupJobConfig | undefined;
         if (!config) {
-          throw new Error('LL Cleanup configuration required');
+          throw new Error('Bilingual Cleanup configuration required');
         }
 
-        console.log('[QUEUE] Starting ll-cleanup job:', {
+        console.log('[QUEUE] Starting bilingual-cleanup job:', {
           projectId: config.projectId,
           aiProvider: config.aiProvider,
           aiModel: config.aiModel
         });
 
-        if (!electron.llCleanup) {
-          throw new Error('LL Cleanup not available');
+        if (!electron.bilingualCleanup) {
+          throw new Error('Bilingual Cleanup not available');
         }
 
-        const result = await electron.llCleanup.run(job.id, {
+        const result = await electron.bilingualCleanup.run(job.id, {
           projectId: config.projectId,
           projectDir: config.projectDir,
-          // inputText removed - ll-cleanup reads from article.epub
+          // inputText removed - bilingual-cleanup reads from article.epub
           sourceLang: config.sourceLang,
           aiProvider: config.aiProvider,
           aiModel: config.aiModel,
@@ -2162,7 +1992,7 @@ export class QueueService {
         });
 
         if (!result.success) {
-          throw new Error(result.error || 'LL Cleanup failed');
+          throw new Error(result.error || 'Bilingual Cleanup failed');
         }
 
         // Mark cleanup job as complete
@@ -2182,28 +2012,28 @@ export class QueueService {
         this._currentJobId.set(null);
         await this.processNext();
 
-      } else if (job.type === 'll-translation') {
+      } else if (job.type === 'bilingual-translation') {
         // Language Learning Translation job
-        const config = job.config as LLTranslationJobConfig | undefined;
+        const config = job.config as BilingualTranslationJobConfig | undefined;
         if (!config) {
-          throw new Error('LL Translation configuration required');
+          throw new Error('Bilingual Translation configuration required');
         }
 
-        console.log('[QUEUE] Starting ll-translation job:', {
+        console.log('[QUEUE] Starting bilingual-translation job:', {
           projectId: config.projectId,
           targetLang: config.targetLang,
           aiProvider: config.aiProvider,
           aiModel: config.aiModel
         });
 
-        if (!electron.llTranslation) {
-          throw new Error('LL Translation not available');
+        if (!electron.bilingualTranslation) {
+          throw new Error('Bilingual Translation not available');
         }
 
-        const result = await electron.llTranslation.run(job.id, {
+        const result = await electron.bilingualTranslation.run(job.id, {
           projectId: config.projectId,
           projectDir: config.projectDir,
-          cleanedEpubPath: config.cleanedEpubPath,
+          cleanedEpubPath: config.cleanedEpubPath || job.epubPath,  // Use epubPath if cleanedEpubPath not set
           sourceLang: config.sourceLang,
           targetLang: config.targetLang,
           title: config.title,
@@ -2212,11 +2042,12 @@ export class QueueService {
           ollamaBaseUrl: config.ollamaBaseUrl,
           claudeApiKey: config.claudeApiKey,
           openaiApiKey: config.openaiApiKey,
-          translationPrompt: config.translationPrompt
+          translationPrompt: config.translationPrompt,
+          monoTranslation: config.monoTranslation
         });
 
         if (!result.success) {
-          throw new Error(result.error || 'LL Translation failed');
+          throw new Error(result.error || 'Bilingual Translation failed');
         }
 
         // Mark translation job as complete
@@ -2232,6 +2063,12 @@ export class QueueService {
           this.updateMasterJobProgress(job.workflowId, job.parentJobId);
         }
 
+        // For mono translation, skip the dual-EPUB workflow
+        if (config.monoTranslation) {
+          console.log('[QUEUE] Mono translation complete, skipping dual-EPUB workflow');
+          return;
+        }
+
         // Check if translation returned dual EPUB paths for dual-voice TTS
         // Check both result.nextJobConfig (old format) and result.data (new format from language-learning-jobs.ts)
         const nextConfig = (result as any).nextJobConfig || (result as any).data;
@@ -2242,10 +2079,10 @@ export class QueueService {
           parentJobId: job.parentJobId
         });
 
-        if (nextConfig?.sourceEpubPath && nextConfig?.targetEpubPath && job.parentJobId) {
-          // Get TTS settings from the master job
+        if (nextConfig?.sourceEpubPath && nextConfig?.targetEpubPath && job.parentJobId && config.projectDir) {
+          // Get TTS settings from the master job (legacy workflow support)
           const masterJob = this._jobs().find(j => j.id === job.parentJobId);
-          const masterConfig = masterJob?.config as LanguageLearningJobConfig | undefined;
+          const masterConfig = masterJob?.config as any;
 
           console.log('[QUEUE] Master job lookup:', {
             found: !!masterJob,
@@ -2254,7 +2091,7 @@ export class QueueService {
           });
 
           if (masterConfig) {
-            console.log('[QUEUE] LL Translation complete with dual EPUBs, updating placeholder TTS jobs');
+            console.log('[QUEUE] Bilingual Translation complete with dual EPUBs, updating placeholder TTS jobs');
 
             // Calculate paths - handle both article and book project structures
             // Normalize backslashes for cross-platform path manipulation
@@ -2601,7 +2438,7 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | LanguageLearningJobConfig | LLCleanupJobConfig | LLTranslationJobConfig | BilingualAssemblyJobConfig | AudiobookJobConfig | undefined {
+  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | AudiobookJobConfig | undefined {
     if (request.type === 'ocr-cleanup') {
       const config = request.config as Partial<OcrCleanupConfig>;
       if (!config?.aiProvider || !config?.aiModel) {
@@ -2623,7 +2460,8 @@ export class QueueService {
         // Cleanup mode and test mode
         cleanupMode: config.cleanupMode,
         testMode: config.testMode,
-        // Simplify for children
+        // Processing options
+        enableAiCleanup: config.enableAiCleanup,
         simplifyForChildren: config.simplifyForChildren
       };
     } else if (request.type === 'translation') {
@@ -2698,50 +2536,14 @@ export class QueueService {
         bfpPath: config.bfpPath,
         replaceOriginal: config.replaceOriginal ?? true
       };
-    } else if (request.type === 'language-learning') {
-      const config = request.config as Partial<LanguageLearningJobConfig>;
-      if (!config?.projectId || !config?.aiProvider || !config?.aiModel ||
-          config.sourceTtsSpeed === undefined || config.targetTtsSpeed === undefined) {
-        return undefined; // Required fields
-      }
-      return {
-        type: 'language-learning',
-        projectId: config.projectId,
-        sourceUrl: config.sourceUrl || '',
-        sourceLang: config.sourceLang || 'en',
-        targetLang: config.targetLang || 'de',
-        htmlPath: config.htmlPath || '',
-        pdfPath: config.pdfPath,
-        deletedBlockIds: config.deletedBlockIds || [],
-        title: config.title,
-        aiProvider: config.aiProvider,
-        aiModel: config.aiModel,
-        ollamaBaseUrl: config.ollamaBaseUrl,
-        claudeApiKey: config.claudeApiKey,
-        openaiApiKey: config.openaiApiKey,
-        // AI prompt settings
-        translationPrompt: config.translationPrompt,
-        enableCleanup: config.enableCleanup,
-        cleanupPrompt: config.cleanupPrompt,
-        // TTS settings
-        sourceVoice: config.sourceVoice || 'ScarlettJohansson',
-        targetVoice: config.targetVoice || 'ScarlettJohansson',
-        ttsEngine: config.ttsEngine || 'xtts',
-        sourceTtsSpeed: config.sourceTtsSpeed,
-        targetTtsSpeed: config.targetTtsSpeed,
-        device: config.device || 'cpu',
-        workerCount: config.workerCount,
-        // Alignment verification settings
-        autoAcceptResults: config.autoAcceptResults
-      };
-    } else if (request.type === 'll-cleanup') {
-      const config = request.config as Partial<LLCleanupJobConfig>;
-      // inputText is optional - ll-cleanup will load from article.epub when empty
+    } else if (request.type === 'bilingual-cleanup') {
+      const config = request.config as Partial<BilingualCleanupJobConfig>;
+      // inputText is optional - bilingual-cleanup will load from article.epub when empty
       if (!config?.projectId || !config?.projectDir || !config?.aiProvider || !config?.aiModel) {
         return undefined;
       }
       return {
-        type: 'll-cleanup',
+        type: 'bilingual-cleanup',
         projectId: config.projectId,
         projectDir: config.projectDir,
         // inputText removed - always reads from article.epub
@@ -2753,13 +2555,13 @@ export class QueueService {
         openaiApiKey: config.openaiApiKey,
         cleanupPrompt: config.cleanupPrompt
       };
-    } else if (request.type === 'll-translation') {
-      const config = request.config as Partial<LLTranslationJobConfig>;
+    } else if (request.type === 'bilingual-translation') {
+      const config = request.config as Partial<BilingualTranslationJobConfig>;
       if (!config?.projectId || !config?.projectDir || !config?.cleanedEpubPath || !config?.aiProvider || !config?.aiModel) {
         return undefined;
       }
       return {
-        type: 'll-translation',
+        type: 'bilingual-translation',
         projectId: config.projectId,
         projectDir: config.projectDir,
         cleanedEpubPath: config.cleanedEpubPath,
@@ -3010,6 +2812,46 @@ export class QueueService {
       }
     } catch (err) {
       console.error('[QUEUE] Error copying VTT to BFP:', err);
+    }
+  }
+
+  /**
+   * Cache audio files after TTS completion for cached-language TTS jobs
+   */
+  private async cacheAudioAfterTts(
+    sentencesDir: string,
+    cacheDir: string,
+    language: string,
+    ttsSettings: {
+      engine: 'xtts' | 'orpheus';
+      voice: string;
+      speed: number;
+    }
+  ): Promise<void> {
+    const electron = window.electron as any;
+    if (!electron?.sentenceCache?.cacheAudio) {
+      console.warn('[QUEUE] Cannot cache audio - electron.sentenceCache.cacheAudio not available');
+      return;
+    }
+
+    try {
+      // Extract audiobook folder from cache dir (e.g., 'audiobooks/book/audio/en' -> 'audiobooks/book')
+      const audiobookFolder = cacheDir.replace(/\/audio\/[^/]+$/, '');
+
+      const result = await electron.sentenceCache.cacheAudio({
+        audiobookFolder,
+        language,
+        sentencesDir,
+        ttsSettings,
+      });
+
+      if (result.success) {
+        console.log(`[QUEUE] Cached ${result.fileCount} audio files for ${language}`);
+      } else {
+        console.error('[QUEUE] Failed to cache audio:', result.error);
+      }
+    } catch (err) {
+      console.error('[QUEUE] Error caching audio:', err);
     }
   }
 

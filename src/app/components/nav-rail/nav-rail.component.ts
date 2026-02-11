@@ -199,22 +199,22 @@ export class NavRailComponent {
   // Default navigation items
   readonly items = input<NavRailItem[]>([
     {
-      id: 'library',
-      icon: '\u{1F4DA}', // Books emoji
-      label: 'Library',
-      route: '/library'
-    },
-    {
-      id: 'audiobook',
-      icon: '\u{1F3A7}', // Headphones emoji
-      label: 'Audio',
-      route: '/audiobook'
+      id: 'studio',
+      icon: '\u{1F3AC}', // Clapper board emoji
+      label: 'Studio',
+      route: '/studio'
     },
     {
       id: 'queue',
       icon: '\u{23F3}', // Hourglass emoji
       label: 'Queue',
       route: '/queue'
+    },
+    {
+      id: 'settings',
+      icon: '\u{2699}', // Gear emoji
+      label: 'Settings',
+      route: '/settings'
     }
   ]);
 
