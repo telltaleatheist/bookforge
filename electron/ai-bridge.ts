@@ -1533,6 +1533,9 @@ export async function cleanupText(
     return { success: false, error: `Model '${model}' not found. Run: ollama pull ${model}` };
   }
 
+  // Reload prompt from disk so external changes (e.g., Syncthing pull) take effect
+  // without restarting the app
+  cachedPrompt = await loadPrompt('structure');
   const systemPrompt = buildCleanupPrompt(options);
 
   // Split text into chunks at logical break points
@@ -1602,6 +1605,8 @@ export async function cleanupChapterStreaming(
     return { success: false, error: `Ollama not available: ${connection.error}` };
   }
 
+  // Reload prompt from disk so external changes take effect without restart
+  cachedPrompt = await loadPrompt('structure');
   const systemPrompt = buildCleanupPrompt(options);
 
   try {
