@@ -10,7 +10,6 @@ WHAT TO KEEP UNCHANGED:
 - All dialogue exchanges (simplified words, same meaning)
 - Character actions and motivations
 - The sequence and logic of events
-- Story conclusions and morals
 - All specific details mentioned in the original
 
 WHAT TO SIMPLIFY:
@@ -18,18 +17,33 @@ WHAT TO SIMPLIFY:
 - Archaic language → modern equivalents
 - Long sentences → shorter, clearer ones
 - Formal speech → simpler but still proper language
+- "Assured him" → "said" (but don't add extra emphasis words)
 
 FORBIDDEN:
 - Adding new details not in the original
+- Adding filler words ("actually", "really", "just") not in the original
 - Changing the order of events
 - Skipping any dialogue or actions
 - Inventing explanations or motivations
 - Modernizing the story setting
+- Making morals too casual - keep them simple but dignified
+
+DIALOGUE SIMPLIFICATION:
+- Keep dialogue direct and clean
+- "I am not X, but Y" stays as "I'm not X, I'm Y" (no added emphasis)
+- Don't add conversational fillers between statements
+
+MORAL SIMPLIFICATION:
+- Keep the wisdom/lesson clear and direct
+- Use simple words but maintain a thoughtful tone
+- Don't over-modernize into casual speech
+- "It is wise to..." can become "It's wise to..." but maintain dignity
+- "Turn circumstances to good account" → "Use circumstances wisely" (not "use your situation")
 
 EXAMPLE:
 ORIGINAL: "Wolf, meeting with a Lamb astray from the fold, resolved not to lay violent hands on him, but to find some plea to justify to the Lamb the Wolf's right to eat him. He thus addressed him: 'Sirrah, last year you grossly insulted me.' 'Indeed,' bleated the Lamb in a mournful tone of voice, 'I was not then born.' Then said the Wolf, 'You feed in my pasture.' 'No, good sir,' replied the Lamb, 'I have not yet tasted grass.' Again said the Wolf, 'You drink of my well.' 'No,' exclaimed the Lamb, 'I never yet drank water, for as yet my mother's milk is both food and drink to me.' Upon which the Wolf seized him and ate him up, saying, 'Well! I won't remain supperless, even though you refute every one of my imputations.' The tyrant will always find a pretext for his tyranny."
 
-SIMPLIFIED: "A wolf met a lamb that had wandered away from its flock. The wolf decided not to attack the lamb directly, but to find an excuse to justify eating him. The wolf said to the lamb: 'Last year you insulted me badly.' 'But sir,' the lamb replied sadly, 'I wasn't even born last year.' Then the wolf said, 'You eat grass in my pasture.' 'No, good sir,' replied the lamb, 'I haven't eaten any grass yet.' The wolf tried again: 'You drink water from my well.' 'No,' said the lamb, 'I have never drunk water. I still only drink my mother's milk.' After hearing this, the wolf grabbed the lamb and ate him, saying, 'Well! I won't go without my dinner, even though you have good answers for all my accusations.' The cruel and powerful will always find an excuse for their cruelty."
+SIMPLIFIED: "A wolf met a lamb that had wandered away from its flock. The wolf decided not to attack the lamb directly, but to find an excuse to justify eating him. The wolf said to the lamb: 'Last year you insulted me badly.' 'But sir,' the lamb replied sadly, 'I wasn't even born last year.' Then the wolf said, 'You eat grass in my pasture.' 'No, good sir,' replied the lamb, 'I haven't eaten any grass yet.' The wolf tried again: 'You drink water from my well.' 'No,' said the lamb, 'I have never drunk water. I still only drink my mother's milk.' After hearing this, the wolf grabbed the lamb and ate him, saying, 'Well! I won't go without my dinner, even though you have good answers for all my accusations.' The powerful will always find an excuse for their cruelty."
 
 Notice: All three accusations remain in order. No well is "looked at" or details added. Every exchange preserved.
 
