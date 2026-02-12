@@ -34,15 +34,25 @@ export interface HeadlessOcrOptions {
 }
 
 export class HeadlessOcrService {
-  private mutoolPath: string = '/opt/homebrew/bin/mutool';
+  private mutoolPath: string = 'mutool';
 
   constructor() {
-    // Try to find mutool in common locations
-    const possiblePaths = [
-      '/opt/homebrew/bin/mutool',
-      '/usr/local/bin/mutool',
-      '/usr/bin/mutool',
-    ];
+    const homeDir = require('os').homedir();
+
+    // Platform-specific search paths for mutool
+    const possiblePaths = process.platform === 'win32'
+      ? [
+          path.join(homeDir, 'scoop', 'shims', 'mutool.exe'),
+          'C:\\Program Files\\MuPDF\\mutool.exe',
+          'C:\\Program Files (x86)\\MuPDF\\mutool.exe',
+          'C:\\ProgramData\\chocolatey\\bin\\mutool.exe',
+          path.join(homeDir, 'mupdf', 'mutool.exe'),
+        ]
+      : [
+          '/opt/homebrew/bin/mutool',
+          '/usr/local/bin/mutool',
+          '/usr/bin/mutool',
+        ];
 
     for (const p of possiblePaths) {
       if (require('fs').existsSync(p)) {
@@ -121,16 +131,22 @@ export class HeadlessOcrService {
    */
   private async getPageCount(pdfPath: string): Promise<number> {
     try {
-      const { stdout } = await execAsync(
-        `"${this.mutoolPath}" info "${pdfPath}" | grep "Pages:" | awk '{print $2}'`
-      );
-      return parseInt(stdout.trim()) || 0;
-    } catch {
-      // Fallback: try to count by extracting page info
+      // Use mutool show which outputs the page count directly (cross-platform, no shell pipes)
       const { stdout } = await execAsync(
         `"${this.mutoolPath}" show "${pdfPath}" trailer/Root/Pages/Count`
       );
       return parseInt(stdout.trim()) || 0;
+    } catch {
+      // Fallback: parse "Pages:" from mutool info output using JS regex (no grep/awk)
+      try {
+        const { stdout } = await execAsync(
+          `"${this.mutoolPath}" info "${pdfPath}"`
+        );
+        const match = stdout.match(/Pages:\s*(\d+)/);
+        return match ? parseInt(match[1], 10) : 0;
+      } catch {
+        return 0;
+      }
     }
   }
 

@@ -14,8 +14,72 @@ import { initializeLoggers, getMainLogger, closeLoggers } from './rolling-logger
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
+import { findEbookConvert } from './ebook-convert-bridge';
 
 let mainWindow: BrowserWindow | null = null;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tool Discovery
+// ─────────────────────────────────────────────────────────────────────────────
+
+let cachedPdftotextPath: string | null | undefined = undefined;
+
+/**
+ * Find the pdftotext executable (from poppler-utils or Xpdf)
+ */
+async function findPdftotext(): Promise<string | null> {
+  if (cachedPdftotextPath !== undefined) {
+    return cachedPdftotextPath;
+  }
+
+  const homeDir = os.homedir();
+  const candidates: string[] = process.platform === 'win32'
+    ? [
+        path.join(homeDir, 'scoop', 'shims', 'pdftotext.exe'),
+        'C:\\Program Files\\poppler\\bin\\pdftotext.exe',
+        'C:\\Program Files\\poppler\\Library\\bin\\pdftotext.exe',
+        'C:\\Program Files (x86)\\poppler\\bin\\pdftotext.exe',
+        'C:\\ProgramData\\chocolatey\\bin\\pdftotext.exe',
+        path.join(homeDir, 'poppler', 'bin', 'pdftotext.exe'),
+      ]
+    : [
+        '/opt/homebrew/bin/pdftotext',
+        '/usr/local/bin/pdftotext',
+        '/usr/bin/pdftotext',
+      ];
+
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      cachedPdftotextPath = candidate;
+      console.log('[Tool Discovery] pdftotext found at:', candidate);
+      return candidate;
+    } catch {
+      // Not found at this path
+    }
+  }
+
+  // Try PATH lookup
+  try {
+    const { exec: execCb } = require('child_process');
+    const { promisify } = require('util');
+    const execP = promisify(execCb);
+    const cmd = process.platform === 'win32' ? 'where' : 'which';
+    const { stdout } = await execP(`${cmd} pdftotext`);
+    if (stdout && stdout.trim()) {
+      const foundPath = stdout.trim().split('\n')[0].trim();
+      cachedPdftotextPath = foundPath;
+      console.log('[Tool Discovery] pdftotext found in PATH:', foundPath);
+      return foundPath;
+    }
+  } catch {
+    // Not in PATH
+  }
+
+  console.log('[Tool Discovery] pdftotext not found');
+  cachedPdftotextPath = null;
+  return null;
+}
 
 // Custom library root (set via IPC from renderer settings)
 // Module-level so all path functions can use it
@@ -530,13 +594,11 @@ function setupIpcHandlers(): void {
     try {
       const { exec } = require('child_process');
       const { promisify } = require('util');
-      const fs = require('fs').promises;
-      const path = require('path');
-      const os = require('os');
+      const fsLocal = require('fs').promises;
       const execAsync = promisify(exec);
 
       // Create temp directory for intermediate files
-      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bookforge-epub-'));
+      const tempDir = await fsLocal.mkdtemp(path.join(os.tmpdir(), 'bookforge-epub-'));
       const tempTextFile = path.join(tempDir, 'extracted.txt');
       const tempEpubFile = path.join(tempDir, 'output.epub');
 
@@ -544,27 +606,37 @@ function setupIpcHandlers(): void {
       const ext = path.extname(filePath).toLowerCase();
       const isEpub = ext === '.epub';
 
+      // Find ebook-convert using cross-platform discovery
+      const ebookConvertPath = await findEbookConvert();
+      if (!ebookConvertPath) {
+        throw new Error('Calibre ebook-convert not found. Please install Calibre from https://calibre-ebook.com');
+      }
+
       try {
         // Step 1: Extract text based on file type
         if (isEpub) {
           // For EPUB: use ebook-convert to extract text
           console.log('[Text-only EPUB] Extracting text from EPUB...');
-          await execAsync(`/Applications/calibre.app/Contents/MacOS/ebook-convert "${filePath}" "${tempTextFile}"`);
+          await execAsync(`"${ebookConvertPath}" "${filePath}" "${tempTextFile}"`);
         } else {
           // For PDF: use pdftotext
           console.log('[Text-only EPUB] Extracting text from PDF...');
-          await execAsync(`/opt/homebrew/bin/pdftotext -layout "${filePath}" "${tempTextFile}"`);
+          const pdftotextPath = await findPdftotext();
+          if (!pdftotextPath) {
+            throw new Error('pdftotext not found. Please install poppler-utils (Linux/Mac) or poppler (Windows via scoop/chocolatey).');
+          }
+          await execAsync(`"${pdftotextPath}" -layout "${filePath}" "${tempTextFile}"`);
         }
 
         // Check if text was extracted
-        const stats = await fs.stat(tempTextFile);
+        const stats = await fsLocal.stat(tempTextFile);
         if (stats.size === 0) {
           throw new Error(`No text extracted from ${isEpub ? 'EPUB' : 'PDF'}`);
         }
 
         // Step 2: Convert text to EPUB using ebook-convert
         console.log('[Text-only EPUB] Converting to EPUB...');
-        let convertCmd = `/Applications/calibre.app/Contents/MacOS/ebook-convert "${tempTextFile}" "${tempEpubFile}"`;
+        let convertCmd = `"${ebookConvertPath}" "${tempTextFile}" "${tempEpubFile}"`;
 
         // Add metadata if provided
         if (metadata?.title) {
@@ -580,20 +652,20 @@ function setupIpcHandlers(): void {
         await execAsync(convertCmd);
 
         // Step 3: Read the EPUB file and return as base64
-        const epubBuffer = await fs.readFile(tempEpubFile);
+        const epubBuffer = await fsLocal.readFile(tempEpubFile);
         const epubBase64 = epubBuffer.toString('base64');
 
         // Clean up temp files
-        await fs.unlink(tempTextFile).catch(() => {});
-        await fs.unlink(tempEpubFile).catch(() => {});
-        await fs.rmdir(tempDir).catch(() => {});
+        await fsLocal.unlink(tempTextFile).catch(() => {});
+        await fsLocal.unlink(tempEpubFile).catch(() => {});
+        await fsLocal.rmdir(tempDir).catch(() => {});
 
         return { success: true, data: epubBase64 };
       } catch (error) {
         // Clean up on error
-        await fs.unlink(tempTextFile).catch(() => {});
-        await fs.unlink(tempEpubFile).catch(() => {});
-        await fs.rmdir(tempDir).catch(() => {});
+        await fsLocal.unlink(tempTextFile).catch(() => {});
+        await fsLocal.unlink(tempEpubFile).catch(() => {});
+        await fsLocal.rmdir(tempDir).catch(() => {});
         throw error;
       }
     } catch (err) {

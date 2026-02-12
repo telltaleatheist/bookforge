@@ -69,7 +69,7 @@ let cachedEbookConvertPath: string | null | undefined = undefined;
 /**
  * Find the ebook-convert executable
  */
-async function findEbookConvert(): Promise<string | null> {
+export async function findEbookConvert(): Promise<string | null> {
   // Return cached result if we've already searched
   if (cachedEbookConvertPath !== undefined) {
     return cachedEbookConvertPath;
