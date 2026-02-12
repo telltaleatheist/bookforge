@@ -1870,13 +1870,15 @@ export class LLWizardComponent implements OnInit {
     }
     // Derive from epubPath (parent directory)
     if (this.epubPath()) {
-      const parts = this.epubPath().split('/');
+      const normalized = this.epubPath().replace(/\\/g, '/');
+      const parts = normalized.split('/');
       parts.pop(); // Remove filename
       return parts.join('/');
     }
     // Derive from bfpPath
     if (this.bfpPath()) {
-      const parts = this.bfpPath().split('/');
+      const normalized = this.bfpPath().replace(/\\/g, '/');
+      const parts = normalized.split('/');
       parts.pop(); // Remove .bfp filename
       return parts.join('/');
     }

@@ -1155,10 +1155,10 @@ export class StudioComponent implements OnInit, OnDestroy {
       return `${articlesPath}/${item.id}`;
     } else if (item.type === 'book' && item.bfpPath) {
       // For books, derive project dir from BFP path
-      // BFP path is like: /path/to/projects/book_id.bfp
+      // BFP path is like: /path/to/projects/book_id.bfp (or E:\path\to\projects\book_id.bfp on Windows)
       // We want: /path/to/projects/book_id
       const bfpPath = item.bfpPath;
-      const lastSlash = bfpPath.lastIndexOf('/');
+      const lastSlash = Math.max(bfpPath.lastIndexOf('/'), bfpPath.lastIndexOf('\\'));
       const bfpFileName = bfpPath.substring(lastSlash + 1);
       const projectName = bfpFileName.replace('.bfp', '');
       const projectsDir = bfpPath.substring(0, lastSlash);
@@ -1172,7 +1172,8 @@ export class StudioComponent implements OnInit, OnDestroy {
     const item = this.selectedItem();
     if (!item || item.type !== 'book') return '';
     if (item.epubPath) {
-      return item.epubPath.substring(0, item.epubPath.lastIndexOf('/'));
+      const lastSlash = Math.max(item.epubPath.lastIndexOf('/'), item.epubPath.lastIndexOf('\\'));
+      return item.epubPath.substring(0, lastSlash);
     }
     return '';
   }
