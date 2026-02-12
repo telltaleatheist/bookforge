@@ -712,8 +712,9 @@ export class DiffService {
     });
 
     try {
-      // Call hydration API
+      // Call hydration API - need to pass both original and cleaned paths
       const result = await this.electronService.hydrateChapter(
+        session.originalPath,
         session.cleanedPath,
         chapterId,
         meta.cachedChanges || []

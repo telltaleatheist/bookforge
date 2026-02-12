@@ -1656,7 +1656,7 @@ export class ElectronService {
   /**
    * Hydrate a chapter's compact diff changes back to full DiffWord[] for rendering
    */
-  async hydrateChapter(cleanedPath: string, chapterId: string, changes: Array<{ pos: number; len: number; add?: string; rem?: string }>): Promise<{
+  async hydrateChapter(originalPath: string, cleanedPath: string, chapterId: string, changes: Array<{ pos: number; len: number; add?: string; rem?: string }>): Promise<{
     success: boolean;
     data?: {
       diffWords: Array<{ text: string; type: 'unchanged' | 'added' | 'removed' }>;
@@ -1665,7 +1665,7 @@ export class ElectronService {
     };
   }> {
     if (this.isElectron) {
-      return (window as any).electron.diff.hydrateChapter(cleanedPath, chapterId, changes);
+      return (window as any).electron.diff.hydrateChapter(originalPath, cleanedPath, chapterId, changes);
     }
     return { success: false };
   }
@@ -2719,6 +2719,56 @@ export class ElectronService {
     if (this.isElectron && (window as any).electron.shell) {
       await (window as any).electron.shell.showItemInFolder(path);
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Session Cache (for Language Learning pipeline)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Cache a TTS session to project folder for later assembly
+   */
+  async cacheSessionToProject(
+    sessionDir: string,
+    projectDir: string,
+    language: string
+  ): Promise<{ success: boolean; cachedPath?: string; error?: string }> {
+    if (this.isElectron && (window as any).electron.sessionCache) {
+      return (window as any).electron.sessionCache.save(sessionDir, projectDir, language);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * List available TTS sessions in a project folder
+   */
+  async listProjectSessions(projectDir: string): Promise<{
+    success: boolean;
+    data?: Array<{
+      language: string;
+      sessionDir: string;
+      sentenceCount: number;
+      createdAt: string;
+    }>;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.sessionCache) {
+      return (window as any).electron.sessionCache.list(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Restore a cached session from project folder to e2a tmp for assembly
+   */
+  async restoreSessionFromProject(
+    projectDir: string,
+    language: string
+  ): Promise<{ success: boolean; sessionDir?: string; error?: string }> {
+    if (this.isElectron && (window as any).electron.sessionCache) {
+      return (window as any).electron.sessionCache.restore(projectDir, language);
+    }
+    return { success: false, error: 'Not running in Electron' };
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

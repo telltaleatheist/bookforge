@@ -168,6 +168,14 @@ export interface TtsConversionConfig {
   cacheAudioTo?: string;  // e.g., 'audiobooks/book/audio/en'
   // Language code for cache metadata (needed for updating sentence cache JSON)
   cacheLanguage?: string;  // e.g., 'en'
+  // Session caching for Language Learning pipeline
+  // When true, the TTS session folder is cached to projectDir/sessions/{language}/
+  cacheToProject?: boolean;
+  // Project directory for session caching (required if cacheToProject is true)
+  projectDir?: string;
+  // Test mode - only process first N sentences (for quick validation)
+  testMode?: boolean;
+  testSentences?: number;  // Number of sentences to process in test mode
 }
 
 // Translation job configuration (auto-detects source language)
@@ -222,7 +230,8 @@ export interface ResembleEnhanceJobConfig {
 export interface BilingualCleanupJobConfig {
   type: 'bilingual-cleanup';
   projectId: string;
-  projectDir: string;          // Path to project directory (reads from article.epub)
+  projectDir: string;          // Path to project directory
+  sourceEpubPath?: string;     // Path to source EPUB (falls back to article.epub for articles)
   sourceLang: string;          // Source language code
 
   // AI settings
@@ -232,6 +241,15 @@ export interface BilingualCleanupJobConfig {
   claudeApiKey?: string;
   openaiApiKey?: string;
   cleanupPrompt?: string;      // Custom cleanup prompt template
+
+  // Test mode - only process first N chunks
+  testMode?: boolean;
+  testModeChunks?: number;
+
+  // Cleanup options
+  enableCleanup?: boolean;         // Enable standard AI cleanup (OCR fixes)
+  simplifyForLearning?: boolean;   // Simplify text for language learners
+  startFresh?: boolean;            // Start from source EPUB vs use existing cleaned.epub
 }
 
 // Sentence splitting granularity for bilingual processing

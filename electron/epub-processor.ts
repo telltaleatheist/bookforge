@@ -263,7 +263,10 @@ class EpubProcessor {
 
     // Parse OPF file
     const opfXml = await this.readFile(opfPath);
-    const rootPath = path.dirname(opfPath);
+    // Get the directory containing the OPF file
+    // If OPF is at root (e.g., 'content.opf'), dirname returns '.', which we convert to ''
+    const rawRootPath = path.dirname(opfPath);
+    const rootPath = rawRootPath === '.' ? '' : rawRootPath;
 
     this.structure = this.parseOpf(opfXml, opfPath, rootPath);
 
@@ -553,7 +556,8 @@ class EpubProcessor {
     if (!this.structure) return href;
     // Handle fragment identifiers
     const cleanHref = href.split('#')[0];
-    if (this.structure.rootPath) {
+    // Don't prepend rootPath if it's '.' (OPF at EPUB root)
+    if (this.structure.rootPath && this.structure.rootPath !== '.') {
       return `${this.structure.rootPath}/${cleanHref}`;
     }
     return cleanHref;
@@ -567,15 +571,19 @@ class EpubProcessor {
     text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
     text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
 
-    // Add period after headings for natural TTS pause, but only if not already punctuated
-    // This handles: <h1>Title</h1> → <h1>Title. </h1> but <h1>Title?</h1> stays as-is
-    text = text.replace(/([^.!?\s])<\/h[1-6]>/gi, '$1.');
+    // IMPORTANT: Remove H1 tags entirely - they're chapter titles that will be added separately
+    // This prevents duplicate titles in the cleaned output
+    text = text.replace(/<h1[^>]*>[\s\S]*?<\/h1>/gi, '');
+
+    // Add period after OTHER headings (h2-h6) for natural TTS pause, but only if not already punctuated
+    // This handles: <h2>Section</h2> → <h2>Section. </h2> but <h2>Section?</h2> stays as-is
+    text = text.replace(/([^.!?\s])<\/h[2-6]>/gi, '$1.');
 
     // PRESERVE PARAGRAPH STRUCTURE: Convert block-level closing tags to double newlines
     // Only convert actual text-containing elements, NOT container divs
     // This must match the elements we look for in replaceXhtmlBodyLocal (ai-bridge.ts)
     text = text.replace(/<\/p>/gi, '\n\n');
-    text = text.replace(/<\/h[1-6]>/gi, '\n\n');
+    text = text.replace(/<\/h[2-6]>/gi, '\n\n');  // Only h2-h6 now, h1 removed above
     text = text.replace(/<\/li>/gi, '\n\n');
     text = text.replace(/<\/blockquote>/gi, '\n\n');
     text = text.replace(/<\/figcaption>/gi, '\n\n');
@@ -583,7 +591,8 @@ class EpubProcessor {
     text = text.replace(/<br\s*\/?>/gi, '\n');
 
     // Also add newlines BEFORE opening block tags (in case closing tags are missing or malformed)
-    text = text.replace(/<(p|h[1-6]|li|blockquote|figcaption)([\s>])/gi, '\n\n<$1$2');
+    // Note: h1 tags are already removed above, so only h2-h6 here
+    text = text.replace(/<(p|h[2-6]|li|blockquote|figcaption)([\s>])/gi, '\n\n<$1$2');
 
     // Remove all remaining tags
     text = text.replace(/<[^>]+>/g, ' ');
@@ -1306,23 +1315,32 @@ export async function getChapterComparison(
   const originalProcessor = new EpubProcessor();
   const cleanedProcessor = new EpubProcessor();
 
+  let originalText = '';
+  let cleanedText = '';
+
   try {
-    await originalProcessor.open(originalPath);
-    await cleanedProcessor.open(cleanedPath);
+    // Check if files exist before trying to open
+    const [originalExists, cleanedExists] = await Promise.all([
+      fs.access(originalPath).then(() => true).catch(() => false),
+      fs.access(cleanedPath).then(() => true).catch(() => false)
+    ]);
 
-    let originalText = '';
-    let cleanedText = '';
-
-    try {
-      originalText = await originalProcessor.getChapterText(chapterId);
-    } catch {
-      // Chapter not found in original
+    if (originalExists) {
+      await originalProcessor.open(originalPath);
+      try {
+        originalText = await originalProcessor.getChapterText(chapterId);
+      } catch {
+        // Chapter not found in original
+      }
     }
 
-    try {
-      cleanedText = await cleanedProcessor.getChapterText(chapterId);
-    } catch {
-      // Chapter not found in cleaned
+    if (cleanedExists) {
+      await cleanedProcessor.open(cleanedPath);
+      try {
+        cleanedText = await cleanedProcessor.getChapterText(chapterId);
+      } catch {
+        // Chapter not found in cleaned
+      }
     }
 
     return { originalText, cleanedText };
@@ -1420,15 +1438,17 @@ export async function replaceTextInEpub(
     let text = xhtml.replace(/<head[\s\S]*?<\/head>/gi, '');
     text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
     text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
-    text = text.replace(/([^.!?\s])<\/h[1-6]>/gi, '$1.');
+    // Remove H1 tags entirely - they're chapter titles
+    text = text.replace(/<h1[^>]*>[\s\S]*?<\/h1>/gi, '');
+    text = text.replace(/([^.!?\s])<\/h[2-6]>/gi, '$1.');
     text = text.replace(/<\/p>/gi, '\n\n');
-    text = text.replace(/<\/h[1-6]>/gi, '\n\n');
+    text = text.replace(/<\/h[2-6]>/gi, '\n\n');
     text = text.replace(/<\/li>/gi, '\n\n');
     text = text.replace(/<\/blockquote>/gi, '\n\n');
     text = text.replace(/<\/figcaption>/gi, '\n\n');
     text = text.replace(/<br\s*\/?>/gi, '\n');
     // Add newlines BEFORE opening block tags too
-    text = text.replace(/<(p|h[1-6]|li|blockquote|figcaption)([\s>])/gi, '\n\n<$1$2');
+    text = text.replace(/<(p|h[2-6]|li|blockquote|figcaption)([\s>])/gi, '\n\n<$1$2');
     text = text.replace(/<[^>]+>/g, ' ');
     text = text.replace(/&nbsp;/g, ' ');
     text = text.replace(/&amp;/g, '&');
@@ -2587,6 +2607,170 @@ export async function extractChaptersFromEpub(
   } catch (err) {
     console.error(`[EPUB] extractChaptersFromEpub error:`, err);
     return { success: false, error: (err as Error).message };
+  }
+}
+
+/**
+ * Replace text in multiple chapters of an EPUB while preserving structure.
+ * This function duplicates the EPUB if outputPath differs from inputPath,
+ * then replaces text content in specified chapters.
+ */
+export async function replaceChapterTextsInEpub(
+  inputPath: string,
+  outputPath: string,
+  chapterReplacements: Array<{ chapterId: string; newText: string }>
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    // If output path differs, copy the EPUB first
+    if (inputPath !== outputPath) {
+      const copyResult = await copyEpubFile(inputPath, outputPath);
+      if (!copyResult.success) {
+        return { success: false, error: `Failed to copy EPUB: ${copyResult.error}` };
+      }
+    }
+
+    // Now work with the output file
+    const processor = new EpubProcessor();
+    const structure = await processor.open(outputPath);
+
+    // Helper to escape XML special characters
+    function escapeXml(text: string): string {
+      return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+    }
+
+    // Helper to rebuild XHTML with new paragraphs
+    function rebuildChapterXhtml(originalXhtml: string, newText: string): string {
+      // Find the body content
+      const bodyMatch = originalXhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+      if (!bodyMatch) {
+        throw new Error('Could not find body tag in chapter XHTML');
+      }
+
+      const bodyContent = bodyMatch[1];
+
+      // Split new text into paragraphs (on double newlines)
+      const newParagraphs = newText.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 0);
+
+      // Find all block elements with text content in the original
+      const blockPattern = /<(p|h[1-6]|li|blockquote|figcaption|div)([^>]*)>([\s\S]*?)<\/\1>/gi;
+      const blockMatches: Array<{ tag: string; attrs: string; index: number; length: number }> = [];
+      let match;
+
+      while ((match = blockPattern.exec(bodyContent)) !== null) {
+        // Check if this block has actual text content
+        const textContent = match[3]
+          .replace(/<[^>]+>/g, '')
+          .replace(/&[^;]+;/g, ' ')
+          .trim();
+
+        if (textContent.length > 0 && match[1].toLowerCase() !== 'h1') {  // Skip h1 (chapter titles)
+          blockMatches.push({
+            tag: match[1],
+            attrs: match[2] || '',
+            index: match.index,
+            length: match[0].length
+          });
+        }
+      }
+
+      // Build new body content
+      let newBodyContent = '';
+
+      // If we have matching block structure, reuse the tags
+      if (blockMatches.length > 0 && newParagraphs.length > 0) {
+        let lastIndex = 0;
+        let paragraphIndex = 0;
+
+        for (const block of blockMatches) {
+          // Add content before this block
+          newBodyContent += bodyContent.substring(lastIndex, block.index);
+
+          // Add the new paragraph with the same tag structure
+          if (paragraphIndex < newParagraphs.length) {
+            newBodyContent += `<${block.tag}${block.attrs}>${escapeXml(newParagraphs[paragraphIndex])}</${block.tag}>`;
+            paragraphIndex++;
+          }
+
+          lastIndex = block.index + block.length;
+        }
+
+        // Add any remaining content after the last block
+        newBodyContent += bodyContent.substring(lastIndex);
+
+        // If we have more paragraphs than blocks, add them as <p> tags
+        while (paragraphIndex < newParagraphs.length) {
+          newBodyContent += `\n    <p>${escapeXml(newParagraphs[paragraphIndex])}</p>`;
+          paragraphIndex++;
+        }
+      } else {
+        // No blocks found or no new content, create simple paragraph structure
+        newBodyContent = newParagraphs.map(p => `    <p>${escapeXml(p)}</p>`).join('\n');
+      }
+
+      // Rebuild the complete XHTML
+      return originalXhtml.replace(
+        /<body[^>]*>[\s\S]*<\/body>/i,
+        `<body>\n${newBodyContent}\n  </body>`
+      );
+    }
+
+    // Process each chapter replacement
+    const zipWriter = new ZipWriter();
+    const tempOutputPath = outputPath + '.tmp';
+
+    // Copy all files from the original EPUB
+    const zipReader = new ZipReader(outputPath);
+    await zipReader.open();
+    const files = zipReader.getEntries();
+
+    // Create a map of chapter IDs to their file paths
+    const chapterPathMap = new Map<string, string>();
+    for (const chapter of structure.chapters) {
+      const href = (processor as any).resolvePath(chapter.href);  // Access private method
+      chapterPathMap.set(chapter.id, href);
+    }
+
+    // Process each file
+    for (const file of files) {
+      // Check if this file needs text replacement
+      const replacement = chapterReplacements.find(r =>
+        chapterPathMap.get(r.chapterId) === file
+      );
+
+      if (replacement) {
+        // This is a chapter that needs replacement
+        const originalBuffer = await zipReader.readEntry(file);
+        const originalContent = originalBuffer.toString('utf8');
+        const newContent = rebuildChapterXhtml(originalContent, replacement.newText);
+        zipWriter.addFile(file, Buffer.from(newContent, 'utf8'));
+      } else {
+        // Copy file as-is
+        const content = await zipReader.readEntry(file);
+        zipWriter.addFile(file, content);
+      }
+    }
+
+    zipReader.close();
+    processor.close();
+
+    // Write the new EPUB
+    await zipWriter.write(tempOutputPath);
+
+    // Replace the original with the temp file
+    await fs.rename(tempOutputPath, outputPath);
+
+    return { success: true };
+  } catch (error) {
+    console.error('[EPUB] replaceChapterTextsInEpub error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
   }
 }
 

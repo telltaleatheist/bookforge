@@ -46,6 +46,9 @@ export interface LanguageLearningProject {
   deletedSelectors: string[];   // CSS selectors for elements user removed
 
   // Outputs
+  epubPath?: string;            // Finalized EPUB (from finalize-content)
+  cleanedEpubPath?: string;     // AI-cleaned EPUB (from bilingual-cleanup)
+  hasCleaned?: boolean;         // Whether AI cleanup has been run
   bilingualEpubPath?: string;
   audiobookPath?: string;
   vttPath?: string;

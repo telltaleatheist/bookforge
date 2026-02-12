@@ -48,6 +48,9 @@ export interface BilingualProcessingConfig {
   // Translation settings
   translationPrompt?: string;
   batchSize?: number;  // Number of sentences per batch (default: 8)
+  // Test mode - limit chunks for faster testing
+  testMode?: boolean;
+  testModeChunks?: number;
 }
 
 export interface ProcessingProgress {
@@ -321,12 +324,21 @@ export async function cleanupText(
     return text;
   }
 
-  const chunks = splitIntoCleanupChunks(text);
+  let chunks = splitIntoCleanupChunks(text);
+
+  // Apply test mode limit if enabled
+  if (config.testMode && config.testModeChunks && config.testModeChunks > 0) {
+    const originalCount = chunks.length;
+    chunks = chunks.slice(0, config.testModeChunks);
+    console.log(`[BILINGUAL] Test mode: limiting to ${config.testModeChunks} chunks (was ${originalCount})`);
+  }
+
   const totalChunks = chunks.length;
   const cleanedChunks: string[] = [];
   const systemPrompt = buildCleanupSystemPrompt(config.cleanupPrompt);
 
   console.log(`[BILINGUAL] Starting cleanup: ${totalChunks} chunks`);
+  console.log(`[BILINGUAL] Using system prompt (${systemPrompt.length} chars): ${systemPrompt.substring(0, 150)}...`);
 
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
@@ -338,7 +350,7 @@ export async function cleanupText(
         totalChunks,
         currentSentence: 0,
         totalSentences: 0,
-        percentage: Math.round((i / totalChunks) * 30), // Cleanup is 0-30%
+        percentage: Math.round((i / totalChunks) * 100),
         message: `Cleaning chunk ${i + 1} of ${totalChunks}...`,
       });
     }
@@ -357,6 +369,19 @@ export async function cleanupText(
     if (config.aiProvider !== 'ollama') {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
+  }
+
+  // Send final 100% progress
+  if (onProgress) {
+    onProgress({
+      phase: 'cleanup',
+      currentChunk: totalChunks,
+      totalChunks,
+      currentSentence: 0,
+      totalSentences: 0,
+      percentage: 100,
+      message: 'Cleanup complete',
+    });
   }
 
   return cleanedChunks.join('\n\n');
@@ -556,8 +581,9 @@ Translations (${count} lines):`;
 
 /**
  * Parse batch translation response into individual translations
+ * Returns the parsed lines WITHOUT padding - caller handles count mismatches
  */
-function parseBatchTranslationResponse(response: string, expectedCount: number): string[] {
+function parseBatchTranslationResponse(response: string, expectedCount: number): { lines: string[]; exact: boolean } {
   // Split by newlines and clean up
   const lines = response
     .split('\n')
@@ -571,32 +597,54 @@ function parseBatchTranslationResponse(response: string, expectedCount: number):
 
   // If we got the expected count, great!
   if (lines.length === expectedCount) {
-    return lines;
+    return { lines, exact: true };
   }
 
   // If we got more lines, take the first N
   if (lines.length > expectedCount) {
     console.warn(`[BILINGUAL] Got ${lines.length} translations, expected ${expectedCount}. Taking first ${expectedCount}.`);
-    return lines.slice(0, expectedCount);
+    return { lines: lines.slice(0, expectedCount), exact: true };
   }
 
-  // If we got fewer lines, pad with error markers
-  console.warn(`[BILINGUAL] Got ${lines.length} translations, expected ${expectedCount}. Padding with markers.`);
-  while (lines.length < expectedCount) {
-    lines.push('[Translation missing]');
-  }
+  // Got fewer - return what we have, caller will handle retry
+  console.warn(`[BILINGUAL] Got ${lines.length} translations, expected ${expectedCount}. Will retry individually.`);
+  return { lines, exact: false };
+}
 
-  return lines;
+/**
+ * Translate a single sentence (used for retry fallback)
+ */
+async function translateSingleSentence(
+  sentence: string,
+  contextSentences: string[],
+  config: BilingualProcessingConfig
+): Promise<string> {
+  const sourceLanguage = LANGUAGE_NAMES[config.sourceLang] || config.sourceLang;
+  const targetLanguage = LANGUAGE_NAMES[config.targetLang] || config.targetLang;
+
+  const prompt = `Translate the following sentence from ${sourceLanguage} to ${targetLanguage}.
+Return ONLY the translation, nothing else.
+
+${contextSentences.length > 0 ? `Context: ${contextSentences.slice(-2).join(' ')}\n\n` : ''}Sentence: ${sentence}
+
+Translation:`;
+
+  const response = await callAI(prompt, config);
+  // Clean up the response - take first non-empty line
+  const lines = response.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  return lines[0] || `[Translation failed for: ${sentence.substring(0, 50)}...]`;
 }
 
 /**
  * Translate a batch of sentences with context
+ * If batch returns wrong count, retries each sentence individually
  */
 async function translateBatch(
   sentences: string[],
   contextSentences: string[],
   config: BilingualProcessingConfig
 ): Promise<string[]> {
+  // Try batch translation first
   const prompt = buildBatchTranslationPrompt(
     sentences,
     config.sourceLang,
@@ -606,7 +654,31 @@ async function translateBatch(
   );
 
   const response = await callAI(prompt, config);
-  return parseBatchTranslationResponse(response, sentences.length);
+  const { lines, exact } = parseBatchTranslationResponse(response, sentences.length);
+
+  // If we got exact count, return immediately
+  if (exact) {
+    return lines;
+  }
+
+  // Count mismatch - retry each sentence individually
+  console.log(`[BILINGUAL] Batch count mismatch (got ${lines.length}, expected ${sentences.length}). Retrying ${sentences.length} sentences individually...`);
+
+  const results: string[] = [];
+  for (let i = 0; i < sentences.length; i++) {
+    // Use previous sentences as context for single translation
+    const singleContext = i > 0 ? sentences.slice(Math.max(0, i - 2), i) : contextSentences.slice(-2);
+    const translation = await translateSingleSentence(sentences[i], singleContext, config);
+    results.push(translation);
+
+    // Rate limiting for API providers during retry
+    if (config.aiProvider !== 'ollama') {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  console.log(`[BILINGUAL] Individual retry complete: ${results.length} translations`);
+  return results;
 }
 
 /**

@@ -169,7 +169,7 @@ declare global {
         run: (jobId: string, config: {
           projectId: string;
           projectDir: string;
-          // inputText removed - always reads from article.epub
+          sourceEpubPath?: string;
           sourceLang: string;
           aiProvider: AIProvider;
           aiModel: string;
@@ -177,6 +177,10 @@ declare global {
           claudeApiKey?: string;
           openaiApiKey?: string;
           cleanupPrompt?: string;
+          simplifyForLearning?: boolean;
+          startFresh?: boolean;
+          testMode?: boolean;
+          testModeChunks?: number;
         }) => Promise<{
           success: boolean;
           outputPath?: string;
@@ -200,6 +204,8 @@ declare global {
           openaiApiKey?: string;
           translationPrompt?: string;
           monoTranslation?: boolean;  // Full book translation (not bilingual interleave)
+          testMode?: boolean;
+          testModeChunks?: number;
         }) => Promise<{
           success: boolean;
           outputPath?: string;
@@ -794,6 +800,15 @@ export class QueueService {
             speed: ttsConfig.speed,
           }
         );
+      }
+    }
+
+    // Cache TTS session to project folder for Language Learning pipeline
+    if (result.success && completedJob?.type === 'tts-conversion') {
+      const ttsConfig = completedJob.config as TtsConversionConfig;
+      if (ttsConfig?.cacheToProject && ttsConfig?.projectDir) {
+        console.log(`[QUEUE] Caching TTS session to project: ${ttsConfig.projectDir}/${ttsConfig.language}`);
+        this.cacheSessionToProject(result, ttsConfig);
       }
     }
 
@@ -1971,7 +1986,9 @@ export class QueueService {
         console.log('[QUEUE] Starting bilingual-cleanup job:', {
           projectId: config.projectId,
           aiProvider: config.aiProvider,
-          aiModel: config.aiModel
+          aiModel: config.aiModel,
+          simplifyForLearning: config.simplifyForLearning,
+          cleanupPrompt: config.cleanupPrompt ? 'PROVIDED' : 'NOT PROVIDED'
         });
 
         if (!electron.bilingualCleanup) {
@@ -1981,14 +1998,18 @@ export class QueueService {
         const result = await electron.bilingualCleanup.run(job.id, {
           projectId: config.projectId,
           projectDir: config.projectDir,
-          // inputText removed - bilingual-cleanup reads from article.epub
+          sourceEpubPath: config.sourceEpubPath,
           sourceLang: config.sourceLang,
           aiProvider: config.aiProvider,
           aiModel: config.aiModel,
           ollamaBaseUrl: config.ollamaBaseUrl,
           claudeApiKey: config.claudeApiKey,
           openaiApiKey: config.openaiApiKey,
-          cleanupPrompt: config.cleanupPrompt
+          cleanupPrompt: config.cleanupPrompt,
+          simplifyForLearning: config.simplifyForLearning,
+          startFresh: config.startFresh,
+          testMode: config.testMode,
+          testModeChunks: config.testModeChunks
         });
 
         if (!result.success) {
@@ -2043,7 +2064,9 @@ export class QueueService {
           claudeApiKey: config.claudeApiKey,
           openaiApiKey: config.openaiApiKey,
           translationPrompt: config.translationPrompt,
-          monoTranslation: config.monoTranslation
+          monoTranslation: config.monoTranslation,
+          testMode: config.testMode,
+          testModeChunks: config.testModeChunks
         });
 
         if (!result.success) {
@@ -2538,7 +2561,6 @@ export class QueueService {
       };
     } else if (request.type === 'bilingual-cleanup') {
       const config = request.config as Partial<BilingualCleanupJobConfig>;
-      // inputText is optional - bilingual-cleanup will load from article.epub when empty
       if (!config?.projectId || !config?.projectDir || !config?.aiProvider || !config?.aiModel) {
         return undefined;
       }
@@ -2546,25 +2568,30 @@ export class QueueService {
         type: 'bilingual-cleanup',
         projectId: config.projectId,
         projectDir: config.projectDir,
-        // inputText removed - always reads from article.epub
+        sourceEpubPath: config.sourceEpubPath || request.epubPath,  // Fall back to request.epubPath
         sourceLang: config.sourceLang || 'en',
         aiProvider: config.aiProvider,
         aiModel: config.aiModel,
         ollamaBaseUrl: config.ollamaBaseUrl,
         claudeApiKey: config.claudeApiKey,
         openaiApiKey: config.openaiApiKey,
-        cleanupPrompt: config.cleanupPrompt
+        cleanupPrompt: config.cleanupPrompt,
+        simplifyForLearning: config.simplifyForLearning,
+        startFresh: config.startFresh,
+        testMode: config.testMode,
+        testModeChunks: config.testModeChunks
       };
     } else if (request.type === 'bilingual-translation') {
       const config = request.config as Partial<BilingualTranslationJobConfig>;
-      if (!config?.projectId || !config?.projectDir || !config?.cleanedEpubPath || !config?.aiProvider || !config?.aiModel) {
+      // Only aiProvider and aiModel are strictly required
+      if (!config?.aiProvider || !config?.aiModel) {
         return undefined;
       }
       return {
         type: 'bilingual-translation',
         projectId: config.projectId,
         projectDir: config.projectDir,
-        cleanedEpubPath: config.cleanedEpubPath,
+        cleanedEpubPath: config.cleanedEpubPath || request.epubPath, // Fall back to epubPath
         sourceLang: config.sourceLang || 'en',
         targetLang: config.targetLang || 'de',
         title: config.title,
@@ -2573,7 +2600,9 @@ export class QueueService {
         ollamaBaseUrl: config.ollamaBaseUrl,
         claudeApiKey: config.claudeApiKey,
         openaiApiKey: config.openaiApiKey,
-        translationPrompt: config.translationPrompt
+        translationPrompt: config.translationPrompt,
+        testMode: config.testMode,
+        testModeChunks: config.testModeChunks
       };
     } else if (request.type === 'bilingual-assembly') {
       const config = request.config as Partial<BilingualAssemblyJobConfig>;
@@ -2852,6 +2881,68 @@ export class QueueService {
       }
     } catch (err) {
       console.error('[QUEUE] Error caching audio:', err);
+    }
+  }
+
+  /**
+   * Cache TTS session to project folder for Language Learning pipeline.
+   * Called after TTS completion when cacheToProject is true.
+   */
+  private async cacheSessionToProject(
+    result: JobResult,
+    ttsConfig: TtsConversionConfig
+  ): Promise<void> {
+    const electron = window.electron as any;
+    if (!electron?.sessionCache?.save) {
+      console.warn('[QUEUE] Cannot cache session - electron.sessionCache.save not available');
+      return;
+    }
+
+    if (!ttsConfig.projectDir || !ttsConfig.language) {
+      console.warn('[QUEUE] Cannot cache session - projectDir or language not specified');
+      return;
+    }
+
+    // The session directory should be in the result analytics or we need to find it
+    // The parallel-tts bridge passes sessionDir in the session-created event
+    // For now, we'll extract it from the outputPath structure if available
+    // outputPath is typically: /path/to/e2a/tmp/ebook-{id}/{processDir}/...
+
+    // Extract session directory from outputPath
+    let sessionDir: string | undefined;
+    if (result.outputPath) {
+      // outputPath might be the sentences folder or the M4B file
+      // We need to find the session folder (ebook-{id})
+      const ebookMatch = result.outputPath.match(/(.*\/tmp\/ebook-[a-f0-9-]+)/);
+      if (ebookMatch) {
+        sessionDir = ebookMatch[1];
+      }
+    }
+
+    // Also check stopInfo if available (from stopped jobs)
+    if (!sessionDir && result.stopInfo?.sessionDir) {
+      sessionDir = result.stopInfo.sessionDir;
+    }
+
+    if (!sessionDir) {
+      console.warn('[QUEUE] Cannot cache session - sessionDir not found in result');
+      return;
+    }
+
+    try {
+      const cacheResult = await electron.sessionCache.save(
+        sessionDir,
+        ttsConfig.projectDir,
+        ttsConfig.language
+      );
+
+      if (cacheResult.success) {
+        console.log(`[QUEUE] Cached session to project: ${cacheResult.cachedPath}`);
+      } else {
+        console.error('[QUEUE] Failed to cache session:', cacheResult.error);
+      }
+    } catch (err) {
+      console.error('[QUEUE] Error caching session to project:', err);
     }
   }
 

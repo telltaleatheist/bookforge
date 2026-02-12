@@ -11,7 +11,7 @@ import { StudioListComponent } from './components/studio-list/studio-list.compon
 import { AddModalComponent } from './components/add-modal/add-modal.component';
 import { ContentEditorComponent } from './components/content-editor/content-editor.component';
 import { ProcessWizardComponent, SourceOption } from './components/process-wizard/process-wizard.component';
-import { BilingualWizardComponent } from './components/bilingual-wizard/bilingual-wizard.component';
+import { LLWizardComponent } from '../language-learning/components/ll-wizard/ll-wizard.component';
 
 // Import existing audiobook components
 import { MetadataEditorComponent, EpubMetadata } from '../audiobook/components/metadata-editor/metadata-editor.component';
@@ -52,7 +52,7 @@ import { QueueService } from '../queue/services/queue.service';
     AddModalComponent,
     ContentEditorComponent,
     ProcessWizardComponent,
-    BilingualWizardComponent,
+    LLWizardComponent,
     MetadataEditorComponent,
     DiffViewComponent,
     PlayViewComponent,
@@ -370,16 +370,18 @@ import { QueueService } from '../queue/services/queue.service';
                 @switch (llSubTab()) {
                   @case ('process') {
                     @if (currentEpubPath()) {
-                      <app-bilingual-wizard
+                      <app-ll-wizard
                         [epubPath]="currentEpubPath()"
                         [originalEpubPath]="selectedItem()?.epubPath || ''"
                         [title]="selectedMetadata()?.title || ''"
+                        [projectTitle]="selectedMetadata()?.title || ''"
                         [author]="selectedMetadata()?.author || ''"
                         [itemType]="selectedItem()?.type || 'book'"
                         [bfpPath]="selectedItem()?.bfpPath || ''"
                         [projectId]="selectedItem()?.id || ''"
                         [projectDir]="getProjectDir()"
                         [audiobookFolder]="getAudiobookFolder()"
+                        [initialSourceLang]="selectedItem()?.language || 'en'"
                         (queued)="onProcessQueued()"
                       />
                     } @else {

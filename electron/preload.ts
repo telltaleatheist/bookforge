@@ -1289,7 +1289,7 @@ export interface ElectronAPI {
       needsRecompute?: boolean;
       error?: string;
     }>;
-    hydrateChapter: (cleanedPath: string, chapterId: string, changes: Array<{ pos: number; len: number; add?: string; rem?: string }>) => Promise<{
+    hydrateChapter: (originalPath: string, cleanedPath: string, chapterId: string, changes: Array<{ pos: number; len: number; add?: string; rem?: string }>) => Promise<{
       success: boolean;
       data?: {
         diffWords: Array<{ text: string; type: 'unchanged' | 'added' | 'removed' }>;
@@ -1337,6 +1337,11 @@ export interface ElectronAPI {
     checkResume: (sessionPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
     resumeConversion: (jobId: string, config: ParallelConversionConfig, resumeInfo: ResumeCheckResult) => Promise<{ success: boolean; data?: ParallelConversionResult; error?: string }>;
     buildResumeInfo: (prepInfo: any, settings: any) => Promise<{ success: boolean; data?: TtsResumeInfo; error?: string }>;
+  };
+  sessionCache: {
+    save: (sessionDir: string, projectDir: string, language: string) => Promise<{ success: boolean; cachedPath?: string; error?: string }>;
+    list: (projectDir: string) => Promise<{ success: boolean; data?: Array<{ language: string; sessionDir: string; sentenceCount: number; createdAt: string }>; error?: string }>;
+    restore: (projectDir: string, language: string) => Promise<{ success: boolean; sessionDir?: string; error?: string }>;
   };
   bilingualAssembly: {
     run: (jobId: string, config: {
@@ -1600,6 +1605,7 @@ export interface ElectronAPI {
     run: (jobId: string, config: {
       projectId: string;
       projectDir: string;
+      sourceEpubPath?: string;
       sourceLang: string;
       aiProvider: 'ollama' | 'claude' | 'openai';
       aiModel: string;
@@ -1607,6 +1613,10 @@ export interface ElectronAPI {
       claudeApiKey?: string;
       openaiApiKey?: string;
       cleanupPrompt?: string;
+      simplifyForLearning?: boolean;
+      startFresh?: boolean;
+      testMode?: boolean;
+      testModeChunks?: number;
     }) => Promise<{
       success: boolean;
       outputPath?: string;
@@ -1630,6 +1640,8 @@ export interface ElectronAPI {
       openaiApiKey?: string;
       translationPrompt?: string;
       monoTranslation?: boolean;  // Full book translation (not bilingual interleave)
+      testMode?: boolean;
+      testModeChunks?: number;
     }) => Promise<{
       success: boolean;
       outputPath?: string;
@@ -2373,8 +2385,8 @@ const electronAPI: ElectronAPI = {
     // Pre-computed diff cache (created during AI cleanup)
     loadCachedFile: (cleanedPath: string) =>
       ipcRenderer.invoke('diff:load-cached-file', cleanedPath),
-    hydrateChapter: (cleanedPath: string, chapterId: string, changes: Array<{ pos: number; len: number; add?: string; rem?: string }>) =>
-      ipcRenderer.invoke('diff:hydrate-chapter', cleanedPath, chapterId, changes),
+    hydrateChapter: (originalPath: string, cleanedPath: string, chapterId: string, changes: Array<{ pos: number; len: number; add?: string; rem?: string }>) =>
+      ipcRenderer.invoke('diff:hydrate-chapter', originalPath, cleanedPath, chapterId, changes),
   },
   play: {
     startSession: () =>
@@ -2473,6 +2485,25 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('parallel-tts:resume-conversion', jobId, config, resumeInfo),
     buildResumeInfo: (prepInfo: any, settings: any) =>
       ipcRenderer.invoke('parallel-tts:build-resume-info', prepInfo, settings),
+  },
+  sessionCache: {
+    // Save a TTS session to project folder for later assembly
+    save: (sessionDir: string, projectDir: string, language: string) =>
+      ipcRenderer.invoke('session-cache:save', sessionDir, projectDir, language),
+    // List available sessions in a project
+    list: (projectDir: string) =>
+      ipcRenderer.invoke('session-cache:list', projectDir) as Promise<{
+        success: boolean;
+        data?: Array<{ language: string; sessionDir: string; sentenceCount: number; createdAt: string }>;
+        error?: string;
+      }>,
+    // Restore a cached session from project folder to e2a tmp
+    restore: (projectDir: string, language: string) =>
+      ipcRenderer.invoke('session-cache:restore', projectDir, language) as Promise<{
+        success: boolean;
+        sessionDir?: string;
+        error?: string;
+      }>,
   },
   bilingualAssembly: {
     run: (jobId: string, config: {
@@ -2711,6 +2742,7 @@ const electronAPI: ElectronAPI = {
     run: (jobId: string, config: {
       projectId: string;
       projectDir: string;
+      sourceEpubPath?: string;
       sourceLang: string;
       aiProvider: 'ollama' | 'claude' | 'openai';
       aiModel: string;
@@ -2718,6 +2750,10 @@ const electronAPI: ElectronAPI = {
       claudeApiKey?: string;
       openaiApiKey?: string;
       cleanupPrompt?: string;
+      simplifyForLearning?: boolean;
+      startFresh?: boolean;
+      testMode?: boolean;
+      testModeChunks?: number;
     }): Promise<{
       success: boolean;
       outputPath?: string;
@@ -2751,6 +2787,8 @@ const electronAPI: ElectronAPI = {
       openaiApiKey?: string;
       translationPrompt?: string;
       monoTranslation?: boolean;
+      testMode?: boolean;
+      testModeChunks?: number;
     }): Promise<{
       success: boolean;
       outputPath?: string;

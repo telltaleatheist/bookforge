@@ -207,3 +207,42 @@ export interface FetchUrlResult {
   wordCount?: number;
   error?: string;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TTS Language Row (for multi-language TTS)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface TtsLanguageRow {
+  id: string;                   // Unique ID for tracking
+  language: string;             // Language code (e.g., 'en', 'de')
+  sourceEpub: string;           // "latest" or explicit path
+  voice: string;                // Voice name/ID
+  speed: number;                // Playback speed (0.5-2.0)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Session Cache (TTS sessions stored in BFP)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface SessionCache {
+  language: string;             // Language code
+  sessionDir: string;           // Path to cached session folder
+  sentenceCount: number;        // Number of sentences
+  createdAt: string;            // ISO timestamp
+}
+
+export interface SessionCacheInfo {
+  sessions: SessionCache[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wizard Step Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type LLWizardStep = 'cleanup' | 'translate' | 'tts' | 'assembly' | 'review';
+
+export interface SourceDropdownOption {
+  value: string;                // "latest" or actual path
+  label: string;                // Display text
+  isLatest: boolean;            // True for "Latest" option
+}

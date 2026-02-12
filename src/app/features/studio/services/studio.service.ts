@@ -216,6 +216,8 @@ export class StudioService {
           content: p.content,
           textContent: p.textContent,
           contentFinalized: p.contentFinalized || false,
+          hasCleaned: p.hasCleaned || false,  // Whether AI cleanup has been run
+          cleanedEpubPath: p.cleanedEpubPath,  // Add cleaned EPUB path for review tab
           audiobookPath: p.audiobookPath,
           vttPath: p.vttPath,
           errorMessage: p.errorMessage

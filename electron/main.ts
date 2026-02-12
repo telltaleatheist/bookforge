@@ -2446,15 +2446,15 @@ function setupIpcHandlers(): void {
   });
 
   // Hydrate a chapter's compact diff changes back to full DiffWord[] for rendering
-  ipcMain.handle('diff:hydrate-chapter', async (_event, cleanedPath: string, chapterId: string, changes: unknown[]) => {
+  ipcMain.handle('diff:hydrate-chapter', async (_event, originalPath: string, cleanedPath: string, chapterId: string, changes: unknown[]) => {
     try {
       const { hydrateDiff } = await import('./diff-cache.js');
       const { getChapterComparison } = await import('./epub-processor.js');
 
-      // Get the cleaned text for this chapter (we need it for hydration)
-      // Use cleanedPath for both since we only need the cleaned text
-      const result = await getChapterComparison(cleanedPath, cleanedPath, chapterId);
-      const cleanedText = result.cleanedText;
+      // Get BOTH the original and cleaned text for this chapter
+      // We need original for display and cleaned for hydration
+      const result = await getChapterComparison(originalPath, cleanedPath, chapterId);
+      const { originalText, cleanedText } = result;
 
       // Hydrate the compact changes
       const diffWords = hydrateDiff(changes as any[], cleanedText);
@@ -2464,7 +2464,7 @@ function setupIpcHandlers(): void {
         data: {
           diffWords,
           cleanedText,
-          originalText: result.originalText // Also include original for display
+          originalText // Now correctly includes the original text
         }
       };
     } catch (err) {
@@ -2967,6 +2967,41 @@ function setupIpcHandlers(): void {
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
       const resumeInfo = parallelTtsBridge.buildResumeInfo(prepInfo, settings);
       return { success: true, data: resumeInfo };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Session Caching handlers (for Language Learning pipeline)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Cache a TTS session to project folder for later assembly
+  ipcMain.handle('session-cache:save', async (_event, sessionDir: string, projectDir: string, language: string) => {
+    try {
+      const { cacheSessionToProject } = await import('./parallel-tts-bridge.js');
+      return await cacheSessionToProject(sessionDir, projectDir, language);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // List available sessions in a project
+  ipcMain.handle('session-cache:list', async (_event, projectDir: string) => {
+    try {
+      const { listProjectSessions } = await import('./parallel-tts-bridge.js');
+      const sessions = await listProjectSessions(projectDir);
+      return { success: true, data: sessions };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Restore a cached session from project folder to e2a tmp
+  ipcMain.handle('session-cache:restore', async (_event, projectDir: string, language: string) => {
+    try {
+      const { restoreSessionFromProject } = await import('./parallel-tts-bridge.js');
+      return await restoreSessionFromProject(projectDir, language);
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -5422,7 +5457,9 @@ function setupIpcHandlers(): void {
       await fs.mkdir(logsDir, { recursive: true });
       const logPath = path.join(logsDir, filename);
       await fs.writeFile(logPath, content, 'utf-8');
-      console.log('[MAIN] Saved logs to:', logPath);
+      console.log('[MAIN] ===== DEVELOPER CONSOLE LOGS SAVED TO FILE =====');
+      console.log('[MAIN] LOG FILE LOCATION:', logPath);
+      console.log('[MAIN] ===========================================');
       return { success: true, path: logPath };
     } catch (err) {
       console.error('[MAIN] Failed to save logs:', err);
@@ -5994,10 +6031,11 @@ function setupIpcHandlers(): void {
   // Bilingual Processing Pipeline Jobs
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // Job 1: AI Cleanup - reads from article.epub, writes to cleaned.epub
+  // Job 1: AI Cleanup - reads from source EPUB, writes to cleaned.epub
   ipcMain.handle('bilingual-cleanup:run', async (_event, jobId: string, config: {
     projectId: string;
     projectDir: string;
+    sourceEpubPath?: string;
     sourceLang: string;
     aiProvider: 'ollama' | 'claude' | 'openai';
     aiModel: string;
@@ -6005,6 +6043,9 @@ function setupIpcHandlers(): void {
     claudeApiKey?: string;
     openaiApiKey?: string;
     cleanupPrompt?: string;
+    simplifyForLearning?: boolean;
+    testMode?: boolean;
+    testModeChunks?: number;
   }) => {
     try {
       const { runLLCleanup } = await import('./ll-jobs.js');
@@ -6030,6 +6071,8 @@ function setupIpcHandlers(): void {
     openaiApiKey?: string;
     translationPrompt?: string;
     monoTranslation?: boolean;
+    testMode?: boolean;
+    testModeChunks?: number;
   }) => {
     try {
       const { runLLTranslation, runMonoTranslation } = await import('./ll-jobs.js');
@@ -6645,9 +6688,11 @@ function setupIpcHandlers(): void {
         editable: boolean,
         language?: string
       ) => {
+        console.log(`[EDITOR:GET-VERSIONS] addVersion called: id=${id}, path=${filePath}, exists=${filePath ? fsSync.existsSync(filePath) : 'no path'}`);
         if (filePath && fsSync.existsSync(filePath)) {
           const stats = await fs.stat(filePath);
           const ext = path.extname(filePath).toLowerCase().replace('.', '');
+          console.log(`[EDITOR:GET-VERSIONS] Adding version: ${id} (${label})`);
           versions.push({
             id,
             type,
@@ -6712,10 +6757,16 @@ function setupIpcHandlers(): void {
       }
 
       // 3. Cleaned EPUB (after AI cleanup)
-      // Check audiobook folder for cleaned version
+      // Check audiobook folder for cleaned version - support both naming conventions
       const audiobookFolder = bfp.audiobookFolder || bfp.audiobook?.folder;
+      console.log('[EDITOR:GET-VERSIONS] audiobookFolder:', audiobookFolder);
       if (audiobookFolder && fsSync.existsSync(audiobookFolder)) {
-        const cleanedPath = path.join(audiobookFolder, 'exported_cleaned.epub');
+        // Try exported_cleaned.epub (old convention) then cleaned.epub (new LL convention)
+        const cleanedPathOld = path.join(audiobookFolder, 'exported_cleaned.epub');
+        const cleanedPathNew = path.join(audiobookFolder, 'cleaned.epub');
+        const cleanedPath = fsSync.existsSync(cleanedPathOld) ? cleanedPathOld : cleanedPathNew;
+        console.log('[EDITOR:GET-VERSIONS] cleanedPath:', cleanedPath, 'exists:', fsSync.existsSync(cleanedPath));
+
         await addVersion(
           'cleaned',
           'cleaned',
@@ -6725,12 +6776,13 @@ function setupIpcHandlers(): void {
           '🧹',
           true
         );
+        console.log('[EDITOR:GET-VERSIONS] Added cleaned version, total versions:', versions.length);
 
-        // 4. Translated EPUBs - look for *_translated.epub files
+        // 4. Translated EPUBs - look for *_translated.epub and {lang}.epub files
         const files = await fs.readdir(audiobookFolder);
         for (const file of files) {
+          // Old convention: exported_de_translated.epub
           if (file.endsWith('_translated.epub')) {
-            // Extract language from filename (e.g., "exported_de_translated.epub")
             const match = file.match(/exported_([a-z]{2})_translated\.epub/);
             const lang = match ? match[1] : 'unknown';
             const langName = new Intl.DisplayNames(['en'], { type: 'language' }).of(lang) || lang;
@@ -6739,6 +6791,21 @@ function setupIpcHandlers(): void {
               'translated',
               `Translated (${langName})`,
               `Translated to ${langName}`,
+              path.join(audiobookFolder, file),
+              '🌍',
+              true,
+              lang
+            );
+          }
+          // New LL convention: de.epub, es.epub, ko.epub (2-letter language code)
+          else if (/^[a-z]{2}\.epub$/.test(file)) {
+            const lang = file.replace('.epub', '');
+            const langName = new Intl.DisplayNames(['en'], { type: 'language' }).of(lang) || lang;
+            await addVersion(
+              `translated-${lang}`,
+              'translated',
+              `${langName} EPUB`,
+              `${langName} language version`,
               path.join(audiobookFolder, file),
               '🌍',
               true,
