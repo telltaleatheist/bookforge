@@ -232,7 +232,23 @@ export async function copyToFinalDestination(
   // Find m4b and vtt files in temp dir
   const files = await fs.readdir(tempDir);
   const m4bFile = files.find(f => f.endsWith('.m4b') && !f.startsWith('._'));
-  const vttFile = files.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
+  let vttFile = files.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
+
+  // VTT may have been moved to vtt/ subfolder during rename step
+  let vttSubdir = false;
+  if (!vttFile) {
+    try {
+      const vttDir = path.join(tempDir, 'vtt');
+      const vttFiles = await fs.readdir(vttDir);
+      const found = vttFiles.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
+      if (found) {
+        vttFile = path.join('vtt', found);
+        vttSubdir = true;
+      }
+    } catch {
+      // No vtt subfolder
+    }
+  }
 
   if (!m4bFile) {
     throw new Error(`No m4b file found in temp directory: ${tempDir}`);
