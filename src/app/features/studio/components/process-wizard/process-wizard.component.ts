@@ -206,75 +206,58 @@ export interface SourceOption {
               <div class="processing-options">
                 <label class="field-label">Processing Options</label>
 
-                <!-- AI Cleanup Option -->
-                <div class="toggle-section">
+                <!-- Mutually exclusive options -->
+                <div class="toggle-section-inline">
                   <button
                     class="option-toggle"
                     [class.active]="enableAiCleanup()"
-                    (click)="enableAiCleanup.set(!enableAiCleanup())"
+                    (click)="toggleAiCleanup()"
                   >
                     <span class="toggle-icon">🔧</span>
                     <span class="toggle-label">AI Cleanup</span>
                     <span class="toggle-sublabel">Fix OCR errors & formatting</span>
                   </button>
-                  <span class="hint">
-                    Fix OCR errors, remove headers/footers, clean up formatting issues
-                  </span>
-                </div>
 
-                <!-- Simplify for Language Learning Option -->
-                <div class="toggle-section">
                   <button
                     class="option-toggle"
-                    [class.active]="simplifyForChildren()"
-                    (click)="simplifyForChildren.set(!simplifyForChildren())"
+                    [class.active]="simplifyForLearning()"
+                    (click)="toggleSimplify()"
                   >
                     <span class="toggle-icon">📖</span>
-                    <span class="toggle-label">Simplify for language learning</span>
-                    <span class="toggle-sublabel">Natural American English, 3rd grade level</span>
+                    <span class="toggle-label">Simplify for learning</span>
+                    <span class="toggle-sublabel">Natural storytelling</span>
                   </button>
-                  <span class="hint">
-                    Rewrite into clean, natural American English that flows well when spoken aloud. Ideal for language learners.
-                  </span>
                 </div>
 
-                @if (!enableAiCleanup() && !simplifyForChildren()) {
+                @if (!enableAiCleanup() && !simplifyForLearning()) {
                   <div class="warning-banner">
                     No processing selected. Enable at least one option or skip this step.
                   </div>
                 }
               </div>
 
-              <!-- Test Mode Option -->
-              <div class="toggle-section">
-                <button
-                  class="option-toggle"
-                  [class.active]="testMode()"
-                  (click)="testMode.set(!testMode())"
-                >
-                  <span class="toggle-icon">🧪</span>
-                  <span class="toggle-label">Test mode</span>
-                  <span class="toggle-sublabel">First {{ testModeChunks() }} chunks only</span>
-                </button>
-                @if (testMode()) {
-                  <div class="test-mode-config">
-                    <label>Chunks to process:</label>
-                    <div class="chunk-options">
-                      @for (count of [3, 5, 10, 20]; track count) {
-                        <button
-                          class="chunk-option"
-                          [class.selected]="testModeChunks() === count"
-                          (click)="testModeChunks.set(count)"
-                        >
-                          {{ count }}
-                        </button>
-                      }
-                    </div>
-                  </div>
-                }
-                <span class="hint">
-                  Process only the first few chunks to preview results before running the full job.
-                </span>
+              <!-- Test Mode -->
+              <div class="config-section">
+                <label class="field-label">Test Mode</label>
+                <div class="worker-options">
+                  <button
+                    class="worker-btn"
+                    [class.selected]="!testMode()"
+                    (click)="testMode.set(false)"
+                  >
+                    Full
+                  </button>
+                  @for (count of [3, 5, 10, 20]; track count) {
+                    <button
+                      class="worker-btn"
+                      [class.selected]="testModeChunks() === count && testMode()"
+                      (click)="testMode.set(true); testModeChunks.set(count)"
+                    >
+                      {{ count }}
+                    </button>
+                  }
+                </div>
+                <span class="hint">Test mode processes only first N chunks</span>
               </div>
 
               <!-- Prompt Accordion -->
@@ -1070,6 +1053,16 @@ export interface SourceOption {
       margin-top: 16px;
     }
 
+    .toggle-section-inline {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+
+      .option-toggle {
+        flex: 1;
+      }
+    }
+
     .option-toggle {
       display: flex;
       flex-direction: column;
@@ -1707,7 +1700,7 @@ export class ProcessWizardComponent implements OnInit {
   readonly cleanupProvider = signal<AIProvider>('ollama');
   readonly cleanupModel = signal<string>('');
   readonly enableAiCleanup = signal(true);  // Standard OCR/formatting cleanup
-  readonly simplifyForChildren = signal(false);  // Simplify archaic language
+  readonly simplifyForLearning = signal(false);  // Simplify for language learners
   readonly testMode = signal(false);
   readonly testModeChunks = signal(5);
   readonly cleanupParallelWorkers = signal(4);  // Parallel workers for Claude/OpenAI
@@ -1831,7 +1824,12 @@ export class ProcessWizardComponent implements OnInit {
     this.initializeTtsDefaults();
     this.initializeSourceSelection();
     this.checkOllamaConnection();
-    this.loadPrompt();
+    // Load the appropriate prompt based on initial state
+    if (this.simplifyForLearning()) {
+      this.loadPrompt('simplify');
+    } else {
+      this.loadPrompt('cleanup');
+    }
   }
 
   private initializeSourceSelection(): void {
@@ -1996,11 +1994,15 @@ export class ProcessWizardComponent implements OnInit {
   }
 
   // Prompt methods
-  async loadPrompt(): Promise<void> {
+  async loadPrompt(type: 'cleanup' | 'simplify' = 'cleanup'): Promise<void> {
     this.loadingPrompt.set(true);
     try {
+      // For now, use the default AI prompt
+      // TODO: Add IPC handler to load specific prompt files (ll-cleanup.txt, ll-simplify.txt)
       const result = await this.electronService.getAIPrompt();
       if (result) {
+        // The default prompt should be appropriate for cleanup
+        // In the future, we can enhance this to load specific prompts
         this.promptText.set(result.prompt);
         this.originalPromptText.set(result.prompt);
       }
@@ -2016,14 +2018,26 @@ export class ProcessWizardComponent implements OnInit {
     this.promptText.set(textarea.value);
   }
 
-  toggleSimplifyForChildren(event: Event): void {
-    const checkbox = event.target as HTMLInputElement;
-    this.simplifyForChildren.set(checkbox.checked);
+  toggleAiCleanup(): void {
+    // Make mutually exclusive
+    if (!this.enableAiCleanup()) {
+      this.enableAiCleanup.set(true);
+      this.simplifyForLearning.set(false);
+      this.loadPrompt('cleanup');
+    } else {
+      this.enableAiCleanup.set(false);
+    }
   }
 
-  toggleTestMode(event: Event): void {
-    const checkbox = event.target as HTMLInputElement;
-    this.testMode.set(checkbox.checked);
+  toggleSimplify(): void {
+    // Make mutually exclusive
+    if (!this.simplifyForLearning()) {
+      this.simplifyForLearning.set(true);
+      this.enableAiCleanup.set(false);
+      this.loadPrompt('simplify');
+    } else {
+      this.simplifyForLearning.set(false);
+    }
   }
 
   async savePrompt(): Promise<void> {
@@ -2249,8 +2263,10 @@ export class ProcessWizardComponent implements OnInit {
             claudeApiKey: aiConfig.claude?.apiKey,
             openaiApiKey: aiConfig.openai?.apiKey,
             enableAiCleanup: this.enableAiCleanup(),
-            simplifyForChildren: this.simplifyForChildren(),
+            simplifyForLearning: this.simplifyForLearning(),
             testMode: this.testMode(),
+            testModeChunks: this.testMode() ? this.testModeChunks() : undefined,
+            cleanupPrompt: this.promptText(),  // Pass the current prompt
             // Parallel processing for Claude/OpenAI
             useParallel: this.cleanupProvider() !== 'ollama',
             parallelWorkers: this.cleanupParallelWorkers(),

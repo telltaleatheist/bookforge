@@ -1204,8 +1204,11 @@ export interface ElectronAPI {
       parallelWorkers?: number;
       cleanupMode?: 'structure' | 'full';
       testMode?: boolean;
+      testModeChunks?: number;
       enableAiCleanup?: boolean;
-      simplifyForChildren?: boolean;
+      simplifyForLearning?: boolean;
+      simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
+      cleanupPrompt?: string;
     }) => Promise<{ success: boolean; data?: any; error?: string }>;
     runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
     runTranslation: (jobId: string, epubPath: string, translationConfig: {
@@ -2317,8 +2320,11 @@ const electronAPI: ElectronAPI = {
       parallelWorkers?: number;
       cleanupMode?: 'structure' | 'full';
       testMode?: boolean;
+      testModeChunks?: number;
       enableAiCleanup?: boolean;
-      simplifyForChildren?: boolean;
+      simplifyForLearning?: boolean;
+      simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
+      cleanupPrompt?: string;
     }) =>
       ipcRenderer.invoke('queue:run-ocr-cleanup', jobId, epubPath, model, aiConfig),
     runTtsConversion: (jobId: string, epubPath: string, config: TtsJobConfig) =>

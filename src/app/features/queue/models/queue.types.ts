@@ -117,12 +117,15 @@ export interface OcrCleanupConfig {
   useParallel?: boolean;     // Enable parallel processing
   // Cleanup mode: 'structure' preserves HTML, 'full' sends HTML to AI for structural fixes
   cleanupMode?: 'structure' | 'full';
-  // Test mode: only process first 5 chunks
+  // Test mode: only process first N chunks
   testMode?: boolean;
+  testModeChunks?: number;  // Number of chunks to process in test mode
   // Enable standard AI cleanup (OCR fixes, formatting)
   enableAiCleanup?: boolean;
-  // Simplify for modern audience: rewrite archaic language for young readers
-  simplifyForChildren?: boolean;
+  // Simplify for language learners
+  simplifyForLearning?: boolean;
+  // Custom cleanup prompt (overrides default)
+  cleanupPrompt?: string;
 }
 
 // TTS Conversion job configuration

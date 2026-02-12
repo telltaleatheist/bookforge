@@ -4829,10 +4829,14 @@ function setupIpcHandlers(): void {
       parallelWorkers?: number;
       // Cleanup mode: 'structure' preserves HTML, 'full' sends HTML to AI
       cleanupMode?: 'structure' | 'full';
-      // Test mode: only process first 5 chunks
+      // Test mode: only process first N chunks
       testMode?: boolean;
-      // Simplify for children: rewrite archaic language for young readers
-      simplifyForChildren?: boolean;
+      testModeChunks?: number;
+      // Simplify for language learners (backwards compat: also accepts simplifyForChildren)
+      simplifyForLearning?: boolean;
+      simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
+      // Custom cleanup prompt (overrides default)
+      cleanupPrompt?: string;
     }
   ) => {
     console.log('[IPC] queue:run-ocr-cleanup received:', {
@@ -4892,20 +4896,31 @@ function setupIpcHandlers(): void {
         parallelWorkers?: number;
         cleanupMode?: 'structure' | 'full';
         testMode?: boolean;
+        testModeChunks?: number;
         simplifyForChildren?: boolean;
+        cleanupPrompt?: string;
       } = {};
 
       // Set cleanup mode (default to 'structure' for backwards compatibility)
       cleanupOptions.cleanupMode = aiConfig.cleanupMode || 'structure';
 
-      // Set test mode
+      // Set test mode and test chunks
       cleanupOptions.testMode = aiConfig.testMode || false;
-      console.log('[IPC] Test mode:', aiConfig.testMode, '-> cleanupOptions.testMode:', cleanupOptions.testMode);
+      if (aiConfig.testModeChunks) {
+        cleanupOptions.testModeChunks = aiConfig.testModeChunks;
+      }
+      console.log('[IPC] Test mode:', aiConfig.testMode, 'chunks:', aiConfig.testModeChunks);
 
-      // Set simplify for children mode
-      cleanupOptions.simplifyForChildren = aiConfig.simplifyForChildren || false;
+      // Set simplify mode (support both names for backwards compatibility)
+      cleanupOptions.simplifyForChildren = aiConfig.simplifyForLearning || aiConfig.simplifyForChildren || false;
       if (cleanupOptions.simplifyForChildren) {
-        console.log('[IPC] Simplify for children mode: ENABLED');
+        console.log('[IPC] Simplify for language learners mode: ENABLED');
+      }
+
+      // Set custom prompt if provided
+      if (aiConfig.cleanupPrompt) {
+        cleanupOptions.cleanupPrompt = aiConfig.cleanupPrompt;
+        console.log('[IPC] Using custom cleanup prompt');
       }
 
       if (aiConfig.useDetailedCleanup) {

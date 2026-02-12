@@ -1747,14 +1747,16 @@ export async function cleanupEpub(
     parallelWorkers?: number;
     cleanupMode?: 'structure' | 'full';
     testMode?: boolean;
+    testModeChunks?: number;  // Number of chunks to process in test mode
     enableAiCleanup?: boolean;  // Standard OCR/formatting cleanup (default: true)
-    simplifyForChildren?: boolean;  // Simplify archaic language
+    simplifyForChildren?: boolean;  // Simplify for language learners
+    cleanupPrompt?: string;  // Custom cleanup prompt (overrides default)
   }
 ): Promise<EpubCleanupResult> {
   // Debug logging to trace provider selection
   const cleanupMode = options?.cleanupMode || 'structure';
   const testMode = options?.testMode || false;
-  const TEST_MODE_CHUNK_LIMIT = 5;
+  const TEST_MODE_CHUNK_LIMIT = options?.testModeChunks || 5;
   console.log('[AI-BRIDGE] cleanupEpub called with:', {
     provider: providerConfig.provider,
     ollamaModel: providerConfig.ollama?.model,
@@ -1901,7 +1903,11 @@ export async function cleanupEpub(
 
     let systemPrompt: string;
 
-    if (enableAiCleanup && simplifyForChildren) {
+    // Use custom prompt if provided
+    if (options?.cleanupPrompt) {
+      systemPrompt = options.cleanupPrompt;
+      console.log('[AI-BRIDGE] Using custom cleanup prompt');
+    } else if (enableAiCleanup && simplifyForChildren) {
       // BOTH: Standard cleanup + simplification
       systemPrompt = getOcrCleanupSystemPrompt(cleanupMode);
       if (options?.useDetailedCleanup && options.deletedBlockExamples && options.deletedBlockExamples.length > 0) {
