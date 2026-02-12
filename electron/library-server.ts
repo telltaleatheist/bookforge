@@ -429,9 +429,10 @@ export class LibraryServer {
       }
 
       // Security: only allow absolute paths starting with /Volumes (Mac) or drive letter (Windows)
+      // Windows paths may use forward or back slashes (E:/ or E:\)
       const isValidPath = filePath.startsWith('/Volumes/') ||
                           filePath.startsWith('/Users/') ||
-                          /^[A-Z]:\\/i.test(filePath);
+                          /^[A-Z]:[\\\/]/i.test(filePath);
       if (!isValidPath) {
         res.status(403).json({ error: 'Invalid path' });
         return;

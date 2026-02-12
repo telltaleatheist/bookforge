@@ -961,9 +961,11 @@ function setupIpcHandlers(): void {
       const mimeType = ext === 'm4b' || ext === 'm4a' ? 'audio/mp4' : 'audio/mpeg';
 
       if (stats.size > MAX_SIZE_FOR_BASE64) {
-        // For large files, use LibraryServer's streaming endpoint
-        const streamUrl = `http://localhost:8765/api/audio?path=${encodeURIComponent(audioPath)}`;
-        console.log(`[fs:read-audio] File too large (${stats.size} bytes), using streaming URL`);
+        // For large files, use the bookforge-audio:// custom protocol for streaming
+        // Normalize to forward slashes for URL path
+        const normalizedPath = audioPath.replace(/\\/g, '/');
+        const streamUrl = `bookforge-audio:///${normalizedPath}`;
+        console.log(`[fs:read-audio] File too large (${stats.size} bytes), using streaming protocol`);
         return { success: true, dataUrl: streamUrl, size: stats.size, isStreamUrl: true };
       }
 
@@ -5393,6 +5395,19 @@ function setupIpcHandlers(): void {
     try {
       const { isE2aAvailable } = await import('./reassembly-bridge.js');
       return { success: true, data: { available: isE2aAvailable() } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('reassembly:get-bfp-session', async (_event, bfpPath: string) => {
+    try {
+      const { getBfpCachedSession } = await import('./reassembly-bridge.js');
+      const session = await getBfpCachedSession(bfpPath);
+      if (!session) {
+        return { success: true, data: null };
+      }
+      return { success: true, data: session };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

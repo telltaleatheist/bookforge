@@ -1390,6 +1390,7 @@ export interface ElectronAPI {
       }
     ) => Promise<{ success: boolean; error?: string; coverPath?: string }>;
     isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
+    getBfpSession: (bfpPath: string) => Promise<{ success: boolean; data?: E2aSession | null; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => () => void;
   };
   deepfilter: {
@@ -2582,6 +2583,8 @@ const electronAPI: ElectronAPI = {
     ) => ipcRenderer.invoke('reassembly:save-metadata', sessionId, processDir, metadata, coverData),
     isAvailable: () =>
       ipcRenderer.invoke('reassembly:is-available'),
+    getBfpSession: (bfpPath: string) =>
+      ipcRenderer.invoke('reassembly:get-bfp-session', bfpPath),
     onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: ReassemblyProgress }) => {
         callback(data);

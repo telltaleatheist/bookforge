@@ -17,14 +17,14 @@ import { SettingsService } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { QueueService } from '../../../queue/services/queue.service';
-import { OcrCleanupConfig, TtsConversionConfig, BilingualCleanupJobConfig, BilingualTranslationJobConfig } from '../../../queue/models/queue.types';
+import { OcrCleanupConfig, TtsConversionConfig, BilingualCleanupJobConfig, BilingualTranslationJobConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
 import { AIProvider } from '../../../../core/models/ai-config.types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-type WizardStep = 'cleanup' | 'translate' | 'tts' | 'review';
+type WizardStep = 'cleanup' | 'translate' | 'tts' | 'assembly' | 'review';
 
 export interface SourceOption {
   path: string;
@@ -44,30 +44,6 @@ export interface SourceOption {
   imports: [CommonModule, FormsModule],
   template: `
     <div class="wizard">
-      <!-- Source Selection -->
-      @if (availableSources().length > 1) {
-        <div class="source-selector">
-          <label class="source-label">Source EPUB</label>
-          <div class="source-options">
-            @for (source of availableSources(); track source.path) {
-              <button
-                class="source-btn"
-                [class.selected]="selectedSourcePath() === source.path"
-                (click)="selectSource(source.path)"
-              >
-                <span class="source-name">{{ source.label }}</span>
-                @if (source.description) {
-                  <span class="source-desc">{{ source.description }}</span>
-                }
-                @if (source.isDefault) {
-                  <span class="source-badge">Latest</span>
-                }
-              </button>
-            }
-          </div>
-        </div>
-      }
-
       <!-- Step Indicator -->
       <div class="step-indicator">
         <div class="step" [class.active]="currentStep() === 'cleanup'" [class.completed]="isStepCompleted('cleanup')" [class.skipped]="isStepSkipped('cleanup')">
@@ -85,11 +61,33 @@ export interface SourceOption {
           <span class="step-label">TTS</span>
         </div>
         <div class="step-connector"></div>
-        <div class="step" [class.active]="currentStep() === 'review'" [class.completed]="isStepCompleted('review')">
+        <div class="step" [class.active]="currentStep() === 'assembly'" [class.completed]="isStepCompleted('assembly')" [class.skipped]="isStepSkipped('assembly')">
           <span class="step-num">4</span>
+          <span class="step-label">Assembly</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step" [class.active]="currentStep() === 'review'" [class.completed]="isStepCompleted('review')">
+          <span class="step-num">5</span>
           <span class="step-label">Review</span>
         </div>
       </div>
+
+      <!-- Source EPUB -->
+      @if (availableSources().length > 0) {
+        <div class="source-dropdown">
+          <label class="source-dropdown-label">Source EPUB</label>
+          <select
+            class="select-input source-select"
+            [value]="selectedSourcePath()"
+            (change)="selectSource($any($event.target).value)"
+          >
+            <option value="latest">Latest</option>
+            @for (source of availableSources(); track source.path) {
+              <option [value]="source.path">{{ source.label }}{{ source.description ? ' (' + source.description + ')' : '' }}</option>
+            }
+          </select>
+        </div>
+      }
 
       <!-- Step Content -->
       <div class="step-content">
@@ -549,6 +547,64 @@ export interface SourceOption {
             </div>
           }
 
+          @case ('assembly') {
+            <div class="step-panel">
+              <h3>Assembly</h3>
+              <p class="step-desc">Assemble TTS output into a finished audiobook (M4B with chapters).</p>
+
+              @if (!isStepSkipped('tts')) {
+                <!-- Mode A: TTS is enabled - assembly will chain from TTS output -->
+                <div class="assembly-info">
+                  <div class="review-section">
+                    <div class="review-item">
+                      <span class="review-label">Mode:</span>
+                      <span class="review-value">Assemble from TTS output</span>
+                    </div>
+                    <div class="review-item">
+                      <span class="review-label">Title:</span>
+                      <span class="review-value">{{ title() || 'Untitled' }}</span>
+                    </div>
+                    <div class="review-item">
+                      <span class="review-label">Author:</span>
+                      <span class="review-value">{{ author() || 'Unknown' }}</span>
+                    </div>
+                  </div>
+                  <span class="hint">Assembly will run automatically after TTS completes.</span>
+                </div>
+              } @else if (cachedSession(); as session) {
+                <!-- Mode B: TTS skipped, cached session exists - standalone reassembly -->
+                <div class="assembly-info">
+                  <div class="review-section">
+                    <div class="review-item">
+                      <span class="review-label">Mode:</span>
+                      <span class="review-value">Reassemble from cached session</span>
+                    </div>
+                    <div class="review-item">
+                      <span class="review-label">Session:</span>
+                      <span class="review-value">{{ session.sessionId }}</span>
+                    </div>
+                    <div class="review-item">
+                      <span class="review-label">Progress:</span>
+                      <span class="review-value">{{ session.completedSentences }}/{{ session.totalSentences }} sentences ({{ session.percentComplete }}%)</span>
+                    </div>
+                    @if (session.chapters?.length) {
+                      <div class="review-item">
+                        <span class="review-label">Chapters:</span>
+                        <span class="review-value">{{ session.chapters.length }}</span>
+                      </div>
+                    }
+                  </div>
+                </div>
+              } @else {
+                <!-- No TTS, no cached session -->
+                <div class="assembly-empty">
+                  <p>No cached TTS session found for this book.</p>
+                  <p class="hint">Enable TTS to chain assembly, or skip this step.</p>
+                </div>
+              }
+            </div>
+          }
+
           @case ('review') {
             <div class="step-panel">
               <h3>Review & Queue</h3>
@@ -585,6 +641,19 @@ export interface SourceOption {
                       Skipped
                     } @else {
                       {{ ttsEngine }} / {{ ttsVoice }} @ {{ ttsSpeed }}x
+                    }
+                  </span>
+                </div>
+
+                <div class="review-item">
+                  <span class="review-label">Assembly:</span>
+                  <span class="review-value" [class.disabled]="isStepSkipped('assembly') || (isStepSkipped('tts') && !cachedSession())">
+                    @if (isStepSkipped('assembly') || (isStepSkipped('tts') && !cachedSession())) {
+                      Skipped
+                    } @else if (!isStepSkipped('tts')) {
+                      Assemble from TTS output
+                    } @else {
+                      Reassemble from cached session ({{ cachedSession().completedSentences }}/{{ cachedSession().totalSentences }} sentences)
                     }
                   </span>
                 </div>
@@ -653,80 +722,28 @@ export interface SourceOption {
       overflow: hidden;
     }
 
-    /* Source Selector */
-    .source-selector {
+    /* Source Dropdown */
+    .source-dropdown {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
       background: var(--bg-surface);
       border-radius: 8px;
-      padding: 12px 16px;
       margin-bottom: 12px;
     }
 
-    .source-label {
-      display: block;
+    .source-dropdown-label {
       font-size: 11px;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: var(--text-tertiary);
-      margin-bottom: 8px;
+      white-space: nowrap;
     }
 
-    .source-options {
-      display: flex;
-      gap: 8px;
-    }
-
-    .source-btn {
+    .source-select {
       flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 2px;
-      padding: 10px 12px;
-      background: var(--bg-elevated);
-      border: 2px solid var(--border-subtle);
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-      position: relative;
-
-      .source-name {
-        font-size: 13px;
-        font-weight: 500;
-        color: var(--text-primary);
-      }
-
-      .source-desc {
-        font-size: 11px;
-        color: var(--text-muted);
-      }
-
-      .source-badge {
-        position: absolute;
-        top: -6px;
-        right: -6px;
-        padding: 2px 6px;
-        background: #22c55e;
-        color: white;
-        font-size: 9px;
-        font-weight: 600;
-        border-radius: 10px;
-        text-transform: uppercase;
-      }
-
-      &:hover:not(.selected) {
-        background: var(--bg-hover);
-        border-color: var(--border-default);
-      }
-
-      &.selected {
-        background: rgba(6, 182, 212, 0.15);
-        border-color: #06b6d4;
-
-        .source-name {
-          color: #06b6d4;
-        }
-      }
     }
 
     /* Step Indicator */
@@ -1568,6 +1585,26 @@ export interface SourceOption {
       color: #eab308;
     }
 
+    .assembly-info {
+      margin-top: 8px;
+    }
+
+    .assembly-empty {
+      padding: 24px;
+      text-align: center;
+      color: var(--text-secondary);
+
+      p {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+
+      .hint {
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+    }
+
     /* Navigation */
     .wizard-nav {
       display: flex;
@@ -1673,6 +1710,9 @@ export class ProcessWizardComponent implements OnInit {
   readonly projectDir = input<string>('');
   readonly sourceLang = input<string>('en');
   readonly textContent = input<string>('');  // Plain text content for article cleanup
+  readonly coverPath = input<string>('');  // Cover image path from BFP metadata
+  readonly year = input<string>('');  // Publication year from BFP metadata
+  readonly cachedSession = input<any>(null);  // Cached TTS session for reassembly
   // Book-specific inputs for bilingual cache
 
   // Outputs
@@ -1683,8 +1723,8 @@ export class ProcessWizardComponent implements OnInit {
   readonly addingToQueue = signal(false);
   readonly addedToQueue = signal(false);
 
-  // Source selection - defaults to the epubPath input, can be changed by user
-  readonly selectedSourcePath = signal<string>('');
+  // Source selection - 'latest' auto-resolves to best available EPUB
+  readonly selectedSourcePath = signal<string>('latest');
 
   // Connection state
   readonly ollamaConnected = signal(false);
@@ -1773,13 +1813,13 @@ export class ProcessWizardComponent implements OnInit {
   private skippedSteps = new Set<WizardStep>();
 
   readonly epubFilename = computed(() => {
-    const path = this.selectedSourcePath() || this.epubPath();
+    const path = this.resolveSourcePath();
     return path.replace(/\\/g, '/').split('/').pop() || path;
   });
 
   // Get the effective EPUB path to use for the pipeline
   readonly effectiveEpubPath = computed(() => {
-    return this.selectedSourcePath() || this.epubPath();
+    return this.resolveSourcePath();
   });
 
   // Computed: check if API keys are configured
@@ -1833,19 +1873,34 @@ export class ProcessWizardComponent implements OnInit {
   }
 
   private initializeSourceSelection(): void {
-    // If sources are provided, find the default (most recently modified)
-    const sources = this.availableSources();
-    if (sources.length > 0) {
-      const defaultSource = sources.find(s => s.isDefault) || sources[0];
-      this.selectedSourcePath.set(defaultSource.path);
-    } else {
-      // Fall back to epubPath input
-      this.selectedSourcePath.set(this.epubPath());
-    }
+    // Default is 'latest' which auto-resolves to the best available EPUB
+    // No explicit path needs to be set
   }
 
   selectSource(path: string): void {
     this.selectedSourcePath.set(path);
+  }
+
+  /**
+   * Resolve 'latest' to the best available source EPUB.
+   * Priority: cleaned > finalized > first available > epubPath input
+   */
+  private resolveSourcePath(): string {
+    const selected = this.selectedSourcePath();
+    if (selected !== 'latest') {
+      return selected;
+    }
+
+    const sources = this.availableSources();
+    // Pick the one marked as default (typically cleaned if available, else finalized)
+    const defaultSource = sources.find(s => s.isDefault);
+    if (defaultSource) return defaultSource.path;
+
+    // Fallback: first source
+    if (sources.length > 0) return sources[0].path;
+
+    // Final fallback: epubPath input
+    return this.epubPath();
   }
 
   private initializeFromSettings(): void {
@@ -2162,6 +2217,9 @@ export class ProcessWizardComponent implements OnInit {
         this.currentStep.set('tts');
         break;
       case 'tts':
+        this.currentStep.set('assembly');
+        break;
+      case 'assembly':
         this.currentStep.set('review');
         break;
     }
@@ -2177,8 +2235,11 @@ export class ProcessWizardComponent implements OnInit {
       case 'tts':
         this.currentStep.set('translate');
         break;
-      case 'review':
+      case 'assembly':
         this.currentStep.set('tts');
+        break;
+      case 'review':
+        this.currentStep.set('assembly');
         break;
     }
   }
@@ -2187,7 +2248,9 @@ export class ProcessWizardComponent implements OnInit {
     const hasCleanup = !this.skippedSteps.has('cleanup');
     const hasTranslate = !this.skippedSteps.has('translate') && this.enableTranslation();
     const hasTts = !this.skippedSteps.has('tts');
-    return hasCleanup || hasTranslate || hasTts;
+    // Assembly counts if TTS is enabled (chained) OR cached session exists (standalone)
+    const hasAssembly = !this.skippedSteps.has('assembly') && (hasTts || !!this.cachedSession());
+    return hasCleanup || hasTranslate || hasTts || hasAssembly;
   }
 
   async addToQueue(): Promise<void> {
@@ -2322,6 +2385,7 @@ export class ProcessWizardComponent implements OnInit {
 
       // 3. TTS job (if not skipped)
       if (!this.skippedSteps.has('tts')) {
+        const assemblyChained = !this.skippedSteps.has('assembly');
         const ttsConfig: Partial<TtsConversionConfig> = {
           type: 'tts-conversion',
           device: this.ttsDevice,
@@ -2339,6 +2403,9 @@ export class ProcessWizardComponent implements OnInit {
           parallelMode: 'sentences',
           parallelWorkers: this.ttsEngine === 'xtts' ? this.parallelWorkers : 1,
           outputDir,
+          // When assembly is chained, skip internal assembly - assembly job handles it
+          skipAssembly: assemblyChained,
+          chainAssembly: assemblyChained,
         };
 
         await this.queueService.addJob({
@@ -2358,6 +2425,74 @@ export class ProcessWizardComponent implements OnInit {
         });
       }
 
+      // 4. Assembly job (if not skipped)
+      if (!this.skippedSteps.has('assembly')) {
+        const audiobookDir = this.getAudiobookDirFromBfp(this.bfpPath());
+
+        if (!this.skippedSteps.has('tts')) {
+          // MODE A: TTS + Assembly chained — create placeholder, paths filled by TTS completion handler
+          const reassemblyConfig: ReassemblyJobConfig = {
+            type: 'reassembly',
+            sessionId: '',   // placeholder — filled by TTS completion handler
+            sessionDir: '',  // placeholder
+            processDir: '',  // placeholder
+            outputDir: audiobookDir,
+            metadata: {
+              title: this.title() || '',
+              author: this.author() || '',
+              coverPath: this.coverPath() || undefined,
+              year: this.year() || undefined,
+              outputFilename: `${this.title() || 'audiobook'}.m4b`,
+            },
+            excludedChapters: [],
+          };
+
+          await this.queueService.addJob({
+            type: 'reassembly',
+            bfpPath: this.bfpPath(),
+            config: reassemblyConfig,
+            metadata: {
+              title: this.title(),
+              author: this.author(),
+              assemblyPlaceholder: { pending: true, bfpPath: this.bfpPath(), outputDir: audiobookDir },
+            },
+            workflowId,
+            parentJobId: masterJobId,
+          });
+        } else if (this.cachedSession()) {
+          // MODE B: TTS skipped, standalone reassembly from cached session
+          const session = this.cachedSession();
+          const totalChapters = session.chapters?.filter((ch: any) => !ch.excluded)?.length || 0;
+
+          const reassemblyConfig: ReassemblyJobConfig = {
+            type: 'reassembly',
+            sessionId: session.sessionId,
+            sessionDir: session.sessionDir,
+            processDir: session.processDir,
+            outputDir: audiobookDir,
+            totalChapters,
+            metadata: {
+              title: this.title() || session.metadata?.title || '',
+              author: this.author() || session.metadata?.author || '',
+              year: this.year() || session.metadata?.year,
+              coverPath: this.coverPath() || session.metadata?.coverPath,
+              outputFilename: `${this.title() || 'audiobook'}.m4b`,
+            },
+            excludedChapters: [],
+          };
+
+          await this.queueService.addJob({
+            type: 'reassembly',
+            epubPath: session.processDir,
+            bfpPath: this.bfpPath(),
+            config: reassemblyConfig,
+            metadata: { title: reassemblyConfig.metadata.title, author: reassemblyConfig.metadata.author },
+            workflowId,
+            parentJobId: masterJobId,
+          });
+        }
+      }
+
       console.log('[ProcessWizard] Jobs added to queue:', {
         workflowId,
         masterJobId,
@@ -2365,6 +2500,10 @@ export class ProcessWizardComponent implements OnInit {
         cleanup: !this.skippedSteps.has('cleanup'),
         translate: !this.skippedSteps.has('translate') && this.enableTranslation(),
         tts: !this.skippedSteps.has('tts'),
+        assembly: !this.skippedSteps.has('assembly'),
+        assemblyMode: !this.skippedSteps.has('assembly')
+          ? (!this.skippedSteps.has('tts') ? 'chained' : (this.cachedSession() ? 'standalone' : 'none'))
+          : 'skipped',
       });
 
       this.addedToQueue.set(true);
@@ -2374,6 +2513,21 @@ export class ProcessWizardComponent implements OnInit {
     } finally {
       this.addingToQueue.set(false);
     }
+  }
+
+  /**
+   * Derive audiobook folder from BFP path (mirrors getAudiobookDirFromBfp in parallel-tts-bridge)
+   * .bfp files: {library}/audiobooks/{projectName}/
+   */
+  private getAudiobookDirFromBfp(bfpPath: string): string {
+    const normalized = bfpPath.replace(/\\/g, '/');
+    if (normalized.endsWith('.bfp')) {
+      const lastSlash = normalized.lastIndexOf('/');
+      const libraryRoot = normalized.substring(0, lastSlash).replace(/\/projects$/, '');
+      const projectName = normalized.substring(lastSlash + 1).replace('.bfp', '');
+      return `${libraryRoot}/audiobooks/${projectName}`;
+    }
+    return `${normalized}/audiobook`;
   }
 
   private generateWorkflowId(): string {

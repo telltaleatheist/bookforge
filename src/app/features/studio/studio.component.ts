@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, OnInit, OnDestroy, ViewChild } from '@angular/core';
+import { Component, inject, signal, computed, effect, OnInit, OnDestroy, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
   SplitPaneComponent
@@ -29,7 +29,6 @@ import { AudiobookService } from '../audiobook/services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { SettingsService } from '../../core/services/settings.service';
-import { QueueService } from '../queue/services/queue.service';
 
 /**
  * StudioComponent - Unified workspace for books and articles
@@ -290,12 +289,15 @@ import { QueueService } from '../queue/services/queue.service';
                         [availableSources]="availableSources()"
                         [title]="selectedMetadata()?.title || ''"
                         [author]="selectedMetadata()?.author || ''"
+                        [coverPath]="selectedItem()?.coverPath || ''"
+                        [year]="selectedMetadata()?.year || ''"
                         [itemType]="selectedItem()?.type || 'book'"
                         [bfpPath]="selectedItem()?.bfpPath || ''"
                         [projectId]="selectedItem()?.id || ''"
                         [projectDir]="getProjectDir()"
                         [sourceLang]="selectedItem()?.sourceLang || 'en'"
                         [textContent]="selectedItem()?.textContent || ''"
+                        [cachedSession]="cachedSession()"
                         (queued)="onProcessQueued()"
                       />
                     } @else {
@@ -834,6 +836,7 @@ import { QueueService } from '../queue/services/queue.service';
         background: var(--bg-hover);
       }
     }
+
   `]
 })
 export class StudioComponent implements OnInit, OnDestroy {
@@ -843,7 +846,6 @@ export class StudioComponent implements OnInit, OnDestroy {
   private readonly electronService = inject(ElectronService);
   private readonly libraryService = inject(LibraryService);
   private readonly settingsService = inject(SettingsService);
-  private readonly queueService = inject(QueueService);
 
   @ViewChild(ContentEditorComponent) contentEditor?: ContentEditorComponent;
 
@@ -874,6 +876,19 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly contextMenuX = signal<number>(0);
   readonly contextMenuY = signal<number>(0);
   private contextMenuItem: StudioItem | null = null;
+
+  // Cached TTS session for reassembly
+  readonly cachedSession = signal<any>(null);
+
+  // Watch selectedItem changes to check for cached sessions
+  private readonly cachedSessionEffect = effect(() => {
+    const item = this.selectedItem();
+    if (item?.bfpPath) {
+      this.checkCachedSession(item.bfpPath);
+    } else {
+      this.cachedSession.set(null);
+    }
+  }, { allowSignalWrites: true });
 
   // ─────────────────────────────────────────────────────────────────────────
   // Computed
@@ -1160,6 +1175,21 @@ export class StudioComponent implements OnInit, OnDestroy {
       return item.epubPath.substring(0, item.epubPath.lastIndexOf('/'));
     }
     return '';
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Cached Session
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async checkCachedSession(bfpPath: string): Promise<void> {
+    const electron = (window as any).electron;
+    if (!electron?.reassembly?.getBfpSession) return;
+    const result = await electron.reassembly.getBfpSession(bfpPath);
+    if (result.success && result.data) {
+      this.cachedSession.set(result.data);
+    } else {
+      this.cachedSession.set(null);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────

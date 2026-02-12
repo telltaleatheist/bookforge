@@ -25,12 +25,12 @@ export class VttParserService {
   parseVtt(vttContent: string): VttCue[] {
     const cues: VttCue[] = [];
 
-    // Split by double newline to get blocks
-    const blocks = vttContent.split(/\n\n+/);
+    // Split by double newline to get blocks (handle \r\n and \n line endings)
+    const blocks = vttContent.split(/\r?\n\r?\n+/);
 
     let cueIndex = 0;
     for (const block of blocks) {
-      const lines = block.trim().split('\n');
+      const lines = block.trim().split(/\r?\n/);
 
       // Skip WEBVTT header and empty blocks
       if (lines.length === 0 || lines[0].startsWith('WEBVTT') || lines[0].startsWith('NOTE')) {

@@ -7,6 +7,7 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath } from './e2a-paths';
+import { getAudiobookDirFromBfp } from './parallel-tts-bridge';
 import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
@@ -141,6 +142,17 @@ function getE2aAppPath(tmpPath: string): string {
   // Always use the app path that supports --title/--author/--cover
   // The tmp path may be different (e.g., ebook2audiobook-latest/tmp)
   return E2A_APP_PATH;
+}
+
+// Format seconds as human-readable ETA (e.g., "2m 30s")
+function formatEta(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  if (mins < 60) return `${mins}m ${secs}s`;
+  const hrs = Math.floor(mins / 60);
+  const remainMins = mins % 60;
+  return `${hrs}h ${remainMins}m`;
 }
 
 // Escape a string for safe use as a shell argument (wrap in quotes, escape internal quotes)
@@ -968,23 +980,9 @@ export async function startReassembly(
     let currentPhase: 'combining' | 'concatenating' | 'encoding' | 'metadata' = 'combining';
     let lastProgressUpdate = Date.now();
     let encodingStartTime = 0;
-    // Export phase ETA tracking
     let exportStartTime = 0;
     let exportStartPct = 0;
     let lastExportPct = 0;
-
-    // Helper to format seconds as "Xm Ys" or "Xh Ym"
-    const formatEta = (seconds: number): string => {
-      if (seconds < 60) return `${Math.round(seconds)}s`;
-      if (seconds < 3600) {
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.round(seconds % 60);
-        return `${mins}m ${secs}s`;
-      }
-      const hours = Math.floor(seconds / 3600);
-      const mins = Math.round((seconds % 3600) / 60);
-      return `${hours}h ${mins}m`;
-    };
 
     // Send initial progress with totalChapters if known
     if (totalChapters > 0) {
@@ -1002,13 +1000,12 @@ export async function startReassembly(
     const heartbeatInterval = setInterval(() => {
       const now = Date.now();
       if (currentPhase === 'encoding' && encodingStartTime > 0) {
-        const elapsedMinutes = Math.floor((now - encodingStartTime) / 60000);
         // Only send heartbeat if no progress for 5+ seconds
         if (now - lastProgressUpdate > 5000) {
           sendProgress(mainWindow, jobId, {
             phase: 'encoding',
-            percentage: Math.min(89, 65 + elapsedMinutes), // Slowly increment to show activity
-            message: `Encoding M4B audiobook... (${elapsedMinutes} min elapsed)`
+            percentage: Math.min(89, 65 + Math.floor((now - encodingStartTime) / 60000)), // Slowly increment to show activity
+            message: 'Encoding M4B...'
           });
           lastProgressUpdate = now;
         }
@@ -1050,8 +1047,8 @@ export async function startReassembly(
           currentChapter: currentChapter || undefined,
           totalChapters: totalChapters || undefined,
           message: currentChapter > 0 && totalChapters > 0
-            ? `Chapter ${currentChapter}/${totalChapters} (${currentChapterProgress.toFixed(0)}%)`
-            : `Combining sentences (${currentChapterProgress.toFixed(0)}%)`
+            ? `Combining chapter ${currentChapter}/${totalChapters}`
+            : `Combining sentences`
         });
       }
 
@@ -1059,35 +1056,15 @@ export async function startReassembly(
       const exportMatch = line.match(/Export\s*-\s*([\d.]+)%/);
       if (exportMatch) {
         const pct = parseFloat(exportMatch[1]);
-        const now = Date.now();
-
-        // Track export start for ETA calculation
-        if (exportStartTime === 0 || pct < lastExportPct) {
-          // First export progress or restart
-          exportStartTime = now;
-          exportStartPct = pct;
-        }
-        lastExportPct = pct;
-
-        // Calculate ETA based on progress rate
-        let etaDisplay = '';
-        const elapsed = (now - exportStartTime) / 1000;
-        const pctDone = pct - exportStartPct;
-        if (elapsed > 5 && pctDone > 0.5) {
-          const pctRemaining = 100 - pct;
-          const secondsPerPct = elapsed / pctDone;
-          const etaSeconds = pctRemaining * secondsPerPct;
-          etaDisplay = ` — ETA: ${formatEta(etaSeconds)}`;
-        }
 
         // Export phase is 50-95% of total progress
         const totalPct = Math.round(50 + pct * 0.45);
         currentPhase = 'encoding';
-        lastProgressUpdate = now;
+        lastProgressUpdate = Date.now();
         sendProgress(mainWindow, jobId, {
           phase: 'encoding',
           percentage: totalPct,
-          message: `Encoding M4B (${pct.toFixed(1)}%)${etaDisplay}`
+          message: `Encoding M4B (${pct.toFixed(0)}%)`
         });
       }
 
@@ -1134,8 +1111,9 @@ export async function startReassembly(
             message: `Combining chapter ${currentChapter}/${total}...`
           });
         }
-      } else if (line.includes('Combined block audio file saved') || line.includes('Completed →')) {
+      } else if (line.includes('Combined block audio file saved')) {
         // Chapter FLAC saved - update progress based on chapters completed
+        // Note: e2a also prints "Completed →" for the same event, only count one
         chaptersCompleted++;
         currentChapterProgress = 100;  // Mark current chapter as done
         const total = totalChapters || chaptersCompleted;
@@ -1396,6 +1374,22 @@ export async function startReassembly(
           }
         }
 
+        // Copy VTT subtitle file from processDir to output directory so audiobook:copy-vtt can find it
+        if (outputPath && config.processDir) {
+          try {
+            const vttFiles = fs.readdirSync(config.processDir).filter(f => f.toLowerCase().endsWith('.vtt') && !f.startsWith('._'));
+            if (vttFiles.length > 0) {
+              const vttSource = path.join(config.processDir, vttFiles[0]);
+              const outputDir = path.dirname(outputPath);
+              const vttDest = path.join(outputDir, vttFiles[0]);
+              fs.copyFileSync(vttSource, vttDest);
+              console.log(`[REASSEMBLY] Copied VTT to output directory: ${vttSource} -> ${vttDest}`);
+            }
+          } catch (vttErr) {
+            console.warn('[REASSEMBLY] Failed to copy VTT to output directory (non-fatal):', vttErr);
+          }
+        }
+
         // Apply extended metadata with m4b-tool if output file exists
         if (outputPath && fs.existsSync(outputPath)) {
           await applyMetadataWithM4bTool(outputPath, config.metadata, mainWindow, jobId);
@@ -1469,6 +1463,41 @@ export function isE2aAvailable(customTmpPath?: string): boolean {
   const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
   const e2aPath = getE2aAppPath(tmpPath);
   return fs.existsSync(e2aPath) && fs.existsSync(path.join(e2aPath, 'app.py'));
+}
+
+/**
+ * Get a cached TTS session from a single BFP project's audiobook folder.
+ * Much faster than scanE2aTmpFolder() since it only checks one book.
+ * @param bfpPath - Path to the .bfp file or project directory
+ */
+export async function getBfpCachedSession(bfpPath: string): Promise<E2aSession | null> {
+  const audiobookDir = getAudiobookDirFromBfp(bfpPath);
+  const sessionBaseDir = path.join(audiobookDir, 'session');
+
+  if (!fs.existsSync(sessionBaseDir)) {
+    return null;
+  }
+
+  // Look for ebook-* directories inside session/
+  const entries = fs.readdirSync(sessionBaseDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
+
+    const sessionDir = path.join(sessionBaseDir, entry.name);
+    const sessionId = entry.name.replace('ebook-', '');
+
+    try {
+      const session = await parseSession(sessionId, sessionDir);
+      if (session) {
+        session.source = 'bfp-cache';
+        return session;
+      }
+    } catch (err) {
+      console.error(`[REASSEMBLY] Error parsing cached session ${sessionId}:`, err);
+    }
+  }
+
+  return null;
 }
 
 /**
