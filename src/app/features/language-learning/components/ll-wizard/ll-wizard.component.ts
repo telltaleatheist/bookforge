@@ -236,32 +236,27 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
               </div>
 
               <!-- Test Mode -->
-              <div class="toggle-section">
-                <button
-                  class="option-toggle"
-                  [class.active]="testMode()"
-                  (click)="testMode.set(!testMode())"
-                >
-                  <span class="toggle-icon">🧪</span>
-                  <span class="toggle-label">Test mode</span>
-                  <span class="toggle-sublabel">First {{ testModeChunks() }} chunks only</span>
-                </button>
-                @if (testMode()) {
-                  <div class="test-mode-config">
-                    <label>Chunks to process:</label>
-                    <div class="chunk-options">
-                      @for (count of [3, 5, 10, 20]; track count) {
-                        <button
-                          class="chunk-option"
-                          [class.selected]="testModeChunks() === count"
-                          (click)="testModeChunks.set(count)"
-                        >
-                          {{ count }}
-                        </button>
-                      }
-                    </div>
-                  </div>
-                }
+              <div class="config-section">
+                <label class="field-label">Test Mode</label>
+                <div class="worker-options">
+                  <button
+                    class="worker-btn"
+                    [class.selected]="!testMode()"
+                    (click)="testMode.set(false)"
+                  >
+                    Full
+                  </button>
+                  @for (count of [3, 5, 10, 20]; track count) {
+                    <button
+                      class="worker-btn"
+                      [class.selected]="testModeChunks() === count && testMode()"
+                      (click)="testMode.set(true); testModeChunks.set(count)"
+                    >
+                      {{ count }}
+                    </button>
+                  }
+                </div>
+                <span class="hint">Test mode processes only first N chunks</span>
               </div>
             </div>
           }
