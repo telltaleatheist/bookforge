@@ -570,7 +570,7 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
                 <select
                   class="select-input"
                   [value]="assemblySourceLang()"
-                  (change)="assemblySourceLang.set($any($event.target).value)"
+                  (change)="setAssemblySourceLang($any($event.target).value)"
                 >
                   @if (availableSessions().length === 0) {
                     <option value="">No TTS sessions available</option>
@@ -595,7 +595,7 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
                 <select
                   class="select-input"
                   [value]="assemblyTargetLang()"
-                  (change)="assemblyTargetLang.set($any($event.target).value)"
+                  (change)="setAssemblyTargetLang($any($event.target).value)"
                 >
                   @if (availableSessions().length === 0 && ttsLanguageRows().length <= 1) {
                     <option value="">No TTS sessions available</option>
@@ -2216,6 +2216,11 @@ export class LLWizardComponent implements OnInit {
       current.add(code);
     }
     this.targetLangs.set(current);
+
+    // If we have target languages selected, remove 'translate' from skipped steps
+    if (current.size > 0) {
+      this._skippedSteps.delete('translate');
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -2243,6 +2248,9 @@ export class LLWizardComponent implements OnInit {
     const defaultVoice = this.ttsEngine() === 'orpheus' ? 'tara' : 'ScarlettJohansson';
     const existingLangs = new Set(this.ttsLanguageRows().map(r => r.language));
     const availableLangs = this.availableTtsLanguages();
+
+    // Remove TTS from skipped steps since we're configuring it
+    this._skippedSteps.delete('tts');
 
     // Find a language that's not already added from available languages
     let newLang = this.detectedSourceLang();
@@ -2273,6 +2281,26 @@ export class LLWizardComponent implements OnInit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Assembly
+  // ─────────────────────────────────────────────────────────────────────────
+
+  setAssemblySourceLang(lang: string): void {
+    this.assemblySourceLang.set(lang);
+    // If we have both source and target configured, remove from skipped steps
+    if (lang && this.assemblyTargetLang()) {
+      this._skippedSteps.delete('assembly');
+    }
+  }
+
+  setAssemblyTargetLang(lang: string): void {
+    this.assemblyTargetLang.set(lang);
+    // If we have both source and target configured, remove from skipped steps
+    if (lang && this.assemblySourceLang()) {
+      this._skippedSteps.delete('assembly');
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Navigation
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -2289,6 +2317,8 @@ export class LLWizardComponent implements OnInit {
       // Turning on AI Cleanup - turn off simplify
       this.enableAiCleanup.set(true);
       this.simplifyForLearning.set(false);
+      // Remove cleanup from skipped steps since we're configuring it
+      this._skippedSteps.delete('cleanup');
     } else {
       // Turning off AI Cleanup
       this.enableAiCleanup.set(false);
@@ -2301,6 +2331,8 @@ export class LLWizardComponent implements OnInit {
       console.log('[LL-WIZARD] Enabling simplify for learning, disabling AI cleanup');
       this.simplifyForLearning.set(true);
       this.enableAiCleanup.set(false);
+      // Remove cleanup from skipped steps since we're configuring it
+      this._skippedSteps.delete('cleanup');
     } else {
       // Turning off Simplify
       console.log('[LL-WIZARD] Disabling simplify for learning');

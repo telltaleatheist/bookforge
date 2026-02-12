@@ -73,7 +73,9 @@ declare global {
           parallelWorkers?: number;
           cleanupMode?: 'structure' | 'full';
           testMode?: boolean;
-          simplifyForChildren?: boolean;
+          testModeChunks?: number;
+          simplifyForLearning?: boolean;
+          cleanupPrompt?: string;
         }) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTtsConversion: (jobId: string, epubPath: string, config: any) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTranslation: (jobId: string, epubPath: string, translationConfig: any, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
@@ -1648,8 +1650,10 @@ export class QueueService {
           parallelWorkers?: number;
           cleanupMode?: 'structure' | 'full';
           testMode?: boolean;
+          testModeChunks?: number;
           enableAiCleanup?: boolean;
-          simplifyForChildren?: boolean;
+          simplifyForLearning?: boolean;
+          cleanupPrompt?: string;
         } = {
           provider: config.aiProvider,
           ollama: config.aiProvider === 'ollama' ? {
@@ -1674,11 +1678,13 @@ export class QueueService {
           cleanupMode: config.cleanupMode || 'structure',
           // Test mode
           testMode: config.testMode,
+          testModeChunks: config.testModeChunks,
           // Processing options
           enableAiCleanup: config.enableAiCleanup,
-          simplifyForChildren: config.simplifyForChildren
+          simplifyForLearning: config.simplifyForLearning,
+          cleanupPrompt: config.cleanupPrompt
         };
-        console.log('[QUEUE] Job config from storage:', { testMode: config.testMode, cleanupMode: config.cleanupMode, enableAiCleanup: config.enableAiCleanup, simplifyForChildren: config.simplifyForChildren, fullConfig: JSON.stringify(config) });
+        console.log('[QUEUE] Job config from storage:', { testMode: config.testMode, cleanupMode: config.cleanupMode, enableAiCleanup: config.enableAiCleanup, simplifyForLearning: config.simplifyForLearning, fullConfig: JSON.stringify(config) });
         console.log('[QUEUE] Built aiConfig:', { testMode: aiConfig.testMode, cleanupMode: aiConfig.cleanupMode });
         console.log('[QUEUE] Calling runOcrCleanup with:', {
           jobId: job.id,
@@ -2483,9 +2489,11 @@ export class QueueService {
         // Cleanup mode and test mode
         cleanupMode: config.cleanupMode,
         testMode: config.testMode,
+        testModeChunks: config.testModeChunks,
         // Processing options
         enableAiCleanup: config.enableAiCleanup,
-        simplifyForChildren: config.simplifyForChildren
+        simplifyForLearning: config.simplifyForLearning,
+        cleanupPrompt: config.cleanupPrompt
       };
     } else if (request.type === 'translation') {
       const config = request.config as Partial<TranslationJobConfig>;
