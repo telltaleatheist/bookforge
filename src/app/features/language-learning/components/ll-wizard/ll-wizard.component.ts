@@ -2476,7 +2476,8 @@ export class LLWizardComponent implements OnInit {
       if (!this._skippedSteps.has('cleanup') && (this.enableAiCleanup() || this.simplifyForLearning())) {
         const simplifyValue = this.simplifyForLearning();
         const cleanupValue = this.enableAiCleanup();
-        const cleanupPromptValue = cleanupValue ? this.getCleanupPrompt() : undefined;
+        // Prompts are now loaded from files on the backend (electron/prompts/)
+        const cleanupPromptValue = undefined; // Backend will load appropriate prompt from file
 
         console.log('[LL-WIZARD] Signal values at job creation:');
         console.log('[LL-WIZARD]   simplifyForLearning signal:', simplifyValue);
@@ -2637,30 +2638,6 @@ export class LLWizardComponent implements OnInit {
     }
   }
 
-  private getCleanupPrompt(): string {
-    return `You are preparing text for text-to-speech (TTS) audiobook narration.
-
-OUTPUT FORMAT: Respond with ONLY the processed text. Start immediately with the content.
-FORBIDDEN: Never write "Here is", "I'll help", or ANY conversational language.
-
-CRITICAL RULES:
-- NEVER summarize. Output must be the same length as input (with minor variations from edits).
-- NEVER paraphrase or rewrite sentences unless fixing an error.
-- NEVER skip or omit any content.
-- Process the text LINE BY LINE, making only the specific fixes below.
-
-FIX:
-- Obvious OCR errors and typos
-- Expand common abbreviations (Dr. → Doctor, Mr. → Mister, St. → Saint)
-- Convert numbers to spoken form (1923 → nineteen twenty-three, $5 → five dollars)
-- Fix misplaced punctuation
-- Remove artifacts like page numbers or headers
-
-PRESERVE:
-- The exact narrative, meaning, and story flow
-- All content and details
-- Author's writing style and voice`;
-  }
 
   private generateWorkflowId(): string {
     return `ll-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;

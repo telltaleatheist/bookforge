@@ -854,6 +854,16 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('fs:delete-file', async (_event, filePath: string) => {
+    const fs = await import('fs/promises');
+    try {
+      await fs.unlink(filePath);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // List files in a directory
   ipcMain.handle('fs:list-directory', async (_event, dirPath: string): Promise<string[]> => {
     const fsPromises = await import('fs/promises');

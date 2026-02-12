@@ -869,6 +869,7 @@ export interface ElectronAPI {
     readBinary: (filePath: string) => Promise<{ success: boolean; data?: Uint8Array; error?: string }>;
     exists: (filePath: string) => Promise<boolean>;
     writeText: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>;
+    deleteFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     writeTempFile: (filename: string, data: Uint8Array) => Promise<{ success: boolean; path?: string; dataUrl?: string; error?: string }>;
     readText: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
     readAudio: (audioPath: string) => Promise<{ success: boolean; dataUrl?: string; size?: number; error?: string }>;
@@ -1981,6 +1982,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('fs:exists', filePath),
     writeText: (filePath: string, content: string) =>
       ipcRenderer.invoke('fs:write-text', filePath, content),
+    deleteFile: (filePath: string) =>
+      ipcRenderer.invoke('fs:delete-file', filePath),
     writeTempFile: (filename: string, data: Uint8Array) =>
       ipcRenderer.invoke('fs:write-temp-file', filename, data),
     listDirectory: (dirPath: string) =>

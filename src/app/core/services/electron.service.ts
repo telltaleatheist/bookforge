@@ -1842,6 +1842,16 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  async deleteFile(filePath: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.fs.deleteFile(filePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   // Shell operations
   async showItemInFolder(filePath: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {

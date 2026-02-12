@@ -81,24 +81,35 @@ export interface VersionPickerDialogData {
           } @else {
             <div class="version-list">
               @for (version of versions(); track version.id) {
-                <button
-                  class="version-item"
-                  [class.selected]="selectedVersion()?.id === version.id"
-                  [class.disabled]="!version.editable"
-                  [disabled]="!version.editable"
-                  (click)="selectVersion(version)"
-                  (dblclick)="confirmSelection()"
-                >
-                  <span class="version-icon">{{ version.icon }}</span>
-                  <div class="version-info">
-                    <span class="version-label">{{ version.label }}</span>
-                    <span class="version-description">{{ version.description }}</span>
-                    @if (version.modifiedAt) {
-                      <span class="version-date">Modified: {{ formatDate(version.modifiedAt) }}</span>
-                    }
-                  </div>
-                  <span class="version-extension">.{{ version.extension }}</span>
-                </button>
+                <div class="version-item-wrapper">
+                  <button
+                    class="version-item"
+                    [class.selected]="selectedVersion()?.id === version.id"
+                    [class.disabled]="!version.editable"
+                    [disabled]="!version.editable"
+                    (click)="selectVersion(version)"
+                    (dblclick)="confirmSelection()"
+                  >
+                    <span class="version-icon">{{ version.icon }}</span>
+                    <div class="version-info">
+                      <span class="version-label">{{ version.label }}</span>
+                      <span class="version-description">{{ version.description }}</span>
+                      @if (version.modifiedAt) {
+                        <span class="version-date">Modified: {{ formatDate(version.modifiedAt) }}</span>
+                      }
+                    </div>
+                    <span class="version-extension">.{{ version.extension }}</span>
+                  </button>
+                  @if (canDelete(version)) {
+                    <button
+                      class="delete-btn"
+                      (click)="deleteVersion(version)"
+                      title="Delete this version"
+                    >
+                      ×
+                    </button>
+                  }
+                </div>
               }
             </div>
           }
@@ -243,6 +254,12 @@ export interface VersionPickerDialogData {
       gap: var(--ui-spacing-sm);
     }
 
+    .version-item-wrapper {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+    }
+
     .version-item {
       display: flex;
       align-items: center;
@@ -254,7 +271,7 @@ export interface VersionPickerDialogData {
       cursor: pointer;
       transition: all 0.15s ease;
       text-align: left;
-      width: 100%;
+      flex: 1;
 
       &:hover:not(.disabled) {
         background: var(--bg-hover);
@@ -269,6 +286,27 @@ export interface VersionPickerDialogData {
       &.disabled {
         opacity: 0.5;
         cursor: not-allowed;
+      }
+    }
+
+    .delete-btn {
+      width: 32px;
+      height: 32px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 1.5rem;
+      cursor: pointer;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+
+      &:hover {
+        background: var(--error-bg);
+        color: var(--error-text);
       }
     }
 
@@ -445,6 +483,65 @@ export class VersionPickerDialogComponent implements OnInit, OnChanges {
       });
     } catch {
       return dateStr;
+    }
+  }
+
+  /**
+   * Check if a version can be deleted
+   * Original source files cannot be deleted
+   */
+  canDelete(version: ProjectVersion): boolean {
+    // Don't allow deleting original source files or finalized versions
+    return version.type !== 'original' && version.type !== 'finalized';
+  }
+
+  /**
+   * Delete a version file
+   */
+  async deleteVersion(version: ProjectVersion): Promise<void> {
+    // Confirm deletion
+    const confirmResult = await this.electronService.showConfirmDialog({
+      title: 'Delete Version',
+      message: `Are you sure you want to delete "${version.label}"?`,
+      detail: 'This action cannot be undone.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      type: 'warning'
+    });
+
+    if (!confirmResult.confirmed) return;
+
+    try {
+      // Delete the file
+      const result = await this.electronService.deleteFile(version.path);
+
+      if (result.success) {
+        // If the deleted version was selected, clear selection
+        if (this.selectedVersion()?.id === version.id) {
+          this.selectedVersion.set(null);
+        }
+
+        // Reload the versions list
+        await this.loadVersions();
+      } else {
+        console.error('[VersionPicker] Failed to delete version:', result.error);
+        // Show error using the confirm dialog (as an error type)
+        await this.electronService.showConfirmDialog({
+          title: 'Delete Failed',
+          message: result.error || 'Failed to delete the version file.',
+          type: 'error',
+          confirmLabel: 'OK'
+        });
+      }
+    } catch (err) {
+      console.error('[VersionPicker] Error deleting version:', err);
+      // Show error using the confirm dialog
+      await this.electronService.showConfirmDialog({
+        title: 'Delete Failed',
+        message: (err as Error).message || 'An unexpected error occurred.',
+        type: 'error',
+        confirmLabel: 'OK'
+      });
     }
   }
 }

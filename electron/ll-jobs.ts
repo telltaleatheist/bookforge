@@ -10,6 +10,7 @@
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { loadPrompt, PROMPTS } from './prompts.js';
 import {
   splitIntoSentences,
   translateSentences,
@@ -324,53 +325,13 @@ export async function runLLCleanup(
     let finalPrompt: string;
 
     if (config.simplifyForLearning) {
-      // User chose simplification - use simplification prompt
-      console.log(`[LL-CLEANUP] Using simplification prompt for language learners`);
-      finalPrompt = `You are simplifying text for language learners to make it easier to understand.
-
-OUTPUT FORMAT: Respond with ONLY the simplified text. Start immediately with the content.
-FORBIDDEN: Never write "Here is", "I'll help", or ANY conversational language.
-
-SIMPLIFICATION RULES:
-- PRESERVE the story structure and key events
-- SIMPLIFY complex vocabulary to common words
-- SHORTEN long, complex sentences into shorter, simpler ones
-- REPLACE idioms and cultural references with clear, direct language
-- KEEP proper nouns (names, places) unchanged
-- MAINTAIN the narrative flow and meaning
-
-EXAMPLES:
-- "He was beside himself with rage" → "He was very angry"
-- "The tyrant will always find a pretext for his tyranny" → "Bad rulers always find excuses to be cruel"
-- Complex: "Wolf, meeting with a Lamb astray from the fold, resolved not to lay violent hands on him, but to find some plea to justify to the Lamb the Wolf's right to eat him."
-  Simple: "A wolf met a lamb who had wandered away from the other sheep. The wolf wanted to eat the lamb but decided to find an excuse first."
-
-Process the text to make it accessible for B1-B2 level language learners while keeping the story engaging.`;
+      // User chose simplification - load simplification prompt from file
+      console.log(`[LL-CLEANUP] Loading simplification prompt from file`);
+      finalPrompt = await loadPrompt(PROMPTS.LL_SIMPLIFY);
     } else {
-      // User chose cleanup (or default) - use cleanup prompt
-      console.log(`[LL-CLEANUP] Using standard cleanup prompt`);
-      finalPrompt = config.cleanupPrompt || `You are preparing text for text-to-speech (TTS) audiobook narration.
-
-OUTPUT FORMAT: Respond with ONLY the processed text. Start immediately with the content.
-FORBIDDEN: Never write "Here is", "I'll help", or ANY conversational language.
-
-CRITICAL RULES:
-- NEVER summarize. Output must be the same length as input (with minor variations from edits).
-- NEVER paraphrase or rewrite sentences unless fixing an error.
-- NEVER skip or omit any content.
-- Process the text LINE BY LINE, making only the specific fixes below.
-
-FIX:
-- Obvious OCR errors and typos
-- Expand common abbreviations (Dr. → Doctor, Mr. → Mister, St. → Saint)
-- Convert numbers to spoken form (1923 → nineteen twenty-three, $5 → five dollars)
-- Fix misplaced punctuation
-- Remove artifacts like page numbers or headers
-
-PRESERVE:
-- The exact narrative, meaning, and story flow
-- All content and details
-- Author's writing style and voice`;
+      // User chose cleanup (or default) - load cleanup prompt from file or use provided
+      console.log(`[LL-CLEANUP] Loading standard cleanup prompt`);
+      finalPrompt = config.cleanupPrompt || await loadPrompt(PROMPTS.TTS_CLEANUP);
     }
 
     console.log(`[LL-CLEANUP] Prompt selected (${finalPrompt.length} chars)`);
