@@ -980,6 +980,17 @@ export class ElectronService {
   }
 
   /**
+   * Translate a cross-platform library path to the current platform.
+   * Handles BFP files synced between Mac and Windows (e.g., via Syncthing).
+   */
+  async libraryTranslatePath(inputPath: string): Promise<{ success: boolean; translated: string | null }> {
+    if (this.isElectron) {
+      return (window as any).electron.library.translatePath(inputPath);
+    }
+    return { success: false, translated: null };
+  }
+
+  /**
    * Copy a file to the audiobook producer queue folder
    */
   async copyToAudiobookQueue(sourcePath: string, filename: string): Promise<{

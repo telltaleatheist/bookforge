@@ -1486,6 +1486,41 @@ function setupIpcHandlers(): void {
 
   // Resolve project source file - finds file in current library by hash or filename
   // Used when opening projects from another machine where paths don't match
+  /**
+   * Translate a cross-platform library path to the current platform.
+   * Handles BFP files synced between Mac and Windows (e.g., via Syncthing).
+   *
+   * Detects known library subdirectories (audiobooks/, files/, projects/, media/, cache/)
+   * in the stored path, extracts the relative portion, and resolves against
+   * the current library root.
+   *
+   * Example:
+   *   Stored (Mac):  /Volumes/Callisto/Shared/BookForge/audiobooks/MyBook/source.epub
+   *   Current root:  E:\Shared\BookForge
+   *   Result:        E:\Shared\BookForge\audiobooks\MyBook\source.epub
+   */
+  const translateLibraryPath = (storedPath: string): string | null => {
+    if (!storedPath) return null;
+
+    // Normalize to forward slashes for matching
+    const normalized = storedPath.replace(/\\/g, '/');
+
+    // Known library subdirectories
+    const knownSubdirs = ['/audiobooks/', '/files/', '/projects/', '/media/', '/cache/'];
+
+    for (const subdir of knownSubdirs) {
+      const idx = normalized.indexOf(subdir);
+      if (idx !== -1) {
+        // Extract relative path from the subdir onwards (e.g., "audiobooks/MyBook/source.epub")
+        const relativePart = normalized.substring(idx + 1); // Skip leading /
+        const translated = path.join(getLibraryRoot(), ...relativePart.split('/'));
+        return translated;
+      }
+    }
+
+    return null;
+  };
+
   ipcMain.handle('library:resolve-source', async (_event, options: {
     libraryPath?: string;
     sourcePath?: string;
@@ -1503,6 +1538,18 @@ function setupIpcHandlers(): void {
         return { success: true, resolvedPath: options.libraryPath };
       } catch {
         console.log('[library:resolve-source] libraryPath not found:', options.libraryPath);
+      }
+
+      // 1b. Try cross-platform translation of library_path
+      const translated = translateLibraryPath(options.libraryPath);
+      if (translated) {
+        try {
+          await fs.access(translated);
+          console.log('[library:resolve-source] Found via cross-platform translation:', translated);
+          return { success: true, resolvedPath: translated };
+        } catch {
+          console.log('[library:resolve-source] Cross-platform translated path not found:', translated);
+        }
       }
     }
 
@@ -1537,9 +1584,47 @@ function setupIpcHandlers(): void {
       } catch {
         console.log('[library:resolve-source] sourcePath not found:', options.sourcePath);
       }
+
+      // 4b. Try cross-platform translation of source_path
+      const translated = translateLibraryPath(options.sourcePath);
+      if (translated) {
+        try {
+          await fs.access(translated);
+          console.log('[library:resolve-source] Found source via cross-platform translation:', translated);
+          return { success: true, resolvedPath: translated };
+        } catch {
+          console.log('[library:resolve-source] Cross-platform translated source not found:', translated);
+        }
+      }
     }
 
     return { success: false, error: 'Source file not found in library' };
+  });
+
+  // Translate a cross-platform library path to the current platform
+  // Used by renderer when BFP files contain paths from another OS (e.g., Mac path on Windows)
+  ipcMain.handle('library:translate-path', async (_event, inputPath: string) => {
+    if (!inputPath) return { success: false, translated: null };
+
+    // First check if the path works as-is
+    try {
+      await fs.access(inputPath);
+      return { success: true, translated: inputPath };
+    } catch {
+      // Try cross-platform translation
+    }
+
+    const translated = translateLibraryPath(inputPath);
+    if (translated) {
+      try {
+        await fs.access(translated);
+        return { success: true, translated };
+      } catch {
+        return { success: false, translated };
+      }
+    }
+
+    return { success: false, translated: null };
   });
 
   // List all projects in the folder (checks both root and projects/ for backward compat)
@@ -4173,17 +4258,28 @@ function setupIpcHandlers(): void {
           const backupPath = bfpPath + '.migration-backup';
           await fs.copyFile(bfpPath, backupPath);
 
-          // Determine audiobook folder
+          // Determine audiobook folder (translate cross-platform paths)
           let audiobookFolder = bfp.audiobookFolder as string | undefined;
-          if (!audiobookFolder) {
+          if (audiobookFolder) {
+            // Try cross-platform translation if stored path doesn't exist
+            if (!fsSync.existsSync(audiobookFolder)) {
+              const translated = translateLibraryPath(audiobookFolder);
+              if (translated) audiobookFolder = translated;
+            }
+          }
+          if (!audiobookFolder || !fsSync.existsSync(audiobookFolder)) {
             audiobookFolder = path.join(audiobooksFolder, projectName);
           }
 
-          // Check if migration is needed
-          const sourcePath = bfp.source_path as string | undefined;
+          // Check if migration is needed (translate source path for cross-platform)
+          let sourcePath = bfp.source_path as string | undefined;
+          if (sourcePath && !fsSync.existsSync(sourcePath)) {
+            const translated = translateLibraryPath(sourcePath);
+            if (translated && fsSync.existsSync(translated)) sourcePath = translated;
+          }
           const needsMigration = sourcePath && !sourcePath.includes('/audiobooks/') && !sourcePath.includes('/source.epub');
 
-          if (!needsMigration) {
+          if (!needsMigration || !sourcePath) {
             // Already migrated or no source to migrate
             results.skipped++;
             results.details.push({ name: projectName, action: 'skipped - already migrated or no source' });
@@ -4494,18 +4590,39 @@ function setupIpcHandlers(): void {
           if (project.audiobook) {
             const projectName = entry.name.replace('.bfp', '');
 
-            // Check if linked audio path exists on current system
-            // (handles cross-platform scenarios like Mac path on Windows)
+            // Resolve stored paths for cross-platform compatibility.
+            // BFP files synced between Mac and Windows store absolute paths
+            // from whichever platform created them. translateLibraryPath()
+            // re-roots them under the current library root.
+            const resolveStoredPath = (storedPath: string | undefined): string | undefined => {
+              if (!storedPath) return undefined;
+              if (fsSync.existsSync(storedPath)) return storedPath;
+              const translated = translateLibraryPath(storedPath);
+              if (translated && fsSync.existsSync(translated)) return translated;
+              return undefined;
+            };
+
+            // Resolve linked audio path
+            let resolvedLinkedAudioPath: string | undefined;
             let linkedAudioPathValid: boolean | undefined;
             if (project.audiobook.linkedAudioPath) {
-              linkedAudioPathValid = fsSync.existsSync(project.audiobook.linkedAudioPath);
+              resolvedLinkedAudioPath = resolveStoredPath(project.audiobook.linkedAudioPath);
+              linkedAudioPathValid = !!resolvedLinkedAudioPath;
             }
 
-            // Check if bilingual audio path exists
+            // Resolve bilingual audio path
+            let resolvedBilingualAudioPath: string | undefined;
             let bilingualAudioPathValid: boolean | undefined;
             if (project.audiobook.bilingualAudioPath) {
-              bilingualAudioPathValid = fsSync.existsSync(project.audiobook.bilingualAudioPath);
+              resolvedBilingualAudioPath = resolveStoredPath(project.audiobook.bilingualAudioPath);
+              bilingualAudioPathValid = !!resolvedBilingualAudioPath;
             }
+
+            // Resolve VTT path
+            const resolvedVttPath = resolveStoredPath(project.audiobook.vttPath);
+
+            // Resolve bilingual VTT path
+            const resolvedBilingualVttPath = resolveStoredPath(project.audiobook.bilingualVttPath);
 
             projects.push({
               name: projectName,
@@ -4515,13 +4632,13 @@ function setupIpcHandlers(): void {
               exportedAt: project.audiobook.exportedAt,
               cleanedAt: project.audiobook.cleanedAt,
               completedAt: project.audiobook.completedAt,
-              linkedAudioPath: project.audiobook.linkedAudioPath,
+              linkedAudioPath: resolvedLinkedAudioPath || project.audiobook.linkedAudioPath,
               linkedAudioPathValid,
-              vttPath: project.audiobook.vttPath,  // VTT path from BFP
-              // Bilingual audio paths
-              bilingualAudioPath: project.audiobook.bilingualAudioPath,
+              vttPath: resolvedVttPath || project.audiobook.vttPath,
+              // Bilingual audio paths (resolved for cross-platform)
+              bilingualAudioPath: resolvedBilingualAudioPath || project.audiobook.bilingualAudioPath,
               bilingualAudioPathValid,
-              bilingualVttPath: project.audiobook.bilingualVttPath,
+              bilingualVttPath: resolvedBilingualVttPath || project.audiobook.bilingualVttPath,
               metadata: project.metadata ? {
                 title: project.metadata.title,
                 author: project.metadata.author,
@@ -6759,6 +6876,15 @@ function setupIpcHandlers(): void {
         icon: string;
       }> = [];
 
+      // Helper to resolve a path, trying cross-platform translation if needed
+      const resolvePath = (p: string | undefined): string | undefined => {
+        if (!p) return undefined;
+        if (fsSync.existsSync(p)) return p;
+        const translated = translateLibraryPath(p);
+        if (translated && fsSync.existsSync(translated)) return translated;
+        return undefined;
+      };
+
       // Helper to add a version if the file exists
       const addVersion = async (
         id: string,
@@ -6770,17 +6896,19 @@ function setupIpcHandlers(): void {
         editable: boolean,
         language?: string
       ) => {
-        console.log(`[EDITOR:GET-VERSIONS] addVersion called: id=${id}, path=${filePath}, exists=${filePath ? fsSync.existsSync(filePath) : 'no path'}`);
-        if (filePath && fsSync.existsSync(filePath)) {
-          const stats = await fs.stat(filePath);
-          const ext = path.extname(filePath).toLowerCase().replace('.', '');
+        // Try cross-platform path translation if path doesn't exist locally
+        const resolvedFilePath = resolvePath(filePath);
+        console.log(`[EDITOR:GET-VERSIONS] addVersion called: id=${id}, path=${filePath}, resolved=${resolvedFilePath || 'not found'}`);
+        if (resolvedFilePath) {
+          const stats = await fs.stat(resolvedFilePath);
+          const ext = path.extname(resolvedFilePath).toLowerCase().replace('.', '');
           console.log(`[EDITOR:GET-VERSIONS] Adding version: ${id} (${label})`);
           versions.push({
             id,
             type,
             label,
             description,
-            path: filePath,
+            path: resolvedFilePath,
             extension: ext,
             language,
             modifiedAt: stats.mtime.toISOString(),
@@ -6818,14 +6946,15 @@ function setupIpcHandlers(): void {
       const sourceIsPdf = sourcePath && sourcePath.toLowerCase().endsWith('.pdf');
 
       if (exportedPath) {
-        const resolvedExportedPath = path.isAbsolute(exportedPath)
+        const rawExportedPath = path.isAbsolute(exportedPath)
           ? exportedPath
           : path.join(bfpDir, exportedPath);
+        const resolvedExportedPath = resolvePath(rawExportedPath);
 
         // Only show finalized version if user actually edited or source is PDF
         const showFinalizedVersion = hasUserEdits || sourceIsPdf;
 
-        if (showFinalizedVersion && fsSync.existsSync(resolvedExportedPath)) {
+        if (showFinalizedVersion && resolvedExportedPath) {
           await addVersion(
             'finalized',
             'finalized',
@@ -6840,9 +6969,10 @@ function setupIpcHandlers(): void {
 
       // 3. Cleaned EPUB (after AI cleanup)
       // Check audiobook folder for cleaned version - support both naming conventions
-      const audiobookFolder = bfp.audiobookFolder || bfp.audiobook?.folder;
-      console.log('[EDITOR:GET-VERSIONS] audiobookFolder:', audiobookFolder);
-      if (audiobookFolder && fsSync.existsSync(audiobookFolder)) {
+      const rawAudiobookFolder = bfp.audiobookFolder || bfp.audiobook?.folder;
+      const audiobookFolder = resolvePath(rawAudiobookFolder);
+      console.log('[EDITOR:GET-VERSIONS] audiobookFolder:', rawAudiobookFolder, '-> resolved:', audiobookFolder);
+      if (audiobookFolder) {
         // Try exported_cleaned.epub (old convention) then cleaned.epub (new LL convention)
         const cleanedPathOld = path.join(audiobookFolder, 'exported_cleaned.epub');
         const cleanedPathNew = path.join(audiobookFolder, 'cleaned.epub');

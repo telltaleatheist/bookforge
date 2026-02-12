@@ -932,6 +932,10 @@ export interface ElectronAPI {
       resolvedPath?: string;
       error?: string;
     }>;
+    translatePath: (inputPath: string) => Promise<{
+      success: boolean;
+      translated: string | null;
+    }>;
     copyToQueue: (data: ArrayBuffer | string, filename: string, metadata?: {
       title?: string;
       author?: string;
@@ -2047,6 +2051,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('library:import-file', sourcePath),
     resolveSource: (options: { libraryPath?: string; sourcePath?: string; fileHash?: string; sourceName?: string }) =>
       ipcRenderer.invoke('library:resolve-source', options),
+    translatePath: (inputPath: string) =>
+      ipcRenderer.invoke('library:translate-path', inputPath) as Promise<{ success: boolean; translated: string | null }>,
     copyToQueue: (data: ArrayBuffer | string, filename: string, metadata?: { title?: string; author?: string; language?: string }) =>
       ipcRenderer.invoke('library:copy-to-queue', data, filename, metadata),
     listQueue: () =>

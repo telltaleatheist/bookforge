@@ -5586,6 +5586,13 @@ export class PdfPickerComponent implements OnInit {
         if (exists) {
           pdfPathToLoad = exportedEpubPath;
           console.log('[openProject] Using exported EPUB as source:', exportedEpubPath);
+        } else {
+          // Try cross-platform path translation (BFP from another OS)
+          const translated = await this.electronService.libraryTranslatePath(exportedEpubPath);
+          if (translated.success && translated.translated) {
+            pdfPathToLoad = translated.translated;
+            console.log('[openProject] Using cross-platform translated exported EPUB:', translated.translated);
+          }
         }
       }
     }
@@ -5793,6 +5800,14 @@ export class PdfPickerComponent implements OnInit {
           pdfPathToLoad = exportedEpubPath;
           usingExportedEpub = true;
           console.log('[loadProjectFromPath] Using exported EPUB as source:', exportedEpubPath);
+        } else {
+          // Try cross-platform path translation (BFP from another OS)
+          const translated = await this.electronService.libraryTranslatePath(exportedEpubPath);
+          if (translated.success && translated.translated) {
+            pdfPathToLoad = translated.translated;
+            usingExportedEpub = true;
+            console.log('[loadProjectFromPath] Using cross-platform translated exported EPUB:', translated.translated);
+          }
         }
       }
     }

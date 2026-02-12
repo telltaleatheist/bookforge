@@ -564,22 +564,32 @@ export class StudioService {
   }
 
   /**
-   * Translate path for cross-platform compatibility (Syncthing shared library)
-   * Windows: E:\Shared\BookForge\... <-> Mac: /Volumes/Callisto/Shared/BookForge/...
+   * Translate path for cross-platform compatibility (Syncthing shared library).
+   * Uses the configured library root to re-root paths from other platforms.
+   * Detects known library subdirectories (audiobooks/, files/, projects/, etc.)
+   * and resolves relative to the current library root.
    */
   private translatePath(inputPath: string): string {
     if (!inputPath) return inputPath;
 
-    const isMac = navigator.platform.toLowerCase().includes('mac');
-    const isWindowsPath = /^[A-Z]:\\/i.test(inputPath);
-    const isMacPath = inputPath.startsWith('/Volumes/');
+    const libraryRoot = this.libraryService.libraryPath();
+    if (!libraryRoot) return inputPath;
 
-    if (isMac && isWindowsPath) {
-      // Windows path on Mac: E:\Shared\... -> /Volumes/Callisto/Shared/...
-      return `/Volumes/Callisto${inputPath.substring(2).replace(/\\/g, '/')}`;
-    } else if (!isMac && isMacPath) {
-      // Mac path on Windows: /Volumes/Callisto/Shared/... -> E:\Shared\...
-      return `E:${inputPath.replace('/Volumes/Callisto', '').replace(/\//g, '\\')}`;
+    // Normalize to forward slashes for matching
+    const normalized = inputPath.replace(/\\/g, '/');
+
+    // Known library subdirectories
+    const knownSubdirs = ['/audiobooks/', '/files/', '/projects/', '/media/', '/cache/'];
+
+    for (const subdir of knownSubdirs) {
+      const idx = normalized.indexOf(subdir);
+      if (idx !== -1) {
+        // Extract relative path from the subdir onwards (e.g., "audiobooks/MyBook/source.epub")
+        const relativePart = normalized.substring(idx + 1); // Skip leading /
+        // Construct path using library root and relative part
+        const rootNormalized = libraryRoot.replace(/\\/g, '/');
+        return `${rootNormalized}/${relativePart}`;
+      }
     }
 
     return inputPath;
