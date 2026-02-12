@@ -2140,12 +2140,18 @@ export class LLWizardComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────
 
   async scanProjectEpubs(): Promise<void> {
-    const dir = this.effectiveProjectDir();
+    // For book projects, look in audiobook folder where language EPUBs are stored
+    // For article projects, look in project dir
+    const audiobookFolder = this.audiobookFolder();
+    const projectDir = this.effectiveProjectDir();
+    const dir = audiobookFolder || projectDir;
+
     if (!dir) {
       this.availableEpubs.set([]);
       return;
     }
 
+    console.log('[LL-WIZARD] Scanning for EPUBs in:', dir);
     this.scanningEpubs.set(true);
     try {
       const files = await this.electronService.listDirectory(dir);
@@ -2175,6 +2181,12 @@ export class LLWizardComponent implements OnInit {
         }
       }
 
+      console.log('[LL-WIZARD] Scanned EPUBs:', epubs.map(e => ({
+        filename: e.filename,
+        lang: e.lang,
+        isTranslated: e.isTranslated,
+        isSource: e.isSource
+      })));
       this.availableEpubs.set(epubs);
     } catch (err) {
       console.error('Failed to scan project EPUBs:', err);
