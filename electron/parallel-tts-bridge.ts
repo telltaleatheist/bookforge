@@ -319,6 +319,191 @@ export async function copyToFinalDestination(
 }
 
 /**
+ * Get the audiobook directory for a BFP project
+ * .bfp files: {library}/audiobooks/{projectName}/
+ * Directory-based projects: {projectDir}/audiobook/
+ */
+export function getAudiobookDirFromBfp(bfpPath: string): string {
+  if (bfpPath.endsWith('.bfp')) {
+    const libraryRoot = path.dirname(path.dirname(bfpPath)); // projects/ → library root
+    const projectName = path.basename(bfpPath, '.bfp');
+    return path.join(libraryRoot, 'audiobooks', projectName);
+  }
+  // Directory-based project (articles) - use audiobook/ subfolder
+  return path.join(bfpPath, 'audiobook');
+}
+
+/**
+ * Cache the full TTS session folder from e2a tmp to BFP for permanent storage.
+ * After caching, the original session in e2a tmp is removed.
+ *
+ * For WSL sessions (paths containing \\wsl$), uses wsl.exe to copy.
+ * For native sessions, uses Node.js fs.cp.
+ *
+ * Layout: {audiobookDir}/session/ebook-{sessionId}/{processHash}/...
+ */
+export async function cacheSessionToBfp(
+  sessionDir: string,
+  bfpPath: string
+): Promise<{ success: boolean; cachedPath?: string; error?: string }> {
+  console.log(`[PARALLEL-TTS] Caching session to BFP`);
+  console.log(`[PARALLEL-TTS]   sessionDir: ${sessionDir}`);
+  console.log(`[PARALLEL-TTS]   bfpPath: ${bfpPath}`);
+
+  try {
+    const audiobookDir = getAudiobookDirFromBfp(bfpPath);
+    const sessionFolderName = path.basename(sessionDir); // e.g. "ebook-{id}"
+    const sessionParent = path.join(audiobookDir, 'session');
+    const destDir = path.join(sessionParent, sessionFolderName);
+    // Write to a temp name first, then atomically rename into place.
+    // This prevents Syncthing from seeing a partially-written session folder.
+    const tempDestDir = path.join(sessionParent, `.tmp-${sessionFolderName}`);
+
+    await fs.mkdir(sessionParent, { recursive: true });
+
+    // Clean up any leftover temp dir from a previous failed attempt
+    try { await fs.rm(tempDestDir, { recursive: true, force: true }); } catch { /* may not exist */ }
+
+    // Determine if the session is in WSL filesystem
+    const isWslSession = sessionDir.startsWith('\\\\wsl$') || sessionDir.startsWith('//wsl$');
+
+    if (isWslSession && process.platform === 'win32') {
+      // WSL session: use wsl.exe to copy within WSL filesystem to /mnt/ destination
+      const wslSourcePath = sessionDir
+        .replace(/^(\\\\wsl\$\\Ubuntu\\|\/\/wsl\$\/Ubuntu\/)/, '/')
+        .replace(/\\/g, '/');
+      const wslTempDestPath = windowsToWslPath(tempDestDir);
+
+      // Ensure parent exists in WSL
+      const wslDestParent = windowsToWslPath(sessionParent);
+      const mkdirCmd = `mkdir -p "${wslDestParent}"`;
+      const copyCmd = `cp -r "${wslSourcePath}" "${wslTempDestPath}"`;
+      const distro = getWslDistro();
+      const wslArgs = distro
+        ? ['-d', distro, 'bash', '-c', `${mkdirCmd} && ${copyCmd}`]
+        : ['bash', '-c', `${mkdirCmd} && ${copyCmd}`];
+
+      console.log(`[PARALLEL-TTS] WSL copy: wsl.exe ${wslArgs.join(' ')}`);
+
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn('wsl.exe', wslArgs, { shell: false });
+        let stderr = '';
+        proc.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+        proc.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`WSL copy failed (code ${code}): ${stderr}`));
+        });
+        proc.on('error', reject);
+      });
+    } else {
+      // Native session: use Node.js recursive copy
+      await fs.cp(sessionDir, tempDestDir, { recursive: true });
+    }
+
+    // Atomic swap: remove old session(s), rename temp into place.
+    // Only one session should exist per BFP audiobook folder.
+    try {
+      const existingEntries = await fs.readdir(sessionParent, { withFileTypes: true });
+      for (const entry of existingEntries) {
+        if (entry.isDirectory() && entry.name.startsWith('ebook-')) {
+          const oldDir = path.join(sessionParent, entry.name);
+          await fs.rm(oldDir, { recursive: true, force: true });
+          console.log(`[PARALLEL-TTS] Removed old session: ${entry.name}`);
+        }
+      }
+    } catch (err) {
+      console.error('[PARALLEL-TTS] Failed to clean old sessions (non-fatal):', err);
+    }
+
+    // Rename temp dir to final name (atomic on same filesystem)
+    await fs.rename(tempDestDir, destDir);
+    console.log(`[PARALLEL-TTS] Session cached to: ${destDir}`);
+
+    // Remove original from e2a tmp
+    try {
+      if (isWslSession && process.platform === 'win32') {
+        const wslSourcePath = sessionDir
+          .replace(/^(\\\\wsl\$\\Ubuntu\\|\/\/wsl\$\/Ubuntu\/)/, '/')
+          .replace(/\\/g, '/');
+        const distro = getWslDistro();
+        const rmArgs = distro
+          ? ['-d', distro, 'bash', '-c', `rm -rf "${wslSourcePath}"`]
+          : ['bash', '-c', `rm -rf "${wslSourcePath}"`];
+        await new Promise<void>((resolve) => {
+          const proc = spawn('wsl.exe', rmArgs, { shell: false });
+          proc.on('close', () => resolve());
+          proc.on('error', () => resolve()); // Don't fail if cleanup fails
+        });
+      } else {
+        await fs.rm(sessionDir, { recursive: true, force: true });
+      }
+      console.log(`[PARALLEL-TTS] Removed original session from e2a tmp`);
+    } catch (err) {
+      console.error('[PARALLEL-TTS] Failed to remove original session (non-fatal):', err);
+    }
+
+    return { success: true, cachedPath: destDir };
+  } catch (err) {
+    const error = `Failed to cache session to BFP: ${err}`;
+    console.error(`[PARALLEL-TTS] ${error}`);
+    return { success: false, error };
+  }
+}
+
+/**
+ * Post-process output after e2a writes directly to the BFP audiobook folder.
+ * Renames VTT to standard name and optionally copies m4b to external folder.
+ */
+async function postProcessOutput(
+  outputDir: string,
+  externalAudiobooksDir?: string,
+  isArticle?: boolean
+): Promise<{ audioPath: string; vttPath?: string }> {
+  const files = await fs.readdir(outputDir);
+  const m4bFile = files.find(f => f.endsWith('.m4b') && !f.startsWith('._'));
+  let vttFile = files.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
+
+  // VTT may be in vtt/ subfolder
+  if (!vttFile) {
+    try {
+      const vttDir = path.join(outputDir, 'vtt');
+      const vttFiles = await fs.readdir(vttDir);
+      const found = vttFiles.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
+      if (found) {
+        // Move from subfolder to output dir
+        await fs.rename(path.join(vttDir, found), path.join(outputDir, 'subtitles.vtt'));
+        vttFile = 'subtitles.vtt';
+      }
+    } catch {
+      // No vtt subfolder
+    }
+  }
+
+  // Rename VTT to standard name
+  if (vttFile && vttFile !== 'subtitles.vtt') {
+    await fs.rename(path.join(outputDir, vttFile), path.join(outputDir, 'subtitles.vtt'));
+    vttFile = 'subtitles.vtt';
+  }
+
+  // Copy m4b to external audiobooks folder (for books only, not articles)
+  if (!isArticle && externalAudiobooksDir && m4bFile) {
+    try {
+      await fs.mkdir(externalAudiobooksDir, { recursive: true });
+      const externalPath = path.join(externalAudiobooksDir, m4bFile);
+      await fs.copyFile(path.join(outputDir, m4bFile), externalPath);
+      console.log(`[PARALLEL-TTS] Copied m4b to external: ${externalPath}`);
+    } catch (err) {
+      console.error('[PARALLEL-TTS] Failed to copy to external audiobooks folder:', err);
+    }
+  }
+
+  return {
+    audioPath: m4bFile ? path.join(outputDir, m4bFile) : path.join(outputDir, 'audiobook.m4b'),
+    vttPath: vttFile ? path.join(outputDir, vttFile) : undefined
+  };
+}
+
+/**
  * Clean up stale temp folders older than maxAgeHours
  * Called on app startup to prevent tmp folder buildup
  */
@@ -832,8 +1017,6 @@ interface ConversionSession {
   persistentState?: PersistentSessionState;
   // State save timer
   stateSaveTimer?: NodeJS.Timeout;
-  // Temp output directory - used when bfpPath is set, for Syncthing compatibility
-  tempOutputDir?: string;
 }
 
 // Persistent session state - saved to disk for resume capability
@@ -1861,31 +2044,26 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
  * @returns The final output path (BFP audiobook path if using temp, otherwise processedPath)
  */
 async function finalizeOutputPath(processedPath: string, session: ConversionSession): Promise<string> {
-  // If not using temp folder, return the processed path as-is
-  if (!session.tempOutputDir) {
-    return processedPath;
-  }
-
   const config = session.config;
-  console.log('[PARALLEL-TTS] Finalizing output from temp folder to destinations...');
 
-  try {
-    const result = await copyToFinalDestination(
-      session.tempOutputDir,
-      config.bfpPath,
-      config.externalAudiobooksDir,
-      config.isArticle || false
-    );
-
-    console.log('[PARALLEL-TTS] Files copied to final destinations:', result);
-    return result.audioPath;
-  } catch (err) {
-    // If copy fails, log the error but don't fail the job
-    // The files are still in the temp folder
-    console.error('[PARALLEL-TTS] Failed to copy to final destinations:', err);
-    console.log('[PARALLEL-TTS] Files remain in temp folder:', session.tempOutputDir);
-    return processedPath;
+  // If outputting to BFP audiobook folder, run post-processing (rename VTT, copy to external)
+  if (config.bfpPath) {
+    console.log('[PARALLEL-TTS] Post-processing output in BFP audiobook folder...');
+    try {
+      const result = await postProcessOutput(
+        config.outputDir,
+        config.externalAudiobooksDir,
+        config.isArticle || false
+      );
+      console.log('[PARALLEL-TTS] Post-processing complete:', result);
+      return result.audioPath;
+    } catch (err) {
+      console.error('[PARALLEL-TTS] Post-processing failed, using original path:', err);
+      return processedPath;
+    }
   }
+
+  return processedPath;
 }
 
 /**
@@ -1927,6 +2105,9 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     ...(config.epubPath ? ['--ebook', config.epubPath] : []),
     '--output_dir', config.outputDir,
     '--session', prepInfo.sessionId,
+    // Pass --session_dir when session may not be in default e2a tmp location
+    // (e.g., cached sessions in BFP audiobook folder)
+    ...(prepInfo.sessionDir ? ['--session_dir', prepInfo.sessionDir] : []),
     '--device', asmDeviceArg,
     '--language', settings.language,
     '--tts_engine', settings.ttsEngine,  // Required for session setup even in assembly mode
@@ -2755,7 +2936,9 @@ function emitComplete(
     outputPath,
     error,
     duration,
-    analytics
+    analytics,
+    sessionId: session.prepInfo?.sessionId,
+    sessionDir: session.prepInfo?.sessionDir
   });
 }
 
@@ -2802,23 +2985,20 @@ export async function startParallelConversion(
   });
 
   // Determine effective output directory:
-  // - If bfpPath is set, use temp folder (for Syncthing compatibility)
+  // - If bfpPath is set, output directly to BFP audiobook folder
   // - Otherwise, require outputDir to be set
   let effectiveOutputDir: string;
-  let tempOutputDir: string | undefined;
 
   if (config.bfpPath) {
-    // Use temp folder - files will be copied to BFP on completion
-    tempOutputDir = getTempOutputDir(jobId);
-    await fs.mkdir(tempOutputDir, { recursive: true });
-    effectiveOutputDir = tempOutputDir;
-    console.log(`[PARALLEL-TTS] Using temp folder for output: ${tempOutputDir}`);
-    console.log(`[PARALLEL-TTS] Will copy to BFP on completion: ${config.bfpPath}`);
+    // Output directly to BFP audiobook folder (no temp dir needed)
+    effectiveOutputDir = getAudiobookDirFromBfp(config.bfpPath);
+    await fs.mkdir(effectiveOutputDir, { recursive: true });
+    console.log(`[PARALLEL-TTS] Outputting directly to BFP audiobook folder: ${effectiveOutputDir}`);
     if (config.externalAudiobooksDir && !config.isArticle) {
       console.log(`[PARALLEL-TTS] Will also copy to external: ${config.externalAudiobooksDir}`);
     }
   } else if (config.outputDir && config.outputDir.trim() !== '') {
-    // Legacy mode: output directly to outputDir
+    // No BFP: output directly to outputDir
     effectiveOutputDir = config.outputDir;
   } else {
     const error = 'Output directory not configured. Please set the audiobook output folder in Settings.';
@@ -2916,8 +3096,7 @@ export async function startParallelConversion(
     workers,
     startTime: Date.now(),
     cancelled: false,
-    assemblyProcess: null,
-    tempOutputDir
+    assemblyProcess: null
   };
 
   activeSessions.set(jobId, session);
@@ -3928,15 +4107,13 @@ export async function resumeParallelConversion(
   }
 
   // Determine effective output directory (same logic as startParallelConversion)
-  // Do this BEFORE the complete check so runAssemblyOnly also gets temp folder support
+  // Do this BEFORE the complete check so runAssemblyOnly also uses BFP folder
   let effectiveOutputDir: string;
-  let tempOutputDir: string | undefined;
 
   if (config.bfpPath) {
-    tempOutputDir = getTempOutputDir(jobId);
-    await fs.mkdir(tempOutputDir, { recursive: true });
-    effectiveOutputDir = tempOutputDir;
-    console.log(`[PARALLEL-TTS] Resume: Using temp folder for output: ${tempOutputDir}`);
+    effectiveOutputDir = getAudiobookDirFromBfp(config.bfpPath);
+    await fs.mkdir(effectiveOutputDir, { recursive: true });
+    console.log(`[PARALLEL-TTS] Resume: Outputting directly to BFP audiobook folder: ${effectiveOutputDir}`);
   } else if (config.outputDir && config.outputDir.trim() !== '') {
     effectiveOutputDir = config.outputDir;
   } else {
@@ -3953,8 +4130,7 @@ export async function resumeParallelConversion(
 
   if (resumeInfo.complete) {
     console.log('[PARALLEL-TTS] All sentences already complete, proceeding to assembly');
-    // Go directly to assembly - pass internalConfig and tempOutputDir for Syncthing compatibility
-    return runAssemblyOnly(jobId, internalConfig, resumeInfo.sessionId!, tempOutputDir);
+    return runAssemblyOnly(jobId, internalConfig, resumeInfo.sessionId!, resumeInfo.sessionDir);
   }
 
   // Create PrepInfo-like structure from resume info
@@ -4036,8 +4212,7 @@ export async function resumeParallelConversion(
     // Resume job tracking
     isResumeJob: true,
     baselineCompleted: resumeInfo.completedSentences || 0,
-    totalMissing: resumeInfo.missingSentences || 0,
-    tempOutputDir
+    totalMissing: resumeInfo.missingSentences || 0
   };
 
   activeSessions.set(jobId, session);
@@ -4114,14 +4289,14 @@ async function runAssemblyOnly(
   jobId: string,
   config: ParallelConversionConfig,
   sessionId: string,
-  tempOutputDir?: string
+  sessionDir?: string
 ): Promise<ParallelConversionResult> {
   console.log(`[PARALLEL-TTS] Running assembly only for session ${sessionId}`);
 
   // Create a session with minimal prepInfo (just need sessionId for assembly)
   const minimalPrepInfo: PrepInfo = {
     sessionId,
-    sessionDir: '',  // Not needed for assembly
+    sessionDir: sessionDir || '',  // Used for --session_dir when session is cached outside e2a tmp
     processDir: '',
     chaptersDir: '',
     chaptersDirSentences: '',
@@ -4138,8 +4313,7 @@ async function runAssemblyOnly(
     workers: [],
     startTime: Date.now(),
     cancelled: false,
-    assemblyProcess: null,
-    tempOutputDir
+    assemblyProcess: null
   };
 
   activeSessions.set(jobId, session);
@@ -4172,7 +4346,8 @@ async function runAssemblyOnly(
         jobId,
         success: true,
         outputPath,
-        duration: (Date.now() - session.startTime) / 1000
+        duration: (Date.now() - session.startTime) / 1000,
+        sessionId
       });
     }
 
@@ -4188,7 +4363,8 @@ async function runAssemblyOnly(
       mainWindow.webContents.send('parallel-tts:complete', {
         jobId,
         success: false,
-        error
+        error,
+        sessionId
       });
     }
 
@@ -4239,251 +4415,6 @@ export function buildResumeInfo(prepInfo: PrepInfo, settings: ParallelTtsSetting
 // ─────────────────────────────────────────────────────────────────────────────
 // Session Caching (for Language Learning pipeline)
 // ─────────────────────────────────────────────────────────────────────────────
-
-export interface ProjectSessionInfo {
-  language: string;
-  sessionDir: string;
-  sentenceCount: number;
-  createdAt: string;
-}
-
-/**
- * Copy a TTS session folder to the project's sessions directory for later use
- * in bilingual assembly.
- *
- * @param sessionDir - Path to the TTS session (e.g., /path/to/e2a/tmp/ebook-{id}/{processDir})
- * @param projectDir - Path to the project folder
- * @param language - Language code (e.g., 'en', 'de')
- */
-export async function cacheSessionToProject(
-  sessionDir: string,
-  projectDir: string,
-  language: string
-): Promise<{ success: boolean; cachedPath?: string; error?: string }> {
-  console.log(`[PARALLEL-TTS] Caching session to project: ${language}`);
-  console.log(`[PARALLEL-TTS]   sessionDir: ${sessionDir}`);
-  console.log(`[PARALLEL-TTS]   projectDir: ${projectDir}`);
-
-  try {
-    // Find the process directory (the actual session data)
-    let processDir = sessionDir;
-
-    // If sessionDir is the ebook-{id} folder, find the process subdirectory
-    const entries = await fs.readdir(sessionDir, { withFileTypes: true });
-    const subDirs = entries.filter(e => e.isDirectory());
-    if (subDirs.length > 0) {
-      // Look for a directory that contains sentences folder
-      for (const dir of subDirs) {
-        const checkPath = path.join(sessionDir, dir.name, 'chapters', 'sentences');
-        try {
-          await fs.access(checkPath);
-          processDir = path.join(sessionDir, dir.name);
-          break;
-        } catch {
-          // Try next directory
-        }
-      }
-    }
-
-    // Create target sessions directory
-    const targetDir = path.join(projectDir, 'sessions', language);
-    await fs.mkdir(targetDir, { recursive: true });
-
-    // Copy sentences folder
-    const sourceSentencesDir = path.join(processDir, 'chapters', 'sentences');
-    const targetSentencesDir = path.join(targetDir, 'sentences');
-
-    // Remove existing sentences folder if it exists (re-running TTS)
-    try {
-      await fs.rm(targetSentencesDir, { recursive: true, force: true });
-    } catch {
-      // Folder may not exist
-    }
-
-    await fs.mkdir(targetSentencesDir, { recursive: true });
-
-    // Copy all sentence audio files
-    const sentenceFiles = await fs.readdir(sourceSentencesDir);
-    const audioFiles = sentenceFiles.filter(f => f.endsWith('.wav') || f.endsWith('.flac'));
-
-    for (const file of audioFiles) {
-      await fs.copyFile(
-        path.join(sourceSentencesDir, file),
-        path.join(targetSentencesDir, file)
-      );
-    }
-
-    // Copy session-state.json if it exists
-    const sourceStatePath = path.join(processDir, 'session-state.json');
-    const targetStatePath = path.join(targetDir, 'session_state.json');
-    try {
-      await fs.copyFile(sourceStatePath, targetStatePath);
-    } catch {
-      // session-state.json may not exist, create a minimal one
-      const minimalState = {
-        language,
-        sentenceCount: audioFiles.length,
-        cachedAt: new Date().toISOString()
-      };
-      await fs.writeFile(targetStatePath, JSON.stringify(minimalState, null, 2));
-    }
-
-    // Also copy chapters folder if it exists
-    const sourceChaptersDir = path.join(processDir, 'chapters');
-    const targetChaptersDir = path.join(targetDir, 'chapters');
-    try {
-      await fs.rm(targetChaptersDir, { recursive: true, force: true });
-    } catch {
-      // Folder may not exist
-    }
-    await fs.mkdir(targetChaptersDir, { recursive: true });
-
-    const chapterFiles = await fs.readdir(sourceChaptersDir);
-    for (const file of chapterFiles) {
-      const srcPath = path.join(sourceChaptersDir, file);
-      const stat = await fs.stat(srcPath);
-      if (stat.isFile() && (file.endsWith('.flac') || file.endsWith('.wav') || file.endsWith('.mp3'))) {
-        await fs.copyFile(srcPath, path.join(targetChaptersDir, file));
-      }
-    }
-
-    console.log(`[PARALLEL-TTS] Session cached: ${audioFiles.length} sentences to ${targetDir}`);
-
-    return {
-      success: true,
-      cachedPath: targetDir
-    };
-  } catch (err) {
-    const error = `Failed to cache session: ${err}`;
-    console.error(`[PARALLEL-TTS] ${error}`);
-    return { success: false, error };
-  }
-}
-
-/**
- * List available TTS sessions in a project's sessions folder
- *
- * @param projectDir - Path to the project folder
- */
-export async function listProjectSessions(projectDir: string): Promise<ProjectSessionInfo[]> {
-  const sessionsDir = path.join(projectDir, 'sessions');
-  const sessions: ProjectSessionInfo[] = [];
-
-  try {
-    const entries = await fs.readdir(sessionsDir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
-      const language = entry.name;
-      const sessionDir = path.join(sessionsDir, language);
-      const sentencesDir = path.join(sessionDir, 'sentences');
-
-      try {
-        const sentenceFiles = await fs.readdir(sentencesDir);
-        const audioFiles = sentenceFiles.filter(f => f.endsWith('.wav') || f.endsWith('.flac'));
-
-        if (audioFiles.length > 0) {
-          // Try to get created date from session_state.json
-          let createdAt = new Date().toISOString();
-          try {
-            const statePath = path.join(sessionDir, 'session_state.json');
-            const stateContent = await fs.readFile(statePath, 'utf-8');
-            const state = JSON.parse(stateContent);
-            createdAt = state.cachedAt || state.createdAt || createdAt;
-          } catch {
-            // Use current date as fallback
-          }
-
-          sessions.push({
-            language,
-            sessionDir,
-            sentenceCount: audioFiles.length,
-            createdAt
-          });
-        }
-      } catch {
-        // No sentences folder, skip this language
-      }
-    }
-  } catch {
-    // Sessions folder may not exist
-  }
-
-  return sessions;
-}
-
-/**
- * Restore a cached session from project folder back to e2a tmp for assembly
- *
- * @param projectDir - Path to the project folder
- * @param language - Language code to restore
- * @returns Path to restored session in e2a tmp
- */
-export async function restoreSessionFromProject(
-  projectDir: string,
-  language: string
-): Promise<{ success: boolean; sessionDir?: string; error?: string }> {
-  console.log(`[PARALLEL-TTS] Restoring session from project: ${language}`);
-
-  try {
-    const cachedDir = path.join(projectDir, 'sessions', language);
-    const sentencesDir = path.join(cachedDir, 'sentences');
-
-    // Verify the cached session exists
-    await fs.access(sentencesDir);
-
-    // Create a temp session directory in e2a
-    const sessionId = crypto.randomUUID();
-    const e2aPath = getDefaultE2aPath();
-    const tmpDir = path.join(e2aPath, 'tmp', `ebook-${sessionId}`);
-    const processDir = path.join(tmpDir, 'restored-session');
-    const targetSentencesDir = path.join(processDir, 'chapters', 'sentences');
-    const targetChaptersDir = path.join(processDir, 'chapters');
-
-    await fs.mkdir(targetSentencesDir, { recursive: true });
-
-    // Copy sentence files
-    const sentenceFiles = await fs.readdir(sentencesDir);
-    for (const file of sentenceFiles) {
-      if (file.endsWith('.wav') || file.endsWith('.flac')) {
-        await fs.copyFile(
-          path.join(sentencesDir, file),
-          path.join(targetSentencesDir, file)
-        );
-      }
-    }
-
-    // Copy chapter files if they exist
-    const cachedChaptersDir = path.join(cachedDir, 'chapters');
-    try {
-      const chapterFiles = await fs.readdir(cachedChaptersDir);
-      for (const file of chapterFiles) {
-        if (file.endsWith('.flac') || file.endsWith('.wav') || file.endsWith('.mp3')) {
-          await fs.copyFile(
-            path.join(cachedChaptersDir, file),
-            path.join(targetChaptersDir, file)
-          );
-        }
-      }
-    } catch {
-      // No chapters folder in cache, that's ok
-    }
-
-    console.log(`[PARALLEL-TTS] Session restored to: ${processDir}`);
-
-    return {
-      success: true,
-      sessionDir: processDir
-    };
-  } catch (err) {
-    const error = `Failed to restore session: ${err}`;
-    console.error(`[PARALLEL-TTS] ${error}`);
-    return { success: false, error };
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Export
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -4511,8 +4442,7 @@ export const parallelTtsBridge = {
   // Temp folder management
   getTempOutputDir,
   cleanupStaleTempFolders,
-  // Session caching for LL pipeline
-  cacheSessionToProject,
-  listProjectSessions,
-  restoreSessionFromProject
+  // Session caching
+  cacheSessionToBfp,
+  getAudiobookDirFromBfp,
 };

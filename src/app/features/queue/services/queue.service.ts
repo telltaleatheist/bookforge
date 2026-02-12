@@ -93,7 +93,7 @@ declare global {
         isActive: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
         listActive: () => Promise<{ success: boolean; data?: Array<{ jobId: string; progress: ParallelAggregatedProgress; epubPath: string; startTime: number }>; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
-        onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string } }) => void) => () => void;
+        onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string }; sessionId?: string; sessionDir?: string }) => void) => () => void;
         // Session tracking for stop/resume
         onSessionCreated: (callback: (data: { jobId: string; sessionId: string; sessionDir: string; processDir: string; totalSentences: number; totalChapters: number }) => void) => () => void;
         // Resume support
@@ -371,7 +371,9 @@ export class QueueService {
             error: data.error,
             analytics: data.analytics,
             wasStopped: data.wasStopped,
-            stopInfo: data.stopInfo
+            stopInfo: data.stopInfo,
+            sessionId: data.sessionId,
+            sessionDir: data.sessionDir
           });
         });
       });
@@ -804,6 +806,25 @@ export class QueueService {
       }
     }
 
+    // Cache TTS session to BFP for future reassembly
+    if (result.success && result.sessionDir && completedJob?.bfpPath &&
+        completedJob.type === 'tts-conversion') {
+      try {
+        const electron = (window as any).electron;
+        if (electron?.sessionCache?.saveToBfp) {
+          console.log(`[QUEUE] Caching TTS session to BFP: ${result.sessionDir}`);
+          const cacheResult = await electron.sessionCache.saveToBfp(result.sessionDir, completedJob.bfpPath);
+          if (cacheResult.success) {
+            console.log(`[QUEUE] Session cached to: ${cacheResult.cachedPath}`);
+          } else {
+            console.error('[QUEUE] Failed to cache session to BFP:', cacheResult.error);
+          }
+        }
+      } catch (err) {
+        console.error('[QUEUE] Error caching session to BFP:', err);
+      }
+    }
+
     // Cache audio files for cached-language TTS jobs (bilingual tab)
     if (result.success && result.outputPath && completedJob?.type === 'tts-conversion') {
       const ttsConfig = completedJob.config as TtsConversionConfig;
@@ -819,14 +840,6 @@ export class QueueService {
             speed: ttsConfig.speed,
           }
         );
-      }
-    }
-
-    // Cache TTS session to project folder for Language Learning pipeline
-    if (result.success && completedJob?.type === 'tts-conversion') {
-      const ttsConfig = completedJob.config as TtsConversionConfig;
-      if (ttsConfig?.cacheToProject && ttsConfig?.projectDir) {
-        this.cacheSessionToProject(result, ttsConfig);
       }
     }
 
@@ -2900,74 +2913,6 @@ export class QueueService {
       }
     } catch (err) {
       console.error('[QUEUE] Error caching audio:', err);
-    }
-  }
-
-  /**
-   * Cache TTS session to project folder for Language Learning pipeline.
-   * Called after TTS completion when cacheToProject is true.
-   */
-  private async cacheSessionToProject(
-    result: JobResult,
-    ttsConfig: TtsConversionConfig
-  ): Promise<void> {
-    console.log('[QUEUE] cacheSessionToProject called with:', {
-      outputPath: result.outputPath,
-      projectDir: ttsConfig.projectDir,
-      language: ttsConfig.language
-    });
-
-    const electron = window.electron as any;
-    if (!electron?.sessionCache?.save) {
-      console.warn('[QUEUE] Cannot cache session - electron.sessionCache.save not available');
-      return;
-    }
-
-    if (!ttsConfig.projectDir || !ttsConfig.language) {
-      console.warn('[QUEUE] Cannot cache session - projectDir or language not specified');
-      return;
-    }
-
-    // The session directory should be in the result analytics or we need to find it
-    // The parallel-tts bridge passes sessionDir in the session-created event
-    // For now, we'll extract it from the outputPath structure if available
-    // outputPath is typically: /path/to/e2a/tmp/ebook-{id}/{processDir}/...
-
-    // Extract session directory from outputPath
-    let sessionDir: string | undefined;
-    if (result.outputPath) {
-      // outputPath might be the sentences folder or the M4B file
-      // We need to find the session folder (ebook-{id})
-      const ebookMatch = result.outputPath.match(/(.*\/tmp\/ebook-[a-f0-9-]+)/);
-      if (ebookMatch) {
-        sessionDir = ebookMatch[1];
-      }
-    }
-
-    // Also check stopInfo if available (from stopped jobs)
-    if (!sessionDir && result.stopInfo?.sessionDir) {
-      sessionDir = result.stopInfo.sessionDir;
-    }
-
-    if (!sessionDir) {
-      console.warn('[QUEUE] Cannot cache session - sessionDir not found in result');
-      return;
-    }
-
-    try {
-      const cacheResult = await electron.sessionCache.save(
-        sessionDir,
-        ttsConfig.projectDir,
-        ttsConfig.language
-      );
-
-      if (cacheResult.success) {
-        console.log(`[QUEUE] Cached session to project: ${cacheResult.cachedPath}`);
-      } else {
-        console.error('[QUEUE] Failed to cache session:', cacheResult.error);
-      }
-    } catch (err) {
-      console.error('[QUEUE] Error caching session to project:', err);
     }
   }
 

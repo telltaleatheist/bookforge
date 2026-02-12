@@ -2236,54 +2236,10 @@ export class LLWizardComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────
 
   async scanAvailableSessions(): Promise<void> {
-    const projectDir = this.effectiveProjectDir();
+    this.availableSessions.set([]);
 
-    if (!projectDir) {
-      this.availableSessions.set([]);
-      return;
-    }
-
-    try {
-      // Use the proper session cache API
-      const result = await this.electronService.listProjectSessions(projectDir);
-
-      if (result.success && result.data) {
-        const sessions: SessionCache[] = result.data.map(s => ({
-          language: s.language,
-          sessionDir: s.sessionDir,
-          sentenceCount: s.sentenceCount,
-          createdAt: s.createdAt
-        }));
-        this.availableSessions.set(sessions);
-
-        // Set default assembly languages if we have sessions
-        if (sessions.length >= 2) {
-          const sourceLang = this.detectedSourceLang();
-          const sourceSession = sessions.find(s => s.language === sourceLang);
-          const targetSession = sessions.find(s => s.language !== sourceLang);
-
-          if (sourceSession) {
-            this.assemblySourceLang.set(sourceSession.language);
-          }
-          if (targetSession) {
-            this.assemblyTargetLang.set(targetSession.language);
-          }
-
-          // If both languages are set, remove assembly from skipped steps
-          if (sourceSession && targetSession) {
-            this._skippedSteps.delete('assembly');
-          }
-        }
-      } else {
-        this.availableSessions.set([]);
-      }
-    } catch (err) {
-      console.error('Failed to scan sessions:', err);
-      this.availableSessions.set([]);
-    }
-
-    // If no sessions exist but TTS is configured, auto-populate from TTS language rows
-    if (this.availableSessions().length === 0 && this.ttsLanguageRows().length >= 2) {
+    // Auto-populate from TTS language rows
+    if (this.ttsLanguageRows().length >= 2) {
       const ttsRows = this.ttsLanguageRows();
       const sourceLang = this.detectedSourceLang();
 
@@ -2819,11 +2775,8 @@ export class LLWizardComponent implements OnInit {
               testSentences: this.ttsTestSentences(),
               // Skip assembly - only generate sentence audio files
               skipAssembly: true,
-              // Output to temp directory (will be cached to project)
+              // Output to temp directory
               outputDir: `/tmp/bookforge-tts-${Date.now()}`,
-              // Cache session to project folder (unified structure)
-              cacheToProject: true,
-              projectDir: projectDir,
             },
             workflowId,
           });

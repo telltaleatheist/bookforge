@@ -3140,35 +3140,14 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Session Caching handlers (for Language Learning pipeline)
+  // Session Caching handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // Cache a TTS session to project folder for later assembly
-  ipcMain.handle('session-cache:save', async (_event, sessionDir: string, projectDir: string, language: string) => {
+  // Cache full TTS session to BFP audiobook folder for permanent storage
+  ipcMain.handle('session-cache:save-to-bfp', async (_event, sessionDir: string, bfpPath: string) => {
     try {
-      const { cacheSessionToProject } = await import('./parallel-tts-bridge.js');
-      return await cacheSessionToProject(sessionDir, projectDir, language);
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // List available sessions in a project
-  ipcMain.handle('session-cache:list', async (_event, projectDir: string) => {
-    try {
-      const { listProjectSessions } = await import('./parallel-tts-bridge.js');
-      const sessions = await listProjectSessions(projectDir);
-      return { success: true, data: sessions };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Restore a cached session from project folder to e2a tmp
-  ipcMain.handle('session-cache:restore', async (_event, projectDir: string, language: string) => {
-    try {
-      const { restoreSessionFromProject } = await import('./parallel-tts-bridge.js');
-      return await restoreSessionFromProject(projectDir, language);
+      const { cacheSessionToBfp } = await import('./parallel-tts-bridge.js');
+      return await cacheSessionToBfp(sessionDir, bfpPath);
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -5348,7 +5327,8 @@ function setupIpcHandlers(): void {
   ipcMain.handle('reassembly:scan-sessions', async (_event, customTmpPath?: string) => {
     try {
       const { scanE2aTmpFolder } = await import('./reassembly-bridge.js');
-      const result = await scanE2aTmpFolder(customTmpPath);
+      const libraryPath = getLibraryRoot();
+      const result = await scanE2aTmpFolder(customTmpPath, libraryPath);
       return { success: true, data: result };
     } catch (err) {
       console.error('[MAIN] reassembly:scan-sessions error:', err);
