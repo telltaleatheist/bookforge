@@ -1887,25 +1887,39 @@ export class LLWizardComponent implements OnInit {
   });
 
   /**
-   * Available languages for TTS - source language + selected target languages.
-   * If translate step is skipped, only source language is available.
+   * Available languages for TTS - based on existing language EPUBs.
+   * Detects which language EPUBs exist (en.epub, de.epub, etc.) and makes those available.
    */
   readonly availableTtsLanguages = computed(() => {
     const sourceLang = this.detectedSourceLang();
-    const targets = this.targetLangs();
-    const isTranslateSkipped = this._skippedSteps.has('translate');
+    const epubs = this.availableEpubs();
+    const languageMap = new Map<string, string>();
 
-    const languages: { code: string; name: string }[] = [
-      { code: sourceLang, name: this.getLanguageName(sourceLang) }
-    ];
+    // Always include source language
+    languageMap.set(sourceLang, this.getLanguageName(sourceLang));
 
-    // Add target languages if translate step is not skipped
-    if (!isTranslateSkipped && targets.size > 0) {
-      for (const code of targets) {
-        languages.push({ code, name: this.getLanguageName(code) });
+    // Add any language EPUBs that exist (en.epub, de.epub, es.epub, etc.)
+    for (const epub of epubs) {
+      if (epub.isTranslated && epub.lang) {
+        languageMap.set(epub.lang, this.getLanguageName(epub.lang));
       }
     }
 
+    // Also add target languages from translation step if selected
+    const targets = this.targetLangs();
+    for (const code of targets) {
+      if (!languageMap.has(code)) {
+        languageMap.set(code, this.getLanguageName(code));
+      }
+    }
+
+    // Convert to array format expected by template
+    const languages: { code: string; name: string }[] = [];
+    for (const [code, name] of languageMap) {
+      languages.push({ code, name });
+    }
+
+    console.log('[LL-WIZARD] Available TTS languages:', languages);
     return languages;
   });
 
@@ -2004,7 +2018,15 @@ export class LLWizardComponent implements OnInit {
     });
 
     // If we have language EPUBs available, add the first target language
+    console.log('[LL-WIZARD] Available EPUBs for TTS init:', epubs.map(e => ({
+      filename: e.filename,
+      lang: e.lang,
+      isTranslated: e.isTranslated
+    })));
+
     const languageEpubs = epubs.filter(e => e.isTranslated && e.lang !== sourceLang);
+    console.log('[LL-WIZARD] Language EPUBs (non-source):', languageEpubs.map(e => e.filename));
+
     if (languageEpubs.length > 0) {
       const firstTargetEpub = languageEpubs[0];
       const firstTargetLang = firstTargetEpub.lang;
@@ -2167,8 +2189,10 @@ export class LLWizardComponent implements OnInit {
           const filePath = `${dir}/${file}`;
           const lang = this.detectLanguageFromFilename(file);
           const isSource = file === 'exported.epub' || file.includes('original') || file === 'article.epub' || file === 'finalized.epub';
-          const isTranslated = /^[a-z]{2}\.epub$/.test(file);
+          const isTranslated = /^[a-z]{2}\.epub$/i.test(file);  // Case-insensitive check
           const isCleaned = file.includes('cleaned');
+
+          console.log('[LL-WIZARD] EPUB file:', file, '- lang:', lang, '- isTranslated:', isTranslated);
 
           epubs.push({
             path: filePath,
@@ -2197,9 +2221,9 @@ export class LLWizardComponent implements OnInit {
   }
 
   private detectLanguageFromFilename(filename: string): string {
-    const match = filename.match(/^([a-z]{2})\.epub$/);
+    const match = filename.match(/^([a-z]{2})\.epub$/i);
     if (match) {
-      return match[1];
+      return match[1].toLowerCase();
     }
     return this.initialSourceLang();
   }
