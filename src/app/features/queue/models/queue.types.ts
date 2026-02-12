@@ -171,11 +171,6 @@ export interface TtsConversionConfig {
   cacheAudioTo?: string;  // e.g., 'audiobooks/book/audio/en'
   // Language code for cache metadata (needed for updating sentence cache JSON)
   cacheLanguage?: string;  // e.g., 'en'
-  // Session caching for Language Learning pipeline
-  // When true, the TTS session folder is cached to projectDir/sessions/{language}/
-  cacheToProject?: boolean;
-  // Project directory for session caching (required if cacheToProject is true)
-  projectDir?: string;
   // Test mode - only process first N sentences (for quick validation)
   testMode?: boolean;
   testSentences?: number;  // Number of sentences to process in test mode
@@ -412,6 +407,9 @@ export interface JobResult {
   skippedChunksPath?: string;
   // Analytics data (TTS or cleanup job)
   analytics?: any;
+  // TTS session info (for caching after completion)
+  sessionId?: string;
+  sessionDir?: string;
   // Stop/resume support for TTS jobs
   wasStopped?: boolean;          // True if job was stopped by user (can be resumed)
   stopInfo?: {

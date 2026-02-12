@@ -176,6 +176,7 @@ export interface E2aSession {
   createdAt: string;  // ISO string for IPC serialization
   modifiedAt: string; // ISO string for IPC serialization
   bfpPath?: string;   // Path to linked BFP project.json (if found)
+  source?: 'e2a-tmp' | 'bfp-cache';  // Where this session was found
 }
 
 export interface E2aChapter {
@@ -228,32 +229,72 @@ const activeReassemblies = new Map<string, ChildProcess>();
  * BFP metadata is extracted from each session's source_epub_path
  * @param customTmpPath - Optional custom path to the e2a tmp folder
  */
-export async function scanE2aTmpFolder(customTmpPath?: string): Promise<{ sessions: E2aSession[]; tmpPath: string }> {
+export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: string): Promise<{ sessions: E2aSession[]; tmpPath: string }> {
   const sessions: E2aSession[] = [];
   const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
 
-  if (!fs.existsSync(tmpPath)) {
-    return { sessions: [], tmpPath };
+  // Scan e2a tmp folder for active sessions
+  if (fs.existsSync(tmpPath)) {
+    const entries = fs.readdirSync(tmpPath, { withFileTypes: true });
+
+    for (const entry of entries) {
+      // Look for ebook-* directories
+      if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) {
+        continue;
+      }
+
+      const sessionDir = path.join(tmpPath, entry.name);
+      const sessionId = entry.name.replace('ebook-', '');
+
+      try {
+        const session = await parseSession(sessionId, sessionDir);
+        if (session) {
+          session.source = 'e2a-tmp';
+          sessions.push(session);
+        }
+      } catch (err) {
+        console.error(`[REASSEMBLY] Error parsing session ${sessionId}:`, err);
+      }
+    }
   }
 
-  const entries = fs.readdirSync(tmpPath, { withFileTypes: true });
-
-  for (const entry of entries) {
-    // Look for ebook-* directories
-    if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) {
-      continue;
-    }
-
-    const sessionDir = path.join(tmpPath, entry.name);
-    const sessionId = entry.name.replace('ebook-', '');
-
+  // Scan BFP audiobook folders for cached sessions
+  if (libraryPath) {
+    const audiobooksDir = path.join(libraryPath, 'audiobooks');
     try {
-      const session = await parseSession(sessionId, sessionDir);
-      if (session) {
-        sessions.push(session);
+      if (fs.existsSync(audiobooksDir)) {
+        const projectDirs = fs.readdirSync(audiobooksDir, { withFileTypes: true });
+        for (const projectEntry of projectDirs) {
+          if (!projectEntry.isDirectory()) continue;
+
+          const sessionBaseDir = path.join(audiobooksDir, projectEntry.name, 'session');
+          if (!fs.existsSync(sessionBaseDir)) continue;
+
+          // Look for ebook-* directories inside session/
+          const sessionEntries = fs.readdirSync(sessionBaseDir, { withFileTypes: true });
+          for (const entry of sessionEntries) {
+            if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
+
+            const sessionDir = path.join(sessionBaseDir, entry.name);
+            const sessionId = entry.name.replace('ebook-', '');
+
+            // Skip if we already have this session from e2a tmp
+            if (sessions.some(s => s.sessionId === sessionId)) continue;
+
+            try {
+              const session = await parseSession(sessionId, sessionDir);
+              if (session) {
+                session.source = 'bfp-cache';
+                sessions.push(session);
+              }
+            } catch (err) {
+              console.error(`[REASSEMBLY] Error parsing cached session ${sessionId}:`, err);
+            }
+          }
+        }
       }
     } catch (err) {
-      console.error(`[REASSEMBLY] Error parsing session ${sessionId}:`, err);
+      console.error('[REASSEMBLY] Error scanning BFP audiobook folders:', err);
     }
   }
 
@@ -755,24 +796,7 @@ export async function startReassembly(
     return { success: false, error: 'Session process directory not found' };
   }
 
-  // Create symlink if session is in a different tmp folder than e2a expects
-  // e2a looks for sessions in <e2aPath>/tmp/ebook-<sessionId>
-  const e2aExpectedTmp = path.join(e2aPath, 'tmp');
-  const e2aExpectedSessionDir = path.join(e2aExpectedTmp, `ebook-${config.sessionId}`);
-
-  if (config.sessionDir !== e2aExpectedSessionDir && !fs.existsSync(e2aExpectedSessionDir)) {
-    try {
-      // Ensure the e2a tmp folder exists
-      if (!fs.existsSync(e2aExpectedTmp)) {
-        fs.mkdirSync(e2aExpectedTmp, { recursive: true });
-      }
-      // Create symlink to actual session location
-      fs.symlinkSync(config.sessionDir, e2aExpectedSessionDir);
-      console.log(`[REASSEMBLY] Created symlink: ${e2aExpectedSessionDir} -> ${config.sessionDir}`);
-    } catch (err) {
-      console.log(`[REASSEMBLY] Symlink exists or failed: ${err}`);
-    }
-  }
+  // No symlink needed - we pass --session_dir to e2a to tell it where the session is
 
   // Copy BFP cover to session directory if provided and not already there
   // e2a uses covers from the processDir (cleaned.jpg, cover.jpg, etc.) during assembly
@@ -890,6 +914,7 @@ export async function startReassembly(
       '--ebook', epubPath,
       '--output_dir', config.outputDir,
       '--session', config.sessionId,
+      '--session_dir', config.sessionDir,
       '--device', 'CPU',
       '--language', language,
       '--tts_engine', 'xtts',

@@ -703,6 +703,7 @@ export interface E2aSession {
   chapters: E2aChapter[];
   createdAt: string;   // ISO string
   modifiedAt: string;  // ISO string
+  source?: 'e2a-tmp' | 'bfp-cache';  // Where this session was found
 }
 
 export interface E2aChapter {
@@ -1338,7 +1339,7 @@ export interface ElectronAPI {
     isActive: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
     listActive: () => Promise<{ success: boolean; data?: Array<{ jobId: string; progress: ParallelAggregatedProgress; epubPath: string; startTime: number }>; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
-    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string } }) => void) => () => void;
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string }; sessionId?: string; sessionDir?: string }) => void) => () => void;
     onSessionCreated: (callback: (data: { jobId: string; sessionId: string; sessionDir: string; processDir: string; totalSentences: number; totalChapters: number }) => void) => () => void;
     // Resume support
     checkResumeFast: (epubPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
@@ -1347,9 +1348,7 @@ export interface ElectronAPI {
     buildResumeInfo: (prepInfo: any, settings: any) => Promise<{ success: boolean; data?: TtsResumeInfo; error?: string }>;
   };
   sessionCache: {
-    save: (sessionDir: string, projectDir: string, language: string) => Promise<{ success: boolean; cachedPath?: string; error?: string }>;
-    list: (projectDir: string) => Promise<{ success: boolean; data?: Array<{ language: string; sessionDir: string; sentenceCount: number; createdAt: string }>; error?: string }>;
-    restore: (projectDir: string, language: string) => Promise<{ success: boolean; sessionDir?: string; error?: string }>;
+    saveToBfp: (sessionDir: string, bfpPath: string) => Promise<{ success: boolean; cachedPath?: string; error?: string }>;
   };
   bilingualAssembly: {
     run: (jobId: string, config: {
@@ -2472,8 +2471,8 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('parallel-tts:progress', listener);
       };
     },
-    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string } }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string } }) => {
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string }; sessionId?: string; sessionDir?: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string }; sessionId?: string; sessionDir?: string }) => {
         callback(data);
       };
       ipcRenderer.on('parallel-tts:complete', listener);
@@ -2502,21 +2501,11 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('parallel-tts:build-resume-info', prepInfo, settings),
   },
   sessionCache: {
-    // Save a TTS session to project folder for later assembly
-    save: (sessionDir: string, projectDir: string, language: string) =>
-      ipcRenderer.invoke('session-cache:save', sessionDir, projectDir, language),
-    // List available sessions in a project
-    list: (projectDir: string) =>
-      ipcRenderer.invoke('session-cache:list', projectDir) as Promise<{
+    // Cache full TTS session to BFP audiobook folder for permanent storage
+    saveToBfp: (sessionDir: string, bfpPath: string) =>
+      ipcRenderer.invoke('session-cache:save-to-bfp', sessionDir, bfpPath) as Promise<{
         success: boolean;
-        data?: Array<{ language: string; sessionDir: string; sentenceCount: number; createdAt: string }>;
-        error?: string;
-      }>,
-    // Restore a cached session from project folder to e2a tmp
-    restore: (projectDir: string, language: string) =>
-      ipcRenderer.invoke('session-cache:restore', projectDir, language) as Promise<{
-        success: boolean;
-        sessionDir?: string;
+        cachedPath?: string;
         error?: string;
       }>,
   },

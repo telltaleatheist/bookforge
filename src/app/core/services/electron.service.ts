@@ -2743,56 +2743,6 @@ export class ElectronService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Session Cache (for Language Learning pipeline)
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Cache a TTS session to project folder for later assembly
-   */
-  async cacheSessionToProject(
-    sessionDir: string,
-    projectDir: string,
-    language: string
-  ): Promise<{ success: boolean; cachedPath?: string; error?: string }> {
-    if (this.isElectron && (window as any).electron.sessionCache) {
-      return (window as any).electron.sessionCache.save(sessionDir, projectDir, language);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * List available TTS sessions in a project folder
-   */
-  async listProjectSessions(projectDir: string): Promise<{
-    success: boolean;
-    data?: Array<{
-      language: string;
-      sessionDir: string;
-      sentenceCount: number;
-      createdAt: string;
-    }>;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.sessionCache) {
-      return (window as any).electron.sessionCache.list(projectDir);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Restore a cached session from project folder to e2a tmp for assembly
-   */
-  async restoreSessionFromProject(
-    projectDir: string,
-    language: string
-  ): Promise<{ success: boolean; sessionDir?: string; error?: string }> {
-    if (this.isElectron && (window as any).electron.sessionCache) {
-      return (window as any).electron.sessionCache.restore(projectDir, language);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
   // Manifest Service (Unified Project Management)
   // ─────────────────────────────────────────────────────────────────────────────
 
