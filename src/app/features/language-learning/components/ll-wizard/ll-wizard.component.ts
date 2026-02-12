@@ -1925,9 +1925,14 @@ export class LLWizardComponent implements OnInit {
   // Lifecycle
   // ─────────────────────────────────────────────────────────────────────────
 
+  private isInitializing = true;
+
   constructor() {
     // Sync TTS language rows when target languages change
     effect(() => {
+      // Skip during initialization to avoid conflicts
+      if (this.isInitializing) return;
+
       const targets = this.targetLangs();
       const sourceLang = this.detectedSourceLang();
       this.syncTtsRowsWithTargets(sourceLang, targets);
@@ -1950,6 +1955,9 @@ export class LLWizardComponent implements OnInit {
     console.log('[LL-WIZARD] After initialization:');
     console.log('[LL-WIZARD]   enableAiCleanup:', this.enableAiCleanup());
     console.log('[LL-WIZARD]   simplifyForLearning:', this.simplifyForLearning());
+
+    // Allow effects to run now that initialization is complete
+    this.isInitializing = false;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1978,44 +1986,70 @@ export class LLWizardComponent implements OnInit {
     const sourceLang = this.detectedSourceLang();
     const defaultVoice = this.ttsEngine() === 'orpheus' ? 'tara' : 'ScarlettJohansson';
     const rows: TtsLanguageRow[] = [];
+    const projectDir = this.effectiveProjectDir();
+    const timestamp = Date.now();
 
     // Always add source language (English) row
+    // Look for the source language EPUB (e.g., en.epub)
+    const epubs = this.availableEpubs();
+    const sourceEpub = epubs.find(e => e.isTranslated && e.lang === sourceLang);
+    const sourceEpubPath = sourceEpub ? sourceEpub.path : 'latest';
+
     rows.push({
-      id: `tts-${Date.now()}`,
+      id: `tts-${timestamp}-${sourceLang}`,
       language: sourceLang,
-      sourceEpub: 'latest',
+      sourceEpub: sourceEpubPath,
       voice: defaultVoice,
       speed: 1.0
     });
 
     // If we have language EPUBs available, add the first target language
-    const epubs = this.availableEpubs();
     const languageEpubs = epubs.filter(e => e.isTranslated && e.lang !== sourceLang);
     if (languageEpubs.length > 0) {
-      const firstTargetLang = languageEpubs[0].lang;
+      const firstTargetEpub = languageEpubs[0];
+      const firstTargetLang = firstTargetEpub.lang;
+
+      console.log('[LL-WIZARD] Adding target language TTS row:', {
+        lang: firstTargetLang,
+        path: firstTargetEpub.path,
+        filename: firstTargetEpub.filename
+      });
+
       rows.push({
-        id: `tts-${Date.now()}-${firstTargetLang}`,
+        id: `tts-${timestamp}-${firstTargetLang}`,
         language: firstTargetLang,
-        sourceEpub: 'latest',
+        sourceEpub: firstTargetEpub.path,  // Use the actual path to the target language EPUB
         voice: defaultVoice,
         speed: 0.85 // Slower for target language
       });
+    } else {
+      console.log('[LL-WIZARD] No target language EPUBs found yet');
     }
 
+    console.log('[LL-WIZARD] Initialized TTS rows:', rows);
     this.ttsLanguageRows.set(rows);
   }
 
   private syncTtsRowsWithTargets(sourceLang: string, targets: Set<string>): void {
+    // Skip if we haven't initialized yet
+    if (this.availableEpubs().length === 0) {
+      return;
+    }
+
     const currentRows = this.ttsLanguageRows();
     const defaultVoice = this.ttsEngine() === 'orpheus' ? 'tara' : 'ScarlettJohansson';
+    const epubs = this.availableEpubs();
 
     // Ensure source language row exists
     const hasSource = currentRows.some(r => r.language === sourceLang);
     if (!hasSource && currentRows.length === 0) {
+      const sourceEpub = epubs.find(e => e.isTranslated && e.lang === sourceLang);
+      const sourceEpubPath = sourceEpub ? sourceEpub.path : 'latest';
+
       this.ttsLanguageRows.update(rows => [...rows, {
         id: `tts-${Date.now()}`,
         language: sourceLang,
-        sourceEpub: 'latest',
+        sourceEpub: sourceEpubPath,
         voice: defaultVoice,
         speed: 1.0
       }]);
@@ -2025,10 +2059,13 @@ export class LLWizardComponent implements OnInit {
     for (const lang of targets) {
       const hasLang = currentRows.some(r => r.language === lang);
       if (!hasLang) {
+        const targetEpub = epubs.find(e => e.isTranslated && e.lang === lang);
+        const targetEpubPath = targetEpub ? targetEpub.path : 'latest';
+
         this.ttsLanguageRows.update(rows => [...rows, {
           id: `tts-${Date.now()}-${lang}`,
           language: lang,
-          sourceEpub: 'latest',
+          sourceEpub: targetEpubPath,
           voice: defaultVoice,
           speed: 0.85 // Slower for target language
         }]);
