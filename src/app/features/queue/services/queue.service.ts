@@ -788,6 +788,22 @@ export class QueueService {
       this.copyVttToBfp(completedJob.bfpPath, result.outputPath);
     }
 
+    // Link the completed audio file to the BFP so it shows up in Studio and Audiobook tabs
+    // without relying on filename matching (which can fail if e2a names the file differently)
+    if (result.success && result.outputPath && completedJob?.bfpPath &&
+        (completedJob.type === 'tts-conversion' || completedJob.type === 'reassembly') &&
+        result.outputPath.endsWith('.m4b')) {
+      try {
+        const electron = (window as any).electron;
+        if (electron?.audiobook?.linkAudio) {
+          console.log(`[QUEUE] Auto-linking audio to BFP: ${result.outputPath}`);
+          await electron.audiobook.linkAudio(completedJob.bfpPath, result.outputPath);
+        }
+      } catch (err) {
+        console.error('[QUEUE] Failed to auto-link audio to BFP:', err);
+      }
+    }
+
     // Cache audio files for cached-language TTS jobs (bilingual tab)
     if (result.success && result.outputPath && completedJob?.type === 'tts-conversion') {
       const ttsConfig = completedJob.config as TtsConversionConfig;

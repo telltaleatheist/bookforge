@@ -4635,6 +4635,22 @@ function setupIpcHandlers(): void {
             // Resolve bilingual VTT path
             const resolvedBilingualVttPath = resolveStoredPath(project.audiobook.bilingualVttPath);
 
+            // If no linked audio, scan audiobook folder for any .m4b file
+            // (e2a may use title-based naming instead of output.m4b)
+            let detectedAudioPath: string | undefined;
+            if (!resolvedLinkedAudioPath) {
+              const abFolder = getAudiobookFolderForProject(projectName);
+              try {
+                const abFiles = fsSync.readdirSync(abFolder);
+                const m4bFile = abFiles.find(f => f.endsWith('.m4b') && !f.startsWith('.') && !f.startsWith('._'));
+                if (m4bFile) {
+                  detectedAudioPath = path.join(abFolder, m4bFile);
+                }
+              } catch {
+                // Folder doesn't exist
+              }
+            }
+
             projects.push({
               name: projectName,
               bfpPath,
@@ -4643,8 +4659,8 @@ function setupIpcHandlers(): void {
               exportedAt: project.audiobook.exportedAt,
               cleanedAt: project.audiobook.cleanedAt,
               completedAt: project.audiobook.completedAt,
-              linkedAudioPath: resolvedLinkedAudioPath || project.audiobook.linkedAudioPath,
-              linkedAudioPathValid,
+              linkedAudioPath: resolvedLinkedAudioPath || detectedAudioPath || project.audiobook.linkedAudioPath,
+              linkedAudioPathValid: !!(resolvedLinkedAudioPath || detectedAudioPath) || linkedAudioPathValid,
               vttPath: resolvedVttPath || project.audiobook.vttPath,
               // Bilingual audio paths (resolved for cross-platform)
               bilingualAudioPath: resolvedBilingualAudioPath || project.audiobook.bilingualAudioPath,
