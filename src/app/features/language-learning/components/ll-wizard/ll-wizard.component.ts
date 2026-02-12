@@ -516,8 +516,10 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
                         (change)="updateTtsRow(i, 'sourceEpub', $any($event.target).value)"
                       >
                         <option value="latest">Latest</option>
-                        @for (epub of availableEpubs(); track epub.path) {
-                          <option [value]="epub.path">{{ epub.filename }}</option>
+                        @for (epub of ttsAvailableEpubs(); track epub.path) {
+                          <option [value]="epub.path">
+                            {{ epub.isTranslated ? epub.filename.toUpperCase().replace('.EPUB', '') + ' - ' + getLanguageName(epub.lang) : epub.filename }}
+                          </option>
                         }
                       </select>
 
@@ -1907,6 +1909,18 @@ export class LLWizardComponent implements OnInit {
     return languages;
   });
 
+  /**
+   * Filtered EPUBs for TTS step - only show language-specific EPUBs (en.epub, de.epub, etc.)
+   */
+  readonly ttsAvailableEpubs = computed(() => {
+    const allEpubs = this.availableEpubs();
+    // Only show translated EPUBs (language files like en.epub, de.epub) and cleaned.epub
+    return allEpubs.filter(epub =>
+      epub.isTranslated ||
+      epub.filename === 'cleaned.epub'
+    );
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // Lifecycle
   // ─────────────────────────────────────────────────────────────────────────
@@ -1920,7 +1934,7 @@ export class LLWizardComponent implements OnInit {
     });
   }
 
-  ngOnInit(): void {
+  async ngOnInit(): Promise<void> {
     console.log('[LL-WIZARD] Component initializing with:');
     console.log('[LL-WIZARD]   enableAiCleanup:', this.enableAiCleanup());
     console.log('[LL-WIZARD]   simplifyForLearning:', this.simplifyForLearning());
@@ -1928,7 +1942,8 @@ export class LLWizardComponent implements OnInit {
     this.detectedSourceLang.set(this.initialSourceLang());
     this.initializeFromSettings();
     this.checkOllamaConnection();
-    this.scanProjectEpubs();
+    // Scan EPUBs first, then initialize TTS rows based on what's available
+    await this.scanProjectEpubs();
     this.scanAvailableSessions();
     this.initializeDefaultTtsRows();
 
@@ -1962,14 +1977,32 @@ export class LLWizardComponent implements OnInit {
   private initializeDefaultTtsRows(): void {
     const sourceLang = this.detectedSourceLang();
     const defaultVoice = this.ttsEngine() === 'orpheus' ? 'tara' : 'ScarlettJohansson';
+    const rows: TtsLanguageRow[] = [];
 
-    this.ttsLanguageRows.set([{
+    // Always add source language (English) row
+    rows.push({
       id: `tts-${Date.now()}`,
       language: sourceLang,
       sourceEpub: 'latest',
       voice: defaultVoice,
       speed: 1.0
-    }]);
+    });
+
+    // If we have language EPUBs available, add the first target language
+    const epubs = this.availableEpubs();
+    const languageEpubs = epubs.filter(e => e.isTranslated && e.lang !== sourceLang);
+    if (languageEpubs.length > 0) {
+      const firstTargetLang = languageEpubs[0].lang;
+      rows.push({
+        id: `tts-${Date.now()}-${firstTargetLang}`,
+        language: firstTargetLang,
+        sourceEpub: 'latest',
+        voice: defaultVoice,
+        speed: 0.85 // Slower for target language
+      });
+    }
+
+    this.ttsLanguageRows.set(rows);
   }
 
   private syncTtsRowsWithTargets(sourceLang: string, targets: Set<string>): void {
@@ -2082,6 +2115,11 @@ export class LLWizardComponent implements OnInit {
       const epubs: AvailableEpub[] = [];
 
       for (const file of files) {
+        // Skip macOS resource fork files and hidden files
+        if (file.startsWith('._') || file.startsWith('.')) {
+          continue;
+        }
+
         if (file.endsWith('.epub')) {
           const filePath = `${dir}/${file}`;
           const lang = this.detectLanguageFromFilename(file);
