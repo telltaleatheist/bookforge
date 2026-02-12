@@ -2372,10 +2372,20 @@ export class LLWizardComponent implements OnInit {
       }
     }
 
+    // Find the matching EPUB for this language
+    const epubs = this.availableEpubs();
+    const matchingEpub = epubs.find(e => e.isTranslated && e.lang === newLang);
+    const sourceEpubPath = matchingEpub ? matchingEpub.path : 'latest';
+
+    console.log('[LL-WIZARD] Adding new TTS row:', {
+      lang: newLang,
+      epub: matchingEpub?.filename || 'latest'
+    });
+
     this.ttsLanguageRows.update(rows => [...rows, {
-      id: `tts-${Date.now()}`,
+      id: `tts-${Date.now()}-${newLang}`,
       language: newLang,
-      sourceEpub: 'latest',
+      sourceEpub: sourceEpubPath,
       voice: defaultVoice,
       speed: newLang === this.detectedSourceLang() ? 1.0 : 0.85
     }]);
@@ -2387,7 +2397,26 @@ export class LLWizardComponent implements OnInit {
 
   updateTtsRow(index: number, field: keyof TtsLanguageRow, value: any): void {
     this.ttsLanguageRows.update(rows =>
-      rows.map((row, i) => i === index ? { ...row, [field]: value } : row)
+      rows.map((row, i) => {
+        if (i !== index) return row;
+
+        const updatedRow = { ...row, [field]: value };
+
+        // When language changes, auto-select the matching EPUB
+        if (field === 'language') {
+          const epubs = this.availableEpubs();
+          const matchingEpub = epubs.find(e => e.isTranslated && e.lang === value);
+          if (matchingEpub) {
+            updatedRow.sourceEpub = matchingEpub.path;
+            console.log(`[LL-WIZARD] Auto-selected ${matchingEpub.filename} for language ${value}`);
+          } else {
+            // If no matching EPUB found, use 'latest'
+            updatedRow.sourceEpub = 'latest';
+          }
+        }
+
+        return updatedRow;
+      })
     );
   }
 
