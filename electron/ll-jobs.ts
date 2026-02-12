@@ -216,8 +216,8 @@ export async function runLLCleanup(
   // Use sourceEpubPath if provided, otherwise fall back to article.epub (for articles)
   const sourceEpubPath = config.sourceEpubPath || path.join(config.projectDir, 'article.epub');
 
-  // For book projects, use exported_cleaned.epub; for articles, use cleaned.epub
-  const cleanedFilename = config.projectId.endsWith('.bfp') ? 'exported_cleaned.epub' : 'cleaned.epub';
+  // Always use 'cleaned.epub' for consistency
+  const cleanedFilename = 'cleaned.epub';
   const cleanedEpubPath = path.join(config.projectDir, cleanedFilename);
 
   // Handle startFresh flag - delete existing cleaned.epub if starting fresh

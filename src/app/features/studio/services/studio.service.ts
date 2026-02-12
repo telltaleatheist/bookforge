@@ -150,7 +150,7 @@ export class StudioService {
             coverPath: p.metadata?.coverImagePath,
             hasCleaned: !!p.cleanedAt,
             // Only set cleanedEpubPath if the book was actually cleaned (cleanedAt exists)
-            cleanedEpubPath: (p.cleanedAt && p.audiobookFolder) ? `${p.audiobookFolder}/exported_cleaned.epub` : undefined,
+            cleanedEpubPath: (p.cleanedAt && p.audiobookFolder) ? `${p.audiobookFolder}/cleaned.epub` : undefined,
             audiobookPath,
             vttPath,
             skippedChunksPath,

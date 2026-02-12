@@ -665,7 +665,7 @@ export class AudiobookComponent implements OnInit {
     if (item.hasCleaned && item.projectId) {
       const pathNorm = item.path.replace(/\\/g, '/');
       const originalDir = pathNorm.substring(0, pathNorm.lastIndexOf('/'));
-      const cleanedName = item.cleanedFilename || 'exported_cleaned.epub';
+      const cleanedName = item.cleanedFilename || 'cleaned.epub';
       return `${originalDir}/${cleanedName}`;
     }
 
@@ -905,15 +905,17 @@ export class AudiobookComponent implements OnInit {
         // Check if cleaned EPUB exists based on project state
         const hasCleaned = !!project.cleanedAt;
 
-        // Determine which cleaned epub filename exists (new: exported_cleaned.epub, legacy: cleaned.epub)
+        // Determine cleaned epub filename (unified to 'cleaned.epub')
         let cleanedFilename: string | undefined;
         if (hasCleaned && this.electron) {
-          const newCleanedPath = `${project.audiobookFolder}/exported_cleaned.epub`;
-          const legacyCleanedPath = `${project.audiobookFolder}/cleaned.epub`;
-          if (await this.electron.fs.exists(newCleanedPath).catch(() => false)) {
-            cleanedFilename = 'exported_cleaned.epub';
-          } else if (await this.electron.fs.exists(legacyCleanedPath).catch(() => false)) {
+          const cleanedPath = `${project.audiobookFolder}/cleaned.epub`;
+          // Also check for legacy exported_cleaned.epub
+          const legacyCleanedPath = `${project.audiobookFolder}/exported_cleaned.epub`;
+          if (await this.electron.fs.exists(cleanedPath).catch(() => false)) {
             cleanedFilename = 'cleaned.epub';
+          } else if (await this.electron.fs.exists(legacyCleanedPath).catch(() => false)) {
+            // Found legacy file, use it for now (it will be renamed by backend when accessed)
+            cleanedFilename = 'exported_cleaned.epub';
           }
         }
 
@@ -1209,7 +1211,7 @@ export class AudiobookComponent implements OnInit {
       if (item?.hasCleaned) {
         const pathNorm = item.path.replace(/\\/g, '/');
         const originalDir = pathNorm.substring(0, pathNorm.lastIndexOf('/'));
-        const cleanedName = item.cleanedFilename || 'exported_cleaned.epub';
+        const cleanedName = item.cleanedFilename || 'cleaned.epub';
         const paths = {
           originalPath: `${originalDir}/exported.epub`,
           cleanedPath: `${originalDir}/${cleanedName}`

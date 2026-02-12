@@ -1784,8 +1784,9 @@ export class QueueService {
             const candidates = [
               `${basePath}_translated_cleaned.epub`,  // Translated + cleaned (best)
               `${basePath}_translated.epub`,           // Translated only
-              `${basePath}_cleaned.epub`,              // Cleaned only (new naming: exported_cleaned.epub)
-              `${epubDir}/cleaned.epub`                // Cleaned only (legacy naming: cleaned.epub)
+              `${basePath}_cleaned.epub`,              // Cleaned only with base path
+              `${epubDir}/cleaned.epub`,               // Cleaned only (unified naming)
+              `${epubDir}/exported_cleaned.epub`       // Legacy naming (will be renamed by backend)
             ];
             let foundPath: string | null = null;
             for (const candidatePath of candidates) {

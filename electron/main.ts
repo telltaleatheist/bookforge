@@ -3310,17 +3310,27 @@ function setupIpcHandlers(): void {
     return `${baseName}_${timestamp}`;
   };
 
-  // Helper to find cleaned epub - checks for both 'exported_cleaned.epub' (new) and 'cleaned.epub' (legacy)
+  // Helper to find cleaned epub - now unified to always use 'cleaned.epub'
   const findCleanedEpub = async (folderPath: string): Promise<string | null> => {
-    const newName = path.join(folderPath, 'exported_cleaned.epub');
-    const legacyName = path.join(folderPath, 'cleaned.epub');
+    const cleanedPath = path.join(folderPath, 'cleaned.epub');
 
-    if (await fs.access(newName).then(() => true).catch(() => false)) {
-      return newName;
+    if (await fs.access(cleanedPath).then(() => true).catch(() => false)) {
+      return cleanedPath;
     }
-    if (await fs.access(legacyName).then(() => true).catch(() => false)) {
-      return legacyName;
+
+    // Check for legacy 'exported_cleaned.epub' and rename it if found
+    const legacyPath = path.join(folderPath, 'exported_cleaned.epub');
+    if (await fs.access(legacyPath).then(() => true).catch(() => false)) {
+      try {
+        await fs.rename(legacyPath, cleanedPath);
+        console.log(`[AUDIOBOOK] Renamed exported_cleaned.epub to cleaned.epub in ${folderPath}`);
+        return cleanedPath;
+      } catch (err) {
+        console.error(`[AUDIOBOOK] Failed to rename exported_cleaned.epub:`, err);
+        return legacyPath; // Fall back to legacy name if rename fails
+      }
     }
+
     return null;
   };
 
@@ -3577,8 +3587,8 @@ function setupIpcHandlers(): void {
     const hasExported = await fs.access(exportedPath).then(() => true).catch(() => false);
     const originalPath = hasExported ? exportedPath : legacyPath;
 
-    // Find cleaned epub (checks both 'exported_cleaned.epub' and 'cleaned.epub')
-    const cleanedPath = await findCleanedEpub(folderPath) || path.join(folderPath, 'exported_cleaned.epub');
+    // Find cleaned epub (now unified to 'cleaned.epub')
+    const cleanedPath = await findCleanedEpub(folderPath) || path.join(folderPath, 'cleaned.epub');
 
     return {
       success: true,
@@ -3627,6 +3637,7 @@ function setupIpcHandlers(): void {
         }
 
         // Remove old files (exported.epub, original.epub (legacy), cleaned epubs, project.json)
+        // Include both cleaned.epub and exported_cleaned.epub for legacy cleanup
         const filesToRemove = ['exported.epub', 'original.epub', 'cleaned.epub', 'exported_cleaned.epub', 'project.json'];
         for (const file of filesToRemove) {
           try {
@@ -6988,10 +6999,19 @@ function setupIpcHandlers(): void {
       const audiobookFolder = resolvePath(rawAudiobookFolder);
       console.log('[EDITOR:GET-VERSIONS] audiobookFolder:', rawAudiobookFolder, '-> resolved:', audiobookFolder);
       if (audiobookFolder) {
-        // Try exported_cleaned.epub (old convention) then cleaned.epub (new LL convention)
-        const cleanedPathOld = path.join(audiobookFolder, 'exported_cleaned.epub');
-        const cleanedPathNew = path.join(audiobookFolder, 'cleaned.epub');
-        const cleanedPath = fsSync.existsSync(cleanedPathOld) ? cleanedPathOld : cleanedPathNew;
+        // Look for cleaned.epub (unified naming)
+        const cleanedPath = path.join(audiobookFolder, 'cleaned.epub');
+
+        // Check for legacy exported_cleaned.epub and rename if found
+        const legacyCleanedPath = path.join(audiobookFolder, 'exported_cleaned.epub');
+        if (!fsSync.existsSync(cleanedPath) && fsSync.existsSync(legacyCleanedPath)) {
+          try {
+            fsSync.renameSync(legacyCleanedPath, cleanedPath);
+            console.log('[EDITOR:GET-VERSIONS] Renamed exported_cleaned.epub to cleaned.epub');
+          } catch (err) {
+            console.error('[EDITOR:GET-VERSIONS] Failed to rename exported_cleaned.epub:', err);
+          }
+        }
         console.log('[EDITOR:GET-VERSIONS] cleanedPath:', cleanedPath, 'exists:', fsSync.existsSync(cleanedPath));
 
         await addVersion(
