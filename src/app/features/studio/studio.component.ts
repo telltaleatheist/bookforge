@@ -1098,10 +1098,25 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   getProjectDir(): string {
     const item = this.selectedItem();
-    if (!item || item.type !== 'article') return '';
-    const articlesPath = this.libraryService.articlesPath();
-    if (!articlesPath) return '';
-    return `${articlesPath}/${item.id}`;
+    if (!item) return '';
+
+    if (item.type === 'article') {
+      const articlesPath = this.libraryService.articlesPath();
+      if (!articlesPath) return '';
+      return `${articlesPath}/${item.id}`;
+    } else if (item.type === 'book' && item.bfpPath) {
+      // For books, derive project dir from BFP path
+      // BFP path is like: /path/to/projects/book_id.bfp
+      // We want: /path/to/projects/book_id
+      const bfpPath = item.bfpPath;
+      const lastSlash = bfpPath.lastIndexOf('/');
+      const bfpFileName = bfpPath.substring(lastSlash + 1);
+      const projectName = bfpFileName.replace('.bfp', '');
+      const projectsDir = bfpPath.substring(0, lastSlash);
+      return `${projectsDir}/${projectName}`;
+    }
+
+    return '';
   }
 
   getAudiobookFolder(): string {

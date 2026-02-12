@@ -1694,10 +1694,8 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
     }
 
     // Check if we should skip assembly (for dual-voice bilingual workflows)
-    console.log(`[PARALLEL-TTS] Checking skipAssembly: session.config.skipAssembly = ${session.config.skipAssembly}`);
     if (session.config.skipAssembly) {
       const sentencesDir = session.prepInfo?.chaptersDirSentences || session.prepInfo?.chaptersDir;
-      console.log(`[PARALLEL-TTS] skipAssembly=true, returning sentences directory: ${sentencesDir}`);
       await logger.log('INFO', session.jobId, `skipAssembly mode - sentences at: ${sentencesDir}`);
       // Emit completion with sentences directory as the "output path" for downstream assembly
       emitComplete(session, true, sentencesDir);
@@ -2633,7 +2631,9 @@ function emitComplete(
   outputPath?: string,
   error?: string
 ): void {
-  if (!mainWindow || !session.prepInfo) return;
+  if (!mainWindow || !session.prepInfo) {
+    return;
+  }
 
   // Clean up
   progressHistory.delete(session.jobId);

@@ -215,9 +215,27 @@ export interface FetchUrlResult {
 export interface TtsLanguageRow {
   id: string;                   // Unique ID for tracking
   language: string;             // Language code (e.g., 'en', 'de')
-  sourceEpub: string;           // "latest" or explicit path
   voice: string;                // Voice name/ID
   speed: number;                // Playback speed (0.5-2.0)
+  // REMOVED sourceEpub - file resolution is a runtime concern, not UI state
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EPUB Resolution (for Language Learning pipeline)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface EpubResolutionContext {
+  projectDir: string;           // Project directory
+  audiobookDir?: string;        // Audiobook folder (for books)
+  pipeline: 'language-learning' | 'standard';
+  language: string;             // Target language for resolution
+}
+
+export interface ResolvedEpub {
+  path: string;                 // Resolved file path
+  source: 'language' | 'cleaned' | 'finalized' | 'original' | 'fallback';
+  exists: boolean;              // Whether file exists on disk
+  sentenceCount?: number;       // Expected sentence count (if known)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

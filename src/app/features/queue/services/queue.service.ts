@@ -709,6 +709,7 @@ export class QueueService {
 
     // Get the job before updating to capture the type
     const completedJob = this._jobs().find(j => j.id === result.jobId);
+    console.log('[QUEUE] Found completed job:', completedJob ? `type=${completedJob.type}, id=${completedJob.id}` : 'NOT FOUND');
 
     // Determine the final status:
     // - success=true -> 'complete'
@@ -809,7 +810,6 @@ export class QueueService {
     if (result.success && completedJob?.type === 'tts-conversion') {
       const ttsConfig = completedJob.config as TtsConversionConfig;
       if (ttsConfig?.cacheToProject && ttsConfig?.projectDir) {
-        console.log(`[QUEUE] Caching TTS session to project: ${ttsConfig.projectDir}/${ttsConfig.language}`);
         this.cacheSessionToProject(result, ttsConfig);
       }
     }
@@ -1763,21 +1763,27 @@ export class QueueService {
           console.log(`[QUEUE] config.outputFilename:`, config.outputFilename);
           console.log(`[QUEUE] isResumeJob:`, job.isResumeJob);
 
-          // Prefer processed epubs in order: translated+cleaned > translated > cleaned > original
-          // BUT: Skip this for bilingual/language-learning TTS jobs which have explicit epub paths
+          // IMPORTANT: For Language Learning pipeline, trust the EPUB path that was resolved when the job was created
+          // The LL wizard uses EpubResolverService to find the correct language-specific EPUB (en.epub, de.epub, etc.)
+          // Do NOT override with hardcoded search logic that would find cleaned.epub instead
           let epubPathForTts: string = job.epubPath || '';
           const isBilingualTts = !!(job.metadata as any)?.bilingualWorkflow;
+
+          // Check if this is a Language Learning TTS job (has language config and sentencePerParagraph)
+          const isLanguageLearningTts = config.sentencePerParagraph === true;
 
           if (job.outputPath) {
             // Job has an explicit output path (e.g., from chained workflow)
             epubPathForTts = job.outputPath;
             console.log(`[QUEUE] Using job.outputPath for TTS: ${epubPathForTts}`);
-          } else if (isBilingualTts) {
-            // Bilingual TTS jobs already have the correct epub path (source.epub or target.epub)
-            // Don't override with cleaned.epub which would use wrong language content
-            console.log(`[QUEUE] Bilingual TTS job, using explicit epubPath: ${epubPathForTts}`);
+          } else if (isBilingualTts || isLanguageLearningTts) {
+            // Language Learning or Bilingual TTS jobs already have the correct epub path
+            // These use language-specific EPUBs (en.epub, de.epub) with sentence-per-paragraph format
+            // Don't override with cleaned.epub which would have wrong format and too many chunks
+            console.log(`[QUEUE] Language Learning TTS job, using resolved epubPath: ${epubPathForTts}`);
           } else if (electron.fs?.exists && job.epubPath) {
-            // Check for processed EPUBs in priority order
+            // Standard audiobook workflow: Check for processed EPUBs in priority order
+            // This is for regular audiobooks, not Language Learning
             const epubPathNorm = job.epubPath.replace(/\\/g, '/');
             const basePath = epubPathNorm.replace(/\.epub$/i, '');
             const epubDir = epubPathNorm.substring(0, epubPathNorm.lastIndexOf('/'));
@@ -1801,9 +1807,9 @@ export class QueueService {
             }
             if (foundPath) {
               epubPathForTts = foundPath;
-              console.log(`[QUEUE] Found processed epub, using: ${epubPathForTts}`);
+              console.log(`[QUEUE] Standard audiobook: Found processed epub, using: ${epubPathForTts}`);
             } else {
-              console.log(`[QUEUE] No processed epub found, using original: ${epubPathForTts}`);
+              console.log(`[QUEUE] Standard audiobook: No processed epub found, using original: ${epubPathForTts}`);
             }
           }
 
@@ -1900,33 +1906,21 @@ export class QueueService {
             await electron.parallelTts.startConversion(job.id, parallelConfig);
           }
         } else {
-          // Use sequential TTS conversion (also check for translated/cleaned epub)
+          // Use sequential TTS conversion
+          // IMPORTANT: Use the EPUB path that was resolved when the job was created
+          // Do NOT override with hardcoded search logic - this breaks Language Learning pipeline
           let seqEpubPath = job.epubPath || '';
+
+          // Only use outputPath if explicitly set (from previous job in chain)
           if (job.outputPath) {
             seqEpubPath = job.outputPath;
-          } else if (electron.fs?.exists && job.epubPath) {
-            const epubPathNorm = job.epubPath.replace(/\\/g, '/');
-            const basePath = epubPathNorm.replace(/\.epub$/i, '');
-            const epubDir = epubPathNorm.substring(0, epubPathNorm.lastIndexOf('/'));
-            const candidates = [
-              `${basePath}_translated_cleaned.epub`,
-              `${basePath}_translated.epub`,
-              `${basePath}_cleaned.epub`,
-              `${epubDir}/cleaned.epub`  // Legacy naming
-            ];
-            for (const candidatePath of candidates) {
-              try {
-                if (await electron.fs.exists(candidatePath)) {
-                  seqEpubPath = candidatePath;
-                  console.log(`[QUEUE] Sequential TTS: using processed epub: ${seqEpubPath}`);
-                  break;
-                }
-              } catch { /* continue checking */ }
-            }
-          }
-          if (!seqEpubPath) {
+            console.log(`[QUEUE] Sequential TTS: using output from previous job: ${seqEpubPath}`);
+          } else if (!seqEpubPath) {
             throw new Error('EPUB path is required for TTS conversion');
+          } else {
+            console.log(`[QUEUE] Sequential TTS: using job's EPUB path: ${seqEpubPath}`);
           }
+
           await electron.queue.runTtsConversion(job.id, seqEpubPath, config);
         }
       } else if (job.type === 'reassembly') {
@@ -2901,6 +2895,12 @@ export class QueueService {
     result: JobResult,
     ttsConfig: TtsConversionConfig
   ): Promise<void> {
+    console.log('[QUEUE] cacheSessionToProject called with:', {
+      outputPath: result.outputPath,
+      projectDir: ttsConfig.projectDir,
+      language: ttsConfig.language
+    });
+
     const electron = window.electron as any;
     if (!electron?.sessionCache?.save) {
       console.warn('[QUEUE] Cannot cache session - electron.sessionCache.save not available');

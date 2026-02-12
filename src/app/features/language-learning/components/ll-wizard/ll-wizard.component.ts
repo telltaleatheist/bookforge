@@ -20,6 +20,7 @@ import { SettingsService } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { QueueService } from '../../../queue/services/queue.service';
+import { EpubResolverService } from '../../services/epub-resolver.service';
 import {
   SUPPORTED_LANGUAGES,
   TtsLanguageRow,
@@ -510,18 +511,10 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
                         }
                       </select>
 
-                      <select
-                        class="source-select"
-                        [value]="row.sourceEpub"
-                        (change)="updateTtsRow(i, 'sourceEpub', $any($event.target).value)"
-                      >
-                        <option value="latest">Latest</option>
-                        @for (epub of ttsAvailableEpubs(); track epub.path) {
-                          <option [value]="epub.path">
-                            {{ epub.isTranslated ? epub.filename.toUpperCase().replace('.EPUB', '') + ' - ' + getLanguageName(epub.lang) : epub.filename }}
-                          </option>
-                        }
-                      </select>
+                      <!-- EPUB automatically resolved at runtime based on language -->
+                      <span class="epub-auto">
+                        {{ row.language.toUpperCase() }}.epub
+                      </span>
 
                       <select
                         class="voice-select"
@@ -1423,14 +1416,17 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
         color: var(--text-primary);
       }
 
-      .source-select {
+      .epub-auto {
         width: 140px;
         padding: 6px 8px;
-        background: var(--bg-surface);
-        border: 1px solid var(--border-default);
+        background: var(--bg-subtle);
+        border: 1px solid var(--border-subtle);
         border-radius: 4px;
         font-size: 12px;
-        color: var(--text-primary);
+        color: var(--text-secondary);
+        display: inline-block;
+        text-align: center;
+        font-style: italic;
       }
 
       .voice-select {
@@ -1701,6 +1697,7 @@ export class LLWizardComponent implements OnInit {
   private readonly libraryService = inject(LibraryService);
   private readonly queueService = inject(QueueService);
   private readonly router = inject(Router);
+  private readonly epubResolver = inject(EpubResolverService);
 
   // Make Array available in template
   readonly Array = Array;
@@ -2000,56 +1997,27 @@ export class LLWizardComponent implements OnInit {
     const sourceLang = this.detectedSourceLang();
     const defaultVoice = this.ttsEngine() === 'orpheus' ? 'tara' : 'ScarlettJohansson';
     const rows: TtsLanguageRow[] = [];
-    const projectDir = this.effectiveProjectDir();
     const timestamp = Date.now();
 
-    // Always add source language (English) row
-    // Look for the source language EPUB (e.g., en.epub)
-    const epubs = this.availableEpubs();
-    const sourceEpub = epubs.find(e => e.isTranslated && e.lang === sourceLang);
-    const sourceEpubPath = sourceEpub ? sourceEpub.path : 'latest';
-
+    // First row: Source language (e.g., English)
     rows.push({
       id: `tts-${timestamp}-${sourceLang}`,
       language: sourceLang,
-      sourceEpub: sourceEpubPath,
       voice: defaultVoice,
       speed: 1.0
     });
 
-    // If we have language EPUBs available, add the first target language
-    console.log('[LL-WIZARD] Available EPUBs for TTS init:', epubs.map(e => ({
-      filename: e.filename,
-      lang: e.lang,
-      isTranslated: e.isTranslated
-    })));
-
-    const languageEpubs = epubs.filter(e => e.isTranslated && e.lang !== sourceLang);
-    console.log('[LL-WIZARD] Language EPUBs (non-source):', languageEpubs.map(e => e.filename));
-
-    if (languageEpubs.length > 0) {
-      const firstTargetEpub = languageEpubs[0];
-      const firstTargetLang = firstTargetEpub.lang;
-
-      console.log('[LL-WIZARD] Adding target language TTS row:', {
-        lang: firstTargetLang,
-        path: firstTargetEpub.path,
-        filename: firstTargetEpub.filename
-      });
-
-      rows.push({
-        id: `tts-${timestamp}-${firstTargetLang}`,
-        language: firstTargetLang,
-        sourceEpub: firstTargetEpub.path,  // Use the actual path to the target language EPUB
-        voice: defaultVoice,
-        speed: 0.85 // Slower for target language
-      });
-    } else {
-      console.log('[LL-WIZARD] No target language EPUBs found yet');
-    }
+    // Second row: First target language (if available from translation config)
+    // This will be populated based on selected target languages
+    // We don't need to check for EPUBs here - that happens at runtime
 
     console.log('[LL-WIZARD] Initialized TTS rows:', rows);
     this.ttsLanguageRows.set(rows);
+
+    // If we have TTS rows configured, remove from skipped steps
+    if (rows.length > 0) {
+      this._skippedSteps.delete('tts');
+    }
   }
 
   private syncTtsRowsWithTargets(sourceLang: string, targets: Set<string>): void {
@@ -2162,47 +2130,82 @@ export class LLWizardComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────
 
   async scanProjectEpubs(): Promise<void> {
-    // For book projects, look in audiobook folder where language EPUBs are stored
-    // For article projects, look in project dir
-    const audiobookFolder = this.audiobookFolder();
     const projectDir = this.effectiveProjectDir();
-    const dir = audiobookFolder || projectDir;
 
-    if (!dir) {
+    if (!projectDir) {
       this.availableEpubs.set([]);
       return;
     }
 
-    console.log('[LL-WIZARD] Scanning for EPUBs in:', dir);
+    console.log('[LL-WIZARD] Scanning for EPUBs in unified structure:', projectDir);
     this.scanningEpubs.set(true);
     try {
-      const files = await this.electronService.listDirectory(dir);
       const epubs: AvailableEpub[] = [];
 
-      for (const file of files) {
-        // Skip macOS resource fork files and hidden files
-        if (file.startsWith('._') || file.startsWith('.')) {
-          continue;
+      // Scan translation stage for language EPUBs
+      try {
+        const translationDir = `${projectDir}/stages/02-translate`;
+        const translationFiles = await this.electronService.listDirectory(translationDir);
+        for (const file of translationFiles) {
+          if (file.endsWith('.epub') && !file.startsWith('._') && !file.startsWith('.')) {
+            const filePath = `${translationDir}/${file}`;
+            const lang = this.detectLanguageFromFilename(file);
+            const isLangEpub = /^[a-z]{2}\.epub$/i.test(file);
+
+            epubs.push({
+              path: filePath,
+              filename: file,
+              lang: lang,
+              isSource: false,
+              isTranslated: isLangEpub,
+              isCleaned: false
+            });
+          }
         }
+      } catch (err) {
+        console.log('[LL-WIZARD] No translation stage found');
+      }
 
-        if (file.endsWith('.epub')) {
-          const filePath = `${dir}/${file}`;
-          const lang = this.detectLanguageFromFilename(file);
-          const isSource = file === 'exported.epub' || file.includes('original') || file === 'article.epub' || file === 'finalized.epub';
-          const isTranslated = /^[a-z]{2}\.epub$/i.test(file);  // Case-insensitive check
-          const isCleaned = file.includes('cleaned');
-
-          console.log('[LL-WIZARD] EPUB file:', file, '- lang:', lang, '- isTranslated:', isTranslated);
-
-          epubs.push({
-            path: filePath,
-            filename: file,
-            lang,
-            isSource,
-            isTranslated,
-            isCleaned
-          });
+      // Scan cleanup stage
+      try {
+        const cleanupDir = `${projectDir}/stages/01-cleanup`;
+        const cleanupFiles = await this.electronService.listDirectory(cleanupDir);
+        for (const file of cleanupFiles) {
+          if (file === 'cleaned.epub') {
+            const filePath = `${cleanupDir}/${file}`;
+            epubs.push({
+              path: filePath,
+              filename: file,
+              lang: 'en',
+              isSource: false,
+              isTranslated: false,
+              isCleaned: true
+            });
+          }
         }
+      } catch (err) {
+        console.log('[LL-WIZARD] No cleanup stage found');
+      }
+
+      // Scan source folder
+      try {
+        const sourceDir = `${projectDir}/source`;
+        const sourceFiles = await this.electronService.listDirectory(sourceDir);
+        for (const file of sourceFiles) {
+          if ((file === 'original.epub' || file === 'finalized.epub') && !file.startsWith('._')) {
+            const filePath = `${sourceDir}/${file}`;
+            epubs.push({
+              path: filePath,
+              filename: file,
+              lang: 'en',
+              isSource: file === 'original.epub',
+              isTranslated: false,
+              isCleaned: file === 'finalized.epub'
+            });
+          }
+        }
+      } catch (err) {
+        console.log('[LL-WIZARD] No source folder found');
       }
 
       console.log('[LL-WIZARD] Scanned EPUBs:', epubs.map(e => ({
@@ -2233,15 +2236,16 @@ export class LLWizardComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────
 
   async scanAvailableSessions(): Promise<void> {
-    const dir = this.effectiveProjectDir();
-    if (!dir) {
+    const projectDir = this.effectiveProjectDir();
+
+    if (!projectDir) {
       this.availableSessions.set([]);
       return;
     }
 
     try {
       // Use the proper session cache API
-      const result = await this.electronService.listProjectSessions(dir);
+      const result = await this.electronService.listProjectSessions(projectDir);
 
       if (result.success && result.data) {
         const sessions: SessionCache[] = result.data.map(s => ({
@@ -2264,6 +2268,11 @@ export class LLWizardComponent implements OnInit {
           if (targetSession) {
             this.assemblyTargetLang.set(targetSession.language);
           }
+
+          // If both languages are set, remove assembly from skipped steps
+          if (sourceSession && targetSession) {
+            this._skippedSteps.delete('assembly');
+          }
         }
       } else {
         this.availableSessions.set([]);
@@ -2271,6 +2280,31 @@ export class LLWizardComponent implements OnInit {
     } catch (err) {
       console.error('Failed to scan sessions:', err);
       this.availableSessions.set([]);
+    }
+
+    // If no sessions exist but TTS is configured, auto-populate from TTS language rows
+    if (this.availableSessions().length === 0 && this.ttsLanguageRows().length >= 2) {
+      const ttsRows = this.ttsLanguageRows();
+      const sourceLang = this.detectedSourceLang();
+
+      // Find source and target language rows
+      const sourceRow = ttsRows.find(r => r.language === sourceLang);
+      const targetRow = ttsRows.find(r => r.language !== sourceLang);
+
+      if (sourceRow && !this.assemblySourceLang()) {
+        console.log('[LL-WIZARD] Auto-setting assembly source from TTS:', sourceRow.language);
+        this.assemblySourceLang.set(sourceRow.language);
+      }
+
+      if (targetRow && !this.assemblyTargetLang()) {
+        console.log('[LL-WIZARD] Auto-setting assembly target from TTS:', targetRow.language);
+        this.assemblyTargetLang.set(targetRow.language);
+      }
+
+      // If both are now set, remove from skipped steps
+      if (this.assemblySourceLang() && this.assemblyTargetLang()) {
+        this._skippedSteps.delete('assembly');
+      }
     }
   }
 
@@ -2355,6 +2389,7 @@ export class LLWizardComponent implements OnInit {
     return this.ttsEngine() === 'orpheus' ? this.orpheusVoices : this.xttsVoices;
   }
 
+
   addTtsRow(): void {
     const defaultVoice = this.ttsEngine() === 'orpheus' ? 'tara' : 'ScarlettJohansson';
     const existingLangs = new Set(this.ttsLanguageRows().map(r => r.language));
@@ -2372,20 +2407,9 @@ export class LLWizardComponent implements OnInit {
       }
     }
 
-    // Find the matching EPUB for this language
-    const epubs = this.availableEpubs();
-    const matchingEpub = epubs.find(e => e.isTranslated && e.lang === newLang);
-    const sourceEpubPath = matchingEpub ? matchingEpub.path : 'latest';
-
-    console.log('[LL-WIZARD] Adding new TTS row:', {
-      lang: newLang,
-      epub: matchingEpub?.filename || 'latest'
-    });
-
     this.ttsLanguageRows.update(rows => [...rows, {
       id: `tts-${Date.now()}-${newLang}`,
       language: newLang,
-      sourceEpub: sourceEpubPath,
       voice: defaultVoice,
       speed: newLang === this.detectedSourceLang() ? 1.0 : 0.85
     }]);
@@ -2399,23 +2423,8 @@ export class LLWizardComponent implements OnInit {
     this.ttsLanguageRows.update(rows =>
       rows.map((row, i) => {
         if (i !== index) return row;
-
-        const updatedRow = { ...row, [field]: value };
-
-        // When language changes, auto-select the matching EPUB
-        if (field === 'language') {
-          const epubs = this.availableEpubs();
-          const matchingEpub = epubs.find(e => e.isTranslated && e.lang === value);
-          if (matchingEpub) {
-            updatedRow.sourceEpub = matchingEpub.path;
-            console.log(`[LL-WIZARD] Auto-selected ${matchingEpub.filename} for language ${value}`);
-          } else {
-            // If no matching EPUB found, use 'latest'
-            updatedRow.sourceEpub = 'latest';
-          }
-        }
-
-        return updatedRow;
+        // Simple update - EPUB resolution happens at runtime
+        return { ...row, [field]: value };
       })
     );
   }
@@ -2512,7 +2521,7 @@ export class LLWizardComponent implements OnInit {
     this.goNext();
   }
 
-  goNext(): void {
+  async goNext(): Promise<void> {
     const step = this.currentStep();
     if (!this._skippedSteps.has(step)) {
       this.completedSteps.add(step);
@@ -2528,17 +2537,54 @@ export class LLWizardComponent implements OnInit {
         // Don't auto-skip, let user decide
       }
 
+      // Check if TTS is configured when entering the step
+      if (nextStep === 'tts') {
+        // Re-scan for EPUBs to pick up newly created language files from Translation
+        // IMPORTANT: Must await to ensure scan completes before TTS configuration
+        await this.scanProjectEpubs();
+
+        if (this.ttsLanguageRows().length > 0) {
+          // TTS has languages configured, remove from skipped
+          this._skippedSteps.delete('tts');
+        }
+      }
+
+      // Check if assembly is configured when entering the step
+      if (nextStep === 'assembly') {
+        if (this.assemblySourceLang() && this.assemblyTargetLang()) {
+          // Assembly has both languages configured, remove from skipped
+          this._skippedSteps.delete('assembly');
+        }
+        // Rescan sessions when entering assembly step
+        this.scanAvailableSessions();
+      }
+
+      // When entering review, double-check that configured steps are not marked as skipped
+      if (nextStep === 'review') {
+        // Check cleanup
+        if ((this.enableAiCleanup() || this.simplifyForLearning())) {
+          this._skippedSteps.delete('cleanup');
+        }
+        // Check translation
+        if (this.targetLangs().size > 0) {
+          this._skippedSteps.delete('translate');
+        }
+        // Check TTS
+        if (this.ttsLanguageRows().length > 0) {
+          this._skippedSteps.delete('tts');
+        }
+        // Check assembly
+        if (this.assemblySourceLang() && this.assemblyTargetLang()) {
+          this._skippedSteps.delete('assembly');
+        }
+      }
+
       // Auto-skip assembly if no source/target
       if (step === 'assembly' && (!this.assemblySourceLang() || !this.assemblyTargetLang())) {
         this._skippedSteps.add('assembly');
       }
 
       this.currentStep.set(nextStep);
-
-      // Rescan sessions when entering assembly step
-      if (nextStep === 'assembly') {
-        this.scanAvailableSessions();
-      }
     }
   }
 
@@ -2722,10 +2768,31 @@ export class LLWizardComponent implements OnInit {
 
       // 3. TTS jobs (one per language row)
       if (!this._skippedSteps.has('tts')) {
+        console.log(`[LL-WIZARD] Creating TTS jobs. ProjectDir: ${projectDir}`);
+
         for (const row of this.ttsLanguageRows()) {
+          console.log(`[LL-WIZARD] Processing TTS row for language: ${row.language}`);
+
+          // Resolve EPUB at runtime using the new service
+          const resolved = await this.epubResolver.resolveEpub({
+            projectDir: projectDir,
+            audiobookDir: '', // No longer used, kept for compatibility
+            pipeline: 'language-learning',
+            language: row.language
+          });
+
+          console.log(`[LL-WIZARD] RESOLVED EPUB for ${row.language}:`, {
+            resolvedPath: resolved.path,
+            source: resolved.source,
+            exists: resolved.exists
+          });
+
+          // Double-check what we're about to queue
+          console.warn(`[LL-WIZARD] >>> QUEUING TTS JOB WITH EPUB: ${resolved.path}`);
+
           await this.queueService.addJob({
             type: 'tts-conversion',
-            epubPath: this.resolveTtsSource(row),
+            epubPath: resolved.path,
             projectDir: projectDir,
             metadata: {
               title: `TTS (${row.language.toUpperCase()})`,
@@ -2750,7 +2817,11 @@ export class LLWizardComponent implements OnInit {
               cleanSession: true,
               testMode: this.ttsTestMode(),
               testSentences: this.ttsTestSentences(),
-              // Cache session to project folder
+              // Skip assembly - only generate sentence audio files
+              skipAssembly: true,
+              // Output to temp directory (will be cached to project)
+              outputDir: `/tmp/bookforge-tts-${Date.now()}`,
+              // Cache session to project folder (unified structure)
               cacheToProject: true,
               projectDir: projectDir,
             },
@@ -2764,6 +2835,9 @@ export class LLWizardComponent implements OnInit {
         const sourceLang = this.assemblySourceLang();
         const targetLang = this.assemblyTargetLang();
 
+        // Get audiobook output folder from settings
+        const audiobooksDir = this.settingsService.get<string>('externalAudiobooksDir') || '';
+
         await this.queueService.addJob({
           type: 'bilingual-assembly',
           projectDir: projectDir,
@@ -2775,8 +2849,8 @@ export class LLWizardComponent implements OnInit {
             projectId: this.projectId(),
             sourceSentencesDir: `${projectDir}/sessions/${sourceLang}/sentences`,
             targetSentencesDir: `${projectDir}/sessions/${targetLang}/sentences`,
-            sentencePairsPath: `${projectDir}/sentence_pairs_${targetLang}.json`,
-            outputDir: projectDir,
+            sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${targetLang}.json`,
+            outputDir: audiobooksDir || projectDir,  // Use configured audiobooks dir, fallback to project
             pauseDuration: this.pauseDuration(),
             gapDuration: this.gapDuration(),
             sourceLang,
@@ -2853,41 +2927,6 @@ export class LLWizardComponent implements OnInit {
     return `${projectDir}/article.epub`;
   }
 
-  /**
-   * Resolve TTS source EPUB based on language
-   */
-  private resolveTtsSource(row: TtsLanguageRow): string {
-    if (row.sourceEpub !== 'latest') {
-      return row.sourceEpub;
-    }
-
-    const epubs = this.availableEpubs();
-    const lang = row.language;
-    const sourceLang = this.detectedSourceLang();
-    const projectDir = this.effectiveProjectDir();
-
-    if (lang === sourceLang) {
-      // Source language: cleaned.epub > finalized.epub > exported.epub > original.epub
-      const cleaned = epubs.find(e => e.filename === 'cleaned.epub');
-      if (cleaned) return cleaned.path;
-      const finalized = epubs.find(e => e.filename === 'finalized.epub');
-      if (finalized) return finalized.path;
-      const exported = epubs.find(e => e.filename === 'exported.epub');
-      if (exported) return exported.path;
-      const original = epubs.find(e => e.filename === 'original.epub' || e.filename === 'article.epub');
-      if (original) return original.path;
-    } else {
-      // Target language: {lang}.epub (created by translation)
-      const langEpub = epubs.find(e => e.filename === `${lang}.epub`);
-      if (langEpub) return langEpub.path;
-
-      // Fallback: will be created by translation job
-      return `${projectDir}/${lang}.epub`;
-    }
-
-    // Fallback
-    return `${projectDir}/article.epub`;
-  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Helpers
