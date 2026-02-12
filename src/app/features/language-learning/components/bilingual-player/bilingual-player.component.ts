@@ -12,7 +12,13 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ElectronService } from '../../../../core/services/electron.service';
-import { VttParserService, VttCue } from '../../services/vtt-parser.service';
+import { ManifestService } from '../../../../core/services/manifest.service';
+import { VttParserService, VttCue } from '../../../../shared/services/vtt-parser.service';
+import { PlayerControlsComponent } from '../../../../shared/player/player-controls.component';
+import { PlayerProgressComponent } from '../../../../shared/player/player-progress.component';
+import { PlayerChapterDrawerComponent } from '../../../../shared/player/player-chapter-drawer.component';
+import { BookmarkService } from '../../../../shared/player/bookmark.service';
+import type { PlayerChapter, TransportAction } from '../../../../shared/player/player.types';
 
 interface SentencePair {
   index: number;
@@ -28,17 +34,22 @@ interface AudiobookData {
   sourceLang?: string;
   targetLang?: string;
   audiobookPath?: string;
-  path?: string;        // From completed list
+  path?: string;
   epubPath?: string;
   vttPath?: string;
-  createdAt?: string;   // From completed list
+  createdAt?: string;
   sentencePairs?: SentencePair[];
 }
 
 @Component({
   selector: 'app-bilingual-player',
   standalone: true,
-  imports: [CommonModule],
+  imports: [
+    CommonModule,
+    PlayerControlsComponent,
+    PlayerProgressComponent,
+    PlayerChapterDrawerComponent
+  ],
   template: `
     <div class="bilingual-player">
       @if (!audiobook()) {
@@ -59,6 +70,16 @@ interface AudiobookData {
         </div>
       } @else {
         <div class="player-content">
+          @if (chapters().length > 0) {
+            <button
+              class="btn-chapters"
+              [class.active]="chapterDrawerOpen()"
+              (click)="chapterDrawerOpen.set(!chapterDrawerOpen())"
+              title="Chapters"
+            >
+              ☰
+            </button>
+          }
           <!-- Title -->
           <div class="player-header">
             <h2>{{ audiobook()!.title }}</h2>
@@ -69,11 +90,17 @@ interface AudiobookData {
                 <span class="lang">{{ getLangName(audiobook()!.targetLang!) }}</span>
               </div>
             }
+            @if (currentChapter()) {
+              <p class="current-chapter">{{ currentChapter()!.title }}</p>
+            }
           </div>
 
           <!-- Scrollable sentences container -->
           <div class="sentences-container" #sentencesContainer>
             @for (pair of sentencePairs(); track pair.index) {
+              @if (chapterStartPairMap().get(pair.index); as chapterTitle) {
+                <div class="chapter-header">{{ chapterTitle }}</div>
+              }
               <div
                 class="sentence-pair"
                 [class.active]="pair.index === currentPairIndex()"
@@ -98,37 +125,20 @@ interface AudiobookData {
             <span>Sentence {{ currentPairIndex() + 1 }} of {{ sentencePairs().length }}</span>
           </div>
 
-          <!-- Audio controls -->
-          <div class="audio-controls">
-            <button class="btn-control" (click)="previousSentence()" [disabled]="currentPairIndex() <= 0" title="Previous sentence">
-              ⏮
-            </button>
-            <button class="btn-play" (click)="togglePlayPause()" [title]="isPlaying() ? 'Pause' : 'Play'">
-              {{ isPlaying() ? '⏸' : '▶' }}
-            </button>
-            <button class="btn-control" (click)="nextSentence()" [disabled]="currentPairIndex() >= sentencePairs().length - 1" title="Next sentence">
-              ⏭
-            </button>
-          </div>
+          <!-- Transport controls -->
+          <app-player-controls
+            [isPlaying]="isPlaying()"
+            [canPrevious]="canPrevious()"
+            [canNext]="canNext()"
+            (transport)="onTransport($event)"
+          />
 
           <!-- Progress bar -->
-          <div class="progress-bar-container">
-            <div class="progress-bar" (click)="onProgressClick($event)">
-              <div class="progress-fill" [style.width.%]="progressPercent()"></div>
-              <input
-                type="range"
-                class="progress-slider"
-                [min]="0"
-                [max]="duration()"
-                [value]="currentTime()"
-                (input)="onSeek($event)"
-              />
-            </div>
-            <div class="time-display">
-              <span>{{ formatTime(currentTime()) }}</span>
-              <span>{{ formatTime(duration()) }}</span>
-            </div>
-          </div>
+          <app-player-progress
+            [currentTime]="currentTime()"
+            [duration]="duration()"
+            (seek)="seekToTime($event)"
+          />
 
           <!-- Speed controls - separate sliders for each language -->
           <div class="speed-controls">
@@ -175,6 +185,15 @@ interface AudiobookData {
             (pause)="onPause()"
             (error)="onAudioError($event)"
           ></audio>
+
+          <!-- Chapter drawer -->
+          <app-player-chapter-drawer
+            [chapters]="chapters()"
+            [currentChapter]="currentChapter()"
+            [isOpen]="chapterDrawerOpen()"
+            (chapterSelect)="onChapterSelect($event)"
+            (close)="chapterDrawerOpen.set(false)"
+          />
         </div>
       }
     </div>
@@ -241,11 +260,13 @@ interface AudiobookData {
     }
 
     .player-content {
+      position: relative;
       flex: 1;
       display: flex;
       flex-direction: column;
       padding: 24px;
       min-height: 0;
+      overflow: hidden;
     }
 
     .player-header {
@@ -274,6 +295,40 @@ interface AudiobookData {
       .arrow {
         color: var(--text-muted);
       }
+
+      .current-chapter {
+        margin: 8px 0 0;
+        font-size: 12px;
+        color: var(--color-primary);
+        font-weight: 500;
+      }
+    }
+
+    .btn-chapters {
+      position: absolute;
+      top: 24px;
+      right: 24px;
+      z-index: 5;
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      background: var(--bg-surface);
+      color: var(--text-secondary);
+      font-size: 16px;
+      cursor: pointer;
+      transition: all 0.15s;
+
+      &:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+
+      &.active {
+        background: var(--color-primary);
+        border-color: var(--color-primary);
+        color: white;
+      }
     }
 
     .sentences-container {
@@ -282,6 +337,20 @@ interface AudiobookData {
       min-height: 0;
       padding: 8px 0;
       scroll-behavior: smooth;
+    }
+
+    .chapter-header {
+      padding: 16px 16px 8px;
+      margin-top: 12px;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--color-primary);
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 8px;
+
+      &:first-child {
+        margin-top: 0;
+      }
     }
 
     .sentence-pair {
@@ -364,95 +433,6 @@ interface AudiobookData {
       color: var(--text-muted);
       padding: 12px 0;
       flex-shrink: 0;
-    }
-
-    .audio-controls {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 16px;
-      margin-bottom: 20px;
-      flex-shrink: 0;
-    }
-
-    .btn-control {
-      width: 44px;
-      height: 44px;
-      border: none;
-      border-radius: 50%;
-      background: var(--bg-hover);
-      color: var(--text-primary);
-      font-size: 18px;
-      cursor: pointer;
-      transition: background 0.15s;
-
-      &:hover:not(:disabled) {
-        background: var(--bg-muted);
-      }
-
-      &:disabled {
-        opacity: 0.3;
-        cursor: not-allowed;
-      }
-    }
-
-    .btn-play {
-      width: 64px;
-      height: 64px;
-      border: none;
-      border-radius: 50%;
-      background: var(--color-primary);
-      color: white;
-      font-size: 24px;
-      cursor: pointer;
-      transition: transform 0.15s, background 0.15s;
-
-      &:hover {
-        transform: scale(1.05);
-      }
-    }
-
-    .progress-bar-container {
-      max-width: 500px;
-      margin: 0 auto;
-      width: 100%;
-      flex-shrink: 0;
-    }
-
-    .progress-bar {
-      position: relative;
-      height: 6px;
-      background: var(--bg-muted);
-      border-radius: 3px;
-      overflow: visible;
-      cursor: pointer;
-    }
-
-    .progress-fill {
-      height: 100%;
-      background: var(--color-primary);
-      border-radius: 3px;
-      transition: width 0.1s;
-      pointer-events: none;
-    }
-
-    .progress-slider {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      opacity: 0;
-      cursor: pointer;
-      margin: 0;
-    }
-
-    .time-display {
-      display: flex;
-      justify-content: space-between;
-      font-size: 11px;
-      color: var(--text-muted);
-      margin-top: 8px;
     }
 
     .speed-controls {
@@ -545,7 +525,9 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
   @ViewChild('sentencesContainer') sentencesContainerRef!: ElementRef<HTMLDivElement>;
 
   private readonly electronService = inject(ElectronService);
+  private readonly manifestService = inject(ManifestService);
   private readonly vttParser = inject(VttParserService);
+  private readonly bookmarkService = inject(BookmarkService);
 
   // Inputs
   readonly audiobook = input<AudiobookData | null>(null);
@@ -570,46 +552,73 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
   // Audio path
   readonly audioPath = signal<string>('');
 
-  // Computed
-  readonly progressPercent = computed(() => {
-    const d = this.duration();
-    if (d === 0) return 0;
-    return (this.currentTime() / d) * 100;
+  // Chapter state
+  readonly chapters = signal<PlayerChapter[]>([]);
+  readonly chapterDrawerOpen = signal<boolean>(false);
+
+  // Bookmark auto-save interval
+  private bookmarkInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Computed: current chapter
+  readonly currentChapter = computed<PlayerChapter | null>(() => {
+    const chaps = this.chapters();
+    if (chaps.length === 0) return null;
+    const time = this.currentTime();
+    for (let i = chaps.length - 1; i >= 0; i--) {
+      if (time >= chaps[i].startTime) return chaps[i];
+    }
+    return chaps[0];
+  });
+
+  readonly canPreviousChapter = computed(() => {
+    const cur = this.currentChapter();
+    if (!cur) return false;
+    return cur.order > 0;
+  });
+
+  readonly canNextChapter = computed(() => {
+    const cur = this.currentChapter();
+    const chaps = this.chapters();
+    if (!cur || chaps.length === 0) return false;
+    return cur.order < chaps.length - 1;
+  });
+
+  // When chapters exist, prev/next skips chapters; otherwise skips sentences
+  readonly canPrevious = computed(() => {
+    if (this.chapters().length > 0) return this.canPreviousChapter();
+    return this.currentPairIndex() > 0;
+  });
+
+  readonly canNext = computed(() => {
+    if (this.chapters().length > 0) return this.canNextChapter();
+    return this.currentPairIndex() < this.sentencePairs().length - 1;
+  });
+
+  // Map of pair index → chapter title for inline headers
+  readonly chapterStartPairMap = computed<Map<number, string>>(() => {
+    const map = new Map<number, string>();
+    for (const ch of this.chapters()) {
+      // Each pair = 2 cues, so pair index = startCueIndex / 2
+      const pairIndex = Math.floor(ch.startCueIndex / 2);
+      map.set(pairIndex, ch.title);
+    }
+    return map;
   });
 
   // Language name mapping
   private readonly langNames: Record<string, string> = {
-    'en': 'English',
-    'de': 'German',
-    'es': 'Spanish',
-    'fr': 'French',
-    'it': 'Italian',
-    'pt': 'Portuguese',
-    'nl': 'Dutch',
-    'pl': 'Polish',
-    'ru': 'Russian',
-    'ja': 'Japanese',
-    'zh': 'Chinese',
-    'ko': 'Korean',
+    'en': 'English', 'de': 'German', 'es': 'Spanish', 'fr': 'French',
+    'it': 'Italian', 'pt': 'Portuguese', 'nl': 'Dutch', 'pl': 'Polish',
+    'ru': 'Russian', 'ja': 'Japanese', 'zh': 'Chinese', 'ko': 'Korean',
   };
 
   private readonly shortLangNames: Record<string, string> = {
-    'en': 'EN',
-    'de': 'DE',
-    'es': 'ES',
-    'fr': 'FR',
-    'it': 'IT',
-    'pt': 'PT',
-    'nl': 'NL',
-    'pl': 'PL',
-    'ru': 'RU',
-    'ja': 'JA',
-    'zh': 'ZH',
-    'ko': 'KO',
+    'en': 'EN', 'de': 'DE', 'es': 'ES', 'fr': 'FR',
+    'it': 'IT', 'pt': 'PT', 'nl': 'NL', 'pl': 'PL',
+    'ru': 'RU', 'ja': 'JA', 'zh': 'ZH', 'ko': 'KO',
   };
 
   constructor() {
-    // React to audiobook changes
     effect(() => {
       const book = this.audiobook();
       if (book) {
@@ -620,13 +629,36 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     });
   }
 
-  ngOnInit(): void {
-    // Initial load handled by effect
-  }
+  ngOnInit(): void {}
 
   ngOnDestroy(): void {
+    this.saveBookmarkImmediate();
     this.pause();
+    this.stopBookmarkInterval();
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Transport events from shared controls
+  // ─────────────────────────────────────────────────────────────────────────
+
+  onTransport(action: TransportAction): void {
+    switch (action) {
+      case 'play': this.play(); break;
+      case 'pause': this.pause(); break;
+      case 'previous':
+        if (this.chapters().length > 0) this.previousChapter();
+        else this.previousSentence();
+        break;
+      case 'next':
+        if (this.chapters().length > 0) this.nextChapter();
+        else this.nextSentence();
+        break;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Audio Loading
+  // ─────────────────────────────────────────────────────────────────────────
 
   async loadAudioData(): Promise<void> {
     const book = this.audiobook();
@@ -636,53 +668,42 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     this.error.set(null);
 
     try {
-      // Load audio as data URL (more reliable than custom protocols)
       const audioResult = await this.electronService.languageLearningGetAudioData(book.id);
       if (!audioResult.success || !audioResult.dataUrl) {
         throw new Error(audioResult.error || 'Audio file not found');
       }
-      console.log(`[PLAYER] Loaded audio: ${audioResult.size} bytes`);
 
-      // Load VTT file
       const vttResult = await this.electronService.languageLearningReadVtt(book.id);
       if (!vttResult.success || !vttResult.content) {
         throw new Error(vttResult.error || 'Subtitles not available');
       }
 
-      // Load sentence pairs
       const pairsResult = await this.electronService.languageLearningReadSentencePairs(book.id);
       if (!pairsResult.success || !pairsResult.pairs) {
         throw new Error(pairsResult.error || 'Sentence pairs not found');
       }
 
-      // Parse VTT
       const cues = this.vttParser.parseVtt(vttResult.content);
       this.vttCues.set(cues);
-
-      // Set sentence pairs
       this.sentencePairs.set(pairsResult.pairs);
 
-      // Validate: VTT cues should be 2x sentence pairs
       const expectedCues = pairsResult.pairs.length * 2;
       if (cues.length !== expectedCues) {
         console.warn(`VTT cue count mismatch: ${cues.length} cues for ${pairsResult.pairs.length} pairs (expected ${expectedCues})`);
       }
 
-      // Set audio source using data URL
       this.audioPath.set(audioResult.dataUrl!);
 
-      // Wait a tick for the audio element to be ready
       setTimeout(() => {
         const audio = this.audioElementRef?.nativeElement;
         if (audio) {
-          console.log('[PLAYER] Setting audio source...');
           audio.src = audioResult.dataUrl!;
           audio.load();
-          console.log('[PLAYER] Audio load() called');
-        } else {
-          console.error('[PLAYER] Audio element not found!');
         }
       }, 0);
+
+      // Detect chapters from manifest (non-blocking)
+      this.loadChaptersFromManifest(book.id, cues);
 
     } catch (err) {
       console.error('Failed to load audio data:', err);
@@ -691,6 +712,161 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
       this.isLoading.set(false);
     }
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Chapter Detection (from manifest)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private async loadChaptersFromManifest(projectId: string, cues: VttCue[]): Promise<void> {
+    try {
+      const result = await this.manifestService.getProject(projectId);
+      if (!result.success || !result.manifest || !result.manifest.chapters?.length) {
+        this.chapters.set([]);
+        return;
+      }
+
+      const manifestChapters = result.manifest.chapters
+        .filter(ch => ch.sentences?.length > 0)
+        .sort((a, b) => a.order - b.order);
+
+      if (manifestChapters.length <= 1) {
+        this.chapters.set([]);
+        return;
+      }
+
+      // Each sentence has 2 cues (source + target)
+      // Chapter start cue index = sum of (sentence counts * 2) for all prior chapters
+      const playerChapters: PlayerChapter[] = [];
+      let cumulativeCueIndex = 0;
+
+      for (let i = 0; i < manifestChapters.length; i++) {
+        const ch = manifestChapters[i];
+        const startCueIndex = cumulativeCueIndex;
+        const sentenceCount = ch.sentences.filter(s => !s.deleted).length;
+        const endCueIndex = Math.min(startCueIndex + (sentenceCount * 2) - 1, cues.length - 1);
+
+        const startTime = startCueIndex < cues.length ? cues[startCueIndex].startTime : 0;
+        const endTime = endCueIndex < cues.length ? cues[endCueIndex].endTime : startTime;
+
+        playerChapters.push({
+          id: ch.id,
+          title: ch.title,
+          order: i,
+          startTime,
+          endTime,
+          startCueIndex,
+          endCueIndex
+        });
+
+        cumulativeCueIndex += sentenceCount * 2;
+      }
+
+      this.chapters.set(playerChapters);
+      console.log(`[BilingualPlayer] Loaded ${playerChapters.length} chapters from manifest`);
+    } catch (err) {
+      console.warn('[BilingualPlayer] Failed to load chapters:', err);
+      this.chapters.set([]);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Chapter Navigation
+  // ─────────────────────────────────────────────────────────────────────────
+
+  onChapterSelect(chapter: PlayerChapter): void {
+    this.seekToTime(chapter.startTime);
+    this.chapterDrawerOpen.set(false);
+  }
+
+  previousChapter(): void {
+    const cur = this.currentChapter();
+    const chaps = this.chapters();
+    if (!cur || cur.order <= 0) return;
+    const prev = chaps.find(c => c.order === cur.order - 1);
+    if (prev) this.seekToTime(prev.startTime);
+  }
+
+  nextChapter(): void {
+    const cur = this.currentChapter();
+    const chaps = this.chapters();
+    if (!cur) return;
+    const next = chaps.find(c => c.order === cur.order + 1);
+    if (next) this.seekToTime(next.startTime);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Bookmarks
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private getBookmarkKey(): string {
+    const book = this.audiobook();
+    if (book?.sourceLang && book?.targetLang) {
+      return `${book.sourceLang}-${book.targetLang}`;
+    }
+    return 'bilingual';
+  }
+
+  private async restoreBookmark(): Promise<void> {
+    const book = this.audiobook();
+    if (!book) return;
+
+    const bookmark = await this.bookmarkService.loadBookmark(book.id, this.getBookmarkKey());
+    if (!bookmark || bookmark.position <= 0) return;
+
+    console.log(`[BilingualPlayer] Restoring bookmark at ${bookmark.position}s`);
+    const audio = this.audioElementRef?.nativeElement;
+    if (audio) {
+      audio.currentTime = bookmark.position;
+      this.currentTime.set(bookmark.position);
+      this.updateCurrentSentence(bookmark.position);
+    }
+    if (bookmark.sourceSpeed) this.sourceSpeed.set(bookmark.sourceSpeed);
+    if (bookmark.targetSpeed) this.targetSpeed.set(bookmark.targetSpeed);
+  }
+
+  private saveBookmarkDebounced(): void {
+    const book = this.audiobook();
+    if (!book) return;
+    this.bookmarkService.saveBookmarkDebounced(book.id, this.getBookmarkKey(), {
+      position: this.currentTime(),
+      chapterId: this.currentChapter()?.id,
+      sourceSpeed: this.sourceSpeed(),
+      targetSpeed: this.targetSpeed(),
+      lastPlayedAt: new Date().toISOString()
+    });
+  }
+
+  private saveBookmarkImmediate(): void {
+    const book = this.audiobook();
+    if (!book || this.currentTime() <= 0) return;
+    this.bookmarkService.saveBookmarkImmediate(book.id, this.getBookmarkKey(), {
+      position: this.currentTime(),
+      chapterId: this.currentChapter()?.id,
+      sourceSpeed: this.sourceSpeed(),
+      targetSpeed: this.targetSpeed(),
+      lastPlayedAt: new Date().toISOString()
+    });
+  }
+
+  private startBookmarkInterval(): void {
+    this.stopBookmarkInterval();
+    this.bookmarkInterval = setInterval(() => {
+      if (this.isPlaying()) {
+        this.saveBookmarkDebounced();
+      }
+    }, 10_000);
+  }
+
+  private stopBookmarkInterval(): void {
+    if (this.bookmarkInterval) {
+      clearInterval(this.bookmarkInterval);
+      this.bookmarkInterval = null;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Playback Controls
+  // ─────────────────────────────────────────────────────────────────────────
 
   reset(): void {
     this.pause();
@@ -701,15 +877,9 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     this.currentTime.set(0);
     this.duration.set(0);
     this.audioPath.set('');
+    this.chapters.set([]);
+    this.chapterDrawerOpen.set(false);
     this.error.set(null);
-  }
-
-  togglePlayPause(): void {
-    if (this.isPlaying()) {
-      this.pause();
-    } else {
-      this.play();
-    }
   }
 
   play(): void {
@@ -746,9 +916,7 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
 
   seekToPair(pairIndex: number): void {
     const cues = this.vttCues();
-    // Each pair has 2 cues (source and target)
     const cueIndex = pairIndex * 2;
-
     if (cueIndex < cues.length) {
       const cue = cues[cueIndex];
       this.seekToTime(cue.startTime);
@@ -768,12 +936,9 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     const input = event.target as HTMLInputElement;
     const speed = parseFloat(input.value);
     this.sourceSpeed.set(speed);
-    // If currently playing source, update playback rate immediately
     if (this.isSourceSpeaking()) {
       const audio = this.audioElementRef?.nativeElement;
-      if (audio) {
-        audio.playbackRate = speed;
-      }
+      if (audio) audio.playbackRate = speed;
     }
   }
 
@@ -781,14 +946,15 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     const input = event.target as HTMLInputElement;
     const speed = parseFloat(input.value);
     this.targetSpeed.set(speed);
-    // If currently playing target, update playback rate immediately
     if (!this.isSourceSpeaking()) {
       const audio = this.audioElementRef?.nativeElement;
-      if (audio) {
-        audio.playbackRate = speed;
-      }
+      if (audio) audio.playbackRate = speed;
     }
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Audio Events
+  // ─────────────────────────────────────────────────────────────────────────
 
   onTimeUpdate(): void {
     const audio = this.audioElementRef?.nativeElement;
@@ -807,17 +973,14 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     if (cueIndex >= 0) {
       const { pairIndex, isSource } = this.vttParser.cueToSentencePair(cueIndex);
 
-      // Only update and scroll if pair changed
       if (pairIndex !== this.currentPairIndex()) {
         this.currentPairIndex.set(pairIndex);
         this.scrollToCurrentPair();
       }
 
-      // Track previous speaking state to detect language switches
       const wasSource = this.isSourceSpeaking();
       this.isSourceSpeaking.set(isSource);
 
-      // When language switches, update playback rate
       if (audio && wasSource !== isSource) {
         const newSpeed = isSource ? this.sourceSpeed() : this.targetSpeed();
         audio.playbackRate = newSpeed;
@@ -833,14 +996,9 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     const pairElement = container.querySelector(`[data-index="${pairIndex}"]`) as HTMLElement;
 
     if (pairElement) {
-      // Use getBoundingClientRect for accurate positioning relative to container
       const containerRect = container.getBoundingClientRect();
       const elementRect = pairElement.getBoundingClientRect();
-
-      // Calculate element's position relative to container's visible area
       const elementRelativeTop = elementRect.top - containerRect.top + container.scrollTop;
-
-      // Center the element in the container
       const containerHeight = container.clientHeight;
       const elementHeight = pairElement.offsetHeight;
       const scrollTop = elementRelativeTop - (containerHeight / 2) + (elementHeight / 2);
@@ -856,21 +1014,25 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     const audio = this.audioElementRef?.nativeElement;
     if (audio) {
       this.duration.set(audio.duration);
-      // Apply initial playback speed (starts with source language)
       audio.playbackRate = this.sourceSpeed();
+      this.restoreBookmark();
     }
   }
 
   onEnded(): void {
     this.isPlaying.set(false);
+    this.saveBookmarkImmediate();
   }
 
   onPlay(): void {
     this.isPlaying.set(true);
+    this.startBookmarkInterval();
   }
 
   onPause(): void {
     this.isPlaying.set(false);
+    this.stopBookmarkInterval();
+    this.saveBookmarkImmediate();
   }
 
   onAudioError(event: Event): void {
@@ -878,19 +1040,9 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     this.error.set('Failed to load audio file');
   }
 
-  onSeek(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    const time = parseFloat(input.value);
-    this.seekToTime(time);
-  }
-
-  onProgressClick(event: MouseEvent): void {
-    const bar = event.currentTarget as HTMLElement;
-    const rect = bar.getBoundingClientRect();
-    const percent = (event.clientX - rect.left) / rect.width;
-    const time = percent * this.duration();
-    this.seekToTime(time);
-  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // Helpers
+  // ─────────────────────────────────────────────────────────────────────────
 
   getLangName(code: string): string {
     return this.langNames[code] || code.toUpperCase();
@@ -898,12 +1050,5 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
 
   getShortLangName(code: string): string {
     return this.shortLangNames[code] || code.toUpperCase();
-  }
-
-  formatTime(seconds: number): string {
-    if (!seconds || isNaN(seconds)) return '0:00';
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 }

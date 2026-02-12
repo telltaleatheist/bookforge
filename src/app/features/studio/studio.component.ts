@@ -1,9 +1,7 @@
 import { Component, inject, signal, computed, OnInit, OnDestroy, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
-  SplitPaneComponent,
-  ToolbarComponent,
-  ToolbarItem
+  SplitPaneComponent
 } from '../../creamsicle-desktop';
 import { StudioService } from './services/studio.service';
 import { StudioItem, MainTab, AudiobookSubTab, LanguageLearningSubTab, ProcessStep } from './models/studio.types';
@@ -47,7 +45,6 @@ import { QueueService } from '../queue/services/queue.service';
   imports: [
     CommonModule,
     SplitPaneComponent,
-    ToolbarComponent,
     StudioListComponent,
     AddModalComponent,
     ContentEditorComponent,
@@ -64,28 +61,27 @@ import { QueueService } from '../queue/services/queue.service';
     VersionPickerDialogComponent
   ],
   template: `
-    <!-- Toolbar -->
-    <desktop-toolbar
-      [items]="toolbarItems()"
-      (itemClicked)="onToolbarAction($event)"
-    >
-    </desktop-toolbar>
-
     <div class="studio-container">
       <desktop-split-pane [primarySize]="280" [minSize]="200" [maxSize]="500">
         <!-- Left Panel: List -->
         <div pane-primary class="list-panel">
           <div class="panel-header">
             <h3>Studio</h3>
-            <button class="btn-add" (click)="showAddModal.set(true)" title="Add Content">
-              +
-            </button>
+            <div class="header-actions">
+              <button class="btn-header-action" (click)="studioService.loadAll()" title="Refresh">
+                ↻
+              </button>
+              <button class="btn-add" (click)="showAddModal.set(true)" title="Add Content">
+                +
+              </button>
+            </div>
           </div>
           <app-studio-list
             [articles]="studioService.articles()"
             [books]="studioService.books()"
             [selectedId]="selectedItemId()"
             (select)="selectItem($event)"
+            (play)="playItem($event)"
             (contextMenu)="onContextMenu($event)"
           />
         </div>
@@ -324,7 +320,7 @@ import { QueueService } from '../queue/services/queue.service';
                   }
                   @case ('play') {
                     @if (bookAudioData()) {
-                      <app-audiobook-player [audiobook]="bookAudioData()" />
+                      <app-audiobook-player [audiobook]="bookAudioData()" (requestFullscreen)="fullscreenPlayer.set(true)" />
                     } @else {
                       <div class="empty-state-panel">
                         <div class="icon">🎧</div>
@@ -418,7 +414,7 @@ import { QueueService } from '../queue/services/queue.service';
             <!-- Empty State -->
             <div class="empty-state">
               <div class="empty-icon">🎧</div>
-              <h2>Welcome to Studio</h2>
+              <h2>Welcome to BookForge</h2>
               <p>Create audiobooks from EPUBs or web articles.</p>
               <button class="btn-primary btn-large" (click)="showAddModal.set(true)">
                 Add Content
@@ -457,6 +453,13 @@ import { QueueService } from '../queue/services/queue.service';
         [data]="versionPickerData()"
       />
     }
+
+    <!-- Fullscreen Player Overlay -->
+    @if (fullscreenPlayer()) {
+      <div class="fullscreen-overlay">
+        <app-audiobook-player [audiobook]="bookAudioData()" [fullscreen]="true" (closeFullscreen)="fullscreenPlayer.set(false)" />
+      </div>
+    }
   `,
   styles: [`
     :host {
@@ -468,6 +471,19 @@ import { QueueService } from '../queue/services/queue.service';
     .studio-container {
       flex: 1;
       overflow: hidden;
+    }
+
+    .fullscreen-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 1000;
+      background: var(--bg-base);
+      display: flex;
+      flex-direction: column;
+      -webkit-app-region: no-drag;
     }
 
     .list-panel {
@@ -500,6 +516,33 @@ import { QueueService } from '../queue/services/queue.service';
       }
     }
 
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-header-action {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      border: 1px solid var(--border-default);
+      background: var(--bg-surface);
+      color: var(--text-secondary);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+
+      &:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+    }
+
     .btn-add {
       width: 28px;
       height: 28px;
@@ -516,8 +559,8 @@ import { QueueService } from '../queue/services/queue.service';
       transition: all 0.15s ease;
 
       &:hover {
-        background: var(--color-primary);
-        border-color: var(--color-primary);
+        background: var(--accent);
+        border-color: var(--accent);
         color: white;
       }
     }
@@ -591,9 +634,9 @@ import { QueueService } from '../queue/services/queue.service';
       }
 
       &.active {
-        background: var(--color-primary);
+        background: var(--accent);
         color: white;
-        border-color: var(--color-primary);
+        border-color: var(--accent);
       }
 
       &.disabled {
@@ -746,7 +789,7 @@ import { QueueService } from '../queue/services/queue.service';
 
     .btn-primary {
       padding: 12px 24px;
-      background: var(--color-primary);
+      background: var(--accent);
       border: none;
       border-radius: 8px;
       color: white;
@@ -756,7 +799,7 @@ import { QueueService } from '../queue/services/queue.service';
       transition: all 0.15s ease;
 
       &:hover {
-        background: var(--color-primary-hover);
+        background: var(--accent-hover);
       }
     }
 
@@ -810,6 +853,7 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   readonly showAddModal = signal<boolean>(false);
   readonly selectedItemId = signal<string | null>(null);
+  readonly fullscreenPlayer = signal<boolean>(false);
 
   // Tab navigation
   readonly mainTab = signal<MainTab>('metadata');
@@ -928,6 +972,7 @@ export class StudioComponent implements OnInit, OnDestroy {
       author: item.author,
       audiobookPath: item.audiobookPath,
       vttPath: item.vttPath,
+      epubPath: item.epubPath,
     };
   });
 
@@ -990,17 +1035,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     speed: 1.0,
     enableTextSplitting: true
   });
-
-  // Toolbar
-  readonly toolbarItems = computed<ToolbarItem[]>(() => [
-    {
-      id: 'refresh',
-      type: 'button',
-      icon: '↻',
-      label: 'Refresh',
-      tooltip: 'Reload items'
-    }
-  ]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Lifecycle
@@ -1078,10 +1112,10 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.finalizingContent.set('idle');
   }
 
-  onToolbarAction(item: ToolbarItem): void {
-    if (item.id === 'refresh') {
-      this.studioService.loadAll();
-    }
+  playItem(item: StudioItem): void {
+    this.selectedItemId.set(item.id);
+    this.mainTab.set('audiobook');
+    this.audiobookSubTab.set('play');
   }
 
   onItemAdded(item: StudioItem): void {

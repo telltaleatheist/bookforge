@@ -48,6 +48,9 @@ import { StudioItem } from '../../models/studio.types';
                     }
                   </div>
                 </div>
+                @if (item.audiobookPath) {
+                  <button class="btn-play-item" (click)="onPlayClick($event, item)" title="Play audiobook">▶</button>
+                }
               </div>
             } @empty {
               <div class="empty-section">
@@ -95,6 +98,9 @@ import { StudioItem } from '../../models/studio.types';
                     }
                   </div>
                 </div>
+                @if (item.audiobookPath) {
+                  <button class="btn-play-item" (click)="onPlayClick($event, item)" title="Play audiobook">▶</button>
+                }
               </div>
             } @empty {
               <div class="empty-section">
@@ -184,7 +190,7 @@ import { StudioItem } from '../../models/studio.types';
 
       &.selected {
         background: rgba(6, 182, 212, 0.12);
-        border-left: 3px solid var(--color-primary);
+        border-left: 3px solid var(--accent);
         padding-left: 13px;
       }
     }
@@ -294,6 +300,35 @@ import { StudioItem } from '../../models/studio.types';
       text-overflow: ellipsis;
     }
 
+    .btn-play-item {
+      width: 26px;
+      height: 26px;
+      border: none;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-size: 10px;
+      cursor: pointer;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.15s, transform 0.15s;
+
+      &:hover {
+        transform: scale(1.1);
+      }
+    }
+
+    .list-item:hover .btn-play-item {
+      opacity: 1;
+    }
+
+    .list-item.selected .btn-play-item {
+      opacity: 1;
+    }
+
     .empty-section {
       padding: 24px 16px;
       text-align: center;
@@ -314,11 +349,17 @@ export class StudioListComponent {
 
   // Outputs
   readonly select = output<StudioItem>();
+  readonly play = output<StudioItem>();
   readonly contextMenu = output<{ event: MouseEvent; item: StudioItem }>();
 
   // State
   readonly articlesExpanded = signal<boolean>(true);
   readonly booksExpanded = signal<boolean>(true);
+
+  onPlayClick(event: MouseEvent, item: StudioItem): void {
+    event.stopPropagation();
+    this.play.emit(item);
+  }
 
   onContextMenu(event: MouseEvent, item: StudioItem): void {
     event.preventDefault();

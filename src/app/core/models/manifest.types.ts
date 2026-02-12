@@ -192,6 +192,29 @@ export interface ManifestOutputs {
 
   // Enhanced audiobook (post Resemble Enhance)
   enhancedAudiobook?: AudiobookOutput;
+
+  // Playback position bookmarks keyed by output identifier: "audiobook", "en-de", etc.
+  bookmarks?: Record<string, BookmarkState>;
+
+  // User-created named bookmarks keyed by output identifier
+  namedBookmarks?: Record<string, NamedBookmark[]>;
+}
+
+export interface BookmarkState {
+  position: number;        // currentTime in seconds
+  chapterId?: string;
+  cueIndex?: number;
+  lastPlayedAt: string;    // ISO timestamp
+  speed?: number;          // playback speed (mono player)
+  sourceSpeed?: number;    // source language speed (bilingual)
+  targetSpeed?: number;    // target language speed (bilingual)
+}
+
+export interface NamedBookmark {
+  name: string;
+  position: number;        // seconds
+  chapterId?: string;
+  createdAt: string;       // ISO timestamp
 }
 
 export interface AudiobookOutput {
