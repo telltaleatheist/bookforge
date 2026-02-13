@@ -1004,7 +1004,8 @@ export class StudioComponent implements OnInit, OnDestroy {
         sourceLang: item.sourceLang,
         targetLang: item.targetLang,
         audiobookPath: item.bilingualAudioPath,
-        vttPath: item.bilingualVttPath
+        vttPath: item.bilingualVttPath,
+        sentencePairsPath: item.bilingualSentencePairsPath
       };
     }
 

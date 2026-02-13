@@ -451,6 +451,202 @@ export async function cacheSessionToBfp(
 }
 
 /**
+ * Cache TTS session to an LL project directory, keyed by language.
+ * Unlike cacheSessionToBfp, this supports multiple sessions (one per language)
+ * and does NOT delete the original (the chaining handler still needs it).
+ *
+ * Destination: ${projectDir}/sessions/${language}/ebook-{uuid}/
+ * Returns the cached sentences path for use in assembly chaining.
+ */
+export async function cacheSessionToProject(
+  sessionDir: string,
+  projectDir: string,
+  language: string
+): Promise<{ success: boolean; cachedSentencesDir?: string; error?: string }> {
+  console.log(`[PARALLEL-TTS] Caching LL session to project`);
+  console.log(`[PARALLEL-TTS]   sessionDir: ${sessionDir}`);
+  console.log(`[PARALLEL-TTS]   projectDir: ${projectDir}`);
+  console.log(`[PARALLEL-TTS]   language: ${language}`);
+
+  try {
+    const sessionFolderName = path.basename(sessionDir); // e.g. "ebook-{id}"
+    const langSessionParent = path.join(projectDir, 'sessions', language);
+    const destDir = path.join(langSessionParent, sessionFolderName);
+    const tempDestDir = path.join(langSessionParent, `.tmp-${sessionFolderName}`);
+
+    await fs.mkdir(langSessionParent, { recursive: true });
+
+    // Clean up any leftover temp dir from a previous failed attempt
+    try { await fs.rm(tempDestDir, { recursive: true, force: true }); } catch { /* may not exist */ }
+
+    // Remove old session for this language only (keeps other languages intact)
+    try {
+      const existingEntries = await fs.readdir(langSessionParent, { withFileTypes: true });
+      for (const entry of existingEntries) {
+        if (entry.isDirectory() && entry.name.startsWith('ebook-')) {
+          const oldDir = path.join(langSessionParent, entry.name);
+          await fs.rm(oldDir, { recursive: true, force: true });
+          console.log(`[PARALLEL-TTS] Removed old ${language} session: ${entry.name}`);
+        }
+      }
+    } catch (err) {
+      console.error('[PARALLEL-TTS] Failed to clean old sessions (non-fatal):', err);
+    }
+
+    // Determine if the session is in WSL filesystem
+    const isWslSession = sessionDir.startsWith('\\\\wsl$') || sessionDir.startsWith('//wsl$');
+
+    if (isWslSession && process.platform === 'win32') {
+      const wslSourcePath = sessionDir
+        .replace(/^(\\\\wsl\$\\Ubuntu\\|\/\/wsl\$\/Ubuntu\/)/, '/')
+        .replace(/\\/g, '/');
+      const wslTempDestPath = windowsToWslPath(tempDestDir);
+      const wslDestParent = windowsToWslPath(langSessionParent);
+      const mkdirCmd = `mkdir -p "${wslDestParent}"`;
+      const copyCmd = `cp -r "${wslSourcePath}" "${wslTempDestPath}"`;
+      const distro = getWslDistro();
+      const wslArgs = distro
+        ? ['-d', distro, 'bash', '-c', `${mkdirCmd} && ${copyCmd}`]
+        : ['bash', '-c', `${mkdirCmd} && ${copyCmd}`];
+
+      console.log(`[PARALLEL-TTS] WSL copy: wsl.exe ${wslArgs.join(' ')}`);
+
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn('wsl.exe', wslArgs, { shell: false });
+        let stderr = '';
+        proc.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+        proc.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`WSL copy failed (code ${code}): ${stderr}`));
+        });
+        proc.on('error', reject);
+      });
+    } else {
+      await fs.cp(sessionDir, tempDestDir, { recursive: true });
+    }
+
+    // Rename temp dir to final name
+    await fs.rename(tempDestDir, destDir);
+
+    // Find the sentences directory within the cached session.
+    // e2a structure: ebook-{uuid}/{hash}/chapters/sentences/
+    let cachedSentencesDir = destDir;
+
+    // Check direct path first: ebook-{uuid}/chapters/sentences/
+    const directSentences = path.join(destDir, 'chapters', 'sentences');
+    try {
+      await fs.access(directSentences);
+      cachedSentencesDir = directSentences;
+    } catch {
+      // Check for hash subdirectory: ebook-{uuid}/{hash}/chapters/sentences/
+      try {
+        const entries = await fs.readdir(destDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && !entry.name.startsWith('.')) {
+            const hashSentences = path.join(destDir, entry.name, 'chapters', 'sentences');
+            try {
+              await fs.access(hashSentences);
+              cachedSentencesDir = hashSentences;
+              break;
+            } catch { /* not this subdir */ }
+          }
+        }
+      } catch { /* readdir failed */ }
+    }
+
+    console.log(`[PARALLEL-TTS] LL session cached: ${destDir}`);
+    console.log(`[PARALLEL-TTS] Cached sentences dir: ${cachedSentencesDir}`);
+
+    return { success: true, cachedSentencesDir };
+  } catch (err) {
+    const error = `Failed to cache LL session to project: ${err}`;
+    console.error(`[PARALLEL-TTS] ${error}`);
+    return { success: false, error };
+  }
+}
+
+/**
+ * Scan an LL project's sessions/ directory for cached TTS sessions.
+ * Returns one entry per language with sentence count and sentences path.
+ */
+export async function scanProjectSessions(
+  projectDir: string
+): Promise<{ language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }[]> {
+  const sessionsRoot = path.join(projectDir, 'sessions');
+  const results: { language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }[] = [];
+
+  try {
+    await fs.access(sessionsRoot);
+  } catch {
+    return results; // No sessions directory
+  }
+
+  try {
+    const langEntries = await fs.readdir(sessionsRoot, { withFileTypes: true });
+    for (const langEntry of langEntries) {
+      if (!langEntry.isDirectory()) continue;
+      const language = langEntry.name;
+      const langDir = path.join(sessionsRoot, language);
+
+      // Find ebook-{uuid} directory
+      const sessionEntries = await fs.readdir(langDir, { withFileTypes: true });
+      for (const sessionEntry of sessionEntries) {
+        if (!sessionEntry.isDirectory() || !sessionEntry.name.startsWith('ebook-')) continue;
+        const sessionDir = path.join(langDir, sessionEntry.name);
+
+        // Find sentences: direct or via hash subdirectory
+        let sentencesDir = '';
+
+        // Check direct: ebook-{uuid}/chapters/sentences/
+        const directPath = path.join(sessionDir, 'chapters', 'sentences');
+        try {
+          await fs.access(directPath);
+          sentencesDir = directPath;
+        } catch {
+          // Check hash subdir: ebook-{uuid}/{hash}/chapters/sentences/
+          try {
+            const subEntries = await fs.readdir(sessionDir, { withFileTypes: true });
+            for (const sub of subEntries) {
+              if (sub.isDirectory() && !sub.name.startsWith('.') && !sub.name.startsWith('ebook-')) {
+                const hashPath = path.join(sessionDir, sub.name, 'chapters', 'sentences');
+                try {
+                  await fs.access(hashPath);
+                  sentencesDir = hashPath;
+                  break;
+                } catch { /* not this one */ }
+              }
+            }
+          } catch { /* readdir failed */ }
+        }
+
+        if (!sentencesDir) continue;
+
+        // Count sentence files
+        let sentenceCount = 0;
+        try {
+          const files = await fs.readdir(sentencesDir);
+          sentenceCount = files.filter(f => f.endsWith('.flac') || f.endsWith('.wav')).length;
+        } catch { /* count failed */ }
+
+        // Get creation time from the session dir
+        let createdAt = new Date().toISOString();
+        try {
+          const stat = await fs.stat(sessionDir);
+          createdAt = stat.mtime.toISOString();
+        } catch { /* stat failed */ }
+
+        results.push({ language, sessionDir, sentencesDir, sentenceCount, createdAt });
+        break; // Only one session per language
+      }
+    }
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Error scanning project sessions:', err);
+  }
+
+  return results;
+}
+
+/**
  * Post-process output after e2a writes directly to the BFP audiobook folder.
  * Renames VTT to standard name and optionally copies m4b to external folder.
  */

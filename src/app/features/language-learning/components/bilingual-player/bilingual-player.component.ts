@@ -37,6 +37,7 @@ interface AudiobookData {
   path?: string;
   epubPath?: string;
   vttPath?: string;
+  sentencePairsPath?: string;
   createdAt?: string;
   sentencePairs?: SentencePair[];
 }
@@ -668,36 +669,65 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     this.error.set(null);
 
     try {
-      const audioResult = await this.electronService.languageLearningGetAudioData(book.id);
-      if (!audioResult.success || !audioResult.dataUrl) {
-        throw new Error(audioResult.error || 'Audio file not found');
+      // Audio: use file path from BFP when available (same as mono audiobook player)
+      let audioDataUrl: string;
+      if (book.audiobookPath) {
+        const audioResult = await this.electronService.readAudioFile(book.audiobookPath);
+        if (!audioResult.success || !audioResult.dataUrl) {
+          throw new Error(audioResult.error || 'Audio file not found');
+        }
+        audioDataUrl = audioResult.dataUrl;
+      } else {
+        const audioResult = await this.electronService.languageLearningGetAudioData(book.id);
+        if (!audioResult.success || !audioResult.dataUrl) {
+          throw new Error(audioResult.error || 'Audio file not found');
+        }
+        audioDataUrl = audioResult.dataUrl;
       }
 
-      const vttResult = await this.electronService.languageLearningReadVtt(book.id);
-      if (!vttResult.success || !vttResult.content) {
-        throw new Error(vttResult.error || 'Subtitles not available');
+      // VTT: use file path from BFP when available
+      let vttContent: string;
+      if (book.vttPath) {
+        const content = await this.electronService.readTextFile(book.vttPath);
+        if (!content) throw new Error('VTT file not found');
+        vttContent = content;
+      } else {
+        const vttResult = await this.electronService.languageLearningReadVtt(book.id);
+        if (!vttResult.success || !vttResult.content) {
+          throw new Error(vttResult.error || 'Subtitles not available');
+        }
+        vttContent = vttResult.content;
       }
 
-      const pairsResult = await this.electronService.languageLearningReadSentencePairs(book.id);
-      if (!pairsResult.success || !pairsResult.pairs) {
-        throw new Error(pairsResult.error || 'Sentence pairs not found');
+      // Sentence pairs: use file path from BFP when available
+      let pairs: SentencePair[];
+      if (book.sentencePairsPath) {
+        const content = await this.electronService.readTextFile(book.sentencePairsPath);
+        if (!content) throw new Error('Sentence pairs file not found');
+        pairs = JSON.parse(content);
+      } else {
+        const pairsResult = await this.electronService.languageLearningReadSentencePairs(book.id);
+        if (!pairsResult.success || !pairsResult.pairs) {
+          throw new Error(pairsResult.error || 'Sentence pairs not found');
+        }
+        pairs = pairsResult.pairs;
       }
 
-      const cues = this.vttParser.parseVtt(vttResult.content);
+      const cues = this.vttParser.parseVtt(vttContent);
       this.vttCues.set(cues);
-      this.sentencePairs.set(pairsResult.pairs);
+      this.sentencePairs.set(pairs);
 
-      const expectedCues = pairsResult.pairs.length * 2;
+      const expectedCues = pairs.length * 2;
       if (cues.length !== expectedCues) {
-        console.warn(`VTT cue count mismatch: ${cues.length} cues for ${pairsResult.pairs.length} pairs (expected ${expectedCues})`);
+        console.warn(`VTT cue count mismatch: ${cues.length} cues for ${pairs.length} pairs (expected ${expectedCues})`);
       }
 
-      this.audioPath.set(audioResult.dataUrl!);
+      this.audioPath.set(audioDataUrl);
 
       setTimeout(() => {
         const audio = this.audioElementRef?.nativeElement;
         if (audio) {
-          audio.src = audioResult.dataUrl!;
+          audio.src = audioDataUrl;
           audio.load();
         }
       }, 0);

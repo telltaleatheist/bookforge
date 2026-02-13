@@ -2240,29 +2240,53 @@ export class LLWizardComponent implements OnInit {
   async scanAvailableSessions(): Promise<void> {
     this.availableSessions.set([]);
 
-    // Auto-populate from TTS language rows
-    if (this.ttsLanguageRows().length >= 2) {
-      const ttsRows = this.ttsLanguageRows();
-      const sourceLang = this.detectedSourceLang();
-
-      // Find source and target language rows
-      const sourceRow = ttsRows.find(r => r.language === sourceLang);
-      const targetRow = ttsRows.find(r => r.language !== sourceLang);
-
-      if (sourceRow && !this.assemblySourceLang()) {
-        console.log('[LL-WIZARD] Auto-setting assembly source from TTS:', sourceRow.language);
-        this.assemblySourceLang.set(sourceRow.language);
+    // Scan project directory for cached TTS sessions
+    const projectDir = this.effectiveProjectDir();
+    if (projectDir) {
+      try {
+        const electron = (window as any).electron;
+        if (electron?.sessionCache?.scanProject) {
+          const result = await electron.sessionCache.scanProject(projectDir);
+          if (result.success && result.sessions.length > 0) {
+            const sessions: SessionCache[] = result.sessions.map((s: any) => ({
+              language: s.language,
+              sessionDir: s.sentencesDir, // Use sentences dir as the session path for assembly
+              sentenceCount: s.sentenceCount,
+              createdAt: s.createdAt,
+            }));
+            this.availableSessions.set(sessions);
+            console.log('[LL-WIZARD] Found cached sessions:', sessions.map(s => `${s.language} (${s.sentenceCount} sentences)`));
+          }
+        }
+      } catch (err) {
+        console.error('[LL-WIZARD] Error scanning sessions:', err);
       }
+    }
 
-      if (targetRow && !this.assemblyTargetLang()) {
-        console.log('[LL-WIZARD] Auto-setting assembly target from TTS:', targetRow.language);
+    // Auto-populate assembly source/target from available sessions or TTS rows
+    const sourceLang = this.detectedSourceLang();
+
+    if (!this.assemblySourceLang()) {
+      const sourceSession = this.availableSessions().find(s => s.language === sourceLang);
+      const sourceRow = this.ttsLanguageRows().find(r => r.language === sourceLang);
+      if (sourceSession || sourceRow) {
+        this.assemblySourceLang.set(sourceLang);
+      }
+    }
+
+    if (!this.assemblyTargetLang()) {
+      const targetSession = this.availableSessions().find(s => s.language !== sourceLang);
+      const targetRow = this.ttsLanguageRows().find(r => r.language !== sourceLang);
+      if (targetSession) {
+        this.assemblyTargetLang.set(targetSession.language);
+      } else if (targetRow) {
         this.assemblyTargetLang.set(targetRow.language);
       }
+    }
 
-      // If both are now set, remove from skipped steps
-      if (this.assemblySourceLang() && this.assemblyTargetLang()) {
-        this._skippedSteps.delete('assembly');
-      }
+    // If both are now set, remove from skipped steps
+    if (this.assemblySourceLang() && this.assemblyTargetLang()) {
+      this._skippedSteps.delete('assembly');
     }
   }
 
@@ -2517,22 +2541,24 @@ export class LLWizardComponent implements OnInit {
         this.scanAvailableSessions();
       }
 
-      // When entering review, double-check that configured steps are not marked as skipped
+      // When entering review, un-skip steps that were auto-skipped but now have config.
+      // Only un-skip if the user didn't explicitly skip the step (completedSteps tracks
+      // steps the user passed through without skipping).
       if (nextStep === 'review') {
-        // Check cleanup
-        if ((this.enableAiCleanup() || this.simplifyForLearning())) {
+        // Check cleanup — only un-skip if user visited the step (completed it)
+        if ((this.enableAiCleanup() || this.simplifyForLearning()) && this.completedSteps.has('cleanup')) {
           this._skippedSteps.delete('cleanup');
         }
         // Check translation
-        if (this.targetLangs().size > 0) {
+        if (this.targetLangs().size > 0 && this.completedSteps.has('translate')) {
           this._skippedSteps.delete('translate');
         }
-        // Check TTS
-        if (this.ttsLanguageRows().length > 0) {
+        // Check TTS — don't un-skip if user explicitly skipped it
+        if (this.ttsLanguageRows().length > 0 && this.completedSteps.has('tts')) {
           this._skippedSteps.delete('tts');
         }
         // Check assembly
-        if (this.assemblySourceLang() && this.assemblyTargetLang()) {
+        if (this.assemblySourceLang() && this.assemblyTargetLang() && this.completedSteps.has('assembly')) {
           this._skippedSteps.delete('assembly');
         }
       }
@@ -2728,16 +2754,35 @@ export class LLWizardComponent implements OnInit {
       if (!this._skippedSteps.has('tts')) {
         console.log(`[LL-WIZARD] Creating TTS jobs. ProjectDir: ${projectDir}`);
 
-        for (const row of this.ttsLanguageRows()) {
-          console.log(`[LL-WIZARD] Processing TTS row for language: ${row.language}`);
+        // Check if assembly chaining is needed (TTS → Assembly via bilingual workflow pattern)
+        const assemblyChained = !this._skippedSteps.has('assembly')
+          && !!this.assemblySourceLang() && !!this.assemblyTargetLang();
+        const asmSourceLang = this.assemblySourceLang();
+        const asmTargetLang = this.assemblyTargetLang();
 
-          // Resolve EPUB at runtime using the new service
+        // Pre-resolve EPUBs for all TTS rows (needed for bilingualWorkflow.targetEpubPath)
+        const resolvedEpubs = new Map<string, { path: string; source: string; exists: boolean }>();
+        for (const row of this.ttsLanguageRows()) {
           const resolved = await this.epubResolver.resolveEpub({
             projectDir: projectDir,
-            audiobookDir: '', // No longer used, kept for compatibility
+            audiobookDir: '',
             pipeline: 'language-learning',
             language: row.language
           });
+          resolvedEpubs.set(row.language, resolved);
+        }
+
+        // Get assembly config values when chaining
+        const audiobooksDir = assemblyChained
+          ? (this.settingsService.get<string>('externalAudiobooksDir') || '')
+          : '';
+        const targetEpubPath = assemblyChained ? resolvedEpubs.get(asmTargetLang)?.path : undefined;
+        const targetRow = assemblyChained
+          ? this.ttsLanguageRows().find(r => r.language === asmTargetLang)
+          : undefined;
+
+        for (const row of this.ttsLanguageRows()) {
+          const resolved = resolvedEpubs.get(row.language)!;
 
           console.log(`[LL-WIZARD] RESOLVED EPUB for ${row.language}:`, {
             resolvedPath: resolved.path,
@@ -2745,16 +2790,51 @@ export class LLWizardComponent implements OnInit {
             exists: resolved.exists
           });
 
-          // Double-check what we're about to queue
           console.warn(`[LL-WIZARD] >>> QUEUING TTS JOB WITH EPUB: ${resolved.path}`);
+
+          // Build metadata with chaining info when assembly is enabled
+          const metadata: any = {
+            title: `TTS (${row.language.toUpperCase()})`,
+          };
+
+          if (assemblyChained && row.language === asmSourceLang && targetEpubPath && targetRow) {
+            // Source TTS: carries chaining config for target TTS + assembly
+            metadata.bilingualWorkflow = {
+              role: 'source',
+              targetEpubPath,
+              targetConfig: {
+                epubPath: targetEpubPath,
+                language: asmTargetLang,
+                ttsEngine: this.ttsEngine(),
+                voice: targetRow.voice,
+                speed: targetRow.speed,
+                device: this.ttsDevice(),
+                workerCount: this.ttsWorkers(),
+                outputDir: '',
+              },
+              assemblyConfig: {
+                projectId: this.projectId(),
+                audiobooksDir: audiobooksDir || projectDir,
+                bfpPath: this.bfpPath(),
+                sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${asmTargetLang}.json`,
+                pauseDuration: this.pauseDuration(),
+                gapDuration: this.gapDuration(),
+                title: this.projectTitle() || this.title(),
+                sourceLang: asmSourceLang,
+                targetLang: asmTargetLang,
+                pattern: this.assemblyPattern(),
+              }
+            };
+          } else if (assemblyChained && row.language === asmTargetLang) {
+            // Target TTS: placeholder — skipped by processNext() until source TTS completes
+            metadata.bilingualPlaceholder = { role: 'target', projectId: this.projectId() };
+          }
 
           await this.queueService.addJob({
             type: 'tts-conversion',
             epubPath: resolved.path,
             projectDir: projectDir,
-            metadata: {
-              title: `TTS (${row.language.toUpperCase()})`,
-            },
+            metadata,
             config: {
               type: 'tts-conversion',
               device: this.ttsDevice(),
@@ -2789,32 +2869,62 @@ export class LLWizardComponent implements OnInit {
       if (!this._skippedSteps.has('assembly') && this.assemblySourceLang() && this.assemblyTargetLang()) {
         const sourceLang = this.assemblySourceLang();
         const targetLang = this.assemblyTargetLang();
-
-        // Get audiobook output folder from settings
         const audiobooksDir = this.settingsService.get<string>('externalAudiobooksDir') || '';
 
-        await this.queueService.addJob({
-          type: 'bilingual-assembly',
-          projectDir: projectDir,
-          metadata: {
-            title: `Assembly (${sourceLang.toUpperCase()}-${targetLang.toUpperCase()})`,
-          },
-          config: {
+        if (!this._skippedSteps.has('tts')) {
+          // Assembly chained to TTS — placeholder activated by target TTS completion handler
+          await this.queueService.addJob({
             type: 'bilingual-assembly',
-            projectId: this.projectId(),
-            sourceSentencesDir: `${projectDir}/sessions/${sourceLang}/sentences`,
-            targetSentencesDir: `${projectDir}/sessions/${targetLang}/sentences`,
-            sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${targetLang}.json`,
-            outputDir: audiobooksDir || projectDir,  // Use configured audiobooks dir, fallback to project
-            pauseDuration: this.pauseDuration(),
-            gapDuration: this.gapDuration(),
-            sourceLang,
-            targetLang,
-            title: this.projectTitle() || this.title(),
-            pattern: this.assemblyPattern(),
-          },
-          workflowId,
-        });
+            projectDir: projectDir,
+            metadata: {
+              title: `Assembly (${sourceLang.toUpperCase()}-${targetLang.toUpperCase()})`,
+              bilingualPlaceholder: { role: 'assembly', projectId: this.projectId() },
+            },
+            config: {
+              type: 'bilingual-assembly',
+              projectId: this.projectId(),
+              bfpPath: this.bfpPath(),
+              sourceSentencesDir: '',  // Filled by TTS completion handler
+              targetSentencesDir: '',  // Filled by TTS completion handler
+              sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${targetLang}.json`,
+              outputDir: audiobooksDir || projectDir,
+              pauseDuration: this.pauseDuration(),
+              gapDuration: this.gapDuration(),
+              sourceLang,
+              targetLang,
+              title: this.projectTitle() || this.title(),
+              pattern: this.assemblyPattern(),
+            },
+            workflowId,
+          });
+        } else {
+          // TTS skipped — standalone assembly (sentences must already exist in project sessions dir)
+          await this.queueService.addJob({
+            type: 'bilingual-assembly',
+            projectDir: projectDir,
+            metadata: {
+              title: `Assembly (${sourceLang.toUpperCase()}-${targetLang.toUpperCase()})`,
+            },
+            config: {
+              type: 'bilingual-assembly',
+              projectId: this.projectId(),
+              bfpPath: this.bfpPath(),
+              sourceSentencesDir: this.availableSessions().find(s => s.language === sourceLang)?.sessionDir
+                || `${projectDir}/sessions/${sourceLang}/sentences`,
+              targetSentencesDir: this.availableSessions().find(s => s.language === targetLang)?.sessionDir
+                || `${projectDir}/sessions/${targetLang}/sentences`,
+              sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${targetLang}.json`,
+              outputDir: audiobooksDir || projectDir,
+              pauseDuration: this.pauseDuration(),
+              gapDuration: this.gapDuration(),
+              sourceLang,
+              targetLang,
+              title: this.projectTitle() || this.title(),
+              pattern: this.assemblyPattern(),
+            },
+            workflowId,
+          });
+        }
       }
 
       console.log('[LLWizard] Jobs added to queue:', {

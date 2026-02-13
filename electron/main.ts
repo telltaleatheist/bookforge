@@ -3155,6 +3155,24 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('session-cache:save-to-project', async (_event, sessionDir: string, projectDir: string, language: string) => {
+    try {
+      const { cacheSessionToProject } = await import('./parallel-tts-bridge.js');
+      return await cacheSessionToProject(sessionDir, projectDir, language);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('session-cache:scan-project', async (_event, projectDir: string) => {
+    try {
+      const { scanProjectSessions } = await import('./parallel-tts-bridge.js');
+      return { success: true, sessions: await scanProjectSessions(projectDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message, sessions: [] };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Bilingual Assembly handlers (for dual-voice language learning audiobooks)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -4557,6 +4575,7 @@ function setupIpcHandlers(): void {
         bilingualAudioPath?: string;
         bilingualAudioPathValid?: boolean;
         bilingualVttPath?: string;
+        bilingualSentencePairsPath?: string;
         metadata?: {
           title?: string;
           author?: string;
@@ -4647,6 +4666,7 @@ function setupIpcHandlers(): void {
               bilingualAudioPath: resolvedBilingualAudioPath || project.audiobook.bilingualAudioPath,
               bilingualAudioPathValid,
               bilingualVttPath: resolvedBilingualVttPath || project.audiobook.bilingualVttPath,
+              bilingualSentencePairsPath: project.audiobook.bilingualSentencePairsPath,
               metadata: project.metadata ? {
                 title: project.metadata.title,
                 author: project.metadata.author,
@@ -4731,12 +4751,15 @@ function setupIpcHandlers(): void {
   });
 
   // Link bilingual audio file to BFP project (separate from mono audiobook)
-  ipcMain.handle('audiobook:link-bilingual-audio', async (_event, bfpPath: string, audioPath: string, vttPath?: string) => {
+  ipcMain.handle('audiobook:link-bilingual-audio', async (_event, bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) => {
     try {
+      const { wslToWindowsPath } = await import('./e2a-paths.js');
+
       console.log('[audiobook:link-bilingual-audio] === LINK BILINGUAL AUDIO CALLED ===');
       console.log('[audiobook:link-bilingual-audio] bfpPath:', bfpPath);
       console.log('[audiobook:link-bilingual-audio] audioPath:', audioPath);
       console.log('[audiobook:link-bilingual-audio] vttPath:', vttPath);
+      console.log('[audiobook:link-bilingual-audio] sentencePairsPath:', sentencePairsPath);
 
       // Validate inputs
       if (!bfpPath || !audioPath) {
@@ -4762,13 +4785,17 @@ function setupIpcHandlers(): void {
         project.audiobook = {};
       }
 
-      // Set the bilingual audio and VTT paths
-      project.audiobook.bilingualAudioPath = audioPath;
+      // Convert WSL paths to Windows paths before storing
+      project.audiobook.bilingualAudioPath = wslToWindowsPath(audioPath);
       if (vttPath) {
-        project.audiobook.bilingualVttPath = vttPath;
+        project.audiobook.bilingualVttPath = wslToWindowsPath(vttPath);
+      }
+      if (sentencePairsPath) {
+        project.audiobook.bilingualSentencePairsPath = wslToWindowsPath(sentencePairsPath);
       }
       console.log('[audiobook:link-bilingual-audio] New bilingualAudioPath:', project.audiobook.bilingualAudioPath);
       console.log('[audiobook:link-bilingual-audio] New bilingualVttPath:', project.audiobook.bilingualVttPath);
+      console.log('[audiobook:link-bilingual-audio] New bilingualSentencePairsPath:', project.audiobook.bilingualSentencePairsPath);
 
       // Save the BFP file
       console.log('[audiobook:link-bilingual-audio] Writing BFP file...');

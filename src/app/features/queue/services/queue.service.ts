@@ -799,6 +799,34 @@ export class QueueService {
           );
         }
       }
+
+      // If TTS job failed in bilingual workflow, mark dependent placeholders as error
+      const bilingualMeta = (completedJob?.metadata as any)?.bilingualWorkflow;
+      if (bilingualMeta && completedJob.workflowId) {
+        const placeholdersToFail = this._jobs().filter(j =>
+          j.workflowId === completedJob.workflowId &&
+          j.status === 'pending' &&
+          (j.metadata as any)?.bilingualPlaceholder
+        );
+        if (placeholdersToFail.length > 0) {
+          const failIds = new Set(placeholdersToFail.map(j => j.id));
+          console.log(`[QUEUE] TTS failed in bilingual workflow - marking ${failIds.size} placeholder(s) as error`);
+          this._jobs.update(jobs =>
+            jobs.map(job => {
+              if (!failIds.has(job.id)) return job;
+              return {
+                ...job,
+                status: 'error' as JobStatus,
+                error: 'Skipped: TTS conversion failed. Dependent jobs cannot proceed.',
+                metadata: {
+                  ...job.metadata,
+                  bilingualPlaceholder: undefined,
+                },
+              };
+            })
+          );
+        }
+      }
     }
 
     // Save analytics directly to BFP (no longer using signal/effect pattern to avoid duplicates)
@@ -848,6 +876,33 @@ export class QueueService {
         }
       } catch (err) {
         console.error('[QUEUE] Error caching session to BFP:', err);
+      }
+    }
+
+    // Cache LL TTS session to project directory (per-language)
+    // This persists the session so assembly can run later even if temp dirs are cleaned
+    if (result.success && result.sessionDir && completedJob?.projectDir &&
+        completedJob.type === 'tts-conversion' && !completedJob.bfpPath) {
+      const ttsConfig = completedJob.config as TtsConversionConfig;
+      if (ttsConfig?.language) {
+        try {
+          const electron = (window as any).electron;
+          if (electron?.sessionCache?.saveToProject) {
+            console.log(`[QUEUE] Caching LL TTS session for ${ttsConfig.language} to project: ${completedJob.projectDir}`);
+            const cacheResult = await electron.sessionCache.saveToProject(
+              result.sessionDir, completedJob.projectDir, ttsConfig.language
+            );
+            if (cacheResult.success && cacheResult.cachedSentencesDir) {
+              console.log(`[QUEUE] LL session cached, sentences at: ${cacheResult.cachedSentencesDir}`);
+              // Update outputPath to cached location so chaining handler uses persistent paths
+              result.outputPath = cacheResult.cachedSentencesDir;
+            } else {
+              console.error('[QUEUE] Failed to cache LL session:', cacheResult.error);
+            }
+          }
+        } catch (err) {
+          console.error('[QUEUE] Error caching LL session to project:', err);
+        }
       }
     }
 
@@ -980,6 +1035,7 @@ export class QueueService {
                   ...j,
                   metadata: {
                     ...j.metadata,
+                    bilingualPlaceholder: undefined, // Clear placeholder so processNext() picks it up
                     bilingualWorkflow: {
                       role: 'target',
                       sourceSentencesDir, // Pass source sentences dir for assembly
@@ -1108,7 +1164,8 @@ export class QueueService {
                   title: assemblyConfig.title,
                   sourceLang: assemblyConfig.sourceLang,
                   targetLang: assemblyConfig.targetLang,
-                  bfpPath: assemblyConfig.bfpPath
+                  bfpPath: assemblyConfig.bfpPath,
+                  pattern: assemblyConfig.pattern
                 }
               };
             })
@@ -1136,7 +1193,8 @@ export class QueueService {
               title: assemblyConfig.title,
               sourceLang: assemblyConfig.sourceLang,
               targetLang: assemblyConfig.targetLang,
-              bfpPath: assemblyConfig.bfpPath
+              bfpPath: assemblyConfig.bfpPath,
+              pattern: assemblyConfig.pattern
             }
           });
         }
@@ -1379,6 +1437,12 @@ export class QueueService {
     const electron = window.electron as any;
     if (!electron?.languageLearning?.loadProject || !electron?.languageLearning?.saveProject) {
       console.warn('[QUEUE] Cannot update project status: language learning API not available');
+      return;
+    }
+
+    // Skip if projectId looks like an absolute path (BFP project opened in LL tab, not a native LL project)
+    if (projectId.includes('\\') || projectId.includes('/') || /^[A-Za-z]:/.test(projectId)) {
+      console.log(`[QUEUE] Skipping LL project status update — projectId is a BFP path: ${projectId}`);
       return;
     }
 
@@ -2523,12 +2587,18 @@ export class QueueService {
 
         console.log('[QUEUE] Bilingual assembly complete:', {
           audioPath: result.data?.audioPath,
-          vttPath: result.data?.vttPath
+          vttPath: result.data?.vttPath,
+          bfpPath: config.bfpPath,
+          sentencePairsPath: config.sentencePairsPath
         });
 
-        // Update the article's project.json with the audiobook paths
-        if (config.projectId && result.data?.audioPath) {
+        // For LL projects: copy audio to canonical location and update project
+        // Skip if projectId is an absolute path (BFP project, not a native LL project)
+        if (config.projectId && result.data?.audioPath &&
+            !config.projectId.includes('\\') && !config.projectId.includes('/') && !/^[A-Za-z]:/.test(config.projectId)) {
           const languageLearning = (window.electron as any)?.languageLearning;
+
+          // Update project.json with paths and completed status
           if (languageLearning?.updateProject) {
             const updateResult = await languageLearning.updateProject(config.projectId, {
               audiobookPath: result.data.audioPath,
@@ -2546,7 +2616,8 @@ export class QueueService {
             const updateResult = await audiobook.linkBilingualAudio(
               config.bfpPath,
               result.data.audioPath,
-              result.data.vttPath
+              result.data.vttPath,
+              config.sentencePairsPath
             );
             console.log('[QUEUE] Updated book BFP with bilingual audio paths:', updateResult);
 

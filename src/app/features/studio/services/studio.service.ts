@@ -123,6 +123,7 @@ export class StudioService {
           // Check for bilingual audio path
           let bilingualAudioPath: string | undefined;
           let bilingualVttPath: string | undefined;
+          let bilingualSentencePairsPath: string | undefined;
           if (p.bilingualAudioPath && p.bilingualAudioPathValid !== false) {
             bilingualAudioPath = p.bilingualAudioPath;
             console.log(`[StudioService]   -> Found bilingualAudioPath: ${bilingualAudioPath}`);
@@ -134,6 +135,9 @@ export class StudioService {
               console.log(`[StudioService]   -> Found bilingualVttPath: ${bilingualVttPath}`);
             }
           }
+          if (p.bilingualSentencePairsPath) {
+            bilingualSentencePairsPath = p.bilingualSentencePairsPath;
+          }
 
           const book: StudioItem = {
             id: p.bfpPath,  // Use bfpPath as unique ID
@@ -142,7 +146,7 @@ export class StudioService {
             author: p.metadata?.author,
             year: p.metadata?.year,
             language: p.metadata?.language,
-            status: this.mapBookStatus(audiobookPath, !!p.cleanedAt),
+            status: this.mapBookStatus(audiobookPath || bilingualAudioPath, !!p.cleanedAt),
             createdAt: p.exportedAt || new Date().toISOString(),
             modifiedAt: p.cleanedAt || p.exportedAt || new Date().toISOString(),
             epubPath: p.audiobookFolder ? `${p.audiobookFolder}/exported.epub` : undefined,
@@ -156,7 +160,8 @@ export class StudioService {
             skippedChunksPath,
             // Bilingual audio paths
             bilingualAudioPath,
-            bilingualVttPath
+            bilingualVttPath,
+            bilingualSentencePairsPath
           };
 
           // Load cover image as base64 for display

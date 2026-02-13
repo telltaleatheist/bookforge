@@ -1114,6 +1114,7 @@ export class ElectronService {
       bilingualAudioPath?: string;
       bilingualAudioPathValid?: boolean;
       bilingualVttPath?: string;
+      bilingualSentencePairsPath?: string;
       metadata?: {
         title?: string;
         author?: string;
@@ -1144,9 +1145,9 @@ export class ElectronService {
   /**
    * Link a bilingual audio file to a BFP project (separate from mono audiobook)
    */
-  async audiobookLinkBilingualAudio(bfpPath: string, audioPath: string, vttPath?: string): Promise<{ success: boolean; error?: string }> {
+  async audiobookLinkBilingualAudio(bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.audiobook.linkBilingualAudio(bfpPath, audioPath, vttPath);
+      return (window as any).electron.audiobook.linkBilingualAudio(bfpPath, audioPath, vttPath, sentencePairsPath);
     }
     return { success: false, error: 'Not running in Electron' };
   }

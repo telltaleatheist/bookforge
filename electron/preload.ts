@@ -1086,7 +1086,7 @@ export interface ElectronAPI {
       error?: string;
     }>;
     linkAudio: (bfpPath: string, audioPath: string) => Promise<{ success: boolean; error?: string }>;
-    linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string) => Promise<{ success: boolean; error?: string }>;
+    linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) => Promise<{ success: boolean; error?: string }>;
   };
   epub: {
     parse: (epubPath: string) => Promise<{ success: boolean; data?: EpubStructure; error?: string }>;
@@ -1349,6 +1349,8 @@ export interface ElectronAPI {
   };
   sessionCache: {
     saveToBfp: (sessionDir: string, bfpPath: string) => Promise<{ success: boolean; cachedPath?: string; error?: string }>;
+    saveToProject: (sessionDir: string, projectDir: string, language: string) => Promise<{ success: boolean; cachedSentencesDir?: string; error?: string }>;
+    scanProject: (projectDir: string) => Promise<{ success: boolean; sessions: Array<{ language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }>; error?: string }>;
   };
   bilingualAssembly: {
     run: (jobId: string, config: {
@@ -2114,8 +2116,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:list-projects-with-audiobook'),
     linkAudio: (bfpPath: string, audioPath: string) =>
       ipcRenderer.invoke('audiobook:link-audio', bfpPath, audioPath),
-    linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string) =>
-      ipcRenderer.invoke('audiobook:link-bilingual-audio', bfpPath, audioPath, vttPath),
+    linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) =>
+      ipcRenderer.invoke('audiobook:link-bilingual-audio', bfpPath, audioPath, vttPath, sentencePairsPath),
   },
   epub: {
     parse: (epubPath: string) =>
@@ -2507,6 +2509,20 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('session-cache:save-to-bfp', sessionDir, bfpPath) as Promise<{
         success: boolean;
         cachedPath?: string;
+        error?: string;
+      }>,
+    // Cache TTS session to LL project directory, keyed by language
+    saveToProject: (sessionDir: string, projectDir: string, language: string) =>
+      ipcRenderer.invoke('session-cache:save-to-project', sessionDir, projectDir, language) as Promise<{
+        success: boolean;
+        cachedSentencesDir?: string;
+        error?: string;
+      }>,
+    // Scan LL project for cached TTS sessions
+    scanProject: (projectDir: string) =>
+      ipcRenderer.invoke('session-cache:scan-project', projectDir) as Promise<{
+        success: boolean;
+        sessions: Array<{ language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }>;
         error?: string;
       }>,
   },

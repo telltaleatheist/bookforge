@@ -66,6 +66,7 @@ export interface StudioItem {
   // Bilingual audiobook paths (separate from mono audiobook)
   bilingualAudioPath?: string;
   bilingualVttPath?: string;
+  bilingualSentencePairsPath?: string;
 
   // Error message if status is 'error'
   errorMessage?: string;
