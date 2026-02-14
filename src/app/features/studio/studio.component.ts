@@ -321,7 +321,7 @@ import { SettingsService } from '../../core/services/settings.service';
                     }
                   }
                   @case ('play') {
-                    @if (bookAudioData()) {
+                    @if (bookAudioData() && !fullscreenPlayer()) {
                       <app-audiobook-player [audiobook]="bookAudioData()" (requestFullscreen)="fullscreenPlayer.set(true)" />
                     } @else {
                       <div class="empty-state-panel">
@@ -394,6 +394,17 @@ import { SettingsService } from '../../core/services/settings.service';
                   }
                   @case ('play') {
                     @if (bilingualAudioData()) {
+                      @if (bilingualPairKeys().length > 1) {
+                        <div class="bilingual-pair-picker">
+                          @for (key of bilingualPairKeys(); track key) {
+                            <button
+                              class="pair-btn"
+                              [class.active]="bilingualAudioData()?.sourceLang + '-' + bilingualAudioData()?.targetLang === key"
+                              (click)="selectBilingualPair(key)"
+                            >{{ bilingualPairLabel(key) }}</button>
+                          }
+                        </div>
+                      }
                       <app-bilingual-player [audiobook]="bilingualAudioData()" />
                     } @else {
                       <div class="empty-state-panel">
@@ -443,7 +454,10 @@ import { SettingsService } from '../../core/services/settings.service';
         [style.left.px]="contextMenuX()"
         (click)="hideContextMenu()"
       >
-        <button class="context-menu-item" (click)="deleteContextMenuItem()">
+        <button class="context-menu-item" (click)="openContextMenuItemFolder()">
+          Open File Location
+        </button>
+        <button class="context-menu-item danger" (click)="deleteContextMenuItem()">
           Delete
         </button>
       </div>
@@ -733,6 +747,35 @@ import { SettingsService } from '../../core/services/settings.service';
       }
     }
 
+    .bilingual-pair-picker {
+      display: flex;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+
+      .pair-btn {
+        padding: 4px 12px;
+        border-radius: 4px;
+        border: 1px solid var(--border-subtle);
+        background: transparent;
+        color: var(--text-secondary);
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.15s;
+
+        &:hover {
+          border-color: var(--text-muted);
+          color: var(--text-primary);
+        }
+
+        &.active {
+          background: var(--accent-subtle);
+          border-color: var(--accent);
+          color: var(--accent);
+        }
+      }
+    }
+
     .empty-state-panel {
       height: 100%;
       display: flex;
@@ -835,6 +878,10 @@ import { SettingsService } from '../../core/services/settings.service';
       &:hover {
         background: var(--bg-hover);
       }
+
+      &.danger {
+        color: var(--text-danger, #ef4444);
+      }
     }
 
   `]
@@ -926,11 +973,11 @@ export class StudioComponent implements OnInit, OnDestroy {
 
     const sources: SourceOption[] = [];
 
-    // Original/Finalized EPUB (from editor export)
+    // Original/Exported EPUB (from editor export)
     if (item.epubPath) {
       sources.push({
         path: item.epubPath,
-        label: 'Finalized',
+        label: 'Exported',
         description: 'From editor export',
       });
     }
@@ -991,12 +1038,65 @@ export class StudioComponent implements OnInit, OnDestroy {
     };
   });
 
+  // Bilingual language pair selection
+  readonly selectedBilingualKey = signal<string>('');
+
+  // Available bilingual language pairs for the picker
+  readonly bilingualPairKeys = computed(() => {
+    const item = this.selectedItem();
+    if (!item?.bilingualOutputs) return [];
+    return Object.keys(item.bilingualOutputs);
+  });
+
+  // Language code → display name
+  private readonly langDisplayNames: Record<string, string> = {
+    en: 'English', de: 'German', es: 'Spanish', fr: 'French', it: 'Italian',
+    pt: 'Portuguese', nl: 'Dutch', pl: 'Polish', ru: 'Russian',
+    ja: 'Japanese', zh: 'Chinese', ko: 'Korean', ar: 'Arabic',
+    hi: 'Hindi', sv: 'Swedish', da: 'Danish', no: 'Norwegian', fi: 'Finnish',
+  };
+
+  bilingualPairLabel(key: string): string {
+    const [src, tgt] = key.split('-');
+    const srcName = this.langDisplayNames[src] || src.toUpperCase();
+    const tgtName = this.langDisplayNames[tgt] || tgt.toUpperCase();
+    return `${srcName} / ${tgtName}`;
+  }
+
+  selectBilingualPair(key: string): void {
+    this.selectedBilingualKey.set(key);
+  }
+
   // Data for bilingual player
   readonly bilingualAudioData = computed(() => {
     const item = this.selectedItem();
     if (!item) return null;
 
-    // Check for bilingual audio first
+    // Use bilingualOutputs map if available (supports multiple pairs)
+    if (item.bilingualOutputs) {
+      const keys = Object.keys(item.bilingualOutputs);
+      if (keys.length === 0) return null;
+
+      // Use selected key, or default to first available
+      let key = this.selectedBilingualKey();
+      if (!key || !item.bilingualOutputs[key]) {
+        key = keys[0];
+      }
+      const output = item.bilingualOutputs[key];
+      if (!output.audioPath || !output.vttPath) return null;
+
+      return {
+        id: item.id,
+        title: item.title,
+        sourceLang: output.sourceLang,
+        targetLang: output.targetLang,
+        audiobookPath: output.audioPath,
+        vttPath: output.vttPath,
+        sentencePairsPath: output.sentencePairsPath
+      };
+    }
+
+    // Legacy fallback: single bilingual pair
     if (item.bilingualAudioPath && item.bilingualVttPath) {
       return {
         id: item.id,
@@ -1148,35 +1248,14 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   getProjectDir(): string {
     const item = this.selectedItem();
-    if (!item) return '';
-
-    if (item.type === 'article') {
-      const articlesPath = this.libraryService.articlesPath();
-      if (!articlesPath) return '';
-      return `${articlesPath}/${item.id}`;
-    } else if (item.type === 'book' && item.bfpPath) {
-      // For books, derive project dir from BFP path
-      // BFP path is like: /path/to/projects/book_id.bfp (or E:\path\to\projects\book_id.bfp on Windows)
-      // We want: /path/to/projects/book_id
-      const bfpPath = item.bfpPath;
-      const lastSlash = Math.max(bfpPath.lastIndexOf('/'), bfpPath.lastIndexOf('\\'));
-      const bfpFileName = bfpPath.substring(lastSlash + 1);
-      const projectName = bfpFileName.replace('.bfp', '');
-      const projectsDir = bfpPath.substring(0, lastSlash);
-      return `${projectsDir}/${projectName}`;
-    }
-
-    return '';
+    if (!item?.bfpPath) return '';
+    return item.bfpPath;
   }
 
   getAudiobookFolder(): string {
     const item = this.selectedItem();
-    if (!item || item.type !== 'book') return '';
-    if (item.epubPath) {
-      const lastSlash = Math.max(item.epubPath.lastIndexOf('/'), item.epubPath.lastIndexOf('\\'));
-      return item.epubPath.substring(0, lastSlash);
-    }
-    return '';
+    if (!item?.bfpPath) return '';
+    return `${item.bfpPath}/output`;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1208,6 +1287,12 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   hideContextMenu(): void {
     this.contextMenuVisible.set(false);
+  }
+
+  openContextMenuItemFolder(): void {
+    if (!this.contextMenuItem?.bfpPath) return;
+    this.electronService.showItemInFolder(this.contextMenuItem.bfpPath);
+    this.hideContextMenu();
   }
 
   async deleteContextMenuItem(): Promise<void> {
@@ -1277,9 +1362,18 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   async onLinkAudio(path: string): Promise<void> {
     const item = this.selectedItem();
-    if (!item?.bfpPath) return;
+    if (!item) return;
 
-    const result = await this.electronService.audiobookLinkAudio(item.bfpPath, path);
+    // Update manifest with linked audio path
+    const result = await this.electronService.manifestUpdate({
+      projectId: item.id,
+      outputs: {
+        audiobook: {
+          path: path,
+          completedAt: new Date().toISOString(),
+        },
+      },
+    });
     if (result.success) {
       await this.studioService.loadBooks();
     }

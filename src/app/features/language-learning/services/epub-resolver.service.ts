@@ -7,7 +7,7 @@ import { EpubResolutionContext, ResolvedEpub } from '../models/language-learning
  *
  * Key principles:
  * 1. Language Learning pipeline needs sentence-per-paragraph EPUBs (e.g., en.epub, de.epub)
- * 2. Standard pipeline uses full-text EPUBs (cleaned.epub, finalized.epub, etc.)
+ * 2. Standard pipeline uses full-text EPUBs (cleaned.epub, exported.epub, etc.)
  * 3. Resolution happens at runtime, not configuration time
  * 4. Clear fallback hierarchy for robustness
  */
@@ -77,8 +77,21 @@ export class EpubResolverService {
       };
     }
 
-    // Priority 2: If this is a source language without a language EPUB, check for cleaned
-    // This can happen if translation was skipped but we still want bilingual format
+    // Priority 2a: Simplified EPUB (most processed)
+    const simplifiedPath = `${dir}/stages/01-cleanup/simplified.epub`;
+    const simplifiedExists = await this.fileExists(simplifiedPath);
+
+    if (simplifiedExists) {
+      console.warn(`[EPUB-RESOLVER] ⚠️ No ${language}.epub found, falling back to simplified.epub`);
+      console.warn(`[EPUB-RESOLVER] This will process the full text, not sentence-per-paragraph format!`);
+      return {
+        path: simplifiedPath,
+        source: 'simplified',
+        exists: true
+      };
+    }
+
+    // Priority 2b: Cleaned EPUB
     const cleanedPath = `${dir}/stages/01-cleanup/cleaned.epub`;
     const cleanedExists = await this.fileExists(cleanedPath);
 
@@ -92,15 +105,15 @@ export class EpubResolverService {
       };
     }
 
-    // Priority 3: Finalized (user-edited, could be in source folder)
-    const finalizedPath = `${dir}/source/finalized.epub`;
-    const finalizedExists = await this.fileExists(finalizedPath);
+    // Priority 3: Exported (user-edited from PDF picker, in source folder)
+    const exportedPath = `${dir}/source/exported.epub`;
+    const exportedExists = await this.fileExists(exportedPath);
 
-    if (finalizedExists) {
-      console.warn(`[EPUB-RESOLVER] ⚠️ Using finalized.epub as fallback`);
+    if (exportedExists) {
+      console.warn(`[EPUB-RESOLVER] ⚠️ Using exported.epub as fallback`);
       return {
-        path: finalizedPath,
-        source: 'finalized',
+        path: exportedPath,
+        source: 'exported',
         exists: true
       };
     }
@@ -132,7 +145,19 @@ export class EpubResolverService {
    * Uses full-text EPUBs for regular audiobook production.
    */
   private async resolveStandardEpub(dir: string): Promise<ResolvedEpub> {
-    // Priority 1: Cleaned EPUB (AI-processed) in stages
+    // Priority 1a: Simplified EPUB (most processed) in stages
+    const simplifiedPath = `${dir}/stages/01-cleanup/simplified.epub`;
+    const simplifiedExists = await this.fileExists(simplifiedPath);
+
+    if (simplifiedExists) {
+      return {
+        path: simplifiedPath,
+        source: 'simplified',
+        exists: true
+      };
+    }
+
+    // Priority 1b: Cleaned EPUB (AI-processed) in stages
     const cleanedPath = `${dir}/stages/01-cleanup/cleaned.epub`;
     const cleanedExists = await this.fileExists(cleanedPath);
 
@@ -144,14 +169,14 @@ export class EpubResolverService {
       };
     }
 
-    // Priority 2: Finalized EPUB (user-edited) in source
-    const finalizedPath = `${dir}/source/finalized.epub`;
-    const finalizedExists = await this.fileExists(finalizedPath);
+    // Priority 2: Exported EPUB (user-edited from PDF picker) in source
+    const exportedPath = `${dir}/source/exported.epub`;
+    const exportedExists = await this.fileExists(exportedPath);
 
-    if (finalizedExists) {
+    if (exportedExists) {
       return {
-        path: finalizedPath,
-        source: 'finalized',
+        path: exportedPath,
+        source: 'exported',
         exists: true
       };
     }

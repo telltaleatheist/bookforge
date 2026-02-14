@@ -871,6 +871,7 @@ export interface ElectronAPI {
     exists: (filePath: string) => Promise<boolean>;
     writeText: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>;
     deleteFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+    deleteDirectory: (dirPath: string) => Promise<{ success: boolean; error?: string }>;
     writeTempFile: (filename: string, data: Uint8Array) => Promise<{ success: boolean; path?: string; dataUrl?: string; error?: string }>;
     readText: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
     readAudio: (audioPath: string) => Promise<{ success: boolean; dataUrl?: string; size?: number; error?: string }>;
@@ -1365,6 +1366,17 @@ export interface ElectronAPI {
     }) => Promise<{ success: boolean; data?: { success: boolean; audioPath?: string; vttPath?: string; error?: string }; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; message: string } }) => void) => () => void;
     onComplete: (callback: (data: { jobId: string; success: boolean; audioPath?: string; vttPath?: string; error?: string }) => void) => () => void;
+    finalizeOutput: (params: {
+      audioPath: string;
+      vttPath?: string;
+      projectDir: string;
+      projectId: string;
+      sourceLang: string;
+      targetLang: string;
+      externalAudiobooksDir?: string;
+      metadataFilename?: string;
+      sentencePairsPath?: string;
+    }) => Promise<{ success: boolean; projectAudioPath?: string; projectVttPath?: string; error?: string }>;
   };
   reassembly: {
     scanSessions: (customTmpPath?: string) => Promise<{ success: boolean; data?: E2aSessionScanResult; error?: string }>;
@@ -1993,6 +2005,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('fs:write-text', filePath, content),
     deleteFile: (filePath: string) =>
       ipcRenderer.invoke('fs:delete-file', filePath),
+    deleteDirectory: (dirPath: string) =>
+      ipcRenderer.invoke('fs:delete-directory', dirPath),
     writeTempFile: (filename: string, data: Uint8Array) =>
       ipcRenderer.invoke('fs:write-temp-file', filename, data),
     listDirectory: (dirPath: string) =>
@@ -2562,6 +2576,18 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('bilingual-assembly:complete', listener);
       };
     },
+    finalizeOutput: (params: {
+      audioPath: string;
+      vttPath?: string;
+      projectDir: string;
+      projectId: string;
+      sourceLang: string;
+      targetLang: string;
+      externalAudiobooksDir?: string;
+      metadataFilename?: string;
+      sentencePairsPath?: string;
+    }) =>
+      ipcRenderer.invoke('bilingual-assembly:finalize-output', params),
   },
   reassembly: {
     scanSessions: async (customTmpPath?: string) => {

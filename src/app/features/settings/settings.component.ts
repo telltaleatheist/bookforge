@@ -120,8 +120,7 @@ import {
                   </p>
                   <p style="margin-top: 8px;">
                     <strong>Current structure:</strong><br/>
-                    {{ currentLibraryPath() }}/projects/ - Project files (.bfp)<br/>
-                    {{ currentLibraryPath() }}/audiobooks/ - Audiobook exports<br/>
+                    {{ currentLibraryPath() }}/projects/ - Project files, audiobook output<br/>
                     {{ currentLibraryPath() }}/cache/ - Page render cache
                   </p>
                 </div>

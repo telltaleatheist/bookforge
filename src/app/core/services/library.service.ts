@@ -51,19 +51,22 @@ export class LibraryService {
     return lib ? `${lib}/files` : null;
   });
 
+  /** @deprecated Audiobooks now live under projects/{name}/output/. Use projectsPath instead. */
   readonly audiobooksPath = computed(() => {
     const lib = this._libraryPath();
-    return lib ? `${lib}/audiobooks` : null;
+    return lib ? `${lib}/projects` : null;
   });
 
+  /** @deprecated */
   readonly audiobooksQueuePath = computed(() => {
     const lib = this._libraryPath();
-    return lib ? `${lib}/audiobooks/queue` : null;
+    return lib ? `${lib}/projects` : null;
   });
 
+  /** @deprecated */
   readonly audiobooksCompletedPath = computed(() => {
     const lib = this._libraryPath();
-    return lib ? `${lib}/audiobooks/completed` : null;
+    return lib ? `${lib}/projects` : null;
   });
 
   readonly cachePath = computed(() => {

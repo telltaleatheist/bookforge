@@ -123,7 +123,7 @@ export interface ManifestPipeline {
 
 export interface CleanupStage {
   status: PipelineStageStatus;
-  outputPath?: string;        // Relative: "stages/01-cleanup/output.epub"
+  outputPath?: string;        // Relative: "stages/01-cleanup/cleaned.epub"
   completedAt?: string;
   error?: string;
   model?: string;             // AI model used
@@ -220,6 +220,7 @@ export interface NamedBookmark {
 export interface AudiobookOutput {
   path: string;               // Relative: "output/audiobook.m4b"
   vttPath?: string;           // Relative: "output/audiobook.vtt"
+  sentencePairsPath?: string; // Relative: "stages/02-translate/sentence_pairs_de.json"
   duration?: number;          // Duration in seconds
   completedAt?: string;
 }

@@ -905,16 +905,18 @@ export class AudiobookComponent implements OnInit {
         // Check if cleaned EPUB exists based on project state
         const hasCleaned = !!project.cleanedAt;
 
-        // Determine cleaned epub filename (unified to 'cleaned.epub')
+        // Determine cleaned/simplified epub filename
+        // Priority: simplified.epub > cleaned.epub > exported_cleaned.epub (legacy)
         let cleanedFilename: string | undefined;
         if (hasCleaned && this.electron) {
+          const simplifiedPath = `${project.audiobookFolder}/simplified.epub`;
           const cleanedPath = `${project.audiobookFolder}/cleaned.epub`;
-          // Also check for legacy exported_cleaned.epub
           const legacyCleanedPath = `${project.audiobookFolder}/exported_cleaned.epub`;
-          if (await this.electron.fs.exists(cleanedPath).catch(() => false)) {
+          if (await this.electron.fs.exists(simplifiedPath).catch(() => false)) {
+            cleanedFilename = 'simplified.epub';
+          } else if (await this.electron.fs.exists(cleanedPath).catch(() => false)) {
             cleanedFilename = 'cleaned.epub';
           } else if (await this.electron.fs.exists(legacyCleanedPath).catch(() => false)) {
-            // Found legacy file, use it for now (it will be renamed by backend when accessed)
             cleanedFilename = 'exported_cleaned.epub';
           }
         }

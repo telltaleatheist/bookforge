@@ -1680,7 +1680,7 @@ export interface EpubCleanupProgress {
   percentage: number;
   message?: string;
   error?: string;            // Error message when phase is 'error'
-  outputPath?: string;  // Path to _cleaned.epub (available during processing for diff view)
+  outputPath?: string;  // Path to cleaned/simplified EPUB (available during processing for diff view)
   // Timing data for dynamic ETA calculation
   chunksCompletedInJob?: number;  // Cumulative chunks completed across all chapters
   totalChunksInJob?: number;      // Total chunks in entire job (same as totalChunks)
@@ -1751,6 +1751,7 @@ export async function cleanupEpub(
     enableAiCleanup?: boolean;  // Standard OCR/formatting cleanup (default: true)
     simplifyForChildren?: boolean;  // Simplify for language learners
     cleanupPrompt?: string;  // Custom cleanup prompt (overrides default)
+    outputDir?: string;  // Override output directory (default: same dir as input EPUB)
   }
 ): Promise<EpubCleanupResult> {
   // Debug logging to trace provider selection
@@ -1948,12 +1949,16 @@ export async function cleanupEpub(
       return ` (${chunksPerMinute.toFixed(1)}/min)`;
     };
 
-    // Generate output path - save as {originalName}_cleaned.epub in the same folder
-    const epubDir = path.dirname(epubPath);
-    const epubBasename = path.basename(epubPath, '.epub');
-    const outputPath = path.join(epubDir, `${epubBasename}_cleaned.epub`);
+    // Generate output path - save as cleaned.epub or simplified.epub
+    // If outputDir is specified, write there; otherwise write alongside the source EPUB
+    const epubDir = options?.outputDir || path.dirname(epubPath);
+    if (options?.outputDir) {
+      await fsPromises.mkdir(options.outputDir, { recursive: true });
+    }
+    const outputFilename = options?.simplifyForChildren ? 'simplified.epub' : 'cleaned.epub';
+    const outputPath = path.join(epubDir, outputFilename);
 
-    // Delete any existing _cleaned.epub to start fresh
+    // Delete any existing output EPUB to start fresh
     try {
       await fsPromises.unlink(outputPath);
     } catch {

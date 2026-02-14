@@ -427,7 +427,14 @@ export async function updateManifest(update: ManifestUpdate): Promise<ManifestSa
       manifest.pipeline = { ...manifest.pipeline, ...update.pipeline };
     }
     if (update.outputs) {
+      // Deep merge bilingualAudiobooks to preserve existing language pairs
+      const mergedBilingualAudiobooks = update.outputs.bilingualAudiobooks
+        ? { ...manifest.outputs?.bilingualAudiobooks, ...update.outputs.bilingualAudiobooks }
+        : manifest.outputs?.bilingualAudiobooks;
       manifest.outputs = { ...manifest.outputs, ...update.outputs };
+      if (mergedBilingualAudiobooks) {
+        manifest.outputs.bilingualAudiobooks = mergedBilingualAudiobooks;
+      }
     }
     if (update.editor) {
       manifest.editor = { ...manifest.editor, ...update.editor };

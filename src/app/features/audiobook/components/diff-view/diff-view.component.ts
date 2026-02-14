@@ -4,7 +4,14 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { DiffService, DiffLoadingProgress } from '../../services/diff.service';
 import { DiffChapter, DiffChapterMeta, DiffWord } from '../../../../core/models/diff.types';
+import { ElectronService } from '../../../../core/services/electron.service';
 import { Subscription } from 'rxjs';
+
+interface DiffSource {
+  label: string;
+  path: string;
+  filename: string;
+}
 
 /**
  * A segment of text in the unified diff view.
@@ -40,11 +47,6 @@ interface EditState {
           <h4>Review Changes</h4>
           @if (totalChanges() > 0) {
             <span class="change-badge">{{ totalChanges() }} changes</span>
-          }
-          @if (backgroundLoading()) {
-            <span class="background-loading-indicator" title="Loading remaining content in background">
-              <span class="spinner-small">&#8635;</span>
-            </span>
           }
           <label class="whitespace-toggle" title="When enabled, ignores differences in whitespace, paragraph breaks, and newlines">
             <input
@@ -95,6 +97,21 @@ interface EditState {
           </div>
         }
       </div>
+
+      <!-- Source picker (shown when multiple processed EPUBs exist) -->
+      @if (availableSources().length > 1) {
+        <div class="source-picker">
+          @for (source of availableSources(); track source.path) {
+            <button
+              class="source-box"
+              [class.active]="source.path === activeCleanedPath()"
+              (click)="selectSource(source)"
+            >
+              {{ source.label }}
+            </button>
+          }
+        </div>
+      }
 
       <!-- Loading state -->
       @if (loading()) {
@@ -258,6 +275,38 @@ interface EditState {
       }
     }
 
+    .source-picker {
+      display: flex;
+      gap: 0.375rem;
+      padding: 0.375rem 0.75rem;
+      background: var(--bg-subtle);
+      border-bottom: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .source-box {
+      padding: 0.25rem 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+      border: 1px solid var(--border-default);
+      border-radius: 4px;
+      background: var(--bg-default);
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.15s;
+
+      &:hover {
+        background: var(--bg-elevated);
+        color: var(--text-primary);
+      }
+
+      &.active {
+        background: rgba(255, 107, 53, 0.15);
+        border-color: #ff6b35;
+        color: #ff6b35;
+      }
+    }
+
     .header-left {
       display: flex;
       align-items: center;
@@ -271,20 +320,6 @@ interface EditState {
       color: #ff6b35;
       border-radius: 10px;
       font-weight: 500;
-    }
-
-    .background-loading-indicator {
-      display: inline-flex;
-      align-items: center;
-      margin-left: 0.5rem;
-      color: var(--text-tertiary);
-    }
-
-    .spinner-small {
-      display: inline-block;
-      animation: spin 1s linear infinite;
-      font-size: 0.875rem;
-      opacity: 0.6;
     }
 
     .whitespace-toggle {
@@ -647,6 +682,7 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   @ViewChild('chapterContent') chapterContentRef!: ElementRef<HTMLDivElement>;
 
   private readonly diffService = inject(DiffService);
+  private readonly electronService = inject(ElectronService);
   private readonly ngZone = inject(NgZone);
   private readonly cdr = inject(ChangeDetectorRef);
   private readonly injector = inject(Injector);
@@ -657,12 +693,15 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly originalPath = input<string>('');
   readonly cleanedPath = input<string>('');
 
+  // Source picker: when multiple processed EPUBs exist in the same directory
+  readonly availableSources = signal<DiffSource[]>([]);
+  readonly activeCleanedPath = signal<string>('');
+
   // State
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
   readonly loadingProgress = signal<DiffLoadingProgress | null>(null);
   readonly chapterLoading = signal(false);
-  readonly backgroundLoading = signal(false);
 
   // Tooltip state
   readonly tooltipVisible = signal(false);
@@ -696,17 +735,15 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   private isDestroyed = false;
 
   constructor() {
-    // Effect to watch for path changes and reload comparison
+    // Effect to watch for input path changes and discover available sources
     effect(() => {
       const original = this.originalPath();
       const cleaned = this.cleanedPath();
 
-      // Only reload if paths changed and both are provided
       if (original && cleaned &&
           (original !== this.previousPaths.original || cleaned !== this.previousPaths.cleaned)) {
         this.previousPaths = { original, cleaned };
-        // Use setTimeout to avoid issues with effect running during change detection
-        setTimeout(() => this.loadComparison(), 0);
+        setTimeout(() => this.discoverAndLoad(original, cleaned), 0);
       }
     });
   }
@@ -826,18 +863,23 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
       this.diffService.error$.subscribe(error => this.error.set(error)),
       this.diffService.loadingProgress$.subscribe(progress => this.loadingProgress.set(progress)),
       this.diffService.chapterLoading$.subscribe(loading => this.chapterLoading.set(loading)),
-      this.diffService.backgroundLoading$.subscribe(loading => this.backgroundLoading.set(loading)),
       this.diffService.session$.subscribe(session => {
         // Skip processing if component is destroyed
         if (this.isDestroyed) return;
 
         if (session) {
-          this.chaptersMeta.set(session.chaptersMeta);
-          this.currentChapterId.set(session.currentChapterId);
-
-          // Get current chapter if loaded
-          const current = session.chapters.find(c => c.id === session.currentChapterId);
-          this.currentChapter.set(current || null);
+          // Only update signals when values actually change to avoid re-render storms
+          // during background chapter loading (hundreds of session emissions)
+          if (this.chaptersMeta() !== session.chaptersMeta) {
+            this.chaptersMeta.set(session.chaptersMeta);
+          }
+          if (this.currentChapterId() !== session.currentChapterId) {
+            this.currentChapterId.set(session.currentChapterId);
+          }
+          const current = session.chapters.find(c => c.id === session.currentChapterId) || null;
+          if (this.currentChapter() !== current) {
+            this.currentChapter.set(current);
+          }
         } else {
           this.chaptersMeta.set([]);
           this.currentChapterId.set('');
@@ -851,7 +893,7 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
       const original = this.originalPath();
       const cleaned = this.cleanedPath();
       if (original && cleaned && this.chaptersMeta().length === 0 && !this.loading()) {
-        this.loadComparison();
+        this.discoverAndLoad(original, cleaned);
       }
     }, 100);
   }
@@ -945,13 +987,76 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
 
   private async loadComparison(): Promise<void> {
     const original = this.originalPath();
-    const cleaned = this.cleanedPath();
+    const cleaned = this.activeCleanedPath() || this.cleanedPath();
 
     if (!original || !cleaned) {
       return;
     }
 
     await this.diffService.loadComparison(original, cleaned);
+  }
+
+  /**
+   * Discover available processed EPUBs in the same directory as cleanedPath.
+   * If both cleaned.epub and simplified.epub exist, show picker boxes.
+   * Otherwise, auto-select the one that exists (or fall back to cleanedPath).
+   */
+  private async discoverAndLoad(original: string, cleaned: string): Promise<void> {
+    if (!cleaned || !this.electronService.isRunningInElectron) {
+      this.availableSources.set([]);
+      this.activeCleanedPath.set(cleaned);
+      this.loadComparison();
+      return;
+    }
+
+    // Derive directory and check for both known filenames
+    const lastSlash = cleaned.lastIndexOf('/');
+    const dir = lastSlash > 0 ? cleaned.substring(0, lastSlash) : '';
+
+    if (!dir) {
+      this.availableSources.set([]);
+      this.activeCleanedPath.set(cleaned);
+      this.loadComparison();
+      return;
+    }
+
+    const candidates: DiffSource[] = [
+      { label: 'AI Cleaned', path: `${dir}/cleaned.epub`, filename: 'cleaned.epub' },
+      { label: 'AI Simplified', path: `${dir}/simplified.epub`, filename: 'simplified.epub' },
+    ];
+
+    // Check which files exist in parallel
+    const existChecks = await Promise.all(
+      candidates.map(c => this.electronService.fsExists(c.path))
+    );
+
+    const found = candidates.filter((_, i) => existChecks[i]);
+
+    if (found.length > 1) {
+      // Both exist - show picker, default to whichever was passed in
+      this.availableSources.set(found);
+      const matchingSource = found.find(s => s.path === cleaned);
+      this.activeCleanedPath.set(matchingSource ? matchingSource.path : found[0].path);
+    } else if (found.length === 1) {
+      // Only one exists - use it, no picker needed
+      this.availableSources.set([]);
+      this.activeCleanedPath.set(found[0].path);
+    } else {
+      // Neither found at standard names - use the provided path as-is
+      this.availableSources.set([]);
+      this.activeCleanedPath.set(cleaned);
+    }
+
+    this.loadComparison();
+  }
+
+  /**
+   * User clicked a source picker box - switch to that diff source.
+   */
+  selectSource(source: DiffSource): void {
+    if (source.path === this.activeCleanedPath()) return;
+    this.activeCleanedPath.set(source.path);
+    this.loadComparison();
   }
 
   /**

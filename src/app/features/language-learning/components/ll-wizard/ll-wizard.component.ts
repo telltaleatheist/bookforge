@@ -32,6 +32,17 @@ import {
 import { AIProvider } from '../../../../core/models/ai-config.types';
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Source Stage Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface SourceStage {
+  id: 'original' | 'exported' | 'cleaned' | 'simplified';
+  label: string;
+  completed: boolean;
+  path: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -83,17 +94,22 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
               <!-- Source EPUB Selection -->
               <div class="config-section">
                 <label class="field-label">Source EPUB</label>
-                <select
-                  class="select-input"
-                  [value]="cleanupSourceEpub()"
-                  (change)="cleanupSourceEpub.set($any($event.target).value)"
-                >
-                  <option value="latest">Latest</option>
-                  @for (epub of availableEpubs(); track epub.path) {
-                    <option [value]="epub.path">{{ epub.filename }} ({{ getLanguageName(epub.lang) }})</option>
+                <div class="source-stages">
+                  @for (stage of cleanupSourceStages(); track stage.id) {
+                    <button
+                      class="stage-btn"
+                      [class.selected]="isStageSelected('cleanup', stage)"
+                      [class.completed]="stage.completed"
+                      [disabled]="!stage.completed"
+                      (click)="selectStage('cleanup', stage)"
+                    >
+                      {{ stage.label }}
+                      @if (stage.completed) {
+                        <span class="stage-check">&#10003;</span>
+                      }
+                    </button>
                   }
-                </select>
-                <span class="hint">Latest: uses finalized.epub or original.epub</span>
+                </div>
               </div>
 
               <!-- Provider Selection -->
@@ -174,32 +190,8 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
                 }
               </div>
 
-              <!-- Start Fresh vs Use Existing (only show if cleaned.epub exists) -->
-              @if (hasExistingCleaned()) {
-                <div class="config-section">
-                  <label class="field-label">Cleanup Mode</label>
-                  <div class="provider-buttons">
-                    <button
-                      class="provider-btn"
-                      [class.selected]="startFreshCleanup()"
-                      (click)="startFreshCleanup.set(true)"
-                    >
-                      <span class="provider-icon">🆕</span>
-                      <span class="provider-name">Start Fresh</span>
-                      <span class="provider-status">Process from source EPUB</span>
-                    </button>
-                    <button
-                      class="provider-btn"
-                      [class.selected]="!startFreshCleanup()"
-                      (click)="startFreshCleanup.set(false)"
-                    >
-                      <span class="provider-icon">♻️</span>
-                      <span class="provider-name">Use Existing</span>
-                      <span class="provider-status">Apply to cleaned.epub</span>
-                    </button>
-                  </div>
-                </div>
-              }
+              <!-- Start Fresh / Use Existing removed — source picker handles input selection,
+                   backend always overwrites output (startFresh defaults to true) -->
 
               <!-- Processing Options -->
               <div class="processing-options">
@@ -273,17 +265,22 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
               <!-- Source EPUB Selection -->
               <div class="config-section">
                 <label class="field-label">Source EPUB</label>
-                <select
-                  class="select-input"
-                  [value]="translateSourceEpub()"
-                  (change)="translateSourceEpub.set($any($event.target).value)"
-                >
-                  <option value="latest">Latest</option>
-                  @for (epub of availableEpubs(); track epub.path) {
-                    <option [value]="epub.path">{{ epub.filename }} ({{ getLanguageName(epub.lang) }})</option>
+                <div class="source-stages">
+                  @for (stage of translateSourceStages(); track stage.id) {
+                    <button
+                      class="stage-btn"
+                      [class.selected]="isStageSelected('translate', stage)"
+                      [class.completed]="stage.completed"
+                      [disabled]="!stage.completed"
+                      (click)="selectStage('translate', stage)"
+                    >
+                      {{ stage.label }}
+                      @if (stage.completed) {
+                        <span class="stage-check">&#10003;</span>
+                      }
+                    </button>
                   }
-                </select>
-                <span class="hint">Latest: uses cleaned.epub, finalized.epub, or original.epub</span>
+                </div>
               </div>
 
               <!-- AI Provider for Translation -->
@@ -411,6 +408,24 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
                   </div>
                 }
               </div>
+
+              <!-- Existing Translations -->
+              @if (existingTranslationEpubs().length > 0) {
+                <div class="config-section">
+                  <label class="field-label">Existing Translations</label>
+                  <div class="existing-translations">
+                    @for (epub of existingTranslationEpubs(); track epub.path) {
+                      <div class="existing-translation-row">
+                        <span class="existing-translation-label">{{ epub.lang.toUpperCase() }} — {{ getLanguageName(epub.lang) }}</span>
+                        <button class="existing-translation-delete" (click)="deleteTranslationEpub(epub)">Delete</button>
+                      </div>
+                    }
+                    @if (existingTranslationEpubs().length > 1) {
+                      <button class="existing-translation-clear-all" (click)="deleteAllTranslationEpubs()">Clear All Translations</button>
+                    }
+                  </div>
+                </div>
+              }
             </div>
           }
 
@@ -699,7 +714,7 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
                       <div class="review-row">
                         <span class="review-label">Mode:</span>
                         <span class="review-value">
-                          {{ enableAiCleanup() ? 'AI Cleanup' : simplifyForLearning() ? 'Simplify for Learning' : 'None' }}
+                          {{ enableAiCleanup() && simplifyForLearning() ? 'AI Cleanup + Simplify' : enableAiCleanup() ? 'AI Cleanup' : simplifyForLearning() ? 'Simplify for Learning' : 'None' }}
                         </span>
                       </div>
                       @if (testMode()) {
@@ -1351,6 +1366,62 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
       color: #06b6d4;
     }
 
+    .existing-translations {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .existing-translation-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 12px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .existing-translation-label {
+      color: var(--text-secondary);
+    }
+
+    .existing-translation-delete {
+      background: transparent;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #ef4444;
+      padding: 2px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+
+      &:hover {
+        background: rgba(239, 68, 68, 0.15);
+        border-color: #ef4444;
+      }
+    }
+
+    .existing-translation-clear-all {
+      align-self: flex-end;
+      background: transparent;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: rgba(239, 68, 68, 0.7);
+      padding: 4px 12px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      margin-top: 4px;
+      transition: all 0.15s;
+
+      &:hover {
+        background: rgba(239, 68, 68, 0.1);
+        color: #ef4444;
+        border-color: #ef4444;
+      }
+    }
+
     .hint {
       display: block;
       margin-top: 8px;
@@ -1388,6 +1459,51 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
     .full-width-slider {
       width: 100%;
       margin-top: 4px;
+    }
+
+    /* Source Stage Buttons */
+    .source-stages {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .stage-btn {
+      padding: 6px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      font-size: 13px;
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+
+      .stage-check {
+        color: #22c55e;
+        font-size: 11px;
+      }
+
+      &:hover:not(:disabled) {
+        background: var(--bg-hover);
+      }
+
+      &.selected {
+        background: rgba(6, 182, 212, 0.15);
+        border-color: #06b6d4;
+        color: #06b6d4;
+
+        .stage-check {
+          color: #06b6d4;
+        }
+      }
+
+      &:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
     }
 
     /* Language Rows (TTS) */
@@ -1743,10 +1859,75 @@ export class LLWizardComponent implements OnInit {
   readonly simplifyForLearning = signal(false);
   readonly testMode = signal(false);
   readonly testModeChunks = signal(5);
-  readonly startFreshCleanup = signal(true);  // Default to start fresh
   readonly hasExistingCleaned = computed(() => {
-    return this.availableEpubs().some(e => e.filename === 'cleaned.epub');
+    return this.availableEpubs().some(e => e.filename === 'cleaned.epub' || e.filename === 'simplified.epub');
   });
+
+  /** Stages relevant for cleanup source: Original, Exported, AI Cleaned, AI Simplified */
+  readonly cleanupSourceStages = computed<SourceStage[]>(() => {
+    const epubs = this.availableEpubs();
+    const find = (name: string) => epubs.find(e => e.filename === name);
+    return [
+      { id: 'original', label: 'Original', completed: !!find('original.epub'), path: find('original.epub')?.path ?? '' },
+      { id: 'exported', label: 'Exported', completed: !!find('exported.epub'), path: find('exported.epub')?.path ?? '' },
+      { id: 'cleaned', label: 'AI Cleaned', completed: !!find('cleaned.epub'), path: find('cleaned.epub')?.path ?? '' },
+      { id: 'simplified', label: 'AI Simplified', completed: !!find('simplified.epub'), path: find('simplified.epub')?.path ?? '' },
+    ];
+  });
+
+  /** Stages relevant for translate source: Original, Exported, AI Cleaned, AI Simplified */
+  readonly translateSourceStages = computed<SourceStage[]>(() => {
+    const epubs = this.availableEpubs();
+    const find = (name: string) => epubs.find(e => e.filename === name);
+    return [
+      { id: 'original', label: 'Original', completed: !!find('original.epub'), path: find('original.epub')?.path ?? '' },
+      { id: 'exported', label: 'Exported', completed: !!find('exported.epub'), path: find('exported.epub')?.path ?? '' },
+      { id: 'cleaned', label: 'AI Cleaned', completed: !!find('cleaned.epub'), path: find('cleaned.epub')?.path ?? '' },
+      { id: 'simplified', label: 'AI Simplified', completed: !!find('simplified.epub'), path: find('simplified.epub')?.path ?? '' },
+    ];
+  });
+
+  /** Resolve which stage ID "latest" maps to for a given pipeline step */
+  private resolveLatestStageId(step: 'cleanup' | 'translate'): string {
+    const epubs = this.availableEpubs();
+    const has = (name: string) => epubs.some(e => e.filename === name);
+    if (step === 'cleanup') {
+      // Cleanup: simplified > cleaned > exported > original
+      if (has('simplified.epub')) return 'simplified';
+      if (has('cleaned.epub')) return 'cleaned';
+      if (has('exported.epub')) return 'exported';
+      if (has('original.epub')) return 'original';
+    } else {
+      // Translate: simplified > cleaned > exported > original
+      if (has('simplified.epub')) return 'simplified';
+      if (has('cleaned.epub')) return 'cleaned';
+      if (has('exported.epub')) return 'exported';
+      if (has('original.epub')) return 'original';
+    }
+    return '';
+  }
+
+  /** Check if a stage button should be highlighted as selected */
+  isStageSelected(step: 'cleanup' | 'translate', stage: SourceStage): boolean {
+    const source = step === 'cleanup' ? this.cleanupSourceEpub() : this.translateSourceEpub();
+    if (source === 'latest') {
+      return stage.id === this.resolveLatestStageId(step);
+    }
+    return source === stage.path;
+  }
+
+  /** Handle stage button click — clicking the auto-selected stage returns to 'latest' */
+  selectStage(step: 'cleanup' | 'translate', stage: SourceStage): void {
+    const signal = step === 'cleanup' ? this.cleanupSourceEpub : this.translateSourceEpub;
+    const current = signal();
+
+    // If clicking the currently selected stage, toggle back to 'latest'
+    if (current === stage.path || (current === 'latest' && stage.id === this.resolveLatestStageId(step))) {
+      signal.set('latest');
+    } else {
+      signal.set(stage.path);
+    }
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Step 2: Translation
@@ -1761,6 +1942,11 @@ export class LLWizardComponent implements OnInit {
   readonly translateTestChunks = signal(5);
 
   readonly supportedLanguages = SUPPORTED_LANGUAGES;
+
+  /** Translation EPUBs that already exist in the project (e.g., en.epub, de.epub) */
+  readonly existingTranslationEpubs = computed(() => {
+    return this.availableEpubs().filter(e => e.isTranslated);
+  });
 
   // ─────────────────────────────────────────────────────────────────────────
   // Step 3: TTS
@@ -1875,12 +2061,9 @@ export class LLWizardComponent implements OnInit {
       parts.pop(); // Remove filename
       return parts.join('/');
     }
-    // Derive from bfpPath
+    // Derive from bfpPath (project directory)
     if (this.bfpPath()) {
-      const normalized = this.bfpPath().replace(/\\/g, '/');
-      const parts = normalized.split('/');
-      parts.pop(); // Remove .bfp filename
-      return parts.join('/');
+      return this.bfpPath().replace(/\\/g, '/');
     }
     return '';
   });
@@ -1927,10 +2110,11 @@ export class LLWizardComponent implements OnInit {
    */
   readonly ttsAvailableEpubs = computed(() => {
     const allEpubs = this.availableEpubs();
-    // Only show translated EPUBs (language files like en.epub, de.epub) and cleaned.epub
+    // Only show translated EPUBs (language files like en.epub, de.epub) and cleaned/simplified EPUBs
     return allEpubs.filter(epub =>
       epub.isTranslated ||
-      epub.filename === 'cleaned.epub'
+      epub.filename === 'cleaned.epub' ||
+      epub.filename === 'simplified.epub'
     );
   });
 
@@ -2173,7 +2357,7 @@ export class LLWizardComponent implements OnInit {
         const cleanupDir = `${projectDir}/stages/01-cleanup`;
         const cleanupFiles = await this.electronService.listDirectory(cleanupDir);
         for (const file of cleanupFiles) {
-          if (file === 'cleaned.epub') {
+          if (file === 'cleaned.epub' || file === 'simplified.epub') {
             const filePath = `${cleanupDir}/${file}`;
             epubs.push({
               path: filePath,
@@ -2194,15 +2378,15 @@ export class LLWizardComponent implements OnInit {
         const sourceDir = `${projectDir}/source`;
         const sourceFiles = await this.electronService.listDirectory(sourceDir);
         for (const file of sourceFiles) {
-          if ((file === 'original.epub' || file === 'finalized.epub') && !file.startsWith('._')) {
+          if ((file === 'original.epub' || file === 'exported.epub') && !file.startsWith('._')) {
             const filePath = `${sourceDir}/${file}`;
             epubs.push({
               path: filePath,
               filename: file,
               lang: 'en',
-              isSource: file === 'original.epub',
+              isSource: true,
               isTranslated: false,
-              isCleaned: file === 'finalized.epub'
+              isCleaned: false
             });
           }
         }
@@ -2350,6 +2534,34 @@ export class LLWizardComponent implements OnInit {
     }
   }
 
+  async deleteTranslationEpub(epub: AvailableEpub): Promise<void> {
+    const projectDir = this.effectiveProjectDir();
+    if (!projectDir) return;
+
+    // Delete the EPUB file
+    await this.electronService.deleteFile(epub.path);
+
+    // Delete the corresponding sentence cache
+    await this.electronService.deleteFile(`${projectDir}/stages/02-translate/sentences/${epub.lang}.json`);
+
+    // Delete the TTS session folder for this language (contains wav/flac audio)
+    await this.electronService.deleteDirectory(`${projectDir}/stages/03-tts/sessions/${epub.lang}`);
+
+    // Delete the sentence pairs file (may be stale)
+    await this.electronService.deleteFile(`${projectDir}/stages/02-translate/sentence_pairs_${epub.lang}.json`);
+
+    // Re-scan EPUBs and sessions to update all UI
+    await this.scanProjectEpubs();
+    await this.scanAvailableSessions();
+  }
+
+  async deleteAllTranslationEpubs(): Promise<void> {
+    const epubs = [...this.existingTranslationEpubs()];
+    for (const epub of epubs) {
+      await this.deleteTranslationEpub(epub);
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // TTS
   // ─────────────────────────────────────────────────────────────────────────
@@ -2445,31 +2657,22 @@ export class LLWizardComponent implements OnInit {
 
   toggleAiCleanup(): void {
     if (!this.enableAiCleanup()) {
-      // Turning on AI Cleanup - turn off simplify
       this.enableAiCleanup.set(true);
-      this.simplifyForLearning.set(false);
       // Remove cleanup from skipped steps since we're configuring it
       this._skippedSteps.delete('cleanup');
     } else {
-      // Turning off AI Cleanup
       this.enableAiCleanup.set(false);
     }
   }
 
   toggleSimplify(): void {
     if (!this.simplifyForLearning()) {
-      // Turning on Simplify - turn off AI Cleanup
-      console.log('[LL-WIZARD] Enabling simplify for learning, disabling AI cleanup');
       this.simplifyForLearning.set(true);
-      this.enableAiCleanup.set(false);
       // Remove cleanup from skipped steps since we're configuring it
       this._skippedSteps.delete('cleanup');
     } else {
-      // Turning off Simplify
-      console.log('[LL-WIZARD] Disabling simplify for learning');
       this.simplifyForLearning.set(false);
     }
-    console.log('[LL-WIZARD] Current state: simplify=', this.simplifyForLearning(), 'cleanup=', this.enableAiCleanup());
   }
 
   canProceed(): boolean {
@@ -2587,9 +2790,10 @@ export class LLWizardComponent implements OnInit {
   getTotalJobCount(): number {
     let count = 0;
 
-    // Cleanup job
-    if (!this._skippedSteps.has('cleanup') && (this.enableAiCleanup() || this.simplifyForLearning())) {
-      count += 1;
+    // Cleanup + Simplify jobs (independent, can both be enabled)
+    if (!this._skippedSteps.has('cleanup')) {
+      if (this.enableAiCleanup()) count += 1;
+      if (this.simplifyForLearning()) count += 1;
     }
 
     // Translation jobs (one per language)
@@ -2669,19 +2873,16 @@ export class LLWizardComponent implements OnInit {
       const workflowId = this.generateWorkflowId();
       const aiConfig = this.settingsService.getAIConfig();
 
-      // 1. Cleanup job (if not skipped and has processing selected)
-      if (!this._skippedSteps.has('cleanup') && (this.enableAiCleanup() || this.simplifyForLearning())) {
-        const simplifyValue = this.simplifyForLearning();
+      // Track what the cleanup step will produce (for downstream jobs to reference)
+      let cleanupWillProduce: 'cleaned' | 'simplified' | null = null;
+
+      // 1. Cleanup + Simplify jobs (independent, can both be enabled)
+      if (!this._skippedSteps.has('cleanup')) {
         const cleanupValue = this.enableAiCleanup();
-        // Prompts are now loaded from files on the backend (electron/prompts/)
-        const cleanupPromptValue = undefined; // Backend will load appropriate prompt from file
+        const simplifyValue = this.simplifyForLearning();
 
-        console.log('[LL-WIZARD] Signal values at job creation:');
-        console.log('[LL-WIZARD]   simplifyForLearning signal:', simplifyValue);
-        console.log('[LL-WIZARD]   enableAiCleanup signal:', cleanupValue);
-        console.log('[LL-WIZARD]   cleanupPrompt being sent:', cleanupPromptValue ? 'PROVIDED' : 'UNDEFINED');
-
-        const jobConfig = {
+        // Shared AI config for both jobs
+        const baseConfig = {
           type: 'bilingual-cleanup' as const,
           projectId: this.projectId(),
           projectDir: projectDir,
@@ -2693,40 +2894,64 @@ export class LLWizardComponent implements OnInit {
           openaiApiKey: aiConfig.openai?.apiKey,
           testMode: this.testMode(),
           testModeChunks: this.testModeChunks(),
-          cleanupPrompt: cleanupPromptValue,
-          simplifyForLearning: simplifyValue,
-          startFresh: this.startFreshCleanup(),
+          cleanupPrompt: undefined as string | undefined, // Backend loads from file
         };
 
-        console.log('[LL-WIZARD] Full job config being sent:', JSON.stringify(jobConfig, null, 2));
+        // Resolve cleanup source from stage picker
+        const cleanupSource = this.resolveLatestSource('cleanup');
 
-        // If not starting fresh and cleaned.epub exists, use it as source
-        let cleanupSource = this.resolveLatestSource('cleanup');
-        if (!this.startFreshCleanup() && this.hasExistingCleaned()) {
-          const cleanedEpub = this.availableEpubs().find(e => e.filename === 'cleaned.epub');
-          if (cleanedEpub) {
-            cleanupSource = cleanedEpub.path;
-          }
+        // Job 1a: AI Cleanup
+        if (cleanupValue) {
+          console.log('[LL-WIZARD] Creating AI Cleanup job');
+          await this.queueService.addJob({
+            type: 'bilingual-cleanup',
+            epubPath: cleanupSource,
+            projectDir: projectDir,
+            metadata: {
+              title: 'AI Cleanup',
+            },
+            config: { ...baseConfig, simplifyForLearning: false },
+            workflowId,
+          });
+          cleanupWillProduce = 'cleaned';
         }
 
-        await this.queueService.addJob({
-          type: 'bilingual-cleanup',
-          epubPath: cleanupSource,
-          projectDir: projectDir,
-          metadata: {
-            title: 'AI Cleanup',
-          },
-          config: jobConfig,
-          workflowId,
-        });
+        // Job 1b: Simplify (uses cleaned.epub as input if cleanup also enabled)
+        if (simplifyValue) {
+          const simplifySource = cleanupValue
+            ? `${projectDir}/stages/01-cleanup/cleaned.epub`
+            : cleanupSource;
+          console.log('[LL-WIZARD] Creating Simplify job, source:', simplifySource);
+          await this.queueService.addJob({
+            type: 'bilingual-cleanup',
+            epubPath: simplifySource,
+            projectDir: projectDir,
+            metadata: {
+              title: 'Simplify for Learning',
+            },
+            config: { ...baseConfig, simplifyForLearning: true },
+            workflowId,
+          });
+          cleanupWillProduce = 'simplified';
+        }
       }
 
       // 2. Translation jobs (if not skipped, one per target language)
       if (!this._skippedSteps.has('translate') && this.targetLangs().size > 0) {
+        // If cleanup/simplify is in the pipeline, use the expected output path
+        // (the file won't exist yet but will by the time translate runs)
+        let translateSource: string;
+        if (cleanupWillProduce) {
+          translateSource = `${projectDir}/stages/01-cleanup/${cleanupWillProduce}.epub`;
+          console.log('[LL-WIZARD] Translate will use expected cleanup output:', translateSource);
+        } else {
+          translateSource = this.resolveLatestSource('translate');
+        }
+
         for (const targetLang of this.targetLangs()) {
           await this.queueService.addJob({
             type: 'bilingual-translation',
-            epubPath: this.resolveLatestSource('translate'),
+            epubPath: translateSource,
             projectDir: projectDir,
             metadata: {
               title: `Translate → ${this.getLanguageName(targetLang)}`,
@@ -2760,16 +2985,24 @@ export class LLWizardComponent implements OnInit {
         const asmSourceLang = this.assemblySourceLang();
         const asmTargetLang = this.assemblyTargetLang();
 
-        // Pre-resolve EPUBs for all TTS rows (needed for bilingualWorkflow.targetEpubPath)
+        // Resolve EPUBs for all TTS rows
+        // When translation is in the pipeline, use the expected output path (file won't exist yet)
+        const translationActive = !this._skippedSteps.has('translate') && this.targetLangs().size > 0;
         const resolvedEpubs = new Map<string, { path: string; source: string; exists: boolean }>();
         for (const row of this.ttsLanguageRows()) {
-          const resolved = await this.epubResolver.resolveEpub({
-            projectDir: projectDir,
-            audiobookDir: '',
-            pipeline: 'language-learning',
-            language: row.language
-          });
-          resolvedEpubs.set(row.language, resolved);
+          if (translationActive) {
+            // Translation will create {lang}.epub in stages/02-translate/ before TTS runs
+            const expectedPath = `${projectDir}/stages/02-translate/${row.language}.epub`;
+            resolvedEpubs.set(row.language, { path: expectedPath, source: 'language', exists: false });
+          } else {
+            const resolved = await this.epubResolver.resolveEpub({
+              projectDir: projectDir,
+              audiobookDir: '',
+              pipeline: 'language-learning',
+              language: row.language
+            });
+            resolvedEpubs.set(row.language, resolved);
+          }
         }
 
         // Get assembly config values when chaining
@@ -2781,6 +3014,22 @@ export class LLWizardComponent implements OnInit {
           ? this.ttsLanguageRows().find(r => r.language === asmTargetLang)
           : undefined;
 
+        // Detect "solo TTS + cached partner" scenario:
+        // One assembly language is in TTS rows, the other is already cached
+        const ttsRowLangs = new Set(this.ttsLanguageRows().map(r => r.language));
+        const sourceInTts = ttsRowLangs.has(asmSourceLang);
+        const targetInTts = ttsRowLangs.has(asmTargetLang);
+        const soloTts = assemblyChained && (sourceInTts !== targetInTts); // exactly one is in TTS
+
+        // Get cached session dir for the partner language (if solo)
+        let cachedPartnerDir = '';
+        if (soloTts) {
+          const cachedLang = sourceInTts ? asmTargetLang : asmSourceLang;
+          const cachedSession = this.availableSessions().find(s => s.language === cachedLang);
+          cachedPartnerDir = cachedSession?.sessionDir || '';
+          console.log(`[LL-WIZARD] Solo TTS: ${sourceInTts ? asmSourceLang : asmTargetLang} will be TTS'd, ${cachedLang} cached at: ${cachedPartnerDir}`);
+        }
+
         for (const row of this.ttsLanguageRows()) {
           const resolved = resolvedEpubs.get(row.language)!;
 
@@ -2790,14 +3039,34 @@ export class LLWizardComponent implements OnInit {
             exists: resolved.exists
           });
 
-          console.warn(`[LL-WIZARD] >>> QUEUING TTS JOB WITH EPUB: ${resolved.path}`);
-
           // Build metadata with chaining info when assembly is enabled
           const metadata: any = {
             title: `TTS (${row.language.toUpperCase()})`,
           };
 
-          if (assemblyChained && row.language === asmSourceLang && targetEpubPath && targetRow) {
+          if (soloTts && (row.language === asmSourceLang || row.language === asmTargetLang)) {
+            // Solo TTS: one assembly language being TTS'd, the other is cached
+            // This job runs immediately (no placeholder) and chains directly to assembly
+            const isSourceLang = row.language === asmSourceLang;
+            metadata.bilingualWorkflow = {
+              role: 'solo',
+              // Pre-fill the cached dir; leave the other empty (filled from TTS output)
+              assemblySourceSentencesDir: isSourceLang ? '' : cachedPartnerDir,
+              assemblyTargetSentencesDir: isSourceLang ? cachedPartnerDir : '',
+              assemblyConfig: {
+                projectId: this.projectId(),
+                audiobooksDir: audiobooksDir || projectDir,
+                bfpPath: this.bfpPath(),
+                sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${asmTargetLang}.json`,
+                pauseDuration: this.pauseDuration(),
+                gapDuration: this.gapDuration(),
+                title: this.projectTitle() || this.title(),
+                sourceLang: asmSourceLang,
+                targetLang: asmTargetLang,
+                pattern: this.assemblyPattern(),
+              }
+            };
+          } else if (assemblyChained && !soloTts && row.language === asmSourceLang && targetEpubPath && targetRow) {
             // Source TTS: carries chaining config for target TTS + assembly
             metadata.bilingualWorkflow = {
               role: 'source',
@@ -2825,7 +3094,7 @@ export class LLWizardComponent implements OnInit {
                 pattern: this.assemblyPattern(),
               }
             };
-          } else if (assemblyChained && row.language === asmTargetLang) {
+          } else if (assemblyChained && !soloTts && row.language === asmTargetLang) {
             // Target TTS: placeholder — skipped by processNext() until source TTS completes
             metadata.bilingualPlaceholder = { role: 'target', projectId: this.projectId() };
           }
@@ -2910,9 +3179,9 @@ export class LLWizardComponent implements OnInit {
               projectId: this.projectId(),
               bfpPath: this.bfpPath(),
               sourceSentencesDir: this.availableSessions().find(s => s.language === sourceLang)?.sessionDir
-                || `${projectDir}/sessions/${sourceLang}/sentences`,
+                || `${projectDir}/stages/03-tts/sessions/${sourceLang}/sentences`,
               targetSentencesDir: this.availableSessions().find(s => s.language === targetLang)?.sessionDir
-                || `${projectDir}/sessions/${targetLang}/sentences`,
+                || `${projectDir}/stages/03-tts/sessions/${targetLang}/sentences`,
               sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${targetLang}.json`,
               outputDir: audiobooksDir || projectDir,
               pauseDuration: this.pauseDuration(),
@@ -2964,22 +3233,24 @@ export class LLWizardComponent implements OnInit {
     const projectDir = this.effectiveProjectDir();
 
     if (stage === 'cleanup') {
-      // Cleanup: finalized.epub > exported.epub > original.epub > article.epub
-      const finalized = epubs.find(e => e.filename === 'finalized.epub');
-      if (finalized) return finalized.path;
-      const exported = epubs.find(e => e.filename === 'exported.epub');
-      if (exported) return exported.path;
-      const original = epubs.find(e => e.filename === 'original.epub' || e.filename === 'article.epub');
-      if (original) return original.path;
-    } else if (stage === 'translate') {
-      // Translation: cleaned.epub > finalized.epub > exported.epub > original.epub > article.epub
+      // Cleanup: simplified > cleaned > exported > original
+      const simplified = epubs.find(e => e.filename === 'simplified.epub');
+      if (simplified) return simplified.path;
       const cleaned = epubs.find(e => e.filename === 'cleaned.epub');
       if (cleaned) return cleaned.path;
-      const finalized = epubs.find(e => e.filename === 'finalized.epub');
-      if (finalized) return finalized.path;
       const exported = epubs.find(e => e.filename === 'exported.epub');
       if (exported) return exported.path;
-      const original = epubs.find(e => e.filename === 'original.epub' || e.filename === 'article.epub');
+      const original = epubs.find(e => e.filename === 'original.epub');
+      if (original) return original.path;
+    } else if (stage === 'translate') {
+      // Translation: simplified > cleaned > exported > original
+      const simplified = epubs.find(e => e.filename === 'simplified.epub');
+      if (simplified) return simplified.path;
+      const cleaned = epubs.find(e => e.filename === 'cleaned.epub');
+      if (cleaned) return cleaned.path;
+      const exported = epubs.find(e => e.filename === 'exported.epub');
+      if (exported) return exported.path;
+      const original = epubs.find(e => e.filename === 'original.epub');
       if (original) return original.path;
     }
 
@@ -2989,7 +3260,7 @@ export class LLWizardComponent implements OnInit {
     }
 
     // Ultimate fallback
-    return `${projectDir}/article.epub`;
+    return `${projectDir}/source/original.epub`;
   }
 
 

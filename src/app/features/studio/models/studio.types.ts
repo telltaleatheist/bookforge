@@ -64,9 +64,19 @@ export interface StudioItem {
   skippedChunksPath?: string;
 
   // Bilingual audiobook paths (separate from mono audiobook)
+  // Legacy single-pair fields (still used for backward compat with hasBilingualAudio)
   bilingualAudioPath?: string;
   bilingualVttPath?: string;
   bilingualSentencePairsPath?: string;
+
+  // All bilingual outputs keyed by language pair (e.g., "en-de", "en-es")
+  bilingualOutputs?: Record<string, {
+    audioPath: string;
+    vttPath: string;
+    sentencePairsPath?: string;
+    sourceLang: string;
+    targetLang: string;
+  }>;
 
   // Error message if status is 'error'
   errorMessage?: string;

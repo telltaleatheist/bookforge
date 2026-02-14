@@ -3,7 +3,7 @@
  *
  * This module computes word-level diffs during AI cleanup (when we already have
  * both original and cleaned text) and stores them in a .diff.json file alongside
- * the _cleaned.epub. When the user opens Review Changes, loading is instant.
+ * the cleaned/simplified EPUB. When the user opens Review Changes, loading is instant.
  *
  * INCREMENTAL WRITES: The cache is written after each chapter completes, so
  * partial progress is available even if the job is still running or was interrupted.
@@ -64,7 +64,7 @@ let cacheStartTime: string | null = null;
  * Initialize diff cache at the start of a cleanup job.
  * Creates an empty cache file immediately.
  *
- * @param cleanedEpubPath Path to the _cleaned.epub file (used to derive .diff.json path)
+ * @param cleanedEpubPath Path to the cleaned/simplified EPUB file (used to derive .diff.json path)
  */
 export async function startDiffCache(cleanedEpubPath: string): Promise<void> {
   currentOutputPath = cleanedEpubPath;
@@ -217,7 +217,7 @@ export async function clearDiffCache(cleanedEpubPath: string): Promise<void> {
 /**
  * Load a pre-computed diff cache file.
  *
- * @param cleanedEpubPath Path to the _cleaned.epub file
+ * @param cleanedEpubPath Path to the cleaned/simplified EPUB file
  * @returns The cache data, or null if not found/invalid
  */
 export async function loadDiffCacheFile(cleanedEpubPath: string): Promise<DiffCacheFile | null> {
@@ -408,10 +408,17 @@ function computeCompactDiff(
         }
       }
 
+      // Use the actual cleaned text span for `add` (not the word-joined string)
+      // to ensure `len` always equals `add.length`. The word-joined `added` may
+      // differ from the real text when whitespace between words isn't a single space
+      // (e.g., double space after periods, newlines, etc.).
+      const addText = added && addedLen > 0
+        ? cleanedText.slice(actualPos, actualPos + addedLen)
+        : (added || undefined);
       changes.push({
         pos: actualPos,
         len: addedLen,
-        add: added || undefined,
+        add: addText,
         rem: removed || undefined
       });
       changeCount++;

@@ -202,6 +202,25 @@ export function getCondaPath(): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Shell Escaping
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Escape arguments for shell: true spawn calls.
+ * Node.js spawn with shell:true joins args with spaces and passes to
+ * /bin/sh -c with NO escaping — special characters like apostrophes
+ * in file paths (e.g., "Aesop's Fables") break the shell.
+ */
+export function shellEscapeArgs(args: string[]): string[] {
+  return args.map(arg => {
+    if (/['\s"\\$`!#&|;(){}[\]*?<>~]/.test(arg)) {
+      return `'${arg.replace(/'/g, "'\\''")}'`;
+    }
+    return arg;
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // WSL Path Conversion (Windows only)
 // ─────────────────────────────────────────────────────────────────────────────
 

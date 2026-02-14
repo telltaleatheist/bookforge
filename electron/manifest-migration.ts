@@ -3,7 +3,7 @@
  *
  * Migrates legacy project formats to unified manifest.json:
  * - BFP files from ~/Documents/BookForge/projects/
- * - Audiobook project.json from ~/Documents/BookForge/audiobooks/
+ * - Audiobook project.json from legacy audiobooks/ (now deprecated)
  * - Language learning project.json from ~/Documents/BookForge/language-learning/projects/
  *
  * Migration creates backups before modifying anything.
@@ -165,36 +165,7 @@ export async function scanLegacyProjects(): Promise<{
     }
   }
 
-  // Scan audiobook folders (look for project.json, not manifest.json)
-  const audiobooksDir = path.join(libraryPath, 'audiobooks');
-  if (fs.existsSync(audiobooksDir)) {
-    const entries = await fs.promises.readdir(audiobooksDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && entry.name !== 'queue' && entry.name !== 'completed') {
-        const projectJson = path.join(audiobooksDir, entry.name, 'project.json');
-        const manifestJson = path.join(audiobooksDir, entry.name, 'manifest.json');
-        // Only include if it has project.json but NOT manifest.json (not already migrated)
-        if (fs.existsSync(projectJson) && !fs.existsSync(manifestJson)) {
-          audiobookFolders.push(path.join(audiobooksDir, entry.name));
-        }
-      }
-    }
-  }
-
-  // Scan language learning projects
-  const articlesDir = path.join(libraryPath, 'language-learning', 'projects');
-  if (fs.existsSync(articlesDir)) {
-    const entries = await fs.promises.readdir(articlesDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        const projectJson = path.join(articlesDir, entry.name, 'project.json');
-        const manifestJson = path.join(articlesDir, entry.name, 'manifest.json');
-        if (fs.existsSync(projectJson) && !fs.existsSync(manifestJson)) {
-          articleFolders.push(path.join(articlesDir, entry.name));
-        }
-      }
-    }
-  }
+  // Legacy audiobooks/ and language-learning/ scanning removed — data moved to deprecated/
 
   return { bfpFiles, audiobookFolders, articleFolders };
 }
@@ -293,9 +264,9 @@ export async function migrateBfpProject(
       warnings.push(`Source file not found: ${bfp.source_path}`);
     }
 
-    // Copy exported EPUB if exists
+    // Copy exported EPUB if exists (user-edited version from PDF picker)
     if (bfp.exportedEpubPath && fs.existsSync(bfp.exportedEpubPath)) {
-      const targetPath = path.join(projectPath, 'stages', '01-cleanup', 'exported.epub');
+      const targetPath = path.join(projectPath, 'source', 'exported.epub');
       await atomicCopyFile(bfp.exportedEpubPath, targetPath);
     }
 
@@ -320,11 +291,15 @@ export async function migrateBfpProject(
         audiobookProjectData = JSON.parse(abContent);
       }
 
-      // Copy cleaned EPUB if exists
-      const cleanedEpubPath = path.join(bfp.audiobookFolder, 'exported_cleaned.epub');
-      if (fs.existsSync(cleanedEpubPath)) {
-        const targetPath = path.join(projectPath, 'stages', '01-cleanup', 'output.epub');
-        await atomicCopyFile(cleanedEpubPath, targetPath);
+      // Copy cleaned/simplified EPUB if exists (check all naming conventions)
+      const cleanedCandidates = ['simplified.epub', 'cleaned.epub', 'exported_cleaned.epub'];
+      for (const candidate of cleanedCandidates) {
+        const candidatePath = path.join(bfp.audiobookFolder, candidate);
+        if (fs.existsSync(candidatePath)) {
+          const targetPath = path.join(projectPath, 'stages', '01-cleanup', 'cleaned.epub');
+          await atomicCopyFile(candidatePath, targetPath);
+          break; // Use first found
+        }
       }
 
       // Copy diff cache if exists
@@ -417,9 +392,9 @@ export async function migrateAudiobookFolder(
     const projectPath = createResult.projectPath!;
 
     // Copy files from audiobook folder
+    // Note: cleaned/simplified EPUBs are handled separately below with priority logic
     const filesToCopy = [
       { src: 'exported.epub', dest: 'source/original.epub' },
-      { src: 'exported_cleaned.epub', dest: 'stages/01-cleanup/output.epub' },
       { src: 'output.m4b', dest: 'output/audiobook.m4b' },
       { src: 'subtitles.vtt', dest: 'output/audiobook.vtt' },
     ];
@@ -430,6 +405,18 @@ export async function migrateAudiobookFolder(
         const destPath = path.join(projectPath, dest);
         await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
         await atomicCopyFile(srcPath, destPath);
+      }
+    }
+
+    // Copy cleaned/simplified EPUB (check all naming conventions, use first found)
+    const cleanedMigrationCandidates = ['simplified.epub', 'cleaned.epub', 'exported_cleaned.epub'];
+    for (const candidate of cleanedMigrationCandidates) {
+      const srcPath = path.join(folderPath, candidate);
+      if (fs.existsSync(srcPath)) {
+        const destPath = path.join(projectPath, 'stages', '01-cleanup', 'cleaned.epub');
+        await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+        await atomicCopyFile(srcPath, destPath);
+        break; // Use first found
       }
     }
 
@@ -687,7 +674,7 @@ async function updateMigratedManifest(
       if (abProject.state.cleanupStatus === 'complete') {
         manifest.pipeline.cleanup = {
           status: 'complete',
-          outputPath: 'stages/01-cleanup/output.epub',
+          outputPath: 'stages/01-cleanup/cleaned.epub',
           completedAt: abProject.modifiedAt,
         };
       }
@@ -745,7 +732,7 @@ export async function migrateAllProjects(
   failed: Array<{ path: string; error: string }>;
 }> {
   const libraryPath = getLibraryBasePath();
-  const backupDir = path.join(libraryPath, 'legacy-backup');
+  const backupDir = path.join(libraryPath, 'deprecated', 'legacy-backup');
 
   const migrated: string[] = [];
   const failed: Array<{ path: string; error: string }> = [];

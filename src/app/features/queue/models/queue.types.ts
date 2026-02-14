@@ -37,7 +37,7 @@ export interface QueueJob {
   status: JobStatus;
   progress?: number;          // 0-100 percentage
   error?: string;             // Error message if status is 'error'
-  outputPath?: string;        // Path to output file (e.g., _cleaned.epub for OCR jobs)
+  outputPath?: string;        // Path to output file (e.g., cleaned.epub for OCR jobs)
   addedAt: Date;
   startedAt?: Date;
   completedAt?: Date;
@@ -170,7 +170,7 @@ export interface TtsConversionConfig {
   skipHeadings?: boolean;
   // Audio caching for cached-language TTS (bilingual tab)
   // When set, audio files are copied to this folder after TTS completes
-  cacheAudioTo?: string;  // e.g., 'audiobooks/book/audio/en'
+  cacheAudioTo?: string;  // e.g., 'projects/book/output/audio/en'
   // Language code for cache metadata (needed for updating sentence cache JSON)
   cacheLanguage?: string;  // e.g., 'en'
   // Test mode - only process first N sentences (for quick validation)
@@ -231,7 +231,7 @@ export interface BilingualCleanupJobConfig {
   type: 'bilingual-cleanup';
   projectId: string;
   projectDir: string;          // Path to project directory
-  sourceEpubPath?: string;     // Path to source EPUB (falls back to article.epub for articles)
+  sourceEpubPath?: string;     // Path to source EPUB
   sourceLang: string;          // Source language code
 
   // AI settings
@@ -249,7 +249,6 @@ export interface BilingualCleanupJobConfig {
   // Cleanup options
   enableCleanup?: boolean;         // Enable standard AI cleanup (OCR fixes)
   simplifyForLearning?: boolean;   // Simplify text for language learners
-  startFresh?: boolean;            // Start from source EPUB vs use existing cleaned.epub
 }
 
 // Sentence splitting granularity for bilingual processing
@@ -260,7 +259,7 @@ export interface BilingualTranslationJobConfig {
   type: 'bilingual-translation';
   projectId?: string;           // Optional for mono translation
   projectDir?: string;          // Path to project directory (optional for mono)
-  cleanedEpubPath?: string;     // Path to cleaned.epub from cleanup step (optional - uses epubPath if not set)
+  cleanedEpubPath?: string;     // Path to cleaned/simplified EPUB from cleanup step (optional - uses epubPath if not set)
   sourceLang: string;
   targetLang: string;
   title?: string;

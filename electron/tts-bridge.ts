@@ -11,7 +11,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as logger from './audiobook-logger';
-import { getDefaultE2aPath, getCondaRunArgs, getCondaPath } from './e2a-paths';
+import { getDefaultE2aPath, getCondaRunArgs, getCondaPath, shellEscapeArgs } from './e2a-paths';
 
 /**
  * Kill a process and all its children (process tree)
@@ -370,7 +370,7 @@ export async function startConversion(
     console.log('[TTS]   conda', fullArgs.join(' '));
     console.log('[TTS]   cwd:', currentE2aPath);
 
-    currentProcess = spawn(getCondaPath(), fullArgs, {
+    currentProcess = spawn(getCondaPath(), shellEscapeArgs(fullArgs), {
       cwd: currentE2aPath,
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true

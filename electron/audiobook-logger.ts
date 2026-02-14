@@ -60,7 +60,7 @@ let jobSummaries = new Map<string, JobSummary>();
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function initializeLogger(libraryPath: string): Promise<void> {
-  logsPath = path.join(libraryPath, 'audiobooks', 'logs');
+  logsPath = path.join(libraryPath, 'logs');
 
   // Ensure logs directory exists
   await fs.mkdir(logsPath, { recursive: true });

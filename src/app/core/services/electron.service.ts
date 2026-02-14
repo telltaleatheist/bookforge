@@ -1786,6 +1786,20 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Extract cover image from an EPUB file as a data URL
+   */
+  async epubGetCover(epubPath: string): Promise<{
+    success: boolean;
+    data?: string | null;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron?.epub?.getCover) {
+      return (window as any).electron.epub.getCover(epubPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   // EPUB export with block deletions (for EPUB editor block-based deletion)
   async exportEpubWithDeletedBlocks(
     inputPath: string,
@@ -1860,6 +1874,16 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.fs.deleteFile(filePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async deleteDirectory(dirPath: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.fs.deleteDirectory(dirPath);
     }
     return { success: false, error: 'Not running in Electron' };
   }

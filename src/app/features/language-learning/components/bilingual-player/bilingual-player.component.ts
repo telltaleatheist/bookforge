@@ -533,6 +533,10 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
   // Inputs
   readonly audiobook = input<AudiobookData | null>(null);
 
+  // Track which audiobook is loaded to prevent infinite reload loops
+  private loadedAudioKey = '';
+  private _autoPlayAfterLoad = false;
+
   // Loading/Error state
   readonly isLoading = signal<boolean>(false);
   readonly error = signal<string | null>(null);
@@ -623,8 +627,14 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     effect(() => {
       const book = this.audiobook();
       if (book) {
-        this.loadAudioData();
+        // Build a key from the data that matters — skip reload if same audiobook
+        const key = `${book.id}|${book.audiobookPath || ''}|${book.sourceLang || ''}|${book.targetLang || ''}`;
+        if (key !== this.loadedAudioKey) {
+          this.loadedAudioKey = key;
+          this.loadAudioData();
+        }
       } else {
+        this.loadedAudioKey = '';
         this.reset();
       }
     });
@@ -664,6 +674,28 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
   async loadAudioData(): Promise<void> {
     const book = this.audiobook();
     if (!book) return;
+
+    // Save bookmark and stop old audio before switching
+    this.saveBookmarkImmediate();
+    const wasPlaying = this.isPlaying();
+    this.pause();
+    const audio = this.audioElementRef?.nativeElement;
+    if (audio) {
+      audio.removeAttribute('src');
+      audio.load(); // Reset the element
+    }
+
+    // Reset playback state
+    this.currentPairIndex.set(0);
+    this.isSourceSpeaking.set(true);
+    this.currentTime.set(0);
+    this.duration.set(0);
+    this.audioPath.set('');
+    this.sentencePairs.set([]);
+    this.vttCues.set([]);
+    this.chapters.set([]);
+    this.isPlaying.set(false);
+    this._autoPlayAfterLoad = wasPlaying;
 
     this.isLoading.set(true);
     this.error.set(null);
@@ -766,6 +798,7 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
 
       // Each sentence has 2 cues (source + target)
       // Chapter start cue index = sum of (sentence counts * 2) for all prior chapters
+      // Only include chapters that have audio cues (test mode may only have partial audio)
       const playerChapters: PlayerChapter[] = [];
       let cumulativeCueIndex = 0;
 
@@ -773,15 +806,18 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
         const ch = manifestChapters[i];
         const startCueIndex = cumulativeCueIndex;
         const sentenceCount = ch.sentences.filter(s => !s.deleted).length;
-        const endCueIndex = Math.min(startCueIndex + (sentenceCount * 2) - 1, cues.length - 1);
 
-        const startTime = startCueIndex < cues.length ? cues[startCueIndex].startTime : 0;
+        // Stop once we've passed all available cues (test mode: only partial audio)
+        if (startCueIndex >= cues.length) break;
+
+        const endCueIndex = Math.min(startCueIndex + (sentenceCount * 2) - 1, cues.length - 1);
+        const startTime = cues[startCueIndex].startTime;
         const endTime = endCueIndex < cues.length ? cues[endCueIndex].endTime : startTime;
 
         playerChapters.push({
           id: ch.id,
           title: ch.title,
-          order: i,
+          order: playerChapters.length,
           startTime,
           endTime,
           startCueIndex,
@@ -792,7 +828,7 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
       }
 
       this.chapters.set(playerChapters);
-      console.log(`[BilingualPlayer] Loaded ${playerChapters.length} chapters from manifest`);
+      console.log(`[BilingualPlayer] Loaded ${playerChapters.length} chapters from manifest (${cues.length} cues available)`);
     } catch (err) {
       console.warn('[BilingualPlayer] Failed to load chapters:', err);
       this.chapters.set([]);
@@ -1045,7 +1081,13 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     if (audio) {
       this.duration.set(audio.duration);
       audio.playbackRate = this.sourceSpeed();
-      this.restoreBookmark();
+      if (this._autoPlayAfterLoad) {
+        this._autoPlayAfterLoad = false;
+        audio.currentTime = 0;
+        audio.play().catch(() => {});
+      } else {
+        this.restoreBookmark();
+      }
     }
   }
 

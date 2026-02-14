@@ -23,7 +23,7 @@ export interface VersionPickerDialogData {
  *
  * Shows all available versions of a project's source document:
  * - Original source (PDF/EPUB)
- * - Finalized EPUB
+ * - Exported EPUB
  * - Cleaned EPUB
  * - Translated EPUBs
  *
@@ -491,8 +491,8 @@ export class VersionPickerDialogComponent implements OnInit, OnChanges {
    * Original source files cannot be deleted
    */
   canDelete(version: ProjectVersion): boolean {
-    // Don't allow deleting original source files or finalized versions
-    return version.type !== 'original' && version.type !== 'finalized';
+    // Don't allow deleting original source files or exported versions
+    return version.type !== 'original' && version.type !== 'exported';
   }
 
   /**

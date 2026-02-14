@@ -215,10 +215,16 @@ function computeWordDiffIgnoringWhitespace(originalText: string, cleanedText: st
     } else {
       // This is a word - find its status in the diff
       // Skip any 'removed' entries (they're not in the cleaned text)
+      // Insert synthetic spaces between consecutive removed words so they
+      // don't get merged into "sawit" instead of "saw it" by mergeDiffOperations
+      let isFirstRemoved = true;
       while (wordDiffIdx < wordDiff.length && wordDiff[wordDiffIdx].type === 'removed') {
-        // Add removed words to output
+        if (!isFirstRemoved) {
+          result.push({ text: ' ', type: 'removed' });
+        }
         result.push(wordDiff[wordDiffIdx]);
         wordDiffIdx++;
+        isFirstRemoved = false;
       }
 
       if (wordDiffIdx < wordDiff.length) {
@@ -229,10 +235,15 @@ function computeWordDiffIgnoringWhitespace(originalText: string, cleanedText: st
     }
   }
 
-  // Add any remaining removed words at the end
+  // Add any remaining removed words at the end (with spaces between them)
+  let isFirstTrailing = true;
   while (wordDiffIdx < wordDiff.length) {
     if (wordDiff[wordDiffIdx].type === 'removed') {
+      if (!isFirstTrailing) {
+        result.push({ text: ' ', type: 'removed' });
+      }
       result.push(wordDiff[wordDiffIdx]);
+      isFirstTrailing = false;
     }
     wordDiffIdx++;
   }

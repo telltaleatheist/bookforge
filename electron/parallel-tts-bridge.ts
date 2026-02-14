@@ -260,25 +260,17 @@ export async function copyToFinalDestination(
   let finalAudioPath: string;
   let finalVttPath: string | undefined;
 
-  // Step 1: Copy to library audiobooks/ folder (always, for both books and articles)
+  // Step 1: Copy to project output/ folder (always, for both books and articles)
   if (bfpPath) {
-    // Derive audiobook output dir from bfpPath
-    // BFP files: E:\Shared\BookForge\projects\occult_test.bfp → E:\Shared\BookForge\audiobooks\occult_test\
-    // Project dirs (articles): E:\Shared\BookForge\language-learning\projects\myproject\ → myproject\audiobook\
-    let bfpAudiobookDir: string;
-    if (bfpPath.endsWith('.bfp')) {
-      const libraryRoot = path.dirname(path.dirname(bfpPath)); // projects/ → library root
-      const projectName = path.basename(bfpPath, '.bfp');
-      bfpAudiobookDir = path.join(libraryRoot, 'audiobooks', projectName);
-    } else {
-      // Directory-based project (articles) - use audiobook/ subfolder
-      bfpAudiobookDir = path.join(bfpPath, 'audiobook');
-    }
+    // Derive output dir from bfpPath
+    // BFP files: .../projects/occult_test.bfp → .../projects/occult_test/output/
+    // Project dirs: .../projects/myproject/ → .../projects/myproject/output/
+    const bfpAudiobookDir = getAudiobookDirFromBfp(bfpPath);
     await fs.mkdir(bfpAudiobookDir, { recursive: true });
 
     finalAudioPath = path.join(bfpAudiobookDir, m4bFile);
     await fs.copyFile(tempM4bPath, finalAudioPath);
-    console.log(`[PARALLEL-TTS] Copied m4b to audiobooks: ${finalAudioPath}`);
+    console.log(`[PARALLEL-TTS] Copied m4b to project output: ${finalAudioPath}`);
 
     if (tempVttPath) {
       finalVttPath = path.join(bfpAudiobookDir, 'subtitles.vtt');
@@ -319,18 +311,10 @@ export async function copyToFinalDestination(
 }
 
 /**
- * Get the audiobook directory for a BFP project
- * .bfp files: {library}/audiobooks/{projectName}/
- * Directory-based projects: {projectDir}/audiobook/
+ * Get the audiobook output directory for a project.
  */
 export function getAudiobookDirFromBfp(bfpPath: string): string {
-  if (bfpPath.endsWith('.bfp')) {
-    const libraryRoot = path.dirname(path.dirname(bfpPath)); // projects/ → library root
-    const projectName = path.basename(bfpPath, '.bfp');
-    return path.join(libraryRoot, 'audiobooks', projectName);
-  }
-  // Directory-based project (articles) - use audiobook/ subfolder
-  return path.join(bfpPath, 'audiobook');
+  return path.join(bfpPath, 'output');
 }
 
 /**
@@ -455,7 +439,7 @@ export async function cacheSessionToBfp(
  * Unlike cacheSessionToBfp, this supports multiple sessions (one per language)
  * and does NOT delete the original (the chaining handler still needs it).
  *
- * Destination: ${projectDir}/sessions/${language}/ebook-{uuid}/
+ * Destination: ${projectDir}/stages/03-tts/sessions/${language}/ebook-{uuid}/
  * Returns the cached sentences path for use in assembly chaining.
  */
 export async function cacheSessionToProject(
@@ -470,7 +454,7 @@ export async function cacheSessionToProject(
 
   try {
     const sessionFolderName = path.basename(sessionDir); // e.g. "ebook-{id}"
-    const langSessionParent = path.join(projectDir, 'sessions', language);
+    const langSessionParent = path.join(projectDir, 'stages', '03-tts', 'sessions', language);
     const destDir = path.join(langSessionParent, sessionFolderName);
     const tempDestDir = path.join(langSessionParent, `.tmp-${sessionFolderName}`);
 
@@ -566,13 +550,13 @@ export async function cacheSessionToProject(
 }
 
 /**
- * Scan an LL project's sessions/ directory for cached TTS sessions.
+ * Scan an LL project's stages/03-tts/sessions/ directory for cached TTS sessions.
  * Returns one entry per language with sentence count and sentences path.
  */
 export async function scanProjectSessions(
   projectDir: string
 ): Promise<{ language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }[]> {
-  const sessionsRoot = path.join(projectDir, 'sessions');
+  const sessionsRoot = path.join(projectDir, 'stages', '03-tts', 'sessions');
   const results: { language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }[] = [];
 
   try {
@@ -883,8 +867,12 @@ function spawnWithWslSupport(
     });
   }
 
+  // Shell-escape args when using shell: true to handle paths with
+  // special characters (e.g., apostrophes in "Aesop's Fables")
+  const safeArgs = options.shell ? shellEscapeArgs(args) : args;
+
   // Regular Windows/Mac/Linux spawn
-  return spawn(condaPath, args, options);
+  return spawn(condaPath, safeArgs, options);
 }
 
 /**
@@ -1097,6 +1085,9 @@ export interface ParallelTtsSettings {
   sentencePerParagraph?: boolean;
   // For bilingual TTS: skip reading heading tags (h1-h4) as chapter titles
   skipHeadings?: boolean;
+  // Test mode: only process first N sentences
+  testMode?: boolean;
+  testSentences?: number;
 }
 
 export interface AggregatedProgress {
@@ -1143,6 +1134,7 @@ import {
   getWslOrpheusCondaEnv,
   windowsToWslPath,
   wslPathToWindows,
+  shellEscapeArgs,
 } from './e2a-paths';
 
 // Helper to get conda run args - always uses fresh e2aPath from centralized config
@@ -1624,6 +1616,11 @@ export async function prepareSession(
   // Language learning mode: preserve paragraph boundaries as sentences
   if (settings.sentencePerParagraph) {
     args.push('--sentence_per_paragraph');
+  }
+
+  // Skip heading text in TTS (headings parsed for chapter detection but not spoken)
+  if (settings.skipHeadings) {
+    args.push('--skip_headings');
   }
 
   console.log('[PARALLEL-TTS] Running prep with:', args.join(' '));
@@ -3232,6 +3229,13 @@ export async function startParallelConversion(
     return { success: false, error };
   }
 
+  // Test mode: cap total sentences to process
+  if (config.settings.testMode && config.settings.testSentences && config.settings.testSentences > 0) {
+    const originalTotal = prepInfo.totalSentences;
+    prepInfo.totalSentences = Math.min(prepInfo.totalSentences, config.settings.testSentences);
+    console.log(`[PARALLEL-TTS] Test mode: limiting to ${prepInfo.totalSentences} of ${originalTotal} sentences`);
+  }
+
   // Calculate ranges for workers based on mode
   const isChapterMode = config.parallelMode === 'chapters';
   let workers: WorkerState[];
@@ -4140,7 +4144,7 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
     let stdout = '';
     let stderr = '';
 
-    const resumeCheckProcess = spawn(getCondaPath(), args, {
+    const resumeCheckProcess = spawn(getCondaPath(), shellEscapeArgs(args), {
       cwd: getDefaultE2aPath(),
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true
@@ -4236,7 +4240,7 @@ export async function listResumableSessions(): Promise<Array<{
   return new Promise((resolve) => {
     let stdout = '';
 
-    const listProcess = spawn(getCondaPath(), args, {
+    const listProcess = spawn(getCondaPath(), shellEscapeArgs(args), {
       cwd: getDefaultE2aPath(),
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
       shell: true

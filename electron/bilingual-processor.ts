@@ -32,6 +32,16 @@ export interface BilingualChapter {
   sentences: SentencePair[];
 }
 
+export interface SkippedChunk {
+  chapterTitle: string;
+  chunkIndex: number;
+  overallChunkNumber: number;
+  totalChunks: number;
+  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated';
+  text: string;
+  aiResponse?: string;
+}
+
 export interface BilingualProcessingConfig {
   projectId: string;
   sourceText: string;
@@ -314,14 +324,16 @@ Start your response with the first word of the text. No introduction.`;
 
 /**
  * Clean up text using chunk-based processing
+ * Returns both cleaned text and any skipped chunks
  */
 export async function cleanupText(
   text: string,
   config: BilingualProcessingConfig,
-  onProgress?: (progress: ProcessingProgress) => void
-): Promise<string> {
+  onProgress?: (progress: ProcessingProgress) => void,
+  chapterTitle?: string
+): Promise<{ cleanedText: string; skippedChunks: SkippedChunk[] }> {
   if (!config.enableCleanup) {
-    return text;
+    return { cleanedText: text, skippedChunks: [] };
   }
 
   let chunks = splitIntoCleanupChunks(text);
@@ -335,6 +347,7 @@ export async function cleanupText(
 
   const totalChunks = chunks.length;
   const cleanedChunks: string[] = [];
+  const skippedChunks: SkippedChunk[] = [];
   const systemPrompt = buildCleanupSystemPrompt(config.cleanupPrompt);
 
   console.log(`[BILINGUAL] Starting cleanup: ${totalChunks} chunks`);
@@ -357,10 +370,87 @@ export async function cleanupText(
 
     try {
       const cleaned = await callAI(chunk, config, systemPrompt);
-      cleanedChunks.push(cleaned);
-      console.log(`[BILINGUAL] Cleaned chunk ${i + 1}/${totalChunks} (${chunk.length} -> ${cleaned.length} chars)`);
+      const lowerCleaned = cleaned.toLowerCase();
+
+      // Check for explicit refusals
+      const hasExplicitRefusal =
+        cleaned.includes('[SKIP]') ||
+        lowerCleaned.includes('copyright') ||
+        lowerCleaned.includes('cannot reproduce') ||
+        lowerCleaned.includes('cannot process') ||
+        lowerCleaned.includes('cannot simplify') ||
+        lowerCleaned.includes('lengthy passage') ||
+        lowerCleaned.includes('i cannot') ||
+        lowerCleaned.includes("i can't") ||
+        lowerCleaned.includes('unable to process');
+
+      // For simplification, use 50% threshold (text should get shorter, but not THIS much shorter)
+      const truncationRatio = cleaned.length / chunk.length;
+      const isTruncated = truncationRatio < 0.5 && chunk.length > 200;
+
+      if (hasExplicitRefusal) {
+        // AI explicitly refused
+        console.warn(`[BILINGUAL] AI refused to process chunk ${i + 1}: "${cleaned.substring(0, 100)}..."`);
+
+        skippedChunks.push({
+          chapterTitle: chapterTitle || 'Unknown',
+          chunkIndex: i + 1,
+          overallChunkNumber: i + 1,
+          totalChunks: totalChunks,
+          reason: cleaned.toLowerCase().includes('copyright') ? 'copyright' : 'ai-refusal',
+          text: chunk,
+          aiResponse: cleaned.substring(0, 500)
+        });
+
+        // Use original text
+        cleanedChunks.push(chunk);
+      } else if (isTruncated) {
+        console.warn(`[BILINGUAL] Detected severe truncation in chunk ${i + 1}: ${chunk.length} -> ${cleaned.length} chars (${(truncationRatio * 100).toFixed(1)}%)`);
+        console.warn(`[BILINGUAL] Retrying with stronger prompt...`);
+
+        // Retry with a more explicit instruction
+        const strongerSystemPrompt = systemPrompt + '\n\nCRITICAL: The text you are about to receive is a COMPLETE story or passage. You MUST simplify ALL of it from beginning to end. Do not stop after the first sentence or paragraph.';
+        const secondAttempt = await callAI(chunk, config, strongerSystemPrompt);
+
+        // Check if second attempt is also truncated
+        const secondRatio = secondAttempt.length / chunk.length;
+        if (secondRatio < 0.5) {
+          console.error(`[BILINGUAL] Second attempt also truncated (${(secondRatio * 100).toFixed(1)}%). Marking as skipped.`);
+
+          skippedChunks.push({
+            chapterTitle: chapterTitle || 'Unknown',
+            chunkIndex: i + 1,
+            overallChunkNumber: i + 1,
+            totalChunks: totalChunks,
+            reason: 'truncated',
+            text: chunk,
+            aiResponse: cleaned.substring(0, 500)
+          });
+
+          // Use original text
+          cleanedChunks.push(chunk);
+        } else {
+          cleanedChunks.push(secondAttempt);
+          console.log(`[BILINGUAL] Retry successful: ${chunk.length} -> ${secondAttempt.length} chars`);
+        }
+      } else {
+        // Success - use cleaned text
+        cleanedChunks.push(cleaned);
+        console.log(`[BILINGUAL] Cleaned chunk ${i + 1}/${totalChunks} (${chunk.length} -> ${cleaned.length} chars)`);
+      }
     } catch (error) {
       console.error(`[BILINGUAL] Cleanup failed for chunk ${i + 1}:`, error);
+
+      skippedChunks.push({
+        chapterTitle: chapterTitle || 'Unknown',
+        chunkIndex: i + 1,
+        overallChunkNumber: i + 1,
+        totalChunks: totalChunks,
+        reason: 'ai-refusal',
+        text: chunk,
+        aiResponse: `Error: ${error}`
+      });
+
       // Fall back to original chunk on error
       cleanedChunks.push(chunk);
     }
@@ -384,7 +474,20 @@ export async function cleanupText(
     });
   }
 
-  return cleanedChunks.join('\n\n');
+  // Log skipped chunks summary
+  if (skippedChunks.length > 0) {
+    console.log(`[BILINGUAL] Cleanup complete with ${skippedChunks.length} skipped chunks`);
+    const byReason = skippedChunks.reduce((acc, chunk) => {
+      acc[chunk.reason] = (acc[chunk.reason] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    console.log('[BILINGUAL] Skipped chunks by reason:', byReason);
+  }
+
+  return {
+    cleanedText: cleanedChunks.join('\n\n'),
+    skippedChunks
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -772,11 +875,7 @@ export async function generateMonolingualEpub(
   outputPath: string,
   options?: { includeBookforgeMarker?: boolean }
 ): Promise<string> {
-  // Only add bookforge marker for TTS EPUBs, not for intermediate cleaned.epub
-  // e2a uses first sentence as chapter title fallback, so we add a marker that
-  // bilingual assembly will skip (starts from sentence 1)
-  const includeMarker = options?.includeBookforgeMarker ?? true;
-  const allSentences = includeMarker ? ['bookforge.', ...sentences] : sentences;
+  const allSentences = sentences;
 
   // Generate HTML content - one paragraph per sentence
   const sentencesHtml = allSentences.map((sentence, index) =>
@@ -875,9 +974,8 @@ export async function generateChapteredEpub(
   bookTitle: string,
   lang: string,
   outputPath: string,
-  options?: { includeBookforgeMarker?: boolean }
+  options?: { includeBookforgeMarker?: boolean; flattenHeadings?: boolean }
 ): Promise<string> {
-  const includeMarker = options?.includeBookforgeMarker ?? true;
   const epubDir = path.dirname(outputPath);
   const tempDir = path.join(epubDir, '.epub-temp-' + crypto.randomBytes(4).toString('hex'));
 
@@ -918,16 +1016,13 @@ export async function generateChapteredEpub(
     </navPoint>`);
 
       // Generate chapter HTML - one paragraph per sentence with global index
-      const chapterSentences = includeMarker && i === 0
-        ? ['bookforge.', ...chapter.sentences]
-        : chapter.sentences;
-
-      const sentencesHtml = chapterSentences.map((sentence) => {
+      const sentencesHtml = chapter.sentences.map((sentence) => {
         const html = `<p id="s${globalSentenceIndex}">${escapeHtml(sentence)}</p>`;
         globalSentenceIndex++;
         return html;
       }).join('\n');
 
+      const headingHtml = options?.flattenHeadings ? '' : `\n  <h1>${escapeHtml(chapter.title)}</h1>`;
       const chapterHtml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${lang}">
@@ -940,8 +1035,7 @@ export async function generateChapteredEpub(
     h1 { margin-bottom: 1.5em; }
   </style>
 </head>
-<body>
-  <h1>${escapeHtml(ensureTitleEndsWithPunctuation(chapter.title))}</h1>
+<body>${headingHtml}
   ${sentencesHtml}
 </body>
 </html>`;
@@ -1424,20 +1518,6 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#039;');
 }
 
-/**
- * Ensure a chapter title ends with a period for TTS readability.
- * TTS engines often run headings into the following text without punctuation.
- */
-function ensureTitleEndsWithPunctuation(title: string): string {
-  const trimmed = title.trim();
-  if (!trimmed) return trimmed;
-  const lastChar = trimmed[trimmed.length - 1];
-  if (['.', '!', '?', ':', ';'].includes(lastChar)) {
-    return trimmed;
-  }
-  return trimmed + '.';
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Processing Function
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1469,8 +1549,12 @@ export async function processBilingualText(
         });
       }
 
-      processedText = await cleanupText(config.sourceText, config, onProgress);
+      const cleanupResult = await cleanupText(config.sourceText, config, onProgress);
+      processedText = cleanupResult.cleanedText;
       console.log(`[BILINGUAL] Cleanup complete: ${config.sourceText.length} -> ${processedText.length} chars`);
+      if (cleanupResult.skippedChunks.length > 0) {
+        console.log(`[BILINGUAL] Cleanup had ${cleanupResult.skippedChunks.length} skipped chunks`);
+      }
     }
 
     // Phase 2: Split into sentences

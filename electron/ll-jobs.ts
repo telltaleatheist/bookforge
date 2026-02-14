@@ -14,11 +14,11 @@ import { loadPrompt, PROMPTS } from './prompts.js';
 import {
   splitIntoSentences,
   translateSentences,
-  generateSeparateEpubs,
   cleanupText,
   BilingualProcessingConfig,
   ProcessingProgress,
   SentencePair,
+  SkippedChunk,
   SplitGranularity
 } from './bilingual-processor.js';
 import { validateAndAlignSentences } from './sentence-alignment-window.js';
@@ -128,7 +128,7 @@ function completeStage(
 export interface LLCleanupConfig {
   projectId: string;
   projectDir: string;
-  sourceEpubPath?: string;  // Path to source EPUB (falls back to article.epub for articles)
+  sourceEpubPath?: string;  // Path to source EPUB
   sourceLang: string;
   aiProvider: 'ollama' | 'claude' | 'openai';
   aiModel: string;
@@ -137,7 +137,7 @@ export interface LLCleanupConfig {
   openaiApiKey?: string;
   cleanupPrompt?: string;
   simplifyForLearning?: boolean;  // Simplify text for language learners
-  startFresh?: boolean;  // Start from source EPUB vs use existing cleaned.epub
+  startFresh?: boolean;  // Start from source EPUB vs use existing cleaned/simplified EPUB
   // Test mode - limit chunks for faster testing
   testMode?: boolean;
   testModeChunks?: number;
@@ -146,7 +146,7 @@ export interface LLCleanupConfig {
 export interface LLTranslationConfig {
   projectId?: string;          // Required for bilingual workflow, optional for mono
   projectDir?: string;         // Required for bilingual workflow, optional for mono
-  cleanedEpubPath?: string;    // Path to cleaned.epub (output from cleanup job)
+  cleanedEpubPath?: string;    // Path to cleaned/simplified EPUB (output from cleanup job)
   sourceLang: string;
   targetLang: string;
   title?: string;
@@ -204,7 +204,7 @@ function sendProgress(
 
 /**
  * Run AI cleanup on extracted text
- * Reads from source EPUB (or article.epub for articles), writes cleaned content to cleaned.epub
+ * Reads from source EPUB, writes to cleaned.epub or simplified.epub
  */
 export async function runLLCleanup(
   jobId: string,
@@ -213,19 +213,28 @@ export async function runLLCleanup(
 ): Promise<LLJobResult> {
   console.log(`[LL-CLEANUP] Starting job ${jobId}`);
 
-  // Use sourceEpubPath if provided, otherwise fall back to article.epub (for articles)
-  const sourceEpubPath = config.sourceEpubPath || path.join(config.projectDir, 'article.epub');
+  // Use sourceEpubPath if provided, otherwise fall back to source/original.epub
+  const sourceEpubPath = config.sourceEpubPath || path.join(config.projectDir, 'source', 'original.epub');
 
-  // Always use 'cleaned.epub' for consistency
-  const cleanedFilename = 'cleaned.epub';
-  const cleanedEpubPath = path.join(config.projectDir, cleanedFilename);
+  // Output filename depends on mode: simplify → simplified.epub, cleanup → cleaned.epub
+  const cleanedFilename = config.simplifyForLearning ? 'simplified.epub' : 'cleaned.epub';
+  const cleanupStageDir = path.join(config.projectDir, 'stages', '01-cleanup');
+  await fs.mkdir(cleanupStageDir, { recursive: true });
+  const cleanedEpubPath = path.join(cleanupStageDir, cleanedFilename);
 
-  // Handle startFresh flag - delete existing cleaned.epub if starting fresh
+  // Handle startFresh flag - delete existing output if starting fresh
   if (config.startFresh !== false) {  // Default to true if not specified
     try {
       await fs.stat(cleanedEpubPath);
       console.log(`[LL-CLEANUP] startFresh=true, deleting existing ${cleanedFilename}`);
       await fs.unlink(cleanedEpubPath);
+    } catch {
+      // File doesn't exist, nothing to delete
+    }
+    // Also clean up legacy root-level output file
+    try {
+      await fs.unlink(path.join(config.projectDir, cleanedFilename));
+      console.log(`[LL-CLEANUP] Deleted legacy root-level ${cleanedFilename}`);
     } catch {
       // File doesn't exist, nothing to delete
     }
@@ -235,8 +244,8 @@ export async function runLLCleanup(
   let readFromPath = sourceEpubPath;
   let workingOnCleaned = false;
 
-  // Check if we should read from an existing cleaned version
-  // Only use existing cleaned.epub if startFresh is false
+  // Check if we should read from an existing cleaned/simplified version
+  // Only use existing output if startFresh is false
   if (config.startFresh === false) {
     try {
       await fs.stat(cleanedEpubPath);
@@ -253,17 +262,24 @@ export async function runLLCleanup(
   console.log(`[LL-CLEANUP] Loading chapters from: ${path.basename(readFromPath)}`);
 
   // Always keep track of original chapters for diff comparison
+  // Use block-level extraction to get actual chapter IDs, but exclude h1 from cleanup text
+  // (h1 headings should pass through untouched — AI cleanup would rewrite titles into body text)
   let originalChapters: Array<{ id: string; title: string; text: string }>;
   let workingChapters: Array<{ id: string; title: string; text: string }>;
   let inputText: string;
 
   try {
-    const { extractChaptersFromEpub } = await import('./epub-processor.js');
+    const { extractChaptersWithBlocks } = await import('./epub-processor.js');
 
     // Always load original chapters for diff comparison
-    const originalResult = await extractChaptersFromEpub(sourceEpubPath);
+    const originalResult = await extractChaptersWithBlocks(sourceEpubPath);
     if (originalResult.success && originalResult.chapters) {
-      originalChapters = originalResult.chapters;
+      // Use bodyText (excludes h1) for cleanup — headings pass through untouched
+      originalChapters = originalResult.chapters.map(ch => ({
+        id: ch.chapterId,
+        title: ch.heading || ch.chapterId,
+        text: ch.bodyText
+      }));
       console.log(`[LL-CLEANUP] Loaded ${originalChapters.length} original chapters for diff comparison`);
     } else {
       throw new Error(originalResult.error || 'Failed to extract chapters from source EPUB');
@@ -271,9 +287,13 @@ export async function runLLCleanup(
 
     // Load working chapters (may be from cleaned if it exists)
     if (workingOnCleaned) {
-      const workingResult = await extractChaptersFromEpub(readFromPath);
+      const workingResult = await extractChaptersWithBlocks(readFromPath);
       if (workingResult.success && workingResult.chapters) {
-        workingChapters = workingResult.chapters;
+        workingChapters = workingResult.chapters.map(ch => ({
+          id: ch.chapterId,
+          title: ch.heading || ch.chapterId,
+          text: ch.bodyText
+        }));
         inputText = workingChapters.map(ch => ch.text).join('\n\n');
         console.log(`[LL-CLEANUP] Extracted ${workingChapters.length} chapters (${inputText.length} total chars) from existing cleaned EPUB`);
       } else {
@@ -361,11 +381,53 @@ export async function runLLCleanup(
       console.log(`[LL-CLEANUP] Test mode: will process up to ${config.testModeChunks} total chunks across all chapters`);
     }
 
+    // Set up incremental flush - diff cache and EPUB replacement
+    const isIncrementalUpdate = workingOnCleaned;
+    if (!isIncrementalUpdate) {
+      await clearDiffCache(cleanedEpubPath);
+    }
+    await startDiffCache(cleanedEpubPath);
+    const { replaceChapterTextsInEpub } = await import('./epub-processor.js');
+    const chapterReplacements: Array<{ chapterId: string; newText: string }> = [];
+
     // Clean each chapter individually to preserve structure
     const cleanedChapters: Array<{ title: string; sentences: string[] }> = [];
-    const estimatedTotalChunks = config.testMode && config.testModeChunks ?
-      config.testModeChunks :
-      workingChapters.length * 3; // Estimate ~3 chunks per chapter
+    const allSkippedChunks: SkippedChunk[] = [];
+
+    // Pre-calculate exact chunk count for accurate progress
+    const CLEANUP_CHUNK_SIZE = 2500; // From bilingual-processor.ts
+    let totalChunksNeeded = 0;
+    const chapterChunkCounts: number[] = [];
+
+    for (const chapter of workingChapters) {
+      // Calculate chunks for this chapter using the same logic as splitIntoCleanupChunks
+      const paragraphs = chapter.text.split(/\n\n+/);
+      let chunkCount = 0;
+      let currentChunkLength = 0;
+
+      for (const paragraph of paragraphs) {
+        if (currentChunkLength + paragraph.length + 2 > CLEANUP_CHUNK_SIZE && currentChunkLength > 0) {
+          chunkCount++;
+          currentChunkLength = paragraph.length;
+        } else {
+          currentChunkLength += (currentChunkLength ? 2 : 0) + paragraph.length;
+        }
+      }
+
+      if (currentChunkLength > 0) {
+        chunkCount++; // Add the final chunk
+      }
+
+      chapterChunkCounts.push(chunkCount || 1); // At least 1 chunk per chapter
+      totalChunksNeeded += chunkCount || 1;
+    }
+
+    // Use exact count, or test mode limit if applicable
+    let dynamicTotalChunks = config.testMode && config.testModeChunks ?
+      Math.min(config.testModeChunks, totalChunksNeeded) :
+      totalChunksNeeded;
+
+    console.log(`[LL-CLEANUP] Pre-calculated ${totalChunksNeeded} total chunks across ${workingChapters.length} chapters`);
 
     for (let i = 0; i < workingChapters.length; i++) {
       const chapter = workingChapters[i];
@@ -391,29 +453,42 @@ export async function runLLCleanup(
       let chunksProcessedInThisChapter = 0;
 
       // Clean this chapter's text
-      const cleanedChapterText = await cleanupText(chapter.text, chapterConfig, (progress) => {
-        // Track chunks - cleanupText reports 1-based chunk numbers
-        if (progress.currentChunk && progress.currentChunk > chunksProcessedInThisChapter) {
-          const newChunks = progress.currentChunk - chunksProcessedInThisChapter;
-          chunksProcessedInThisChapter = progress.currentChunk;
-          totalChunksProcessedSoFar += newChunks;
-        }
+      const cleanupResult = await cleanupText(
+        chapter.text,
+        chapterConfig,
+        (progress) => {
+          // Track chunks - cleanupText reports 1-based chunk numbers
+          if (progress.currentChunk && progress.currentChunk > chunksProcessedInThisChapter) {
+            const newChunks = progress.currentChunk - chunksProcessedInThisChapter;
+            chunksProcessedInThisChapter = progress.currentChunk;
+            totalChunksProcessedSoFar += newChunks;
+          }
 
-        // Calculate overall progress across all chapters
-        const overallProgress = Math.round(
-          ((totalChunksProcessedSoFar) / estimatedTotalChunks) * 100
-        );
+          // Calculate overall progress across all chapters
+          const overallProgress = Math.round(
+            ((totalChunksProcessedSoFar) / dynamicTotalChunks) * 100
+          );
 
-        sendProgress(mainWindow, jobId, {
-          phase: 'cleanup',
-          currentChunk: totalChunksProcessedSoFar,
-          totalChunks: estimatedTotalChunks,
-          currentSentence: 0,
-          totalSentences: 0,
-          percentage: overallProgress,
-          message: `Cleaning chapter ${i + 1}/${workingChapters.length}: ${chapter.title}...`
-        });
-      });
+          sendProgress(mainWindow, jobId, {
+            phase: 'cleanup',
+            currentChunk: totalChunksProcessedSoFar,
+            totalChunks: dynamicTotalChunks,
+            currentSentence: 0,
+            totalSentences: 0,
+            percentage: overallProgress,
+            message: `Cleaning chapter ${i + 1}/${workingChapters.length}: ${chapter.title}...`
+          });
+        },
+        chapter.title // Pass chapter title for skipped chunks tracking
+      );
+
+      const cleanedChapterText = cleanupResult.cleanedText;
+
+      // Collect any skipped chunks from this chapter
+      if (cleanupResult.skippedChunks && cleanupResult.skippedChunks.length > 0) {
+        allSkippedChunks.push(...cleanupResult.skippedChunks);
+        console.log(`[LL-CLEANUP] Chapter ${i + 1} had ${cleanupResult.skippedChunks.length} skipped chunks`);
+      }
 
       // Split cleaned chapter text into sentences/paragraphs
       const sentences = cleanedChapterText.split(/\n\n+/)
@@ -425,70 +500,45 @@ export async function runLLCleanup(
         sentences
       });
 
+      // Incremental flush: update diff cache and EPUB after each chapter
+      const chapterId = workingChapters[i]?.id || `chapter${i + 1}`;
+      const newText = sentences.join('\n\n');
+      chapterReplacements.push({ chapterId, newText });
+
+      const originalChapter = originalChapters[i];
+      if (originalChapter) {
+        await addChapterDiff(chapterId, chapter.title || `Chapter ${i + 1}`, originalChapter.text, newText);
+      }
+
+      const replaceResult = await replaceChapterTextsInEpub(sourceEpubPath, cleanedEpubPath, chapterReplacements);
+      if (!replaceResult.success) {
+        throw new Error(`Failed to flush EPUB at chapter ${i + 1}: ${replaceResult.error}`);
+      }
+
+      console.log(`[LL-CLEANUP] Flushed chapter ${i + 1}/${workingChapters.length} to EPUB and diff cache`);
+
       // Log progress in test mode
       if (config.testMode && config.testModeChunks) {
         console.log(`[LL-CLEANUP] Processed ${chunksProcessedInThisChapter} chunks in chapter ${i + 1}, total so far: ${totalChunksProcessedSoFar}/${totalChunksToProcess}`);
       }
     }
 
-    // Create combined cleaned text for analytics and diff
+    // Create combined cleaned text for analytics
     const cleanedText = cleanedChapters
       .map(ch => ch.sentences.join('\n\n'))
       .join('\n\n');
 
-    // We've already determined the input path earlier
-    // Use workingOnCleaned flag to determine if this is incremental
-    const inputEpubPath = workingOnCleaned ? cleanedEpubPath : sourceEpubPath;
-    const isIncrementalUpdate = workingOnCleaned;
+    console.log(`[LL-CLEANUP] Completed ${cleanedChapters.length} chapters (${cleanedText.length} chars), EPUB and diff cache flushed incrementally`);
 
-    // Start diff cache for Review Changes functionality
-    // Only clear cache if this is not an incremental update
-    if (!isIncrementalUpdate) {
-      await clearDiffCache(cleanedEpubPath);
-    }
-    await startDiffCache(cleanedEpubPath);
-
-    // Prepare chapter replacements for the new approach
-    const chapterReplacements: Array<{ chapterId: string; newText: string }> = [];
-    for (let i = 0; i < cleanedChapters.length; i++) {
-      const cleanedChapter = cleanedChapters[i];
-      // The chapter ID in EPUB is "chapter1", "chapter2", etc. (without dash)
-      const chapterId = `chapter${i + 1}`;
-      const newText = cleanedChapter.sentences.join('\n\n');
-      chapterReplacements.push({ chapterId, newText });
-    }
-
-    // Use the new function to duplicate and modify the EPUB
-    const { replaceChapterTextsInEpub } = await import('./epub-processor.js');
-    const replaceResult = await replaceChapterTextsInEpub(
-      inputEpubPath,
-      cleanedEpubPath,
-      chapterReplacements
-    );
-
-    if (!replaceResult.success) {
-      throw new Error(`Failed to update EPUB: ${replaceResult.error}`);
-    }
-
-    console.log(`[LL-CLEANUP] Updated ${isIncrementalUpdate ? 'existing' : 'new'} cleaned EPUB with ${cleanedChapters.length} chapters (${cleanedText.length} chars)`);
-
-    // Add diffs for each chapter to cache for Review Changes functionality
-    // Always compare against the original source chapters for accurate diffs
-    for (let i = 0; i < cleanedChapters.length; i++) {
-      const originalChapter = originalChapters[i];
-      const cleanedChapter = cleanedChapters[i];
-      if (originalChapter && cleanedChapter) {
-        await addChapterDiff(
-          `chapter${i + 1}`,  // Match EPUB chapter IDs (no dash)
-          cleanedChapter.title,
-          originalChapter.text,
-          cleanedChapter.sentences.join('\n\n')
-        );
-      }
-    }
-
-    // Finalize the diff cache
+    // Finalize the diff cache (marks it as completed)
     await finalizeDiffCache();
+
+    // Save skipped chunks if any were found
+    if (allSkippedChunks.length > 0) {
+      const skippedChunksPath = path.join(cleanupStageDir, 'skipped-chunks.json');
+      await fs.writeFile(skippedChunksPath, JSON.stringify(allSkippedChunks, null, 2), 'utf-8');
+      console.log(`[LL-CLEANUP] Saved ${allSkippedChunks.length} skipped chunks to ${skippedChunksPath}`);
+    }
 
     // Update the project metadata for the review tab to work
     // Check if this is a book (BFP) or article (project.json) based on projectId
@@ -511,23 +561,84 @@ export async function runLLCleanup(
         console.warn(`[LL-CLEANUP] Failed to update BFP:`, err);
         // Don't fail the job if BFP update fails
       }
-    } else {
-      // This is a language learning article - update project.json
+
+      // Copy cleaned/simplified EPUB and diff cache to the project output folder
+      // The studio's Review tab looks in the output folder for diff view data.
+      // We write to stages/ as the canonical location, then copy to output/.
       try {
-        const { updateProject } = await import('./web-fetch-bridge.js');
-        // For articles, projectId is just the ID, projectDir already contains the full path
-        const projectPath = path.dirname(config.projectDir);
-        const projectsPath = path.dirname(projectPath);
-        const libraryRoot = path.resolve(projectsPath, '../..');
-        await updateProject(config.projectId, {
-          cleanedEpubPath: cleanedEpubPath,
-          hasCleaned: true,
-          modifiedAt: new Date().toISOString()
-        }, libraryRoot);
-        console.log(`[LL-CLEANUP] Updated project.json with cleanedEpubPath and hasCleaned flag`);
+        const projectName = path.basename(config.projectDir);
+        const projectsDir = path.resolve(config.projectDir, '..');
+        const outputFolder = path.join(projectsDir, projectName, 'output');
+        await fs.mkdir(outputFolder, { recursive: true });
+
+        await fs.copyFile(cleanedEpubPath, path.join(outputFolder, cleanedFilename));
+        const diffCachePath = cleanedEpubPath.replace('.epub', '.diff.json');
+        const diffCacheTarget = cleanedFilename.replace('.epub', '.diff.json');
+        try {
+          await fs.copyFile(diffCachePath, path.join(outputFolder, diffCacheTarget));
+        } catch {
+          // Diff cache may not exist yet if job was interrupted
+        }
+
+        // Copy skipped chunks file if it exists
+        if (allSkippedChunks.length > 0) {
+          const skippedChunksSource = path.join(cleanupStageDir, 'skipped-chunks.json');
+          const skippedChunksTarget = path.join(outputFolder, 'skipped-chunks.json');
+          try {
+            await fs.copyFile(skippedChunksSource, skippedChunksTarget);
+          } catch (err) {
+            console.warn(`[LL-CLEANUP] Failed to copy skipped chunks file:`, err);
+          }
+        }
+
+        console.log(`[LL-CLEANUP] Copied cleaned files to output folder: ${outputFolder}`);
       } catch (err) {
-        console.warn(`[LL-CLEANUP] Failed to update project.json:`, err);
-        // Don't fail the job if project update fails
+        console.warn(`[LL-CLEANUP] Failed to copy to output folder:`, err);
+      }
+    } else {
+      // Check if this is a unified manifest project or language learning article
+      const manifestPath = path.join(config.projectDir, 'manifest.json');
+      try {
+        await fs.access(manifestPath);
+        // This is a unified manifest project - update the manifest
+        const { updateManifest } = await import('./manifest-service.js');
+
+        // Extract project ID from the project directory path
+        const projectId = path.basename(config.projectDir);
+
+        await updateManifest({
+          projectId: projectId,
+          modifiedAt: new Date().toISOString(),
+          pipeline: {
+            cleanup: {
+              status: 'complete',
+              outputPath: path.relative(config.projectDir, cleanedEpubPath),
+              completedAt: new Date().toISOString(),
+              model: config.aiModel
+            }
+          }
+        });
+        console.log(`[LL-CLEANUP] Updated manifest.json with cleanup stage`);
+      } catch (err) {
+        // No manifest - might be a language learning article with project.json
+        try {
+          const projectJsonPath = path.join(config.projectDir, 'project.json');
+          await fs.access(projectJsonPath);
+
+          // Update article project.json
+          const { updateProject } = await import('./web-fetch-bridge.js');
+          const projectPath = path.dirname(config.projectDir);
+          const projectsPath = path.dirname(projectPath);
+          const libraryRoot = path.resolve(projectsPath, '../..');
+          await updateProject(config.projectId, {
+            cleanedEpubPath: cleanedEpubPath,
+            hasCleaned: true,
+            modifiedAt: new Date().toISOString()
+          }, libraryRoot);
+          console.log(`[LL-CLEANUP] Updated project.json with cleanedEpubPath and hasCleaned flag`);
+        } catch (updateErr) {
+          console.log(`[LL-CLEANUP] No manifest.json or project.json found, skipping metadata update`);
+        }
       }
     }
 
@@ -583,7 +694,7 @@ export async function runLLCleanup(
 
 /**
  * Translate cleaned text and generate bilingual EPUB
- * Reads from cleaned.epub, saves to {sourceLang}.epub + {targetLang}.epub
+ * Reads from cleaned/simplified EPUB, saves to {sourceLang}.epub + {targetLang}.epub
  */
 export async function runLLTranslation(
   jobId: string,
@@ -616,13 +727,32 @@ export async function runLLTranslation(
   try {
     // Types for chapter-aware processing
     interface ChapterWithSentences {
-      title: string;
-      sourceSentences: string[];
-      translatedSentences: string[];
+      chapterId: string;      // Actual EPUB chapter ID
+      title: string;          // Chapter title (for TOC/nav)
+      sourceSentences: string[];       // ALL sentences including heading as first item
+      translatedSentences: string[];   // ALL translated sentences, 1:1 with source
+    }
+
+    // Clean up stale outputs from previous runs before starting
+    const staleTranslationDir = path.join(config.projectDir, 'stages', '02-translate');
+    const staleFiles = [
+      path.join(staleTranslationDir, `${config.targetLang}.epub`),
+      path.join(staleTranslationDir, `${config.sourceLang}.epub`),
+      path.join(staleTranslationDir, 'sentences', `${config.targetLang}.json`),
+      path.join(staleTranslationDir, 'sentences', `${config.sourceLang}.json`),
+      path.join(staleTranslationDir, `sentence_pairs_${config.targetLang}.json`),
+    ];
+    for (const filePath of staleFiles) {
+      try {
+        await fs.unlink(filePath);
+        console.log(`[LL-TRANSLATION] Deleted stale output: ${path.basename(filePath)}`);
+      } catch {
+        // File doesn't exist, nothing to delete
+      }
     }
 
     // Check for cached translation first
-    const sentencesCacheDir = path.join(config.projectDir, 'sentences');
+    const sentencesCacheDir = path.join(staleTranslationDir, 'sentences');
     const targetCachePath = path.join(sentencesCacheDir, `${config.targetLang}.json`);
     let chapters: ChapterWithSentences[] = [];
     let pairs: SentencePair[] = [];
@@ -638,6 +768,7 @@ export async function runLLTranslation(
         if (cachedData.chapters?.length > 0) {
           console.log(`[LL-TRANSLATION] Found cached chaptered translation: ${cachedData.chapters.length} chapters`);
           chapters = cachedData.chapters.map((ch: any) => ({
+            chapterId: ch.chapterId || '',
             title: ch.title,
             sourceSentences: ch.sentences.map((s: any) => s.source),
             translatedSentences: ch.sentences.map((s: any) => s.target)
@@ -656,6 +787,7 @@ export async function runLLTranslation(
           console.log(`[LL-TRANSLATION] Found cached flat translation: ${cachedData.sentences.length} pairs`);
           // Convert flat to single chapter
           chapters = [{
+            chapterId: '',
             title: config.title || 'Content',
             sourceSentences: cachedData.sentences.map((s: any) => s.source),
             translatedSentences: cachedData.sentences.map((s: any) => s.target)
@@ -684,15 +816,15 @@ export async function runLLTranslation(
 
     // If no cache, extract chapters and translate
     if (!usedCache) {
-      // Extract chapters from the cleaned EPUB
-      const { extractChaptersFromEpub } = await import('./epub-processor.js');
-      const extractResult = await extractChaptersFromEpub(config.cleanedEpubPath);
+      // Extract chapters from the cleaned EPUB with block-level info (includes h1 headings)
+      const { extractChaptersWithBlocks } = await import('./epub-processor.js');
+      const extractResult = await extractChaptersWithBlocks(config.cleanedEpubPath);
       if (!extractResult.success || !extractResult.chapters) {
         throw new Error(extractResult.error || 'Failed to extract chapters from EPUB');
       }
-      console.log(`[LL-TRANSLATION] Extracted ${extractResult.chapters.length} chapters from EPUB`);
+      console.log(`[LL-TRANSLATION] Extracted ${extractResult.chapters.length} chapters from EPUB (with block info)`);
 
-      // Phase 1: Split each chapter into sentences
+      // Phase 1: Split each chapter's body text into sentences (heading tracked separately)
       const granularity = config.splitGranularity || 'sentence';
       const granularityLabel = granularity === 'paragraph' ? 'paragraphs' : 'sentences';
       sendProgress(mainWindow, jobId, {
@@ -703,61 +835,62 @@ export async function runLLTranslation(
         message: `Splitting ${extractResult.chapters.length} chapters into ${granularityLabel}...`
       });
 
-      // Track chapter boundaries for reconstruction after translation
+      // Flatten all text (including headings) into a flat sentence stream per chapter
+      // Heading text becomes the first sentence — everything is 1:1 between source and target
       interface ChapterBoundary {
-        title: string;
-        startIndex: number;
-        endIndex: number;
+        chapterId: string;
+        title: string;         // For TOC/nav display
+        startIndex: number;    // Start in allSentences
+        endIndex: number;      // End in allSentences
       }
       const chapterBoundaries: ChapterBoundary[] = [];
       const allSentences: string[] = [];
 
       for (const chapter of extractResult.chapters) {
-        let chapterSentences = splitIntoSentences(chapter.text, config.sourceLang, granularity);
+        const chapterSentences: string[] = [];
 
-        // Filter out sentences that are just the chapter title (prevents cascading duplicates)
-        // The title is already shown as h1 in the EPUB, so we don't need it as sentence content
-        const normalizedTitle = chapter.title.replace(/[.!?]+$/, '').toLowerCase().trim();
-        chapterSentences = chapterSentences.filter(s => {
-          const normalizedSentence = s.replace(/[.!?]+$/, '').toLowerCase().trim();
-          return normalizedSentence !== normalizedTitle;
-        });
-
-        if (chapterSentences.length > 0) {
-          chapterBoundaries.push({
-            title: chapter.title,
-            startIndex: allSentences.length,
-            endIndex: allSentences.length + chapterSentences.length
-          });
-          allSentences.push(...chapterSentences);
+        // Heading becomes the first sentence (if present)
+        if (chapter.heading) {
+          chapterSentences.push(chapter.heading);
         }
+
+        // Body text split into remaining sentences
+        const bodySentences = splitIntoSentences(chapter.bodyText, config.sourceLang, granularity);
+        chapterSentences.push(...bodySentences);
+
+        const start = allSentences.length;
+        allSentences.push(...chapterSentences);
+
+        chapterBoundaries.push({
+          chapterId: chapter.chapterId,
+          title: chapter.heading || chapter.chapterId,
+          startIndex: start,
+          endIndex: allSentences.length
+        });
       }
 
       console.log(`[LL-TRANSLATION] Split into ${allSentences.length} ${granularityLabel} across ${chapterBoundaries.length} chapters`);
 
-      // Apply test mode limit if enabled
-      let sentencesToTranslate = allSentences;
-      if (config.testMode && config.testModeChunks && config.testModeChunks > 0) {
-        const limit = config.testModeChunks;
-        sentencesToTranslate = allSentences.slice(0, limit);
-        console.log(`[LL-TRANSLATION] Test mode: limiting to ${limit} sentences (was ${allSentences.length})`);
+      // Phase 2: Translate chapter-by-chapter with incremental flush
+      // Set up for incremental EPUB and sentence cache flush
+      const flushTranslationDir = path.join(config.projectDir, 'stages', '02-translate');
+      await fs.mkdir(flushTranslationDir, { recursive: true });
+      const flushSourceEpubPath = path.join(flushTranslationDir, `${config.sourceLang}.epub`);
+      const flushTargetEpubPath = path.join(flushTranslationDir, `${config.targetLang}.epub`);
+      const flushSentencesDir = path.join(config.projectDir, 'sentences');
+      await fs.mkdir(flushSentencesDir, { recursive: true });
+      const { generateChapteredEpub: flushGenerateEpub } = await import('./bilingual-processor.js');
+      const flushBookTitle = config.title || 'Book';
 
-        // Also adjust chapter boundaries for test mode
-        let remaining = limit;
-        for (const boundary of chapterBoundaries) {
-          const chapterSize = boundary.endIndex - boundary.startIndex;
-          if (remaining <= 0) {
-            boundary.endIndex = boundary.startIndex; // Empty chapter
-          } else if (remaining < chapterSize) {
-            boundary.endIndex = boundary.startIndex + remaining;
-            remaining = 0;
-          } else {
-            remaining -= chapterSize;
-          }
-        }
+      // Test mode: track global sentence limit
+      const totalSentenceLimit = (config.testMode && config.testModeChunks && config.testModeChunks > 0)
+        ? config.testModeChunks : Infinity;
+      let totalSentencesTranslated = 0;
+
+      if (totalSentenceLimit < Infinity) {
+        console.log(`[LL-TRANSLATION] Test mode: will translate up to ${totalSentenceLimit} sentences`);
       }
 
-      // Phase 2: Translate all sentences (batched for efficiency)
       const bilingualConfig: BilingualProcessingConfig = {
         projectId: config.projectId,
         sourceText: '',  // Not used - we pass sentences directly
@@ -771,29 +904,99 @@ export async function runLLTranslation(
         translationPrompt: config.translationPrompt
       };
 
-      pairs = await translateSentences(sentencesToTranslate, bilingualConfig, (progress) => {
-        // Map translation progress to 10-70%
-        const overallPercentage = 10 + Math.round((progress.percentage / 100) * 60);
-        sendProgress(mainWindow, jobId, {
-          phase: 'translating',
-          currentSentence: progress.currentSentence,
-          totalSentences: progress.totalSentences,
-          percentage: overallPercentage,
-          message: `Translating: ${progress.currentSentence}/${progress.totalSentences} sentences`
-        });
-      });
+      const totalSentencesToProcess = Math.min(allSentences.length, totalSentenceLimit);
+      console.log(`[LL-TRANSLATION] Translating ${totalSentencesToProcess} sentences across ${chapterBoundaries.length} chapters`);
 
-      console.log(`[LL-TRANSLATION] Translated ${pairs.length} sentence pairs`);
-
-      // Reconstruct chapter structure from flat pairs
       for (const boundary of chapterBoundaries) {
-        const chapterPairs = pairs.slice(boundary.startIndex, boundary.endIndex);
+        if (totalSentencesTranslated >= totalSentenceLimit) break;
+
+        let chapterSentences = allSentences.slice(boundary.startIndex, boundary.endIndex);
+        if (chapterSentences.length === 0) continue;
+
+        // Apply test mode limit for this chapter
+        const remaining = totalSentenceLimit - totalSentencesTranslated;
+        if (chapterSentences.length > remaining) {
+          chapterSentences = chapterSentences.slice(0, remaining);
+        }
+
+        console.log(`[LL-TRANSLATION] Translating chapter "${boundary.title}": ${chapterSentences.length} sentences`);
+
+        const chapterPairs = await translateSentences(chapterSentences, bilingualConfig, (progress) => {
+          const overallSentences = totalSentencesTranslated + progress.currentSentence;
+          const overallPercentage = 10 + Math.round((overallSentences / totalSentencesToProcess) * 60);
+          sendProgress(mainWindow, jobId, {
+            phase: 'translating',
+            currentSentence: overallSentences,
+            totalSentences: totalSentencesToProcess,
+            percentage: overallPercentage,
+            message: `Translating: ${overallSentences}/${totalSentencesToProcess} sentences (chapter "${boundary.title}")`
+          });
+        });
+
+        totalSentencesTranslated += chapterPairs.length;
+
         chapters.push({
+          chapterId: boundary.chapterId,
           title: boundary.title,
           sourceSentences: chapterPairs.map(p => p.source),
           translatedSentences: chapterPairs.map(p => p.target)
         });
+
+        // Re-index pairs for global sequential ordering
+        const baseIndex = pairs.length;
+        pairs.push(...chapterPairs.map((p, j) => ({ ...p, index: baseIndex + j })));
+
+        // Incremental flush: write EPUBs and sentence caches with all completed chapters
+        const flushChapters = chapters.filter(ch =>
+          ch.sourceSentences.length > 0 && ch.translatedSentences.length > 0
+        );
+        if (flushChapters.length > 0) {
+          // Flush source and target EPUBs
+          const sourceChaptersForFlush = flushChapters.map(ch => ({ title: ch.title, sentences: ch.sourceSentences }));
+          const targetChaptersForFlush = flushChapters.map(ch => ({ title: ch.title, sentences: ch.translatedSentences }));
+          await flushGenerateEpub(sourceChaptersForFlush, flushBookTitle, config.sourceLang, flushSourceEpubPath, { flattenHeadings: true });
+          await flushGenerateEpub(targetChaptersForFlush, `${flushBookTitle} (${config.targetLang.toUpperCase()})`, config.targetLang, flushTargetEpubPath, { flattenHeadings: true });
+
+          // Flush sentence caches
+          const flushTotalSource = flushChapters.reduce((sum, ch) => sum + ch.sourceSentences.length, 0);
+          const flushTotalTarget = flushChapters.reduce((sum, ch) => sum + ch.translatedSentences.length, 0);
+          await fs.writeFile(
+            path.join(flushSentencesDir, `${config.sourceLang}.json`),
+            JSON.stringify({
+              language: config.sourceLang,
+              sourceLanguage: null,
+              createdAt: new Date().toISOString(),
+              sentenceCount: flushTotalSource,
+              chapters: flushChapters.map(ch => ({
+                chapterId: ch.chapterId,
+                title: ch.title,
+                sentences: ch.sourceSentences
+              }))
+            }, null, 2)
+          );
+          await fs.writeFile(
+            path.join(flushSentencesDir, `${config.targetLang}.json`),
+            JSON.stringify({
+              language: config.targetLang,
+              sourceLanguage: config.sourceLang,
+              createdAt: new Date().toISOString(),
+              sentenceCount: flushTotalTarget,
+              chapters: flushChapters.map(ch => ({
+                chapterId: ch.chapterId,
+                title: ch.title,
+                sentences: ch.sourceSentences.map((src, i) => ({
+                  source: src,
+                  target: ch.translatedSentences[i]
+                }))
+              }))
+            }, null, 2)
+          );
+
+          console.log(`[LL-TRANSLATION] Flushed ${flushChapters.length} chapters to EPUBs and sentence caches`);
+        }
       }
+
+      console.log(`[LL-TRANSLATION] Translated ${pairs.length} pairs across ${chapters.length} chapters`);
     }
 
     // Phase 3: Validate sentence alignment (skip if autoApprove is true)
@@ -839,14 +1042,20 @@ export async function runLLTranslation(
       message: `Generating chaptered EPUBs for TTS (${chapters.length} chapters)...`
     });
 
-    // Name EPUBs by language code (e.g., en.epub, de.epub) for clarity with multiple translations
-    const sourceEpubPath = path.join(config.projectDir, `${config.sourceLang}.epub`);
-    const targetEpubPath = path.join(config.projectDir, `${config.targetLang}.epub`);
-    const { generateChapteredEpub } = await import('./bilingual-processor.js');
+    // Name EPUBs by language code (e.g., en.epub, de.epub) in the translation stage directory
+    const translationDir = path.join(config.projectDir, 'stages', '02-translate');
+    await fs.mkdir(translationDir, { recursive: true });
+    const sourceEpubPath = path.join(translationDir, `${config.sourceLang}.epub`);
+    const targetEpubPath = path.join(translationDir, `${config.targetLang}.epub`);
 
     // Prepare chapter data for EPUB generation
     // Filter out empty chapters AND ensure source/target have matching sentence counts per chapter
-    const validChapters: Array<{ title: string; sourceSentences: string[]; targetSentences: string[] }> = [];
+    const validChapters: Array<{
+      chapterId: string;
+      title: string;
+      sourceSentences: string[];
+      targetSentences: string[];
+    }> = [];
 
     for (const ch of chapters) {
       // Filter out undefined/empty sentences from both arrays
@@ -855,12 +1064,12 @@ export async function runLLTranslation(
 
       // Only include chapter if both have sentences AND counts match
       if (sourceSentences.length > 0 && targetSentences.length > 0) {
-        // If counts don't match, truncate to the shorter one (shouldn't happen, but be safe)
         const minLen = Math.min(sourceSentences.length, targetSentences.length);
         if (sourceSentences.length !== targetSentences.length) {
           console.warn(`[LL-TRANSLATION] Chapter "${ch.title}" has mismatched counts: ${sourceSentences.length} source, ${targetSentences.length} target. Truncating to ${minLen}.`);
         }
         validChapters.push({
+          chapterId: ch.chapterId,
           title: ch.title,
           sourceSentences: sourceSentences.slice(0, minLen),
           targetSentences: targetSentences.slice(0, minLen)
@@ -868,19 +1077,9 @@ export async function runLLTranslation(
       }
     }
 
-    const sourceChapters = validChapters.map(ch => ({
-      title: ch.title,
-      sentences: ch.sourceSentences
-    }));
-
-    const targetChapters = validChapters.map(ch => ({
-      title: ch.title, // Use same title as source for consistency
-      sentences: ch.targetSentences
-    }));
-
     // Final validation: total sentence counts must match
-    const totalSourceSentences = sourceChapters.reduce((sum, ch) => sum + ch.sentences.length, 0);
-    const totalTargetSentences = targetChapters.reduce((sum, ch) => sum + ch.sentences.length, 0);
+    const totalSourceSentences = validChapters.reduce((sum, ch) => sum + ch.sourceSentences.length, 0);
+    const totalTargetSentences = validChapters.reduce((sum, ch) => sum + ch.targetSentences.length, 0);
 
     if (totalSourceSentences !== totalTargetSentences) {
       throw new Error(`Source/target sentence count mismatch: ${totalSourceSentences} vs ${totalTargetSentences}`);
@@ -888,25 +1087,37 @@ export async function runLLTranslation(
 
     console.log(`[LL-TRANSLATION] Validated ${validChapters.length} chapters with ${totalSourceSentences} sentences each`);
 
-    // Generate source language EPUB with chapters
+    // Generate new multi-chapter EPUBs with flat sentences (one <p> per sentence, no <h1>)
+    const { generateChapteredEpub } = await import('./bilingual-processor.js');
+    const bookTitle = config.title || 'Book';
+
+    // Source EPUB (e.g., en.epub)
+    const sourceChapters = validChapters.map(ch => ({
+      title: ch.title,
+      sentences: ch.sourceSentences
+    }));
     await generateChapteredEpub(
       sourceChapters,
-      `${config.title || 'Book'} (${config.sourceLang})`,
+      bookTitle,
       config.sourceLang,
       sourceEpubPath,
-      { includeBookforgeMarker: false }
+      { flattenHeadings: true }
     );
 
-    // Generate target language EPUB with chapters
+    // Target EPUB (e.g., de.epub)
+    const targetChapters = validChapters.map(ch => ({
+      title: ch.title,
+      sentences: ch.targetSentences
+    }));
     await generateChapteredEpub(
       targetChapters,
-      `${config.title || 'Book'} (${config.targetLang})`,
+      `${bookTitle} (${config.targetLang.toUpperCase()})`,
       config.targetLang,
       targetEpubPath,
-      { includeBookforgeMarker: false }
+      { flattenHeadings: true }
     );
 
-    console.log(`[LL-TRANSLATION] Generated ${config.sourceLang}.epub and ${config.targetLang}.epub with ${validChapters.length} chapters`);
+    console.log(`[LL-TRANSLATION] Generated ${config.sourceLang}.epub and ${config.targetLang}.epub with ${validChapters.length} chapters, ${totalSourceSentences} sentences each`);
 
     // Save sentence pairs for reference and assembly (flat format using validated data)
     const validatedPairs = validChapters.flatMap(ch =>
@@ -916,20 +1127,21 @@ export async function runLLTranslation(
         target: ch.targetSentences[i]
       }))
     );
-    const pairsPath = path.join(config.projectDir, 'sentence_pairs.json');
+    const pairsPath = path.join(translationDir, `sentence_pairs_${config.targetLang}.json`);
     await fs.writeFile(pairsPath, JSON.stringify(validatedPairs, null, 2));
 
     // Save to sentence cache for reuse (chaptered format)
-    const sentencesDir = path.join(config.projectDir, 'sentences');
+    const sentencesDir = path.join(translationDir, 'sentences');
     await fs.mkdir(sentencesDir, { recursive: true });
 
-    // Save source language cache with validated chapters
+    // Save source language cache
     const sourceCache = {
       language: config.sourceLang,
       sourceLanguage: null,
       createdAt: new Date().toISOString(),
       sentenceCount: totalSourceSentences,
       chapters: validChapters.map(ch => ({
+        chapterId: ch.chapterId,
         title: ch.title,
         sentences: ch.sourceSentences
       }))
@@ -939,13 +1151,14 @@ export async function runLLTranslation(
       JSON.stringify(sourceCache, null, 2)
     );
 
-    // Save target language cache with validated chapters (with source pairs for reference)
+    // Save target language cache (with source pairs for reference)
     const targetCache = {
       language: config.targetLang,
       sourceLanguage: config.sourceLang,
       createdAt: new Date().toISOString(),
       sentenceCount: totalTargetSentences,
       chapters: validChapters.map(ch => ({
+        chapterId: ch.chapterId,
         title: ch.title,
         sentences: ch.sourceSentences.map((src, i) => ({
           source: src,
@@ -1053,8 +1266,21 @@ export async function runMonoTranslation(
     return { success: false, error: 'No input EPUB path provided' };
   }
 
-  // Output path: same directory as input, with _translated suffix
-  const outputEpubPath = inputEpubPath.replace('.epub', '_translated.epub');
+  // Determine project dir from the input path (walk up from source/ or stages/01-cleanup/)
+  let projectDir = '';
+  const inputDir = path.dirname(inputEpubPath);
+  if (inputDir.includes(path.join('stages', '01-cleanup'))) {
+    projectDir = path.resolve(inputDir, '..', '..');
+  } else if (inputDir.endsWith('source') || inputDir.includes(path.join('source'))) {
+    projectDir = path.dirname(inputDir);
+  } else {
+    projectDir = inputDir;
+  }
+
+  // Output path: stages/02-translate/translated.epub
+  const translateDir = path.join(projectDir, 'stages', '02-translate');
+  await fs.mkdir(translateDir, { recursive: true });
+  const outputEpubPath = path.join(translateDir, 'translated.epub');
 
   try {
     // Extract chapters from the input EPUB

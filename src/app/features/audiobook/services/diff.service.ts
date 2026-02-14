@@ -43,21 +43,15 @@ export class DiffService {
   private errorSubject = new BehaviorSubject<string | null>(null);
   private loadingProgressSubject = new BehaviorSubject<DiffLoadingProgress | null>(null);
   private chapterLoadingSubject = new BehaviorSubject<boolean>(false);
-  private backgroundLoadingSubject = new BehaviorSubject<boolean>(false);
 
   session$ = this.sessionSubject.asObservable();
   loading$ = this.loadingSubject.asObservable();
   error$ = this.errorSubject.asObservable();
   loadingProgress$ = this.loadingProgressSubject.asObservable();
   chapterLoading$ = this.chapterLoadingSubject.asObservable();
-  backgroundLoading$ = this.backgroundLoadingSubject.asObservable();
 
   // Track which chapters are cached in memory (LRU order)
   private cachedChapterIds: string[] = [];
-
-  // Background loading state
-  private backgroundLoadingAborted = false;
-  private backgroundLoadingPromise: Promise<void> | null = null;
 
   // Streaming diff state (per-chapter incremental computation)
   private streamingAborted = false;
@@ -169,7 +163,7 @@ export class DiffService {
   /**
    * Load comparison metadata only (no text content).
    * This is memory-efficient and won't cause OOM on large EPUBs.
-   * After loading, starts background loading of all chapters.
+   * Chapters are loaded lazily when the user navigates to them.
    */
   async loadComparison(originalPath: string, cleanedPath: string): Promise<boolean> {
     console.log('[DiffService] loadComparison called:', originalPath.slice(-40));
@@ -177,13 +171,6 @@ export class DiffService {
     // Reset all streaming flags (may have been set by previous stopStreaming)
     this.emissionsBlocked = false;
     this.streamingAborted = false;  // CRITICAL: Reset this or computeDiff returns empty!
-
-    // Abort any in-progress background loading
-    this.backgroundLoadingAborted = true;
-    if (this.backgroundLoadingPromise) {
-      await this.backgroundLoadingPromise.catch(() => {});
-    }
-    this.backgroundLoadingAborted = false;
 
     this.loadingSubject.next(true);
     this.errorSubject.next(null);
@@ -292,9 +279,6 @@ export class DiffService {
       console.log('[DiffService] Loading first chapter from cache:', chaptersMeta[0].id);
       const chapter = await this.loadChapter(chaptersMeta[0].id);
       console.log('[DiffService] First chapter loaded:', chapter ? 'success' : 'failed');
-
-      // Start background loading of remaining chapters
-      this.startBackgroundLoading();
     }
 
     return true;
@@ -354,14 +338,11 @@ export class DiffService {
       this.loadingSubject.next(false);
       this.loadingProgressSubject.next(null);
 
-      // Auto-load the first chapter, then start background loading
+      // Auto-load the first chapter
       if (chaptersMeta.length > 0) {
         console.log('[DiffService] Auto-loading first chapter:', chaptersMeta[0].id);
         const chapter = await this.loadChapter(chaptersMeta[0].id);
         console.log('[DiffService] First chapter loaded:', chapter ? 'success' : 'failed');
-
-        // Start background loading of all chapters
-        this.startBackgroundLoading();
       }
 
       return true;
@@ -369,175 +350,6 @@ export class DiffService {
       this.errorSubject.next((err as Error).message);
       this.loadingSubject.next(false);
       this.loadingProgressSubject.next(null);
-      return false;
-    }
-  }
-
-  /**
-   * Start background loading of all chapters.
-   * Loads current chapter fully, then moves to next chapters.
-   */
-  private startBackgroundLoading(): void {
-    this.backgroundLoadingPromise = this.backgroundLoadAll();
-  }
-
-  /**
-   * Background loading loop - loads all chapters progressively.
-   */
-  private async backgroundLoadAll(): Promise<void> {
-    const session = this.sessionSubject.getValue();
-    if (!session) return;
-
-    this.backgroundLoadingSubject.next(true);
-    console.log('[DiffService] Starting background loading for', session.chaptersMeta.length, 'chapters');
-
-    try {
-      // First, fully load the current chapter
-      await this.backgroundLoadChapterFully(session.currentChapterId);
-
-      // Then load remaining chapters in order
-      for (const meta of session.chaptersMeta) {
-        if (this.backgroundLoadingAborted) {
-          console.log('[DiffService] Background loading aborted');
-          break;
-        }
-
-        // Skip if already fully loaded
-        const chapter = session.chapters.find(c => c.id === meta.id);
-        if (chapter && chapter.loadedChars >= chapter.totalChars) {
-          continue;
-        }
-
-        await this.backgroundLoadChapterFully(meta.id);
-      }
-
-      console.log('[DiffService] Background loading complete');
-    } catch (err) {
-      console.error('[DiffService] Background loading error:', err);
-    } finally {
-      this.backgroundLoadingSubject.next(false);
-      this.backgroundLoadingPromise = null;
-    }
-  }
-
-  /**
-   * Load a chapter fully in the background (all chunks).
-   */
-  private async backgroundLoadChapterFully(chapterId: string): Promise<void> {
-    // Re-fetch session at the START to get the most current state
-    // (not from a captured variable that might be stale)
-    let session = this.sessionSubject.getValue();
-    if (!session || this.backgroundLoadingAborted) return;
-
-    // Load initial chunk if not loaded
-    let chapter: DiffChapter | undefined = session.chapters.find(c => c.id === chapterId);
-    if (!chapter) {
-      // Try to load from cache first
-      const cached = await this.loadFromCache(session.originalPath, session.cleanedPath, chapterId);
-      if (cached && cached.fullyLoaded) {
-        // Full cache hit - add directly to session
-        await this.addCachedChapterToSession(chapterId, cached);
-        return;
-      }
-
-      // Load chapter text
-      const loaded = await this.loadChapter(chapterId);
-      if (!loaded) return;
-      chapter = loaded;
-
-      // Re-fetch session since loadChapter may have updated it
-      session = this.sessionSubject.getValue();
-      if (!session) return;
-    }
-
-    // Continue loading remaining chunks
-    while (chapter && chapter.loadedChars < chapter.totalChars && !this.backgroundLoadingAborted) {
-      await this.loadMoreBackground(chapterId);
-
-      // Re-fetch chapter from session (it may have been updated)
-      const updatedSession = this.sessionSubject.getValue();
-      chapter = updatedSession?.chapters.find(c => c.id === chapterId);
-
-      // Small yield to keep UI responsive
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
-
-    // Save fully loaded chapter to cache
-    if (chapter && chapter.loadedChars >= chapter.totalChars) {
-      await this.saveToCache(session.originalPath, session.cleanedPath, chapterId, {
-        diffWords: chapter.diffWords,
-        changeCount: chapter.changeCount,
-        loadedChars: chapter.loadedChars,
-        totalChars: chapter.totalChars,
-        fullyLoaded: true
-      });
-    }
-  }
-
-  /**
-   * Load more content in background (doesn't set chapterLoadingSubject).
-   */
-  private async loadMoreBackground(chapterId: string): Promise<boolean> {
-    const session = this.sessionSubject.getValue();
-    if (!session) return false;
-
-    const chapter = session.chapters.find(c => c.id === chapterId);
-    if (!chapter) return false;
-
-    if (chapter.loadedChars >= chapter.totalChars) {
-      return false;
-    }
-
-    try {
-      const newLoadedChars = Math.min(
-        chapter.loadedChars + DIFF_LOAD_MORE_SIZE,
-        chapter.totalChars
-      );
-
-      // Recompute diff for the extended range
-      const truncatedOriginal = chapter.originalText.slice(0, newLoadedChars);
-      const truncatedCleaned = chapter.cleanedText.slice(0, newLoadedChars);
-      const diffWords = await this.computeDiff(truncatedOriginal, truncatedCleaned);
-
-      // CRITICAL: Never update with empty diffWords - this would corrupt the session
-      // This can happen if streaming was aborted or there was a computation error
-      if (diffWords.length === 0) {
-        console.log('[DiffService] loadMoreBackground: empty diff result, skipping update');
-        return false;
-      }
-
-      const changeCount = countChanges(diffWords);
-
-      // Update chapter
-      const updatedChapter: DiffChapter = {
-        ...chapter,
-        diffWords,
-        changeCount,
-        loadedChars: newLoadedChars
-      };
-
-      // Update session without triggering full reload
-      const currentSession = this.sessionSubject.getValue();
-      if (!currentSession) return false;
-
-      const updatedChapters = currentSession.chapters.map(c =>
-        c.id === chapter.id ? updatedChapter : c
-      );
-
-      // Update metadata change count
-      const meta = currentSession.chaptersMeta.find(m => m.id === chapter.id);
-      if (meta) {
-        meta.changeCount = changeCount;
-      }
-
-      this.sessionSubject.next({
-        ...currentSession,
-        chapters: updatedChapters
-      });
-
-      return true;
-    } catch (err) {
-      console.error('[DiffService] loadMoreBackground error:', err);
       return false;
     }
   }
@@ -991,50 +803,6 @@ export class DiffService {
     }
   }
 
-  /**
-   * Add a fully cached chapter to session (when we have complete cache).
-   */
-  private async addCachedChapterToSession(chapterId: string, cached: CachedChapterData): Promise<void> {
-    const session = this.sessionSubject.getValue();
-    if (!session) return;
-
-    const meta = session.chaptersMeta.find(m => m.id === chapterId);
-    if (!meta) return;
-
-    // Still need text for potential edits
-    const result = await this.electronService.getDiffChapter(
-      session.originalPath,
-      session.cleanedPath,
-      chapterId
-    );
-
-    if (!result.success) return;
-
-    const chapter: DiffChapter = {
-      id: chapterId,
-      title: meta.title,
-      originalText: result.originalText || '',
-      cleanedText: result.cleanedText || '',
-      diffWords: cached.diffWords,
-      changeCount: cached.changeCount,
-      loadedChars: cached.loadedChars,
-      totalChars: cached.totalChars
-    };
-
-    meta.isLoaded = true;
-    meta.changeCount = cached.changeCount;
-
-    const currentSession = this.sessionSubject.getValue();
-    if (currentSession) {
-      this.evictOldestIfNeeded(currentSession);
-      this.sessionSubject.next({
-        ...currentSession,
-        chapters: [...currentSession.chapters, chapter]
-      });
-      this.cachedChapterIds.push(chapterId);
-    }
-  }
-
   // ─────────────────────────────────────────────────────────────────────────────
   // Cache Operations
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1344,7 +1112,6 @@ export class DiffService {
   }
 
   clearSession(): void {
-    this.backgroundLoadingAborted = true;
     this.streamingAborted = true;
     this.streamingChapterId = null;
     this.sessionSubject.next(null);

@@ -4,7 +4,7 @@
  * Types for managing different versions of a project's source documents.
  * Books can have multiple versions at different stages of the pipeline:
  * - Original source (PDF/EPUB)
- * - Exported/Finalized EPUB
+ * - Exported EPUB (from PDF picker editor)
  * - Cleaned EPUB (after AI cleanup)
  * - Translated EPUBs (per language)
  */
@@ -14,7 +14,7 @@
  */
 export type ProjectVersionType =
   | 'original'      // Original PDF/EPUB source file
-  | 'finalized'     // Exported EPUB from editor (with all edits)
+  | 'exported'      // Exported EPUB from editor (with all edits)
   | 'cleaned'       // After AI cleanup
   | 'translated';   // After translation to another language
 

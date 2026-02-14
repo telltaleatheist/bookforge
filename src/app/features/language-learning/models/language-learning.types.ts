@@ -233,7 +233,7 @@ export interface EpubResolutionContext {
 
 export interface ResolvedEpub {
   path: string;                 // Resolved file path
-  source: 'language' | 'cleaned' | 'finalized' | 'original' | 'fallback';
+  source: 'language' | 'simplified' | 'cleaned' | 'exported' | 'original' | 'fallback';
   exists: boolean;              // Whether file exists on disk
   sentenceCount?: number;       // Expected sentence count (if known)
 }

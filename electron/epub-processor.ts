@@ -2284,25 +2284,75 @@ export function extractBlockTexts(xhtml: string): string[] {
 }
 
 /**
+ * Extract text from each block element in XHTML using cheerio,
+ * also returning the tag name per block.
+ */
+export function extractBlockTextsWithTags(xhtml: string): Array<{ text: string; tagName: string }> {
+  const $ = cheerio.load(xhtml, { xmlMode: true });
+  const blocks: Array<{ text: string; tagName: string }> = [];
+  $(BLOCK_SELECTORS).each((_, el) => {
+    const text = $(el).text().trim();
+    if (text.length > 0) {
+      blocks.push({ text, tagName: (el as any).tagName?.toLowerCase() || 'p' });
+    }
+  });
+  return blocks;
+}
+
+/**
  * Replace text in each block element in XHTML using cheerio.
  * Takes cleaned texts in the same order as extractBlockTexts returned them.
  * Returns the modified XHTML.
  */
-export function replaceBlockTexts(xhtml: string, cleanedTexts: string[]): string {
+export function replaceBlockTexts(xhtml: string, cleanedTexts: string[], options?: { skipHeadings?: boolean }): string {
   const $ = cheerio.load(xhtml, { xmlMode: true });
   let textIndex = 0;
+  const skipH1 = options?.skipHeadings ?? false;
 
   $(BLOCK_SELECTORS).each((_, el) => {
     // Only replace elements that had text (matching extractBlockTexts logic)
     const originalText = $(el).text().trim();
     if (originalText.length > 0) {
+      // Skip h1 headings if requested (cleanup: headings pass through untouched)
+      const tagName = (el as any).tagName?.toLowerCase();
+      if (skipH1 && tagName === 'h1') {
+        return; // Leave h1 unchanged
+      }
       if (textIndex < cleanedTexts.length) {
         // Sanitize: strip any [[BLOCK]] markers that might have slipped into the text
         // These are internal processing markers and should NEVER appear in final output
         let cleanedText = cleanedTexts[textIndex].replace(/\[\[BLOCK\]\]/g, '');
+        textIndex++;
+
+        // If there are more cleaned text entries than remaining block elements,
+        // join the overflow into this block. This prevents text loss when the AI
+        // introduces paragraph breaks (double newlines) that produce more split
+        // entries than there are block elements in the original XHTML.
+        // Count how many non-skipped text blocks come AFTER this one
+        let blocksAfter = 0;
+        let pastCurrent = false;
+        $(BLOCK_SELECTORS).each((_, candidate) => {
+          if (candidate === el) { pastCurrent = true; return; }
+          if (!pastCurrent) return;
+          const candidateText = $(candidate).text().trim();
+          if (candidateText.length === 0) return;
+          const candidateTag = (candidate as any).tagName?.toLowerCase();
+          if (skipH1 && candidateTag === 'h1') return;
+          blocksAfter++;
+        });
+
+        const remainingTexts = cleanedTexts.length - textIndex;
+        if (remainingTexts > 0 && remainingTexts > blocksAfter) {
+          // More texts than remaining blocks — absorb overflow into this element
+          const overflow = remainingTexts - blocksAfter;
+          for (let j = 0; j < overflow; j++) {
+            cleanedText += '\n\n' + cleanedTexts[textIndex].replace(/\[\[BLOCK\]\]/g, '');
+            textIndex++;
+          }
+        }
+
         // Replace the element's text content
         $(el).text(cleanedText);
-        textIndex++;
       }
     }
   });
@@ -2611,6 +2661,195 @@ export async function extractChaptersFromEpub(
 }
 
 /**
+ * Chapter data with block-level text and tag info.
+ * Provides heading separately from body text for proper h1/p handling.
+ */
+export interface ChapterBlockData {
+  chapterId: string;
+  filePath: string;       // path within ZIP
+  heading: string | null; // h1 text if present
+  bodyText: string;       // non-h1 block texts joined by \n\n
+  allBlocks: Array<{ text: string; tagName: string }>;
+}
+
+/**
+ * Extract chapters with block-level text and tag info.
+ * Unlike extractChaptersFromEpub which strips h1 (via extractTextFromXhtml),
+ * this preserves heading info and returns all block elements with their tags.
+ */
+export async function extractChaptersWithBlocks(
+  epubPath: string
+): Promise<{ success: boolean; chapters?: ChapterBlockData[]; error?: string }> {
+  const processor = new EpubProcessor();
+  try {
+    console.log(`[EPUB] extractChaptersWithBlocks: parsing ${epubPath}`);
+    const structure = await processor.open(epubPath);
+
+    const chapters = structure.chapters;
+    if (!chapters || chapters.length === 0) {
+      processor.close();
+      return { success: false, error: 'No chapters found in EPUB' };
+    }
+
+    const result: ChapterBlockData[] = [];
+    for (const chapter of chapters) {
+      try {
+        const href = (processor as any).resolvePath(chapter.href);
+        const xhtml = await processor.readFile(href);
+        const blocks = extractBlockTextsWithTags(xhtml);
+
+        if (blocks.length === 0) continue;
+
+        // First h1 block is the heading, rest are body
+        const headingBlock = blocks.find(b => b.tagName === 'h1');
+        const bodyBlocks = blocks.filter(b => b.tagName !== 'h1');
+
+        result.push({
+          chapterId: chapter.id,
+          filePath: href,
+          heading: headingBlock?.text || null,
+          bodyText: bodyBlocks.map(b => b.text).join('\n\n'),
+          allBlocks: blocks
+        });
+      } catch (err) {
+        console.warn(`[EPUB] Failed to extract chapter ${chapter.id}: ${(err as Error).message}`);
+      }
+    }
+
+    processor.close();
+    console.log(`[EPUB] Extracted ${result.length} chapters with block info`);
+
+    if (result.length === 0) {
+      return { success: false, error: 'No text content found in EPUB' };
+    }
+
+    return { success: true, chapters: result };
+  } catch (err) {
+    processor.close();
+    console.error(`[EPUB] extractChaptersWithBlocks error:`, err);
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+/**
+ * Copy an EPUB and replace the body content of specified chapter files.
+ * For translation: rebuilds body as h1 heading + one <p> per sentence.
+ * Preserves everything else: CSS, images, fonts, nav, metadata, non-chapter files.
+ */
+export async function copyEpubReplaceBodies(
+  inputPath: string,
+  outputPath: string,
+  chapterReplacements: Array<{
+    chapterId: string;
+    heading: string | null;
+    sentences: string[];
+    lang: string;
+  }>,
+  globalSentenceStartIndex: number = 0
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const processor = new EpubProcessor();
+    const structure = await processor.open(inputPath);
+
+    // Build map of chapter ID → file path within ZIP
+    const chapterPathMap = new Map<string, string>();
+    for (const chapter of structure.chapters) {
+      const href = (processor as any).resolvePath(chapter.href);
+      chapterPathMap.set(chapter.id, href);
+    }
+
+    // Build replacement lookup by file path
+    const replacementByPath = new Map<string, typeof chapterReplacements[0]>();
+    for (const r of chapterReplacements) {
+      const filePath = chapterPathMap.get(r.chapterId);
+      if (filePath) {
+        replacementByPath.set(filePath, r);
+      }
+    }
+
+    // Read all files from source, modify chapter bodies
+    const zipReader = new ZipReader(inputPath);
+    await zipReader.open();
+    const files = zipReader.getEntries();
+    const zipWriter = new ZipWriter();
+
+    let sentenceIndex = globalSentenceStartIndex;
+
+    for (const file of files) {
+      const replacement = replacementByPath.get(file);
+
+      if (replacement) {
+        // Read original xhtml to preserve head/structure
+        const originalBuffer = await zipReader.readEntry(file);
+        const originalXhtml = originalBuffer.toString('utf8');
+
+        // Build new body content
+        const $ = cheerio.load(originalXhtml, { xmlMode: true });
+        const body = $('body');
+        if (body.length === 0) {
+          // No body tag — just copy as-is
+          zipWriter.addFile(file, originalBuffer);
+          continue;
+        }
+
+        // Clear body and rebuild
+        body.empty();
+
+        // Add heading if present
+        if (replacement.heading) {
+          body.append(`<h1>${escapeXmlText(replacement.heading)}</h1>\n`);
+        }
+
+        // Add one <p> per sentence with global sentence index
+        for (const sentence of replacement.sentences) {
+          body.append(`<p id="s${sentenceIndex}">${escapeXmlText(sentence)}</p>\n`);
+          sentenceIndex++;
+        }
+
+        // Update lang attribute if present
+        if (replacement.lang) {
+          $('html').attr('xml:lang', replacement.lang);
+          $('html').attr('lang', replacement.lang);
+        }
+
+        const newXhtml = $.xml();
+        zipWriter.addFile(file, Buffer.from(newXhtml, 'utf8'));
+      } else {
+        // Copy file as-is
+        const content = await zipReader.readEntry(file);
+        zipWriter.addFile(file, content);
+      }
+    }
+
+    zipReader.close();
+    processor.close();
+
+    // Write the new EPUB
+    const tempPath = outputPath + '.tmp';
+    await zipWriter.write(tempPath);
+    await fs.rename(tempPath, outputPath);
+
+    return { success: true };
+  } catch (error) {
+    console.error('[EPUB] copyEpubReplaceBodies error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  }
+}
+
+// Helper to escape XML text content
+function escapeXmlText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
  * Replace text in multiple chapters of an EPUB while preserving structure.
  * This function duplicates the EPUB if outputPath differs from inputPath,
  * then replaces text content in specified chapters.
@@ -2633,92 +2872,6 @@ export async function replaceChapterTextsInEpub(
     const processor = new EpubProcessor();
     const structure = await processor.open(outputPath);
 
-    // Helper to escape XML special characters
-    function escapeXml(text: string): string {
-      return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&apos;');
-    }
-
-    // Helper to rebuild XHTML with new paragraphs
-    function rebuildChapterXhtml(originalXhtml: string, newText: string): string {
-      // Find the body content
-      const bodyMatch = originalXhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-      if (!bodyMatch) {
-        throw new Error('Could not find body tag in chapter XHTML');
-      }
-
-      const bodyContent = bodyMatch[1];
-
-      // Split new text into paragraphs (on double newlines)
-      const newParagraphs = newText.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 0);
-
-      // Find all block elements with text content in the original
-      const blockPattern = /<(p|h[1-6]|li|blockquote|figcaption|div)([^>]*)>([\s\S]*?)<\/\1>/gi;
-      const blockMatches: Array<{ tag: string; attrs: string; index: number; length: number }> = [];
-      let match;
-
-      while ((match = blockPattern.exec(bodyContent)) !== null) {
-        // Check if this block has actual text content
-        const textContent = match[3]
-          .replace(/<[^>]+>/g, '')
-          .replace(/&[^;]+;/g, ' ')
-          .trim();
-
-        if (textContent.length > 0 && match[1].toLowerCase() !== 'h1') {  // Skip h1 (chapter titles)
-          blockMatches.push({
-            tag: match[1],
-            attrs: match[2] || '',
-            index: match.index,
-            length: match[0].length
-          });
-        }
-      }
-
-      // Build new body content
-      let newBodyContent = '';
-
-      // If we have matching block structure, reuse the tags
-      if (blockMatches.length > 0 && newParagraphs.length > 0) {
-        let lastIndex = 0;
-        let paragraphIndex = 0;
-
-        for (const block of blockMatches) {
-          // Add content before this block
-          newBodyContent += bodyContent.substring(lastIndex, block.index);
-
-          // Add the new paragraph with the same tag structure
-          if (paragraphIndex < newParagraphs.length) {
-            newBodyContent += `<${block.tag}${block.attrs}>${escapeXml(newParagraphs[paragraphIndex])}</${block.tag}>`;
-            paragraphIndex++;
-          }
-
-          lastIndex = block.index + block.length;
-        }
-
-        // Add any remaining content after the last block
-        newBodyContent += bodyContent.substring(lastIndex);
-
-        // If we have more paragraphs than blocks, add them as <p> tags
-        while (paragraphIndex < newParagraphs.length) {
-          newBodyContent += `\n    <p>${escapeXml(newParagraphs[paragraphIndex])}</p>`;
-          paragraphIndex++;
-        }
-      } else {
-        // No blocks found or no new content, create simple paragraph structure
-        newBodyContent = newParagraphs.map(p => `    <p>${escapeXml(p)}</p>`).join('\n');
-      }
-
-      // Rebuild the complete XHTML
-      return originalXhtml.replace(
-        /<body[^>]*>[\s\S]*<\/body>/i,
-        `<body>\n${newBodyContent}\n  </body>`
-      );
-    }
-
     // Process each chapter replacement
     const zipWriter = new ZipWriter();
     const tempOutputPath = outputPath + '.tmp';
@@ -2731,7 +2884,7 @@ export async function replaceChapterTextsInEpub(
     // Create a map of chapter IDs to their file paths
     const chapterPathMap = new Map<string, string>();
     for (const chapter of structure.chapters) {
-      const href = (processor as any).resolvePath(chapter.href);  // Access private method
+      const href = (processor as any).resolvePath(chapter.href);
       chapterPathMap.set(chapter.id, href);
     }
 
@@ -2743,10 +2896,15 @@ export async function replaceChapterTextsInEpub(
       );
 
       if (replacement) {
-        // This is a chapter that needs replacement
+        // This is a chapter that needs replacement — use cheerio-based replaceBlockTexts
         const originalBuffer = await zipReader.readEntry(file);
         const originalContent = originalBuffer.toString('utf8');
-        const newContent = rebuildChapterXhtml(originalContent, replacement.newText);
+
+        // Split new text into paragraphs (on double newlines)
+        const splitTexts = replacement.newText.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 0);
+
+        // Skip h1 headings — cleanup sends only body text, headings pass through untouched
+        const newContent = replaceBlockTexts(originalContent, splitTexts, { skipHeadings: true });
         zipWriter.addFile(file, Buffer.from(newContent, 'utf8'));
       } else {
         // Copy file as-is

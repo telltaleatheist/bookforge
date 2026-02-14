@@ -136,6 +136,7 @@ export interface ManifestOutputs {
 export interface AudiobookOutput {
   path: string;
   vttPath?: string;
+  sentencePairsPath?: string;
   duration?: number;
   completedAt?: string;
 }

@@ -2139,18 +2139,16 @@ export class PdfPickerComponent implements OnInit {
     if (this.embedded() && this.bfpPath()) {
       // Embedded mode - load the specified project
       const filePath = this.bfpPath();
-      const lowerPath = filePath.toLowerCase();
 
-      // Determine how to load based on file extension
-      if (lowerPath.endsWith('.bfp')) {
-        // BFP project file - load as existing project
-        setTimeout(() => this.loadProjectFromPath(filePath), 0);
-      } else {
-        // Any other file type (EPUB, PDF, etc.) - import to library and load
-        // Do NOT set sourceFilePath - we never want to modify the original file
-        // All changes go through the BFP project flow
-        setTimeout(() => this.loadPdf(filePath), 0);
-      }
+      // Determine how to load based on path type
+      setTimeout(async () => {
+        const manifestExists = await this.electronService.fsExists(filePath + '/manifest.json');
+        if (manifestExists) {
+          this.loadProjectFromPath(filePath);
+        } else {
+          this.loadPdf(filePath);
+        }
+      }, 0);
     } else if (!this.embedded()) {
       // Non-embedded mode - restore open tabs from localStorage
       // This must be in ngOnInit to ensure embedded() input is properly bound
@@ -5832,7 +5830,7 @@ export class PdfPickerComponent implements OnInit {
       // Determine if we're loading the original source or a derived version (exported/cleaned)
       // Derived versions have deletions baked in, so we shouldn't load deletion state for them
       // Original = library_path or resolved from source_path
-      // Derived = exported.epub, cleaned.epub, or any file in the audiobook folder
+      // Derived = exported.epub, cleaned.epub, simplified.epub, or any file in the audiobook folder
       const resolvedOriginalPath = project.library_path || project.source_path;
       const isLoadingOriginal = !usingExportedEpub && (
         !this.overrideSourcePath() ||  // No override = loading original

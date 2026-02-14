@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
-import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath } from './e2a-paths';
+import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, shellEscapeArgs } from './e2a-paths';
 import { getAudiobookDirFromBfp } from './parallel-tts-bridge';
 import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
@@ -80,7 +80,7 @@ interface BfpMetadata {
 
 /**
  * Get BFP metadata from source_epub_path
- * The session's source_epub_path points directly to the BFP folder (e.g., .../audiobooks/Book_Name/cleaned.epub)
+ * The session's source_epub_path points directly to the project output folder (e.g., .../projects/Book_Name/output/cleaned.epub)
  * Metadata comes from project.json - if it doesn't exist, there's no BFP metadata
  */
 function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined): BfpMetadata | null {
@@ -96,7 +96,7 @@ function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined): BfpMe
     }
   }
 
-  // Get the BFP folder (parent of cleaned.epub or exported.epub)
+  // Get the BFP folder (parent of cleaned.epub, simplified.epub, or exported.epub)
   const bfpFolder = path.dirname(windowsPath);
   if (!fs.existsSync(bfpFolder)) return null;
 
@@ -270,16 +270,16 @@ export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: str
     }
   }
 
-  // Scan BFP audiobook folders for cached sessions
+  // Scan project folders for cached sessions (in projects/{name}/output/session/)
   if (libraryPath) {
-    const audiobooksDir = path.join(libraryPath, 'audiobooks');
+    const projectsDir = path.join(libraryPath, 'projects');
     try {
-      if (fs.existsSync(audiobooksDir)) {
-        const projectDirs = fs.readdirSync(audiobooksDir, { withFileTypes: true });
+      if (fs.existsSync(projectsDir)) {
+        const projectDirs = fs.readdirSync(projectsDir, { withFileTypes: true });
         for (const projectEntry of projectDirs) {
           if (!projectEntry.isDirectory()) continue;
 
-          const sessionBaseDir = path.join(audiobooksDir, projectEntry.name, 'session');
+          const sessionBaseDir = path.join(projectsDir, projectEntry.name, 'output', 'session');
           if (!fs.existsSync(sessionBaseDir)) continue;
 
           // Look for ebook-* directories inside session/
@@ -961,7 +961,7 @@ export async function startReassembly(
       const condaArgs = [...getCondaRunArgs(e2aPath), ...appArgs];
       console.log('[REASSEMBLY] Running command: conda', condaArgs.join(' '));
 
-      proc = spawn(getCondaPath(), condaArgs, {
+      proc = spawn(getCondaPath(), shellEscapeArgs(condaArgs), {
         cwd: e2aPath,
         env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
         shell: true

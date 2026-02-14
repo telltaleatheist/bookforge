@@ -1227,7 +1227,7 @@ export class SessionDetailComponent {
     let outputDir = '';
     if (session.bfpPath) {
       // Extract the BFP folder from the project.json path
-      // bfpPath is like: /path/to/audiobooks/Book_Name/project.json
+      // bfpPath is like: /path/to/projects/Book_Name/output/project.json
       const bfpFolder = session.bfpPath.replace(/[/\\]project\.json$/i, '');
       outputDir = bfpFolder;
       console.log('[REASSEMBLY] Using BFP folder as output:', outputDir);

@@ -30,7 +30,7 @@ export interface QueueItem {
   bfpPath?: string;  // Path to the source BFP project (unified system)
   audiobookFolder?: string;  // Folder containing audiobook files (unified system)
   hasCleaned?: boolean;
-  cleanedFilename?: string;  // Filename of cleaned epub (may be 'exported_cleaned.epub' or 'cleaned.epub')
+  cleanedFilename?: string;  // Filename of cleaned/simplified epub (simplified.epub, cleaned.epub, or legacy exported_cleaned.epub)
   hasAudiobook?: boolean;  // True if completed audiobook exists for this book
   linkedAudioPath?: string;  // Manually linked audio file path (when auto-detection fails)
   linkedAudioPathValid?: boolean;  // True if linkedAudioPath exists on current system (for cross-platform)

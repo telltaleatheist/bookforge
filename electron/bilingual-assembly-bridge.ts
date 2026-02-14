@@ -59,29 +59,20 @@ async function copyToFinalDestination(
   const tempM4bPath = path.join(tempDir, m4bFile);
   const tempVttPath = vttFile ? path.join(tempDir, vttFile) : undefined;
 
-  // Derive audiobook output dir from bfpPath
-  // BFP files: E:\Shared\BookForge\projects\occult_test.bfp → E:\Shared\BookForge\audiobooks\occult_test\
-  // Project dirs (articles): .../language-learning/projects/myproject/ → myproject/audiobook/
-  let bfpAudiobookDir: string;
-  if (bfpPath.endsWith('.bfp')) {
-    const libraryRoot = path.dirname(path.dirname(bfpPath));
-    const projectName = path.basename(bfpPath, '.bfp');
-    bfpAudiobookDir = path.join(libraryRoot, 'audiobooks', projectName);
-  } else {
-    bfpAudiobookDir = path.join(bfpPath, 'audiobook');
-  }
-  await fs.mkdir(bfpAudiobookDir, { recursive: true });
+  // Derive output dir from project path
+  const outputDir = path.join(bfpPath, 'output');
+  await fs.mkdir(outputDir, { recursive: true });
 
-  // Copy to BFP audiobook folder
-  const finalAudioPath = path.join(bfpAudiobookDir, 'output.m4b');
+  // Copy to project output folder with canonical naming
+  const finalAudioPath = path.join(outputDir, 'audiobook.m4b');
   await fs.copyFile(tempM4bPath, finalAudioPath);
-  console.log(`[BILINGUAL-ASSEMBLY] Copied m4b to BFP: ${finalAudioPath}`);
+  console.log(`[BILINGUAL-ASSEMBLY] Copied m4b: ${finalAudioPath}`);
 
   let finalVttPath: string | undefined;
   if (tempVttPath) {
-    finalVttPath = path.join(bfpAudiobookDir, 'subtitles.vtt');
+    finalVttPath = path.join(outputDir, 'audiobook.vtt');
     await fs.copyFile(tempVttPath, finalVttPath);
-    console.log(`[BILINGUAL-ASSEMBLY] Copied vtt to BFP: ${finalVttPath}`);
+    console.log(`[BILINGUAL-ASSEMBLY] Copied vtt: ${finalVttPath}`);
   }
 
   // Clean up temp folder

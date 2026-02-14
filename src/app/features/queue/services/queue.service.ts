@@ -1096,38 +1096,52 @@ export class QueueService {
             }
           });
         }
-      } else if (bilingualWorkflow.role === 'target') {
-        // Target TTS complete - chain bilingual assembly
-        console.log('[QUEUE] Bilingual target TTS complete, chaining assembly');
-        const targetSentencesDir = result.outputPath || '';
-        const sourceSentencesDir = bilingualWorkflow.sourceSentencesDir || '';
-        const assemblyConfig = bilingualWorkflow.assemblyConfig;
+      } else if (bilingualWorkflow.role === 'target' || bilingualWorkflow.role === 'solo') {
+        // TTS complete - chain bilingual assembly
+        // 'target': last TTS in source→target chain, sourceSentencesDir from earlier TTS
+        // 'solo': single TTS with cached partner, dirs pre-assigned by wizard
+        const isSolo = bilingualWorkflow.role === 'solo';
+        console.log(`[QUEUE] Bilingual ${isSolo ? 'solo' : 'target'} TTS complete, chaining assembly`);
 
-        // Validate sourceSentencesDir exists (may be stale from previous run)
-        const electron = window.electron;
-        let sourceExists = false;
-        try {
-          sourceExists = await electron?.fs?.exists?.(sourceSentencesDir) ?? false;
-        } catch {
-          sourceExists = false;
+        const freshDir = result.outputPath || '';
+        let sourceSentencesDir: string;
+        let targetSentencesDir: string;
+
+        if (isSolo) {
+          // Solo: one dir is pre-filled (cached), the other gets the fresh TTS output
+          sourceSentencesDir = bilingualWorkflow.assemblySourceSentencesDir || freshDir;
+          targetSentencesDir = bilingualWorkflow.assemblyTargetSentencesDir || freshDir;
+        } else {
+          // Target role: source was set by source TTS completion
+          sourceSentencesDir = bilingualWorkflow.sourceSentencesDir || '';
+          targetSentencesDir = freshDir;
         }
 
-        if (!sourceExists) {
-          console.error('[QUEUE] Source sentences directory does not exist, cannot create bilingual assembly:', sourceSentencesDir);
-          console.error('[QUEUE] This can happen if the source TTS session was cleaned. Please re-run the workflow from the beginning.');
+        const assemblyConfig = bilingualWorkflow.assemblyConfig;
 
-          // Mark the job as error instead of silently failing
-          this._jobs.update(jobs =>
-            jobs.map(j => {
-              if (j.id !== completedJob.id) return j;
-              return {
-                ...j,
-                status: 'error' as JobStatus,
-                error: 'Source TTS sentences not found. The session may have been cleaned. Please delete this workflow and start fresh.'
-              };
-            })
-          );
-          return;
+        // Validate both sentence dirs exist
+        const electron = window.electron;
+        for (const [label, dir] of [['Source', sourceSentencesDir], ['Target', targetSentencesDir]] as const) {
+          let exists = false;
+          try {
+            exists = await electron?.fs?.exists?.(dir) ?? false;
+          } catch {
+            exists = false;
+          }
+          if (!exists) {
+            console.error(`[QUEUE] ${label} sentences directory does not exist, cannot create bilingual assembly:`, dir);
+            this._jobs.update(jobs =>
+              jobs.map(j => {
+                if (j.id !== completedJob.id) return j;
+                return {
+                  ...j,
+                  status: 'error' as JobStatus,
+                  error: `${label} TTS sentences not found at: ${dir}`
+                };
+              })
+            );
+            return;
+          }
         }
 
         // Look for existing placeholder assembly job
@@ -1198,14 +1212,6 @@ export class QueueService {
             }
           });
         }
-      }
-    }
-
-    // When bilingual-assembly completes, update the project status to 'completed'
-    if (result.success && completedJob?.type === 'bilingual-assembly') {
-      const config = completedJob.config as any;
-      if (config?.projectId) {
-        this.updateLanguageLearningProjectStatus(config.projectId, 'completed');
       }
     }
 
@@ -1985,14 +1991,27 @@ export class QueueService {
             // Standard audiobook workflow: Check for processed EPUBs in priority order
             // This is for regular audiobooks, not Language Learning
             const epubPathNorm = job.epubPath.replace(/\\/g, '/');
-            const basePath = epubPathNorm.replace(/\.epub$/i, '');
             const epubDir = epubPathNorm.substring(0, epubPathNorm.lastIndexOf('/'));
+
+            // Derive project dir from epub path (epub is in source/ or stages/01-cleanup/)
+            let projectDirForTts = '';
+            if (epubDir.includes('/stages/01-cleanup')) {
+              projectDirForTts = epubDir.substring(0, epubDir.indexOf('/stages/01-cleanup'));
+            } else if (epubDir.endsWith('/source')) {
+              projectDirForTts = epubDir.substring(0, epubDir.lastIndexOf('/source'));
+            }
+
             const candidates = [
-              `${basePath}_translated_cleaned.epub`,  // Translated + cleaned (best)
-              `${basePath}_translated.epub`,           // Translated only
-              `${basePath}_cleaned.epub`,              // Cleaned only with base path
-              `${epubDir}/cleaned.epub`,               // Cleaned only (unified naming)
-              `${epubDir}/exported_cleaned.epub`       // Legacy naming (will be renamed by backend)
+              // Mono translation output in stages/02-translate/
+              ...(projectDirForTts ? [`${projectDirForTts}/stages/02-translate/translated.epub`] : []),
+              // AI-simplified or AI-cleaned in stages/01-cleanup/
+              ...(projectDirForTts ? [
+                `${projectDirForTts}/stages/01-cleanup/simplified.epub`,
+                `${projectDirForTts}/stages/01-cleanup/cleaned.epub`,
+              ] : [
+                `${epubDir}/simplified.epub`,
+                `${epubDir}/cleaned.epub`,
+              ]),
             ];
             let foundPath: string | null = null;
             for (const candidatePath of candidates) {
@@ -2036,7 +2055,10 @@ export class QueueService {
               // For language learning: preserve paragraph boundaries as sentences
               sentencePerParagraph: config.sentencePerParagraph,
               // For bilingual: skip reading heading tags as chapter titles
-              skipHeadings: config.skipHeadings
+              skipHeadings: config.skipHeadings,
+              // Test mode - only process first N sentences
+              testMode: config.testMode,
+              testSentences: config.testSentences
             },
             // Pass metadata for final audiobook (applied after assembly via m4b-tool)
             // Use bookTitle/author for m4b tags (metadata.title is the queue display label)
@@ -2208,7 +2230,6 @@ export class QueueService {
           openaiApiKey: config.openaiApiKey,
           cleanupPrompt: config.cleanupPrompt,
           simplifyForLearning: config.simplifyForLearning,
-          startFresh: config.startFresh,
           testMode: config.testMode,
           testModeChunks: config.testModeChunks
         });
@@ -2322,18 +2343,13 @@ export class QueueService {
             const projectDir = config.projectDir.replace(/\\/g, '/');
             let audiobooksDir: string;
 
-            // Check if this is a book (projectDir is already in audiobooks folder)
-            // or an article (projectDir is in language-learning/projects)
-            if (projectDir.includes('/audiobooks/')) {
-              // Book: projectDir is like /library/audiobooks/bookname
-              // Output should go to the same directory
-              audiobooksDir = projectDir;
+            // Book projects: projectDir is like /library/projects/bookname
+            // Output goes to projectDir/output/
+            if (projectDir.includes('/projects/')) {
+              audiobooksDir = `${projectDir}/output`;
             } else {
-              // Article: projectDir is like /library/language-learning/projects/projectId
-              // Output should go to /library/language-learning/audiobooks
-              const projectsDir = projectDir.substring(0, projectDir.lastIndexOf('/'));
-              const languageLearningDir = projectsDir.substring(0, projectsDir.lastIndexOf('/'));
-              audiobooksDir = `${languageLearningDir}/audiobooks`;
+              // Fallback for other structures
+              audiobooksDir = `${projectDir}/output`;
             }
 
             // Get bfpPath from the job for book projects (needed to update bilingual paths later)
@@ -2588,43 +2604,43 @@ export class QueueService {
         console.log('[QUEUE] Bilingual assembly complete:', {
           audioPath: result.data?.audioPath,
           vttPath: result.data?.vttPath,
-          bfpPath: config.bfpPath,
+          projectDir: job.projectDir,
           sentencePairsPath: config.sentencePairsPath
         });
 
-        // For LL projects: copy audio to canonical location and update project
-        // Skip if projectId is an absolute path (BFP project, not a native LL project)
-        if (config.projectId && result.data?.audioPath &&
-            !config.projectId.includes('\\') && !config.projectId.includes('/') && !/^[A-Za-z]:/.test(config.projectId)) {
-          const languageLearning = (window.electron as any)?.languageLearning;
+        // Finalize output: copy to project dir, update manifest, copy to external audiobooks dir
+        if (result.data?.audioPath && job.projectDir) {
+          const bilingualAssembly = (window.electron as any)?.bilingualAssembly;
+          if (bilingualAssembly?.finalizeOutput) {
+            // Build metadata-based filename base: "{Title}. {Author}"
+            // The finalize handler appends "(language learning, english-german)" with full language names
+            const title = config.title || config.projectId || 'Audiobook';
+            const author = job.metadata?.author || '';
+            let metadataFilename = title;
+            if (author && !title.includes(author)) {
+              metadataFilename += `. ${author}`;
+            }
 
-          // Update project.json with paths and completed status
-          if (languageLearning?.updateProject) {
-            const updateResult = await languageLearning.updateProject(config.projectId, {
-              audiobookPath: result.data.audioPath,
+            const externalAudiobooksDir = this.settingsService.get<string>('externalAudiobooksDir') || '';
+
+            const finalizeResult = await bilingualAssembly.finalizeOutput({
+              audioPath: result.data.audioPath,
               vttPath: result.data.vttPath,
-              status: 'completed'
+              projectDir: job.projectDir,
+              projectId: config.projectId,
+              sourceLang: config.sourceLang || 'en',
+              targetLang: config.targetLang || 'de',
+              externalAudiobooksDir: externalAudiobooksDir || undefined,
+              metadataFilename,
+              sentencePairsPath: config.sentencePairsPath,
             });
-            console.log('[QUEUE] Updated article project with audio paths:', updateResult);
-          }
-        }
 
-        // Update book's BFP with bilingual audio paths (if bfpPath is set)
-        if (config.bfpPath && result.data?.audioPath) {
-          const audiobook = (window.electron as any)?.audiobook;
-          if (audiobook?.linkBilingualAudio) {
-            const updateResult = await audiobook.linkBilingualAudio(
-              config.bfpPath,
-              result.data.audioPath,
-              result.data.vttPath,
-              config.sentencePairsPath
-            );
-            console.log('[QUEUE] Updated book BFP with bilingual audio paths:', updateResult);
-
-            // Reload the book in StudioService so the UI sees the bilingual paths
-            if (updateResult?.success) {
-              console.log('[QUEUE] Reloading book in StudioService...');
-              await this.studioService.reloadItem(config.bfpPath);
+            if (finalizeResult?.success) {
+              console.log('[QUEUE] Bilingual assembly output finalized to project');
+              // Reload the book in StudioService so the Play button lights up
+              await this.studioService.reloadItem(job.projectDir);
+            } else {
+              console.error('[QUEUE] Failed to finalize bilingual assembly output:', finalizeResult?.error);
             }
           }
         }
@@ -2739,7 +2755,10 @@ export class QueueService {
         // Preserve paragraph boundaries (for language learning)
         sentencePerParagraph: config.sentencePerParagraph,
         // Skip reading heading tags as chapter titles (for bilingual)
-        skipHeadings: config.skipHeadings
+        skipHeadings: config.skipHeadings,
+        // Test mode - only process first N sentences
+        testMode: config.testMode,
+        testSentences: config.testSentences
       };
     } else if (request.type === 'reassembly') {
       const config = request.config as Partial<ReassemblyJobConfig>;
@@ -2787,7 +2806,6 @@ export class QueueService {
         openaiApiKey: config.openaiApiKey,
         cleanupPrompt: config.cleanupPrompt,
         simplifyForLearning: config.simplifyForLearning,
-        startFresh: config.startFresh,
         testMode: config.testMode,
         testModeChunks: config.testModeChunks
       };

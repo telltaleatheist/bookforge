@@ -45,7 +45,7 @@ export interface QueueFileInfo {
   // Project-based fields
   projectId?: string;
   hasCleaned?: boolean;
-  cleanedFilename?: string;  // Filename of cleaned epub (may be 'exported_cleaned.epub' or 'cleaned.epub')
+  cleanedFilename?: string;  // Filename of cleaned/simplified epub (simplified.epub, cleaned.epub, or legacy exported_cleaned.epub)
   skippedChunksPath?: string;
 }
 

@@ -2265,8 +2265,8 @@ export class ProcessWizardComponent implements OnInit {
       let masterJobId: string | undefined;
       // Use user-selected source, or fall back to epubPath
       const selectedSource = this.effectiveEpubPath();
-      // For cleanup: ALWAYS use the original finalized EPUB (not any existing cleaned version)
-      // This ensures we don't create _cleaned_cleaned.epub files - cleanup replaces the old cleaned version
+      // For cleanup: ALWAYS use the original/exported EPUB (not any existing cleaned version)
+      // Cleanup outputs cleaned.epub or simplified.epub in the same directory (not {name}_cleaned.epub)
       const cleanupSourcePath = this.originalEpubPath() || selectedSource;
       // For TTS: start with selected source, will be updated to cleaned version after cleanup
       let currentEpubPath = selectedSource;
@@ -2347,8 +2347,10 @@ export class ProcessWizardComponent implements OnInit {
             parentJobId: masterJobId,
           });
 
-          // Cleanup produces _cleaned.epub from the original source
-          currentEpubPath = cleanupSourcePath.replace('.epub', '_cleaned.epub');
+          // Cleanup produces cleaned.epub or simplified.epub
+          // Cleanup output goes to stages/01-cleanup/
+          const cleanedFilename = this.simplifyForLearning() ? 'simplified.epub' : 'cleaned.epub';
+          currentEpubPath = `${this.bfpPath()}/stages/01-cleanup/${cleanedFilename}`;
         }
       }
 
@@ -2379,8 +2381,8 @@ export class ProcessWizardComponent implements OnInit {
           parentJobId: masterJobId,
         });
 
-        // Translation produces _translated.epub
-        currentEpubPath = currentEpubPath.replace('.epub', '_translated.epub');
+        // Mono translation writes to stages/02-translate/translated.epub
+        currentEpubPath = `${this.bfpPath()}/stages/02-translate/translated.epub`;
       }
 
       // 3. TTS job (if not skipped)
@@ -2516,18 +2518,10 @@ export class ProcessWizardComponent implements OnInit {
   }
 
   /**
-   * Derive audiobook folder from BFP path (mirrors getAudiobookDirFromBfp in parallel-tts-bridge)
-   * .bfp files: {library}/audiobooks/{projectName}/
+   * Derive output folder from project directory path.
    */
   private getAudiobookDirFromBfp(bfpPath: string): string {
-    const normalized = bfpPath.replace(/\\/g, '/');
-    if (normalized.endsWith('.bfp')) {
-      const lastSlash = normalized.lastIndexOf('/');
-      const libraryRoot = normalized.substring(0, lastSlash).replace(/\/projects$/, '');
-      const projectName = normalized.substring(lastSlash + 1).replace('.bfp', '');
-      return `${libraryRoot}/audiobooks/${projectName}`;
-    }
-    return `${normalized}/audiobook`;
+    return `${bfpPath.replace(/\\/g, '/')}/output`;
   }
 
   private generateWorkflowId(): string {

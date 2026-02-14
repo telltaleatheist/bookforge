@@ -214,7 +214,7 @@ export async function runLanguageLearningJob(
         message: 'Starting AI cleanup...'
       });
 
-      sourceText = await cleanupText(sourceText, bilingualConfig, (progress) => {
+      const cleanupResult = await cleanupText(sourceText, bilingualConfig, (progress) => {
         // Map cleanup progress (0-100%) to overall job progress (5-20%)
         const overallPercentage = 5 + Math.round((progress.percentage / 100) * 15);
         sendProgress(mainWindow, jobId, {
@@ -227,6 +227,10 @@ export async function runLanguageLearningJob(
           message: `Cleaning chunk ${progress.currentChunk}/${progress.totalChunks}...`
         });
       });
+      sourceText = cleanupResult.cleanedText;
+      if (cleanupResult.skippedChunks.length > 0) {
+        console.log(`[LL-LEGACY] Cleanup had ${cleanupResult.skippedChunks.length} skipped chunks`);
+      }
 
       // Update the config with cleaned text
       bilingualConfig.sourceText = sourceText;
