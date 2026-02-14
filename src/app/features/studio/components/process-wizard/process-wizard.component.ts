@@ -442,6 +442,27 @@ interface AvailableEpub {
               <h3>Text-to-Speech</h3>
               <p class="step-desc">Configure voice synthesis settings.</p>
 
+              <!-- Source EPUB Selection -->
+              <div class="config-section">
+                <label class="field-label">Source EPUB</label>
+                <div class="source-stages">
+                  @for (stage of ttsSourceStages(); track stage.id) {
+                    <button
+                      class="stage-btn"
+                      [class.selected]="isStageSelected('tts', stage)"
+                      [class.completed]="stage.completed"
+                      [disabled]="!stage.completed"
+                      (click)="selectStage('tts', stage)"
+                    >
+                      {{ stage.label }}
+                      @if (stage.completed) {
+                        <span class="stage-check">&#10003;</span>
+                      }
+                    </button>
+                  }
+                </div>
+              </div>
+
               <div class="config-section">
                   <!-- Device Selection -->
                   <label class="field-label">Processing Device</label>
@@ -590,6 +611,10 @@ interface AvailableEpub {
                       <span class="review-value">Assemble from TTS output</span>
                     </div>
                     <div class="review-item">
+                      <span class="review-label">Status:</span>
+                      <span class="review-value">Will run after TTS completes</span>
+                    </div>
+                    <div class="review-item">
                       <span class="review-label">Title:</span>
                       <span class="review-value">{{ title() || 'Untitled' }}</span>
                     </div>
@@ -598,7 +623,6 @@ interface AvailableEpub {
                       <span class="review-value">{{ author() || 'Unknown' }}</span>
                     </div>
                   </div>
-                  <span class="hint">Assembly will run automatically after TTS completes.</span>
                 </div>
               } @else if (cachedSession(); as session) {
                 <!-- Mode B: TTS skipped, cached session exists - standalone reassembly -->
@@ -630,6 +654,51 @@ interface AvailableEpub {
                   <p>No cached TTS session found for this book.</p>
                   <p class="hint">Enable TTS to chain assembly, or skip this step.</p>
                 </div>
+              }
+
+              <!-- Output Format (shown when assembly is possible) -->
+              @if (!isStepSkipped('tts') || cachedSession()) {
+                <div class="config-section">
+                  <label class="field-label">Output Format</label>
+                  <div class="provider-buttons">
+                    <button class="provider-btn selected" disabled>
+                      <span class="provider-name">Audio</span>
+                      <span class="provider-status">M4B + VTT (always)</span>
+                    </button>
+                    <button class="provider-btn"
+                      [class.selected]="generateVideo()"
+                      (click)="generateVideo.set(!generateVideo())">
+                      <span class="provider-name">Video</span>
+                      <span class="provider-status">MP4 with subtitles</span>
+                    </button>
+                  </div>
+                </div>
+
+                @if (generateVideo()) {
+                  <div class="config-section">
+                    <label class="field-label">Video Resolution</label>
+                    <div class="provider-buttons">
+                      <button class="provider-btn"
+                        [class.selected]="videoResolution() === '720p'"
+                        (click)="videoResolution.set('720p')">
+                        <span class="provider-name">720p</span>
+                        <span class="provider-status">1280 x 720</span>
+                      </button>
+                      <button class="provider-btn"
+                        [class.selected]="videoResolution() === '1080p'"
+                        (click)="videoResolution.set('1080p')">
+                        <span class="provider-name">1080p</span>
+                        <span class="provider-status">1920 x 1080</span>
+                      </button>
+                      <button class="provider-btn"
+                        [class.selected]="videoResolution() === '4k'"
+                        (click)="videoResolution.set('4k')">
+                        <span class="provider-name">4K</span>
+                        <span class="provider-status">3840 x 2160</span>
+                      </button>
+                    </div>
+                  </div>
+                }
               }
             </div>
           }
@@ -1770,10 +1839,13 @@ export class ProcessWizardComponent implements OnInit {
   readonly currentStep = signal<WizardStep>('cleanup');
   readonly addingToQueue = signal(false);
   readonly addedToQueue = signal(false);
+  readonly generateVideo = signal(false);
+  readonly videoResolution = signal<'720p' | '1080p' | '4k'>('720p');
 
   // Per-step source EPUB selection
   readonly cleanupSourceEpub = signal<string>('latest');
   readonly translateSourceEpub = signal<string>('latest');
+  readonly ttsSourceEpub = signal<string>('latest');
 
   // EPUB scanning
   readonly availableEpubs = signal<AvailableEpub[]>([]);
@@ -1809,7 +1881,7 @@ export class ProcessWizardComponent implements OnInit {
   ttsEngine: 'xtts' | 'orpheus' = 'xtts';
   ttsLanguage = 'en';
   ttsVoice = 'ScarlettJohansson';
-  ttsSpeed = 1.25;
+  ttsSpeed = 1.0;
   parallelWorkers = 4;
   ttsTemperature = 0.7;
   ttsTopP = 0.9;
@@ -1914,6 +1986,18 @@ export class ProcessWizardComponent implements OnInit {
     ];
   });
 
+  /** Stages relevant for TTS source — includes all EPUBs */
+  readonly ttsSourceStages = computed<SourceStage[]>(() => {
+    const epubs = this.availableEpubs();
+    const find = (name: string) => epubs.find(e => e.filename === name);
+    return [
+      { id: 'original', label: 'Original', completed: !!find('original.epub'), path: find('original.epub')?.path ?? '' },
+      { id: 'exported', label: 'Exported', completed: !!find('exported.epub'), path: find('exported.epub')?.path ?? '' },
+      { id: 'cleaned', label: 'AI Cleaned', completed: !!find('cleaned.epub'), path: find('cleaned.epub')?.path ?? '' },
+      { id: 'simplified', label: 'AI Simplified', completed: !!find('simplified.epub'), path: find('simplified.epub')?.path ?? '' },
+    ];
+  });
+
   // Computed: check if API keys are configured
   readonly hasClaudeKey = computed(() => {
     const config = this.settingsService.getAIConfig();
@@ -1983,7 +2067,7 @@ export class ProcessWizardComponent implements OnInit {
         const sourceDir = `${projectDir}/source`;
         const sourceFiles = await this.electronService.listDirectory(sourceDir);
         for (const file of sourceFiles) {
-          if ((file === 'original.epub' || file === 'exported.epub' || file === 'finalized.epub') && !file.startsWith('._')) {
+          if ((file === 'original.epub' || file === 'exported.epub') && !file.startsWith('._')) {
             epubs.push({ path: `${sourceDir}/${file}`, filename: file });
           }
         }
@@ -2011,18 +2095,24 @@ export class ProcessWizardComponent implements OnInit {
   }
 
   /** Resolve which stage ID "latest" maps to for a given pipeline step */
-  private resolveLatestStageId(step: 'cleanup' | 'translate'): string {
+  private resolveLatestStageId(step: 'cleanup' | 'translate' | 'tts'): string {
     const epubs = this.availableEpubs();
     const has = (name: string) => epubs.some(e => e.filename === name);
     if (step === 'cleanup') {
-      // Cleanup input: prefer exported > finalized > original (not cleaned — we're producing that)
+      // Cleanup input: prefer exported > original (not cleaned — we're producing that)
       if (has('exported.epub')) return 'exported';
       if (has('original.epub')) return 'original';
-    } else {
+    } else if (step === 'translate') {
       // Translate input: consider pipeline intent (cleanup will produce this file)
       const willProduce = this.cleanupWillProduce();
       if (willProduce === 'simplified.epub' || has('simplified.epub')) return 'simplified';
       if (willProduce === 'cleaned.epub' || has('cleaned.epub')) return 'cleaned';
+      if (has('exported.epub')) return 'exported';
+      if (has('original.epub')) return 'original';
+    } else {
+      // TTS input: prefer simplified > cleaned > exported > original
+      if (has('simplified.epub')) return 'simplified';
+      if (has('cleaned.epub')) return 'cleaned';
       if (has('exported.epub')) return 'exported';
       if (has('original.epub')) return 'original';
     }
@@ -2030,8 +2120,16 @@ export class ProcessWizardComponent implements OnInit {
   }
 
   /** Check if a stage button should be highlighted as selected */
-  isStageSelected(step: 'cleanup' | 'translate', stage: SourceStage): boolean {
-    const source = step === 'cleanup' ? this.cleanupSourceEpub() : this.translateSourceEpub();
+  isStageSelected(step: 'cleanup' | 'translate' | 'tts', stage: SourceStage): boolean {
+    let source: string;
+    if (step === 'cleanup') {
+      source = this.cleanupSourceEpub();
+    } else if (step === 'translate') {
+      source = this.translateSourceEpub();
+    } else {
+      source = this.ttsSourceEpub();
+    }
+
     if (source === 'latest') {
       return stage.id === this.resolveLatestStageId(step);
     }
@@ -2039,8 +2137,15 @@ export class ProcessWizardComponent implements OnInit {
   }
 
   /** Handle stage button click — clicking the auto-selected stage returns to 'latest' */
-  selectStage(step: 'cleanup' | 'translate', stage: SourceStage): void {
-    const sig = step === 'cleanup' ? this.cleanupSourceEpub : this.translateSourceEpub;
+  selectStage(step: 'cleanup' | 'translate' | 'tts', stage: SourceStage): void {
+    let sig: any;
+    if (step === 'cleanup') {
+      sig = this.cleanupSourceEpub;
+    } else if (step === 'translate') {
+      sig = this.translateSourceEpub;
+    } else {
+      sig = this.ttsSourceEpub;
+    }
     const current = sig();
 
     if (current === stage.path || (current === 'latest' && stage.id === this.resolveLatestStageId(step))) {
@@ -2051,8 +2156,15 @@ export class ProcessWizardComponent implements OnInit {
   }
 
   /** Resolve "latest" source EPUB based on pipeline stage */
-  private resolveLatestSource(stage: 'cleanup' | 'translate'): string {
-    const sourceSignal = stage === 'cleanup' ? this.cleanupSourceEpub : this.translateSourceEpub;
+  private resolveLatestSource(stage: 'cleanup' | 'translate' | 'tts'): string {
+    let sourceSignal: any;
+    if (stage === 'cleanup') {
+      sourceSignal = this.cleanupSourceEpub;
+    } else if (stage === 'translate') {
+      sourceSignal = this.translateSourceEpub;
+    } else {
+      sourceSignal = this.ttsSourceEpub;
+    }
     const source = sourceSignal();
 
     if (source !== 'latest') {
@@ -2063,11 +2175,9 @@ export class ProcessWizardComponent implements OnInit {
     const projectDir = this.bfpPath();
 
     if (stage === 'cleanup') {
-      // Cleanup: exported > finalized > original
+      // Cleanup: exported > original (no legacy fallbacks)
       const exported = epubs.find(e => e.filename === 'exported.epub');
       if (exported) return exported.path;
-      const finalized = epubs.find(e => e.filename === 'finalized.epub');
-      if (finalized) return finalized.path;
       const original = epubs.find(e => e.filename === 'original.epub');
       if (original) return original.path;
     } else if (stage === 'translate') {
@@ -2085,8 +2195,16 @@ export class ProcessWizardComponent implements OnInit {
       if (cleaned) return cleaned.path;
       const exported = epubs.find(e => e.filename === 'exported.epub');
       if (exported) return exported.path;
-      const finalized = epubs.find(e => e.filename === 'finalized.epub');
-      if (finalized) return finalized.path;
+      const original = epubs.find(e => e.filename === 'original.epub');
+      if (original) return original.path;
+    } else if (stage === 'tts') {
+      // TTS: prefer simplified > cleaned > exported > original
+      const simplified = epubs.find(e => e.filename === 'simplified.epub');
+      if (simplified) return simplified.path;
+      const cleaned = epubs.find(e => e.filename === 'cleaned.epub');
+      if (cleaned) return cleaned.path;
+      const exported = epubs.find(e => e.filename === 'exported.epub');
+      if (exported) return exported.path;
       const original = epubs.find(e => e.filename === 'original.epub');
       if (original) return original.path;
     }
@@ -2165,11 +2283,14 @@ export class ProcessWizardComponent implements OnInit {
       const result = await this.electronService.getClaudeModels(apiKey);
       if (result.success && result.models) {
         this.claudeModels.set(result.models);
-        // Update selected model if current isn't valid
-        const currentModel = this.cleanupModel();
-        const modelExists = result.models.some(m => m.value === currentModel);
-        if (!modelExists && result.models.length > 0) {
-          this.cleanupModel.set(result.models[0].value);
+        // Only update cleanup model if Claude is the active provider
+        // (otherwise we'd clobber the user's Ollama/OpenAI model selection)
+        if (this.cleanupProvider() === 'claude') {
+          const currentModel = this.cleanupModel();
+          const modelExists = result.models.some(m => m.value === currentModel);
+          if (!modelExists && result.models.length > 0) {
+            this.cleanupModel.set(result.models[0].value);
+          }
         }
       }
     } catch (err) {
@@ -2186,11 +2307,14 @@ export class ProcessWizardComponent implements OnInit {
       const result = await this.electronService.getOpenAIModels(apiKey);
       if (result.success && result.models) {
         this.openaiModels.set(result.models);
-        // Update selected model if current isn't valid
-        const currentModel = this.cleanupModel();
-        const modelExists = result.models.some(m => m.value === currentModel);
-        if (!modelExists && result.models.length > 0) {
-          this.cleanupModel.set(result.models[0].value);
+        // Only update cleanup model if OpenAI is the active provider
+        // (otherwise we'd clobber the user's Ollama/Claude model selection)
+        if (this.cleanupProvider() === 'openai') {
+          const currentModel = this.cleanupModel();
+          const modelExists = result.models.some(m => m.value === currentModel);
+          if (!modelExists && result.models.length > 0) {
+            this.cleanupModel.set(result.models[0].value);
+          }
         }
       }
     } catch (err) {
@@ -2600,6 +2724,11 @@ export class ProcessWizardComponent implements OnInit {
 
       // 3. TTS job (if not skipped)
       if (!this.skippedSteps.has('tts')) {
+        // Use TTS source selection if configured, otherwise use current pipeline output
+        const ttsSourcePath = this.ttsSourceEpub() !== 'latest'
+          ? this.ttsSourceEpub()
+          : this.resolveLatestSource('tts');
+
         const assemblyChained = !this.skippedSteps.has('assembly');
         const ttsConfig: Partial<TtsConversionConfig> = {
           type: 'tts-conversion',
@@ -2625,7 +2754,7 @@ export class ProcessWizardComponent implements OnInit {
 
         await this.queueService.addJob({
           type: 'tts-conversion',
-          epubPath: currentEpubPath,
+          epubPath: ttsSourcePath,
           projectDir: isArticle ? this.projectDir() : undefined,
           bfpPath: isArticle ? undefined : this.bfpPath(),
           metadata: {
@@ -2708,6 +2837,36 @@ export class ProcessWizardComponent implements OnInit {
         }
       }
 
+      // 5. Video Assembly job (optional, after audio assembly)
+      if (this.generateVideo() && !this.skippedSteps.has('assembly')) {
+        // Build external filename from title + author
+        let videoOutputFilename = this.title() || 'audiobook';
+        const videoAuthor = this.author() || '';
+        if (videoAuthor && videoAuthor !== 'Unknown' && !videoOutputFilename.includes(videoAuthor)) {
+          videoOutputFilename += `. ${videoAuthor}`;
+        }
+
+        await this.queueService.addJob({
+          type: 'video-assembly',
+          bfpPath: this.bfpPath(),
+          metadata: { title: 'Video' },
+          config: {
+            type: 'video-assembly',
+            projectId: this.bfpPath(),
+            bfpPath: this.bfpPath(),
+            mode: 'monolingual',
+            m4bPath: `${this.bfpPath()}/output/audiobook.m4b`,
+            vttPath: `${this.bfpPath()}/output/audiobook.vtt`,
+            title: this.title(),
+            sourceLang: 'en',
+            resolution: this.videoResolution(),
+            outputFilename: videoOutputFilename,
+          },
+          workflowId,
+          parentJobId: masterJobId,
+        });
+      }
+
       console.log('[ProcessWizard] Jobs added to queue:', {
         workflowId,
         masterJobId,
@@ -2716,6 +2875,7 @@ export class ProcessWizardComponent implements OnInit {
         translate: !this.skippedSteps.has('translate') && this.enableTranslation(),
         tts: !this.skippedSteps.has('tts'),
         assembly: !this.skippedSteps.has('assembly'),
+        video: this.generateVideo(),
         assemblyMode: !this.skippedSteps.has('assembly')
           ? (!this.skippedSteps.has('tts') ? 'chained' : (this.cachedSession() ? 'standalone' : 'none'))
           : 'skipped',

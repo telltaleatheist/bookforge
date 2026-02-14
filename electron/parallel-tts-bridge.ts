@@ -4358,6 +4358,24 @@ export async function resumeParallelConversion(
   };
 
   if (resumeInfo.complete) {
+    // If skipAssembly is set (chained workflow), skip assembly and return sentences dir
+    if (internalConfig.skipAssembly) {
+      console.log('[PARALLEL-TTS] All sentences already complete, skipAssembly=true, returning sentences dir');
+      const sentencesDir = resumeInfo.processDir
+        ? path.join(resumeInfo.processDir, 'chapters', 'sentences')
+        : '';
+      // Emit complete event for event-based listeners
+      if (mainWindow) {
+        mainWindow.webContents.send('parallel-tts:complete', {
+          jobId,
+          success: true,
+          outputPath: sentencesDir,
+          sessionId: resumeInfo.sessionId,
+          sessionDir: resumeInfo.sessionDir,
+        });
+      }
+      return { success: true, outputPath: sentencesDir };
+    }
     console.log('[PARALLEL-TTS] All sentences already complete, proceeding to assembly');
     return runAssemblyOnly(jobId, internalConfig, resumeInfo.sessionId!, resumeInfo.sessionDir);
   }

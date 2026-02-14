@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>loading</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0e0d0c;
+    color: #faf9f7;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  .container {
+    width: 100%;
+    height: 100vh;
+    padding: 24px 64px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 16px;
+  }
+
+  .card {
+    background: #181715;
+    border: 1px solid #2a2824;
+    border-radius: 12px;
+    padding: 24px 32px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 0;
+    transition: none;
+  }
+
+  .card.active {
+    background: color-mix(in srgb, #22d3ee 8%, #181715);
+    border-color: #22d3ee;
+  }
+
+  .card.past { opacity: 0.4; }
+  .card.future { opacity: 0.6; }
+
+  .sentence-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    margin-bottom: 8px;
+  }
+
+  .sentence-row:last-child { margin-bottom: 0; }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 40px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    flex-shrink: 0;
+    margin-top: 3px;
+    background: #2a2824;
+    color: #928b7f;
+  }
+
+  .badge.speaking {
+    background: #22d3ee;
+    color: #fff;
+  }
+
+  .sentence-text {
+    font-size: 22px;
+    line-height: 1.5;
+    color: #faf9f7;
+  }
+
+  .sentence-text.speaking { font-weight: 500; }
+  .sentence-text.target { font-style: italic; color: #c4bdb3; }
+  .sentence-text.target.speaking { color: #faf9f7; }
+
+  /* Monolingual mode */
+  .mono .sentence-text { font-style: normal; }
+</style>
+</head>
+<body>
+<div class="container" id="container"></div>
+
+<script>
+  const VISIBLE_CARDS = 5;
+  const CENTER = Math.floor(VISIBLE_CARDS / 2); // 2 (0-indexed)
+
+  function setState(data) {
+    document.title = 'rendering';
+    const container = document.getElementById('container');
+    container.innerHTML = '';
+    container.className = data.mode === 'monolingual' ? 'container mono' : 'container';
+
+    const active = data.activePairIndex;
+    const total = data.sentences.length;
+
+    // Determine which cards to show: center the active pair
+    const startIdx = active - CENTER;
+
+    for (let slot = 0; slot < VISIBLE_CARDS; slot++) {
+      const idx = startIdx + slot;
+      const card = document.createElement('div');
+      card.className = 'card';
+
+      if (idx < 0 || idx >= total) {
+        // Empty placeholder card (invisible)
+        card.style.visibility = 'hidden';
+        container.appendChild(card);
+        continue;
+      }
+
+      if (idx < active) card.classList.add('past');
+      else if (idx === active) card.classList.add('active');
+      else card.classList.add('future');
+
+      const pair = data.sentences[idx];
+      const isActive = idx === active;
+
+      if (data.mode === 'bilingual') {
+        // Source row
+        const sourceRow = document.createElement('div');
+        sourceRow.className = 'sentence-row';
+
+        const srcBadge = document.createElement('span');
+        srcBadge.className = 'badge';
+        if (isActive && data.isSourceSpeaking) srcBadge.classList.add('speaking');
+        srcBadge.textContent = data.sourceLang;
+
+        const srcText = document.createElement('span');
+        srcText.className = 'sentence-text';
+        if (isActive && data.isSourceSpeaking) srcText.classList.add('speaking');
+        srcText.textContent = pair.source || '';
+
+        sourceRow.appendChild(srcBadge);
+        sourceRow.appendChild(srcText);
+        card.appendChild(sourceRow);
+
+        // Target row
+        if (pair.target) {
+          const targetRow = document.createElement('div');
+          targetRow.className = 'sentence-row';
+
+          const tgtBadge = document.createElement('span');
+          tgtBadge.className = 'badge';
+          if (isActive && !data.isSourceSpeaking) tgtBadge.classList.add('speaking');
+          tgtBadge.textContent = data.targetLang || '';
+
+          const tgtText = document.createElement('span');
+          tgtText.className = 'sentence-text target';
+          if (isActive && !data.isSourceSpeaking) tgtText.classList.add('speaking');
+          tgtText.textContent = pair.target;
+
+          targetRow.appendChild(tgtBadge);
+          targetRow.appendChild(tgtText);
+          card.appendChild(targetRow);
+        }
+      } else {
+        // Monolingual: single sentence
+        const row = document.createElement('div');
+        row.className = 'sentence-row';
+
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        if (isActive) badge.classList.add('speaking');
+        badge.textContent = data.sourceLang;
+
+        const text = document.createElement('span');
+        text.className = 'sentence-text';
+        if (isActive) text.classList.add('speaking');
+        text.textContent = pair.source || '';
+
+        row.appendChild(badge);
+        row.appendChild(text);
+        card.appendChild(row);
+      }
+
+      container.appendChild(card);
+    }
+
+    // Signal ready after a brief layout tick
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        document.title = 'ready';
+      });
+    });
+  }
+
+  // Expose globally
+  window.setState = setState;
+</script>
+</body>
+</html>

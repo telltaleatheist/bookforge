@@ -5,7 +5,7 @@
 import { AIProvider } from '../../../core/models/ai-config.types';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'resemble-enhance' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'audiobook';
+export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'resemble-enhance' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook';
 
 // Job status
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
@@ -90,7 +90,7 @@ export interface QueueJob {
 }
 
 // Job configuration union type
-export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | AudiobookJobConfig;
+export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -312,6 +312,23 @@ export interface BilingualAssemblyJobConfig {
   audiobookFolder?: string;
 }
 
+// Video Assembly job configuration - renders subtitle video from M4B + VTT
+export interface VideoAssemblyJobConfig {
+  type: 'video-assembly';
+  projectId: string;
+  bfpPath: string;
+  mode: 'bilingual' | 'monolingual';
+  m4bPath: string;
+  vttPath: string;
+  sentencePairsPath?: string;  // bilingual only
+  title: string;
+  sourceLang: string;
+  targetLang?: string;         // bilingual only
+  resolution: '720p' | '1080p' | '4k';
+  externalAudiobooksDir?: string;
+  outputFilename?: string;          // Custom filename for external copy (without extension)
+}
+
 // Audiobook job configuration - master container for audiobook production workflows
 // This job type doesn't run any processing itself; it groups sub-jobs (cleanup, TTS)
 export interface AudiobookJobConfig {
@@ -481,7 +498,7 @@ export interface AudiobookMetadata {
 export interface CreateJobRequest {
   type: JobType;
   epubPath?: string;  // Optional for bilingual-assembly and audiobook jobs
-  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | AudiobookJobConfig>;
+  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;

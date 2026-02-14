@@ -678,6 +678,49 @@ interface SourceStage {
                 />
               </div>
 
+              <!-- Output Format -->
+              <div class="config-section">
+                <label class="field-label">Output Format</label>
+                <div class="provider-buttons">
+                  <button class="provider-btn selected" disabled>
+                    <span class="provider-name">Audio</span>
+                    <span class="provider-status">M4B + VTT (always)</span>
+                  </button>
+                  <button class="provider-btn"
+                    [class.selected]="generateVideo()"
+                    (click)="generateVideo.set(!generateVideo())">
+                    <span class="provider-name">Video</span>
+                    <span class="provider-status">MP4 with subtitles</span>
+                  </button>
+                </div>
+              </div>
+
+              @if (generateVideo()) {
+                <div class="config-section">
+                  <label class="field-label">Video Resolution</label>
+                  <div class="provider-buttons">
+                    <button class="provider-btn"
+                      [class.selected]="videoResolution() === '720p'"
+                      (click)="videoResolution.set('720p')">
+                      <span class="provider-name">720p</span>
+                      <span class="provider-status">1280 x 720</span>
+                    </button>
+                    <button class="provider-btn"
+                      [class.selected]="videoResolution() === '1080p'"
+                      (click)="videoResolution.set('1080p')">
+                      <span class="provider-name">1080p</span>
+                      <span class="provider-status">1920 x 1080</span>
+                    </button>
+                    <button class="provider-btn"
+                      [class.selected]="videoResolution() === '4k'"
+                      (click)="videoResolution.set('4k')">
+                      <span class="provider-name">4K</span>
+                      <span class="provider-status">3840 x 2160</span>
+                    </button>
+                  </div>
+                </div>
+              }
+
               @if (!assemblySourceLang() || !assemblyTargetLang()) {
                 <div class="warning-banner">
                   Select both source and target languages for assembly, or skip this step.
@@ -1988,6 +2031,8 @@ export class LLWizardComponent implements OnInit {
   readonly assemblyPattern = signal<'interleaved' | 'sequential'>('interleaved');
   readonly pauseDuration = signal(0.5);
   readonly gapDuration = signal(1.0);
+  readonly generateVideo = signal(false);
+  readonly videoResolution = signal<'720p' | '1080p' | '4k'>('720p');
   readonly availableSessions = signal<SessionCache[]>([]);
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -3196,12 +3241,56 @@ export class LLWizardComponent implements OnInit {
         }
       }
 
+      // 5. Video Assembly job (optional)
+      if (this.generateVideo() && !this._skippedSteps.has('assembly') && this.assemblySourceLang() && this.assemblyTargetLang()) {
+        const sourceLang = this.assemblySourceLang();
+        const targetLang = this.assemblyTargetLang();
+        const videoTitle = this.projectTitle() || this.title();
+
+        // Build external filename: "{Title}. {Author} (language learning, en-de)"
+        const langNames: Record<string, string> = {
+          en: 'english', de: 'german', es: 'spanish', fr: 'french', it: 'italian',
+          pt: 'portuguese', nl: 'dutch', pl: 'polish', ru: 'russian',
+          ja: 'japanese', zh: 'chinese', ko: 'korean', ar: 'arabic',
+        };
+        const srcName = langNames[sourceLang] || sourceLang;
+        const tgtName = langNames[targetLang] || targetLang;
+        let videoOutputFilename = videoTitle;
+        const author = this.author?.() || '';
+        if (author && author !== 'Unknown' && !videoTitle.includes(author)) {
+          videoOutputFilename += `. ${author}`;
+        }
+        videoOutputFilename += ` (language learning, ${srcName}-${tgtName})`;
+
+        await this.queueService.addJob({
+          type: 'video-assembly',
+          projectDir,
+          metadata: { title: `Video (${sourceLang.toUpperCase()}-${targetLang.toUpperCase()})` },
+          config: {
+            type: 'video-assembly',
+            projectId: this.projectId(),
+            bfpPath: this.bfpPath(),
+            mode: 'bilingual',
+            m4bPath: `${this.bfpPath()}/output/bilingual-${sourceLang}-${targetLang}.m4b`,
+            vttPath: `${this.bfpPath()}/output/bilingual-${sourceLang}-${targetLang}.vtt`,
+            sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${targetLang}.json`,
+            title: videoTitle,
+            sourceLang,
+            targetLang,
+            resolution: this.videoResolution(),
+            outputFilename: videoOutputFilename,
+          },
+          workflowId,
+        });
+      }
+
       console.log('[LLWizard] Jobs added to queue:', {
         workflowId,
         cleanup: !this._skippedSteps.has('cleanup'),
         translations: Array.from(this.targetLangs()),
         ttsRows: this.ttsLanguageRows().map(r => r.language),
         assembly: this.assemblySourceLang() && this.assemblyTargetLang(),
+        video: this.generateVideo(),
       });
 
       this.addedToQueue.set(true);

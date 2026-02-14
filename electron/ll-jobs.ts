@@ -341,19 +341,106 @@ export async function runLLCleanup(
       message: 'Starting AI cleanup...'
     });
 
-    // Choose prompt based on user selection - simple trade-off
-    let finalPrompt: string;
-
+    // If simplifying, use the full cleanupEpub function from ai-bridge for proper simplification
+    // Otherwise use the lightweight cleanupText function
     if (config.simplifyForLearning) {
-      // User chose simplification - load simplification prompt from file
-      console.log(`[LL-CLEANUP] Loading simplification prompt from file`);
-      finalPrompt = await loadPrompt(PROMPTS.LL_SIMPLIFY);
-    } else {
-      // User chose cleanup (or default) - load cleanup prompt from file or use provided
-      console.log(`[LL-CLEANUP] Loading standard cleanup prompt`);
-      finalPrompt = config.cleanupPrompt || await loadPrompt(PROMPTS.TTS_CLEANUP);
+      console.log(`[LL-CLEANUP] Using full cleanupEpub for simplification`);
+
+      // Import the proper cleanup function
+      const { cleanupEpub } = await import('./ai-bridge.js');
+
+      // Build provider config
+      const providerConfig: any = {
+        provider: config.aiProvider
+      };
+
+      if (config.aiProvider === 'ollama') {
+        providerConfig.ollama = {
+          baseUrl: config.ollamaBaseUrl || 'http://localhost:11434',
+          model: config.aiModel
+        };
+      } else if (config.aiProvider === 'claude') {
+        providerConfig.claude = {
+          apiKey: config.claudeApiKey || '',
+          model: config.aiModel
+        };
+      } else if (config.aiProvider === 'openai') {
+        providerConfig.openai = {
+          apiKey: config.openaiApiKey || '',
+          model: config.aiModel
+        };
+      }
+
+      // Call cleanupEpub with simplifyForChildren flag
+      const cleanupResult = await cleanupEpub(
+        readFromPath,
+        jobId,
+        mainWindow,
+        (progress) => {
+          sendProgress(mainWindow, jobId, {
+            phase: 'cleanup',
+            currentChunk: progress.chunksCompletedInJob || progress.currentChunk || 0,
+            totalChunks: progress.totalChunks || 0,
+            currentSentence: 0,
+            totalSentences: 0,
+            percentage: progress.percentage || 0,
+            message: progress.message || 'Processing...'
+          });
+        },
+        providerConfig,
+        {
+          simplifyForChildren: true,  // This enables the simplification logic
+          enableAiCleanup: true,       // Also do cleanup
+          outputDir: cleanupStageDir,  // Output to stages/01-cleanup/
+          testMode: config.testMode,
+          testModeChunks: config.testModeChunks
+        }
+      );
+
+      if (!cleanupResult.success) {
+        throw new Error(cleanupResult.error || 'Simplification failed');
+      }
+
+      console.log(`[LL-CLEANUP] Simplification complete: ${cleanupResult.outputPath}`);
+
+      // Update manifest pipeline status for simplified.epub
+      const { updateManifest } = await import('./manifest-service.js');
+      const projectId = path.basename(config.projectDir);
+
+      await updateManifest({
+        projectId: projectId,
+        modifiedAt: new Date().toISOString(),
+        pipeline: {
+          cleanup: {
+            status: 'complete',
+            outputPath: 'stages/01-cleanup/simplified.epub',
+            completedAt: new Date().toISOString(),
+            model: config.aiModel
+          }
+        }
+      });
+
+      // Analytics
+      completeStage(analytics, 'cleanup', {
+        inputChars: cleanupResult.outputPath ? 0 : 0,  // We don't have exact char counts from cleanupEpub
+        outputChars: 0
+      });
+      await saveAnalytics(config.projectDir, analytics);
+
+      return {
+        success: true,
+        outputPath: cleanupResult.outputPath,
+        nextJobConfig: {
+          cleanedEpubPath: cleanupResult.outputPath
+        }
+      };
     }
 
+    // For standard cleanup (non-simplification), continue with existing logic
+    console.log(`[LL-CLEANUP] Using standard cleanup (not simplification)`);
+
+    // Choose prompt based on user selection
+    const finalPrompt = config.cleanupPrompt || await loadPrompt(PROMPTS.TTS_CLEANUP);
     console.log(`[LL-CLEANUP] Prompt selected (${finalPrompt.length} chars)`);
 
     // Build the bilingual config for the cleanup function - will be modified per chapter in test mode

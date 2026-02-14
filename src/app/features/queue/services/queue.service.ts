@@ -22,6 +22,7 @@ import {
   BilingualCleanupJobConfig,
   BilingualTranslationJobConfig,
   BilingualAssemblyJobConfig,
+  VideoAssemblyJobConfig,
   AudiobookJobConfig,
   ResumeCheckResult,
   TtsResumeInfo
@@ -711,7 +712,13 @@ export class QueueService {
 
     // Get the job before updating to capture the type
     const completedJob = this._jobs().find(j => j.id === result.jobId);
-    console.log('[QUEUE] Found completed job:', completedJob ? `type=${completedJob.type}, id=${completedJob.id}` : 'NOT FOUND');
+    console.log('[QUEUE] Found completed job:', completedJob ? `type=${completedJob.type}, id=${completedJob.id}, status=${completedJob.status}` : 'NOT FOUND');
+
+    // Guard against double-processing — inline + event-based handlers can both call this
+    if (completedJob && (completedJob.status === 'complete' || completedJob.status === 'error')) {
+      console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping duplicate call`);
+      return;
+    }
 
     // Determine the final status:
     // - success=true -> 'complete'
@@ -1906,7 +1913,25 @@ export class QueueService {
             openaiModel: aiConfig.openai?.model
           }
         });
-        await electron.queue.runOcrCleanup(job.id, job.epubPath, config.aiModel, aiConfig);
+        const ocrResult = await electron.queue.runOcrCleanup(job.id, job.epubPath, config.aiModel, aiConfig);
+
+        // Handle completion inline via handleJobComplete (don't rely solely on queue:job-complete IPC event).
+        // This ensures all OCR-specific logic runs (TOO_MANY_FALLBACKS skip, analytics, etc.)
+        // The IPC event may also arrive — handleJobComplete is idempotent for already-completed jobs.
+        const ocrData = ocrResult?.data || {};
+        await this.handleJobComplete({
+          jobId: job.id,
+          success: ocrData.success ?? ocrResult?.success ?? false,
+          outputPath: ocrData.outputPath,
+          error: ocrData.error || ocrResult?.error,
+          copyrightIssuesDetected: ocrData.copyrightIssuesDetected,
+          copyrightChunksAffected: ocrData.copyrightChunksAffected,
+          contentSkipsDetected: ocrData.contentSkipsDetected,
+          contentSkipsAffected: ocrData.contentSkipsAffected,
+          skippedChunksPath: ocrData.skippedChunksPath,
+          analytics: ocrData.analytics,
+        });
+
       } else if (job.type === 'translation') {
         const config = job.config as TranslationJobConfig | undefined;
         if (!config) {
@@ -1938,7 +1963,18 @@ export class QueueService {
           jobId: job.id,
           model: config.aiModel
         });
-        await electron.queue.runTranslation(job.id, job.epubPath, translationConfig, aiConfig);
+        const transResult = await electron.queue.runTranslation(job.id, job.epubPath, translationConfig, aiConfig);
+
+        // Handle completion inline via handleJobComplete (don't rely solely on queue:job-complete IPC event)
+        const transData = transResult?.data || {};
+        await this.handleJobComplete({
+          jobId: job.id,
+          success: transData.success ?? transResult?.success ?? false,
+          outputPath: transData.outputPath,
+          error: transData.error || transResult?.error,
+          analytics: transData.analytics,
+        });
+
       } else if (job.type === 'tts-conversion') {
         const config = job.config as TtsConversionConfig | undefined;
         if (!config) {
@@ -2120,6 +2156,21 @@ export class QueueService {
             }
           }
 
+          // Create a promise that resolves when TTS completes (inline completion handling)
+          // This prevents the race condition where the event-based onComplete fires
+          // but processNext() isn't called due to timing issues.
+          const ttsComplete = new Promise<{
+            success: boolean; outputPath?: string; error?: string;
+            sessionId?: string; sessionDir?: string;
+            analytics?: any; wasStopped?: boolean; stopInfo?: any;
+          }>((resolve) => {
+            const unsub = electron.parallelTts!.onComplete((data: any) => {
+              if (data.jobId !== job.id) return;
+              unsub();
+              resolve(data);
+            });
+          });
+
           if (shouldResume && resumeCheckResult) {
             console.log(`[QUEUE] Resuming TTS conversion from ${resumeCheckResult.completedSentences} sentences`);
             await electron.parallelTts.resumeConversion(job.id, parallelConfig, resumeCheckResult);
@@ -2127,6 +2178,27 @@ export class QueueService {
             // Start fresh conversion
             await electron.parallelTts.startConversion(job.id, parallelConfig);
           }
+
+          // Wait for TTS to actually finish (the invoke above returns immediately)
+          const ttsResult = await ttsComplete;
+          console.log(`[QUEUE] Parallel TTS inline completion: success=${ttsResult.success}, jobId=${job.id}`);
+
+          // Delegate to handleJobComplete for all TTS-specific logic
+          // (session caching, chainAssembly activation, processNext, etc.)
+          // This is idempotent — if the event-based handler already processed this, it's a no-op
+          // because _currentJobId will have been cleared and the "not the current job" branch runs.
+          await this.handleJobComplete({
+            jobId: job.id,
+            success: ttsResult.success,
+            outputPath: ttsResult.outputPath,
+            error: ttsResult.error,
+            analytics: ttsResult.analytics,
+            wasStopped: ttsResult.wasStopped,
+            stopInfo: ttsResult.stopInfo,
+            sessionId: ttsResult.sessionId,
+            sessionDir: ttsResult.sessionDir,
+          });
+
         } else {
           // Use sequential TTS conversion
           // IMPORTANT: Use the EPUB path that was resolved when the job was created
@@ -2143,7 +2215,19 @@ export class QueueService {
             console.log(`[QUEUE] Sequential TTS: using job's EPUB path: ${seqEpubPath}`);
           }
 
-          await electron.queue.runTtsConversion(job.id, seqEpubPath, config);
+          const seqResult = await electron.queue.runTtsConversion(job.id, seqEpubPath, config);
+
+          // Handle completion inline via handleJobComplete (don't rely solely on queue:job-complete IPC event)
+          const seqData = seqResult?.data || {};
+          await this.handleJobComplete({
+            jobId: job.id,
+            success: seqData.success ?? seqResult?.success ?? false,
+            outputPath: seqData.outputPath,
+            error: seqData.error || seqResult?.error,
+            analytics: seqData.analytics,
+            sessionId: seqData.sessionId,
+            sessionDir: seqData.sessionDir,
+          });
         }
       } else if (job.type === 'reassembly') {
         // Reassembly job - reassemble incomplete e2a session
@@ -2167,7 +2251,52 @@ export class QueueService {
           throw new Error(result.error || 'Reassembly failed');
         }
 
-        // The job completion will be handled by the onComplete callback
+        // Mark job as complete
+        this._jobs.update(jobs =>
+          jobs.map(j => {
+            if (j.id !== job.id) return j;
+            return {
+              ...j,
+              status: 'complete' as JobStatus,
+              progress: 100,
+              completedAt: new Date(),
+              outputPath: result.data?.outputPath,
+            };
+          })
+        );
+
+        console.log('[QUEUE] Reassembly complete:', result.data?.outputPath);
+
+        // Copy VTT to BFP audiobook folder
+        if (result.data?.outputPath && job.bfpPath) {
+          this.copyVttToBfp(job.bfpPath, result.data.outputPath);
+        }
+
+        // Link audio to BFP
+        if (result.data?.outputPath?.endsWith('.m4b') && job.bfpPath) {
+          try {
+            const el = (window as any).electron;
+            if (el?.audiobook?.linkAudio) {
+              await el.audiobook.linkAudio(job.bfpPath, result.data.outputPath);
+            }
+          } catch (err) {
+            console.error('[QUEUE] Failed to auto-link audio after reassembly:', err);
+          }
+        }
+
+        // Reload studio item
+        if (job.bfpPath) {
+          await this.studioService.reloadItem(job.bfpPath);
+        }
+
+        // Update master job progress
+        if (job.parentJobId && job.workflowId) {
+          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
+        }
+
+        // Clear current job and process next
+        this._currentJobId.set(null);
+        await this.processNext();
       } else if (job.type === 'resemble-enhance') {
         // Resemble Enhance job - audio enhancement/denoising
         const config = job.config as ResembleEnhanceJobConfig | undefined;
@@ -2653,6 +2782,106 @@ export class QueueService {
         // Clear current job and process next
         this._currentJobId.set(null);
         await this.processNext();
+
+      } else if (job.type === 'video-assembly') {
+        // Video Assembly job - renders subtitle MP4 from M4B + VTT
+        const config = job.config as any;
+        if (!config) {
+          throw new Error('Video Assembly configuration required');
+        }
+
+        console.log('[QUEUE] Starting video-assembly job:', {
+          mode: config.mode,
+          resolution: config.resolution,
+          m4bPath: config.m4bPath,
+        });
+
+        const videoAssembly = (window.electron as any)?.videoAssembly;
+        if (!videoAssembly) {
+          throw new Error('Video Assembly not available');
+        }
+
+        // Subscribe to progress
+        const unsubscribeProgress = videoAssembly.onProgress((data: {
+          jobId: string; phase: string; percentage: number; message: string;
+        }) => {
+          if (data.jobId !== job.id) return;
+          this._jobs.update(jobs =>
+            jobs.map(j => {
+              if (j.id !== job.id) return j;
+              return {
+                ...j,
+                progress: data.percentage,
+                progressMessage: data.message,
+              };
+            })
+          );
+        });
+
+        // Subscribe to completion
+        const videoComplete = new Promise<{ success: boolean; outputPath?: string; error?: string }>((resolve) => {
+          const unsub = videoAssembly.onComplete((data: {
+            jobId: string; success: boolean; outputPath?: string; error?: string;
+          }) => {
+            if (data.jobId !== job.id) return;
+            unsub();
+            resolve(data);
+          });
+        });
+
+        // Start the video assembly (async - returns immediately)
+        const externalAudiobooksDir = this.settingsService.get<string>('externalAudiobooksDir') || '';
+        const startResult = await videoAssembly.run(job.id, {
+          projectId: config.projectId,
+          bfpPath: config.bfpPath,
+          mode: config.mode,
+          m4bPath: config.m4bPath,
+          vttPath: config.vttPath,
+          sentencePairsPath: config.sentencePairsPath,
+          title: config.title || job.metadata?.title,
+          sourceLang: config.sourceLang,
+          targetLang: config.targetLang,
+          resolution: config.resolution,
+          externalAudiobooksDir: externalAudiobooksDir || undefined,
+          outputFilename: config.outputFilename || job.metadata?.outputFilename,
+        });
+
+        if (!startResult.success) {
+          if (unsubscribeProgress) unsubscribeProgress();
+          throw new Error(startResult.error || 'Failed to start video assembly');
+        }
+
+        // Wait for completion
+        const result = await videoComplete;
+        if (unsubscribeProgress) unsubscribeProgress();
+
+        if (!result.success) {
+          throw new Error(result.error || 'Video assembly failed');
+        }
+
+        // Mark complete
+        this._jobs.update(jobs =>
+          jobs.map(j => {
+            if (j.id !== job.id) return j;
+            return {
+              ...j,
+              status: 'complete' as JobStatus,
+              progress: 100,
+              outputPath: result.outputPath,
+            };
+          })
+        );
+
+        console.log('[QUEUE] Video assembly complete:', result.outputPath);
+
+        // Update master job progress
+        if (job.parentJobId && job.workflowId) {
+          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
+        }
+
+        // Clear current job and process next
+        this._currentJobId.set(null);
+        await this.processNext();
       }
     } catch (err) {
       // Error starting job
@@ -2685,7 +2914,7 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | AudiobookJobConfig | undefined {
+  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | undefined {
     if (request.type === 'ocr-cleanup') {
       const config = request.config as Partial<OcrCleanupConfig>;
       if (!config?.aiProvider || !config?.aiModel) {
@@ -2751,6 +2980,8 @@ export class QueueService {
         // Bilingual mode and skip assembly for dual-voice workflows
         bilingual: config.bilingual,
         skipAssembly: config.skipAssembly,
+        // Chain assembly after TTS completion
+        chainAssembly: config.chainAssembly,
         // Never use cleanSession - preserve session contents
         // Preserve paragraph boundaries (for language learning)
         sentencePerParagraph: config.sentencePerParagraph,
@@ -2762,14 +2993,16 @@ export class QueueService {
       };
     } else if (request.type === 'reassembly') {
       const config = request.config as Partial<ReassemblyJobConfig>;
-      if (!config?.sessionId || !config?.sessionDir || !config?.processDir || !config?.outputDir) {
-        return undefined; // Session info and output dir are required
+      // sessionId/sessionDir/processDir may be empty for placeholder jobs (filled later by chainAssembly handler)
+      // outputDir is required — it's known at creation time from bfpPath
+      if (!config?.outputDir) {
+        return undefined;
       }
       return {
         type: 'reassembly',
-        sessionId: config.sessionId,
-        sessionDir: config.sessionDir,
-        processDir: config.processDir,
+        sessionId: config.sessionId || '',
+        sessionDir: config.sessionDir || '',
+        processDir: config.processDir || '',
         outputDir: config.outputDir,
         totalChapters: config.totalChapters,
         metadata: config.metadata || { title: 'Unknown', author: 'Unknown' },
@@ -2846,6 +3079,25 @@ export class QueueService {
         outputDir: config.outputDir,
         pauseDuration: config.pauseDuration ?? 0.3,
         gapDuration: config.gapDuration ?? 1.0
+      };
+    } else if (request.type === 'video-assembly') {
+      const config = request.config as Partial<VideoAssemblyJobConfig>;
+      if (!config?.projectId || !config?.bfpPath || !config?.m4bPath || !config?.vttPath) {
+        return undefined;
+      }
+      return {
+        type: 'video-assembly',
+        projectId: config.projectId,
+        bfpPath: config.bfpPath,
+        mode: config.mode || 'monolingual',
+        m4bPath: config.m4bPath,
+        vttPath: config.vttPath,
+        sentencePairsPath: config.sentencePairsPath,
+        title: config.title || 'Audiobook',
+        sourceLang: config.sourceLang || 'en',
+        targetLang: config.targetLang,
+        resolution: config.resolution || '1080p',
+        outputFilename: config.outputFilename,
       };
     } else if (request.type === 'audiobook') {
       // Audiobook master jobs are containers - no config needed

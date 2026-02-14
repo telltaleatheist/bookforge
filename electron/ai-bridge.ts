@@ -10,6 +10,7 @@
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import path from 'path';
 import { promises as fsPromises } from 'fs';
+import { getCleanupPromptForLanguage, hasLanguageSpecificPrompt } from './ai-cleanup-prompts';
 
 // Power save blocker ID - prevents system sleep during AI cleanup
 let aiPowerBlockerId: number | null = null;
@@ -407,8 +408,17 @@ loadPrompt('full').then(prompt => {
 /**
  * Build a simple OCR cleanup prompt for queue processing (entire EPUB).
  * Same as buildCleanupPrompt but exposed for queue use.
+ * Now supports language-specific prompts to avoid unwanted translation behavior.
  */
-export function getOcrCleanupSystemPrompt(mode: 'structure' | 'full' = 'structure'): string {
+export function getOcrCleanupSystemPrompt(mode: 'structure' | 'full' = 'structure', languageCode?: string): string {
+  // If a language code is provided and we have a specific prompt for it, use that
+  if (languageCode && hasLanguageSpecificPrompt(languageCode)) {
+    const prompt = getCleanupPromptForLanguage(languageCode, mode);
+    console.log(`[AI-BRIDGE] Using ${languageCode.toUpperCase()} language-specific prompt (mode: ${mode})`);
+    return prompt;
+  }
+
+  // Otherwise fall back to the default English prompt
   const prompt = buildCleanupPrompt({ fixHyphenation: true, fixOcrArtifacts: true, expandAbbreviations: true }, mode);
   // Debug: log first 200 chars of prompt to verify it's the correct version
   console.log(`[AI-BRIDGE] Using system prompt (mode: ${mode}, first 200 chars):`, prompt.substring(0, 200).replace(/\n/g, ' '));
@@ -1897,6 +1907,10 @@ export async function cleanupEpub(
       return { success: false, error: 'No chapters found in EPUB' };
     }
 
+    // Extract the book's language from metadata for language-specific prompts
+    const bookLanguage = structure?.metadata?.language || 'en';
+    console.log(`[AI-BRIDGE] Book language detected: ${bookLanguage}`);
+
     // Build system prompt based on processing options
     // Default: enableAiCleanup is true for backwards compatibility
     const enableAiCleanup = options?.enableAiCleanup !== false;
@@ -1910,7 +1924,8 @@ export async function cleanupEpub(
       console.log('[AI-BRIDGE] Using custom cleanup prompt');
     } else if (enableAiCleanup && simplifyForChildren) {
       // BOTH: Standard cleanup + simplification
-      systemPrompt = getOcrCleanupSystemPrompt(cleanupMode);
+      // Use language-specific prompt to prevent unwanted translation
+      systemPrompt = getOcrCleanupSystemPrompt(cleanupMode, bookLanguage);
       if (options?.useDetailedCleanup && options.deletedBlockExamples && options.deletedBlockExamples.length > 0) {
         const examplesSection = buildExamplesSection(options.deletedBlockExamples);
         systemPrompt = systemPrompt + examplesSection;
@@ -1925,7 +1940,8 @@ export async function cleanupEpub(
       console.log('[AI-BRIDGE] Mode: Simplify for modern audience ONLY (no AI cleanup)');
     } else {
       // CLEANUP ONLY: Standard cleanup without simplification
-      systemPrompt = getOcrCleanupSystemPrompt(cleanupMode);
+      // Use language-specific prompt to prevent unwanted translation
+      systemPrompt = getOcrCleanupSystemPrompt(cleanupMode, bookLanguage);
       if (options?.useDetailedCleanup && options.deletedBlockExamples && options.deletedBlockExamples.length > 0) {
         const examplesSection = buildExamplesSection(options.deletedBlockExamples);
         systemPrompt = systemPrompt + examplesSection;

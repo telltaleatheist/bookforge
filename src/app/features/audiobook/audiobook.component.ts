@@ -599,7 +599,7 @@ export class AudiobookComponent implements OnInit {
     topP: 0.9,
     topK: 40,
     repetitionPenalty: 2.0,
-    speed: 1.25,
+    speed: 1.0,
     enableTextSplitting: false,
     useParallel: true,        // Always use parallel mode (enables resumability)
     parallelWorkers: 0,       // 0 = Auto (detect based on available RAM)

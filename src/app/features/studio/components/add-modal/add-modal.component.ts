@@ -2,6 +2,7 @@ import { Component, inject, signal, output, HostListener } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { StudioService } from '../../services/studio.service';
+import { ElectronService } from '../../../../core/services/electron.service';
 import { StudioItem } from '../../models/studio.types';
 
 /**
@@ -43,14 +44,7 @@ import { StudioItem } from '../../models/studio.types';
               <div class="drop-icon">📚</div>
               <p class="drop-text">Drop EPUB file here</p>
               <p class="drop-hint">or drag from Finder</p>
-              <input
-                type="file"
-                #fileInput
-                accept=".epub"
-                (change)="onFileSelected($event)"
-                style="display: none"
-              />
-              <button class="btn-browse" (click)="fileInput.click()">
+              <button class="btn-browse" (click)="browseFiles()">
                 Browse Files
               </button>
             }
@@ -339,6 +333,7 @@ import { StudioItem } from '../../models/studio.types';
 })
 export class AddModalComponent {
   private readonly studioService = inject(StudioService);
+  private readonly electronService = inject(ElectronService);
 
   // Outputs
   readonly close = output<void>();
@@ -383,12 +378,16 @@ export class AddModalComponent {
     }
   }
 
-  onFileSelected(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    if (input.files && input.files.length > 0) {
-      const file = input.files[0];
-      if (file.name.endsWith('.epub')) {
-        this.importEpub((file as any).path);
+  async browseFiles(): Promise<void> {
+    // Use Electron's native file dialog
+    const result = await this.electronService.openPdfDialog();
+    if (result.success && result.filePath) {
+      // Check if it's an EPUB file
+      if (result.filePath.toLowerCase().endsWith('.epub')) {
+        await this.importEpub(result.filePath);
+      } else {
+        console.error('Selected file is not an EPUB:', result.filePath);
+        // Could show an error message to the user here
       }
     }
   }

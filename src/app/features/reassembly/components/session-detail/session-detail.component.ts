@@ -10,7 +10,7 @@ import { ReassemblyService } from '../../services/reassembly.service';
 import { ChapterListComponent } from '../chapter-list/chapter-list.component';
 import { ConfirmModalComponent } from '../confirm-modal/confirm-modal.component';
 import { QueueService } from '../../../queue/services/queue.service';
-import { ReassemblyJobConfig } from '../../../queue/models/queue.types';
+import { ReassemblyJobConfig, VideoAssemblyJobConfig } from '../../../queue/models/queue.types';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { SettingsService } from '../../../../core/services/settings.service';
 import { LibraryService } from '../../../../core/services/library.service';
@@ -233,6 +233,49 @@ type Tab = 'metadata' | 'chapters' | 'actions';
                       {{ reassemblyService.progress()!.error }}
                     </div>
                   }
+                </div>
+              }
+
+              <!-- Output Format -->
+              <div class="config-section">
+                <label class="field-label">Output Format</label>
+                <div class="provider-buttons">
+                  <button class="provider-btn selected" disabled>
+                    <span class="provider-name">Audio</span>
+                    <span class="provider-status">M4B + VTT (always)</span>
+                  </button>
+                  <button class="provider-btn"
+                    [class.selected]="generateVideo()"
+                    (click)="generateVideo.set(!generateVideo())">
+                    <span class="provider-name">Video</span>
+                    <span class="provider-status">MP4 with subtitles</span>
+                  </button>
+                </div>
+              </div>
+
+              @if (generateVideo()) {
+                <div class="config-section">
+                  <label class="field-label">Video Resolution</label>
+                  <div class="provider-buttons">
+                    <button class="provider-btn"
+                      [class.selected]="videoResolution() === '720p'"
+                      (click)="videoResolution.set('720p')">
+                      <span class="provider-name">720p</span>
+                      <span class="provider-status">1280x720</span>
+                    </button>
+                    <button class="provider-btn"
+                      [class.selected]="videoResolution() === '1080p'"
+                      (click)="videoResolution.set('1080p')">
+                      <span class="provider-name">1080p</span>
+                      <span class="provider-status">1920x1080</span>
+                    </button>
+                    <button class="provider-btn"
+                      [class.selected]="videoResolution() === '4k'"
+                      (click)="videoResolution.set('4k')">
+                      <span class="provider-name">4K</span>
+                      <span class="provider-status">3840x2160</span>
+                    </button>
+                  </div>
                 </div>
               }
 
@@ -765,6 +808,70 @@ type Tab = 'metadata' | 'chapters' | 'actions';
       }
     }
 
+    .config-section {
+      margin-top: 16px;
+    }
+
+    .field-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-tertiary);
+      margin-bottom: 8px;
+    }
+
+    .provider-buttons {
+      display: flex;
+      gap: 8px;
+    }
+
+    .provider-btn {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 12px 8px;
+      background: var(--bg-elevated);
+      border: 2px solid var(--border-subtle);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      color: var(--text-primary);
+
+      .provider-name {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+
+      .provider-status {
+        font-size: 10px;
+        color: var(--text-muted);
+      }
+
+      &:hover:not(:disabled) {
+        background: var(--bg-hover);
+        border-color: var(--border-default);
+      }
+
+      &.selected {
+        background: rgba(6, 182, 212, 0.15);
+        border-color: #06b6d4;
+
+        .provider-name {
+          color: #06b6d4;
+        }
+      }
+
+      &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+    }
+
     .spinner {
       display: inline-block;
       width: 14px;
@@ -804,6 +911,10 @@ export class SessionDetailComponent {
 
   // Track if job was added to queue
   readonly addedToQueue = signal(false);
+
+  // Video assembly options
+  readonly generateVideo = signal(false);
+  readonly videoResolution = signal<'720p' | '1080p' | '4k'>('720p');
 
   // Track last loaded session to detect changes
   private lastLoadedSessionId = '';
@@ -1266,7 +1377,10 @@ export class SessionDetailComponent {
       excludedChapters: this.reassemblyService.getExcludedChapters()
     };
 
-    // Add to queue
+    // Use a workflow ID if video is requested so video job runs after reassembly
+    const workflowId = this.generateVideo() ? `reassembly-video-${Date.now()}` : undefined;
+
+    // Add reassembly job to queue
     await this.queueService.addJob({
       type: 'reassembly',
       epubPath: session.processDir, // Use processDir as identifier
@@ -1274,13 +1388,55 @@ export class SessionDetailComponent {
       metadata: {
         title: config.metadata?.title,
         author: config.metadata?.author
-      }
+      },
+      workflowId,
     });
+
+    // Add video assembly job if requested
+    if (this.generateVideo()) {
+      const title = this.editTitle || session.metadata?.title || 'Untitled';
+      const author = this.editAuthor || session.metadata?.author || '';
+      const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
+
+      // Build external filename from metadata: "{Title}. {Author}" or user's outputFilename
+      const userFilename = this.editOutputFilename || session.metadata?.outputFilename;
+      let videoOutputFilename: string;
+      if (userFilename) {
+        // Strip any audio extension, bridge will add .mp4
+        videoOutputFilename = userFilename.replace(/\.(m4b|mp3|m4a|aac)$/i, '');
+      } else {
+        videoOutputFilename = title;
+        if (author && author !== 'Unknown' && !title.includes(author)) {
+          videoOutputFilename += `. ${author}`;
+        }
+      }
+
+      await this.queueService.addJob({
+        type: 'video-assembly',
+        bfpPath: outputDir,
+        metadata: { title: `Video (${title})` },
+        config: {
+          type: 'video-assembly',
+          projectId: outputDir,
+          bfpPath: outputDir,
+          mode: 'monolingual' as const,
+          m4bPath: `${outputDir}/audiobook.m4b`,
+          vttPath: `${outputDir}/audiobook.vtt`,
+          title,
+          sourceLang: 'en',
+          resolution: this.videoResolution(),
+          externalAudiobooksDir: externalDir || undefined,
+          outputFilename: videoOutputFilename,
+        },
+        workflowId,
+      });
+    }
 
     // Update button state
     this.addedToQueue.set(true);
 
-    console.log('[REASSEMBLY] Added job to queue with metadata:', config.metadata);
+    console.log('[REASSEMBLY] Added job to queue with metadata:', config.metadata,
+      this.generateVideo() ? '(+ video assembly)' : '');
   }
 
   onDelete(): void {

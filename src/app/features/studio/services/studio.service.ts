@@ -135,11 +135,21 @@ export class StudioService {
           }
         }
 
-        // Cleanup state
-        const hasCleaned = manifest.pipeline?.cleanup?.status === 'complete';
+        // Cleanup state - check for actual cleaned files, not manifest status
+        // Check for simplified.epub or cleaned.epub in stages/01-cleanup/
         let cleanedEpubPath: string | undefined;
-        if (hasCleaned && manifest.pipeline?.cleanup?.outputPath) {
-          cleanedEpubPath = `${projectDir}/${manifest.pipeline.cleanup.outputPath}`;
+        let hasCleaned = false;
+
+        // Check for simplified first (takes priority if it exists)
+        const simplifiedPath = `${projectDir}/stages/01-cleanup/simplified.epub`;
+        const cleanedPath = `${projectDir}/stages/01-cleanup/cleaned.epub`;
+
+        if (await this.electronService.fsExists(simplifiedPath)) {
+          cleanedEpubPath = simplifiedPath;
+          hasCleaned = true;
+        } else if (await this.electronService.fsExists(cleanedPath)) {
+          cleanedEpubPath = cleanedPath;
+          hasCleaned = true;
         }
 
         // Skipped chunks
@@ -151,9 +161,9 @@ export class StudioService {
           }
         }
 
-        // Detect actual source EPUB: exported > finalized > original
+        // Detect actual source EPUB: exported > original (no legacy fallbacks)
         let epubPath = '';
-        for (const name of ['exported.epub', 'finalized.epub', 'original.epub']) {
+        for (const name of ['exported.epub', 'original.epub']) {
           const candidate = `${projectDir}/source/${name}`;
           if (await this.electronService.fsExists(candidate)) {
             epubPath = candidate;
@@ -203,6 +213,13 @@ export class StudioService {
         books.push(book);
       }
 
+      // Sort by modifiedAt descending (newest first) to ensure recently added items appear at top
+      books.sort((a, b) => {
+        const dateA = new Date(a.modifiedAt || 0).getTime();
+        const dateB = new Date(b.modifiedAt || 0).getTime();
+        return dateB - dateA;
+      });
+
       this._books.set(books);
     } catch (e) {
       console.error('[StudioService] Failed to load books:', e);
@@ -229,16 +246,26 @@ export class StudioService {
       for (const manifest of result.projects) {
         const projectDir = `${projectsPath}/${manifest.projectId}`;
 
-        // Determine status from pipeline/outputs
-        const hasCleaned = manifest.pipeline?.cleanup?.status === 'complete';
+        // Determine status from pipeline/outputs - check for actual cleaned files
+        // Check for simplified.epub or cleaned.epub in stages/01-cleanup/
+        let hasCleaned = false;
+        const simplifiedPath = `${projectDir}/stages/01-cleanup/simplified.epub`;
+        const cleanedPath = `${projectDir}/stages/01-cleanup/cleaned.epub`;
+
+        if (await this.electronService.fsExists(simplifiedPath)) {
+          hasCleaned = true;
+        } else if (await this.electronService.fsExists(cleanedPath)) {
+          hasCleaned = true;
+        }
+
         const hasAudiobook = !!manifest.outputs?.audiobook?.path;
         let status: StudioItem['status'] = 'draft';
         if (hasAudiobook) status = 'completed';
         else if (hasCleaned) status = 'ready';
 
-        // Detect actual source EPUB: exported > finalized > original
+        // Detect actual source EPUB: exported > original (no legacy fallbacks)
         let articleEpubPath = '';
-        for (const name of ['exported.epub', 'finalized.epub', 'original.epub']) {
+        for (const name of ['exported.epub', 'original.epub']) {
           const candidate = `${projectDir}/source/${name}`;
           if (await this.electronService.fsExists(candidate)) {
             articleEpubPath = candidate;
@@ -269,6 +296,13 @@ export class StudioService {
 
         articles.push(article);
       }
+
+      // Sort by modifiedAt descending (newest first) to ensure recently added items appear at top
+      articles.sort((a, b) => {
+        const dateA = new Date(a.modifiedAt || 0).getTime();
+        const dateB = new Date(b.modifiedAt || 0).getTime();
+        return dateB - dateA;
+      });
 
       this._articles.set(articles);
     } catch (e) {

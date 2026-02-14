@@ -3315,6 +3315,43 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // Video Assembly handlers (render subtitle MP4 from M4B + VTT)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('video-assembly:run', async (_event, jobId: string, config: {
+    projectId: string;
+    bfpPath: string;
+    mode: 'bilingual' | 'monolingual';
+    m4bPath: string;
+    vttPath: string;
+    sentencePairsPath?: string;
+    title: string;
+    sourceLang: string;
+    targetLang?: string;
+    resolution: '720p' | '1080p' | '4k';
+    externalAudiobooksDir?: string;
+    outputFilename?: string;
+  }) => {
+    try {
+      const { startVideoAssembly } = await import('./video-assembly-bridge.js');
+      startVideoAssembly(jobId, mainWindow!, config);
+      return { success: true, jobId };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('video-assembly:cancel', async (_event, jobId: string) => {
+    try {
+      const { cancelVideoAssembly } = await import('./video-assembly-bridge.js');
+      cancelVideoAssembly(jobId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // XTTS Worker Pool handlers (for Play tab real-time TTS with parallel generation)
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -3436,12 +3473,6 @@ function setupIpcHandlers(): void {
     const cleanedPath = path.join(folderPath, 'cleaned.epub');
     if (await fs.access(cleanedPath).then(() => true).catch(() => false)) {
       return cleanedPath;
-    }
-
-    // Legacy: exported_cleaned.epub (don't rename, just use it)
-    const legacyPath = path.join(folderPath, 'exported_cleaned.epub');
-    if (await fs.access(legacyPath).then(() => true).catch(() => false)) {
-      return legacyPath;
     }
 
     return null;
@@ -4318,91 +4349,102 @@ function setupIpcHandlers(): void {
   ) => {
     try {
       const filename = path.basename(epubSourcePath);
-      const projectName = filename.replace(/\.epub$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
 
-      // Create BFP file in projects folder
-      const projectsFolder = getProjectsFolder();
-      await fs.mkdir(projectsFolder, { recursive: true });
+      // Extract title and author from filename (format: Title_-_Author_Year.epub)
+      let title = filename.replace(/\.epub$/i, '');
+      let author = 'Unknown';
+      let year: number | undefined;
 
-      const bfpPath = path.join(projectsFolder, `${projectName}.bfp`);
-      const now = new Date().toISOString();
-
-      // Check if BFP already exists
-      let bfpProject: Record<string, unknown>;
-      let isReplacing = false;
-
-      try {
-        const existingContent = await fs.readFile(bfpPath, 'utf-8');
-        bfpProject = JSON.parse(existingContent);
-        isReplacing = true;
-        console.log(`[audiobook:import-epub] Updating existing BFP: ${bfpPath}`);
-      } catch {
-        // Create new BFP
-        bfpProject = {
-          version: 1,
-          source_path: epubSourcePath,
-          source_name: filename,
-          library_path: epubSourcePath,
-          file_hash: '',
-          deleted_block_ids: [],
-          created_at: now,
-          modified_at: now,
-          metadata: {
-            title: filename.replace(/\.epub$/i, '').replace(/[._]/g, ' ')
-          }
-        };
-        console.log(`[audiobook:import-epub] Creating new BFP: ${bfpPath}`);
+      // Try to parse author and year from filename
+      const titleAuthorMatch = title.match(/^(.+?)_-_(.+?)_\((\d{4})\)$/);
+      if (titleAuthorMatch) {
+        title = titleAuthorMatch[1].replace(/_/g, ' ');
+        author = titleAuthorMatch[2].replace(/_/g, ' ');
+        year = parseInt(titleAuthorMatch[3]);
+      } else {
+        // Simpler format without year
+        const simpleMatch = title.match(/^(.+?)_-_(.+)$/);
+        if (simpleMatch) {
+          title = simpleMatch[1].replace(/_/g, ' ');
+          author = simpleMatch[2].replace(/_/g, ' ');
+        } else {
+          // Just use filename as title
+          title = title.replace(/[._]/g, ' ');
+        }
       }
 
-      // Create audiobook folder
-      const audiobookFolder = getAudiobookFolderForProject(projectName);
-      await fs.mkdir(audiobookFolder, { recursive: true });
+      // Generate human-readable slug for folder name
+      const cleanTitle = title.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+      const cleanAuthor = author.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+      const yearStr = year ? `_(${year})` : '';
+      let slug = `${cleanTitle.replace(/\s+/g, '_')}_-_${cleanAuthor.replace(/\s+/g, '_')}${yearStr}`;
 
-      // Copy original EPUB to audiobook folder as source.epub (immutable original)
-      const sourceCopyPath = path.join(audiobookFolder, 'source.epub');
-      await fs.copyFile(epubSourcePath, sourceCopyPath);
-      console.log(`[audiobook:import-epub] Copied original to: ${sourceCopyPath}`);
+      // Ensure slug is valid as a folder name
+      slug = slug.replace(/[^a-zA-Z0-9_\-()]/g, '_').replace(/_+/g, '_').substring(0, 100);
 
-      // Also create exported.epub as the working copy for the pipeline
-      const epubPath = path.join(audiobookFolder, 'exported.epub');
-      await fs.copyFile(epubSourcePath, epubPath);
+      // Create project directory with human-readable name
+      const projectsFolder = getProjectsFolder();
+      const projectPath = path.join(projectsFolder, slug);
 
-      // Create project.json in audiobook folder
-      const projectJsonPath = path.join(audiobookFolder, 'project.json');
-      const projectJson = {
-        id: projectName,
+      // Check if project already exists
+      if (fsSync.existsSync(projectPath)) {
+        // Add timestamp to make unique
+        const timestamp = Date.now();
+        slug = `${slug}_${timestamp}`;
+      }
+
+      // Create the full project structure manually
+      const projectDir = path.join(projectsFolder, slug);
+      await fs.mkdir(projectDir, { recursive: true });
+      await fs.mkdir(path.join(projectDir, 'source'), { recursive: true });
+      await fs.mkdir(path.join(projectDir, 'stages', '01-cleanup'), { recursive: true });
+      await fs.mkdir(path.join(projectDir, 'stages', '02-translate'), { recursive: true });
+      await fs.mkdir(path.join(projectDir, 'stages', '03-tts', 'sessions'), { recursive: true });
+      await fs.mkdir(path.join(projectDir, 'output'), { recursive: true });
+
+      // Copy the EPUB to source/original.epub (immutable original)
+      const sourcePath = path.join(projectDir, 'source', 'original.epub');
+      await fs.copyFile(epubSourcePath, sourcePath);
+
+      // NOTE: exported.epub is only created when user finalizes from PDF viewer
+
+      // Create manifest.json
+      const manifest = {
         version: 1,
-        metadata: bfpProject.metadata || {},
-        state: { step: 'exported' },
-        createdAt: now
+        projectId: slug,
+        projectType: 'book',
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        source: {
+          type: 'epub',
+          originalFilename: filename,
+          deletedBlockIds: []
+        },
+        metadata: {
+          title,
+          author,
+          year,
+          language: 'en'
+        },
+        chapters: [],
+        pipeline: {},
+        outputs: {}
       };
-      await fs.writeFile(projectJsonPath, JSON.stringify(projectJson, null, 2));
 
-      // Update BFP paths to point to copied source (self-contained project)
-      bfpProject.source_path = sourceCopyPath;
-      bfpProject.library_path = sourceCopyPath;
-      bfpProject.original_source_path = epubSourcePath; // Keep reference to where it came from
+      const manifestPath = path.join(projectDir, 'manifest.json');
+      await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 
-      // Update BFP with audiobook state
-      bfpProject.audiobook = {
-        status: 'pending',
-        exportedEpubPath: epubPath,
-        exportedAt: now
-      };
-      bfpProject.audiobookFolder = audiobookFolder;
-      bfpProject.modified_at = now;
-
-      // Save BFP
-      await atomicWriteFile(bfpPath, JSON.stringify(bfpProject, null, 2));
-
-      console.log(`[audiobook:import-epub] ${isReplacing ? 'Updated' : 'Created'} project: ${bfpPath}`);
+      console.log(`[audiobook:import-epub] Created manifest project: ${projectDir}`);
+      console.log(`[audiobook:import-epub] Copied EPUB to: ${sourcePath}`);
 
       return {
         success: true,
-        bfpPath,
-        audiobookFolder,
-        epubPath,
-        projectName
+        projectId: slug,
+        projectPath: projectDir,
+        bfpPath: projectDir, // Return projectPath as bfpPath for compatibility
+        audiobookFolder: path.join(projectDir, 'output'),
+        epubPath: sourcePath, // Return original.epub path since exported doesn't exist yet
+        projectName: title
       };
     } catch (err) {
       console.error('[audiobook:import-epub] Error:', err);
@@ -7386,7 +7428,7 @@ function setupIpcHandlers(): void {
                 ext === '.pdf' ? '📄' : '📘',
                 true
               );
-            } else if (baseName === 'finalized' || baseName === 'exported') {
+            } else if (baseName === 'exported') {
               await addVersion(
                 'exported',
                 'exported',

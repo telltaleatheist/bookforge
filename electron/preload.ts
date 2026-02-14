@@ -1378,6 +1378,25 @@ export interface ElectronAPI {
       sentencePairsPath?: string;
     }) => Promise<{ success: boolean; projectAudioPath?: string; projectVttPath?: string; error?: string }>;
   };
+  videoAssembly: {
+    run: (jobId: string, config: {
+      projectId: string;
+      bfpPath: string;
+      mode: 'bilingual' | 'monolingual';
+      m4bPath: string;
+      vttPath: string;
+      sentencePairsPath?: string;
+      title: string;
+      sourceLang: string;
+      targetLang?: string;
+      resolution: '720p' | '1080p' | '4k';
+      externalAudiobooksDir?: string;
+      outputFilename?: string;
+    }) => Promise<{ success: boolean; jobId?: string; error?: string }>;
+    cancel: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    onProgress: (callback: (data: { jobId: string; phase: string; percentage: number; message: string }) => void) => () => void;
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string }) => void) => () => void;
+  };
   reassembly: {
     scanSessions: (customTmpPath?: string) => Promise<{ success: boolean; data?: E2aSessionScanResult; error?: string }>;
     getSession: (sessionId: string, customTmpPath?: string) => Promise<{ success: boolean; data?: E2aSession; error?: string }>;
@@ -2588,6 +2607,43 @@ const electronAPI: ElectronAPI = {
       sentencePairsPath?: string;
     }) =>
       ipcRenderer.invoke('bilingual-assembly:finalize-output', params),
+  },
+  videoAssembly: {
+    run: (jobId: string, config: {
+      projectId: string;
+      bfpPath: string;
+      mode: 'bilingual' | 'monolingual';
+      m4bPath: string;
+      vttPath: string;
+      sentencePairsPath?: string;
+      title: string;
+      sourceLang: string;
+      targetLang?: string;
+      resolution: '720p' | '1080p' | '4k';
+      externalAudiobooksDir?: string;
+      outputFilename?: string;
+    }) =>
+      ipcRenderer.invoke('video-assembly:run', jobId, config),
+    cancel: (jobId: string) =>
+      ipcRenderer.invoke('video-assembly:cancel', jobId),
+    onProgress: (callback: (data: { jobId: string; phase: string; percentage: number; message: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; phase: string; percentage: number; message: string }) => {
+        callback(data);
+      };
+      ipcRenderer.on('video-assembly:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('video-assembly:progress', listener);
+      };
+    },
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; outputPath?: string; error?: string }) => {
+        callback(data);
+      };
+      ipcRenderer.on('video-assembly:complete', listener);
+      return () => {
+        ipcRenderer.removeListener('video-assembly:complete', listener);
+      };
+    },
   },
   reassembly: {
     scanSessions: async (customTmpPath?: string) => {
