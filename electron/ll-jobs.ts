@@ -1104,9 +1104,9 @@ export async function runLLTranslation(
       { flattenHeadings: true }
     );
 
-    // Target EPUB (e.g., de.epub)
+    // Target EPUB (e.g., de.epub) — use translated first sentence as chapter title
     const targetChapters = validChapters.map(ch => ({
-      title: ch.title,
+      title: ch.targetSentences[0] || ch.title,
       sentences: ch.targetSentences
     }));
     await generateChapteredEpub(

@@ -163,7 +163,7 @@ export class StudioService {
           modifiedAt: manifest.modifiedAt,
           epubPath: `${projectDir}/source/original.epub`,
           bfpPath: projectDir,
-          coverPath: manifest.metadata?.coverPath,
+          coverPath: manifest.metadata?.coverPath ? `${this.libraryService.libraryPath()}/${manifest.metadata.coverPath}` : undefined,
           hasCleaned,
           cleanedEpubPath,
           audiobookPath,
@@ -175,16 +175,10 @@ export class StudioService {
           bilingualOutputs: Object.keys(bilingualOutputs).length > 0 ? bilingualOutputs : undefined,
         };
 
-        // Load cover image
-        // coverPath may be library-relative ("media/cover_xxx.png") or project-relative ("source/cover.jpg")
+        // Load cover image (coverPath is library-relative, e.g. "media/cover_xxx.png")
         if (manifest.metadata?.coverPath) {
           try {
-            // mediaLoadImage joins with library root, so library-relative paths work directly
-            let coverResult = await this.electronService.mediaLoadImage(manifest.metadata.coverPath);
-            if (!coverResult.success) {
-              // Try as project-relative path
-              coverResult = await this.electronService.mediaLoadImage(`projects/${manifest.projectId}/${manifest.metadata.coverPath}`);
-            }
+            const coverResult = await this.electronService.mediaLoadImage(manifest.metadata.coverPath);
             if (coverResult.success && coverResult.data) {
               book.coverData = coverResult.data;
             }

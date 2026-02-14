@@ -15,6 +15,7 @@ import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
 import { findEbookConvert } from './ebook-convert-bridge';
+import { applyMetadata } from './metadata-tools';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -5033,7 +5034,33 @@ function setupIpcHandlers(): void {
         console.log('[bilingual-assembly:finalize-output] Copied VTT to:', projectVttPath);
       }
 
-      // 3. Update manifest with bilingual output paths
+      // 3. Apply metadata (cover, title, author) to M4B
+      try {
+        const manifestResult0 = await manifestService.getManifest(projectId);
+        if (manifestResult0.success && manifestResult0.manifest) {
+          const meta = manifestResult0.manifest.metadata;
+          let coverAbsPath: string | undefined;
+          if (meta.coverPath) {
+            const candidate = path.join(getLibraryRoot(), meta.coverPath);
+            if (fsSync.existsSync(candidate)) {
+              coverAbsPath = candidate;
+            }
+          }
+          await applyMetadata(projectAudioPath, {
+            title: meta.title,
+            author: meta.author,
+            year: meta.year,
+            narrator: meta.narrator,
+            series: meta.series,
+            coverPath: coverAbsPath,
+          });
+          console.log('[bilingual-assembly:finalize-output] Metadata + cover applied to M4B');
+        }
+      } catch (metaErr) {
+        console.error('[bilingual-assembly:finalize-output] Failed to apply metadata (non-fatal):', metaErr);
+      }
+
+      // 4. Update manifest with bilingual output paths
       // Convert absolute sentencePairsPath to relative for manifest storage
       let relativeSentencePairsPath: string | undefined;
       if (sentencePairsPath && sentencePairsPath.startsWith(projectDir)) {
@@ -5064,7 +5091,7 @@ function setupIpcHandlers(): void {
         console.error('[bilingual-assembly:finalize-output] Failed to update manifest:', manifestResult.error);
       }
 
-      // 4. Copy M4B to external audiobooks dir with metadata-based filename
+      // 5. Copy M4B (with metadata) to external audiobooks dir
       if (externalAudiobooksDir) {
         try {
           await fs.mkdir(externalAudiobooksDir, { recursive: true });
@@ -5102,7 +5129,7 @@ function setupIpcHandlers(): void {
           // Sanitize filename for filesystem (keep apostrophes, remove only truly invalid chars)
           const safeFilename = outputBasename.replace(/[<>:"/\\|?*]/g, '_');
           const externalM4bPath = path.join(externalAudiobooksDir, `${safeFilename}.m4b`);
-          await fs.copyFile(audioPath, externalM4bPath);
+          await fs.copyFile(projectAudioPath, externalM4bPath);
           console.log('[bilingual-assembly:finalize-output] Copied M4B to external:', externalM4bPath);
         } catch (err) {
           console.error('[bilingual-assembly:finalize-output] Failed to copy to external audiobooks dir (non-fatal):', err);
