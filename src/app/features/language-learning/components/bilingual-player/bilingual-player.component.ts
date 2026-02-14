@@ -96,9 +96,20 @@ interface AudiobookData {
             }
           </div>
 
+          <!-- Search bar -->
+          <div class="search-bar">
+            <input type="text" placeholder="Search sentences..."
+              [value]="searchTerm()"
+              (input)="searchTerm.set($any($event.target).value)" />
+            @if (searchTerm()) {
+              <button class="search-clear" (click)="searchTerm.set('')">&times;</button>
+              <span class="search-count">{{ filteredPairs().length }} / {{ sentencePairs().length }}</span>
+            }
+          </div>
+
           <!-- Scrollable sentences container -->
           <div class="sentences-container" #sentencesContainer>
-            @for (pair of sentencePairs(); track pair.index) {
+            @for (pair of filteredPairs(); track pair.index) {
               @if (chapterStartPairMap().get(pair.index); as chapterTitle) {
                 <div class="chapter-header">{{ chapterTitle }}</div>
               }
@@ -123,7 +134,7 @@ interface AudiobookData {
 
           <!-- Sentence counter -->
           <div class="sentence-progress">
-            <span>Sentence {{ currentPairIndex() + 1 }} of {{ sentencePairs().length }}</span>
+            <span>Sentence {{ currentPairIndex() + 1 }} of {{ searchTerm() ? filteredPairs().length + ' (filtered from ' + sentencePairs().length + ')' : sentencePairs().length }}</span>
           </div>
 
           <!-- Transport controls -->
@@ -303,6 +314,62 @@ interface AudiobookData {
         color: var(--color-primary);
         font-weight: 500;
       }
+    }
+
+    .search-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-shrink: 0;
+
+      input {
+        flex: 1;
+        padding: 8px 12px;
+        border: 1px solid var(--border-input);
+        border-radius: 6px;
+        background: var(--bg-input);
+        color: var(--text-primary);
+        font-size: 13px;
+        outline: none;
+        transition: border-color 0.15s;
+
+        &::placeholder {
+          color: var(--text-muted);
+        }
+
+        &:focus {
+          border-color: var(--color-primary);
+        }
+      }
+    }
+
+    .search-clear {
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: 50%;
+      background: var(--bg-muted);
+      color: var(--text-secondary);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      &:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+    }
+
+    .search-count {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
     .btn-chapters {
@@ -553,6 +620,19 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
   readonly vttCues = signal<VttCue[]>([]);
   readonly currentPairIndex = signal<number>(0);
   readonly isSourceSpeaking = signal<boolean>(true);
+
+  // Search
+  readonly searchTerm = signal<string>('');
+
+  readonly filteredPairs = computed(() => {
+    const term = this.searchTerm().toLowerCase().trim();
+    const pairs = this.sentencePairs();
+    if (!term) return pairs;
+    return pairs.filter(p =>
+      p.source.toLowerCase().includes(term) ||
+      p.target.toLowerCase().includes(term)
+    );
+  });
 
   // Audio path
   readonly audioPath = signal<string>('');
@@ -945,6 +1025,7 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     this.audioPath.set('');
     this.chapters.set([]);
     this.chapterDrawerOpen.set(false);
+    this.searchTerm.set('');
     this.error.set(null);
   }
 
@@ -1055,6 +1136,8 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
   }
 
   private scrollToCurrentPair(): void {
+    if (this.searchTerm()) return;
+
     const container = this.sentencesContainerRef?.nativeElement;
     if (!container) return;
 

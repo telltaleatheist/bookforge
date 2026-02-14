@@ -348,20 +348,18 @@ export async function cacheSessionToBfp(
     // Clean up any leftover temp dir from a previous failed attempt
     try { await fs.rm(tempDestDir, { recursive: true, force: true }); } catch { /* may not exist */ }
 
-    // Determine if the session is in WSL filesystem
-    const isWslSession = sessionDir.startsWith('\\\\wsl$') || sessionDir.startsWith('//wsl$');
+    // Determine if the session is in WSL filesystem (handles \\wsl$\ and \\wsl.localhost\)
+    const isWslSession = isWslUncPath(sessionDir);
 
     if (isWslSession && process.platform === 'win32') {
       // WSL session: use wsl.exe to copy within WSL filesystem to /mnt/ destination
-      const wslSourcePath = sessionDir
-        .replace(/^(\\\\wsl\$\\Ubuntu\\|\/\/wsl\$\/Ubuntu\/)/, '/')
-        .replace(/\\/g, '/');
+      const wslSourcePath = uncToWslPath(sessionDir);
       const wslTempDestPath = windowsToWslPath(tempDestDir);
 
       // Ensure parent exists in WSL
       const wslDestParent = windowsToWslPath(sessionParent);
-      const mkdirCmd = `mkdir -p "${wslDestParent}"`;
-      const copyCmd = `cp -r "${wslSourcePath}" "${wslTempDestPath}"`;
+      const mkdirCmd = `mkdir -p ${shellQuote(wslDestParent)}`;
+      const copyCmd = `cp -r ${shellQuote(wslSourcePath)} ${shellQuote(wslTempDestPath)}`;
       const distro = getWslDistro();
       const wslArgs = distro
         ? ['-d', distro, 'bash', '-c', `${mkdirCmd} && ${copyCmd}`]
@@ -406,9 +404,7 @@ export async function cacheSessionToBfp(
     // Remove original from e2a tmp
     try {
       if (isWslSession && process.platform === 'win32') {
-        const wslSourcePath = sessionDir
-          .replace(/^(\\\\wsl\$\\Ubuntu\\|\/\/wsl\$\/Ubuntu\/)/, '/')
-          .replace(/\\/g, '/');
+        const wslSourcePath = uncToWslPath(sessionDir);
         const distro = getWslDistro();
         const rmArgs = distro
           ? ['-d', distro, 'bash', '-c', `rm -rf "${wslSourcePath}"`]
@@ -477,17 +473,15 @@ export async function cacheSessionToProject(
       console.error('[PARALLEL-TTS] Failed to clean old sessions (non-fatal):', err);
     }
 
-    // Determine if the session is in WSL filesystem
-    const isWslSession = sessionDir.startsWith('\\\\wsl$') || sessionDir.startsWith('//wsl$');
+    // Determine if the session is in WSL filesystem (handles \\wsl$\ and \\wsl.localhost\)
+    const isWslSession = isWslUncPath(sessionDir);
 
     if (isWslSession && process.platform === 'win32') {
-      const wslSourcePath = sessionDir
-        .replace(/^(\\\\wsl\$\\Ubuntu\\|\/\/wsl\$\/Ubuntu\/)/, '/')
-        .replace(/\\/g, '/');
+      const wslSourcePath = uncToWslPath(sessionDir);
       const wslTempDestPath = windowsToWslPath(tempDestDir);
       const wslDestParent = windowsToWslPath(langSessionParent);
-      const mkdirCmd = `mkdir -p "${wslDestParent}"`;
-      const copyCmd = `cp -r "${wslSourcePath}" "${wslTempDestPath}"`;
+      const mkdirCmd = `mkdir -p ${shellQuote(wslDestParent)}`;
+      const copyCmd = `cp -r ${shellQuote(wslSourcePath)} ${shellQuote(wslTempDestPath)}`;
       const distro = getWslDistro();
       const wslArgs = distro
         ? ['-d', distro, 'bash', '-c', `${mkdirCmd} && ${copyCmd}`]
@@ -753,6 +747,35 @@ function shouldUseWslForSpawn(ttsEngine?: string): boolean {
 }
 
 /**
+ * Check if a path is a WSL UNC path (\\wsl$\... or \\wsl.localhost\...)
+ */
+function isWslUncPath(p: string): boolean {
+  const normalized = p.replace(/\\/g, '/');
+  return /^\/\/wsl[\$.](?:localhost)?\//.test(normalized);
+}
+
+/**
+ * Convert UNC WSL paths (\\wsl$\<distro>\...) back to native WSL paths (/...).
+ * Also handles Windows drive paths by converting via windowsToWslPath.
+ * Matches any distro name and both \\wsl$ and \\wsl.localhost forms.
+ */
+function uncToWslPath(p: string): string {
+  const uncMatch = p.replace(/\\/g, '/').match(/^\/\/wsl[\$.](?:localhost)?\/[^/]+\/(.*)/);
+  if (uncMatch) {
+    return '/' + uncMatch[1];
+  }
+  if (/^[A-Za-z]:[\\/]/.test(p)) {
+    return windowsToWslPath(p);
+  }
+  return p;
+}
+
+/** Shell-quote a string for safe use in a bash -c command */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/**
  * Build bash command for WSL execution
  * Converts Windows paths and builds the full conda activation command
  */
@@ -811,6 +834,10 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
     // Convert other Windows paths (epub, output dir) to /mnt/... format
     else if (/^[A-Za-z]:[\\/]/.test(arg)) {
       wslArgs.push(windowsToWslPath(arg));
+    }
+    // Convert UNC WSL paths (\\wsl$\..., \\wsl.localhost\...) to native WSL paths
+    else if (isWslUncPath(arg)) {
+      wslArgs.push(uncToWslPath(arg));
     } else {
       wslArgs.push(arg);
     }
@@ -819,10 +846,11 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   // Build the full command:
   // 1. Export Python env vars so output isn't buffered (critical for subprocess stdout capture)
   // 2. cd to e2a directory
-  // 3. Run conda with converted args
+  // 3. Run conda with converted args (shell-quoted to handle spaces/special chars)
   const exportCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8`;
-  const cdCommand = `cd "${wslE2aPath}"`;
-  const condaCommand = `"${wslCondaPath}" ${wslArgs.join(' ')}`;
+  const cdCommand = `cd ${shellQuote(wslE2aPath)}`;
+  const quotedArgs = wslArgs.map(a => shellQuote(a)).join(' ');
+  const condaCommand = `${shellQuote(wslCondaPath)} ${quotedArgs}`;
 
   return `${exportCommand} && ${cdCommand} && ${condaCommand}`;
 }
@@ -1134,6 +1162,7 @@ import {
   getWslOrpheusCondaEnv,
   windowsToWslPath,
   wslPathToWindows,
+  wslToWindowsPath,
   shellEscapeArgs,
 } from './e2a-paths';
 
@@ -2457,7 +2486,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         let detectedPath = outputMatch[2].trim();
         // If running via WSL, convert WSL path (/mnt/c/...) back to Windows path
         if (shouldUseWslForSpawn(settings.ttsEngine) && detectedPath.startsWith('/mnt/')) {
-          detectedPath = wslPathToWindows(detectedPath);
+          detectedPath = wslToWindowsPath(detectedPath);
           console.log('[PARALLEL-TTS] Converted WSL output path to Windows:', detectedPath);
         }
         outputPath = detectedPath;

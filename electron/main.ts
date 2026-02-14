@@ -639,12 +639,13 @@ function setupIpcHandlers(): void {
         console.log('[Text-only EPUB] Converting to EPUB...');
         let convertCmd = `"${ebookConvertPath}" "${tempTextFile}" "${tempEpubFile}"`;
 
-        // Add metadata if provided
+        // Add metadata if provided (escape shell metacharacters for safe interpolation)
+        const escapeShellMeta = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
         if (metadata?.title) {
-          convertCmd += ` --title "${metadata.title.replace(/"/g, '\\"')}"`;
+          convertCmd += ` --title "${escapeShellMeta(metadata.title)}"`;
         }
         if (metadata?.author) {
-          convertCmd += ` --authors "${metadata.author.replace(/"/g, '\\"')}"`;
+          convertCmd += ` --authors "${escapeShellMeta(metadata.author)}"`;
         }
 
         // Add formatting options
@@ -4937,7 +4938,14 @@ function setupIpcHandlers(): void {
   // Link bilingual audio file to BFP project (separate from mono audiobook)
   ipcMain.handle('audiobook:link-bilingual-audio', async (_event, bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) => {
     try {
-      const { wslToWindowsPath } = await import('./e2a-paths.js');
+      const { wslToWindowsPath, wslPathToWindows } = await import('./e2a-paths.js');
+      // Convert any WSL path to Windows: /mnt/c/... → C:\..., /home/... → \\wsl$\...\...
+      const toWindowsPath = (p: string): string => {
+        const converted = wslToWindowsPath(p);
+        if (converted !== p) return converted;  // Was a /mnt/ path, converted successfully
+        if (p.startsWith('/')) return wslPathToWindows(p);  // Native WSL path → UNC
+        return p;  // Already a Windows path
+      };
 
       console.log('[audiobook:link-bilingual-audio] === LINK BILINGUAL AUDIO CALLED ===');
       console.log('[audiobook:link-bilingual-audio] bfpPath:', bfpPath);
@@ -4970,12 +4978,13 @@ function setupIpcHandlers(): void {
       }
 
       // Convert WSL paths to Windows paths before storing
-      project.audiobook.bilingualAudioPath = wslToWindowsPath(audioPath);
+      // Handles both /mnt/c/ mount paths and native /home/ WSL paths
+      project.audiobook.bilingualAudioPath = toWindowsPath(audioPath);
       if (vttPath) {
-        project.audiobook.bilingualVttPath = wslToWindowsPath(vttPath);
+        project.audiobook.bilingualVttPath = toWindowsPath(vttPath);
       }
       if (sentencePairsPath) {
-        project.audiobook.bilingualSentencePairsPath = wslToWindowsPath(sentencePairsPath);
+        project.audiobook.bilingualSentencePairsPath = toWindowsPath(sentencePairsPath);
       }
       console.log('[audiobook:link-bilingual-audio] New bilingualAudioPath:', project.audiobook.bilingualAudioPath);
       console.log('[audiobook:link-bilingual-audio] New bilingualVttPath:', project.audiobook.bilingualVttPath);

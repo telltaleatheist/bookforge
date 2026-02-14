@@ -258,7 +258,8 @@ export class EpubResolverService {
    */
   private async fileExists(filePath: string): Promise<boolean> {
     try {
-      const parts = filePath.split('/');
+      const normalized = filePath.replace(/\\/g, '/');
+      const parts = normalized.split('/');
       const fileName = parts.pop();
       const dirPath = parts.join('/');
 

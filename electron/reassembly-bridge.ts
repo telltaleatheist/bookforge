@@ -6,17 +6,38 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
-import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, shellEscapeArgs } from './e2a-paths';
+import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, shellEscapeArgs } from './e2a-paths';
 import { getAudiobookDirFromBfp } from './parallel-tts-bridge';
 import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
 
 /**
- * Check if a path is a WSL path (starts with \\wsl$)
+ * Check if a path is a WSL UNC path (\\wsl$\... or \\wsl.localhost\...)
  */
 function isWslPath(p: string): boolean {
-  return p.startsWith('\\\\wsl$') || p.startsWith('//wsl$');
+  const normalized = p.replace(/\\/g, '/');
+  return /^\/\/wsl[\$.](?:localhost)?\//.test(normalized);
+}
+
+/**
+ * Convert UNC WSL paths back to native WSL paths.
+ * Handles any distro name and both \\wsl$ and \\wsl.localhost forms.
+ */
+function uncToWslPath(p: string): string {
+  const uncMatch = p.replace(/\\/g, '/').match(/^\/\/wsl[\$.](?:localhost)?\/[^/]+\/(.*)/);
+  if (uncMatch) {
+    return '/' + uncMatch[1];
+  }
+  if (/^[A-Za-z]:[\\/]/.test(p)) {
+    return windowsToWslPath(p);
+  }
+  return p;
+}
+
+/** Shell-quote a string for safe use in a bash -c command */
+function shellQuoteArg(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
 /**
@@ -39,18 +60,20 @@ function buildWslAssemblyCommand(
     if (arg.match(/^[A-Za-z]:\\/)) {
       return windowsToWslPath(arg);
     }
-    // Convert UNC WSL paths (\\wsl$\Ubuntu\...) to native WSL paths (/...)
-    if (arg.startsWith('\\\\wsl$\\Ubuntu\\') || arg.startsWith('//wsl$/Ubuntu/')) {
-      return arg.replace(/^(\\\\wsl\$\\Ubuntu\\|\/\/wsl\$\/Ubuntu\/)/, '/').replace(/\\/g, '/');
+    // Convert UNC WSL paths (\\wsl$\..., \\wsl.localhost\...) to native WSL paths
+    if (isWslPath(arg)) {
+      return uncToWslPath(arg);
     }
-    // Also handle already-converted /mnt/c/ style paths that should stay as-is
+    // Already a WSL path or flag - pass through
     return arg;
   });
 
-  const cdCommand = `cd "${wslE2aPath}"`;
+  const q = shellQuoteArg;
+  const cdCommand = `cd ${q(wslE2aPath)}`;
   // Use WSL native app.py path
   const wslAppPath = `${wslE2aPath}/app.py`;
-  const condaCommand = `"${wslCondaPath}" run --no-capture-output -p ${wslE2aPath}/python_env python ${wslAppPath} ${wslArgs.join(' ')}`;
+  const quotedArgs = wslArgs.map(a => q(a)).join(' ');
+  const condaCommand = `${q(wslCondaPath)} run --no-capture-output -p ${q(`${wslE2aPath}/python_env`)} python ${q(wslAppPath)} ${quotedArgs}`;
 
   return `${cdCommand} && ${condaCommand}`;
 }
@@ -89,11 +112,7 @@ function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined): BfpMe
   // Convert WSL path to Windows if needed
   let windowsPath = sourceEpubPath;
   if (sourceEpubPath.startsWith('/mnt/')) {
-    // /mnt/e/... → E:/...
-    const match = sourceEpubPath.match(/^\/mnt\/([a-z])\/(.*)$/i);
-    if (match) {
-      windowsPath = `${match[1].toUpperCase()}:/${match[2]}`;
-    }
+    windowsPath = wslToWindowsPath(sourceEpubPath);
   }
 
   // Get the BFP folder (parent of cleaned.epub, simplified.epub, or exported.epub)

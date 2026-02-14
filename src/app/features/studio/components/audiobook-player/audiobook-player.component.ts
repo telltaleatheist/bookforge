@@ -146,9 +146,20 @@ type AudioVersion = 'traditional' | 'bilingual';
             </div>
           }
 
+          <!-- Search bar -->
+          <div class="search-bar">
+            <input type="text" placeholder="Search text..."
+              [value]="searchTerm()"
+              (input)="searchTerm.set($any($event.target).value)" />
+            @if (searchTerm()) {
+              <button class="search-clear" (click)="searchTerm.set('')">&times;</button>
+              <span class="search-count">{{ filteredCues().length }} / {{ vttCues().length }}</span>
+            }
+          </div>
+
           <!-- Scrollable text container -->
           <div class="text-container" #textContainer (scroll)="onTextScroll()">
-            @for (cue of vttCues(); track cue.index) {
+            @for (cue of filteredCues(); track cue.index) {
               @if (chapterStartMap().get(cue.index); as chapterTitle) {
                 <div class="chapter-header">{{ chapterTitle }}</div>
               }
@@ -562,6 +573,62 @@ type AudioVersion = 'traditional' | 'bilingual';
       }
     }
 
+    .search-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      flex-shrink: 0;
+
+      input {
+        flex: 1;
+        padding: 6px 10px;
+        border: 1px solid var(--border-input);
+        border-radius: 6px;
+        background: var(--bg-input);
+        color: var(--text-primary);
+        font-size: 13px;
+        outline: none;
+        transition: border-color 0.15s;
+
+        &::placeholder {
+          color: var(--text-muted);
+        }
+
+        &:focus {
+          border-color: var(--accent);
+        }
+      }
+    }
+
+    .search-clear {
+      width: 26px;
+      height: 26px;
+      border: none;
+      border-radius: 50%;
+      background: var(--bg-muted);
+      color: var(--text-secondary);
+      font-size: 15px;
+      line-height: 1;
+      cursor: pointer;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      &:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+    }
+
+    .search-count {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
     .text-container {
       flex: 1;
       overflow-y: auto;
@@ -844,6 +911,16 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
   // VTT cues
   readonly vttCues = signal<VttCue[]>([]);
   readonly currentCueIndex = signal<number>(0);
+
+  // Search
+  readonly searchTerm = signal<string>('');
+
+  readonly filteredCues = computed(() => {
+    const term = this.searchTerm().toLowerCase().trim();
+    const cues = this.vttCues();
+    if (!term) return cues;
+    return cues.filter(c => c.text.toLowerCase().includes(term));
+  });
 
   // Version selection (traditional vs bilingual)
   readonly selectedVersion = signal<AudioVersion>('traditional');
@@ -1378,6 +1455,7 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
     this.chapterDrawerOpen.set(false);
     this.bookmarkDrawerOpen.set(false);
     this.savedBookmarks.set([]);
+    this.searchTerm.set('');
     this.error.set(null);
   }
 
@@ -1537,6 +1615,8 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
   }
 
   private scrollToCurrentCue(): void {
+    if (this.searchTerm()) return;
+
     const container = this.textContainerRef?.nativeElement;
     if (!container) return;
 

@@ -612,7 +612,7 @@ export async function runLLCleanup(
           pipeline: {
             cleanup: {
               status: 'complete',
-              outputPath: path.relative(config.projectDir, cleanedEpubPath),
+              outputPath: path.relative(config.projectDir, cleanedEpubPath).replace(/\\/g, '/'),
               completedAt: new Date().toISOString(),
               model: config.aiModel
             }
