@@ -26,12 +26,16 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
 
 type WizardStep = 'cleanup' | 'translate' | 'tts' | 'assembly' | 'review';
 
-export interface SourceOption {
-  path: string;
+interface SourceStage {
+  id: 'original' | 'exported' | 'cleaned' | 'simplified';
   label: string;
-  description?: string;
-  modifiedAt?: string;
-  isDefault?: boolean;
+  completed: boolean;
+  path: string;
+}
+
+interface AvailableEpub {
+  path: string;
+  filename: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,23 +76,6 @@ export interface SourceOption {
         </div>
       </div>
 
-      <!-- Source EPUB -->
-      @if (availableSources().length > 0) {
-        <div class="source-dropdown">
-          <label class="source-dropdown-label">Source EPUB</label>
-          <select
-            class="select-input source-select"
-            [value]="selectedSourcePath()"
-            (change)="selectSource($any($event.target).value)"
-          >
-            <option value="latest">Latest</option>
-            @for (source of availableSources(); track source.path) {
-              <option [value]="source.path">{{ source.label }}{{ source.description ? ' (' + source.description + ')' : '' }}</option>
-            }
-          </select>
-        </div>
-      }
-
       <!-- Step Content -->
       <div class="step-content">
         @switch (currentStep()) {
@@ -96,6 +83,27 @@ export interface SourceOption {
             <div class="step-panel">
               <h3>AI Cleanup</h3>
               <p class="step-desc">Clean up OCR artifacts and formatting issues using AI.</p>
+
+              <!-- Source EPUB Selection -->
+              <div class="config-section">
+                <label class="field-label">Source EPUB</label>
+                <div class="source-stages">
+                  @for (stage of cleanupSourceStages(); track stage.id) {
+                    <button
+                      class="stage-btn"
+                      [class.selected]="isStageSelected('cleanup', stage)"
+                      [class.completed]="stage.completed"
+                      [disabled]="!stage.completed"
+                      (click)="selectStage('cleanup', stage)"
+                    >
+                      {{ stage.label }}
+                      @if (stage.completed) {
+                        <span class="stage-check">&#10003;</span>
+                      }
+                    </button>
+                  }
+                </div>
+              </div>
 
               <!-- Provider Selection -->
               <div class="config-section">
@@ -311,6 +319,27 @@ export interface SourceOption {
               </div>
 
               @if (enableTranslation()) {
+                <!-- Source EPUB Selection -->
+                <div class="config-section">
+                  <label class="field-label">Source EPUB</label>
+                  <div class="source-stages">
+                    @for (stage of translateSourceStages(); track stage.id) {
+                      <button
+                        class="stage-btn"
+                        [class.selected]="isStageSelected('translate', stage)"
+                        [class.completed]="stage.completed"
+                        [disabled]="!stage.completed"
+                        (click)="selectStage('translate', stage)"
+                      >
+                        {{ stage.label }}
+                        @if (stage.completed) {
+                          <span class="stage-check">&#10003;</span>
+                        }
+                      </button>
+                    }
+                  </div>
+                </div>
+
                 <!-- Source Language -->
                 <div class="config-section">
                   <label class="field-label">Source Language (book's language)</label>
@@ -613,7 +642,7 @@ export interface SourceOption {
               <div class="review-section">
                 <div class="review-item">
                   <span class="review-label">EPUB:</span>
-                  <span class="review-value">{{ epubFilename() }}</span>
+                  <span class="review-value">{{ reviewEpubFilename() }}</span>
                 </div>
 
                 <div class="review-item">
@@ -722,28 +751,49 @@ export interface SourceOption {
       overflow: hidden;
     }
 
-    /* Source Dropdown */
-    .source-dropdown {
+    /* Source Stage Buttons */
+    .source-stages {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .stage-btn {
+      padding: 6px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      font-size: 13px;
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.15s ease;
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 8px 16px;
-      background: var(--bg-surface);
-      border-radius: 8px;
-      margin-bottom: 12px;
-    }
+      gap: 4px;
 
-    .source-dropdown-label {
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--text-tertiary);
-      white-space: nowrap;
-    }
+      .stage-check {
+        color: #22c55e;
+        font-size: 11px;
+      }
 
-    .source-select {
-      flex: 1;
+      &:hover:not(:disabled) {
+        background: var(--bg-hover);
+      }
+
+      &.selected {
+        background: rgba(6, 182, 212, 0.15);
+        border-color: #06b6d4;
+        color: #06b6d4;
+
+        .stage-check {
+          color: #06b6d4;
+        }
+      }
+
+      &:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
     }
 
     /* Step Indicator */
@@ -1698,9 +1748,7 @@ export class ProcessWizardComponent implements OnInit {
   private readonly router = inject(Router);
 
   // Inputs
-  readonly epubPath = input.required<string>();  // Current EPUB (may be cleaned version for TTS)
-  readonly originalEpubPath = input<string>('');  // Always the original exported.epub for AI cleanup
-  readonly availableSources = input<SourceOption[]>([]);  // Available source EPUBs to choose from
+  readonly epubPath = input.required<string>();  // Fallback EPUB path
   readonly title = input<string>('');
   readonly author = input<string>('');
   readonly itemType = input<'book' | 'article'>('book');
@@ -1723,8 +1771,12 @@ export class ProcessWizardComponent implements OnInit {
   readonly addingToQueue = signal(false);
   readonly addedToQueue = signal(false);
 
-  // Source selection - 'latest' auto-resolves to best available EPUB
-  readonly selectedSourcePath = signal<string>('latest');
+  // Per-step source EPUB selection
+  readonly cleanupSourceEpub = signal<string>('latest');
+  readonly translateSourceEpub = signal<string>('latest');
+
+  // EPUB scanning
+  readonly availableEpubs = signal<AvailableEpub[]>([]);
 
   // Connection state
   readonly ollamaConnected = signal(false);
@@ -1811,15 +1863,55 @@ export class ProcessWizardComponent implements OnInit {
   // Track completed/skipped steps
   private completedSteps = new Set<WizardStep>();
   private skippedSteps = new Set<WizardStep>();
+  // Reactive signal so downstream computeds (translateSourceStages) update when cleanup is skipped/un-skipped
+  readonly cleanupSkipped = signal(false);
 
-  readonly epubFilename = computed(() => {
-    const path = this.resolveSourcePath();
+  /** What file will cleanup produce? null if cleanup won't run. */
+  readonly cleanupWillProduce = computed<string | null>(() => {
+    if (this.cleanupSkipped()) return null;
+    if (this.simplifyForLearning()) return 'simplified.epub';
+    if (this.enableAiCleanup()) return 'cleaned.epub';
+    return null;
+  });
+
+  // Review step shows the cleanup source filename
+  readonly reviewEpubFilename = computed(() => {
+    const path = this.resolveLatestSource('cleanup');
     return path.replace(/\\/g, '/').split('/').pop() || path;
   });
 
-  // Get the effective EPUB path to use for the pipeline
-  readonly effectiveEpubPath = computed(() => {
-    return this.resolveSourcePath();
+  /** Stages relevant for cleanup source: Original, Exported, AI Cleaned, AI Simplified */
+  readonly cleanupSourceStages = computed<SourceStage[]>(() => {
+    const epubs = this.availableEpubs();
+    const find = (name: string) => epubs.find(e => e.filename === name);
+    return [
+      { id: 'original', label: 'Original', completed: !!find('original.epub'), path: find('original.epub')?.path ?? '' },
+      { id: 'exported', label: 'Exported', completed: !!find('exported.epub'), path: find('exported.epub')?.path ?? '' },
+      { id: 'cleaned', label: 'AI Cleaned', completed: !!find('cleaned.epub'), path: find('cleaned.epub')?.path ?? '' },
+      { id: 'simplified', label: 'AI Simplified', completed: !!find('simplified.epub'), path: find('simplified.epub')?.path ?? '' },
+    ];
+  });
+
+  /** Stages relevant for translate source — includes pipeline intent from cleanup step */
+  readonly translateSourceStages = computed<SourceStage[]>(() => {
+    const epubs = this.availableEpubs();
+    const find = (name: string) => epubs.find(e => e.filename === name);
+    const willProduce = this.cleanupWillProduce();
+    const projectDir = this.bfpPath();
+    const cleanupDir = `${projectDir}/stages/01-cleanup`;
+
+    // A stage is available if the file exists on disk OR cleanup will produce it
+    const cleanedOnDisk = !!find('cleaned.epub');
+    const simplifiedOnDisk = !!find('simplified.epub');
+    const cleanedAvailable = cleanedOnDisk || willProduce === 'cleaned.epub';
+    const simplifiedAvailable = simplifiedOnDisk || willProduce === 'simplified.epub';
+
+    return [
+      { id: 'original', label: 'Original', completed: !!find('original.epub'), path: find('original.epub')?.path ?? '' },
+      { id: 'exported', label: 'Exported', completed: !!find('exported.epub'), path: find('exported.epub')?.path ?? '' },
+      { id: 'cleaned', label: 'AI Cleaned', completed: cleanedAvailable, path: find('cleaned.epub')?.path || `${cleanupDir}/cleaned.epub` },
+      { id: 'simplified', label: 'AI Simplified', completed: simplifiedAvailable, path: find('simplified.epub')?.path || `${cleanupDir}/simplified.epub` },
+    ];
   });
 
   // Computed: check if API keys are configured
@@ -1862,7 +1954,7 @@ export class ProcessWizardComponent implements OnInit {
   ngOnInit(): void {
     this.initializeFromSettings();
     this.initializeTtsDefaults();
-    this.initializeSourceSelection();
+    this.scanProjectEpubs();
     this.checkOllamaConnection();
     // Load the appropriate prompt based on initial state
     if (this.simplifyForLearning()) {
@@ -1872,34 +1964,139 @@ export class ProcessWizardComponent implements OnInit {
     }
   }
 
-  private initializeSourceSelection(): void {
-    // Default is 'latest' which auto-resolves to the best available EPUB
-    // No explicit path needs to be set
-  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // EPUB Scanning & Source Stage Selection
+  // ─────────────────────────────────────────────────────────────────────────
 
-  selectSource(path: string): void {
-    this.selectedSourcePath.set(path);
-  }
-
-  /**
-   * Resolve 'latest' to the best available source EPUB.
-   * Priority: cleaned > finalized > first available > epubPath input
-   */
-  private resolveSourcePath(): string {
-    const selected = this.selectedSourcePath();
-    if (selected !== 'latest') {
-      return selected;
+  async scanProjectEpubs(): Promise<void> {
+    const projectDir = this.bfpPath();
+    if (!projectDir) {
+      this.availableEpubs.set([]);
+      return;
     }
 
-    const sources = this.availableSources();
-    // Pick the one marked as default (typically cleaned if available, else finalized)
-    const defaultSource = sources.find(s => s.isDefault);
-    if (defaultSource) return defaultSource.path;
+    try {
+      const epubs: AvailableEpub[] = [];
 
-    // Fallback: first source
-    if (sources.length > 0) return sources[0].path;
+      // Scan source folder
+      try {
+        const sourceDir = `${projectDir}/source`;
+        const sourceFiles = await this.electronService.listDirectory(sourceDir);
+        for (const file of sourceFiles) {
+          if ((file === 'original.epub' || file === 'exported.epub' || file === 'finalized.epub') && !file.startsWith('._')) {
+            epubs.push({ path: `${sourceDir}/${file}`, filename: file });
+          }
+        }
+      } catch {
+        // No source folder
+      }
 
-    // Final fallback: epubPath input
+      // Scan cleanup stage
+      try {
+        const cleanupDir = `${projectDir}/stages/01-cleanup`;
+        const cleanupFiles = await this.electronService.listDirectory(cleanupDir);
+        for (const file of cleanupFiles) {
+          if (file === 'cleaned.epub' || file === 'simplified.epub') {
+            epubs.push({ path: `${cleanupDir}/${file}`, filename: file });
+          }
+        }
+      } catch {
+        // No cleanup stage
+      }
+
+      this.availableEpubs.set(epubs);
+    } catch {
+      this.availableEpubs.set([]);
+    }
+  }
+
+  /** Resolve which stage ID "latest" maps to for a given pipeline step */
+  private resolveLatestStageId(step: 'cleanup' | 'translate'): string {
+    const epubs = this.availableEpubs();
+    const has = (name: string) => epubs.some(e => e.filename === name);
+    if (step === 'cleanup') {
+      // Cleanup input: prefer exported > finalized > original (not cleaned — we're producing that)
+      if (has('exported.epub')) return 'exported';
+      if (has('original.epub')) return 'original';
+    } else {
+      // Translate input: consider pipeline intent (cleanup will produce this file)
+      const willProduce = this.cleanupWillProduce();
+      if (willProduce === 'simplified.epub' || has('simplified.epub')) return 'simplified';
+      if (willProduce === 'cleaned.epub' || has('cleaned.epub')) return 'cleaned';
+      if (has('exported.epub')) return 'exported';
+      if (has('original.epub')) return 'original';
+    }
+    return '';
+  }
+
+  /** Check if a stage button should be highlighted as selected */
+  isStageSelected(step: 'cleanup' | 'translate', stage: SourceStage): boolean {
+    const source = step === 'cleanup' ? this.cleanupSourceEpub() : this.translateSourceEpub();
+    if (source === 'latest') {
+      return stage.id === this.resolveLatestStageId(step);
+    }
+    return source === stage.path;
+  }
+
+  /** Handle stage button click — clicking the auto-selected stage returns to 'latest' */
+  selectStage(step: 'cleanup' | 'translate', stage: SourceStage): void {
+    const sig = step === 'cleanup' ? this.cleanupSourceEpub : this.translateSourceEpub;
+    const current = sig();
+
+    if (current === stage.path || (current === 'latest' && stage.id === this.resolveLatestStageId(step))) {
+      sig.set('latest');
+    } else {
+      sig.set(stage.path);
+    }
+  }
+
+  /** Resolve "latest" source EPUB based on pipeline stage */
+  private resolveLatestSource(stage: 'cleanup' | 'translate'): string {
+    const sourceSignal = stage === 'cleanup' ? this.cleanupSourceEpub : this.translateSourceEpub;
+    const source = sourceSignal();
+
+    if (source !== 'latest') {
+      return source;
+    }
+
+    const epubs = this.availableEpubs();
+    const projectDir = this.bfpPath();
+
+    if (stage === 'cleanup') {
+      // Cleanup: exported > finalized > original
+      const exported = epubs.find(e => e.filename === 'exported.epub');
+      if (exported) return exported.path;
+      const finalized = epubs.find(e => e.filename === 'finalized.epub');
+      if (finalized) return finalized.path;
+      const original = epubs.find(e => e.filename === 'original.epub');
+      if (original) return original.path;
+    } else if (stage === 'translate') {
+      // Translation: consider pipeline intent from cleanup, then on-disk files
+      const willProduce = this.cleanupWillProduce();
+      const cleanupDir = `${projectDir}/stages/01-cleanup`;
+
+      if (willProduce === 'simplified.epub') return epubs.find(e => e.filename === 'simplified.epub')?.path || `${cleanupDir}/simplified.epub`;
+      if (willProduce === 'cleaned.epub') return epubs.find(e => e.filename === 'cleaned.epub')?.path || `${cleanupDir}/cleaned.epub`;
+
+      // No cleanup intent — fall back to on-disk files
+      const simplified = epubs.find(e => e.filename === 'simplified.epub');
+      if (simplified) return simplified.path;
+      const cleaned = epubs.find(e => e.filename === 'cleaned.epub');
+      if (cleaned) return cleaned.path;
+      const exported = epubs.find(e => e.filename === 'exported.epub');
+      if (exported) return exported.path;
+      const finalized = epubs.find(e => e.filename === 'finalized.epub');
+      if (finalized) return finalized.path;
+      const original = epubs.find(e => e.filename === 'original.epub');
+      if (original) return original.path;
+    }
+
+    // Fallback: first available EPUB
+    if (epubs.length > 0) {
+      return epubs[0].path;
+    }
+
+    // Ultimate fallback
     return this.epubPath();
   }
 
@@ -1940,11 +2137,16 @@ export class ProcessWizardComponent implements OnInit {
         }));
         this.ollamaModels.set(models);
 
-        // Validate selected model exists
+        // Validate selected cleanup model exists
         const currentModel = this.cleanupModel();
         const modelExists = models.some((m: { value: string }) => m.value === currentModel);
         if ((!currentModel || !modelExists) && models.length > 0) {
           this.cleanupModel.set(models[0].value);
+        }
+        // Also initialize translate model if empty
+        const currentTranslateModel = this.translateModel();
+        if (!currentTranslateModel && models.length > 0) {
+          this.translateModel.set(models[0].value);
         }
       } else {
         this.ollamaConnected.set(false);
@@ -2196,6 +2398,7 @@ export class ProcessWizardComponent implements OnInit {
   skipStep(): void {
     const step = this.currentStep();
     this.skippedSteps.add(step);
+    if (step === 'cleanup') this.cleanupSkipped.set(true);
     this.goNext();
   }
 
@@ -2203,6 +2406,11 @@ export class ProcessWizardComponent implements OnInit {
     const step = this.currentStep();
     if (!this.skippedSteps.has(step)) {
       this.completedSteps.add(step);
+      // If user goes back to cleanup and clicks Next (un-skipping), update the signal
+      if (step === 'cleanup') {
+        this.skippedSteps.delete('cleanup');
+        this.cleanupSkipped.set(false);
+      }
     }
 
     switch (step) {
@@ -2263,13 +2471,9 @@ export class ProcessWizardComponent implements OnInit {
       const aiConfig = this.settingsService.getAIConfig();
       const isArticle = this.itemType() === 'article';
       let masterJobId: string | undefined;
-      // Use user-selected source, or fall back to epubPath
-      const selectedSource = this.effectiveEpubPath();
-      // For cleanup: ALWAYS use the original/exported EPUB (not any existing cleaned version)
-      // Cleanup outputs cleaned.epub or simplified.epub in the same directory (not {name}_cleaned.epub)
-      const cleanupSourcePath = this.originalEpubPath() || selectedSource;
-      // For TTS: start with selected source, will be updated to cleaned version after cleanup
-      let currentEpubPath = selectedSource;
+      // Resolve per-step sources
+      const cleanupSource = this.resolveLatestSource('cleanup');
+      let currentEpubPath = cleanupSource;
 
       // Get external audiobooks directory for TTS jobs (books only, not articles)
       const externalDir = this.settingsService.get('externalAudiobooksDir') as string | undefined;
@@ -2278,7 +2482,7 @@ export class ProcessWizardComponent implements OnInit {
       // Create master job for audiobook production
       const masterJob = await this.queueService.addJob({
         type: 'audiobook',
-        epubPath: currentEpubPath,
+        epubPath: cleanupSource,
         projectDir: isArticle ? this.projectDir() : undefined,
         metadata: {
           title: this.title(),
@@ -2297,7 +2501,7 @@ export class ProcessWizardComponent implements OnInit {
           // Article cleanup uses bilingual-cleanup type
           await this.queueService.addJob({
             type: 'bilingual-cleanup',
-            epubPath: cleanupSourcePath,
+            epubPath: cleanupSource,
             projectDir: this.projectDir(),
             metadata: {
               title: 'AI Cleanup',
@@ -2337,7 +2541,7 @@ export class ProcessWizardComponent implements OnInit {
 
           await this.queueService.addJob({
             type: 'ocr-cleanup',
-            epubPath: cleanupSourcePath,
+            epubPath: cleanupSource,
             bfpPath: this.bfpPath(),
             metadata: {
               title: 'AI Cleanup',
@@ -2356,9 +2560,18 @@ export class ProcessWizardComponent implements OnInit {
 
       // 2. Translation job (if enabled and not skipped)
       if (!this.skippedSteps.has('translate') && this.enableTranslation()) {
+        // If cleanup is in the pipeline, use expected cleanup output; otherwise resolve translate source
+        let translateEpubPath: string;
+        if (!this.skippedSteps.has('cleanup')) {
+          translateEpubPath = currentEpubPath; // Already set to cleanup output path above
+        } else {
+          translateEpubPath = this.resolveLatestSource('translate');
+          currentEpubPath = translateEpubPath;
+        }
+
         await this.queueService.addJob({
           type: 'bilingual-translation',
-          epubPath: currentEpubPath,
+          epubPath: translateEpubPath,
           bfpPath: isArticle ? undefined : this.bfpPath(),
           projectDir: isArticle ? this.projectDir() : undefined,
           metadata: {

@@ -8,7 +8,7 @@ import { StudioItem, MainTab, AudiobookSubTab, LanguageLearningSubTab, ProcessSt
 import { StudioListComponent } from './components/studio-list/studio-list.component';
 import { AddModalComponent } from './components/add-modal/add-modal.component';
 import { ContentEditorComponent } from './components/content-editor/content-editor.component';
-import { ProcessWizardComponent, SourceOption } from './components/process-wizard/process-wizard.component';
+import { ProcessWizardComponent } from './components/process-wizard/process-wizard.component';
 import { LLWizardComponent } from '../language-learning/components/ll-wizard/ll-wizard.component';
 
 // Import existing audiobook components
@@ -285,8 +285,6 @@ import { SettingsService } from '../../core/services/settings.service';
                     @if (currentEpubPath()) {
                       <app-process-wizard
                         [epubPath]="currentEpubPath()"
-                        [originalEpubPath]="selectedItem()?.epubPath || ''"
-                        [availableSources]="availableSources()"
                         [title]="selectedMetadata()?.title || ''"
                         [author]="selectedMetadata()?.author || ''"
                         [coverPath]="selectedItem()?.coverPath || ''"
@@ -964,44 +962,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     const item = this.selectedItem();
     if (!item) return '';
     return item.cleanedEpubPath || item.epubPath || '';
-  });
-
-  // Build list of available source EPUBs for the process wizard
-  readonly availableSources = computed<SourceOption[]>(() => {
-    const item = this.selectedItem();
-    if (!item) return [];
-
-    const sources: SourceOption[] = [];
-
-    // Original/Exported EPUB (from editor export)
-    if (item.epubPath) {
-      sources.push({
-        path: item.epubPath,
-        label: 'Exported',
-        description: 'From editor export',
-      });
-    }
-
-    // AI Cleaned EPUB
-    if (item.cleanedEpubPath) {
-      sources.push({
-        path: item.cleanedEpubPath,
-        label: 'AI Cleaned',
-        description: 'OCR/formatting fixed',
-      });
-    }
-
-    // Mark the default (cleaned if available, otherwise finalized)
-    // This matches the currentEpubPath logic
-    if (sources.length > 0) {
-      const defaultPath = item.cleanedEpubPath || item.epubPath;
-      const defaultSource = sources.find(s => s.path === defaultPath);
-      if (defaultSource) {
-        defaultSource.isDefault = true;
-      }
-    }
-
-    return sources;
   });
 
   readonly audioFilePath = computed<string | undefined>(() => {

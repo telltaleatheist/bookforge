@@ -151,6 +151,19 @@ export class StudioService {
           }
         }
 
+        // Detect actual source EPUB: exported > finalized > original
+        let epubPath = '';
+        for (const name of ['exported.epub', 'finalized.epub', 'original.epub']) {
+          const candidate = `${projectDir}/source/${name}`;
+          if (await this.electronService.fsExists(candidate)) {
+            epubPath = candidate;
+            break;
+          }
+        }
+        if (!epubPath) {
+          epubPath = `${projectDir}/source/original.epub`;
+        }
+
         const book: StudioItem = {
           id: projectDir,
           type: 'book',
@@ -161,7 +174,7 @@ export class StudioService {
           status: this.mapBookStatus(audiobookPath || bilingualAudioPath, hasCleaned),
           createdAt: manifest.createdAt,
           modifiedAt: manifest.modifiedAt,
-          epubPath: `${projectDir}/source/original.epub`,
+          epubPath,
           bfpPath: projectDir,
           coverPath: manifest.metadata?.coverPath ? `${this.libraryService.libraryPath()}/${manifest.metadata.coverPath}` : undefined,
           hasCleaned,
@@ -223,6 +236,19 @@ export class StudioService {
         if (hasAudiobook) status = 'completed';
         else if (hasCleaned) status = 'ready';
 
+        // Detect actual source EPUB: exported > finalized > original
+        let articleEpubPath = '';
+        for (const name of ['exported.epub', 'finalized.epub', 'original.epub']) {
+          const candidate = `${projectDir}/source/${name}`;
+          if (await this.electronService.fsExists(candidate)) {
+            articleEpubPath = candidate;
+            break;
+          }
+        }
+        if (!articleEpubPath) {
+          articleEpubPath = `${projectDir}/source/original.epub`;
+        }
+
         const article: StudioItem = {
           id: manifest.projectId,
           type: 'article',
@@ -236,7 +262,7 @@ export class StudioService {
           byline: manifest.metadata?.byline,
           excerpt: manifest.metadata?.excerpt,
           wordCount: manifest.metadata?.wordCount,
-          epubPath: `${projectDir}/source/original.epub`,
+          epubPath: articleEpubPath,
           bfpPath: projectDir,
           hasCleaned,
         };
