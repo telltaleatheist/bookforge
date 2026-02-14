@@ -2,6 +2,7 @@ import { Injectable, inject, signal, computed } from '@angular/core';
 import { ElectronService } from '../../../core/services/electron.service';
 import { LibraryService } from '../../../core/services/library.service';
 import { StudioItem, StudioItemType, FetchUrlResult, EditAction } from '../models/studio.types';
+import type { AudiobookOutput } from '../../../core/models/manifest.types';
 
 /**
  * StudioService - Unified project management for books and articles
@@ -52,7 +53,7 @@ export class StudioService {
   }
 
   /**
-   * Load books from BFP files
+   * Load books from manifest projects
    */
   async loadBooks(): Promise<void> {
     if (!this.electronService.isRunningInElectron) {
@@ -60,127 +61,137 @@ export class StudioService {
     }
 
     try {
-      // Use the correct IPC handler: listProjectsWithAudiobook
-      const result = await this.electronService.audiobookListProjectsWithAudiobook();
+      const result = await this.electronService.manifestList({ type: 'book' });
+      if (!result.success || !result.projects) return;
 
-      if (result.success && result.projects) {
-        const books: StudioItem[] = [];
+      const projectsPath = this.libraryService.projectsPath();
+      if (!projectsPath) return;
 
-        for (const p of result.projects) {
-          console.log(`[StudioService] Processing book: ${p.name}`);
-          console.log(`[StudioService]   audiobookFolder: ${p.audiobookFolder}`);
-          console.log(`[StudioService]   linkedAudioPath: ${p.linkedAudioPath}`);
-          console.log(`[StudioService]   vttPath from BFP: ${p.vttPath}`);
-          console.log(`[StudioService]   outputFilename: ${p.metadata?.outputFilename}`);
+      const books: StudioItem[] = [];
 
-          // Determine audio path - prioritize linkedAudioPath from BFP, then check for output.m4b
-          let audiobookPath: string | undefined;
+      for (const manifest of result.projects) {
+        const projectDir = `${projectsPath}/${manifest.projectId}`;
 
-          // First check linkedAudioPath from BFP (supports custom filenames)
-          if (p.linkedAudioPath && p.linkedAudioPathValid !== false) {
-            const translatedPath = this.translatePath(p.linkedAudioPath);
-            const linkedExists = await this.electronService.fsExists(translatedPath);
-            if (linkedExists) {
-              audiobookPath = translatedPath;
-              console.log(`[StudioService]   -> Using linkedAudioPath: ${audiobookPath}`);
+        // Standard audiobook output
+        let audiobookPath: string | undefined;
+        let vttPath: string | undefined;
+        if (manifest.outputs?.audiobook?.path) {
+          const absPath = `${projectDir}/${manifest.outputs.audiobook.path}`;
+          if (await this.electronService.fsExists(absPath)) {
+            audiobookPath = absPath;
+          }
+          if (manifest.outputs.audiobook.vttPath) {
+            const absVtt = `${projectDir}/${manifest.outputs.audiobook.vttPath}`;
+            if (await this.electronService.fsExists(absVtt)) {
+              vttPath = absVtt;
             }
           }
-
-          // Fall back to output.m4b in audiobook folder
-          if (!audiobookPath && p.audiobookFolder) {
-            // Translate path for cross-platform compatibility (Syncthing shared library)
-            const folder = this.translatePath(p.audiobookFolder);
-            const outputM4b = `${folder}/output.m4b`;
-            const outputExists = await this.electronService.fsExists(outputM4b);
-            if (outputExists) {
-              audiobookPath = outputM4b;
-            }
+        }
+        // Fallback: check for audiobook.m4b / audiobook.vtt
+        if (!audiobookPath) {
+          const outputM4b = `${projectDir}/output/audiobook.m4b`;
+          if (await this.electronService.fsExists(outputM4b)) {
+            audiobookPath = outputM4b;
           }
-
-          // VTT file - check audiobook folder
-          let vttPath: string | undefined;
-          if (p.audiobookFolder) {
-            const folder = this.translatePath(p.audiobookFolder);
-            const vttFile = `${folder}/subtitles.vtt`;
-            const vttExists = await this.electronService.fsExists(vttFile);
-            if (vttExists) {
-              vttPath = vttFile;
-            }
+        }
+        if (!vttPath) {
+          const outputVtt = `${projectDir}/output/audiobook.vtt`;
+          if (await this.electronService.fsExists(outputVtt)) {
+            vttPath = outputVtt;
           }
-
-          console.log(`[StudioService]   RESULT: audiobookPath=${audiobookPath}, vttPath=${vttPath}`);
-
-          // Skipped chunks file - only set if it exists
-          let skippedChunksPath: string | undefined;
-          if (p.audiobookFolder && p.cleanedAt) {
-            const skippedFile = `${p.audiobookFolder}/skipped-chunks.json`;
-            const skippedExists = await this.electronService.fsExists(skippedFile);
-            if (skippedExists) {
-              skippedChunksPath = skippedFile;
-            }
-          }
-
-          // Check for bilingual audio path
-          let bilingualAudioPath: string | undefined;
-          let bilingualVttPath: string | undefined;
-          let bilingualSentencePairsPath: string | undefined;
-          if (p.bilingualAudioPath && p.bilingualAudioPathValid !== false) {
-            bilingualAudioPath = p.bilingualAudioPath;
-            console.log(`[StudioService]   -> Found bilingualAudioPath: ${bilingualAudioPath}`);
-          }
-          if (p.bilingualVttPath) {
-            const bilingualVttExists = await this.electronService.fsExists(p.bilingualVttPath);
-            if (bilingualVttExists) {
-              bilingualVttPath = p.bilingualVttPath;
-              console.log(`[StudioService]   -> Found bilingualVttPath: ${bilingualVttPath}`);
-            }
-          }
-          if (p.bilingualSentencePairsPath) {
-            bilingualSentencePairsPath = p.bilingualSentencePairsPath;
-          }
-
-          const book: StudioItem = {
-            id: p.bfpPath,  // Use bfpPath as unique ID
-            type: 'book' as StudioItemType,
-            title: p.metadata?.title || p.name || 'Untitled',
-            author: p.metadata?.author,
-            year: p.metadata?.year,
-            language: p.metadata?.language,
-            status: this.mapBookStatus(audiobookPath || bilingualAudioPath, !!p.cleanedAt),
-            createdAt: p.exportedAt || new Date().toISOString(),
-            modifiedAt: p.cleanedAt || p.exportedAt || new Date().toISOString(),
-            epubPath: p.audiobookFolder ? `${p.audiobookFolder}/exported.epub` : undefined,
-            bfpPath: p.bfpPath,
-            coverPath: p.metadata?.coverImagePath,
-            hasCleaned: !!p.cleanedAt,
-            // Only set cleanedEpubPath if the book was actually cleaned (cleanedAt exists)
-            cleanedEpubPath: (p.cleanedAt && p.audiobookFolder) ? `${p.audiobookFolder}/cleaned.epub` : undefined,
-            audiobookPath,
-            vttPath,
-            skippedChunksPath,
-            // Bilingual audio paths
-            bilingualAudioPath,
-            bilingualVttPath,
-            bilingualSentencePairsPath
-          };
-
-          // Load cover image as base64 for display
-          if (p.metadata?.coverImagePath) {
-            try {
-              const coverResult = await this.electronService.mediaLoadImage(p.metadata.coverImagePath);
-              if (coverResult.success && coverResult.data) {
-                book.coverData = coverResult.data;
-              }
-            } catch {
-              // Cover not found, continue without it
-            }
-          }
-
-          books.push(book);
         }
 
-        this._books.set(books);
+        // Bilingual audiobook outputs (all language pairs)
+        let bilingualAudioPath: string | undefined;
+        let bilingualVttPath: string | undefined;
+        let bilingualSentencePairsPath: string | undefined;
+        const bilingualOutputs: Record<string, { audioPath: string; vttPath: string; sentencePairsPath?: string; sourceLang: string; targetLang: string }> = {};
+
+        if (manifest.outputs?.bilingualAudiobooks) {
+          for (const [key, bilingual] of Object.entries(manifest.outputs.bilingualAudiobooks) as [string, AudiobookOutput][]) {
+            const absAudio = `${projectDir}/${bilingual.path}`;
+            const audioExists = await this.electronService.fsExists(absAudio);
+            if (!audioExists) continue;
+
+            const absVtt = bilingual.vttPath ? `${projectDir}/${bilingual.vttPath}` : undefined;
+            const vttExists = absVtt ? await this.electronService.fsExists(absVtt) : false;
+            const absPairs = bilingual.sentencePairsPath ? `${projectDir}/${bilingual.sentencePairsPath}` : undefined;
+
+            const [src, tgt] = key.split('-');
+            bilingualOutputs[key] = {
+              audioPath: absAudio,
+              vttPath: vttExists ? absVtt! : absAudio.replace('.m4b', '.vtt'),
+              sentencePairsPath: absPairs,
+              sourceLang: src,
+              targetLang: tgt,
+            };
+
+            // First entry populates legacy single-pair fields
+            if (!bilingualAudioPath) {
+              bilingualAudioPath = absAudio;
+              bilingualVttPath = vttExists ? absVtt : undefined;
+              bilingualSentencePairsPath = absPairs;
+            }
+          }
+        }
+
+        // Cleanup state
+        const hasCleaned = manifest.pipeline?.cleanup?.status === 'complete';
+        let cleanedEpubPath: string | undefined;
+        if (hasCleaned && manifest.pipeline?.cleanup?.outputPath) {
+          cleanedEpubPath = `${projectDir}/${manifest.pipeline.cleanup.outputPath}`;
+        }
+
+        // Skipped chunks
+        let skippedChunksPath: string | undefined;
+        if (hasCleaned) {
+          const skippedFile = `${projectDir}/stages/01-cleanup/skipped-chunks.json`;
+          if (await this.electronService.fsExists(skippedFile)) {
+            skippedChunksPath = skippedFile;
+          }
+        }
+
+        const book: StudioItem = {
+          id: projectDir,
+          type: 'book',
+          title: manifest.metadata?.title || manifest.projectId,
+          author: manifest.metadata?.author,
+          year: manifest.metadata?.year,
+          language: manifest.metadata?.language,
+          status: this.mapBookStatus(audiobookPath || bilingualAudioPath, hasCleaned),
+          createdAt: manifest.createdAt,
+          modifiedAt: manifest.modifiedAt,
+          epubPath: `${projectDir}/source/original.epub`,
+          bfpPath: projectDir,
+          coverPath: manifest.metadata?.coverPath,
+          hasCleaned,
+          cleanedEpubPath,
+          audiobookPath,
+          vttPath,
+          skippedChunksPath,
+          bilingualAudioPath,
+          bilingualVttPath,
+          bilingualSentencePairsPath,
+          bilingualOutputs: Object.keys(bilingualOutputs).length > 0 ? bilingualOutputs : undefined,
+        };
+
+        // Load cover image
+        if (manifest.metadata?.coverPath) {
+          try {
+            const absCover = `${projectDir}/${manifest.metadata.coverPath}`;
+            const coverResult = await this.electronService.mediaLoadImage(absCover);
+            if (coverResult.success && coverResult.data) {
+              book.coverData = coverResult.data;
+            }
+          } catch {
+            // Cover not found, continue without it
+          }
+        }
+
+        books.push(book);
       }
+
+      this._books.set(books);
     } catch (e) {
       console.error('[StudioService] Failed to load books:', e);
     }
