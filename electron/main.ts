@@ -5246,6 +5246,8 @@ function setupIpcHandlers(): void {
       // Simplify for language learners (backwards compat: also accepts simplifyForChildren)
       simplifyForLearning?: boolean;
       simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
+      // Enable AI cleanup (default: true). Set false to skip AI and only simplify.
+      enableAiCleanup?: boolean;
       // Custom cleanup prompt (overrides default)
       cleanupPrompt?: string;
     }
