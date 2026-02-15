@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
-import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, shellEscapeArgs } from './e2a-paths';
+import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath } from './e2a-paths';
 import { getAudiobookDirFromBfp } from './parallel-tts-bridge';
 import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
@@ -1016,10 +1016,9 @@ export async function startReassembly(
       const condaArgs = [...getCondaRunArgs(e2aPath), ...appArgs];
       console.log('[REASSEMBLY] Running command: conda', condaArgs.join(' '));
 
-      proc = spawn(getCondaPath(), shellEscapeArgs(condaArgs), {
+      proc = spawn(getCondaPath(), condaArgs, {
         cwd: e2aPath,
         env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
-        shell: true
       });
     }
 

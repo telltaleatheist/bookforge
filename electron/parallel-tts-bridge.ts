@@ -1664,7 +1664,7 @@ export async function prepareSession(
       {
         cwd: getDefaultE2aPath(),
         env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
-        shell: true
+        shell: false
       },
       settings.ttsEngine
     );
@@ -1929,7 +1929,7 @@ function startWorker(
     {
       cwd: getDefaultE2aPath(),
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
-      shell: true
+      shell: false
     },
     settings.ttsEngine
   );
@@ -2357,7 +2357,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       {
         cwd: getDefaultE2aPath(),
         env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
-        shell: true
+        shell: false
       },
       settings.ttsEngine  // Pass TTS engine to check if WSL should be used
     );
@@ -4192,10 +4192,9 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
     let stdout = '';
     let stderr = '';
 
-    const resumeCheckProcess = spawn(getCondaPath(), shellEscapeArgs(args), {
+    const resumeCheckProcess = spawn(getCondaPath(), args, {
       cwd: getDefaultE2aPath(),
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
-      shell: true
     });
 
     resumeCheckProcess.stdout?.on('data', (data: Buffer) => {
@@ -4288,10 +4287,9 @@ export async function listResumableSessions(): Promise<Array<{
   return new Promise((resolve) => {
     let stdout = '';
 
-    const listProcess = spawn(getCondaPath(), shellEscapeArgs(args), {
+    const listProcess = spawn(getCondaPath(), args, {
       cwd: getDefaultE2aPath(),
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
-      shell: true
     });
 
     listProcess.stdout?.on('data', (data: Buffer) => {

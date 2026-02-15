@@ -715,17 +715,12 @@ export class QueueService {
     console.log('[QUEUE] Found completed job:', completedJob ? `type=${completedJob.type}, id=${completedJob.id}, status=${completedJob.status}` : 'NOT FOUND');
 
     // Guard against double-processing — inline + event-based handlers can both call this.
-    // Skip caching/chaining (already done by first call), but STILL clear _currentJobId
-    // and call processNext as a safety net in case the first call failed to reach that point.
+    // The first handler does the full work (session caching, chaining, processNext).
+    // The second handler must NOT call processNext() — doing so would start the next job
+    // while the first handler is still awaiting async work (e.g., WSL session caching),
+    // causing race conditions where chained jobs can't find the session yet.
     if (completedJob && (completedJob.status === 'complete' || completedJob.status === 'error')) {
-      console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping to processNext safety net`);
-      if (this._currentJobId() === result.jobId) {
-        this._currentJobId.set(null);
-        if (this._isRunning()) {
-          console.log(`[QUEUE] Safety net: processing next job after duplicate completion for ${result.jobId}`);
-          this.processNext();
-        }
-      }
+      console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping (first handler will call processNext)`);
       return;
     }
 
