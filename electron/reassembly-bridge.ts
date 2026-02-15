@@ -11,6 +11,7 @@ import { getAudiobookDirFromBfp } from './parallel-tts-bridge';
 import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
+import * as manifestService from './manifest-service';
 
 /**
  * Check if a path is a WSL UNC path (\\wsl$\... or \\wsl.localhost\...)
@@ -829,22 +830,36 @@ export async function startReassembly(
 
   // No symlink needed - we pass --session_dir to e2a to tell it where the session is
 
-  // Copy BFP cover to session directory if provided and not already there
+  // Resolve cover from manifest if not provided in config
+  if (!config.metadata?.coverPath && config.outputDir) {
+    const projectDir = path.dirname(config.outputDir); // outputDir is {projectDir}/output
+    const projectId = path.basename(projectDir);
+    try {
+      const mResult = await manifestService.getManifest(projectId);
+      if (mResult.success && mResult.manifest?.metadata?.coverPath) {
+        const libRoot = manifestService.getLibraryBasePath();
+        const absCover = path.join(libRoot, mResult.manifest.metadata.coverPath);
+        if (fs.existsSync(absCover)) {
+          if (!config.metadata) config.metadata = { title: '', author: '' };
+          config.metadata.coverPath = absCover;
+          console.log(`[REASSEMBLY] Resolved cover from manifest: ${absCover}`);
+        }
+      }
+    } catch {
+      // Non-fatal — continue without cover
+    }
+  }
+
+  // Copy project cover to session directory, replacing any e2a-extracted cover
   // e2a uses covers from the processDir (cleaned.jpg, cover.jpg, etc.) during assembly
   if (config.metadata?.coverPath && fs.existsSync(config.metadata.coverPath)) {
-    const existingCover = findCoverImage(config.processDir);
-    if (!existingCover) {
-      try {
-        // Determine extension
-        const ext = path.extname(config.metadata.coverPath).toLowerCase() || '.jpg';
-        const targetCoverPath = path.join(config.processDir, `cover${ext}`);
-        fs.copyFileSync(config.metadata.coverPath, targetCoverPath);
-        console.log(`[REASSEMBLY] Copied BFP cover to session: ${config.metadata.coverPath} -> ${targetCoverPath}`);
-      } catch (err) {
-        console.error('[REASSEMBLY] Failed to copy BFP cover to session:', err);
-      }
-    } else {
-      console.log('[REASSEMBLY] Session already has cover:', existingCover);
+    try {
+      const ext = path.extname(config.metadata.coverPath).toLowerCase() || '.jpg';
+      const targetCoverPath = path.join(config.processDir, `cover${ext}`);
+      fs.copyFileSync(config.metadata.coverPath, targetCoverPath);
+      console.log(`[REASSEMBLY] Copied project cover to session: ${config.metadata.coverPath} -> ${targetCoverPath}`);
+    } catch (err) {
+      console.error('[REASSEMBLY] Failed to copy project cover to session:', err);
     }
   }
 

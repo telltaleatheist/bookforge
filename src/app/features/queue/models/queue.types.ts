@@ -158,8 +158,6 @@ export interface TtsConversionConfig {
   // Skip assembly - for dual-voice bilingual workflows where assembly happens after
   // both source and target TTS jobs complete
   skipAssembly?: boolean;
-  // TTS completion handler chains to assembly placeholder
-  chainAssembly?: boolean;
   // Resume info (saved after prep for resume capability)
   resumeInfo?: TtsResumeInfo;
   // Clean session - delete any existing e2a sessions for this epub before starting
@@ -467,13 +465,6 @@ export interface AudiobookMetadata {
     role: 'source' | 'target' | 'assembly';
     projectId: string;
     targetLang?: string;  // Only for source role
-  };
-  // Placeholder marker for mono assembly jobs waiting for TTS to complete
-  // processNext() skips jobs with this marker until TTS completion handler clears it
-  assemblyPlaceholder?: {
-    pending: true;
-    bfpPath: string;
-    outputDir: string;
   };
   // Bilingual workflow state (for chaining TTS jobs)
   bilingualWorkflow?: {

@@ -714,9 +714,18 @@ export class QueueService {
     const completedJob = this._jobs().find(j => j.id === result.jobId);
     console.log('[QUEUE] Found completed job:', completedJob ? `type=${completedJob.type}, id=${completedJob.id}, status=${completedJob.status}` : 'NOT FOUND');
 
-    // Guard against double-processing — inline + event-based handlers can both call this
+    // Guard against double-processing — inline + event-based handlers can both call this.
+    // Skip caching/chaining (already done by first call), but STILL clear _currentJobId
+    // and call processNext as a safety net in case the first call failed to reach that point.
     if (completedJob && (completedJob.status === 'complete' || completedJob.status === 'error')) {
-      console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping duplicate call`);
+      console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping to processNext safety net`);
+      if (this._currentJobId() === result.jobId) {
+        this._currentJobId.set(null);
+        if (this._isRunning()) {
+          console.log(`[QUEUE] Safety net: processing next job after duplicate completion for ${result.jobId}`);
+          this.processNext();
+        }
+      }
       return;
     }
 
@@ -782,32 +791,8 @@ export class QueueService {
       );
     }
 
-    // If TTS job failed with chainAssembly, mark the assembly placeholder as error
+    // If TTS job failed in bilingual workflow, mark dependent placeholders as error
     if (!result.success && !result.wasStopped && completedJob?.type === 'tts-conversion') {
-      const ttsConfig = completedJob.config as TtsConversionConfig;
-      if (ttsConfig?.chainAssembly && completedJob.workflowId) {
-        const pendingAssembly = this._jobs().find(j =>
-          j.workflowId === completedJob.workflowId &&
-          j.type === 'reassembly' &&
-          j.status === 'pending' &&
-          (j.metadata as any)?.assemblyPlaceholder?.pending
-        );
-        if (pendingAssembly) {
-          console.log(`[QUEUE] TTS failed with chainAssembly - marking assembly placeholder ${pendingAssembly.id} as error`);
-          this._jobs.update(jobs =>
-            jobs.map(job => {
-              if (job.id !== pendingAssembly.id) return job;
-              return {
-                ...job,
-                status: 'error' as JobStatus,
-                error: 'Skipped: TTS conversion failed. Assembly cannot proceed without TTS output.'
-              };
-            })
-          );
-        }
-      }
-
-      // If TTS job failed in bilingual workflow, mark dependent placeholders as error
       const bilingualMeta = (completedJob?.metadata as any)?.bilingualWorkflow;
       if (bilingualMeta && completedJob.workflowId) {
         const placeholdersToFail = this._jobs().filter(j =>
@@ -928,85 +913,6 @@ export class QueueService {
             speed: ttsConfig.speed,
           }
         );
-      }
-    }
-
-    // Handle mono TTS → Assembly chaining (when chainAssembly is set)
-    if (result.success && completedJob?.type === 'tts-conversion') {
-      const ttsConf = completedJob.config as TtsConversionConfig;
-      if (ttsConf?.chainAssembly && completedJob.workflowId && completedJob.bfpPath) {
-        console.log('[QUEUE] TTS complete with chainAssembly, activating assembly placeholder');
-
-        // Read the freshly cached session from BFP
-        const electron = window.electron as any;
-        let sessionData: any = null;
-        if (electron?.reassembly?.getBfpSession) {
-          try {
-            const sessionResult = await electron.reassembly.getBfpSession(completedJob.bfpPath);
-            if (sessionResult.success && sessionResult.data) {
-              sessionData = sessionResult.data;
-              console.log(`[QUEUE] Got cached session: sessionId=${sessionData.sessionId}, ` +
-                `${sessionData.completedSentences}/${sessionData.totalSentences} sentences, ` +
-                `${sessionData.chapters?.length || 0} chapters`);
-            } else {
-              console.error('[QUEUE] No cached session found in BFP:', sessionResult.error);
-            }
-          } catch (err) {
-            console.error('[QUEUE] Error reading cached session from BFP:', err);
-          }
-        }
-
-        // Find the pending assembly placeholder in the same workflow
-        const pendingAssembly = this._jobs().find(j =>
-          j.workflowId === completedJob.workflowId &&
-          j.type === 'reassembly' &&
-          j.status === 'pending' &&
-          (j.metadata as any)?.assemblyPlaceholder?.pending
-        );
-
-        if (pendingAssembly && sessionData) {
-          const totalChapters = sessionData.chapters?.filter((ch: any) => !ch.excluded)?.length || 0;
-          const currentConfig = pendingAssembly.config as ReassemblyJobConfig;
-
-          console.log(`[QUEUE] Updating assembly placeholder ${pendingAssembly.id} with session data`);
-          this._jobs.update(jobs =>
-            jobs.map(j => {
-              if (j.id !== pendingAssembly.id) return j;
-              return {
-                ...j,
-                epubPath: sessionData.processDir,
-                metadata: {
-                  ...j.metadata,
-                  assemblyPlaceholder: undefined, // Clear placeholder marker — processNext() can now pick it up
-                },
-                config: {
-                  ...currentConfig,
-                  sessionId: sessionData.sessionId,
-                  sessionDir: sessionData.sessionDir,
-                  processDir: sessionData.processDir,
-                  totalChapters,
-                } as ReassemblyJobConfig,
-              };
-            })
-          );
-        } else if (pendingAssembly && !sessionData) {
-          // Session not found — mark assembly as error
-          console.error(`[QUEUE] Cannot activate assembly placeholder — no session found in BFP`);
-          this._jobs.update(jobs =>
-            jobs.map(j => {
-              if (j.id !== pendingAssembly.id) return j;
-              return {
-                ...j,
-                status: 'error' as JobStatus,
-                error: 'Assembly failed: TTS session could not be read from BFP cache.',
-                metadata: {
-                  ...j.metadata,
-                  assemblyPlaceholder: undefined,
-                },
-              };
-            })
-          );
-        }
       }
     }
 
@@ -1779,8 +1685,6 @@ export class QueueService {
       if (j.type === 'tts-conversion' && (j.metadata as any)?.bilingualPlaceholder) return false;
       // Skip bilingual assembly placeholder jobs that are waiting for TTS to complete
       if (j.type === 'bilingual-assembly' && (j.metadata as any)?.bilingualPlaceholder) return false;
-      // Skip mono assembly placeholder jobs that are waiting for TTS to complete
-      if (j.type === 'reassembly' && (j.metadata as any)?.assemblyPlaceholder?.pending) return false;
       return true;
     });
     if (pending.length === 0) return;
@@ -2190,7 +2094,7 @@ export class QueueService {
           console.log(`[QUEUE] Parallel TTS inline completion: success=${ttsResult.success}, jobId=${job.id}`);
 
           // Delegate to handleJobComplete for all TTS-specific logic
-          // (session caching, chainAssembly activation, processNext, etc.)
+          // (session caching, processNext, etc.)
           // This is idempotent — if the event-based handler already processed this, it's a no-op
           // because _currentJobId will have been cleared and the "not the current job" branch runs.
           await this.handleJobComplete({
@@ -2237,9 +2141,28 @@ export class QueueService {
         }
       } else if (job.type === 'reassembly') {
         // Reassembly job - reassemble incomplete e2a session
-        const config = job.config as ReassemblyJobConfig | undefined;
+        let config = job.config as ReassemblyJobConfig | undefined;
         if (!config) {
           throw new Error('Reassembly configuration required');
+        }
+
+        // Runtime session discovery — resolve session data from BFP cache if not provided
+        if (!config.sessionId && job.bfpPath) {
+          console.log('[QUEUE] Reassembly: discovering session from BFP cache...');
+          const sessionResult = await (electron.reassembly as any).getBfpSession(job.bfpPath);
+          if (sessionResult.success && sessionResult.data) {
+            const s = sessionResult.data;
+            config = {
+              ...config,
+              sessionId: s.sessionId,
+              sessionDir: s.sessionDir,
+              processDir: s.processDir,
+              totalChapters: s.chapters?.filter((ch: any) => !ch.excluded)?.length || 0,
+            };
+            console.log(`[QUEUE] Reassembly: found session ${s.sessionId}, ${config.totalChapters} chapters`);
+          } else {
+            throw new Error('No TTS session found in project — run TTS first');
+          }
         }
 
         console.log('[QUEUE] Starting reassembly job:', {
@@ -2986,8 +2909,6 @@ export class QueueService {
         // Bilingual mode and skip assembly for dual-voice workflows
         bilingual: config.bilingual,
         skipAssembly: config.skipAssembly,
-        // Chain assembly after TTS completion
-        chainAssembly: config.chainAssembly,
         // Never use cleanSession - preserve session contents
         // Preserve paragraph boundaries (for language learning)
         sentencePerParagraph: config.sentencePerParagraph,
@@ -2999,7 +2920,7 @@ export class QueueService {
       };
     } else if (request.type === 'reassembly') {
       const config = request.config as Partial<ReassemblyJobConfig>;
-      // sessionId/sessionDir/processDir may be empty for placeholder jobs (filled later by chainAssembly handler)
+      // sessionId/sessionDir/processDir may be empty — filled at runtime via BFP session discovery
       // outputDir is required — it's known at creation time from bfpPath
       if (!config?.outputDir) {
         return undefined;

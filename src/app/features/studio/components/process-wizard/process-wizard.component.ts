@@ -2864,7 +2864,7 @@ export class ProcessWizardComponent implements OnInit {
 
       // 3. TTS job (if not skipped)
       if (!this.skippedSteps.has('tts')) {
-        const assemblyChained = !this.skippedSteps.has('assembly');
+        const skipAssembly = !this.skippedSteps.has('assembly'); // Tell e2a to produce sentences only (we reassemble ourselves)
         const partial = this.partialTtsSession();
 
         if (this.continueTts() && partial) {
@@ -2893,8 +2893,7 @@ export class ProcessWizardComponent implements OnInit {
               parallelMode: 'sentences',
               parallelWorkers: this.ttsEngine === 'xtts' ? this.parallelWorkers : 1,
               outputDir,
-              skipAssembly: assemblyChained,
-              chainAssembly: assemblyChained,
+              skipAssembly,
             },
             resumeInfo: {
               success: true,
@@ -2933,8 +2932,7 @@ export class ProcessWizardComponent implements OnInit {
             parallelMode: 'sentences',
             parallelWorkers: this.ttsEngine === 'xtts' ? this.parallelWorkers : 1,
             outputDir,
-            skipAssembly: assemblyChained,
-            chainAssembly: assemblyChained,
+            skipAssembly,
           };
 
           await this.queueService.addJob({
@@ -2960,31 +2958,28 @@ export class ProcessWizardComponent implements OnInit {
         const audiobookDir = this.getAudiobookDirFromBfp(this.bfpPath());
 
         if (!this.skippedSteps.has('tts')) {
-          // MODE A: TTS + Assembly chained — create placeholder, paths filled by TTS completion handler
-          const reassemblyConfig: ReassemblyJobConfig = {
-            type: 'reassembly',
-            sessionId: '',   // placeholder — filled by TTS completion handler
-            sessionDir: '',  // placeholder
-            processDir: '',  // placeholder
-            outputDir: audiobookDir,
-            metadata: {
-              title: this.title() || '',
-              author: this.author() || '',
-              coverPath: this.coverPath() || undefined,
-              year: this.year() || undefined,
-              outputFilename: `${this.title() || 'audiobook'}.m4b`,
-            },
-            excludedChapters: [],
-          };
-
+          // MODE A: TTS + Assembly chained — session data discovered at runtime by queue service
           await this.queueService.addJob({
             type: 'reassembly',
             bfpPath: this.bfpPath(),
-            config: reassemblyConfig,
+            config: {
+              type: 'reassembly',
+              sessionId: '',   // filled at runtime via BFP session discovery
+              sessionDir: '',
+              processDir: '',
+              outputDir: audiobookDir,
+              metadata: {
+                title: this.title() || '',
+                author: this.author() || '',
+                coverPath: this.coverPath() || undefined,
+                year: this.year() || undefined,
+                outputFilename: `${this.title() || 'audiobook'}.m4b`,
+              },
+              excludedChapters: [],
+            },
             metadata: {
               title: this.title(),
               author: this.author(),
-              assemblyPlaceholder: { pending: true, bfpPath: this.bfpPath(), outputDir: audiobookDir },
             },
             workflowId,
             parentJobId: masterJobId,

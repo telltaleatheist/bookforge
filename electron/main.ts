@@ -4767,17 +4767,16 @@ function setupIpcHandlers(): void {
         console.warn('[AUDIOBOOK] Failed to delete source VTT (non-fatal):', deleteErr);
       }
 
-      // Update BFP with vttPath
-      const bfpContent = await fs.readFile(bfpPath, 'utf-8');
-      const bfpProject = JSON.parse(bfpContent);
-
-      if (!bfpProject.audiobook) {
-        bfpProject.audiobook = {};
+      // Update manifest with vttPath
+      const projectId = path.basename(bfpPath);
+      const mResult = await manifestService.getManifest(projectId);
+      if (mResult.success && mResult.manifest) {
+        const manifest = mResult.manifest;
+        if (!manifest.outputs) manifest.outputs = {};
+        if (!manifest.outputs.audiobook) manifest.outputs.audiobook = { path: '' };
+        manifest.outputs.audiobook.vttPath = path.relative(bfpPath, vttDestPath).replace(/\\/g, '/');
+        await manifestService.saveManifest(manifest);
       }
-      bfpProject.audiobook.vttPath = vttDestPath;
-      bfpProject.modified_at = new Date().toISOString();
-
-      await atomicWriteFile(bfpPath, JSON.stringify(bfpProject, null, 2));
 
       return { success: true, vttPath: vttDestPath };
     } catch (err) {
@@ -4936,53 +4935,35 @@ function setupIpcHandlers(): void {
   // Link an audio file to a BFP project
   ipcMain.handle('audiobook:link-audio', async (_event, bfpPath: string, audioPath: string) => {
     try {
-      console.log('[audiobook:link-audio] === LINK AUDIO CALLED ===');
-      console.log('[audiobook:link-audio] bfpPath:', bfpPath);
-      console.log('[audiobook:link-audio] audioPath:', audioPath);
+      console.log('[audiobook:link-audio] bfpPath:', bfpPath, 'audioPath:', audioPath);
 
-      // Validate inputs
       if (!bfpPath || !audioPath) {
-        console.error('[audiobook:link-audio] Missing required parameters');
         return { success: false, error: 'Missing bfpPath or audioPath' };
       }
 
-      // Check if BFP file exists
-      const bfpExists = fsSync.existsSync(bfpPath);
-      console.log('[audiobook:link-audio] BFP exists:', bfpExists);
-      if (!bfpExists) {
-        return { success: false, error: `BFP file not found: ${bfpPath}` };
+      // bfpPath is the project directory — derive projectId and relative audio path
+      const projectId = path.basename(bfpPath);
+      const relativePath = path.relative(bfpPath, audioPath).replace(/\\/g, '/');
+      console.log('[audiobook:link-audio] projectId:', projectId, 'relativePath:', relativePath);
+
+      // Update manifest.json with the audiobook output path
+      const result = await manifestService.getManifest(projectId);
+      if (!result.success || !result.manifest) {
+        return { success: false, error: `Manifest not found for project: ${projectId}` };
       }
 
-      // Read the BFP file
-      console.log('[audiobook:link-audio] Reading BFP file...');
-      const content = await fs.readFile(bfpPath, 'utf-8');
-      const project = JSON.parse(content);
-      console.log('[audiobook:link-audio] Current linkedAudioPath:', project.audiobook?.linkedAudioPath);
+      const manifest = result.manifest;
+      if (!manifest.outputs) manifest.outputs = {};
+      manifest.outputs.audiobook = {
+        ...manifest.outputs.audiobook,
+        path: relativePath,
+        completedAt: new Date().toISOString(),
+      };
 
-      // Ensure audiobook state exists
-      if (!project.audiobook) {
-        project.audiobook = {};
-      }
-
-      // Set the linked audio path
-      project.audiobook.linkedAudioPath = audioPath;
-      console.log('[audiobook:link-audio] New linkedAudioPath:', project.audiobook.linkedAudioPath);
-
-      // Save the BFP file
-      console.log('[audiobook:link-audio] Writing BFP file...');
-      const jsonContent = JSON.stringify(project, null, 2);
-      await fs.writeFile(bfpPath, jsonContent);
-      console.log('[audiobook:link-audio] Write complete, bytes:', jsonContent.length);
-
-      // Verify the write
-      const verifyContent = await fs.readFile(bfpPath, 'utf-8');
-      const verifyProject = JSON.parse(verifyContent);
-      console.log('[audiobook:link-audio] Verified linkedAudioPath:', verifyProject.audiobook?.linkedAudioPath);
-
-      console.log('[audiobook:link-audio] === SUCCESS ===');
-      return { success: true };
+      const saveResult = await manifestService.saveManifest(manifest);
+      console.log('[audiobook:link-audio] Manifest saved:', saveResult.success);
+      return { success: saveResult.success, error: saveResult.error };
     } catch (err) {
-      console.error('[audiobook:link-audio] === ERROR ===');
       console.error('[audiobook:link-audio] Error:', err);
       return { success: false, error: (err as Error).message };
     }
@@ -5260,6 +5241,8 @@ function setupIpcHandlers(): void {
       // Test mode: only process first N chunks
       testMode?: boolean;
       testModeChunks?: number;
+      // Enable standard AI cleanup (OCR fixes, formatting)
+      enableAiCleanup?: boolean;
       // Simplify for language learners (backwards compat: also accepts simplifyForChildren)
       simplifyForLearning?: boolean;
       simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning

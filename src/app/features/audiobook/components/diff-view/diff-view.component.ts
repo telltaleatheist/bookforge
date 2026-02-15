@@ -208,12 +208,12 @@ interface EditState {
             >
               <div class="tooltip-row">
                 <span class="tooltip-label">Was:</span>
-                <span class="tooltip-original">"{{ tooltipSegment()!.originalText }}"</span>
+                <span class="tooltip-original">{{ tooltipSegment()!.originalText }}</span>
               </div>
               @if (tooltipSegment()!.text !== '(deleted)') {
                 <div class="tooltip-row">
                   <span class="tooltip-label">Now:</span>
-                  <span class="tooltip-new">"{{ tooltipSegment()!.text }}"</span>
+                  <span class="tooltip-new">{{ tooltipSegment()!.text }}</span>
                 </div>
               }
             </div>

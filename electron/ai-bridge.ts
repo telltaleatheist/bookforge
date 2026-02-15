@@ -2768,10 +2768,39 @@ function replaceXhtmlBodyLocal(xhtml: string, cleanedText: string): string {
   // If counts don't match, fall back to simple paragraph replacement
   if (textMatches.length !== cleanedBlocks.length) {
     console.warn(`[AI-BRIDGE] Block count mismatch: ${textMatches.length} HTML blocks vs ${cleanedBlocks.length} cleaned blocks. Using paragraph fallback.`);
+
+    // Preserve chapter heading from original XHTML so TTS can detect it
+    const firstHeading = textMatches.find(m => /^h[1-6]$/i.test(m.tag));
+    let headingHtml = '';
+
+    if (firstHeading) {
+      const origTitle = firstHeading.content.replace(/<[^>]+>/g, '').replace(/&[^;]+;/g, ' ').trim();
+      const normalizedTitle = origTitle.replace(/[.!?:;\s]+$/g, '').toLowerCase().trim();
+
+      if (normalizedTitle) {
+        // Ensure heading ends with period for TTS pause
+        let headingText = origTitle.replace(/[.!?:;\s]+$/g, '').trim();
+        if (!/[.!?]$/.test(headingText)) headingText += '.';
+        headingHtml = `<${firstHeading.tag}${firstHeading.attrs}>${escapeXmlLocal(headingText)}</${firstHeading.tag}>`;
+
+        // Check if AI included the title at the start of the first block — strip to avoid duplication
+        const firstBlockNorm = (cleanedBlocks[0] || '').toLowerCase().trim();
+        if (firstBlockNorm.startsWith(normalizedTitle)) {
+          const remainder = cleanedBlocks[0].substring(normalizedTitle.length).replace(/^[.!?:;\s]+/, '').trim();
+          if (remainder) {
+            cleanedBlocks[0] = remainder;
+          } else {
+            cleanedBlocks.shift();
+          }
+        }
+      }
+    }
+
     const paragraphs = cleanedBlocks.map(p => `<p>${escapeXmlLocal(p)}</p>`).join('\n');
+    const bodyHtml = headingHtml ? `${headingHtml}\n${paragraphs}` : paragraphs;
     return xhtml.replace(
       /<body([^>]*)>[\s\S]*<\/body>/i,
-      `<body$1>\n${paragraphs}\n</body>`
+      `<body$1>\n${bodyHtml}\n</body>`
     );
   }
 
@@ -2780,7 +2809,15 @@ function replaceXhtmlBodyLocal(xhtml: string, cleanedText: string): string {
 
   for (let i = textMatches.length - 1; i >= 0; i--) {
     const m = textMatches[i];
-    const cleanedBlock = cleanedBlocks[i];
+    let cleanedBlock = cleanedBlocks[i];
+
+    // Ensure heading content ends with punctuation for TTS pause
+    if (/^h[1-6]$/i.test(m.tag) && cleanedBlock) {
+      const trimmed = cleanedBlock.trim();
+      if (trimmed && !/[.!?]$/.test(trimmed)) {
+        cleanedBlock = trimmed + '.';
+      }
+    }
 
     // Build new element preserving original tag and attributes
     const newElement = `<${m.tag}${m.attrs}>${escapeXmlLocal(cleanedBlock)}</${m.tag}>`;
