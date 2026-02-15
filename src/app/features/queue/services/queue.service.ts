@@ -2393,9 +2393,11 @@ export class QueueService {
           this.updateMasterJobProgress(job.workflowId, job.parentJobId);
         }
 
-        // For mono translation, skip the dual-EPUB workflow
+        // For mono translation, skip the dual-EPUB workflow — just advance the queue
         if (config.monoTranslation) {
           console.log('[QUEUE] Mono translation complete, skipping dual-EPUB workflow');
+          this._currentJobId.set(null);
+          await this.processNext();
           return;
         }
 
@@ -3016,6 +3018,7 @@ export class QueueService {
         claudeApiKey: config.claudeApiKey,
         openaiApiKey: config.openaiApiKey,
         translationPrompt: config.translationPrompt,
+        monoTranslation: config.monoTranslation,
         testMode: config.testMode,
         testModeChunks: config.testModeChunks
       };

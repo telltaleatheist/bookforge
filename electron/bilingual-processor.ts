@@ -81,7 +81,7 @@ export interface BilingualResult {
 }
 
 // Language name mapping for prompts
-const LANGUAGE_NAMES: Record<string, string> = {
+export const LANGUAGE_NAMES: Record<string, string> = {
   'en': 'English',
   'de': 'German',
   'es': 'Spanish',
@@ -223,7 +223,7 @@ async function callOpenAI(
 /**
  * Call the configured AI provider
  */
-async function callAI(
+export async function callAI(
   prompt: string,
   config: BilingualProcessingConfig,
   systemPrompt?: string

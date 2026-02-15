@@ -116,7 +116,7 @@ interface ETAState {
             </div>
             @if (job()?.currentChunk && job()?.totalChunks) {
               <div class="stat">
-                <span class="stat-label">Sentences</span>
+                <span class="stat-label">{{ isMonoTranslation() ? 'Paragraphs' : 'Sentences' }}</span>
                 <span class="stat-value">{{ job()!.currentChunk }}/{{ job()!.totalChunks }}</span>
               </div>
             }
@@ -1174,6 +1174,11 @@ export class JobProgressComponent implements OnDestroy {
     } else {
       return 'TTS Conversion';
     }
+  }
+
+  isMonoTranslation(): boolean {
+    const j = this.job();
+    return j?.type === 'bilingual-translation' && !!(j.config as any)?.monoTranslation;
   }
 
   getAssemblySubPhaseLabel(subPhase: string | undefined): string {

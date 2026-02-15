@@ -15,6 +15,8 @@ import {
   splitIntoSentences,
   translateSentences,
   cleanupText,
+  callAI,
+  LANGUAGE_NAMES,
   BilingualProcessingConfig,
   ProcessingProgress,
   SentencePair,
@@ -28,6 +30,17 @@ import {
   finalizeDiffCache,
   clearDiffCache
 } from './diff-cache.js';
+import {
+  EpubProcessor,
+  ZipReader,
+  ZipWriter,
+  extractBlockTexts,
+  replaceBlockTexts,
+  formatNumberedParagraphs,
+  parseNumberedParagraphs,
+  validateNumberedParagraphs,
+} from './epub-processor.js';
+import * as cheerio from 'cheerio';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Analytics Types & Helpers
@@ -1314,6 +1327,8 @@ export async function runLLTranslation(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mono Translation - Full book translation to single language
+// Translates at PARAGRAPH level for natural, context-aware output.
+// Preserves original EPUB structure (CSS, images, fonts, headings).
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface MonoTranslationConfig {
@@ -1329,10 +1344,146 @@ export interface MonoTranslationConfig {
   translationPrompt?: string;
 }
 
+/** Max paragraphs per AI batch */
+const MONO_BATCH_MAX_PARAGRAPHS = 8;
+/** Max characters per AI batch (soft limit) */
+const MONO_BATCH_MAX_CHARS = 3000;
+
 /**
- * Mono Translation - Translates entire book to target language
- * Unlike bilingual translation, this produces a single translated EPUB
- * suitable for standard TTS processing.
+ * Translate a batch of paragraphs using <<<N>>> markers.
+ * Returns an array of translated texts in the same order as the input.
+ * Retries individual paragraphs that are missing from the AI response.
+ */
+async function translateParagraphBatch(
+  paragraphs: string[],
+  sourceLang: string,
+  targetLang: string,
+  config: MonoTranslationConfig,
+  startIndex: number = 1
+): Promise<string[]> {
+  const sourceLanguage = LANGUAGE_NAMES[sourceLang] || sourceLang;
+  const targetLanguage = LANGUAGE_NAMES[targetLang] || targetLang;
+
+  const bilingualConfig: BilingualProcessingConfig = {
+    projectId: '',
+    sourceText: '',
+    sourceLang,
+    targetLang,
+    aiProvider: config.aiProvider,
+    aiModel: config.aiModel,
+    ollamaBaseUrl: config.ollamaBaseUrl,
+    claudeApiKey: config.claudeApiKey,
+    openaiApiKey: config.openaiApiKey,
+  };
+
+  // Format paragraphs with <<<N>>> markers
+  const formatted = formatNumberedParagraphs(paragraphs, startIndex);
+
+  const systemPrompt = config.translationPrompt ||
+    `You are a professional literary translator. Translate naturally and fluently, preserving the author's tone and style.`;
+
+  const prompt = `Translate the following paragraphs from ${sourceLanguage} to ${targetLanguage}.
+Each paragraph is marked with <<<N>>>. Preserve these markers exactly.
+Return ONLY the translated paragraphs with the same <<<N>>> markers. Do not add explanations.
+
+${formatted}`;
+
+  const response = await callAI(prompt, bilingualConfig, systemPrompt);
+
+  // Parse the numbered response
+  const { paragraphs: parsed } = parseNumberedParagraphs(response);
+  const missing = validateNumberedParagraphs(parsed, paragraphs.length, startIndex);
+
+  // Retry missing paragraphs individually
+  for (const missingIdx of missing) {
+    const originalIdx = missingIdx - startIndex;
+    const originalText = paragraphs[originalIdx];
+    console.log(`[MONO-TRANSLATION] Retrying missing paragraph ${missingIdx}: "${originalText.substring(0, 60)}..."`);
+
+    const retryPrompt = `Translate the following paragraph from ${sourceLanguage} to ${targetLanguage}.
+Return ONLY the translation, nothing else.
+
+${originalText}`;
+
+    const retryResponse = await callAI(retryPrompt, bilingualConfig, systemPrompt);
+    parsed.set(missingIdx, retryResponse.trim());
+  }
+
+  // Assemble results in order
+  const results: string[] = [];
+  for (let i = 0; i < paragraphs.length; i++) {
+    const idx = startIndex + i;
+    const translated = parsed.get(idx);
+    if (translated && translated.length > 0) {
+      results.push(translated);
+    } else {
+      // Last resort: use original text
+      console.warn(`[MONO-TRANSLATION] Paragraph ${idx} still missing after retry, keeping original`);
+      results.push(paragraphs[i]);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Split paragraphs into batches respecting size limits,
+ * then translate each batch.
+ */
+async function translateAllParagraphs(
+  paragraphs: string[],
+  sourceLang: string,
+  targetLang: string,
+  config: MonoTranslationConfig,
+  onProgress: (translated: number, total: number) => void
+): Promise<string[]> {
+  // Build batches
+  const batches: { texts: string[]; startIndex: number }[] = [];
+  let currentBatch: string[] = [];
+  let currentChars = 0;
+  let globalIndex = 1; // <<<N>>> numbering starts at 1
+
+  for (const para of paragraphs) {
+    const wouldExceed = currentBatch.length >= MONO_BATCH_MAX_PARAGRAPHS ||
+      (currentBatch.length > 0 && currentChars + para.length > MONO_BATCH_MAX_CHARS);
+
+    if (wouldExceed) {
+      batches.push({ texts: currentBatch, startIndex: globalIndex });
+      globalIndex += currentBatch.length;
+      currentBatch = [];
+      currentChars = 0;
+    }
+
+    currentBatch.push(para);
+    currentChars += para.length;
+  }
+
+  if (currentBatch.length > 0) {
+    batches.push({ texts: currentBatch, startIndex: globalIndex });
+  }
+
+  console.log(`[MONO-TRANSLATION] ${paragraphs.length} paragraphs → ${batches.length} batches`);
+
+  // Translate each batch
+  const allTranslated: string[] = [];
+  let translatedCount = 0;
+
+  for (const batch of batches) {
+    const translated = await translateParagraphBatch(
+      batch.texts, sourceLang, targetLang, config, batch.startIndex
+    );
+    allTranslated.push(...translated);
+    translatedCount += batch.texts.length;
+    onProgress(translatedCount, paragraphs.length);
+  }
+
+  return allTranslated;
+}
+
+/**
+ * Mono Translation - Translates entire book to target language.
+ * Uses paragraph-level translation for natural, context-aware output.
+ * Preserves original EPUB structure (CSS, images, fonts).
  */
 export async function runMonoTranslation(
   jobId: string,
@@ -1370,131 +1521,137 @@ export async function runMonoTranslation(
   const outputEpubPath = path.join(translateDir, 'translated.epub');
 
   try {
-    // Extract chapters from the input EPUB
-    const { extractChaptersFromEpub } = await import('./epub-processor.js');
-    const extractResult = await extractChaptersFromEpub(inputEpubPath);
-
-    if (!extractResult.success || !extractResult.chapters) {
-      throw new Error(extractResult.error || 'Failed to extract chapters from EPUB');
-    }
-
-    const chapters = extractResult.chapters;
-    console.log(`[MONO-TRANSLATION] Extracted ${chapters.length} chapters from EPUB`);
-
+    // ── Step 1: Read EPUB structure ──────────────────────────────────────
     sendProgress(mainWindow, jobId, {
       phase: 'splitting',
       currentSentence: 0,
       totalSentences: 0,
       percentage: 5,
-      message: `Processing ${chapters.length} chapters for translation...`
+      message: 'Reading EPUB structure...'
     });
 
-    // Split each chapter into sentences and collect all for translation
-    interface ChapterWithSentences {
-      title: string;
-      sentences: string[];
-      translatedSentences?: string[];
-    }
-    const chaptersWithSentences: ChapterWithSentences[] = [];
-    const allSentences: string[] = [];
-    const chapterBoundaries: { title: string; startIndex: number; endIndex: number }[] = [];
+    const processor = new EpubProcessor();
+    const structure = await processor.open(inputEpubPath);
 
-    for (const chapter of chapters) {
-      const sentences = splitIntoSentences(chapter.text, config.sourceLang, 'sentence');
-      if (sentences.length > 0) {
-        chapterBoundaries.push({
-          title: chapter.title,
-          startIndex: allSentences.length,
-          endIndex: allSentences.length + sentences.length
-        });
-        allSentences.push(...sentences);
-        chaptersWithSentences.push({
-          title: chapter.title,
-          sentences
-        });
+    // Build chapter path map: ZIP entry path → chapter info
+    const chapterPaths = new Map<string, typeof structure.chapters[0]>();
+    for (const ch of structure.chapters) {
+      const zipPath = processor.resolvePath(ch.href);
+      chapterPaths.set(zipPath, ch);
+    }
+
+    console.log(`[MONO-TRANSLATION] EPUB has ${structure.chapters.length} chapters`);
+
+    // ── Step 2: Extract paragraphs from each chapter ────────────────────
+    const zipReader = new ZipReader(inputEpubPath);
+    await zipReader.open();
+
+    interface ChapterData {
+      zipPath: string;
+      xhtml: string;
+      paragraphs: string[];
+    }
+    const chapterDataList: ChapterData[] = [];
+    let totalParagraphs = 0;
+
+    for (const [zipPath] of chapterPaths) {
+      const buffer = await zipReader.readEntry(zipPath);
+      const xhtml = buffer.toString('utf8');
+      const paragraphs = extractBlockTexts(xhtml);
+
+      if (paragraphs.length > 0) {
+        chapterDataList.push({ zipPath, xhtml, paragraphs });
+        totalParagraphs += paragraphs.length;
       }
     }
 
-    console.log(`[MONO-TRANSLATION] Split into ${allSentences.length} sentences across ${chapterBoundaries.length} chapters`);
+    console.log(`[MONO-TRANSLATION] ${totalParagraphs} paragraphs across ${chapterDataList.length} chapters`);
 
     sendProgress(mainWindow, jobId, {
       phase: 'translating',
       currentSentence: 0,
-      totalSentences: allSentences.length,
+      totalSentences: totalParagraphs,
       percentage: 10,
-      message: `Translating ${allSentences.length} sentences...`
+      message: `Translating ${totalParagraphs} paragraphs...`
     });
 
-    // Translate all sentences
-    const bilingualConfig: BilingualProcessingConfig = {
-      projectId: jobId,  // Use jobId as project ID for mono translation
-      sourceText: '',    // Not used - we pass sentences directly
-      sourceLang: config.sourceLang,
-      targetLang: config.targetLang,
-      aiProvider: config.aiProvider,
-      aiModel: config.aiModel,
-      ollamaBaseUrl: config.ollamaBaseUrl,
-      claudeApiKey: config.claudeApiKey,
-      openaiApiKey: config.openaiApiKey,
-      translationPrompt: config.translationPrompt
-    };
+    // ── Step 3: Translate paragraphs chapter by chapter ─────────────────
+    const translatedChapterXhtml = new Map<string, string>();
+    let paragraphsDone = 0;
 
-    const pairs = await translateSentences(allSentences, bilingualConfig, (progress) => {
-      // Map translation progress to 10-80%
-      const overallPercentage = 10 + Math.round((progress.percentage / 100) * 70);
-      sendProgress(mainWindow, jobId, {
-        phase: 'translating',
-        currentSentence: progress.currentSentence,
-        totalSentences: progress.totalSentences,
-        percentage: overallPercentage,
-        message: `Translating: ${progress.currentSentence}/${progress.totalSentences} sentences`
-      });
+    for (const chData of chapterDataList) {
+      const chapterInfo = chapterPaths.get(chData.zipPath);
+      const chapterTitle = chapterInfo?.title || chData.zipPath;
+      console.log(`[MONO-TRANSLATION] Translating chapter: ${chapterTitle} (${chData.paragraphs.length} paragraphs)`);
+
+      const translated = await translateAllParagraphs(
+        chData.paragraphs,
+        config.sourceLang,
+        config.targetLang,
+        config,
+        (done, total) => {
+          const chapterDone = paragraphsDone + done;
+          // Map to 10-90% range
+          const pct = 10 + Math.round((chapterDone / totalParagraphs) * 80);
+          sendProgress(mainWindow, jobId, {
+            phase: 'translating',
+            currentSentence: chapterDone,
+            totalSentences: totalParagraphs,
+            percentage: Math.min(pct, 90),
+            message: `Translating: ${chapterDone}/${totalParagraphs} paragraphs`
+          });
+        }
+      );
+
+      paragraphsDone += chData.paragraphs.length;
+
+      // Replace block texts in original XHTML (preserves structure, CSS, etc.)
+      let modifiedXhtml = replaceBlockTexts(chData.xhtml, translated);
+
+      // Update xml:lang on translated chapters
+      const $ = cheerio.load(modifiedXhtml, { xmlMode: true });
+      $('html').attr('xml:lang', config.targetLang);
+      $('html').attr('lang', config.targetLang);
+      modifiedXhtml = $.xml();
+
+      translatedChapterXhtml.set(chData.zipPath, modifiedXhtml);
+    }
+
+    // ── Step 4: Write new EPUB ──────────────────────────────────────────
+    sendProgress(mainWindow, jobId, {
+      phase: 'epub',
+      currentSentence: totalParagraphs,
+      totalSentences: totalParagraphs,
+      percentage: 95,
+      message: 'Writing translated EPUB...'
     });
 
-    console.log(`[MONO-TRANSLATION] Translated ${pairs.length} sentences`);
+    const zipWriter = new ZipWriter();
+    const allEntries = zipReader.getEntries();
 
-    // Reconstruct translated chapters
-    for (const boundary of chapterBoundaries) {
-      const chapter = chaptersWithSentences.find(ch => ch.title === boundary.title);
-      if (chapter) {
-        const chapterPairs = pairs.slice(boundary.startIndex, boundary.endIndex);
-        chapter.translatedSentences = chapterPairs.map(p => p.target);
+    for (const file of allEntries) {
+      if (translatedChapterXhtml.has(file)) {
+        zipWriter.addFile(file, Buffer.from(translatedChapterXhtml.get(file)!, 'utf8'));
+      } else {
+        const content = await zipReader.readEntry(file);
+        zipWriter.addFile(file, content);
       }
     }
 
-    sendProgress(mainWindow, jobId, {
-      phase: 'epub',
-      currentSentence: pairs.length,
-      totalSentences: pairs.length,
-      percentage: 85,
-      message: 'Generating translated EPUB...'
-    });
+    zipReader.close();
+    processor.close();
 
-    // Generate translated EPUB using the chaptered format
-    const { generateChapteredEpub } = await import('./bilingual-processor.js');
-
-    // Prepare translated chapters for EPUB generation
-    // For mono translation, we want natural paragraphs, so we join sentences
-    // with proper paragraph breaks
-    const translatedChapters = chaptersWithSentences.map(ch => ({
-      title: ch.title,
-      sentences: ch.translatedSentences || []
-    }));
-
-    await generateChapteredEpub(
-      translatedChapters,
-      `${config.title || 'Book'} (Translated)`,
-      config.targetLang,
-      outputEpubPath,
-      { includeBookforgeMarker: true }  // Mark as processed by BookForge
-    );
+    // Write via temp file for atomic operation
+    const tempPath = outputEpubPath + '.tmp';
+    await zipWriter.write(tempPath);
+    await fs.rename(tempPath, outputEpubPath);
 
     console.log(`[MONO-TRANSLATION] Generated translated EPUB: ${outputEpubPath}`);
 
     sendProgress(mainWindow, jobId, {
       phase: 'complete',
-      currentSentence: pairs.length,
-      totalSentences: pairs.length,
+      currentSentence: totalParagraphs,
+      totalSentences: totalParagraphs,
       percentage: 100,
       message: 'Translation complete'
     });

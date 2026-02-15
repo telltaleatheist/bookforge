@@ -68,7 +68,7 @@ interface ZipEntry {
 // ZIP Parsing (minimal implementation for EPUB)
 // ─────────────────────────────────────────────────────────────────────────────
 
-class ZipReader {
+export class ZipReader {
   private fd: number | null = null;
   private entries: Map<string, ZipEntry> = new Map();
   private filePath: string;
@@ -247,7 +247,7 @@ function getAllTags(xml: string, tagName: string): Array<{ content: string; attr
 // EPUB Processor Class
 // ─────────────────────────────────────────────────────────────────────────────
 
-class EpubProcessor {
+export class EpubProcessor {
   private zipReader: ZipReader | null = null;
   private structure: EpubStructure | null = null;
   private currentPath: string = '';
@@ -552,7 +552,7 @@ class EpubProcessor {
     };
   }
 
-  private resolvePath(href: string): string {
+  resolvePath(href: string): string {
     if (!this.structure) return href;
     // Handle fragment identifiers
     const cleanHref = href.split('#')[0];
@@ -620,7 +620,7 @@ class EpubProcessor {
 
 const deflateRaw = promisify(zlib.deflateRaw);
 
-class ZipWriter {
+export class ZipWriter {
   private entries: Array<{ name: string; data: Buffer; isCompressed: boolean }> = [];
 
   addFile(name: string, data: Buffer, compress: boolean = true): void {
@@ -2452,7 +2452,7 @@ export function parseNumberedParagraphs(text: string): { paragraphs: Map<number,
   // Extract text between each marker and the next (or end of string)
   for (let i = 0; i < markers.length; i++) {
     const startPos = markers[i].pos;
-    const endPos = i + 1 < markers.length ? markers[i + 1].pos - markers[i + 1].num.toString().length - 5 : text.length;
+    const endPos = i + 1 < markers.length ? markers[i + 1].pos - markers[i + 1].num.toString().length - 6 : text.length;
     const paragraphText = text.substring(startPos, endPos).trim();
     paragraphs.set(markers[i].num, paragraphText);
   }
@@ -2706,7 +2706,7 @@ export async function extractChaptersWithBlocks(
     const result: ChapterBlockData[] = [];
     for (const chapter of chapters) {
       try {
-        const href = (processor as any).resolvePath(chapter.href);
+        const href = processor.resolvePath(chapter.href);
         const xhtml = await processor.readFile(href);
         const blocks = extractBlockTextsWithTags(xhtml);
 
@@ -2766,7 +2766,7 @@ export async function copyEpubReplaceBodies(
     // Build map of chapter ID → file path within ZIP
     const chapterPathMap = new Map<string, string>();
     for (const chapter of structure.chapters) {
-      const href = (processor as any).resolvePath(chapter.href);
+      const href = processor.resolvePath(chapter.href);
       chapterPathMap.set(chapter.id, href);
     }
 
@@ -2896,7 +2896,7 @@ export async function replaceChapterTextsInEpub(
     // Create a map of chapter IDs to their file paths
     const chapterPathMap = new Map<string, string>();
     for (const chapter of structure.chapters) {
-      const href = (processor as any).resolvePath(chapter.href);
+      const href = processor.resolvePath(chapter.href);
       chapterPathMap.set(chapter.id, href);
     }
 
@@ -2944,5 +2944,3 @@ export async function replaceChapterTextsInEpub(
   }
 }
 
-// Export the processor and ZipWriter for direct use if needed
-export { EpubProcessor, ZipWriter };
