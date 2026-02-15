@@ -87,6 +87,8 @@ export interface QueueJob {
   // Assembly progress details
   assemblyProgress?: number;       // 0-100 for assembly phase
   assemblySubPhase?: 'combining' | 'vtt' | 'encoding' | 'metadata';
+  // Job was interrupted by app close/crash — TTS should auto-resume instead of starting fresh
+  wasInterrupted?: boolean;
 }
 
 // Job configuration union type

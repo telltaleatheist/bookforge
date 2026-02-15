@@ -2529,6 +2529,8 @@ const electronAPI: ElectronAPI = {
     // Resume support
     checkResumeFast: (epubPath: string) =>
       ipcRenderer.invoke('parallel-tts:check-resume-fast', epubPath),
+    checkResumeFromDir: (processDir: string) =>
+      ipcRenderer.invoke('parallel-tts:check-resume-from-dir', processDir),
     checkResume: (sessionPath: string) =>
       ipcRenderer.invoke('parallel-tts:check-resume', sessionPath),
     resumeConversion: (jobId: string, config: ParallelConversionConfig, resumeInfo: ResumeCheckResult) =>

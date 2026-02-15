@@ -3207,6 +3207,17 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Check resume status from a known processDir (for cached sessions)
+  ipcMain.handle('parallel-tts:check-resume-from-dir', async (_event, processDir: string) => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      const result = await parallelTtsBridge.checkResumeStatusFromProcessDir(processDir);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Fast resume check (no subprocess, just counts files)
   ipcMain.handle('parallel-tts:check-resume-fast', async (_event, epubPath: string) => {
     try {

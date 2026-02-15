@@ -442,6 +442,33 @@ interface AvailableEpub {
               <h3>Text-to-Speech</h3>
               <p class="step-desc">Configure voice synthesis settings.</p>
 
+              <!-- Continue / New Toggle -->
+              <div class="config-section">
+                <label class="field-label">Mode</label>
+                <div class="provider-buttons">
+                  <button class="provider-btn"
+                    [class.selected]="!continueTts()"
+                    (click)="continueTts.set(false)">
+                    <span class="provider-name">New</span>
+                    <span class="provider-status">Start fresh</span>
+                  </button>
+                  <button class="provider-btn"
+                    [class.selected]="continueTts()"
+                    [disabled]="!partialTtsSession()"
+                    (click)="partialTtsSession() && continueTts.set(true)">
+                    <span class="provider-name">Continue</span>
+                    <span class="provider-status">
+                      @if (partialTtsSession(); as session) {
+                        {{ session.completedSentences }}/{{ session.totalSentences }} sentences
+                      } @else {
+                        No partial session
+                      }
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              @if (!continueTts()) {
               <!-- Source EPUB Selection -->
               <div class="config-section">
                 <label class="field-label">Source EPUB</label>
@@ -594,6 +621,14 @@ interface AvailableEpub {
                     </span>
                   </div>
               </div>
+              } @else {
+              <!-- Continue mode info -->
+              <div class="config-section">
+                <span class="hint">
+                  Continuing from previous session. Voice, speed, and other settings from the original run will be used.
+                </span>
+              </div>
+              }
             </div>
           }
 
@@ -1888,6 +1923,8 @@ export class ProcessWizardComponent implements OnInit {
   readonly advancedTtsOpen = signal(false);
   readonly ttsTestMode = signal(false);
   readonly ttsTestModeChunks = signal(10);
+  readonly continueTts = signal(false);
+  readonly partialTtsSession = signal<{ completedSentences: number; totalSentences: number; sessionId: string; sessionDir: string; processDir: string; chapters?: any[] } | null>(null);
 
   // XTTS voice models
   readonly xttsVoices = [
@@ -2486,6 +2523,63 @@ export class ProcessWizardComponent implements OnInit {
     }
   }
 
+  /**
+   * Scan for a partial TTS session that can be continued.
+   * Checks BFP cache (output/session/) and e2a tmp for incomplete sessions.
+   */
+  private async scanForPartialTtsSession(): Promise<void> {
+    const electron = window.electron as any;
+    this.continueTts.set(false);
+    this.partialTtsSession.set(null);
+
+    // Check BFP cached session first
+    if (electron?.reassembly?.getBfpSession && this.bfpPath()) {
+      try {
+        const result = await electron.reassembly.getBfpSession(this.bfpPath());
+        if (result.success && result.data) {
+          const session = result.data;
+          if (session.completedSentences > 0 && session.completedSentences < session.totalSentences) {
+            this.partialTtsSession.set({
+              completedSentences: session.completedSentences,
+              totalSentences: session.totalSentences,
+              sessionId: session.sessionId,
+              sessionDir: session.sessionDir,
+              processDir: session.processDir,
+              chapters: session.chapters,
+            });
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('[PROCESS-WIZARD] Error scanning BFP session:', err);
+      }
+    }
+
+    // Check e2a tmp for interrupted sessions
+    if (electron?.parallelTts?.checkResumeFast) {
+      try {
+        const epubPath = this.ttsSourceEpub() !== 'latest'
+          ? this.ttsSourceEpub()
+          : this.resolveLatestSource('tts');
+        if (!epubPath) return;
+        const result = await electron.parallelTts.checkResumeFast(epubPath);
+        if (result.success && result.data?.success && result.data.canResume) {
+          const data = result.data;
+          this.partialTtsSession.set({
+            completedSentences: data.completedSentences,
+            totalSentences: data.totalSentences,
+            sessionId: data.sessionId,
+            sessionDir: data.sessionDir,
+            processDir: data.processDir,
+            chapters: data.chapters,
+          });
+        }
+      } catch (err) {
+        console.error('[PROCESS-WIZARD] Error scanning e2a tmp sessions:', err);
+      }
+    }
+  }
+
   isStepCompleted(step: WizardStep): boolean {
     return this.completedSteps.has(step);
   }
@@ -2547,6 +2641,7 @@ export class ProcessWizardComponent implements OnInit {
           this.skippedSteps.add('translate');
         }
         this.currentStep.set('tts');
+        this.scanForPartialTtsSession();
         break;
       case 'tts':
         this.currentStep.set('assembly');
@@ -2569,6 +2664,7 @@ export class ProcessWizardComponent implements OnInit {
         break;
       case 'assembly':
         this.currentStep.set('tts');
+        this.scanForPartialTtsSession();
         break;
       case 'review':
         this.currentStep.set('assembly');
@@ -2724,49 +2820,95 @@ export class ProcessWizardComponent implements OnInit {
 
       // 3. TTS job (if not skipped)
       if (!this.skippedSteps.has('tts')) {
-        // Use TTS source selection if configured, otherwise use current pipeline output
-        const ttsSourcePath = this.ttsSourceEpub() !== 'latest'
-          ? this.ttsSourceEpub()
-          : this.resolveLatestSource('tts');
-
         const assemblyChained = !this.skippedSteps.has('assembly');
-        const ttsConfig: Partial<TtsConversionConfig> = {
-          type: 'tts-conversion',
-          device: this.ttsDevice,
-          language: this.ttsLanguage,
-          ttsEngine: this.ttsEngine,
-          fineTuned: this.ttsVoice,
-          temperature: this.ttsTemperature,
-          topP: this.ttsTopP,
-          topK: 50,
-          repetitionPenalty: 1.0,
-          speed: this.ttsSpeed,
-          enableTextSplitting: true,
-          // Use parallel TTS for better performance
-          useParallel: true,
-          parallelMode: 'sentences',
-          parallelWorkers: this.ttsEngine === 'xtts' ? this.parallelWorkers : 1,
-          outputDir,
-          // When assembly is chained, skip internal assembly - assembly job handles it
-          skipAssembly: assemblyChained,
-          chainAssembly: assemblyChained,
-        };
+        const partial = this.partialTtsSession();
 
-        await this.queueService.addJob({
-          type: 'tts-conversion',
-          epubPath: ttsSourcePath,
-          projectDir: isArticle ? this.projectDir() : undefined,
-          bfpPath: isArticle ? undefined : this.bfpPath(),
-          metadata: {
-            title: 'TTS',
-            bookTitle: this.title(),
-            author: this.author(),
-            outputFilename: `${this.title() || 'audiobook'}.m4b`,
-          },
-          config: ttsConfig,
-          workflowId,
-          parentJobId: masterJobId,
-        });
+        if (this.continueTts() && partial) {
+          // Continue mode: resume from partial session using previous settings
+          // Get full resume check result with missing indices
+          const electron = window.electron as any;
+          const resumeCheck = await electron.parallelTts.checkResumeFromDir(partial.processDir);
+          const resumeData = resumeCheck?.data;
+          if (!resumeData?.success) {
+            throw new Error('Failed to get resume info for partial session');
+          }
+
+          await this.queueService.addJob({
+            type: 'tts-conversion',
+            epubPath: resumeData.sourceEpubPath || '',
+            bfpPath: this.bfpPath(),
+            metadata: {
+              title: 'TTS (Continue)',
+              bookTitle: this.title(),
+              author: this.author(),
+              outputFilename: `${this.title() || 'audiobook'}.m4b`,
+            },
+            config: {
+              type: 'tts-conversion',
+              useParallel: true,
+              parallelMode: 'sentences',
+              parallelWorkers: this.ttsEngine === 'xtts' ? this.parallelWorkers : 1,
+              outputDir,
+              skipAssembly: assemblyChained,
+              chainAssembly: assemblyChained,
+            },
+            resumeInfo: {
+              success: true,
+              sessionId: partial.sessionId,
+              sessionDir: partial.sessionDir,
+              processDir: partial.processDir,
+              totalSentences: partial.totalSentences,
+              totalChapters: partial.chapters?.length || 0,
+              completedSentences: partial.completedSentences,
+              missingSentences: resumeData.missingSentences,
+              missingRanges: resumeData.missingRanges,
+              chapters: resumeData.chapters,
+            },
+            workflowId,
+            parentJobId: masterJobId,
+          });
+        } else {
+          // Fresh start: new TTS with current settings
+          const ttsSourcePath = this.ttsSourceEpub() !== 'latest'
+            ? this.ttsSourceEpub()
+            : this.resolveLatestSource('tts');
+
+          const ttsConfig: Partial<TtsConversionConfig> = {
+            type: 'tts-conversion',
+            device: this.ttsDevice,
+            language: this.ttsLanguage,
+            ttsEngine: this.ttsEngine,
+            fineTuned: this.ttsVoice,
+            temperature: this.ttsTemperature,
+            topP: this.ttsTopP,
+            topK: 50,
+            repetitionPenalty: 1.0,
+            speed: this.ttsSpeed,
+            enableTextSplitting: true,
+            useParallel: true,
+            parallelMode: 'sentences',
+            parallelWorkers: this.ttsEngine === 'xtts' ? this.parallelWorkers : 1,
+            outputDir,
+            skipAssembly: assemblyChained,
+            chainAssembly: assemblyChained,
+          };
+
+          await this.queueService.addJob({
+            type: 'tts-conversion',
+            epubPath: ttsSourcePath,
+            projectDir: isArticle ? this.projectDir() : undefined,
+            bfpPath: isArticle ? undefined : this.bfpPath(),
+            metadata: {
+              title: 'TTS',
+              bookTitle: this.title(),
+              author: this.author(),
+              outputFilename: `${this.title() || 'audiobook'}.m4b`,
+            },
+            config: ttsConfig,
+            workflowId,
+            parentJobId: masterJobId,
+          });
+        }
       }
 
       // 4. Assembly job (if not skipped)

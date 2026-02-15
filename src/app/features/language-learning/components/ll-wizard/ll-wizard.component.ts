@@ -437,6 +437,46 @@ interface SourceStage {
               <h3>Text-to-Speech</h3>
               <p class="step-desc">Configure voice synthesis for each language. Each row becomes a separate TTS job.</p>
 
+              <!-- Continue / New Toggle -->
+              <div class="config-section">
+                <label class="field-label">Mode</label>
+                <div class="provider-buttons">
+                  <button class="provider-btn"
+                    [class.selected]="!continueTts()"
+                    (click)="continueTts.set(false)">
+                    <span class="provider-name">New</span>
+                    <span class="provider-status">Start fresh</span>
+                  </button>
+                  <button class="provider-btn"
+                    [class.selected]="continueTts()"
+                    [disabled]="!partialTtsSessions().length"
+                    (click)="partialTtsSessions().length && continueTts.set(true)">
+                    <span class="provider-name">Continue</span>
+                    <span class="provider-status">
+                      @if (partialTtsSessions().length) {
+                        {{ partialTtsSessions().length }} partial session{{ partialTtsSessions().length > 1 ? 's' : '' }}
+                      } @else {
+                        No partial sessions
+                      }
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              @if (continueTts()) {
+              <!-- Continue mode: show partial session info -->
+              <div class="config-section">
+                @for (session of partialTtsSessions(); track session.language) {
+                  <div class="hint" style="margin-bottom: 4px;">
+                    {{ session.language.toUpperCase() }}: {{ session.completedSentences }}/{{ session.totalSentences }} sentences
+                  </div>
+                }
+                <span class="hint">
+                  Continuing from previous sessions. Voice, speed, and other settings from the original runs will be used.
+                </span>
+              </div>
+              } @else {
+
               <!-- TTS Engine Selection -->
               <div class="config-section">
                 <label class="field-label">TTS Engine</label>
@@ -563,6 +603,7 @@ interface SourceStage {
                   + Add Language
                 </button>
               </div>
+              }
             </div>
           }
 
@@ -2001,6 +2042,8 @@ export class LLWizardComponent implements OnInit {
   readonly ttsTestMode = signal(false);
   readonly ttsTestSentences = signal(10);
   readonly ttsLanguageRows = signal<TtsLanguageRow[]>([]);
+  readonly continueTts = signal(false);
+  readonly partialTtsSessions = signal<{ language: string; completedSentences: number; totalSentences: number; sessionDir: string; sentencesDir: string }[]>([]);
 
   // Voice options
   readonly xttsVoices = [
@@ -2628,6 +2671,54 @@ export class LLWizardComponent implements OnInit {
     return this.ttsEngine() === 'orpheus' ? this.orpheusVoices : this.xttsVoices;
   }
 
+  /**
+   * Scan for partial TTS sessions in the project's stages/03-tts/sessions/.
+   */
+  private async scanForPartialTtsSessions(): Promise<void> {
+    const electron = window.electron as any;
+    this.continueTts.set(false);
+    this.partialTtsSessions.set([]);
+
+    if (!electron?.sessionCache?.scanProject) return;
+    const projectDir = this.projectDir();
+    if (!projectDir) return;
+
+    try {
+      const result = await electron.sessionCache.scanProject(projectDir);
+      if (result.success && result.sessions?.length) {
+        // Filter for partial sessions only (not 100% complete)
+        // We need to check each session — scanProject returns sentenceCount (files on disk)
+        // but we need totalSentences from session-state.json to know if it's partial
+        const partials: { language: string; completedSentences: number; totalSentences: number; sessionDir: string; sentencesDir: string }[] = [];
+        for (const session of result.sessions) {
+          // Use checkResumeFromDir to get total and completed counts
+          if (electron?.parallelTts?.checkResumeFromDir) {
+            try {
+              // sessionDir from scanProject is the ebook-{uuid} dir — find processDir inside it
+              const resumeResult = await electron.parallelTts.checkResumeFromDir(session.sessionDir);
+              if (resumeResult.success && resumeResult.data?.success) {
+                const data = resumeResult.data;
+                if (data.completedSentences > 0 && !data.complete) {
+                  partials.push({
+                    language: session.language,
+                    completedSentences: data.completedSentences,
+                    totalSentences: data.totalSentences,
+                    sessionDir: session.sessionDir,
+                    sentencesDir: session.sentencesDir,
+                  });
+                }
+              }
+            } catch (err) {
+              console.error(`[LL-WIZARD] Error checking session for ${session.language}:`, err);
+            }
+          }
+        }
+        this.partialTtsSessions.set(partials);
+      }
+    } catch (err) {
+      console.error('[LL-WIZARD] Error scanning for partial TTS sessions:', err);
+    }
+  }
 
   addTtsRow(): void {
     const defaultVoice = this.ttsEngine() === 'orpheus' ? 'tara' : 'ScarlettJohansson';
@@ -2772,6 +2863,8 @@ export class LLWizardComponent implements OnInit {
         // Re-scan for EPUBs to pick up newly created language files from Translation
         // IMPORTANT: Must await to ensure scan completes before TTS configuration
         await this.scanProjectEpubs();
+        // Scan for partial TTS sessions (for Continue button)
+        this.scanForPartialTtsSessions();
 
         if (this.ttsLanguageRows().length > 0) {
           // TTS has languages configured, remove from skipped
@@ -2824,7 +2917,11 @@ export class LLWizardComponent implements OnInit {
     const stepOrder: LLWizardStep[] = ['cleanup', 'translate', 'tts', 'assembly', 'review'];
     const currentIndex = stepOrder.indexOf(this.currentStep());
     if (currentIndex > 0) {
-      this.currentStep.set(stepOrder[currentIndex - 1]);
+      const prevStep = stepOrder[currentIndex - 1];
+      this.currentStep.set(prevStep);
+      if (prevStep === 'tts') {
+        this.scanForPartialTtsSessions();
+      }
     }
   }
 
@@ -3020,8 +3117,52 @@ export class LLWizardComponent implements OnInit {
         }
       }
 
-      // 3. TTS jobs (one per language row)
+      // 3. TTS jobs (one per language row, or resume partial sessions)
       if (!this._skippedSteps.has('tts')) {
+       if (this.continueTts() && this.partialTtsSessions().length) {
+        // Continue mode: resume partial TTS sessions
+        console.log(`[LL-WIZARD] Creating TTS resume jobs for ${this.partialTtsSessions().length} partial sessions`);
+        const electron = window.electron as any;
+        for (const session of this.partialTtsSessions()) {
+          const resumeCheck = await electron.parallelTts.checkResumeFromDir(session.sessionDir);
+          const resumeData = resumeCheck?.data;
+          if (!resumeData?.success) {
+            console.error(`[LL-WIZARD] Failed to get resume info for ${session.language}:`, resumeCheck?.data?.error);
+            continue;
+          }
+
+          await this.queueService.addJob({
+            type: 'tts-conversion',
+            epubPath: resumeData.sourceEpubPath || '',
+            projectDir,
+            metadata: { title: `TTS Continue (${session.language.toUpperCase()})` },
+            config: {
+              type: 'tts-conversion',
+              language: session.language,
+              useParallel: true,
+              parallelMode: 'sentences',
+              parallelWorkers: this.ttsWorkers(),
+              skipAssembly: true,
+              sentencePerParagraph: true,
+              skipHeadings: true,
+              outputDir: `/tmp/bookforge-tts-${Date.now()}`,
+            },
+            resumeInfo: {
+              success: true,
+              sessionId: resumeData.sessionId,
+              sessionDir: resumeData.sessionDir,
+              processDir: resumeData.processDir || session.sessionDir,
+              totalSentences: resumeData.totalSentences,
+              totalChapters: resumeData.totalChapters,
+              completedSentences: resumeData.completedSentences,
+              missingSentences: resumeData.missingSentences,
+              missingRanges: resumeData.missingRanges,
+              chapters: resumeData.chapters,
+            },
+            workflowId,
+          });
+        }
+       } else {
         console.log(`[LL-WIZARD] Creating TTS jobs. ProjectDir: ${projectDir}`);
 
         // Check if assembly chaining is needed (TTS → Assembly via bilingual workflow pattern)
@@ -3177,6 +3318,7 @@ export class LLWizardComponent implements OnInit {
             workflowId,
           });
         }
+       }
       }
 
       // 4. Assembly job

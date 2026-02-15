@@ -4031,8 +4031,27 @@ export async function checkResumeStatusFromProcessDir(processDir: string): Promi
 
   try {
     // Convert to readable path if it's a WSL path
-    const processDirReadable = toReadablePath(processDir);
-    const statePath = path.join(processDirReadable, 'session-state.json');
+    let processDirReadable = toReadablePath(processDir);
+    let statePath = path.join(processDirReadable, 'session-state.json');
+
+    // If session-state.json isn't here, look in subdirectories
+    // (handles ebook-{uuid} dirs where processDir is a hash subdir inside)
+    try {
+      await fs.access(statePath);
+    } catch {
+      const entries = await fs.readdir(processDirReadable, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && !entry.name.startsWith('.')) {
+          const candidatePath = path.join(processDirReadable, entry.name, 'session-state.json');
+          try {
+            await fs.access(candidatePath);
+            processDirReadable = path.join(processDirReadable, entry.name);
+            statePath = candidatePath;
+            break;
+          } catch { /* not this subdir */ }
+        }
+      }
+    }
 
     const stateContent = await fs.readFile(statePath, 'utf-8');
     const state = JSON.parse(stateContent);

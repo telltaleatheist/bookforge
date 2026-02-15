@@ -2113,15 +2113,17 @@ export class QueueService {
             bfpPath: job.bfpPath,
             isArticle: !!(job.projectDir && job.projectDir.replace(/\\/g, '/').includes('/language-learning/projects/')),
             externalAudiobooksDir: this.settingsService.get<string>('externalAudiobooksDir')
-            // Never use cleanSession - we want to preserve session contents
           };
 
-          // Check if this is a resume job (explicitly set) or if we can auto-resume from BFP
+          // Resume logic — three modes:
+          // 1. Explicit resume (wizard "Continue" button): job.isResumeJob + config.resumeInfo
+          // 2. Interrupted job (app crash/close): job.wasInterrupted — check for existing session
+          // 3. Fresh start (default): clean old sessions and start new
           let shouldResume = false;
           let resumeCheckResult: ResumeCheckResult | null = null;
 
           if (job.isResumeJob && config.resumeInfo) {
-            // Explicitly marked as resume job (from tts-settings component)
+            // Mode 1: Explicit resume from wizard "Continue" button
             resumeCheckResult = {
               success: true,
               sessionId: config.resumeInfo.sessionId,
@@ -2136,13 +2138,11 @@ export class QueueService {
             };
             shouldResume = true;
             console.log(`[QUEUE] Explicit resume job from ${job.resumeCompletedSentences} sentences`);
-          } else if (job.bfpPath) {
-            // Check if BFP has a saved session we can auto-resume from
-            // This handles jobs that were stopped by user clicking Stop
+          } else if (job.wasInterrupted && job.bfpPath) {
+            // Mode 2: Job was interrupted by app close/crash — try to resume
             resumeCheckResult = await this.checkBfpForResumableSession(job.bfpPath, epubPathForTts);
             if (resumeCheckResult?.success && !resumeCheckResult.complete) {
               shouldResume = true;
-              // IMPORTANT: Update job in signal so UI can calculate worker progress correctly
               this._jobs.update(jobs => jobs.map(j => {
                 if (j.id !== job.id) return j;
                 return {
@@ -2152,8 +2152,14 @@ export class QueueService {
                   resumeMissingSentences: resumeCheckResult!.missingSentences
                 };
               }));
-              console.log(`[QUEUE] Auto-resuming from BFP session: ${resumeCheckResult.completedSentences}/${resumeCheckResult.totalSentences} sentences`);
+              console.log(`[QUEUE] Auto-resuming interrupted job: ${resumeCheckResult.completedSentences}/${resumeCheckResult.totalSentences} sentences`);
+            } else {
+              console.log(`[QUEUE] Interrupted job has no resumable session, starting fresh`);
             }
+          }
+          // Mode 3: Fresh start — clean old sessions
+          if (!shouldResume) {
+            (parallelConfig as any).cleanSession = true;
           }
 
           // Create a promise that resolves when TTS completes (inline completion handling)
@@ -3389,7 +3395,9 @@ export class QueueService {
           startedAt: job.startedAt ? new Date(job.startedAt) : undefined,
           completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
           // Reset processing jobs to pending (they were interrupted)
-          status: job.status === 'processing' ? 'pending' : job.status
+          status: job.status === 'processing' ? 'pending' : job.status,
+          // Mark interrupted jobs so TTS can auto-resume instead of starting fresh
+          wasInterrupted: job.status === 'processing' ? true : job.wasInterrupted
         }));
 
         this._jobs.set(jobs);
