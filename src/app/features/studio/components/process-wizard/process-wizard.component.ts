@@ -2836,10 +2836,13 @@ export class ProcessWizardComponent implements OnInit {
     const step = this.currentStep();
     if (!this.skippedSteps.has(step)) {
       this.completedSteps.add(step);
-      // If user goes back to cleanup and clicks Next (un-skipping), update the signal
+      // If user goes back and clicks Next (un-skipping), clear the skip
       if (step === 'cleanup') {
         this.skippedSteps.delete('cleanup');
         this.cleanupSkipped.set(false);
+      }
+      if (step === 'translate') {
+        this.skippedSteps.delete('translate');
       }
     }
 
