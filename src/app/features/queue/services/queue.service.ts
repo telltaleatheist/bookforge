@@ -2213,6 +2213,33 @@ export class QueueService {
           }
         }
 
+        // Copy to external audiobooks directory
+        if (result.data?.outputPath?.endsWith('.m4b')) {
+          const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
+          if (externalDir) {
+            try {
+              const el = (window as any).electron;
+              if (el?.audiobook?.copyToExternal) {
+                const title = (job.metadata as any)?.title || (job.metadata as any)?.bookTitle || '';
+                const author = (job.metadata as any)?.author || '';
+                const copyResult = await el.audiobook.copyToExternal({
+                  m4bPath: result.data.outputPath,
+                  externalDir,
+                  title,
+                  author,
+                });
+                if (copyResult.success) {
+                  console.log('[QUEUE] Copied audiobook to external dir:', copyResult.externalPath);
+                } else {
+                  console.error('[QUEUE] Failed to copy to external dir:', copyResult.error);
+                }
+              }
+            } catch (err) {
+              console.error('[QUEUE] Error copying to external dir:', err);
+            }
+          }
+        }
+
         // Reload studio item
         if (job.bfpPath) {
           await this.studioService.reloadItem(job.bfpPath);

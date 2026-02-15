@@ -698,21 +698,39 @@ async function saveTranslatedEpub(
 }
 
 /**
- * Replace body content in XHTML
+ * Replace body content in XHTML while preserving heading structure.
+ * First block from AI goes into the original heading tag (h1-h6).
+ * Heading text always ends with a period for TTS pause.
  */
 function replaceXhtmlBody(xhtml: string, newText: string): string {
   const bodyMatch = xhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-  if (!bodyMatch) {
-    return xhtml;
+  if (!bodyMatch) return xhtml;
+
+  const bodyContent = bodyMatch[1];
+  const blocks = newText.split(/\n\n+/).filter(p => p.trim());
+  if (blocks.length === 0) return xhtml;
+
+  // Detect heading in original XHTML
+  const headingMatch = bodyContent.match(/<(h[1-6])([^>]*)>([\s\S]*?)<\/\1>/i);
+
+  if (!headingMatch) {
+    const htmlContent = blocks.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
+    return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${htmlContent}\n</body>`);
   }
 
-  const paragraphs = newText.split(/\n\n+/).filter(p => p.trim());
-  const htmlContent = paragraphs.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
+  const tag = headingMatch[1].toLowerCase();
+  const attrs = headingMatch[2];
 
-  return xhtml.replace(
-    /<body([^>]*)>[\s\S]*<\/body>/i,
-    `<body$1>\n${htmlContent}\n</body>`
-  );
+  // First block is the (translated) chapter title
+  let titleText = blocks[0].replace(/\s+/g, ' ').trim();
+  if (titleText && !/[.!?]$/.test(titleText)) titleText += '.';
+  const headingHtml = `<${tag}${attrs}>${escapeXml(titleText)}</${tag}>`;
+  const bodyBlocks = blocks.slice(1);
+
+  const bodyHtml = bodyBlocks.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
+  const htmlContent = bodyHtml ? `${headingHtml}\n${bodyHtml}` : headingHtml;
+
+  return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${htmlContent}\n</body>`);
 }
 
 /**

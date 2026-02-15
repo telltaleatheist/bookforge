@@ -741,60 +741,149 @@ interface AvailableEpub {
           @case ('review') {
             <div class="step-panel">
               <h3>Review & Queue</h3>
-              <p class="step-desc">Review your settings before adding to queue.</p>
+              <p class="step-desc">Review your pipeline configuration before adding to queue.</p>
 
-              <div class="review-section">
-                <div class="review-item">
-                  <span class="review-label">EPUB:</span>
-                  <span class="review-value">{{ reviewEpubFilename() }}</span>
+              <div class="review-cards">
+                <!-- Source Card -->
+                <div class="review-card">
+                  <div class="review-card-header">
+                    <span class="review-card-icon">📄</span>
+                    <span class="review-card-title">Source</span>
+                  </div>
+                  <div class="review-card-content">
+                    <div class="review-row">
+                      <span class="review-label">EPUB:</span>
+                      <span class="review-value">{{ reviewEpubFilename() }}</span>
+                    </div>
+                  </div>
                 </div>
 
-                <div class="review-item">
-                  <span class="review-label">AI Cleanup:</span>
-                  <span class="review-value" [class.disabled]="isStepSkipped('cleanup')">
-                    {{ isStepSkipped('cleanup') ? 'Skipped' : cleanupProvider() + ' / ' + cleanupModel() }}
-                  </span>
-                </div>
+                <!-- AI Cleanup Card -->
+                @if (!isStepSkipped('cleanup') && (enableAiCleanup() || simplifyForLearning())) {
+                  <div class="review-card">
+                    <div class="review-card-header">
+                      <span class="review-card-icon">🔧</span>
+                      <span class="review-card-title">AI Cleanup</span>
+                    </div>
+                    <div class="review-card-content">
+                      <div class="review-row">
+                        <span class="review-label">Provider:</span>
+                        <span class="review-value">{{ cleanupProvider() }} / {{ cleanupModel() }}</span>
+                      </div>
+                      <div class="review-row">
+                        <span class="review-label">Mode:</span>
+                        <span class="review-value">
+                          {{ enableAiCleanup() && simplifyForLearning() ? 'AI Cleanup + Simplify' : enableAiCleanup() ? 'AI Cleanup' : 'Simplify for Learning' }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                } @else {
+                  <div class="review-card skipped">
+                    <div class="review-card-header">
+                      <span class="review-card-icon">🔧</span>
+                      <span class="review-card-title">AI Cleanup</span>
+                      <span class="skipped-badge">Skipped</span>
+                    </div>
+                  </div>
+                }
 
-                <div class="review-item">
-                  <span class="review-label">Translation:</span>
-                  <span class="review-value" [class.disabled]="isStepSkipped('translate') || !enableTranslation()">
-                    @if (isStepSkipped('translate') || !enableTranslation()) {
-                      Skipped
-                    } @else {
-                      {{ getLanguageName(translateSourceLang()) }} → English ({{ translateProvider() }} / {{ translateModel() }})
-                    }
-                  </span>
-                </div>
+                <!-- Translation Card -->
+                @if (!isStepSkipped('translate') && enableTranslation()) {
+                  <div class="review-card">
+                    <div class="review-card-header">
+                      <span class="review-card-icon">🌐</span>
+                      <span class="review-card-title">Translation</span>
+                    </div>
+                    <div class="review-card-content">
+                      <div class="review-row">
+                        <span class="review-label">Direction:</span>
+                        <span class="review-value">{{ getLanguageName(translateSourceLang()) }} → English</span>
+                      </div>
+                      <div class="review-row">
+                        <span class="review-label">Provider:</span>
+                        <span class="review-value">{{ translateProvider() }} / {{ translateModel() }}</span>
+                      </div>
+                    </div>
+                  </div>
+                } @else {
+                  <div class="review-card skipped">
+                    <div class="review-card-header">
+                      <span class="review-card-icon">🌐</span>
+                      <span class="review-card-title">Translation</span>
+                      <span class="skipped-badge">Skipped</span>
+                    </div>
+                  </div>
+                }
 
-                <div class="review-item">
-                  <span class="review-label">TTS:</span>
-                  <span class="review-value" [class.disabled]="isStepSkipped('tts')">
-                    @if (isStepSkipped('tts')) {
-                      Skipped
-                    } @else {
-                      {{ ttsEngine }} / {{ ttsVoice }} @ {{ ttsSpeed }}x
-                    }
-                  </span>
-                </div>
+                <!-- TTS Card -->
+                @if (!isStepSkipped('tts')) {
+                  <div class="review-card">
+                    <div class="review-card-header">
+                      <span class="review-card-icon">🔊</span>
+                      <span class="review-card-title">TTS</span>
+                    </div>
+                    <div class="review-card-content">
+                      <div class="review-row">
+                        <span class="review-label">Engine:</span>
+                        <span class="review-value">{{ ttsEngine.toUpperCase() }} / {{ ttsDevice.toUpperCase() }}</span>
+                      </div>
+                      <div class="review-row">
+                        <span class="review-label">Voice:</span>
+                        <span class="review-value">{{ ttsVoice }} @ {{ ttsSpeed }}x</span>
+                      </div>
+                    </div>
+                  </div>
+                } @else {
+                  <div class="review-card skipped">
+                    <div class="review-card-header">
+                      <span class="review-card-icon">🔊</span>
+                      <span class="review-card-title">TTS</span>
+                      <span class="skipped-badge">Skipped</span>
+                    </div>
+                  </div>
+                }
 
-                <div class="review-item">
-                  <span class="review-label">Assembly:</span>
-                  <span class="review-value" [class.disabled]="isStepSkipped('assembly') || (isStepSkipped('tts') && !cachedSession())">
-                    @if (isStepSkipped('assembly') || (isStepSkipped('tts') && !cachedSession())) {
-                      Skipped
-                    } @else if (!isStepSkipped('tts')) {
-                      Assemble from TTS output
-                    } @else {
-                      Reassemble from cached session ({{ cachedSession().completedSentences }}/{{ cachedSession().totalSentences }} sentences)
-                    }
-                  </span>
-                </div>
+                <!-- Assembly Card -->
+                @if (!isStepSkipped('assembly') && (!isStepSkipped('tts') || cachedSession())) {
+                  <div class="review-card">
+                    <div class="review-card-header">
+                      <span class="review-card-icon">🎵</span>
+                      <span class="review-card-title">Assembly</span>
+                    </div>
+                    <div class="review-card-content">
+                      <div class="review-row">
+                        <span class="review-label">Source:</span>
+                        <span class="review-value">
+                          @if (!isStepSkipped('tts')) {
+                            TTS output
+                          } @else {
+                            Cached session ({{ cachedSession().completedSentences }}/{{ cachedSession().totalSentences }} sentences)
+                          }
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                } @else {
+                  <div class="review-card skipped">
+                    <div class="review-card-header">
+                      <span class="review-card-icon">🎵</span>
+                      <span class="review-card-title">Assembly</span>
+                      <span class="skipped-badge">Skipped</span>
+                    </div>
+                  </div>
+                }
+              </div>
+
+              <!-- Job Count Summary -->
+              <div class="job-summary">
+                <span class="job-summary-label">Total jobs to create:</span>
+                <span class="job-summary-value">{{ getJobCount() }}</span>
               </div>
 
               @if (!hasAnyTask()) {
                 <div class="warning-box">
-                  All steps skipped. Nothing will be processed.
+                  No jobs to create. Go back and configure at least one step.
                 </div>
               }
             </div>
@@ -1691,56 +1780,135 @@ interface AvailableEpub {
       }
     }
 
-    /* Review Section */
-    .review-section {
-      display: flex;
-      flex-direction: column;
+    /* Review Cards */
+    .review-cards {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
       gap: 12px;
-      background: var(--bg-elevated);
-      border-radius: 8px;
-      padding: 16px;
     }
 
-    .review-item {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 0;
-      border-bottom: 1px solid var(--border-subtle);
+    .review-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
 
-      &:last-child {
-        border-bottom: none;
+      &.skipped {
+        opacity: 0.5;
+
+        .review-card-header {
+          background: var(--bg-subtle);
+        }
       }
     }
 
-    .review-label {
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text-secondary);
+    .review-card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: rgba(6, 182, 212, 0.1);
+      border-bottom: 1px solid var(--border-subtle);
+
+      .review-card-icon {
+        font-size: 16px;
+      }
+
+      .review-card-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+        flex: 1;
+      }
+
+      .skipped-badge {
+        font-size: 11px;
+        padding: 2px 8px;
+        background: var(--text-muted);
+        color: white;
+        border-radius: 10px;
+      }
     }
 
-    .review-value {
-      font-size: 13px;
-      color: var(--text-primary);
+    .review-card-content {
+      padding: 12px;
+    }
 
-      &.disabled {
-        color: var(--text-muted);
-        font-style: italic;
+    .review-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0;
+      font-size: 12px;
+
+      .review-label {
+        color: var(--text-secondary);
+      }
+
+      .review-value {
+        color: var(--text-primary);
+        font-weight: 500;
+      }
+    }
+
+    .job-summary {
+      margin-top: 16px;
+      padding: 16px;
+      background: var(--bg-elevated);
+      border-radius: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+
+      .job-summary-label {
+        font-size: 14px;
+        color: var(--text-secondary);
+      }
+
+      .job-summary-value {
+        font-size: 24px;
+        font-weight: 700;
+        color: #06b6d4;
       }
     }
 
     .warning-box {
-      margin-top: 16px;
+      margin-top: 12px;
       padding: 12px 16px;
-      background: rgba(234, 179, 8, 0.15);
-      border: 1px solid #eab308;
+      background: color-mix(in srgb, var(--warning) 10%, transparent);
+      border: 1px solid var(--warning);
       border-radius: 6px;
       font-size: 13px;
-      color: #eab308;
+      color: var(--warning);
     }
 
+    /* Assembly step info (reuses review-row inside a card-like container) */
     .assembly-info {
       margin-top: 8px;
+
+      .review-section {
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        padding: 12px;
+      }
+
+      .review-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 4px 0;
+        font-size: 12px;
+
+        .review-label {
+          color: var(--text-secondary);
+        }
+
+        .review-value {
+          color: var(--text-primary);
+          font-weight: 500;
+        }
+      }
     }
 
     .assembly-empty {
@@ -2717,12 +2885,17 @@ export class ProcessWizardComponent implements OnInit {
   }
 
   hasAnyTask(): boolean {
-    const hasCleanup = !this.skippedSteps.has('cleanup');
-    const hasTranslate = !this.skippedSteps.has('translate') && this.enableTranslation();
+    return this.getJobCount() > 0;
+  }
+
+  getJobCount(): number {
+    let count = 0;
+    if (!this.skippedSteps.has('cleanup') && (this.enableAiCleanup() || this.simplifyForLearning())) count++;
+    if (!this.skippedSteps.has('translate') && this.enableTranslation()) count++;
+    if (!this.skippedSteps.has('tts')) count++;
     const hasTts = !this.skippedSteps.has('tts');
-    // Assembly counts if TTS is enabled (chained) OR cached session exists (standalone)
-    const hasAssembly = !this.skippedSteps.has('assembly') && (hasTts || !!this.cachedSession());
-    return hasCleanup || hasTranslate || hasTts || hasAssembly;
+    if (!this.skippedSteps.has('assembly') && (hasTts || !!this.cachedSession())) count++;
+    return count;
   }
 
   async addToQueue(): Promise<void> {

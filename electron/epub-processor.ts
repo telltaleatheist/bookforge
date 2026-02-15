@@ -571,19 +571,12 @@ class EpubProcessor {
     text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
     text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
 
-    // IMPORTANT: Remove H1 tags entirely - they're chapter titles that will be added separately
-    // This prevents duplicate titles in the cleaned output
-    text = text.replace(/<h1[^>]*>[\s\S]*?<\/h1>/gi, '');
-
-    // Add period after OTHER headings (h2-h6) for natural TTS pause, but only if not already punctuated
-    // This handles: <h2>Section</h2> → <h2>Section. </h2> but <h2>Section?</h2> stays as-is
-    text = text.replace(/([^.!?\s])<\/h[2-6]>/gi, '$1.');
+    // Add period after headings (h1-h6) for natural TTS pause, but only if not already punctuated
+    text = text.replace(/([^.!?\s])<\/h[1-6]>/gi, '$1.');
 
     // PRESERVE PARAGRAPH STRUCTURE: Convert block-level closing tags to double newlines
-    // Only convert actual text-containing elements, NOT container divs
-    // This must match the elements we look for in replaceXhtmlBodyLocal (ai-bridge.ts)
     text = text.replace(/<\/p>/gi, '\n\n');
-    text = text.replace(/<\/h[2-6]>/gi, '\n\n');  // Only h2-h6 now, h1 removed above
+    text = text.replace(/<\/h[1-6]>/gi, '\n\n');
     text = text.replace(/<\/li>/gi, '\n\n');
     text = text.replace(/<\/blockquote>/gi, '\n\n');
     text = text.replace(/<\/figcaption>/gi, '\n\n');
@@ -976,7 +969,7 @@ export async function saveModifiedEpub(outputPath: string): Promise<void> {
     }
 
     if (isModified && modifiedContent !== null) {
-      // Read original XHTML and replace body content
+      // Read original XHTML and replace body content (preserves heading structure)
       const originalXhtml = await currentProcessor.readFile(entryName);
       const newXhtml = replaceXhtmlBody(originalXhtml, modifiedContent);
       zipWriter.addFile(entryName, Buffer.from(newXhtml, 'utf8'));
@@ -1062,25 +1055,44 @@ function updateOpfMetadata(opf: string, metadata: Partial<EpubMetadata>): string
 }
 
 /**
- * Replace the body content in an XHTML document while preserving the structure
+ * Replace the body content in an XHTML document while preserving heading structure.
+ *
+ * The original XHTML has a heading tag (h1-h6) for the chapter title.
+ * extractTextFromXhtml strips H1 entirely and includes H2-H6 as text.
+ * This function detects the original heading and preserves the tag:
+ * - H1-H6: sent to AI as first text block → first block goes back in heading tag
+ * Heading text always ends with a period for TTS pause.
  */
 function replaceXhtmlBody(xhtml: string, newText: string): string {
-  // Find the body tag
   const bodyMatch = xhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-  if (!bodyMatch) {
-    // No body tag, return as-is
-    return xhtml;
+  if (!bodyMatch) return xhtml;
+
+  const bodyContent = bodyMatch[1];
+  const blocks = newText.split(/\n\n+/).filter(p => p.trim());
+  if (blocks.length === 0) return xhtml;
+
+  // Detect heading in original XHTML
+  const headingMatch = bodyContent.match(/<(h[1-6])([^>]*)>([\s\S]*?)<\/\1>/i);
+
+  if (!headingMatch) {
+    // No heading in original — all blocks become <p> tags
+    const htmlContent = blocks.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
+    return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${htmlContent}\n</body>`);
   }
 
-  // Convert plain text to paragraphs
-  const paragraphs = newText.split(/\n\n+/).filter(p => p.trim());
-  const htmlContent = paragraphs.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
+  const tag = headingMatch[1].toLowerCase();
+  const attrs = headingMatch[2];
 
-  // Replace body content
-  return xhtml.replace(
-    /<body([^>]*)>[\s\S]*<\/body>/i,
-    `<body$1>\n${htmlContent}\n</body>`
-  );
+  // First block is the chapter title (AI may have modified it)
+  let titleText = blocks[0].replace(/\s+/g, ' ').trim();
+  if (titleText && !/[.!?]$/.test(titleText)) titleText += '.';
+  const headingHtml = `<${tag}${attrs}>${escapeXml(titleText)}</${tag}>`;
+  const bodyBlocks = blocks.slice(1);
+
+  const bodyHtml = bodyBlocks.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
+  const htmlContent = bodyHtml ? `${headingHtml}\n${bodyHtml}` : headingHtml;
+
+  return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${htmlContent}\n</body>`);
 }
 
 /**

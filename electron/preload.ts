@@ -1088,6 +1088,7 @@ export interface ElectronAPI {
     }>;
     linkAudio: (bfpPath: string, audioPath: string) => Promise<{ success: boolean; error?: string }>;
     linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) => Promise<{ success: boolean; error?: string }>;
+    copyToExternal: (params: { m4bPath: string; externalDir: string; title?: string; author?: string }) => Promise<{ success: boolean; externalPath?: string; error?: string }>;
   };
   epub: {
     parse: (epubPath: string) => Promise<{ success: boolean; data?: EpubStructure; error?: string }>;
@@ -2182,6 +2183,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:link-audio', bfpPath, audioPath),
     linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) =>
       ipcRenderer.invoke('audiobook:link-bilingual-audio', bfpPath, audioPath, vttPath, sentencePairsPath),
+    copyToExternal: (params: { m4bPath: string; externalDir: string; title?: string; author?: string }) =>
+      ipcRenderer.invoke('audiobook:copy-to-external', params),
   },
   epub: {
     parse: (epubPath: string) =>

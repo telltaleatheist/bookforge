@@ -4954,9 +4954,15 @@ function setupIpcHandlers(): void {
 
       const manifest = result.manifest;
       if (!manifest.outputs) manifest.outputs = {};
+
+      // Derive VTT path from the M4B path (same directory, audiobook.vtt)
+      const outputDirRel = path.dirname(relativePath);
+      const vttRelPath = path.join(outputDirRel, 'audiobook.vtt').replace(/\\/g, '/');
+
       manifest.outputs.audiobook = {
         ...manifest.outputs.audiobook,
         path: relativePath,
+        vttPath: vttRelPath,
         completedAt: new Date().toISOString(),
       };
 
@@ -4965,6 +4971,43 @@ function setupIpcHandlers(): void {
       return { success: saveResult.success, error: saveResult.error };
     } catch (err) {
       console.error('[audiobook:link-audio] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Copy standard audiobook to external audiobooks directory
+  ipcMain.handle('audiobook:copy-to-external', async (_event, params: {
+    m4bPath: string;
+    externalDir: string;
+    title?: string;
+    author?: string;
+  }) => {
+    try {
+      const { m4bPath, externalDir, title, author } = params;
+      if (!m4bPath || !externalDir) {
+        return { success: false, error: 'Missing m4bPath or externalDir' };
+      }
+
+      if (!fsSync.existsSync(m4bPath)) {
+        return { success: false, error: `Audio file not found: ${m4bPath}` };
+      }
+
+      await fs.mkdir(externalDir, { recursive: true });
+
+      // Build filename: "Title. Author.m4b" or just "Title.m4b"
+      let basename = title || 'audiobook';
+      if (author && author !== 'Unknown' && !basename.includes(author)) {
+        basename += `. ${author}`;
+      }
+      const safeFilename = basename.replace(/[<>:"/\\|?*]/g, '_');
+      const externalPath = path.join(externalDir, `${safeFilename}.m4b`);
+
+      await fs.copyFile(m4bPath, externalPath);
+      console.log('[audiobook:copy-to-external] Copied M4B to:', externalPath);
+
+      return { success: true, externalPath };
+    } catch (err) {
+      console.error('[audiobook:copy-to-external] Error:', err);
       return { success: false, error: (err as Error).message };
     }
   });
@@ -5060,10 +5103,23 @@ function setupIpcHandlers(): void {
       const outputDir = path.join(projectDir, 'output');
       await fs.mkdir(outputDir, { recursive: true });
 
-      // 2. Copy M4B + VTT to project output dir (language-specific filenames)
+      // 2. Clean up old bilingual output files for this language pair, then copy new ones
       const langKey = `${sourceLang}-${targetLang}`;
       const projectAudioPath = path.join(outputDir, `bilingual-${langKey}.m4b`);
       const projectVttPath = path.join(outputDir, `bilingual-${langKey}.vtt`);
+      const projectMp4Path = path.join(outputDir, `bilingual-${langKey}.mp4`);
+
+      // Remove old bilingual files for this language pair
+      for (const oldFile of [projectAudioPath, projectVttPath, projectMp4Path]) {
+        if (fsSync.existsSync(oldFile)) {
+          try {
+            fsSync.unlinkSync(oldFile);
+            console.log('[bilingual-assembly:finalize-output] Cleaned up old file:', oldFile);
+          } catch {
+            // Non-fatal
+          }
+        }
+      }
 
       if (audioPath && fsSync.existsSync(audioPath)) {
         await fs.copyFile(audioPath, projectAudioPath);
@@ -5246,8 +5302,6 @@ function setupIpcHandlers(): void {
       // Simplify for language learners (backwards compat: also accepts simplifyForChildren)
       simplifyForLearning?: boolean;
       simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
-      // Enable AI cleanup (default: true). Set false to skip AI and only simplify.
-      enableAiCleanup?: boolean;
       // Custom cleanup prompt (overrides default)
       cleanupPrompt?: string;
     }

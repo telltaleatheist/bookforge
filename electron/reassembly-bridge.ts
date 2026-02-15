@@ -939,6 +939,27 @@ export async function startReassembly(
   // Get language from session state
   const language = sessionState?.metadata?.language || 'en';
 
+  // Clean up old standard audiobook output files before writing new ones
+  if (config.outputDir && fs.existsSync(config.outputDir)) {
+    try {
+      const existing = fs.readdirSync(config.outputDir);
+      for (const file of existing) {
+        // Only remove standard audiobook files, not bilingual-* or session/
+        if (file.startsWith('bilingual-') || file === 'session') continue;
+        if (file.endsWith('.m4b') || file.endsWith('.vtt') || file.endsWith('.mp4')) {
+          const filePath = path.join(config.outputDir, file);
+          const stat = fs.statSync(filePath);
+          if (stat.isFile()) {
+            fs.unlinkSync(filePath);
+            console.log(`[REASSEMBLY] Cleaned up old output file: ${file}`);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[REASSEMBLY] Failed to clean old output files (non-fatal):', err);
+    }
+  }
+
   // Send initial progress
   sendProgress(mainWindow, jobId, {
     phase: 'preparing',
@@ -1408,14 +1429,14 @@ export async function startReassembly(
           }
         }
 
-        // Copy VTT subtitle file from processDir to output directory so audiobook:copy-vtt can find it
+        // Copy VTT subtitle file from processDir to output directory as audiobook.vtt
         if (outputPath && config.processDir) {
           try {
             const vttFiles = fs.readdirSync(config.processDir).filter(f => f.toLowerCase().endsWith('.vtt') && !f.startsWith('._'));
             if (vttFiles.length > 0) {
               const vttSource = path.join(config.processDir, vttFiles[0]);
               const outputDir = path.dirname(outputPath);
-              const vttDest = path.join(outputDir, vttFiles[0]);
+              const vttDest = path.join(outputDir, 'audiobook.vtt');
               fs.copyFileSync(vttSource, vttDest);
               console.log(`[REASSEMBLY] Copied VTT to output directory: ${vttSource} -> ${vttDest}`);
             }

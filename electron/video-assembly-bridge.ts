@@ -136,13 +136,10 @@ const RENDERER_HTML = `<!DOCTYPE html>
         }
       } else {
         var r = document.createElement('div'); r.className = 'sentence-row';
-        var b = document.createElement('span'); b.className = 'badge';
-        if (isActive) b.classList.add('speaking');
-        b.textContent = data.sourceLang;
         var t = document.createElement('span'); t.className = 'sentence-text';
         if (isActive) t.classList.add('speaking');
         t.textContent = pair.source || '';
-        r.appendChild(b); r.appendChild(t); card.appendChild(r);
+        r.appendChild(t); card.appendChild(r);
       }
       c.appendChild(card);
     }
