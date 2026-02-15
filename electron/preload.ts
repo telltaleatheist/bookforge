@@ -1344,6 +1344,7 @@ export interface ElectronAPI {
     onSessionCreated: (callback: (data: { jobId: string; sessionId: string; sessionDir: string; processDir: string; totalSentences: number; totalChapters: number }) => void) => () => void;
     // Resume support
     checkResumeFast: (epubPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
+    checkResumeFromDir: (processDir: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
     checkResume: (sessionPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
     resumeConversion: (jobId: string, config: ParallelConversionConfig, resumeInfo: ResumeCheckResult) => Promise<{ success: boolean; data?: ParallelConversionResult; error?: string }>;
     buildResumeInfo: (prepInfo: any, settings: any) => Promise<{ success: boolean; data?: TtsResumeInfo; error?: string }>;
