@@ -1,4 +1,4 @@
-import { Component, input, output, signal, ChangeDetectionStrategy, ElementRef, ViewChild } from '@angular/core';
+import { Component, input, output, signal, effect, inject, ChangeDetectionStrategy, ElementRef, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
@@ -141,9 +141,9 @@ import { Chapter } from '../../../../core/services/electron.service';
           (click)="finalizeChapters.emit()"
         >
           @if (finalizing()) {
-            Finalizing...
+            Saving...
           } @else {
-            Finalize Chapters
+            Save Chapters
           }
         </desktop-button>
         <div class="hint-text">
@@ -397,6 +397,7 @@ import { Chapter } from '../../../../core/services/electron.service';
 })
 export class ChaptersPanelComponent {
   @ViewChild('editInput') editInput?: ElementRef<HTMLInputElement>;
+  private readonly elementRef = inject(ElementRef);
 
   chapters = input.required<Chapter[]>();
   chaptersSource = input.required<'toc' | 'heuristic' | 'manual' | 'mixed'>();
@@ -416,6 +417,19 @@ export class ChaptersPanelComponent {
   readonly editingChapterId = signal<string | null>(null);
   readonly editingTitle = signal<string>('');
   private saveOnBlur = true;
+
+  // Auto-scroll selected chapter into view
+  private readonly scrollEffect = effect(() => {
+    const id = this.selectedChapterId();
+    if (!id) return;
+    // Run after render so the DOM has the .selected class
+    setTimeout(() => {
+      const el = (this.elementRef.nativeElement as HTMLElement).querySelector('.chapter-item.selected');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 0);
+  });
 
   onChapterClick(event: Event, chapterId: string): void {
     // Don't select if we're editing

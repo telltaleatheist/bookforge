@@ -404,6 +404,8 @@ interface AlertModal {
               (chapterPlacement)="onChapterPlacement($event)"
               (chapterDrag)="onChapterDrag($event)"
               (chapterDelete)="removeChapter($event)"
+              (chapterSelect)="selectChapter($event)"
+              (chapterRename)="renameChapter($event)"
               (pageDeleteToggle)="togglePageDeleted($event)"
               (pageSelect)="onPageSelect($event)"
               (deleteSelectedPages)="onDeleteSelectedPages($event)"
@@ -2737,8 +2739,8 @@ export class PdfPickerComponent implements OnInit {
             id: 'finalize',
             type: 'button',
             icon: '✓',
-            label: 'Finalize',
-            tooltip: 'Finalize project for audiobook processing'
+            label: 'Save',
+            tooltip: 'Save changes to EPUB'
           }
         : {
             id: 'export',
@@ -4792,7 +4794,13 @@ export class PdfPickerComponent implements OnInit {
     }
 
     this.loading.set(true);
-    this.loadingText.set('Finalizing project...');
+    this.loadingText.set('Saving...');
+
+    // Determine save target: if opened file is not original.epub, save back to it
+    const overridePath = this.overrideSourcePath();
+    const savePath = (overridePath && !overridePath.endsWith('/original.epub'))
+      ? overridePath
+      : undefined;
 
     try {
       const chapters = this.chapters();
@@ -4809,7 +4817,9 @@ export class PdfPickerComponent implements OnInit {
         this.deletedPages(),
         deletedHighlights,
         this.metadata(),
-        false // Don't navigate to audiobook producer
+        false, // Don't navigate to audiobook producer
+        undefined, // categories
+        savePath
       );
 
       if (result.success) {
@@ -4818,28 +4828,29 @@ export class PdfPickerComponent implements OnInit {
           epubPath: result.filename  // 'exported.epub' - the filename in the audiobook folder
         });
 
+        const savedName = savePath ? savePath.split('/').pop() : 'exported.epub';
         if (result.warning) {
           this.showAlert({
-            title: 'Finalized with Warning',
+            title: 'Saved with Warning',
             message: result.warning,
             type: 'warning'
           });
         } else {
           this.showAlert({
-            title: 'Project Finalized',
-            message: 'EPUB exported and ready for audiobook processing.',
+            title: 'Saved',
+            message: `Saved to ${savedName}.`,
             type: 'success'
           });
         }
       } else {
         this.finalized.emit({
           success: false,
-          error: result.message || 'Failed to finalize project'
+          error: result.message || 'Failed to save'
         });
 
         this.showAlert({
-          title: 'Finalize Failed',
-          message: result.message || 'Failed to export EPUB',
+          title: 'Save Failed',
+          message: result.message || 'Failed to save EPUB',
           type: 'error'
         });
       }
@@ -4851,7 +4862,7 @@ export class PdfPickerComponent implements OnInit {
       });
 
       this.showAlert({
-        title: 'Finalize Failed',
+        title: 'Save Failed',
         message: errorMessage,
         type: 'error'
       });
@@ -7251,7 +7262,7 @@ export class PdfPickerComponent implements OnInit {
       await this.saveProject();
 
       this.showAlert({
-        title: 'Chapters Finalized',
+        title: 'Chapters Saved',
         message,
         type: 'success'
       });

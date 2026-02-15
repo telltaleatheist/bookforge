@@ -235,27 +235,62 @@ export interface CropRect {
                           [attr.stroke-width]="selectedChapterId() === chapter.id ? 3 : 2"
                           stroke-dasharray="8,4"
                         />
-                        <!-- Chapter label background -->
-                        <rect
-                          class="chapter-label-bg"
-                          x="4"
-                          [attr.y]="(chapter.y || 20) - 14"
-                          [attr.width]="getChapterLabelWidth(chapter.title)"
-                          height="16"
-                          rx="3"
-                          [attr.fill]="selectedChapterId() === chapter.id ? '#1565c0' : '#4caf50'"
-                        />
-                        <!-- Chapter label text -->
-                        <text
-                          class="chapter-label-text"
-                          x="8"
-                          [attr.y]="(chapter.y || 20) - 2"
-                          fill="white"
-                          font-size="10"
-                          font-weight="500"
-                        >
-                          {{ chapter.level > 1 ? '  ' : '' }}{{ chapter.title.length > 30 ? chapter.title.substring(0, 27) + '...' : chapter.title }}
-                        </text>
+                        @if (editingChapterId() !== chapter.id) {
+                          <!-- Chapter label background (double-click to edit) -->
+                          <rect
+                            class="chapter-label-bg"
+                            x="4"
+                            [attr.y]="(chapter.y || 20) - 14"
+                            [attr.width]="getChapterLabelWidth(chapter.title)"
+                            height="16"
+                            rx="3"
+                            [attr.fill]="selectedChapterId() === chapter.id ? '#1565c0' : '#4caf50'"
+                            (dblclick)="onChapterLabelDblClick($event, chapter)"
+                          />
+                          <!-- Chapter label text -->
+                          <text
+                            class="chapter-label-text"
+                            x="8"
+                            [attr.y]="(chapter.y || 20) - 2"
+                            fill="white"
+                            font-size="10"
+                            font-weight="500"
+                          >
+                            {{ chapter.level > 1 ? '  ' : '' }}{{ chapter.title.length > 30 ? chapter.title.substring(0, 27) + '...' : chapter.title }}
+                          </text>
+                          <!-- Remove button -->
+                          @if (chaptersMode()) {
+                            <g
+                              class="chapter-remove-btn"
+                              [attr.transform]="'translate(' + (getChapterLabelWidth(chapter.title) + 8) + ',' + ((chapter.y || 20) - 14) + ')'"
+                              (click)="onChapterRemoveClick($event, chapter)"
+                            >
+                              <circle cx="8" cy="8" r="7" fill="rgba(0,0,0,0.5)" />
+                              <text x="8" y="11" fill="white" font-size="11" font-weight="600" text-anchor="middle">&times;</text>
+                            </g>
+                          }
+                        } @else {
+                          <!-- Inline edit input -->
+                          <foreignObject
+                            x="4"
+                            [attr.y]="(chapter.y || 20) - 15"
+                            width="200"
+                            height="18"
+                          >
+                            <input
+                              xmlns="http://www.w3.org/1999/xhtml"
+                              type="text"
+                              class="chapter-inline-input"
+                              [value]="editingChapterTitle()"
+                              (input)="onChapterEditInput($event)"
+                              (keydown.enter)="saveChapterEdit(chapter.id)"
+                              (keydown.escape)="cancelChapterEdit()"
+                              (blur)="onChapterEditBlur(chapter.id)"
+                              (click)="$event.stopPropagation()"
+                              (mousedown)="$event.stopPropagation()"
+                            />
+                          </foreignObject>
+                        }
                       </g>
                     }
                   }
@@ -654,25 +689,58 @@ export interface CropRect {
                             [attr.stroke-width]="selectedChapterId() === chapter.id ? 3 : 2"
                             stroke-dasharray="8,4"
                           />
-                          <rect
-                            class="chapter-label-bg"
-                            x="4"
-                            [attr.y]="(chapter.y || 20) - 14"
-                            [attr.width]="getChapterLabelWidth(chapter.title)"
-                            height="16"
-                            rx="3"
-                            [attr.fill]="selectedChapterId() === chapter.id ? '#1565c0' : '#4caf50'"
-                          />
-                          <text
-                            class="chapter-label-text"
-                            x="8"
-                            [attr.y]="(chapter.y || 20) - 2"
-                            fill="white"
-                            font-size="10"
-                            font-weight="500"
-                          >
-                            {{ chapter.level > 1 ? '  ' : '' }}{{ chapter.title.length > 30 ? chapter.title.substring(0, 27) + '...' : chapter.title }}
-                          </text>
+                          @if (editingChapterId() !== chapter.id) {
+                            <rect
+                              class="chapter-label-bg"
+                              x="4"
+                              [attr.y]="(chapter.y || 20) - 14"
+                              [attr.width]="getChapterLabelWidth(chapter.title)"
+                              height="16"
+                              rx="3"
+                              [attr.fill]="selectedChapterId() === chapter.id ? '#1565c0' : '#4caf50'"
+                              (dblclick)="onChapterLabelDblClick($event, chapter)"
+                            />
+                            <text
+                              class="chapter-label-text"
+                              x="8"
+                              [attr.y]="(chapter.y || 20) - 2"
+                              fill="white"
+                              font-size="10"
+                              font-weight="500"
+                            >
+                              {{ chapter.level > 1 ? '  ' : '' }}{{ chapter.title.length > 30 ? chapter.title.substring(0, 27) + '...' : chapter.title }}
+                            </text>
+                            @if (chaptersMode()) {
+                              <g
+                                class="chapter-remove-btn"
+                                [attr.transform]="'translate(' + (getChapterLabelWidth(chapter.title) + 8) + ',' + ((chapter.y || 20) - 14) + ')'"
+                                (click)="onChapterRemoveClick($event, chapter)"
+                              >
+                                <circle cx="8" cy="8" r="7" fill="rgba(0,0,0,0.5)" />
+                                <text x="8" y="11" fill="white" font-size="11" font-weight="600" text-anchor="middle">&times;</text>
+                              </g>
+                            }
+                          } @else {
+                            <foreignObject
+                              x="4"
+                              [attr.y]="(chapter.y || 20) - 15"
+                              width="200"
+                              height="18"
+                            >
+                              <input
+                                xmlns="http://www.w3.org/1999/xhtml"
+                                type="text"
+                                class="chapter-inline-input"
+                                [value]="editingChapterTitle()"
+                                (input)="onChapterEditInput($event)"
+                                (keydown.enter)="saveChapterEdit(chapter.id)"
+                                (keydown.escape)="cancelChapterEdit()"
+                                (blur)="onChapterEditBlur(chapter.id)"
+                                (click)="$event.stopPropagation()"
+                                (mousedown)="$event.stopPropagation()"
+                              />
+                            </foreignObject>
+                          }
                         </g>
                       }
                     }
@@ -1319,10 +1387,24 @@ export interface CropRect {
           .chapter-label-bg {
             fill: #2e7d32;
           }
+          .chapter-remove-btn {
+            opacity: 1;
+          }
         }
 
         &:active {
           cursor: grabbing;
+        }
+
+        .chapter-label-bg,
+        .chapter-label-text {
+          pointer-events: all;  // Enable dblclick for inline editing
+        }
+      }
+
+      &.selected {
+        .chapter-remove-btn {
+          opacity: 1;
         }
       }
     }
@@ -1344,6 +1426,31 @@ export interface CropRect {
     .chapter-label-text {
       pointer-events: none;
       user-select: none;
+    }
+
+    .chapter-remove-btn {
+      pointer-events: all;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+
+      &:hover circle {
+        fill: #d32f2f;
+      }
+    }
+
+    .chapter-inline-input {
+      width: 100%;
+      height: 100%;
+      box-sizing: border-box;
+      font-size: 10px;
+      font-weight: 500;
+      padding: 1px 4px;
+      border: 1px solid #1565c0;
+      border-radius: 3px;
+      outline: none;
+      background: white;
+      color: #333;
     }
 
     /* Text overlay for corrected/moved blocks */
@@ -1633,6 +1740,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // Chapter delete output (for deleting selected chapter marker)
   chapterDelete = output<string>();
 
+  // Chapter select output (for syncing selection to chapters panel)
+  chapterSelect = output<string>();
+
+  // Chapter rename output (for inline title editing on markers)
+  chapterRename = output<{ chapterId: string; newTitle: string }>();
+
   // Page delete output (for chapters mode)
   pageDeleteToggle = output<number>();
 
@@ -1803,6 +1916,11 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Selected chapter marker (for deletion)
   readonly selectedChapterId = signal<string | null>(null);
+
+  // Inline chapter editing state
+  readonly editingChapterId = signal<string | null>(null);
+  readonly editingChapterTitle = signal<string>('');
+  private chapterEditSaveOnBlur = true;
 
   // Crop drawing state
   readonly isDrawingCrop = signal(false);
@@ -2699,7 +2817,80 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       this.selectedChapterId.set(null);
     } else {
       this.selectedChapterId.set(chapter.id);
+      this.chapterSelect.emit(chapter.id);
     }
+  }
+
+  /**
+   * Handle click on chapter marker remove button
+   */
+  onChapterRemoveClick(event: MouseEvent, chapter: Chapter): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.chapterDelete.emit(chapter.id);
+    if (this.selectedChapterId() === chapter.id) {
+      this.selectedChapterId.set(null);
+    }
+  }
+
+  /**
+   * Handle double-click on chapter label to start inline editing
+   */
+  onChapterLabelDblClick(event: MouseEvent, chapter: Chapter): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.editingChapterId.set(chapter.id);
+    this.editingChapterTitle.set(chapter.title);
+    this.chapterEditSaveOnBlur = true;
+
+    // Focus the input after Angular renders it
+    setTimeout(() => {
+      const input = (this.elementRef.nativeElement as HTMLElement).querySelector('.chapter-inline-input') as HTMLInputElement;
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }, 0);
+  }
+
+  /**
+   * Save inline chapter edit
+   */
+  saveChapterEdit(chapterId: string): void {
+    const newTitle = this.editingChapterTitle().trim();
+    const chapter = this.chapters().find(c => c.id === chapterId);
+    if (newTitle && chapter && newTitle !== chapter.title) {
+      this.chapterRename.emit({ chapterId, newTitle });
+    }
+    this.cancelChapterEdit();
+  }
+
+  /**
+   * Cancel inline chapter edit
+   */
+  cancelChapterEdit(): void {
+    this.chapterEditSaveOnBlur = false;
+    this.editingChapterId.set(null);
+    this.editingChapterTitle.set('');
+  }
+
+  /**
+   * Handle input event on chapter inline edit
+   */
+  onChapterEditInput(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    this.editingChapterTitle.set(input.value);
+  }
+
+  /**
+   * Handle blur on chapter inline edit (auto-save)
+   */
+  onChapterEditBlur(chapterId: string): void {
+    setTimeout(() => {
+      if (this.chapterEditSaveOnBlur && this.editingChapterId() === chapterId) {
+        this.saveChapterEdit(chapterId);
+      }
+    }, 100);
   }
 
   /**

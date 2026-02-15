@@ -1015,7 +1015,8 @@ export class ElectronService {
   async audiobookExportFromProject(
     bfpPath: string,
     epubData: ArrayBuffer,
-    deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>
+    deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
+    savePath?: string
   ): Promise<{
     success: boolean;
     audiobookFolder?: string;
@@ -1023,7 +1024,7 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.audiobook.exportFromProject(bfpPath, epubData, deletedBlockExamples);
+      return (window as any).electron.audiobook.exportFromProject(bfpPath, epubData, deletedBlockExamples, savePath);
     }
     return { success: false, error: 'Not running in Electron' };
   }

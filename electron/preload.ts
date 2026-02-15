@@ -1034,7 +1034,7 @@ export interface ElectronAPI {
       error?: string;
     }>;
     // Unified audiobook export (saves to BFP project folder)
-    exportFromProject: (bfpPath: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>) => Promise<{
+    exportFromProject: (bfpPath: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string) => Promise<{
       success: boolean;
       audiobookFolder?: string;
       epubPath?: string;
@@ -2164,8 +2164,8 @@ const electronAPI: ElectronAPI = {
     getPaths: (projectId: string) =>
       ipcRenderer.invoke('audiobook:get-paths', projectId),
     // Unified audiobook export (saves to BFP project folder)
-    exportFromProject: (bfpPath: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>) =>
-      ipcRenderer.invoke('audiobook:export-from-project', bfpPath, epubData, deletedBlockExamples),
+    exportFromProject: (bfpPath: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string) =>
+      ipcRenderer.invoke('audiobook:export-from-project', bfpPath, epubData, deletedBlockExamples, savePath),
     // Import EPUB directly (creates BFP + audiobook folder)
     importEpub: (epubSourcePath: string) =>
       ipcRenderer.invoke('audiobook:import-epub', epubSourcePath),

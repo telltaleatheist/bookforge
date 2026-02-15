@@ -4246,7 +4246,8 @@ function setupIpcHandlers(): void {
     _event,
     bfpPath: string,
     epubData: ArrayBuffer,
-    deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>
+    deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
+    savePath?: string
   ) => {
     try {
       // Check if bfpPath is a manifest project directory
@@ -4258,15 +4259,21 @@ function setupIpcHandlers(): void {
         const manifestContent = await fs.readFile(manifestPath, 'utf-8');
         const manifest = JSON.parse(manifestContent);
 
-        // Save the exported EPUB to source/
-        const sourceDir = path.join(bfpPath, 'source');
-        await fs.mkdir(sourceDir, { recursive: true });
-        const epubPath = path.join(sourceDir, 'exported.epub');
+        // Save the exported EPUB — to savePath if provided, otherwise source/exported.epub
+        let epubPath: string;
+        if (savePath) {
+          epubPath = savePath;
+          await fs.mkdir(path.dirname(savePath), { recursive: true });
+        } else {
+          const sourceDir = path.join(bfpPath, 'source');
+          await fs.mkdir(sourceDir, { recursive: true });
+          epubPath = path.join(sourceDir, 'exported.epub');
+        }
         await fs.writeFile(epubPath, Buffer.from(epubData));
 
-        // Save deleted block examples if provided
+        // Save deleted block examples if provided (next to the saved EPUB)
         if (deletedBlockExamples && deletedBlockExamples.length > 0) {
-          const examplesPath = path.join(sourceDir, 'deleted-examples.json');
+          const examplesPath = path.join(path.dirname(epubPath), 'deleted-examples.json');
           await fs.writeFile(examplesPath, JSON.stringify(deletedBlockExamples, null, 2));
         }
 

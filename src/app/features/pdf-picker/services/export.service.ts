@@ -632,7 +632,8 @@ export class ExportService {
     deletedHighlights?: DeletedHighlight[],
     metadata?: BookMetadata,
     navigateAfter: boolean = true,
-    categories?: Map<string, Category>
+    categories?: Map<string, Category>,
+    savePath?: string
   ): Promise<ExportResult> {
     if (!this.electron) {
       return {
@@ -682,7 +683,8 @@ export class ExportService {
       const exportResult = await this.electronService.audiobookExportFromProject(
         bfpPath,
         arrayBuffer,
-        deletedBlockExamples.length > 0 ? deletedBlockExamples : undefined
+        deletedBlockExamples.length > 0 ? deletedBlockExamples : undefined,
+        savePath
       );
 
       if (!exportResult.success) {
@@ -699,7 +701,7 @@ export class ExportService {
       return {
         success: true,
         message: `Exported EPUB with ${epubResult.chapterCount} chapters to Audiobook Producer.${deletedBlockExamples.length > 0 ? ` (${deletedBlockExamples.length} deletion examples)` : ''}`,
-        filename: 'exported.epub',
+        filename: savePath ? savePath.split('/').pop()! : 'exported.epub',
         chapterCount: epubResult.chapterCount,
         blockCount: epubResult.blockCount,
         warning: epubResult.warning
