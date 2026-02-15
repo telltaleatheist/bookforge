@@ -486,7 +486,7 @@ export async function runLLCleanup(
     if (!isIncrementalUpdate) {
       await clearDiffCache(cleanedEpubPath);
     }
-    await startDiffCache(cleanedEpubPath);
+    await startDiffCache(cleanedEpubPath, sourceEpubPath);
     const { replaceChapterTextsInEpub } = await import('./epub-processor.js');
     const chapterReplacements: Array<{ chapterId: string; newText: string }> = [];
 

@@ -46,6 +46,7 @@ export interface DiffCacheFile {
   updatedAt: string;
   ignoreWhitespace: boolean;
   completed: boolean;  // True when job finished successfully
+  originalPath?: string;  // Path of the source EPUB this was compared against
   chapters: DiffCacheChapter[];
 }
 
@@ -54,6 +55,7 @@ export interface DiffCacheFile {
 // ─────────────────────────────────────────────────────────────────────────────
 
 let currentOutputPath: string | null = null;
+let currentOriginalPath: string | null = null;
 let cacheStartTime: string | null = null;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,9 +67,11 @@ let cacheStartTime: string | null = null;
  * Creates an empty cache file immediately.
  *
  * @param cleanedEpubPath Path to the cleaned/simplified EPUB file (used to derive .diff.json path)
+ * @param originalEpubPath Optional path to the source EPUB being compared against
  */
-export async function startDiffCache(cleanedEpubPath: string): Promise<void> {
+export async function startDiffCache(cleanedEpubPath: string, originalEpubPath?: string): Promise<void> {
   currentOutputPath = cleanedEpubPath;
+  currentOriginalPath = originalEpubPath || null;
   cacheStartTime = new Date().toISOString();
 
   const diffPath = cleanedEpubPath.replace('.epub', '.diff.json');
@@ -79,6 +83,7 @@ export async function startDiffCache(cleanedEpubPath: string): Promise<void> {
     updatedAt: cacheStartTime,
     ignoreWhitespace: true,
     completed: false,
+    originalPath: currentOriginalPath || undefined,
     chapters: []
   };
 
@@ -191,6 +196,7 @@ export async function finalizeDiffCache(): Promise<void> {
 
   // Clear state
   currentOutputPath = null;
+  currentOriginalPath = null;
   cacheStartTime = null;
 }
 
@@ -210,6 +216,7 @@ export async function clearDiffCache(cleanedEpubPath: string): Promise<void> {
   // Also clear state in case we're restarting
   if (currentOutputPath === cleanedEpubPath) {
     currentOutputPath = null;
+    currentOriginalPath = null;
     cacheStartTime = null;
   }
 }
@@ -319,7 +326,7 @@ function backtrackDiff(original: string[], cleaned: string[], dp: number[][]): D
  * Instead of storing the full DiffWord[] array (which duplicates unchanged text),
  * we store only the changes with their positions.
  */
-function computeCompactDiff(
+export function computeCompactDiff(
   originalText: string,
   cleanedText: string
 ): { changes: DiffChange[]; changeCount: number } {

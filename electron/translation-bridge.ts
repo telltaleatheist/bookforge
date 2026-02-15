@@ -13,6 +13,13 @@ import { promises as fsPromises } from 'fs';
 
 // Import types and helpers from ai-bridge
 import type { AIProviderConfig } from './ai-bridge';
+import {
+  startDiffCache,
+  addChapterDiff,
+  finalizeDiffCache,
+  clearDiffCache
+} from './diff-cache.js';
+import { extractChapterAsText } from './epub-processor.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -500,6 +507,10 @@ export async function translateEpub(
       // File doesn't exist
     }
 
+    // Initialize diff cache for change tracking
+    await clearDiffCache(outputPath);
+    await startDiffCache(outputPath, epubPath);
+
     // Process chapters
     let chunksCompletedInJob = 0;
     let chaptersProcessed = 0;
@@ -580,8 +591,22 @@ export async function translateEpub(
       }
 
       // Store translated chapter
-      modifiedChapters.set(chapter.id, translatedChunks.join(''));
+      const translatedText = translatedChunks.join('');
+      modifiedChapters.set(chapter.id, translatedText);
       chaptersProcessed++;
+
+      // Add to diff cache - track what changed in this chapter
+      try {
+        const chapterHref = processor.resolvePath(chapter.href);
+        const originalXhtml = await processor.readFile(chapterHref);
+        const translatedXhtml = replaceXhtmlBody(originalXhtml, translatedText);
+        const originalTextForDiff = extractChapterAsText(originalXhtml);
+        const translatedTextForDiff = extractChapterAsText(translatedXhtml);
+        await addChapterDiff(chapter.id, chapter.title, originalTextForDiff, translatedTextForDiff);
+      } catch (diffErr) {
+        // Diff cache is optional - don't fail the translation
+        console.warn(`[TRANSLATION] Failed to add chapter diff for "${chapter.title}":`, diffErr);
+      }
 
       // Incremental save
       await saveTranslatedEpub(processor, modifiedChapters, outputPath);
@@ -603,6 +628,9 @@ export async function translateEpub(
     await saveTranslatedEpub(processor, modifiedChapters, outputPath);
     processor.close();
     processor = null;
+
+    // Finalize diff cache
+    await finalizeDiffCache();
 
     // Cleanup
     activeTranslationJobs.delete(jobId);

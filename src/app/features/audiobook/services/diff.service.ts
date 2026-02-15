@@ -80,6 +80,11 @@ export class DiffService {
     return { ignoreWhitespace };
   }
 
+  /** Normalize path separators for comparison (Windows backslashes → forward slashes). */
+  private normalizePath(p: string): string {
+    return p.replace(/\\/g, '/');
+  }
+
   /**
    * Initialize the diff worker if not already created.
    */
@@ -181,8 +186,14 @@ export class DiffService {
     const cacheResult = await this.electronService.loadCachedDiffFile(cleanedPath);
 
     if (cacheResult.success && cacheResult.data) {
-      console.log('[DiffService] Found pre-computed cache with', cacheResult.data.chapters.length, 'chapters');
-      return this.initSessionFromCache(cacheResult.data, originalPath, cleanedPath);
+      // Verify the cache was computed against the same original
+      const cachedOriginal = (cacheResult.data as any).originalPath;
+      if (cachedOriginal && this.normalizePath(cachedOriginal) !== this.normalizePath(originalPath)) {
+        console.log('[DiffService] Pre-computed cache is for a different original, skipping');
+      } else {
+        console.log('[DiffService] Found pre-computed cache with', cacheResult.data.chapters.length, 'chapters');
+        return this.initSessionFromCache(cacheResult.data, originalPath, cleanedPath);
+      }
     }
 
     console.log('[DiffService] No pre-computed cache, falling back to on-demand loading');

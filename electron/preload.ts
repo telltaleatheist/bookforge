@@ -1309,6 +1309,13 @@ export interface ElectronAPI {
       };
       error?: string;
     }>;
+    // Pre-compute diff cache for an arbitrary EPUB pair (background)
+    precomputePair: (originalPath: string, targetPath: string) => Promise<{
+      success: boolean;
+      cached?: boolean;
+      chapters?: number;
+      error?: string;
+    }>;
   };
   ebookConvert: {
     isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
@@ -2471,6 +2478,9 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('diff:load-cached-file', cleanedPath),
     hydrateChapter: (originalPath: string, cleanedPath: string, chapterId: string, changes: Array<{ pos: number; len: number; add?: string; rem?: string }>) =>
       ipcRenderer.invoke('diff:hydrate-chapter', originalPath, cleanedPath, chapterId, changes),
+    // Pre-compute diff cache for an arbitrary EPUB pair (background)
+    precomputePair: (originalPath: string, targetPath: string) =>
+      ipcRenderer.invoke('diff:precompute-pair', originalPath, targetPath),
   },
   play: {
     startSession: () =>

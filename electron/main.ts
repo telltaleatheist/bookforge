@@ -2762,6 +2762,90 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Pre-compute diff cache for an arbitrary EPUB pair (background operation)
+  ipcMain.handle('diff:precompute-pair', async (_event, originalPath: string, targetPath: string) => {
+    try {
+      // Check if .diff.json already exists next to the target
+      const diffJsonPath = targetPath.replace('.epub', '.diff.json');
+      try {
+        await fs.access(diffJsonPath);
+        const { loadDiffCacheFile } = await import('./diff-cache.js');
+        const existing = await loadDiffCacheFile(targetPath);
+        if (existing?.completed) {
+          // Cache exists — don't overwrite even if it's for a different pair.
+          // On-demand loading handles mismatched pairs.
+          return { success: true, cached: true };
+        }
+      } catch {
+        // No existing cache — generate it
+      }
+
+      const { EpubProcessor, extractChapterAsText } = await import('./epub-processor.js');
+      const { computeCompactDiff } = await import('./diff-cache.js');
+
+      const origProc = new EpubProcessor();
+      const targetProc = new EpubProcessor();
+
+      try {
+        const origStructure = await origProc.open(originalPath);
+        const targetStructure = await targetProc.open(targetPath);
+
+        const origChapterMap = new Map(origStructure.chapters.map(c => [c.id, c]));
+        const chapters: Array<{
+          id: string; title: string;
+          originalCharCount: number; cleanedCharCount: number;
+          changeCount: number; changes: any[];
+        }> = [];
+
+        for (const chapter of targetStructure.chapters) {
+          const origChapter = origChapterMap.get(chapter.id);
+          if (!origChapter) continue;
+
+          const origHref = origProc.resolvePath(origChapter.href);
+          const targetHref = targetProc.resolvePath(chapter.href);
+          const origXhtml = await origProc.readFile(origHref);
+          const targetXhtml = await targetProc.readFile(targetHref);
+
+          const origText = extractChapterAsText(origXhtml);
+          const targetText = extractChapterAsText(targetXhtml);
+
+          const { changes, changeCount } = computeCompactDiff(origText, targetText);
+
+          chapters.push({
+            id: chapter.id,
+            title: chapter.title,
+            originalCharCount: origText.length,
+            cleanedCharCount: targetText.length,
+            changeCount,
+            changes,
+          });
+        }
+
+        const now = new Date().toISOString();
+        const cache = {
+          version: 1,
+          createdAt: now,
+          updatedAt: now,
+          ignoreWhitespace: true,
+          completed: true,
+          originalPath,
+          chapters,
+        };
+
+        await fs.writeFile(diffJsonPath, JSON.stringify(cache, null, 2), 'utf-8');
+        console.log(`[DIFF-PRECOMPUTE] Generated ${path.basename(diffJsonPath)} with ${chapters.length} chapters`);
+
+        return { success: true, cached: false, chapters: chapters.length };
+      } finally {
+        origProc.close();
+        targetProc.close();
+      }
+    } catch (err) {
+      console.warn('[DIFF-PRECOMPUTE] Failed:', (err as Error).message);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // AI Bridge handlers (Ollama integration)
   // ─────────────────────────────────────────────────────────────────────────────

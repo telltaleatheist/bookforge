@@ -1683,6 +1683,13 @@ export class ElectronService {
     return { success: false };
   }
 
+  async precomputeDiffPair(originalPath: string, targetPath: string): Promise<{ success: boolean; cached?: boolean; chapters?: number; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.diff.precomputePair(originalPath, targetPath);
+    }
+    return { success: false };
+  }
+
   // Ebook conversion operations (Calibre CLI integration)
   async isEbookConvertAvailable(): Promise<boolean> {
     if (this.isElectron) {

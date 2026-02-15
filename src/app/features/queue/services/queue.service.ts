@@ -765,54 +765,35 @@ export class QueueService {
       this.updateBfpStoppedState(completedJob.bfpPath, result.stopInfo);
     }
 
-    // If OCR job failed with TOO_MANY_FALLBACKS, skip any pending TTS jobs for the same book
-    if (!result.success && !result.wasStopped && completedJob?.type === 'ocr-cleanup' &&
-        result.error?.includes('TOO_MANY_FALLBACKS') && completedJob.bfpPath) {
-      console.log(`[QUEUE] OCR job failed with too many fallbacks - skipping TTS for ${completedJob.bfpPath}`);
-      this._jobs.update(jobs =>
-        jobs.map(job => {
-          if (job.bfpPath === completedJob.bfpPath &&
-              job.type === 'tts-conversion' &&
-              job.status === 'pending') {
-            console.log(`[QUEUE] Skipping TTS job ${job.id} due to OCR failure`);
+    // If any job in a workflow fails, cancel all remaining pending jobs in the same workflow.
+    // This prevents downstream jobs (TTS, reassembly, video) from running when an earlier
+    // step (cleanup, translation, etc.) has failed.
+    if (!result.success && !result.wasStopped && completedJob?.workflowId) {
+      const failedType = completedJob.type;
+      const workflowId = completedJob.workflowId;
+      const pendingInWorkflow = this._jobs().filter(j =>
+        j.workflowId === workflowId &&
+        j.status === 'pending' &&
+        j.id !== completedJob.id
+      );
+      if (pendingInWorkflow.length > 0) {
+        const failIds = new Set(pendingInWorkflow.map(j => j.id));
+        console.log(`[QUEUE] ${failedType} job failed in workflow ${workflowId} - cancelling ${failIds.size} pending job(s)`);
+        this._jobs.update(jobs =>
+          jobs.map(job => {
+            if (!failIds.has(job.id)) return job;
+            console.log(`[QUEUE] Cancelling ${job.type} job ${job.id} due to ${failedType} failure`);
             return {
               ...job,
               status: 'error' as JobStatus,
-              error: 'Skipped: OCR cleanup failed with too many fallback chunks. Please review and re-run OCR cleanup before TTS conversion.'
+              error: `Skipped: ${failedType} failed. Fix the issue and re-run the workflow.`,
+              metadata: {
+                ...job.metadata,
+                bilingualPlaceholder: undefined, // Clear placeholder flag if present
+              },
             };
-          }
-          return job;
-        })
-      );
-    }
-
-    // If TTS job failed in bilingual workflow, mark dependent placeholders as error
-    if (!result.success && !result.wasStopped && completedJob?.type === 'tts-conversion') {
-      const bilingualMeta = (completedJob?.metadata as any)?.bilingualWorkflow;
-      if (bilingualMeta && completedJob.workflowId) {
-        const placeholdersToFail = this._jobs().filter(j =>
-          j.workflowId === completedJob.workflowId &&
-          j.status === 'pending' &&
-          (j.metadata as any)?.bilingualPlaceholder
+          })
         );
-        if (placeholdersToFail.length > 0) {
-          const failIds = new Set(placeholdersToFail.map(j => j.id));
-          console.log(`[QUEUE] TTS failed in bilingual workflow - marking ${failIds.size} placeholder(s) as error`);
-          this._jobs.update(jobs =>
-            jobs.map(job => {
-              if (!failIds.has(job.id)) return job;
-              return {
-                ...job,
-                status: 'error' as JobStatus,
-                error: 'Skipped: TTS conversion failed. Dependent jobs cannot proceed.',
-                metadata: {
-                  ...job.metadata,
-                  bilingualPlaceholder: undefined,
-                },
-              };
-            })
-          );
-        }
       }
     }
 

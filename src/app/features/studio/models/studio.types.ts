@@ -90,7 +90,7 @@ export interface StudioItem {
  * Main tabs: top-level navigation
  * Editor is now a button that opens a new window, not a tab.
  */
-export type MainTab = 'metadata' | 'content' | 'audiobook' | 'language-learning';
+export type MainTab = 'files' | 'content' | 'audiobook' | 'language-learning';
 
 /**
  * Sub-tabs under Audiobook main tab

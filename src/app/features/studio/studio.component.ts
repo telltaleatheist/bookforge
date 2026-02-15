@@ -22,6 +22,7 @@ import { ChapterRecoveryComponent } from '../audiobook/components/chapter-recove
 import { BilingualPlayerComponent } from '../language-learning/components/bilingual-player/bilingual-player.component';
 import { AudiobookPlayerComponent } from './components/audiobook-player/audiobook-player.component';
 import { VersionPickerDialogComponent, VersionPickerDialogData } from './components/version-picker-dialog/version-picker-dialog.component';
+import { ProjectFilesComponent, DiffRequest } from './components/project-files/project-files.component';
 import { ProjectVersion } from './models/project-version.types';
 
 import { EpubService } from '../audiobook/services/epub.service';
@@ -57,7 +58,8 @@ import { SettingsService } from '../../core/services/settings.service';
     ChapterRecoveryComponent,
     BilingualPlayerComponent,
     AudiobookPlayerComponent,
-    VersionPickerDialogComponent
+    VersionPickerDialogComponent,
+    ProjectFilesComponent
   ],
   template: `
     <div class="studio-container">
@@ -93,10 +95,10 @@ import { SettingsService } from '../../core/services/settings.service';
               <div class="main-tabs">
                 <button
                   class="main-tab"
-                  [class.active]="mainTab() === 'metadata'"
-                  (click)="setMainTab('metadata')"
+                  [class.active]="mainTab() === 'files'"
+                  (click)="setMainTab('files')"
                 >
-                  Metadata
+                  Files
                 </button>
                 @if (selectedItem()!.type === 'article') {
                   <button
@@ -121,17 +123,6 @@ import { SettingsService } from '../../core/services/settings.service';
                 >
                   Language Learning
                 </button>
-
-                <!-- Edit Source button for books (positioned on the right) -->
-                @if (selectedItem()!.type === 'book' && getEditorPath()) {
-                  <button
-                    class="btn-edit-source"
-                    (click)="openEditor()"
-                    title="Edit source document in a new window"
-                  >
-                    Edit Source
-                  </button>
-                }
 
                 <!-- Finalize button for articles on Content tab only -->
                 @if (selectedItem()!.type === 'article' && mainTab() === 'content') {
@@ -180,8 +171,8 @@ import { SettingsService } from '../../core/services/settings.service';
                   <button
                     class="sub-tab"
                     [class.active]="audiobookSubTab() === 'review'"
-                    [class.disabled]="!selectedItem()!.hasCleaned"
-                    (click)="handleSubTabClick('audiobook', 'review', selectedItem()!.hasCleaned, 'No cleaned version. Run AI Cleanup first.')"
+                    [class.disabled]="!selectedItem()!.hasCleaned && !diffPaths()"
+                    (click)="handleSubTabClick('audiobook', 'review', selectedItem()!.hasCleaned || !!diffPaths(), 'No cleaned version. Run AI Cleanup first.')"
                   >
                     Review
                   </button>
@@ -252,8 +243,8 @@ import { SettingsService } from '../../core/services/settings.service';
 
             <!-- Tab Content -->
             <div class="tab-content" [class.full-height]="isFullHeightTab()">
-              <!-- Metadata Tab -->
-              @if (mainTab() === 'metadata') {
+              <!-- Files Tab -->
+              @if (mainTab() === 'files') {
                 <app-metadata-editor
                   [metadata]="selectedMetadata()"
                   [saving]="savingMetadata()"
@@ -268,6 +259,15 @@ import { SettingsService } from '../../core/services/settings.service';
                   (linkAudio)="onLinkAudio($event)"
                   (showEpubInFinder)="onShowEpubInFinder($event)"
                 />
+                @if (selectedItem()?.bfpPath) {
+                  <app-project-files
+                    [projectDir]="getProjectDir()"
+                    [projectId]="selectedItem()?.id || ''"
+                    (fileChanged)="onFileChanged()"
+                    (editFile)="openEditorWithFile($event)"
+                    (diffFiles)="onDiffFiles($event)"
+                  />
+                }
               }
 
               <!-- Content Tab (Articles only) -->
@@ -330,8 +330,8 @@ import { SettingsService } from '../../core/services/settings.service';
                   }
                   @case ('review') {
                     <app-diff-view
-                      [originalPath]="selectedItem()?.epubPath || ''"
-                      [cleanedPath]="selectedItem()?.cleanedEpubPath || ''"
+                      [originalPath]="diffPaths()?.originalPath || selectedItem()?.epubPath || ''"
+                      [cleanedPath]="diffPaths()?.changedPath || selectedItem()?.cleanedEpubPath || ''"
                     />
                   }
                   @case ('skipped') {
@@ -414,8 +414,8 @@ import { SettingsService } from '../../core/services/settings.service';
                   }
                   @case ('review') {
                     <app-diff-view
-                      [originalPath]="selectedItem()?.epubPath || ''"
-                      [cleanedPath]="selectedItem()?.cleanedEpubPath || ''"
+                      [originalPath]="diffPaths()?.originalPath || selectedItem()?.epubPath || ''"
+                      [cleanedPath]="diffPaths()?.changedPath || selectedItem()?.cleanedEpubPath || ''"
                     />
                   }
                 }
@@ -685,23 +685,6 @@ import { SettingsService } from '../../core/services/settings.service';
       to { opacity: 1; transform: translateY(0); }
     }
 
-    .btn-edit-source {
-      margin-left: auto;
-      padding: 8px 16px;
-      background: var(--accent);
-      border: none;
-      border-radius: 6px;
-      color: white;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.15s ease;
-
-      &:hover {
-        background: var(--accent-hover);
-      }
-    }
-
     .btn-finalize {
       margin-left: auto;
       padding: 6px 16px;
@@ -903,7 +886,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly fullscreenPlayer = signal<boolean>(false);
 
   // Tab navigation
-  readonly mainTab = signal<MainTab>('metadata');
+  readonly mainTab = signal<MainTab>('files');
   readonly audiobookSubTab = signal<AudiobookSubTab>('process');
   readonly llSubTab = signal<LanguageLearningSubTab>('process');
 
@@ -921,6 +904,9 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly contextMenuX = signal<number>(0);
   readonly contextMenuY = signal<number>(0);
   private contextMenuItem: StudioItem | null = null;
+
+  // Inline diff view (shown in Files tab)
+  readonly diffPaths = signal<DiffRequest | null>(null);
 
   // Cached TTS session for reassembly
   readonly cachedSession = signal<any>(null);
@@ -1142,11 +1128,15 @@ export class StudioComponent implements OnInit, OnDestroy {
   setMainTab(tab: MainTab): void {
     this.mainTab.set(tab);
     this.disabledTabMessage.set(null);
+    this.diffPaths.set(null);
   }
 
   setAudiobookSubTab(tab: AudiobookSubTab): void {
     this.audiobookSubTab.set(tab);
     this.disabledTabMessage.set(null);
+    if (tab !== 'review') {
+      this.diffPaths.set(null);
+    }
   }
 
   setLLSubTab(tab: LanguageLearningSubTab): void {
@@ -1182,10 +1172,11 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   selectItem(item: StudioItem): void {
     this.selectedItemId.set(item.id);
-    this.mainTab.set('metadata');
+    this.mainTab.set('files');
     this.audiobookSubTab.set('process');
     this.llSubTab.set('process');
     this.finalizingContent.set('idle');
+    this.diffPaths.set(null);
   }
 
   playItem(item: StudioItem): void {
@@ -1200,6 +1191,34 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   onItemChanged(): void {
     // Item was modified
+  }
+
+  async onFileChanged(): Promise<void> {
+    const id = this.selectedItemId();
+    if (id) {
+      await this.studioService.reloadItem(id);
+    }
+  }
+
+  /**
+   * Open the editor for a specific file path (from file browser).
+   * Routes through version picker for BFP projects.
+   */
+  async openEditorWithFile(filePath: string): Promise<void> {
+    const item = this.selectedItem();
+    if (!item) return;
+
+    if (item.bfpPath) {
+      await this.openEditorWithBfp(item.bfpPath, filePath);
+    } else {
+      await this.openEditorWithVersion(filePath);
+    }
+  }
+
+  onDiffFiles(request: DiffRequest): void {
+    this.diffPaths.set(request);
+    this.mainTab.set('audiobook');
+    this.audiobookSubTab.set('review');
   }
 
   // ─────────────────────────────────────────────────────────────────────────

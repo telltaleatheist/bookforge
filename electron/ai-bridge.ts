@@ -2001,7 +2001,7 @@ export async function cleanupEpub(
 
     // Clear any existing diff cache and start new session
     await clearDiffCache(outputPath);
-    await startDiffCache(outputPath);
+    await startDiffCache(outputPath, epubPath);
 
     // Track which chapters have been added to diff cache (for parallel processing)
     const chaptersAddedToDiffCache = new Set<string>();
