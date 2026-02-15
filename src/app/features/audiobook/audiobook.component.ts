@@ -26,7 +26,7 @@ import { AnalyticsPanelComponent } from './components/analytics-panel/analytics-
 import { ProjectAnalytics } from '../../core/models/analytics.types';
 
 // Workflow states for the audiobook producer
-type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'skipped' | 'analytics' | 'enhance' | 'chapters' | 'complete';
+type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' | 'play' | 'diff' | 'skipped' | 'analytics' | 'enhance' | 'chapters' | 'pipeline' | 'complete';
 
 @Component({
   selector: 'app-audiobook',
@@ -155,6 +155,13 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                   Chapters
                 </button>
               }
+              <button
+                class="tab"
+                [class.active]="workflowState() === 'pipeline'"
+                (click)="setWorkflowState('pipeline')"
+              >
+                Pipeline
+              </button>
             </div>
 
 
@@ -242,6 +249,134 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
                       (chaptersApplied)="onChaptersApplied($event)"
                     />
                   }
+                }
+                @case ('pipeline') {
+                  <div class="pipeline-management">
+                    <h3>Pipeline Stage Management</h3>
+                    <p class="pipeline-description">
+                      Delete cached pipeline stages to free up disk space or reset the workflow.
+                    </p>
+
+                    <div class="pipeline-sections">
+                      <!-- AI Cleanup Section -->
+                      <div class="pipeline-section">
+                        <div class="section-header">
+                          <h4>AI Cleanup Stage</h4>
+                          @if (hasPipelineCleanup()) {
+                            <span class="status-badge exists">Files exist</span>
+                          } @else {
+                            <span class="status-badge empty">Empty</span>
+                          }
+                        </div>
+                        <p class="section-description">
+                          Cleaned EPUB files and diff data from AI processing.
+                        </p>
+                        <button
+                          class="btn-delete"
+                          [disabled]="!hasPipelineCleanup() || deletingCleanup()"
+                          (click)="deleteCleanupStage()"
+                        >
+                          @if (deletingCleanup()) {
+                            Deleting...
+                          } @else {
+                            Delete Cleanup Files
+                          }
+                        </button>
+                      </div>
+
+                      <!-- Translation Section -->
+                      <div class="pipeline-section">
+                        <div class="section-header">
+                          <h4>Translation Stage</h4>
+                          @if (hasPipelineTranslation()) {
+                            <span class="status-badge exists">Files exist</span>
+                          } @else {
+                            <span class="status-badge empty">Empty</span>
+                          }
+                        </div>
+                        <p class="section-description">
+                          Translated EPUBs and sentence pairs for bilingual audiobooks.
+                        </p>
+                        <button
+                          class="btn-delete"
+                          [disabled]="!hasPipelineTranslation() || deletingTranslation()"
+                          (click)="deleteTranslationStage()"
+                        >
+                          @if (deletingTranslation()) {
+                            Deleting...
+                          } @else {
+                            Delete Translation Files
+                          }
+                        </button>
+                      </div>
+
+                      <!-- TTS Cache Section -->
+                      <div class="pipeline-section">
+                        <div class="section-header">
+                          <h4>TTS Cache</h4>
+                          @if (hasPipelineTTS()) {
+                            <span class="status-badge exists">
+                              {{ ttsCacheLanguages().length }} language(s)
+                            </span>
+                          } @else {
+                            <span class="status-badge empty">Empty</span>
+                          }
+                        </div>
+                        <p class="section-description">
+                          Cached TTS session files for different languages.
+                        </p>
+                        @if (ttsCacheLanguages().length > 0) {
+                          <div class="language-list">
+                            @for (lang of ttsCacheLanguages(); track lang) {
+                              <div class="language-item">
+                                <span class="language-code">{{ lang }}</span>
+                                <button
+                                  class="btn-delete-small"
+                                  [disabled]="deletingTTS()"
+                                  (click)="deleteTTSCache(lang)"
+                                  title="Delete {{ lang }} cache"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            }
+                          </div>
+                        }
+                        <button
+                          class="btn-delete"
+                          [disabled]="!hasPipelineTTS() || deletingTTS()"
+                          (click)="deleteTTSCache()"
+                        >
+                          @if (deletingTTS()) {
+                            Deleting...
+                          } @else {
+                            Delete All TTS Caches
+                          }
+                        </button>
+                      </div>
+
+                      <!-- Delete All Section -->
+                      <div class="pipeline-section danger">
+                        <div class="section-header">
+                          <h4>Delete All Pipeline Stages</h4>
+                        </div>
+                        <p class="section-description warning">
+                          ⚠️ This will delete all cached pipeline data. You'll need to re-run the entire workflow.
+                        </p>
+                        <button
+                          class="btn-delete danger"
+                          [disabled]="(!hasPipelineCleanup() && !hasPipelineTranslation() && !hasPipelineTTS()) || deletingAll()"
+                          (click)="deleteAllPipelineStages()"
+                        >
+                          @if (deletingAll()) {
+                            Deleting...
+                          } @else {
+                            Delete All Pipeline Stages
+                          }
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 }
               }
             </div>
@@ -560,6 +695,155 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
       }
     }
 
+    /* Pipeline Management Styles */
+    .pipeline-management {
+      padding: 2rem;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .pipeline-management h3 {
+      color: var(--text-primary);
+      margin-bottom: 0.5rem;
+    }
+
+    .pipeline-description {
+      color: var(--text-muted);
+      margin-bottom: 2rem;
+    }
+
+    .pipeline-sections {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .pipeline-section {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 1.5rem;
+    }
+
+    .pipeline-section.danger {
+      border-color: var(--danger-color, #ff4444);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+    }
+
+    .section-header h4 {
+      margin: 0;
+      color: var(--text-primary);
+      font-size: 1.1rem;
+    }
+
+    .status-badge {
+      padding: 0.25rem 0.75rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+
+    .status-badge.exists {
+      background: var(--success-bg, rgba(0, 200, 83, 0.1));
+      color: var(--success-color, #00c853);
+    }
+
+    .status-badge.empty {
+      background: var(--muted-bg, rgba(128, 128, 128, 0.1));
+      color: var(--text-muted);
+    }
+
+    .section-description {
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+    }
+
+    .section-description.warning {
+      color: var(--warning-color, #ff9800);
+    }
+
+    .language-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .language-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.25rem 0.5rem;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+    }
+
+    .language-code {
+      font-weight: 500;
+      text-transform: uppercase;
+      font-size: 0.9rem;
+    }
+
+    .btn-delete,
+    .btn-delete-small {
+      background: var(--danger-bg, rgba(255, 68, 68, 0.1));
+      color: var(--danger-color, #ff4444);
+      border: 1px solid var(--danger-color, #ff4444);
+      padding: 0.5rem 1rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      transition: all 0.2s;
+    }
+
+    .btn-delete-small {
+      padding: 0.125rem 0.375rem;
+      font-size: 1.2rem;
+      line-height: 1;
+      min-width: 1.5rem;
+    }
+
+    .btn-delete:hover:not(:disabled),
+    .btn-delete-small:hover:not(:disabled) {
+      background: var(--danger-color, #ff4444);
+      color: white;
+    }
+
+    .btn-delete.danger {
+      background: var(--danger-color, #ff4444);
+      color: white;
+      font-weight: 500;
+    }
+
+    .btn-delete.danger:hover:not(:disabled) {
+      background: #cc0000;
+      border-color: #cc0000;
+    }
+
+    .btn-delete:disabled,
+    .btn-delete-small:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .deprecated-panel {
+      padding: 2rem;
+      text-align: center;
+      color: var(--text-muted);
+    }
+
+    .deprecated-panel p {
+      margin: 0.5rem 0;
+    }
+
   `]
 })
 export class AudiobookComponent implements OnInit {
@@ -772,6 +1056,16 @@ export class AudiobookComponent implements OnInit {
     // For now, we'll show the tab if there's a linked audiobook - we'll verify the file exists when opening
     return !!item?.linkedAudioPath && !!item?.audiobookFolder;
   });
+
+  // Pipeline management signals
+  readonly hasPipelineCleanup = signal(false);
+  readonly hasPipelineTranslation = signal(false);
+  readonly hasPipelineTTS = signal(false);
+  readonly ttsCacheLanguages = signal<string[]>([]);
+  readonly deletingCleanup = signal(false);
+  readonly deletingTranslation = signal(false);
+  readonly deletingTTS = signal(false);
+  readonly deletingAll = signal(false);
 
   // Toolbar
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
@@ -1156,6 +1450,8 @@ export class AudiobookComponent implements OnInit {
     if (this.preloadedResumeInfo()) {
       this.preloadedResumeInfo.set(undefined);
     }
+    // Check pipeline stages for the selected item
+    this.checkPipelineStages();
   }
 
   /**
@@ -1408,5 +1704,155 @@ export class AudiobookComponent implements OnInit {
     const item = this.selectedItem();
     // coverPath in metadata is now the full filesystem path
     return item?.metadata?.coverPath;
+  }
+
+  // Pipeline Management Methods
+
+  /**
+   * Check and update pipeline stages when an item is selected
+   */
+  private async checkPipelineStages(): Promise<void> {
+    const item = this.selectedItem();
+    if (!item?.bfpPath) return;
+
+    const projectPath = item.bfpPath; // bfpPath is actually the project directory
+
+    // Check for cleanup stage
+    const cleanupPath = `${projectPath}/stages/01-cleanup`;
+    const hasCleanup = await this.electron?.fs.exists(cleanupPath) ?? false;
+    this.hasPipelineCleanup.set(hasCleanup);
+
+    // Check for translation stage
+    const translatePath = `${projectPath}/stages/02-translate`;
+    const hasTranslation = await this.electron?.fs.exists(translatePath) ?? false;
+    this.hasPipelineTranslation.set(hasTranslation);
+
+    // Check for TTS cache and get languages
+    const ttsPath = `${projectPath}/stages/03-tts/sessions`;
+    const ttsList = await this.electron?.fs.listDir(ttsPath);
+    if (ttsList?.success && ttsList.files) {
+      const languages = ttsList.files
+        .filter((f: any) => f.isDirectory)
+        .map((f: any) => f.name);
+      this.ttsCacheLanguages.set(languages);
+      this.hasPipelineTTS.set(languages.length > 0);
+    } else {
+      this.ttsCacheLanguages.set([]);
+      this.hasPipelineTTS.set(false);
+    }
+  }
+
+  /**
+   * Delete AI cleanup stage files
+   */
+  async deleteCleanupStage(): Promise<void> {
+    const item = this.selectedItem();
+    if (!item?.bfpPath || !this.electron) return;
+
+    this.deletingCleanup.set(true);
+    try {
+      const result = await this.electron.pipeline.deleteCleanup(item.bfpPath);
+      if (result.success) {
+        console.log('[PIPELINE] Cleanup stage deleted:', result.message);
+        this.hasPipelineCleanup.set(false);
+        // Also update the item to reflect the change
+        item.hasCleaned = false;
+        item.cleanedFilename = undefined;
+        item.skippedChunksPath = undefined;
+      } else {
+        console.error('[PIPELINE] Failed to delete cleanup stage:', result.error);
+      }
+    } finally {
+      this.deletingCleanup.set(false);
+    }
+  }
+
+  /**
+   * Delete translation stage files
+   */
+  async deleteTranslationStage(): Promise<void> {
+    const item = this.selectedItem();
+    if (!item?.bfpPath || !this.electron) return;
+
+    this.deletingTranslation.set(true);
+    try {
+      const result = await this.electron.pipeline.deleteTranslation(item.bfpPath);
+      if (result.success) {
+        console.log('[PIPELINE] Translation stage deleted:', result.message);
+        this.hasPipelineTranslation.set(false);
+      } else {
+        console.error('[PIPELINE] Failed to delete translation stage:', result.error);
+      }
+    } finally {
+      this.deletingTranslation.set(false);
+    }
+  }
+
+  /**
+   * Delete TTS cache for a specific language or all languages
+   */
+  async deleteTTSCache(language?: string): Promise<void> {
+    const item = this.selectedItem();
+    if (!item?.bfpPath || !this.electron) return;
+
+    this.deletingTTS.set(true);
+    try {
+      const result = await this.electron.pipeline.deleteTtsCache(item.bfpPath, language);
+      if (result.success) {
+        console.log('[PIPELINE] TTS cache deleted:', result.message);
+
+        if (language && result.deletedSessions) {
+          // Remove specific language from the list
+          const currentLanguages = this.ttsCacheLanguages();
+          const updatedLanguages = currentLanguages.filter(l => l !== language);
+          this.ttsCacheLanguages.set(updatedLanguages);
+          this.hasPipelineTTS.set(updatedLanguages.length > 0);
+        } else {
+          // All caches deleted
+          this.ttsCacheLanguages.set([]);
+          this.hasPipelineTTS.set(false);
+        }
+      } else {
+        console.error('[PIPELINE] Failed to delete TTS cache:', result.error);
+      }
+    } finally {
+      this.deletingTTS.set(false);
+    }
+  }
+
+  /**
+   * Delete all pipeline stages
+   */
+  async deleteAllPipelineStages(): Promise<void> {
+    const item = this.selectedItem();
+    if (!item?.bfpPath || !this.electron) return;
+
+    // Simple confirmation using browser confirm
+    const confirmed = confirm('Are you sure you want to delete all pipeline stages?\n\nThis will remove all AI cleanup files, translations, and TTS caches. You\'ll need to re-run the entire workflow.');
+
+    if (!confirmed) return;
+
+    this.deletingAll.set(true);
+    try {
+      const result = await this.electron.pipeline.deleteAll(item.bfpPath);
+      if (result.success) {
+        console.log('[PIPELINE] All stages deleted:', result.message);
+
+        // Update all states
+        this.hasPipelineCleanup.set(false);
+        this.hasPipelineTranslation.set(false);
+        this.hasPipelineTTS.set(false);
+        this.ttsCacheLanguages.set([]);
+
+        // Update item state
+        item.hasCleaned = false;
+        item.cleanedFilename = undefined;
+        item.skippedChunksPath = undefined;
+      } else {
+        console.error('[PIPELINE] Failed to delete all stages:', result.error);
+      }
+    } finally {
+      this.deletingAll.set(false);
+    }
   }
 }

@@ -1913,6 +1913,36 @@ export interface ElectronAPI {
     offWindowClosed: () => void;
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) => Promise<{ success: boolean; error?: string }>;
   };
+  pipeline: {
+    deleteCleanup: (projectPath: string) => Promise<{
+      success: boolean;
+      deletedFiles?: string[];
+      message?: string;
+      error?: string;
+    }>;
+    deleteTranslation: (projectPath: string) => Promise<{
+      success: boolean;
+      deletedItems?: string[];
+      message?: string;
+      error?: string;
+    }>;
+    deleteTtsCache: (projectPath: string, language?: string) => Promise<{
+      success: boolean;
+      deletedSessions?: string[];
+      message?: string;
+      error?: string;
+    }>;
+    deleteAll: (projectPath: string) => Promise<{
+      success: boolean;
+      results?: {
+        cleanup: { success: boolean; message?: string };
+        translation: { success: boolean; message?: string };
+        tts: { success: boolean; message?: string };
+      };
+      message?: string;
+      error?: string;
+    }>;
+  };
   platform: string;
 }
 
@@ -3208,6 +3238,16 @@ const electronAPI: ElectronAPI = {
     },
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) =>
       ipcRenderer.invoke('editor:save-epub', epubPath, epubData),
+  },
+  pipeline: {
+    deleteCleanup: (projectPath: string) =>
+      ipcRenderer.invoke('pipeline:delete-cleanup', projectPath),
+    deleteTranslation: (projectPath: string) =>
+      ipcRenderer.invoke('pipeline:delete-translation', projectPath),
+    deleteTtsCache: (projectPath: string, language?: string) =>
+      ipcRenderer.invoke('pipeline:delete-tts-cache', projectPath, language),
+    deleteAll: (projectPath: string) =>
+      ipcRenderer.invoke('pipeline:delete-all', projectPath),
   },
 
   platform: process.platform,

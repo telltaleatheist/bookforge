@@ -27,7 +27,7 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
 type WizardStep = 'cleanup' | 'translate' | 'tts' | 'assembly' | 'review';
 
 interface SourceStage {
-  id: 'original' | 'exported' | 'cleaned' | 'simplified';
+  id: 'original' | 'exported' | 'cleaned' | 'simplified' | 'translated';
   label: string;
   completed: boolean;
   path: string;
@@ -2023,15 +2023,26 @@ export class ProcessWizardComponent implements OnInit {
     ];
   });
 
-  /** Stages relevant for TTS source — includes all EPUBs */
+  /** Stages relevant for TTS source — includes pipeline intent from earlier steps */
   readonly ttsSourceStages = computed<SourceStage[]>(() => {
     const epubs = this.availableEpubs();
     const find = (name: string) => epubs.find(e => e.filename === name);
+    const willProduce = this.cleanupWillProduce();
+    const projectDir = this.bfpPath();
+    const cleanupDir = `${projectDir}/stages/01-cleanup`;
+    const translateDir = `${projectDir}/stages/02-translate`;
+
+    // A stage is available if the file exists on disk OR an earlier pipeline step will produce it
+    const cleanedAvailable = !!find('cleaned.epub') || willProduce === 'cleaned.epub';
+    const simplifiedAvailable = !!find('simplified.epub') || willProduce === 'simplified.epub';
+    const translatedAvailable = !!find('translated.epub') || (this.enableTranslation() && !this.skippedSteps.has('translate'));
+
     return [
       { id: 'original', label: 'Original', completed: !!find('original.epub'), path: find('original.epub')?.path ?? '' },
       { id: 'exported', label: 'Exported', completed: !!find('exported.epub'), path: find('exported.epub')?.path ?? '' },
-      { id: 'cleaned', label: 'AI Cleaned', completed: !!find('cleaned.epub'), path: find('cleaned.epub')?.path ?? '' },
-      { id: 'simplified', label: 'AI Simplified', completed: !!find('simplified.epub'), path: find('simplified.epub')?.path ?? '' },
+      { id: 'cleaned', label: 'AI Cleaned', completed: cleanedAvailable, path: find('cleaned.epub')?.path || `${cleanupDir}/cleaned.epub` },
+      { id: 'simplified', label: 'AI Simplified', completed: simplifiedAvailable, path: find('simplified.epub')?.path || `${cleanupDir}/simplified.epub` },
+      { id: 'translated', label: 'Translated', completed: translatedAvailable, path: find('translated.epub')?.path || `${translateDir}/translated.epub` },
     ];
   });
 
@@ -2125,6 +2136,19 @@ export class ProcessWizardComponent implements OnInit {
         // No cleanup stage
       }
 
+      // Scan translate stage
+      try {
+        const translateDir = `${projectDir}/stages/02-translate`;
+        const translateFiles = await this.electronService.listDirectory(translateDir);
+        for (const file of translateFiles) {
+          if (file === 'translated.epub') {
+            epubs.push({ path: `${translateDir}/${file}`, filename: file });
+          }
+        }
+      } catch {
+        // No translate stage
+      }
+
       this.availableEpubs.set(epubs);
     } catch {
       this.availableEpubs.set([]);
@@ -2147,9 +2171,13 @@ export class ProcessWizardComponent implements OnInit {
       if (has('exported.epub')) return 'exported';
       if (has('original.epub')) return 'original';
     } else {
-      // TTS input: prefer simplified > cleaned > exported > original
-      if (has('simplified.epub')) return 'simplified';
-      if (has('cleaned.epub')) return 'cleaned';
+      // TTS input: prefer translated > simplified > cleaned > exported > original
+      // Consider pipeline intent: earlier steps will produce files that don't exist yet
+      const willProduce = this.cleanupWillProduce();
+      const translationEnabled = this.enableTranslation() && !this.skippedSteps.has('translate');
+      if (has('translated.epub') || translationEnabled) return 'translated';
+      if (has('simplified.epub') || willProduce === 'simplified.epub') return 'simplified';
+      if (has('cleaned.epub') || willProduce === 'cleaned.epub') return 'cleaned';
       if (has('exported.epub')) return 'exported';
       if (has('original.epub')) return 'original';
     }
@@ -2235,7 +2263,23 @@ export class ProcessWizardComponent implements OnInit {
       const original = epubs.find(e => e.filename === 'original.epub');
       if (original) return original.path;
     } else if (stage === 'tts') {
-      // TTS: prefer simplified > cleaned > exported > original
+      // TTS: prefer translated > simplified > cleaned > exported > original
+      // Consider pipeline intent from cleanup and translation steps
+      const willProduce = this.cleanupWillProduce();
+      const cleanupDir = `${projectDir}/stages/01-cleanup`;
+      const translateDir = `${projectDir}/stages/02-translate`;
+      const translationEnabled = this.enableTranslation() && !this.skippedSteps.has('translate');
+
+      // If translation step is active, TTS should use translated output
+      if (translationEnabled) return epubs.find(e => e.filename === 'translated.epub')?.path || `${translateDir}/translated.epub`;
+      const translated = epubs.find(e => e.filename === 'translated.epub');
+      if (translated) return translated.path;
+
+      // Consider cleanup intent
+      if (willProduce === 'simplified.epub') return epubs.find(e => e.filename === 'simplified.epub')?.path || `${cleanupDir}/simplified.epub`;
+      if (willProduce === 'cleaned.epub') return epubs.find(e => e.filename === 'cleaned.epub')?.path || `${cleanupDir}/cleaned.epub`;
+
+      // No pipeline intent — fall back to on-disk files
       const simplified = epubs.find(e => e.filename === 'simplified.epub');
       if (simplified) return simplified.path;
       const cleaned = epubs.find(e => e.filename === 'cleaned.epub');
@@ -2753,7 +2797,7 @@ export class ProcessWizardComponent implements OnInit {
             simplifyForLearning: this.simplifyForLearning(),
             testMode: this.testMode(),
             testModeChunks: this.testMode() ? this.testModeChunks() : undefined,
-            cleanupPrompt: this.promptText(),  // Pass the current prompt
+            cleanupPrompt: this.promptModified() ? this.promptText() : undefined,  // Only override when user customized
             // Parallel processing for Claude/OpenAI
             useParallel: this.cleanupProvider() !== 'ollama',
             parallelWorkers: this.cleanupParallelWorkers(),

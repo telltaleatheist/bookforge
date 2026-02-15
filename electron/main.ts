@@ -5325,6 +5325,7 @@ function setupIpcHandlers(): void {
         cleanupMode?: 'structure' | 'full';
         testMode?: boolean;
         testModeChunks?: number;
+        enableAiCleanup?: boolean;
         simplifyForChildren?: boolean;
         cleanupPrompt?: string;
         outputDir?: string;
@@ -5353,11 +5354,17 @@ function setupIpcHandlers(): void {
       }
       console.log('[IPC] Test mode:', aiConfig.testMode, 'chunks:', aiConfig.testModeChunks);
 
+      // Pass through enableAiCleanup — if omitted, ai-bridge defaults to true
+      if (aiConfig.enableAiCleanup !== undefined) {
+        cleanupOptions.enableAiCleanup = aiConfig.enableAiCleanup;
+      }
+
       // Set simplify mode (support both names for backwards compatibility)
       cleanupOptions.simplifyForChildren = aiConfig.simplifyForLearning || aiConfig.simplifyForChildren || false;
       if (cleanupOptions.simplifyForChildren) {
         console.log('[IPC] Simplify for language learners mode: ENABLED');
       }
+      console.log('[IPC] enableAiCleanup:', cleanupOptions.enableAiCleanup, 'simplifyForChildren:', cleanupOptions.simplifyForChildren);
 
       // Set custom prompt if provided
       if (aiConfig.cleanupPrompt) {
@@ -7193,6 +7200,253 @@ function setupIpcHandlers(): void {
   // Check if project exists
   ipcMain.handle('manifest:exists', async (_event, projectId: string) => {
     return { exists: manifestService.projectExists(projectId) };
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Pipeline Stage Deletion Handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Delete AI cleanup/simplify outputs from stages/01-cleanup/
+  ipcMain.handle('pipeline:delete-cleanup', async (_event, projectPath: string) => {
+    try {
+      const cleanupDir = path.join(projectPath, 'stages', '01-cleanup');
+
+      if (!fsSync.existsSync(cleanupDir)) {
+        return { success: true, message: 'No cleanup stage found' };
+      }
+
+      // List files that will be deleted
+      const files = await fs.readdir(cleanupDir);
+      const deletedFiles: string[] = [];
+
+      for (const file of files) {
+        const filePath = path.join(cleanupDir, file);
+        if (file.endsWith('.epub') || file.endsWith('.diff.json') || file === 'skipped-chunks.json') {
+          await fs.unlink(filePath);
+          deletedFiles.push(file);
+        }
+      }
+
+      // Try to remove the directory if empty
+      try {
+        await fs.rmdir(cleanupDir);
+        console.log('[PIPELINE] Removed empty cleanup directory');
+      } catch {
+        // Directory not empty, that's fine
+      }
+
+      console.log('[PIPELINE] Deleted cleanup stage:', deletedFiles);
+      return { success: true, deletedFiles, message: `Deleted ${deletedFiles.length} files from cleanup stage` };
+    } catch (err) {
+      console.error('[PIPELINE] Failed to delete cleanup stage:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Delete translation outputs from stages/02-translate/
+  ipcMain.handle('pipeline:delete-translation', async (_event, projectPath: string) => {
+    try {
+      const translateDir = path.join(projectPath, 'stages', '02-translate');
+
+      if (!fsSync.existsSync(translateDir)) {
+        return { success: true, message: 'No translation stage found' };
+      }
+
+      // List files and subdirectories that will be deleted
+      const files = await fs.readdir(translateDir);
+      const deletedItems: string[] = [];
+
+      for (const item of files) {
+        const itemPath = path.join(translateDir, item);
+        const stats = await fs.stat(itemPath);
+
+        if (stats.isDirectory()) {
+          // Delete subdirectories like 'sentences'
+          await fs.rm(itemPath, { recursive: true, force: true });
+          deletedItems.push(`${item}/`);
+        } else {
+          // Delete files (.epub, .json)
+          await fs.unlink(itemPath);
+          deletedItems.push(item);
+        }
+      }
+
+      // Remove the directory itself
+      await fs.rmdir(translateDir);
+
+      console.log('[PIPELINE] Deleted translation stage:', deletedItems);
+      return { success: true, deletedItems, message: `Deleted ${deletedItems.length} items from translation stage` };
+    } catch (err) {
+      console.error('[PIPELINE] Failed to delete translation stage:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Delete TTS caches from stages/03-tts/sessions/
+  ipcMain.handle('pipeline:delete-tts-cache', async (_event, projectPath: string, language?: string) => {
+    try {
+      const sessionsDir = path.join(projectPath, 'stages', '03-tts', 'sessions');
+
+      if (!fsSync.existsSync(sessionsDir)) {
+        return { success: true, message: 'No TTS sessions found' };
+      }
+
+      let deletedSessions: string[] = [];
+
+      if (language) {
+        // Delete specific language session
+        const langDir = path.join(sessionsDir, language);
+        if (fsSync.existsSync(langDir)) {
+          await fs.rm(langDir, { recursive: true, force: true });
+          deletedSessions.push(language);
+        }
+      } else {
+        // Delete all language sessions
+        const langs = await fs.readdir(sessionsDir);
+        for (const lang of langs) {
+          const langPath = path.join(sessionsDir, lang);
+          const stats = await fs.stat(langPath);
+          if (stats.isDirectory()) {
+            await fs.rm(langPath, { recursive: true, force: true });
+            deletedSessions.push(lang);
+          }
+        }
+      }
+
+      // Try to clean up empty parent directories
+      try {
+        await fs.rmdir(sessionsDir);
+        await fs.rmdir(path.join(projectPath, 'stages', '03-tts'));
+      } catch {
+        // Directories not empty or don't exist, that's fine
+      }
+
+      console.log('[PIPELINE] Deleted TTS sessions:', deletedSessions);
+      return {
+        success: true,
+        deletedSessions,
+        message: language
+          ? `Deleted TTS session for ${language}`
+          : `Deleted ${deletedSessions.length} TTS sessions`
+      };
+    } catch (err) {
+      console.error('[PIPELINE] Failed to delete TTS cache:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Delete all pipeline stages (cleanup + translation + TTS)
+  ipcMain.handle('pipeline:delete-all', async (_event, projectPath: string) => {
+    try {
+      const results = {
+        cleanup: { success: false, message: '' },
+        translation: { success: false, message: '' },
+        tts: { success: false, message: '' }
+      };
+
+      // Delete cleanup stage
+      try {
+        const cleanupDir = path.join(projectPath, 'stages', '01-cleanup');
+        if (fsSync.existsSync(cleanupDir)) {
+          const files = await fs.readdir(cleanupDir);
+          const deletedFiles: string[] = [];
+          for (const file of files) {
+            const filePath = path.join(cleanupDir, file);
+            if (file.endsWith('.epub') || file.endsWith('.diff.json') || file === 'skipped-chunks.json') {
+              await fs.unlink(filePath);
+              deletedFiles.push(file);
+            }
+          }
+          try {
+            await fs.rmdir(cleanupDir);
+          } catch {
+            // Directory not empty, that's fine
+          }
+          results.cleanup = { success: true, message: `Deleted ${deletedFiles.length} files from cleanup stage` };
+        } else {
+          results.cleanup = { success: true, message: 'No cleanup stage found' };
+        }
+      } catch (err) {
+        results.cleanup = { success: false, message: (err as Error).message };
+      }
+
+      // Delete translation stage
+      try {
+        const translateDir = path.join(projectPath, 'stages', '02-translate');
+        if (fsSync.existsSync(translateDir)) {
+          const files = await fs.readdir(translateDir);
+          const deletedItems: string[] = [];
+          for (const item of files) {
+            const itemPath = path.join(translateDir, item);
+            const stats = await fs.stat(itemPath);
+            if (stats.isDirectory()) {
+              await fs.rm(itemPath, { recursive: true, force: true });
+              deletedItems.push(`${item}/`);
+            } else {
+              await fs.unlink(itemPath);
+              deletedItems.push(item);
+            }
+          }
+          await fs.rmdir(translateDir);
+          results.translation = { success: true, message: `Deleted ${deletedItems.length} items from translation stage` };
+        } else {
+          results.translation = { success: true, message: 'No translation stage found' };
+        }
+      } catch (err) {
+        results.translation = { success: false, message: (err as Error).message };
+      }
+
+      // Delete TTS cache
+      try {
+        const sessionsDir = path.join(projectPath, 'stages', '03-tts', 'sessions');
+        if (fsSync.existsSync(sessionsDir)) {
+          const langs = await fs.readdir(sessionsDir);
+          const deletedSessions: string[] = [];
+          for (const lang of langs) {
+            const langPath = path.join(sessionsDir, lang);
+            const stats = await fs.stat(langPath);
+            if (stats.isDirectory()) {
+              await fs.rm(langPath, { recursive: true, force: true });
+              deletedSessions.push(lang);
+            }
+          }
+          try {
+            await fs.rmdir(sessionsDir);
+            await fs.rmdir(path.join(projectPath, 'stages', '03-tts'));
+          } catch {
+            // Directories not empty or don't exist, that's fine
+          }
+          results.tts = { success: true, message: `Deleted ${deletedSessions.length} TTS sessions` };
+        } else {
+          results.tts = { success: true, message: 'No TTS sessions found' };
+        }
+      } catch (err) {
+        results.tts = { success: false, message: (err as Error).message };
+      }
+
+      // Try to remove the entire stages directory if empty
+      try {
+        const stagesDir = path.join(projectPath, 'stages');
+        if (fsSync.existsSync(stagesDir)) {
+          await fs.rmdir(stagesDir);
+          console.log('[PIPELINE] Removed empty stages directory');
+        }
+      } catch {
+        // Directory not empty, that's fine
+      }
+
+      const allSuccess = results.cleanup.success && results.translation.success && results.tts.success;
+      console.log('[PIPELINE] Deleted all pipeline stages:', results);
+
+      return {
+        success: allSuccess,
+        results,
+        message: 'Deleted all pipeline stages'
+      };
+    } catch (err) {
+      console.error('[PIPELINE] Failed to delete all stages:', err);
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
