@@ -38,17 +38,20 @@ import { StudioItem } from '../../models/studio.types';
             @if (isLoadingEpub()) {
               <div class="loading-state">
                 <div class="spinner"></div>
-                <p>Importing EPUB...</p>
+                <p>{{ loadingMessage() }}</p>
               </div>
             } @else {
               <div class="drop-icon">📚</div>
-              <p class="drop-text">Drop EPUB file here</p>
-              <p class="drop-hint">or drag from Finder</p>
+              <p class="drop-text">Drop any ebook or PDF here</p>
+              <p class="drop-hint">EPUB, PDF, MOBI, AZW3, DOCX, and more</p>
               <button class="btn-browse" (click)="browseFiles()">
                 Browse Files
               </button>
             }
           </div>
+          @if (importError()) {
+            <p class="import-error">{{ importError() }}</p>
+          }
 
           <div class="divider">
             <span>or</span>
@@ -324,6 +327,13 @@ import { StudioItem } from '../../models/studio.types';
       }
     }
 
+    .import-error {
+      margin: 8px 0 0;
+      font-size: 13px;
+      color: var(--color-error);
+      text-align: center;
+    }
+
     .url-error {
       margin: 8px 0 0;
       font-size: 13px;
@@ -343,6 +353,8 @@ export class AddModalComponent {
   readonly isDragOver = signal<boolean>(false);
   readonly isLoadingEpub = signal<boolean>(false);
   readonly isLoadingUrl = signal<boolean>(false);
+  readonly loadingMessage = signal<string>('Importing...');
+  readonly importError = signal<string | null>(null);
   readonly urlError = signal<string | null>(null);
 
   urlValue = '';
@@ -371,42 +383,71 @@ export class AddModalComponent {
 
     const files = event.dataTransfer?.files;
     if (files && files.length > 0) {
-      const file = files[0];
-      if (file.name.endsWith('.epub')) {
-        this.importEpub((file as any).path);
-      }
+      this.handleFile((files[0] as any).path);
     }
   }
 
   async browseFiles(): Promise<void> {
-    // Use Electron's native file dialog
     const result = await this.electronService.openPdfDialog();
     if (result.success && result.filePath) {
-      // Check if it's an EPUB file
-      if (result.filePath.toLowerCase().endsWith('.epub')) {
-        await this.importEpub(result.filePath);
-      } else {
-        console.error('Selected file is not an EPUB:', result.filePath);
-        // Could show an error message to the user here
-      }
+      await this.handleFile(result.filePath);
     }
   }
 
-  private async importEpub(path: string): Promise<void> {
+  private async handleFile(filePath: string): Promise<void> {
+    this.importError.set(null);
+    const name = filePath.toLowerCase();
+
+    if (name.endsWith('.epub') || name.endsWith('.pdf')) {
+      // EPUB and PDF are natively supported — create project directly
+      await this.importFile(filePath);
+    } else {
+      // Other formats: convert to EPUB first, then import
+      await this.convertAndImport(filePath);
+    }
+  }
+
+  private async importFile(filePath: string): Promise<void> {
     this.isLoadingEpub.set(true);
+    const isPdf = filePath.toLowerCase().endsWith('.pdf');
+    this.loadingMessage.set(isPdf ? 'Importing PDF...' : 'Importing EPUB...');
 
     try {
-      const result = await this.studioService.addBook(path);
+      // addBook calls audiobook:import-epub which now handles any format
+      const result = await this.studioService.addBook(filePath);
 
       if (result.success) {
         if (result.item) {
           this.added.emit(result.item);
         }
+        // For PDFs, also open the editor so user can extract/edit text
+        if (isPdf && result.item?.bfpPath) {
+          await this.electronService.editorOpenWindowWithBfp(result.item.bfpPath, filePath);
+        }
         this.close.emit();
       } else {
-        // Show error in some way (could add error state)
-        console.error('Failed to import EPUB:', result.error);
+        this.importError.set(result.error || 'Failed to import');
       }
+    } finally {
+      this.isLoadingEpub.set(false);
+    }
+  }
+
+  private async convertAndImport(filePath: string): Promise<void> {
+    this.isLoadingEpub.set(true);
+    this.loadingMessage.set('Converting to EPUB...');
+
+    try {
+      const convertResult = await this.electronService.convertEbook(filePath);
+      if (!convertResult.success || !convertResult.outputPath) {
+        this.importError.set(convertResult.error || 'Conversion failed. Install Calibre for format conversion.');
+        return;
+      }
+
+      this.loadingMessage.set('Importing...');
+      await this.importFile(convertResult.outputPath);
+    } catch (err) {
+      this.importError.set('Conversion failed: ' + (err as Error).message);
     } finally {
       this.isLoadingEpub.set(false);
     }

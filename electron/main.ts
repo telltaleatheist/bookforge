@@ -1114,11 +1114,32 @@ function setupIpcHandlers(): void {
         // Update manifest with editor state
         if (!manifest.source) manifest.source = {};
         manifest.source.deletedBlockIds = mergedData.deleted_block_ids || [];
+        manifest.source.deletedHighlightIds = mergedData.deleted_highlight_ids || [];
         manifest.source.pageOrder = mergedData.page_order || [];
+        manifest.source.deletedPages = mergedData.deleted_pages || [];
+        manifest.source.removeBackgrounds = mergedData.remove_backgrounds || false;
 
         if (!manifest.editor) manifest.editor = {};
         manifest.editor.undoStack = mergedData.undo_stack || [];
         manifest.editor.redoStack = mergedData.redo_stack || [];
+        manifest.editor.blockEdits = mergedData.block_edits || undefined;
+        manifest.editor.customCategories = mergedData.custom_categories || undefined;
+        manifest.editor.ocrBlocks = mergedData.ocr_blocks || undefined;
+        manifest.editor.ocrCategories = mergedData.ocr_categories || undefined;
+
+        // Chapters
+        manifest.chapters = mergedData.chapters || [];
+        manifest.chaptersSource = mergedData.chapters_source || 'manual';
+
+        // Metadata from editor (title, author, etc.)
+        if (mergedData.metadata) {
+          if (!manifest.metadata) manifest.metadata = {};
+          const meta = mergedData.metadata as Record<string, unknown>;
+          if (meta.title !== undefined) manifest.metadata.title = meta.title;
+          if (meta.author !== undefined) manifest.metadata.author = meta.author;
+          if (meta.year !== undefined) manifest.metadata.year = meta.year;
+          if (meta.language !== undefined) manifest.metadata.language = meta.language;
+        }
 
         manifest.modifiedAt = new Date().toISOString();
 
@@ -2054,6 +2075,7 @@ function setupIpcHandlers(): void {
         } catch { /* source dir doesn't exist */ }
 
         // Convert manifest to BookForgeProject format expected by the editor
+        const editor = manifest.editor || {};
         const data: Record<string, any> = {
           version: manifest.version || 2,
           source_path: sourcePath,
@@ -2061,11 +2083,18 @@ function setupIpcHandlers(): void {
           library_path: sourcePath,
           file_hash: source.fileHash || '',
           deleted_block_ids: source.deletedBlockIds || [],
+          deleted_highlight_ids: source.deletedHighlightIds || [],
           page_order: source.pageOrder || [],
-          undo_stack: manifest.editor?.undoStack || [],
-          redo_stack: manifest.editor?.redoStack || [],
+          deleted_pages: source.deletedPages || [],
+          remove_backgrounds: source.removeBackgrounds || false,
+          undo_stack: editor.undoStack || [],
+          redo_stack: editor.redoStack || [],
+          block_edits: editor.blockEdits || undefined,
+          custom_categories: editor.customCategories || undefined,
+          ocr_blocks: editor.ocrBlocks || undefined,
+          ocr_categories: editor.ocrCategories || undefined,
           chapters: manifest.chapters || [],
-          chapters_source: 'manual',
+          chapters_source: manifest.chaptersSource || 'manual',
           metadata: {
             title: meta.title || '',
             author: meta.author || '',
@@ -4451,13 +4480,14 @@ function setupIpcHandlers(): void {
   ) => {
     try {
       const filename = path.basename(epubSourcePath);
+      const ext = path.extname(filename).toLowerCase();
 
-      // Extract title and author from filename (format: Title_-_Author_Year.epub)
-      let title = filename.replace(/\.epub$/i, '');
+      // Strip any extension for title parsing
+      let title = filename.replace(/\.[^.]+$/i, '');
       let author = 'Unknown';
       let year: number | undefined;
 
-      // Try to parse author and year from filename
+      // Try to parse author and year from filename (format: Title_-_Author_Year)
       const titleAuthorMatch = title.match(/^(.+?)_-_(.+?)_\((\d{4})\)$/);
       if (titleAuthorMatch) {
         title = titleAuthorMatch[1].replace(/_/g, ' ');
@@ -4504,11 +4534,26 @@ function setupIpcHandlers(): void {
       await fs.mkdir(path.join(projectDir, 'stages', '03-tts', 'sessions'), { recursive: true });
       await fs.mkdir(path.join(projectDir, 'output'), { recursive: true });
 
-      // Copy the EPUB to source/original.epub (immutable original)
-      const sourcePath = path.join(projectDir, 'source', 'original.epub');
+      // Determine source type and copy file
+      const isEpub = ext === '.epub';
+      const isPdf = ext === '.pdf';
+      const sourceType = isEpub ? 'epub' : isPdf ? 'pdf' : ext.replace('.', '');
+
+      // Copy the original source file (preserving its extension)
+      const originalFilename = `original${ext}`;
+      const sourcePath = path.join(projectDir, 'source', originalFilename);
       await fs.copyFile(epubSourcePath, sourcePath);
 
-      // NOTE: exported.epub is only created when user finalizes from PDF viewer
+      // For non-EPUB formats, also convert to original.epub if an EPUB was provided alongside
+      // (The add-modal handles conversion before calling this handler for convertible formats)
+      let epubPath = sourcePath;
+      if (isEpub) {
+        // EPUB: the source IS the epub
+        epubPath = sourcePath;
+      } else {
+        // PDF or other format: no original.epub yet — user will create exported.epub from editor
+        epubPath = sourcePath;
+      }
 
       // Create manifest.json
       const manifest = {
@@ -4518,7 +4563,7 @@ function setupIpcHandlers(): void {
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
         source: {
-          type: 'epub',
+          type: sourceType,
           originalFilename: filename,
           deletedBlockIds: []
         },
@@ -4536,20 +4581,21 @@ function setupIpcHandlers(): void {
       const manifestPath = path.join(projectDir, 'manifest.json');
       await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 
-      console.log(`[audiobook:import-epub] Created manifest project: ${projectDir}`);
-      console.log(`[audiobook:import-epub] Copied EPUB to: ${sourcePath}`);
+      console.log(`[audiobook:import] Created manifest project: ${projectDir}`);
+      console.log(`[audiobook:import] Copied ${sourceType} to: ${sourcePath}`);
 
       return {
         success: true,
         projectId: slug,
         projectPath: projectDir,
-        bfpPath: projectDir, // Return projectPath as bfpPath for compatibility
+        bfpPath: projectDir,
         audiobookFolder: path.join(projectDir, 'output'),
-        epubPath: sourcePath, // Return original.epub path since exported doesn't exist yet
-        projectName: title
+        epubPath: sourcePath,
+        projectName: title,
+        sourceType
       };
     } catch (err) {
-      console.error('[audiobook:import-epub] Error:', err);
+      console.error('[audiobook:import] Error:', err);
       return { success: false, error: (err as Error).message };
     }
   });

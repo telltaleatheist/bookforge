@@ -161,9 +161,9 @@ export class StudioService {
           }
         }
 
-        // Detect actual source EPUB: exported > original (no legacy fallbacks)
+        // Detect actual source file: exported.epub > original.epub > original.pdf > any original.*
         let epubPath = '';
-        for (const name of ['exported.epub', 'original.epub']) {
+        for (const name of ['exported.epub', 'original.epub', 'original.pdf']) {
           const candidate = `${projectDir}/source/${name}`;
           if (await this.electronService.fsExists(candidate)) {
             epubPath = candidate;
@@ -263,9 +263,9 @@ export class StudioService {
         if (hasAudiobook) status = 'completed';
         else if (hasCleaned) status = 'ready';
 
-        // Detect actual source EPUB: exported > original (no legacy fallbacks)
+        // Detect actual source file: exported.epub > original.epub > original.pdf > any original.*
         let articleEpubPath = '';
-        for (const name of ['exported.epub', 'original.epub']) {
+        for (const name of ['exported.epub', 'original.epub', 'original.pdf']) {
           const candidate = `${projectDir}/source/${name}`;
           if (await this.electronService.fsExists(candidate)) {
             articleEpubPath = candidate;

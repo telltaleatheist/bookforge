@@ -4796,6 +4796,9 @@ export class PdfPickerComponent implements OnInit {
     this.loading.set(true);
     this.loadingText.set('Saving...');
 
+    // Persist editor state (chapters, undo/redo, deletions, etc.) to manifest
+    await this.saveProjectToPath(projectPath, true);
+
     // Determine save target: if opened file is an EPUB (not original.epub), save back to it.
     // Non-EPUB sources (PDFs, etc.) always produce exported.epub.
     const overridePath = this.overrideSourcePath();
