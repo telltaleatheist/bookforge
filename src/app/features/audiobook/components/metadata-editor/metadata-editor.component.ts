@@ -54,20 +54,9 @@ export interface EpubMetadata {
           />
         </div>
 
-        <div class="form-group">
-          <label for="subtitle">Subtitle</label>
-          <input
-            id="subtitle"
-            type="text"
-            [ngModel]="formData().subtitle"
-            (ngModelChange)="updateField('subtitle', $event)"
-            placeholder="Subtitle (optional)"
-          />
-        </div>
-
         <div class="form-row">
           <div class="form-group">
-            <label for="authorFirst">Author First Name</label>
+            <label for="authorFirst">Author First</label>
             <input
               id="authorFirst"
               type="text"
@@ -78,7 +67,7 @@ export interface EpubMetadata {
           </div>
 
           <div class="form-group">
-            <label for="authorLast">Author Last Name</label>
+            <label for="authorLast">Author Last</label>
             <input
               id="authorLast"
               type="text"
@@ -90,7 +79,7 @@ export interface EpubMetadata {
         </div>
 
         <div class="form-row">
-          <div class="form-group">
+          <div class="form-group year-group">
             <label for="year">Year</label>
             <input
               id="year"
@@ -121,7 +110,6 @@ export interface EpubMetadata {
           </div>
         </div>
 
-        <!-- Output filename (editable) -->
         <div class="form-group filename-group">
           <label for="outputFilename">Output Filename</label>
           <input
@@ -133,10 +121,8 @@ export interface EpubMetadata {
             placeholder="filename.m4b"
             class="filename-input"
           />
-          <span class="hint">Auto-generated from metadata. Edit to customize.</span>
         </div>
 
-        <!-- Save button -->
         <div class="save-section">
           <desktop-button
             variant="primary"
@@ -153,66 +139,6 @@ export interface EpubMetadata {
           </desktop-button>
         </div>
 
-        <!-- Show audiobook file in its BFP project folder -->
-        <div class="output-section">
-          <desktop-button
-            variant="secondary"
-            (click)="onShowInFinder()"
-          >
-            Show Audiobook File
-          </desktop-button>
-        </div>
-
-        <!-- Audio File Linking Section -->
-        <div class="audio-link-section">
-          <label>Linked Audio File</label>
-          @if (audioFilePath()) {
-            <div class="audio-file-row" [class.path-invalid]="!audioFilePathValid()">
-              <span class="audio-file-path" [title]="audioFilePath()">{{ getFilename(audioFilePath()) }}</span>
-              @if (!audioFilePathValid()) {
-                <span class="path-warning" title="File not found on this system">File not found</span>
-              }
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                (click)="browseForAudio()"
-                title="Change linked audio file"
-              >
-                {{ audioFilePathValid() ? 'Change' : 'Relink' }}
-              </desktop-button>
-            </div>
-          } @else {
-            <div class="no-audio-row">
-              <span class="no-audio-text">No audio file linked</span>
-              <desktop-button
-                variant="secondary"
-                size="sm"
-                (click)="browseForAudio()"
-              >
-                Link Audio File
-              </desktop-button>
-            </div>
-            <span class="hint">Link an audiobook file to enable enhancement features</span>
-          }
-        </div>
-
-        <!-- EPUB File Section -->
-        @if (latestEpubPath()) {
-          <div class="epub-link-section">
-            <label>{{ latestEpubLabel() }}</label>
-            <div class="epub-file-row">
-              <span class="epub-file-path" [title]="latestEpubPath()">{{ getFilename(latestEpubPath()) }}</span>
-              <desktop-button
-                variant="ghost"
-                size="xs"
-                (click)="openEpubInFinder()"
-                title="Show in Finder"
-              >
-                Show
-              </desktop-button>
-            </div>
-          </div>
-        }
       </div>
 
       <!-- Hidden file input for cover selection -->
@@ -228,7 +154,7 @@ export interface EpubMetadata {
   styles: [`
     .metadata-editor {
       display: flex;
-      gap: 2rem;
+      gap: 1.5rem;
     }
 
     .cover-section {
@@ -236,12 +162,12 @@ export interface EpubMetadata {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 0.75rem;
+      gap: 0.5rem;
     }
 
     .cover-preview {
-      width: 180px;
-      height: 260px;
+      width: 140px;
+      height: 200px;
       background: var(--bg-subtle);
       border: 2px dashed var(--border-default);
       border-radius: 8px;
@@ -283,7 +209,7 @@ export interface EpubMetadata {
       flex: 1;
       display: flex;
       flex-direction: column;
-      gap: 1rem;
+      gap: 0.75rem;
     }
 
     .form-group {
@@ -337,9 +263,12 @@ export interface EpubMetadata {
       }
     }
 
-    .filename-group {
-      margin-top: 1rem;
+    .year-group {
+      flex: 0 0 auto;
+      width: 80px;
+    }
 
+    .filename-group {
       .filename-input {
         font-family: monospace;
         font-size: 0.8125rem;
@@ -347,155 +276,21 @@ export interface EpubMetadata {
     }
 
     .save-section {
-      margin-top: 1.5rem;
+      margin-top: 0.5rem;
       display: flex;
       justify-content: flex-end;
     }
 
-    .output-section {
-      margin-top: 1rem;
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-
-      .output-hint {
-        font-size: 0.75rem;
-        color: var(--text-muted);
-      }
-    }
-
-    .audio-link-section {
-      margin-top: 1.5rem;
-      padding-top: 1.5rem;
-      border-top: 1px solid var(--border-default);
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-
-      > label {
-        font-size: 0.75rem;
-        font-weight: 500;
-        color: var(--text-secondary);
-        text-transform: uppercase;
-        letter-spacing: 0.02em;
-      }
-
-      .hint {
-        font-size: 0.6875rem;
-        color: var(--text-muted);
-      }
-    }
-
-    .audio-file-row {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      padding: 0.5rem 0.75rem;
-      background: var(--bg-subtle);
-      border-radius: 6px;
-      border: 1px solid var(--border-default);
-
-      &.path-invalid {
-        border-color: var(--warning, #f59e0b);
-        background: color-mix(in srgb, var(--warning, #f59e0b) 8%, var(--bg-subtle));
-      }
-    }
-
-    .audio-file-path {
-      flex: 1;
-      font-size: 0.875rem;
-      font-weight: 500;
-      color: var(--text-primary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-
-      .path-invalid & {
-        color: var(--text-secondary);
-      }
-    }
-
-    .path-warning {
-      font-size: 0.6875rem;
-      font-weight: 500;
-      color: var(--warning, #f59e0b);
-      white-space: nowrap;
-    }
-
-    .no-audio-row {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-    }
-
-    .no-audio-text {
-      font-size: 0.875rem;
-      color: var(--text-muted);
-    }
-
-    .epub-link-section {
-      margin-top: 1rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-
-      > label {
-        font-size: 0.75rem;
-        font-weight: 500;
-        color: var(--text-secondary);
-        text-transform: uppercase;
-        letter-spacing: 0.02em;
-      }
-    }
-
-    .epub-file-row {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      padding: 0.5rem 0.75rem;
-      background: var(--bg-subtle);
-      border-radius: 6px;
-      border: 1px solid var(--border-default);
-    }
-
-    .epub-file-path {
-      flex: 1;
-      font-size: 0.875rem;
-      font-weight: 500;
-      color: var(--text-primary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
   `]
 })
 export class MetadataEditorComponent {
   // Inputs
   readonly metadata = input<EpubMetadata | null>(null);
   readonly saving = input<boolean>(false);
-  readonly audioFilePath = input<string>('');
-  readonly audioFilePathValid = input<boolean>(true);  // Cross-platform path validation
-  readonly epubPath = input<string>('');  // Original exported EPUB
-  readonly cleanedEpubPath = input<string>('');  // Cleaned EPUB (if AI cleanup was run)
-
   // Outputs
   readonly metadataChange = output<EpubMetadata>();
   readonly coverChange = output<string>();
   readonly save = output<EpubMetadata>();
-  readonly showInFinder = output<void>();
-  readonly linkAudio = output<string>();
-  readonly showEpubInFinder = output<string>();  // Emit the path to show
-
-  // Computed: latest EPUB path (prefer cleaned if exists)
-  readonly latestEpubPath = computed(() => {
-    return this.cleanedEpubPath() || this.epubPath();
-  });
-
-  readonly latestEpubLabel = computed(() => {
-    if (this.cleanedEpubPath()) return 'Cleaned EPUB';
-    if (this.epubPath()) return 'Exported EPUB';
-    return '';
-  });
 
   // Electron access
   private get electron(): any {
@@ -689,50 +484,6 @@ export class MetadataEditorComponent {
     this.save.emit(this.formData());
   }
 
-  onShowInFinder(): void {
-    this.showInFinder.emit();
-  }
-
-  getFilename(path: string): string {
-    if (!path) return '';
-    // Handle both forward and back slashes
-    const parts = path.replace(/\\/g, '/').split('/');
-    return parts[parts.length - 1] || path;
-  }
-
-  async browseForAudio(): Promise<void> {
-    console.log('[MetadataEditor] browseForAudio called');
-    console.log('[MetadataEditor] electron:', !!this.electron);
-    console.log('[MetadataEditor] electron.dialog:', !!this.electron?.dialog);
-    console.log('[MetadataEditor] electron.dialog.openAudio:', !!this.electron?.dialog?.openAudio);
-
-    if (!this.electron?.dialog?.openAudio) {
-      console.error('[MetadataEditor] dialog.openAudio not available');
-      return;
-    }
-
-    try {
-      console.log('[MetadataEditor] Calling openAudio...');
-      const result = await this.electron.dialog.openAudio();
-      console.log('[MetadataEditor] openAudio result:', result);
-
-      if (result.success && result.filePath) {
-        console.log('[MetadataEditor] Emitting linkAudio with path:', result.filePath);
-        this.linkAudio.emit(result.filePath);
-      } else {
-        console.log('[MetadataEditor] Dialog result did not have success/filePath:', result);
-      }
-    } catch (err) {
-      console.error('[MetadataEditor] Error opening file dialog:', err);
-    }
-  }
-
-  openEpubInFinder(): void {
-    const path = this.latestEpubPath();
-    if (path) {
-      this.showEpubInFinder.emit(path);
-    }
-  }
 
   @HostListener('window:paste', ['$event'])
   onPaste(event: ClipboardEvent): void {

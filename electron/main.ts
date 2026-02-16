@@ -5395,6 +5395,8 @@ function setupIpcHandlers(): void {
       simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
       // Custom cleanup prompt (overrides default)
       cleanupPrompt?: string;
+      // Additional instructions appended to the AI prompt
+      customInstructions?: string;
     }
   ) => {
     console.log('[IPC] queue:run-ocr-cleanup received:', {
@@ -5458,6 +5460,7 @@ function setupIpcHandlers(): void {
         enableAiCleanup?: boolean;
         simplifyForChildren?: boolean;
         cleanupPrompt?: string;
+        customInstructions?: string;
         outputDir?: string;
       } = {};
 
@@ -5500,6 +5503,12 @@ function setupIpcHandlers(): void {
       if (aiConfig.cleanupPrompt) {
         cleanupOptions.cleanupPrompt = aiConfig.cleanupPrompt;
         console.log('[IPC] Using custom cleanup prompt');
+      }
+
+      // Pass through custom instructions
+      if (aiConfig.customInstructions) {
+        cleanupOptions.customInstructions = aiConfig.customInstructions;
+        console.log('[IPC] Custom instructions provided');
       }
 
       if (aiConfig.useDetailedCleanup) {
@@ -6880,6 +6889,7 @@ function setupIpcHandlers(): void {
     claudeApiKey?: string;
     openaiApiKey?: string;
     cleanupPrompt?: string;
+    customInstructions?: string;
     simplifyForLearning?: boolean;
     testMode?: boolean;
     testModeChunks?: number;

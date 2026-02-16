@@ -118,6 +118,20 @@ export interface DiffRequest {
                             title="Open in EPUB editor"
                           >Edit</button>
                         }
+                        @if (isOriginalSource(file)) {
+                          <button
+                            class="btn-file-action"
+                            (click)="replaceSourceFile($event, file)"
+                            title="Replace with a new source file"
+                          >Replace</button>
+                        }
+                        @if (isDeletableSourceFile(file)) {
+                          <button
+                            class="btn-file-action danger"
+                            (click)="deleteSourceFile($event, file)"
+                            title="Delete this file"
+                          >Delete</button>
+                        }
                       </span>
                     </div>
                     @if (diffPickerFile()?.path === file.path) {
@@ -160,6 +174,7 @@ export interface DiffRequest {
       border-radius: 8px;
       overflow: hidden;
       background: var(--bg-base);
+      margin-top: 16px;
     }
 
     .section-header-main {
@@ -359,6 +374,16 @@ export interface DiffRequest {
 
         &:hover {
           background: var(--accent);
+          color: white;
+        }
+      }
+
+      &.danger {
+        color: var(--text-danger, #ef4444);
+        border-color: var(--text-danger, #ef4444);
+
+        &:hover {
+          background: var(--text-danger, #ef4444);
           color: white;
         }
       }
@@ -835,6 +860,62 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
         return;
     }
 
+    await this.scanFiles();
+    this.fileChanged.emit();
+  }
+
+  // ── Source file operations ─────────────────────────────────────────────
+
+  /** original.epub (or original source) can be replaced */
+  isOriginalSource(file: ProjectFile): boolean {
+    return file.sectionLabel === 'Source' && file.name.toLowerCase() === 'original.epub';
+  }
+
+  /** exported.epub and other non-original source files can be deleted */
+  isDeletableSourceFile(file: ProjectFile): boolean {
+    return file.sectionLabel === 'Source' && file.name.toLowerCase() !== 'original.epub';
+  }
+
+  async replaceSourceFile(event: Event, file: ProjectFile): Promise<void> {
+    event.stopPropagation();
+
+    const result = await this.electronService.openPdfDialog();
+    if (!result.success || !result.filePath) return;
+
+    const { confirmed } = await this.electronService.showConfirmDialog({
+      title: 'Replace Source File',
+      message: `Replace "${file.name}" with the selected file?`,
+      detail: 'The current source file will be overwritten. Downstream stages (cleanup, translation, TTS) will not be affected until re-run.',
+      confirmLabel: 'Replace',
+      type: 'warning',
+    });
+    if (!confirmed) return;
+
+    const importResult = await this.manifestService.importSourceFile(
+      this.projectId(),
+      result.filePath,
+      'original.epub',
+    );
+
+    if (importResult.success) {
+      await this.scanFiles();
+      this.fileChanged.emit();
+    }
+  }
+
+  async deleteSourceFile(event: Event, file: ProjectFile): Promise<void> {
+    event.stopPropagation();
+
+    const { confirmed } = await this.electronService.showConfirmDialog({
+      title: 'Delete File',
+      message: `Delete "${file.name}"?`,
+      detail: 'This action cannot be undone.',
+      confirmLabel: 'Delete',
+      type: 'warning',
+    });
+    if (!confirmed) return;
+
+    await this.electronService.deleteFile(file.path);
     await this.scanFiles();
     this.fileChanged.emit();
   }

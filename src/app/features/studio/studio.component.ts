@@ -248,16 +248,9 @@ import { SettingsService } from '../../core/services/settings.service';
                 <app-metadata-editor
                   [metadata]="selectedMetadata()"
                   [saving]="savingMetadata()"
-                  [audioFilePath]="audioFilePath() || ''"
-                  [audioFilePathValid]="audioFilePathValid()"
-                  [epubPath]="selectedItem()?.epubPath || ''"
-                  [cleanedEpubPath]="selectedItem()?.cleanedEpubPath || ''"
                   (metadataChange)="onMetadataChange($event)"
                   (coverChange)="onCoverChange($event)"
                   (save)="onSaveMetadata($event)"
-                  (showInFinder)="onShowInFinder()"
-                  (linkAudio)="onLinkAudio($event)"
-                  (showEpubInFinder)="onShowEpubInFinder($event)"
                 />
                 @if (selectedItem()?.bfpPath) {
                   <app-project-files
@@ -950,14 +943,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     return item.cleanedEpubPath || item.epubPath || '';
   });
 
-  readonly audioFilePath = computed<string | undefined>(() => {
-    return this.selectedItem()?.audiobookPath;
-  });
-
-  readonly audioFilePathValid = computed(() => {
-    return !!this.selectedItem()?.audiobookPath;
-  });
-
   // Check if mono audiobook exists
   readonly hasMonoAudio = computed(() => {
     const item = this.selectedItem();
@@ -1325,36 +1310,6 @@ export class StudioComponent implements OnInit, OnDestroy {
       }
     } finally {
       this.savingMetadata.set(false);
-    }
-  }
-
-  onShowInFinder(): void {
-    const item = this.selectedItem();
-    if (!item?.audiobookPath) return;
-    (window as any).electron?.shell?.showItemInFolder?.(item.audiobookPath);
-  }
-
-  onShowEpubInFinder(path: string): void {
-    if (!path) return;
-    (window as any).electron?.shell?.showItemInFolder?.(path);
-  }
-
-  async onLinkAudio(path: string): Promise<void> {
-    const item = this.selectedItem();
-    if (!item) return;
-
-    // Update manifest with linked audio path
-    const result = await this.electronService.manifestUpdate({
-      projectId: item.id,
-      outputs: {
-        audiobook: {
-          path: path,
-          completedAt: new Date().toISOString(),
-        },
-      },
-    });
-    if (result.success) {
-      await this.studioService.loadBooks();
     }
   }
 

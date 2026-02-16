@@ -77,6 +77,7 @@ declare global {
           testModeChunks?: number;
           simplifyForLearning?: boolean;
           cleanupPrompt?: string;
+          customInstructions?: string;
         }) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTtsConversion: (jobId: string, epubPath: string, config: any) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTranslation: (jobId: string, epubPath: string, translationConfig: any, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
@@ -180,6 +181,7 @@ declare global {
           claudeApiKey?: string;
           openaiApiKey?: string;
           cleanupPrompt?: string;
+          customInstructions?: string;
           simplifyForLearning?: boolean;
           startFresh?: boolean;
           testMode?: boolean;
@@ -1747,6 +1749,7 @@ export class QueueService {
           enableAiCleanup?: boolean;
           simplifyForLearning?: boolean;
           cleanupPrompt?: string;
+          customInstructions?: string;
         } = {
           provider: config.aiProvider,
           ollama: config.aiProvider === 'ollama' ? {
@@ -1775,7 +1778,8 @@ export class QueueService {
           // Processing options
           enableAiCleanup: config.enableAiCleanup,
           simplifyForLearning: config.simplifyForLearning,
-          cleanupPrompt: config.cleanupPrompt
+          cleanupPrompt: config.cleanupPrompt,
+          customInstructions: config.customInstructions
         };
         console.log('[QUEUE] Job config from storage:', { testMode: config.testMode, cleanupMode: config.cleanupMode, enableAiCleanup: config.enableAiCleanup, simplifyForLearning: config.simplifyForLearning, fullConfig: JSON.stringify(config) });
         console.log('[QUEUE] Built aiConfig:', { testMode: aiConfig.testMode, cleanupMode: aiConfig.cleanupMode });
@@ -2290,6 +2294,7 @@ export class QueueService {
           claudeApiKey: config.claudeApiKey,
           openaiApiKey: config.openaiApiKey,
           cleanupPrompt: config.cleanupPrompt,
+          customInstructions: config.customInstructions,
           simplifyForLearning: config.simplifyForLearning,
           testMode: config.testMode,
           testModeChunks: config.testModeChunks

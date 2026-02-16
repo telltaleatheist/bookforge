@@ -1770,6 +1770,7 @@ export async function cleanupEpub(
     enableAiCleanup?: boolean;  // Standard OCR/formatting cleanup (default: true)
     simplifyForChildren?: boolean;  // Simplify for language learners
     cleanupPrompt?: string;  // Custom cleanup prompt (overrides default)
+    customInstructions?: string;  // Additional instructions appended to the AI prompt
     outputDir?: string;  // Override output directory (default: same dir as input EPUB)
   }
 ): Promise<EpubCleanupResult> {
@@ -1957,6 +1958,12 @@ export async function cleanupEpub(
         console.log(`[AI-BRIDGE] Added ${options.deletedBlockExamples.length} deletion examples to system prompt`);
       }
       console.log('[AI-BRIDGE] Mode: AI Cleanup ONLY (no simplification)');
+    }
+
+    // Append custom instructions if provided
+    if (options?.customInstructions) {
+      systemPrompt += `\n\nADDITIONAL INSTRUCTIONS:\n${options.customInstructions}`;
+      console.log(`[AI-BRIDGE] Appended custom instructions (${options.customInstructions.length} chars)`);
     }
 
     let chaptersProcessed = 0;

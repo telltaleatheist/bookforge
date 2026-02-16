@@ -286,6 +286,11 @@ export class PDFAnalyzer {
         const mimeType = getMimeType(pdfPath);
         this.doc = mupdfLib.Document.openDocument(data, mimeType);
 
+        // Layout reflowable documents (EPUBs) so page numbers are meaningful
+        if (mimeType === 'application/epub+zip') {
+          this.doc.layout(800, 1200, 12);
+        }
+
         return cached;
       }
     }
@@ -310,6 +315,11 @@ export class PDFAnalyzer {
         throw new Error(`Document is too large to load. Try closing other documents first, or restart the app to free memory.`);
       }
       throw err;
+    }
+
+    // Layout reflowable documents (EPUBs) so page numbers are meaningful
+    if (this.doc.isReflowable()) {
+      this.doc.layout(800, 1200, 12);
     }
 
     let totalPages: number;
@@ -1339,6 +1349,9 @@ export class PDFAnalyzer {
       const data = fs.readFileSync(pdfPath);
       const mimeType = getMimeType(pdfPath);
       tempDoc = mupdfLib.Document.openDocument(data, mimeType);
+      if (mimeType === 'application/epub+zip') {
+        tempDoc.layout(800, 1200, 12);
+      }
       doc = tempDoc;
     }
 
@@ -1396,6 +1409,10 @@ export class PDFAnalyzer {
         throw new Error(`Document is too large to render. Try closing other documents first, or restart the app.`);
       }
       throw err;
+    }
+
+    if (mimeType === 'application/epub+zip') {
+      doc.layout(800, 1200, 12);
     }
 
     let totalPages;
@@ -1559,6 +1576,9 @@ export class PDFAnalyzer {
     const data = fs.readFileSync(pdfPath);
     const mimeType = getMimeType(pdfPath);
     const doc = mupdfLib.Document.openDocument(data, mimeType);
+    if (mimeType === 'application/epub+zip') {
+      doc.layout(800, 1200, 12);
+    }
     const totalPages = doc.countPages();
 
     const quality: 'preview' | 'full' = scale <= 1.0 ? 'preview' : 'full';
@@ -3841,13 +3861,12 @@ export class PDFAnalyzer {
         // For EPUBs, mupdf may provide a URI instead - try to resolve it
         else if (item.uri && this.doc) {
           try {
-            // resolveLink converts a URI to a location (page number + coordinates)
-            const location = this.doc.resolveLink(item.uri);
-            if (location && typeof location.page === 'number' && !isNaN(location.page)) {
-              pageNum = location.page;
-              // Capture y-coordinate if available
-              if (typeof location.y === 'number' && !isNaN(location.y)) {
-                yPos = location.y;
+            // resolveLinkDestination converts a URI to a location with page + coordinates
+            const dest = this.doc.resolveLinkDestination(item.uri);
+            if (dest && typeof dest.page === 'number' && !isNaN(dest.page)) {
+              pageNum = dest.page;
+              if (typeof dest.y === 'number' && !isNaN(dest.y)) {
+                yPos = dest.y;
               }
             }
           } catch (e) {

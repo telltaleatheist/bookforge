@@ -267,6 +267,19 @@ interface AvailableEpub {
               </div>
 
               <!-- Prompt Accordion -->
+              <!-- Custom Instructions -->
+              <div class="config-section">
+                <label class="field-label">Custom Instructions</label>
+                <textarea
+                  class="custom-instructions"
+                  [value]="customInstructions()"
+                  (input)="customInstructions.set($any($event.target).value)"
+                  placeholder="Optional: Add specific instructions for the AI (e.g., 'Format numbered lists with periods at the end of each item')"
+                  rows="3"
+                ></textarea>
+                <span class="hint">Appended to the AI prompt for both cleanup and simplify</span>
+              </div>
+
               <div class="accordion" [class.open]="promptAccordionOpen()">
                 <button class="accordion-header" (click)="promptAccordionOpen.set(!promptAccordionOpen())">
                   <span class="accordion-title">AI Prompt</span>
@@ -1617,6 +1630,28 @@ interface AvailableEpub {
       color: var(--text-tertiary);
     }
 
+    .custom-instructions {
+      width: 100%;
+      padding: 8px 10px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-family: inherit;
+      resize: vertical;
+      min-height: 60px;
+
+      &:focus {
+        outline: none;
+        border-color: var(--accent-primary);
+      }
+
+      &::placeholder {
+        color: var(--text-muted);
+      }
+    }
+
     /* Bilingual Mode Styles */
     .loading-cache {
       padding: 16px;
@@ -2071,6 +2106,7 @@ export class ProcessWizardComponent implements OnInit {
   readonly testMode = signal(false);
   readonly testModeChunks = signal(5);
   readonly cleanupParallelWorkers = signal(4);  // Parallel workers for Claude/OpenAI
+  readonly customInstructions = signal('');
 
   // Translation config
   readonly enableTranslation = signal(false);  // Whether to translate before TTS
@@ -2974,6 +3010,7 @@ export class ProcessWizardComponent implements OnInit {
             testMode: this.testMode(),
             testModeChunks: this.testMode() ? this.testModeChunks() : undefined,
             cleanupPrompt: this.promptModified() ? this.promptText() : undefined,  // Only override when user customized
+            customInstructions: this.customInstructions() || undefined,
             // Parallel processing for Claude/OpenAI
             useParallel: this.cleanupProvider() !== 'ollama',
             parallelWorkers: this.cleanupParallelWorkers(),

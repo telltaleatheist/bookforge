@@ -251,6 +251,19 @@ interface SourceStage {
                 </div>
                 <span class="hint">Test mode processes only first N chunks</span>
               </div>
+
+              <!-- Custom Instructions -->
+              <div class="config-section">
+                <label class="field-label">Custom Instructions</label>
+                <textarea
+                  class="custom-instructions"
+                  [value]="customInstructions()"
+                  (input)="customInstructions.set($any($event.target).value)"
+                  placeholder="Optional: Add specific instructions for the AI (e.g., 'Format numbered lists with periods at the end of each item')"
+                  rows="3"
+                ></textarea>
+                <span class="hint">Appended to the AI prompt for both cleanup and simplify</span>
+              </div>
             </div>
           }
 
@@ -1513,6 +1526,28 @@ interface SourceStage {
       color: var(--text-tertiary);
     }
 
+    .custom-instructions {
+      width: 100%;
+      padding: 8px 10px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-family: inherit;
+      resize: vertical;
+      min-height: 60px;
+
+      &:focus {
+        outline: none;
+        border-color: var(--accent-primary);
+      }
+
+      &::placeholder {
+        color: var(--text-muted);
+      }
+    }
+
     /* Worker Options */
     .worker-options {
       display: flex;
@@ -1943,6 +1978,7 @@ export class LLWizardComponent implements OnInit {
   readonly simplifyForLearning = signal(false);
   readonly testMode = signal(false);
   readonly testModeChunks = signal(5);
+  readonly customInstructions = signal('');
   readonly hasExistingCleaned = computed(() => {
     return this.availableEpubs().some(e => e.filename === 'cleaned.epub' || e.filename === 'simplified.epub');
   });
@@ -3037,6 +3073,7 @@ export class LLWizardComponent implements OnInit {
           testMode: this.testMode(),
           testModeChunks: this.testModeChunks(),
           cleanupPrompt: undefined as string | undefined, // Backend loads from file
+          customInstructions: this.customInstructions() || undefined,
         };
 
         // Resolve cleanup source from stage picker

@@ -149,6 +149,7 @@ export interface LLCleanupConfig {
   claudeApiKey?: string;
   openaiApiKey?: string;
   cleanupPrompt?: string;
+  customInstructions?: string;    // Additional instructions appended to the AI prompt
   simplifyForLearning?: boolean;  // Simplify text for language learners
   startFresh?: boolean;  // Start from source EPUB vs use existing cleaned/simplified EPUB
   // Test mode - limit chunks for faster testing
@@ -406,7 +407,8 @@ export async function runLLCleanup(
           enableAiCleanup: true,       // Also do cleanup
           outputDir: cleanupStageDir,  // Output to stages/01-cleanup/
           testMode: config.testMode,
-          testModeChunks: config.testModeChunks
+          testModeChunks: config.testModeChunks,
+          customInstructions: config.customInstructions
         }
       );
 
@@ -453,7 +455,11 @@ export async function runLLCleanup(
     console.log(`[LL-CLEANUP] Using standard cleanup (not simplification)`);
 
     // Choose prompt based on user selection
-    const finalPrompt = config.cleanupPrompt || await loadPrompt(PROMPTS.TTS_CLEANUP);
+    let finalPrompt = config.cleanupPrompt || await loadPrompt(PROMPTS.TTS_CLEANUP);
+    if (config.customInstructions) {
+      finalPrompt += `\n\nADDITIONAL INSTRUCTIONS:\n${config.customInstructions}`;
+      console.log(`[LL-CLEANUP] Appended custom instructions (${config.customInstructions.length} chars)`);
+    }
     console.log(`[LL-CLEANUP] Prompt selected (${finalPrompt.length} chars)`);
 
     // Build the bilingual config for the cleanup function - will be modified per chapter in test mode
@@ -1344,10 +1350,36 @@ export interface MonoTranslationConfig {
   translationPrompt?: string;
 }
 
-/** Max paragraphs per AI batch */
-const MONO_BATCH_MAX_PARAGRAPHS = 8;
-/** Max characters per AI batch (soft limit) */
-const MONO_BATCH_MAX_CHARS = 3000;
+/** Max paragraphs per AI batch - increased for better context */
+const MONO_BATCH_MAX_PARAGRAPHS = 10;
+/** Max characters per AI batch (soft limit) - increased for better context */
+const MONO_BATCH_MAX_CHARS = 5000;
+
+/**
+ * Validate translated text for common issues
+ */
+function validateTranslation(original: string, translated: string, index: number): void {
+  // Check for sentences ending with hanging conjunctions
+  if (translated.match(/\s+(and|or|but|for|nor|so|yet)\.\s*$/i)) {
+    console.warn(`[MONO-TRANSLATION] Warning: Paragraph ${index} ends with hanging conjunction: "...${translated.slice(-20)}"`);
+  }
+
+  // Check for mid-sentence periods (lowercase after period not at paragraph end)
+  const midSentencePeriod = translated.match(/\.\s+[a-z]/);
+  if (midSentencePeriod && !translated.match(/\b(Mr|Mrs|Dr|Prof|St|vs|etc|e\.g|i\.e)\.\s+[a-z]/)) {
+    console.warn(`[MONO-TRANSLATION] Warning: Paragraph ${index} may have incorrect period breaking sentence: "${midSentencePeriod[0]}"`);
+  }
+
+  // Check for misplaced commas
+  if (translated.match(/,\s*,|\s+,\s+\w+,/)) {
+    console.warn(`[MONO-TRANSLATION] Warning: Paragraph ${index} has unusual comma placement`);
+  }
+
+  // Check if translation is significantly shorter (might indicate missing content)
+  if (translated.length < original.length * 0.5) {
+    console.warn(`[MONO-TRANSLATION] Warning: Paragraph ${index} translation is unusually short (${translated.length} vs ${original.length} chars)`);
+  }
+}
 
 /**
  * Translate a batch of paragraphs using <<<N>>> markers.
@@ -1379,8 +1411,11 @@ async function translateParagraphBatch(
   // Format paragraphs with <<<N>>> markers
   const formatted = formatNumberedParagraphs(paragraphs, startIndex);
 
-  const systemPrompt = config.translationPrompt ||
-    `You are a professional literary translator. Translate naturally and fluently, preserving the author's tone and style.`;
+  // Load the mono translation prompt if not provided
+  let systemPrompt = config.translationPrompt;
+  if (!systemPrompt) {
+    systemPrompt = await loadPrompt(PROMPTS.MONO_TRANSLATION);
+  }
 
   const prompt = `Translate the following paragraphs from ${sourceLanguage} to ${targetLanguage}.
 Each paragraph is marked with <<<N>>>. Preserve these markers exactly.
@@ -1415,6 +1450,8 @@ ${originalText}`;
     const idx = startIndex + i;
     const translated = parsed.get(idx);
     if (translated && translated.length > 0) {
+      // Validate the translation for common issues
+      validateTranslation(paragraphs[i], translated, idx);
       results.push(translated);
     } else {
       // Last resort: use original text

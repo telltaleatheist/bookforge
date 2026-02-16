@@ -128,6 +128,8 @@ export interface OcrCleanupConfig {
   simplifyForLearning?: boolean;
   // Custom cleanup prompt (overrides default)
   cleanupPrompt?: string;
+  // Additional instructions appended to the AI prompt
+  customInstructions?: string;
 }
 
 // TTS Conversion job configuration
@@ -249,6 +251,8 @@ export interface BilingualCleanupJobConfig {
   // Cleanup options
   enableCleanup?: boolean;         // Enable standard AI cleanup (OCR fixes)
   simplifyForLearning?: boolean;   // Simplify text for language learners
+  // Additional instructions appended to the AI prompt
+  customInstructions?: string;
 }
 
 // Sentence splitting granularity for bilingual processing
