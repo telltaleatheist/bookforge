@@ -4796,9 +4796,12 @@ export class PdfPickerComponent implements OnInit {
     this.loading.set(true);
     this.loadingText.set('Saving...');
 
-    // Determine save target: if opened file is not original.epub, save back to it
+    // Determine save target: if opened file is an EPUB (not original.epub), save back to it.
+    // Non-EPUB sources (PDFs, etc.) always produce exported.epub.
     const overridePath = this.overrideSourcePath();
-    const savePath = (overridePath && !overridePath.endsWith('/original.epub'))
+    const isOverrideEpub = overridePath?.toLowerCase().endsWith('.epub');
+    const isOriginalEpub = overridePath?.replace(/\\/g, '/').endsWith('/original.epub');
+    const savePath = (overridePath && isOverrideEpub && !isOriginalEpub)
       ? overridePath
       : undefined;
 

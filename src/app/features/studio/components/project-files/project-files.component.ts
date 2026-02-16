@@ -9,7 +9,8 @@ interface ProjectFile {
   path: string;
   size: number | null;
   type: 'file' | 'directory';
-  editable: boolean;
+  editable: boolean;        // can open in EPUB editor (.epub)
+  viewable: boolean;        // can open in viewer (.pdf, .docx, etc.)
   fileCount?: number;       // for directories (TTS language folders)
   sectionLabel: string;     // which pipeline section this file belongs to
   diffCacheFor?: string;    // originalPath from .diff.json (if cache exists for this file)
@@ -111,11 +112,11 @@ export interface DiffRequest {
                           (click)="showInExplorer(file.path)"
                           title="Show in file explorer"
                         >Show</button>
-                        @if (file.editable) {
+                        @if (file.editable || file.viewable) {
                           <button
                             class="btn-file-action accent"
                             (click)="onEditFile(file.path)"
-                            title="Open in EPUB editor"
+                            title="Open in editor"
                           >Edit</button>
                         }
                         @if (isOriginalSource(file)) {
@@ -588,6 +589,7 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
                   size: null,
                   type: 'directory',
                   editable: false,
+                  viewable: false,
                   fileCount,
                   sectionLabel: def.label,
                 });
@@ -602,6 +604,7 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
               if (item.type === 'directory') continue;
               const lowerName = item.name.toLowerCase();
               const isEpub = lowerName.endsWith('.epub');
+              const isPdf = lowerName.endsWith('.pdf');
 
               const file: ProjectFile = {
                 name: item.name,
@@ -609,6 +612,7 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
                 size: item.size,
                 type: 'file',
                 editable: isEpub,
+                viewable: isPdf,
                 sectionLabel: def.label,
               };
 
