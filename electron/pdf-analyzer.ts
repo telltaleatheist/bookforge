@@ -3993,18 +3993,39 @@ export class PDFAnalyzer {
       return (a.y || 0) - (b.y || 0);
     });
 
-    // Remove duplicates (same page and similar position)
-    const dedupedChapters: Chapter[] = [];
+    // Merge multi-line chapter titles: when consecutive chapter candidates on the
+    // same page are vertically adjacent with similar styling, they're likely parts
+    // of the same title split across blocks (e.g. "CHAPTER ONE" / "The Beginning").
+    const mergedChapters: Chapter[] = [];
     for (const chapter of chapters) {
-      const isDuplicate = dedupedChapters.some(
-        c => c.page === chapter.page && Math.abs((c.y || 0) - (chapter.y || 0)) < 20
-      );
-      if (!isDuplicate) {
-        dedupedChapters.push(chapter);
+      const prev = mergedChapters[mergedChapters.length - 1];
+      if (prev && prev.page === chapter.page) {
+        const prevBlock = prev.blockId ? this.blocks.find(b => b.id === prev.blockId) : null;
+        const curBlock = chapter.blockId ? this.blocks.find(b => b.id === chapter.blockId) : null;
+
+        if (prevBlock && curBlock) {
+          const prevBottom = prevBlock.y + prevBlock.height;
+          const gap = curBlock.y - prevBottom;
+          // Merge if gap is small (within ~1.5x the font size) and fonts are similar
+          const maxGap = Math.max(prevBlock.font_size, curBlock.font_size) * 1.5;
+          const similarFont = Math.abs(prevBlock.font_size - curBlock.font_size) < prevBlock.font_size * 0.3;
+          const similarStyle = prevBlock.is_bold === curBlock.is_bold;
+
+          if (gap < maxGap && similarFont && similarStyle) {
+            // Merge: combine titles, keep the first chapter's position and higher confidence
+            const combinedTitle = `${prev.title} ${chapter.title}`.trim();
+            prev.title = combinedTitle.length > 80
+              ? combinedTitle.substring(0, 77) + '...'
+              : combinedTitle;
+            prev.confidence = Math.max(prev.confidence || 0, chapter.confidence || 0);
+            continue; // Skip adding current — it's merged into prev
+          }
+        }
       }
+      mergedChapters.push(chapter);
     }
 
-    return dedupedChapters;
+    return mergedChapters;
   }
 
   /**

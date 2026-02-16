@@ -754,6 +754,12 @@ interface SourceStage {
                   <label class="field-label">Video Resolution</label>
                   <div class="provider-buttons">
                     <button class="provider-btn"
+                      [class.selected]="videoResolution() === '480p'"
+                      (click)="videoResolution.set('480p')">
+                      <span class="provider-name">480p</span>
+                      <span class="provider-status">854 x 480</span>
+                    </button>
+                    <button class="provider-btn"
                       [class.selected]="videoResolution() === '720p'"
                       (click)="videoResolution.set('720p')">
                       <span class="provider-name">720p</span>
@@ -764,12 +770,6 @@ interface SourceStage {
                       (click)="videoResolution.set('1080p')">
                       <span class="provider-name">1080p</span>
                       <span class="provider-status">1920 x 1080</span>
-                    </button>
-                    <button class="provider-btn"
-                      [class.selected]="videoResolution() === '4k'"
-                      (click)="videoResolution.set('4k')">
-                      <span class="provider-name">4K</span>
-                      <span class="provider-status">3840 x 2160</span>
                     </button>
                   </div>
                 </div>
@@ -2111,7 +2111,7 @@ export class LLWizardComponent implements OnInit {
   readonly pauseDuration = signal(0.5);
   readonly gapDuration = signal(1.0);
   readonly generateVideo = signal(false);
-  readonly videoResolution = signal<'720p' | '1080p' | '4k'>('720p');
+  readonly videoResolution = signal<'480p' | '720p' | '1080p'>('720p');
   readonly availableSessions = signal<SessionCache[]>([]);
 
   // ─────────────────────────────────────────────────────────────────────────

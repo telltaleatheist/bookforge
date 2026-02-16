@@ -328,7 +328,7 @@ export interface VideoAssemblyJobConfig {
   title: string;
   sourceLang: string;
   targetLang?: string;         // bilingual only
-  resolution: '720p' | '1080p' | '4k';
+  resolution: '480p' | '720p' | '1080p';
   externalAudiobooksDir?: string;
   outputFilename?: string;          // Custom filename for external copy (without extension)
 }

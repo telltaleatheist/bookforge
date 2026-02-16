@@ -258,6 +258,12 @@ type Tab = 'metadata' | 'chapters' | 'actions';
                   <label class="field-label">Video Resolution</label>
                   <div class="provider-buttons">
                     <button class="provider-btn"
+                      [class.selected]="videoResolution() === '480p'"
+                      (click)="videoResolution.set('480p')">
+                      <span class="provider-name">480p</span>
+                      <span class="provider-status">854x480</span>
+                    </button>
+                    <button class="provider-btn"
                       [class.selected]="videoResolution() === '720p'"
                       (click)="videoResolution.set('720p')">
                       <span class="provider-name">720p</span>
@@ -268,12 +274,6 @@ type Tab = 'metadata' | 'chapters' | 'actions';
                       (click)="videoResolution.set('1080p')">
                       <span class="provider-name">1080p</span>
                       <span class="provider-status">1920x1080</span>
-                    </button>
-                    <button class="provider-btn"
-                      [class.selected]="videoResolution() === '4k'"
-                      (click)="videoResolution.set('4k')">
-                      <span class="provider-name">4K</span>
-                      <span class="provider-status">3840x2160</span>
                     </button>
                   </div>
                 </div>
@@ -914,7 +914,7 @@ export class SessionDetailComponent {
 
   // Video assembly options
   readonly generateVideo = signal(false);
-  readonly videoResolution = signal<'720p' | '1080p' | '4k'>('720p');
+  readonly videoResolution = signal<'480p' | '720p' | '1080p'>('720p');
 
   // Track last loaded session to detect changes
   private lastLoadedSessionId = '';

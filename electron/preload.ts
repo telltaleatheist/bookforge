@@ -1399,7 +1399,7 @@ export interface ElectronAPI {
       title: string;
       sourceLang: string;
       targetLang?: string;
-      resolution: '720p' | '1080p' | '4k';
+      resolution: '480p' | '720p' | '1080p';
       externalAudiobooksDir?: string;
       outputFilename?: string;
     }) => Promise<{ success: boolean; jobId?: string; error?: string }>;
@@ -2668,7 +2668,7 @@ const electronAPI: ElectronAPI = {
       title: string;
       sourceLang: string;
       targetLang?: string;
-      resolution: '720p' | '1080p' | '4k';
+      resolution: '480p' | '720p' | '1080p';
       externalAudiobooksDir?: string;
       outputFilename?: string;
     }) =>

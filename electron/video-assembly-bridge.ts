@@ -26,7 +26,7 @@ export interface VideoAssemblyConfig {
   title: string;
   sourceLang: string;
   targetLang?: string;
-  resolution: '720p' | '1080p' | '4k';
+  resolution: '480p' | '720p' | '1080p';
   externalAudiobooksDir?: string;
   outputFilename?: string;
 }
@@ -55,9 +55,9 @@ interface FrameEntry {
 }
 
 const RESOLUTION_MAP: Record<string, { width: number; height: number }> = {
+  '480p': { width: 854, height: 480 },
   '720p': { width: 1280, height: 720 },
   '1080p': { width: 1920, height: 1080 },
-  '4k': { width: 3840, height: 2160 },
 };
 
 // Inline HTML template — avoids file-path issues between source and dist directories.

@@ -3423,7 +3423,7 @@ function setupIpcHandlers(): void {
     title: string;
     sourceLang: string;
     targetLang?: string;
-    resolution: '720p' | '1080p' | '4k';
+    resolution: '480p' | '720p' | '1080p';
     externalAudiobooksDir?: string;
     outputFilename?: string;
   }) => {
