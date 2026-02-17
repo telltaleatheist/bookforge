@@ -5235,7 +5235,9 @@ function setupIpcHandlers(): void {
     sentencePairsPath?: string; // Absolute path to sentence_pairs_{lang}.json
   }) => {
     try {
-      const { audioPath, vttPath, projectDir, projectId, sourceLang, targetLang, externalAudiobooksDir, metadataFilename, sentencePairsPath } = params;
+      const { audioPath, vttPath, projectDir, sourceLang, targetLang, externalAudiobooksDir, metadataFilename, sentencePairsPath } = params;
+      // projectId may be a full absolute path (from StudioItem.id) — use folder name
+      const projectId = path.basename(projectDir);
       console.log('[bilingual-assembly:finalize-output] Params:', { audioPath, vttPath, projectDir, projectId, sourceLang, targetLang, externalAudiobooksDir, metadataFilename, sentencePairsPath });
 
       // 1. Ensure project output dir exists
