@@ -872,26 +872,23 @@ function setupIpcHandlers(): void {
     const items = [];
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue;
+      // Skip Syncthing conflict files
+      if (entry.name.includes('.sync-conflict-')) continue;
 
       const fullPath = path.join(dirPath, entry.name);
       const isDir = entry.isDirectory();
 
-      const lowerName = entry.name.toLowerCase();
-      const isDocument = lowerName.endsWith('.pdf') || lowerName.endsWith('.epub');
-      if (isDir || isDocument) {
-        let size = null;
-        if (!isDir) {
-          const stat = await fs.stat(fullPath);
-          size = stat.size;
-        }
-        const fileType = isDir ? 'directory' : (lowerName.endsWith('.epub') ? 'epub' : 'pdf');
-        items.push({
-          name: entry.name,
-          path: fullPath,
-          type: fileType,
-          size,
-        });
+      let size = null;
+      if (!isDir) {
+        const stat = await fs.stat(fullPath);
+        size = stat.size;
       }
+      items.push({
+        name: entry.name,
+        path: fullPath,
+        type: isDir ? 'directory' : 'file',
+        size,
+      });
     }
 
     // Sort: directories first, then files

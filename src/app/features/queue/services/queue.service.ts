@@ -831,48 +831,31 @@ export class QueueService {
       }
     }
 
-    // Cache TTS session to BFP for future reassembly
-    if (result.success && result.sessionDir && completedJob?.bfpPath &&
-        completedJob.type === 'tts-conversion') {
-      try {
-        const electron = (window as any).electron;
-        if (electron?.sessionCache?.saveToBfp) {
-          console.log(`[QUEUE] Caching TTS session to BFP: ${result.sessionDir}`);
-          const cacheResult = await electron.sessionCache.saveToBfp(result.sessionDir, completedJob.bfpPath);
-          if (cacheResult.success) {
-            console.log(`[QUEUE] Session cached to: ${cacheResult.cachedPath}`);
-          } else {
-            console.error('[QUEUE] Failed to cache session to BFP:', cacheResult.error);
-          }
-        }
-      } catch (err) {
-        console.error('[QUEUE] Error caching session to BFP:', err);
-      }
-    }
-
-    // Cache LL TTS session to project directory (per-language)
-    // This persists the session so assembly can run later even if temp dirs are cleaned
-    if (result.success && result.sessionDir && completedJob?.projectDir &&
-        completedJob.type === 'tts-conversion' && !completedJob.bfpPath) {
+    // Cache TTS session to project's stages/03-tts/sessions/{lang}/ directory
+    // Both standard and LL pipelines use the same location for consistency
+    if (result.success && result.sessionDir && completedJob?.type === 'tts-conversion') {
       const ttsConfig = completedJob.config as TtsConversionConfig;
-      if (ttsConfig?.language) {
+      const projectDir = completedJob.bfpPath || completedJob.projectDir;
+      const language = ttsConfig?.language || 'en';
+
+      if (projectDir) {
         try {
           const electron = (window as any).electron;
           if (electron?.sessionCache?.saveToProject) {
-            console.log(`[QUEUE] Caching LL TTS session for ${ttsConfig.language} to project: ${completedJob.projectDir}`);
+            console.log(`[QUEUE] Caching TTS session for ${language} to project: ${projectDir}`);
             const cacheResult = await electron.sessionCache.saveToProject(
-              result.sessionDir, completedJob.projectDir, ttsConfig.language
+              result.sessionDir, projectDir, language
             );
             if (cacheResult.success && cacheResult.cachedSentencesDir) {
-              console.log(`[QUEUE] LL session cached, sentences at: ${cacheResult.cachedSentencesDir}`);
+              console.log(`[QUEUE] Session cached, sentences at: ${cacheResult.cachedSentencesDir}`);
               // Update outputPath to cached location so chaining handler uses persistent paths
               result.outputPath = cacheResult.cachedSentencesDir;
             } else {
-              console.error('[QUEUE] Failed to cache LL session:', cacheResult.error);
+              console.error('[QUEUE] Failed to cache session:', cacheResult.error);
             }
           }
         } catch (err) {
-          console.error('[QUEUE] Error caching LL session to project:', err);
+          console.error('[QUEUE] Error caching TTS session:', err);
         }
       }
     }

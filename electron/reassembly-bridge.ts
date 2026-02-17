@@ -7,7 +7,6 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath } from './e2a-paths';
-import { getAudiobookDirFromBfp } from './parallel-tts-bridge';
 import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
@@ -290,7 +289,7 @@ export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: str
     }
   }
 
-  // Scan project folders for cached sessions (in projects/{name}/output/session/)
+  // Scan project folders for cached sessions in stages/03-tts/sessions/{lang}/
   if (libraryPath) {
     const projectsDir = path.join(libraryPath, 'projects');
     try {
@@ -298,35 +297,36 @@ export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: str
         const projectDirs = fs.readdirSync(projectsDir, { withFileTypes: true });
         for (const projectEntry of projectDirs) {
           if (!projectEntry.isDirectory()) continue;
+          const projectPath = path.join(projectsDir, projectEntry.name);
 
-          const sessionBaseDir = path.join(projectsDir, projectEntry.name, 'output', 'session');
-          if (!fs.existsSync(sessionBaseDir)) continue;
+          const stagesSessionDir = path.join(projectPath, 'stages', '03-tts', 'sessions');
+          if (!fs.existsSync(stagesSessionDir)) continue;
 
-          // Look for ebook-* directories inside session/
-          const sessionEntries = fs.readdirSync(sessionBaseDir, { withFileTypes: true });
-          for (const entry of sessionEntries) {
-            if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
-
-            const sessionDir = path.join(sessionBaseDir, entry.name);
-            const sessionId = entry.name.replace('ebook-', '');
-
-            // Skip if we already have this session from e2a tmp
-            if (sessions.some(s => s.sessionId === sessionId)) continue;
-
-            try {
-              const session = await parseSession(sessionId, sessionDir);
-              if (session) {
-                session.source = 'bfp-cache';
-                sessions.push(session);
+          const langDirs = fs.readdirSync(stagesSessionDir, { withFileTypes: true });
+          for (const langEntry of langDirs) {
+            if (!langEntry.isDirectory()) continue;
+            const langDir = path.join(stagesSessionDir, langEntry.name);
+            const langEntries = fs.readdirSync(langDir, { withFileTypes: true });
+            for (const entry of langEntries) {
+              if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
+              const sessionDir = path.join(langDir, entry.name);
+              const sessionId = entry.name.replace('ebook-', '');
+              if (sessions.some(s => s.sessionId === sessionId)) continue;
+              try {
+                const session = await parseSession(sessionId, sessionDir);
+                if (session) {
+                  session.source = 'bfp-cache';
+                  sessions.push(session);
+                }
+              } catch (err) {
+                console.error(`[REASSEMBLY] Error parsing cached session ${sessionId}:`, err);
               }
-            } catch (err) {
-              console.error(`[REASSEMBLY] Error parsing cached session ${sessionId}:`, err);
             }
           }
         }
       }
     } catch (err) {
-      console.error('[REASSEMBLY] Error scanning BFP audiobook folders:', err);
+      console.error('[REASSEMBLY] Error scanning project session folders:', err);
     }
   }
 
@@ -1525,29 +1525,30 @@ export function isE2aAvailable(customTmpPath?: string): boolean {
  * @param bfpPath - Path to the .bfp file or project directory
  */
 export async function getBfpCachedSession(bfpPath: string): Promise<E2aSession | null> {
-  const audiobookDir = getAudiobookDirFromBfp(bfpPath);
-  const sessionBaseDir = path.join(audiobookDir, 'session');
-
-  if (!fs.existsSync(sessionBaseDir)) {
+  // Canonical location: stages/03-tts/sessions/{lang}/ebook-{uuid}/
+  const stagesSessionDir = path.join(bfpPath, 'stages', '03-tts', 'sessions');
+  if (!fs.existsSync(stagesSessionDir)) {
     return null;
   }
 
-  // Look for ebook-* directories inside session/
-  const entries = fs.readdirSync(sessionBaseDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
-
-    const sessionDir = path.join(sessionBaseDir, entry.name);
-    const sessionId = entry.name.replace('ebook-', '');
-
-    try {
-      const session = await parseSession(sessionId, sessionDir);
-      if (session) {
-        session.source = 'bfp-cache';
-        return session;
+  const langDirs = fs.readdirSync(stagesSessionDir, { withFileTypes: true });
+  for (const langEntry of langDirs) {
+    if (!langEntry.isDirectory()) continue;
+    const langDir = path.join(stagesSessionDir, langEntry.name);
+    const entries = fs.readdirSync(langDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
+      const sessionDir = path.join(langDir, entry.name);
+      const sessionId = entry.name.replace('ebook-', '');
+      try {
+        const session = await parseSession(sessionId, sessionDir);
+        if (session) {
+          session.source = 'bfp-cache';
+          return session;
+        }
+      } catch (err) {
+        console.error(`[REASSEMBLY] Error parsing cached session ${sessionId}:`, err);
       }
-    } catch (err) {
-      console.error(`[REASSEMBLY] Error parsing cached session ${sessionId}:`, err);
     }
   }
 

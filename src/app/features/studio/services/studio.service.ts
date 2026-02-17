@@ -72,7 +72,7 @@ export class StudioService {
       for (const manifest of result.projects) {
         const projectDir = `${projectsPath}/${manifest.projectId}`;
 
-        // Standard audiobook output
+        // Standard audiobook output — only from manifest, no filesystem fallback
         let audiobookPath: string | undefined;
         let vttPath: string | undefined;
         if (manifest.outputs?.audiobook?.path) {
@@ -85,19 +85,6 @@ export class StudioService {
             if (await this.electronService.fsExists(absVtt)) {
               vttPath = absVtt;
             }
-          }
-        }
-        // Fallback: check for audiobook.m4b / audiobook.vtt
-        if (!audiobookPath) {
-          const outputM4b = `${projectDir}/output/audiobook.m4b`;
-          if (await this.electronService.fsExists(outputM4b)) {
-            audiobookPath = outputM4b;
-          }
-        }
-        if (!vttPath) {
-          const outputVtt = `${projectDir}/output/audiobook.vtt`;
-          if (await this.electronService.fsExists(outputVtt)) {
-            vttPath = outputVtt;
           }
         }
 
