@@ -580,6 +580,10 @@ export class JobProgressComponent implements OnDestroy {
   // Track when job started for elapsed time
   private jobStartTime: number | null = null;
 
+  // Master job ETA countdown (locally decremented between service updates)
+  private masterEtaLastValue: number | undefined = undefined;
+  private masterEtaLastUpdateTime: number = 0;
+
   // ETA calculation state
   private etaState: ETAState = {
     lastChunksCompleted: 0,
@@ -677,6 +681,8 @@ export class JobProgressComponent implements OnDestroy {
       lastProgress: 0
     };
     this.etaCountdown.set(0);
+    this.masterEtaLastValue = undefined;
+    this.masterEtaLastUpdateTime = 0;
   }
 
   /**
@@ -1020,6 +1026,20 @@ export class JobProgressComponent implements OnDestroy {
     const progress = job.progress || 0;
     if (progress >= 100) {
       return 'Complete';
+    }
+
+    // For master/workflow jobs, use the pre-computed ETA from the queue service
+    // (avoids naive elapsed/progress extrapolation which averages fast and slow steps)
+    if (job.workflowId && !job.parentJobId && job.estimatedSecondsRemaining !== undefined) {
+      // Track when the service-provided value changes so we can count down between updates
+      if (job.estimatedSecondsRemaining !== this.masterEtaLastValue) {
+        this.masterEtaLastValue = job.estimatedSecondsRemaining;
+        this.masterEtaLastUpdateTime = Date.now();
+      }
+      // Count down locally based on elapsed time since last service update
+      const elapsed = Math.floor((Date.now() - this.masterEtaLastUpdateTime) / 1000);
+      const countdown = Math.max(0, job.estimatedSecondsRemaining - elapsed);
+      return this.formatDuration(countdown);
     }
 
     // For resemble-enhance jobs, parse ETA from progressMessage

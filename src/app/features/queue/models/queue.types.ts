@@ -89,6 +89,8 @@ export interface QueueJob {
   assemblySubPhase?: 'combining' | 'vtt' | 'encoding' | 'metadata';
   // Job was interrupted by app close/crash — TTS should auto-resume instead of starting fresh
   wasInterrupted?: boolean;
+  // Pre-computed ETA for master/workflow jobs (calculated in queue service from child job estimates)
+  estimatedSecondsRemaining?: number;
 }
 
 // Job configuration union type

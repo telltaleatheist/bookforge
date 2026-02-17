@@ -336,6 +336,7 @@ export class QueueService {
       if (this.unsubscribeLLJobProgress) {
         this.unsubscribeLLJobProgress();
       }
+      this.stopMasterEtaTimer();
     });
   }
 
@@ -1308,6 +1309,9 @@ export class QueueService {
       masterStatus = errorChildren > 0 ? 'error' : 'complete';
     }
 
+    // Calculate master ETA from child job estimates
+    const estimatedSecondsRemaining = this.computeMasterEta(childJobs);
+
     // Update master job
     this._jobs.update(jobs =>
       jobs.map(job => {
@@ -1316,6 +1320,7 @@ export class QueueService {
           ...job,
           status: masterStatus,
           progress,
+          estimatedSecondsRemaining: masterStatus === 'complete' ? undefined : estimatedSecondsRemaining,
           // Show progress message
           progressMessage: `${completedChildren}/${totalChildren} steps complete`,
           completedAt: masterStatus === 'complete' ? new Date() : job.completedAt,
@@ -1324,7 +1329,186 @@ export class QueueService {
       })
     );
 
-    console.log(`[QUEUE] Master job ${masterJobId} progress: ${completedChildren}/${totalChildren} (${progress}%)`);
+    console.log(`[QUEUE] Master job ${masterJobId} progress: ${completedChildren}/${totalChildren} (${progress}%)` +
+      (estimatedSecondsRemaining !== undefined ? `, ETA: ${estimatedSecondsRemaining}s` : ''));
+
+    // Start/stop periodic ETA refresh timer based on workflow state
+    if (masterStatus === 'processing') {
+      this.startMasterEtaTimer(workflowId, masterJobId);
+    } else {
+      this.stopMasterEtaTimer();
+    }
+  }
+
+  // --- Master ETA Timer ---
+  private masterEtaTimerInterval: ReturnType<typeof setInterval> | null = null;
+
+  private startMasterEtaTimer(workflowId: string, masterJobId: string): void {
+    // Already running — don't start another
+    if (this.masterEtaTimerInterval) return;
+
+    this.masterEtaTimerInterval = setInterval(() => {
+      this.ngZone.run(() => {
+        // Check if master job still processing
+        const masterJob = this._jobs().find(j => j.id === masterJobId);
+        if (!masterJob || masterJob.status !== 'processing') {
+          this.stopMasterEtaTimer();
+          return;
+        }
+        // Recompute ETA
+        this.updateMasterJobProgress(workflowId, masterJobId);
+      });
+    }, 15_000); // Every 15 seconds
+  }
+
+  private stopMasterEtaTimer(): void {
+    if (this.masterEtaTimerInterval) {
+      clearInterval(this.masterEtaTimerInterval);
+      this.masterEtaTimerInterval = null;
+    }
+  }
+
+  // --- Master ETA Computation ---
+
+  /**
+   * Compute the total estimated seconds remaining for a master/workflow job
+   * by summing estimates for the currently-running child and all pending children.
+   *
+   * Uses actual completed sibling durations (inherently model/engine-aware since the
+   * same workflow uses the same settings) and progress-based estimates for running children.
+   */
+  private computeMasterEta(childJobs: QueueJob[]): number | undefined {
+    const runningChild = childJobs.find(j => j.status === 'processing');
+    const pendingChildren = childJobs.filter(j => j.status === 'pending');
+    const completedChildren = childJobs.filter(j => j.status === 'complete');
+
+    // Need at least one running or pending child to estimate
+    if (!runningChild && pendingChildren.length === 0) return undefined;
+
+    let totalEta = 0;
+
+    // Estimate remaining time for the currently-running child
+    if (runningChild) {
+      const runningEta = this.estimateRunningChildEta(runningChild);
+      if (runningEta !== null) {
+        totalEta += runningEta;
+      } else {
+        // Can't estimate running child — return undefined rather than misleading partial ETA
+        return undefined;
+      }
+    }
+
+    // Estimate duration for each pending child
+    for (const pending of pendingChildren) {
+      totalEta += this.estimatePendingChildDuration(pending, completedChildren, runningChild);
+    }
+
+    return Math.round(totalEta);
+  }
+
+  /**
+   * Estimate remaining seconds for a currently-processing child job.
+   * Uses the same logic as job-progress.component.ts but computed server-side.
+   */
+  private estimateRunningChildEta(job: QueueJob): number | null {
+    const progress = job.progress || 0;
+    if (progress <= 0 || !job.startedAt) return null;
+
+    const elapsed = (Date.now() - new Date(job.startedAt).getTime()) / 1000;
+    if (elapsed < 10) return null;
+
+    // For OCR/TTS jobs with chunk data, use chunk-based estimation (most accurate)
+    const chunksCompleted = job.chunksCompletedInJob || 0;
+    const totalChunks = job.totalChunksInJob || job.totalChunks || 0;
+    const chunksDoneInSession = job.chunksDoneInSession || chunksCompleted;
+
+    if (chunksDoneInSession >= 2 && totalChunks > 0) {
+      const avgTimePerChunk = elapsed / chunksDoneInSession;
+      const remainingChunks = totalChunks - chunksCompleted;
+      return remainingChunks * avgTimePerChunk;
+    }
+
+    // For progress-based estimation (reassembly, video-assembly, early-stage jobs)
+    if (progress > 2) {
+      const totalEstimate = elapsed / (progress / 100);
+      const remaining = totalEstimate - elapsed;
+      return remaining > 0 ? remaining : 0;
+    }
+
+    return null;
+  }
+
+  /**
+   * Estimate the TOTAL duration for a pending child job.
+   *
+   * Strategy (in order of preference):
+   * 1. Use completed sibling of the same type (same model/engine/settings by definition)
+   * 2. Use type-based ratio relative to the longest completed sibling
+   * 3. Use a percentage of the running child's estimated total duration
+   */
+  private estimatePendingChildDuration(
+    pendingJob: QueueJob,
+    completedChildren: QueueJob[],
+    runningChild: QueueJob | undefined
+  ): number {
+    // 1. Check for completed sibling of the same type
+    const sameSibling = completedChildren.find(c => c.type === pendingJob.type);
+    if (sameSibling?.startedAt && sameSibling?.completedAt) {
+      const duration = (new Date(sameSibling.completedAt).getTime() - new Date(sameSibling.startedAt).getTime()) / 1000;
+      if (duration > 0) return duration;
+    }
+
+    // 2. Use type-based heuristic ratios relative to completed work
+    // These ratios are empirically observed: reassembly and video-assembly are
+    // orders of magnitude faster than TTS or cleanup
+    const longestCompleted = this.getLongestCompletedDuration(completedChildren);
+    if (longestCompleted > 0) {
+      const ratio = this.getTypeSpeedRatio(pendingJob.type);
+      return longestCompleted * ratio;
+    }
+
+    // 3. If nothing has completed but something is running, estimate from the running child
+    if (runningChild?.startedAt && runningChild.progress && runningChild.progress > 5) {
+      const runningElapsed = (Date.now() - new Date(runningChild.startedAt).getTime()) / 1000;
+      const runningTotalEstimate = runningElapsed / (runningChild.progress / 100);
+      const ratio = this.getTypeSpeedRatio(pendingJob.type);
+      return runningTotalEstimate * ratio;
+    }
+
+    // No basis for estimation
+    return 0;
+  }
+
+  /**
+   * Get the duration of the longest completed child job.
+   */
+  private getLongestCompletedDuration(completedChildren: QueueJob[]): number {
+    let longest = 0;
+    for (const child of completedChildren) {
+      if (child.startedAt && child.completedAt) {
+        const dur = (new Date(child.completedAt).getTime() - new Date(child.startedAt).getTime()) / 1000;
+        if (dur > longest) longest = dur;
+      }
+    }
+    return longest;
+  }
+
+  /**
+   * Get a speed ratio for a job type relative to the slowest step (TTS).
+   * These represent how fast this step typically is relative to the slowest completed step.
+   *
+   * For example, reassembly typically takes ~3-5% of TTS duration.
+   * These are rough heuristics used only when no completed sibling exists.
+   */
+  private getTypeSpeedRatio(jobType: JobType): number {
+    switch (jobType) {
+      case 'reassembly':        return 0.05;  // ~5% of TTS duration
+      case 'video-assembly':    return 0.10;  // ~10% of TTS duration
+      case 'ocr-cleanup':       return 0.50;  // Comparable to TTS (depends on model)
+      case 'tts-conversion':    return 1.00;  // Baseline
+      case 'resemble-enhance':  return 0.30;  // ~30% of TTS duration
+      default:                  return 0.20;  // Conservative default
+    }
   }
 
   /**
@@ -2176,6 +2360,21 @@ export class QueueService {
 
         console.log('[QUEUE] Reassembly complete:', result.data?.outputPath);
 
+        // Save reassembly analytics
+        if (job.bfpPath && job.startedAt) {
+          const completedAt = new Date();
+          const durationSeconds = Math.round((completedAt.getTime() - new Date(job.startedAt).getTime()) / 1000);
+          this.saveAnalyticsToBfp(job.bfpPath, 'reassembly', {
+            jobId: job.id,
+            startedAt: new Date(job.startedAt).toISOString(),
+            completedAt: completedAt.toISOString(),
+            durationSeconds,
+            totalChapters: config.totalChapters || job.totalChapters || 0,
+            success: true,
+            outputPath: result.data?.outputPath
+          });
+        }
+
         // Copy VTT to BFP audiobook folder
         if (result.data?.outputPath && job.bfpPath) {
           this.copyVttToBfp(job.bfpPath, result.data.outputPath);
@@ -2186,11 +2385,21 @@ export class QueueService {
           try {
             const el = (window as any).electron;
             if (el?.audiobook?.linkAudio) {
-              await el.audiobook.linkAudio(job.bfpPath, result.data.outputPath);
+              console.log('[QUEUE] Linking audio to BFP:', { bfpPath: job.bfpPath, outputPath: result.data.outputPath });
+              const linkResult = await el.audiobook.linkAudio(job.bfpPath, result.data.outputPath);
+              console.log('[QUEUE] linkAudio result:', linkResult);
+            } else {
+              console.warn('[QUEUE] linkAudio API not available');
             }
           } catch (err) {
             console.error('[QUEUE] Failed to auto-link audio after reassembly:', err);
           }
+        } else {
+          console.warn('[QUEUE] Skipping linkAudio:', {
+            outputPath: result.data?.outputPath,
+            endsWithM4b: result.data?.outputPath?.endsWith('.m4b'),
+            bfpPath: job.bfpPath
+          });
         }
 
         // Copy to external audiobooks directory
@@ -2813,6 +3022,22 @@ export class QueueService {
 
         console.log('[QUEUE] Video assembly complete:', result.outputPath);
 
+        // Save video-assembly analytics
+        if (job.bfpPath && job.startedAt) {
+          const completedAt = new Date();
+          const durationSeconds = Math.round((completedAt.getTime() - new Date(job.startedAt).getTime()) / 1000);
+          this.saveAnalyticsToBfp(job.bfpPath, 'video-assembly', {
+            jobId: job.id,
+            startedAt: new Date(job.startedAt).toISOString(),
+            completedAt: completedAt.toISOString(),
+            durationSeconds,
+            resolution: config.resolution || 'unknown',
+            mode: config.mode || 'unknown',
+            success: true,
+            outputPath: result.outputPath
+          });
+        }
+
         // Update master job progress
         if (job.parentJobId && job.workflowId) {
           this.updateMasterJobProgress(job.workflowId, job.parentJobId);
@@ -3217,7 +3442,8 @@ export class QueueService {
     }
 
     // Validate job type
-    if (jobType !== 'tts-conversion' && jobType !== 'ocr-cleanup') {
+    const validTypes = ['tts-conversion', 'ocr-cleanup', 'reassembly', 'video-assembly'];
+    if (!validTypes.includes(jobType)) {
       console.log('[QUEUE] Unknown job type for analytics:', jobType);
       return;
     }

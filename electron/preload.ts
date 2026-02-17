@@ -1053,7 +1053,7 @@ export interface ElectronAPI {
       success: boolean;
       error?: string;
     }>;
-    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup', analytics: { jobId: string; [key: string]: unknown }) => Promise<{
+    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly', analytics: { jobId: string; [key: string]: unknown }) => Promise<{
       success: boolean;
       error?: string;
     }>;
@@ -2180,7 +2180,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:import-epub', epubSourcePath),
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) =>
       ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
-    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup', analytics: { jobId: string; [key: string]: unknown }) =>
+    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly', analytics: { jobId: string; [key: string]: unknown }) =>
       ipcRenderer.invoke('audiobook:append-analytics', bfpPath, jobType, analytics),
     copyVtt: (bfpPath: string, m4bOutputPath: string) =>
       ipcRenderer.invoke('audiobook:copy-vtt', bfpPath, m4bOutputPath),

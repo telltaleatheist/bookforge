@@ -1384,6 +1384,7 @@ export class SessionDetailComponent {
     await this.queueService.addJob({
       type: 'reassembly',
       epubPath: session.processDir, // Use processDir as identifier
+      bfpPath: session.bfpPath ? outputDir : undefined,
       config,
       metadata: {
         title: config.metadata?.title,
@@ -1411,14 +1412,15 @@ export class SessionDetailComponent {
         }
       }
 
+      const videoBfpPath = session.bfpPath ? outputDir : undefined;
       await this.queueService.addJob({
         type: 'video-assembly',
-        bfpPath: outputDir,
+        bfpPath: videoBfpPath,
         metadata: { title: `Video (${title})` },
         config: {
           type: 'video-assembly',
           projectId: outputDir,
-          bfpPath: outputDir,
+          bfpPath: videoBfpPath,
           mode: 'monolingual' as const,
           m4bPath: `${outputDir}/audiobook.m4b`,
           vttPath: `${outputDir}/audiobook.vtt`,

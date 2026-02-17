@@ -71,7 +71,40 @@ export interface CleanupJobAnalytics {
   error?: string;
 }
 
+export interface ReassemblyJobAnalytics {
+  jobId: string;
+  startedAt: string;
+  completedAt: string;
+  durationSeconds: number;
+
+  // Input metrics
+  totalChapters: number;
+
+  // Outcome
+  success: boolean;
+  outputPath?: string;
+  error?: string;
+}
+
+export interface VideoAssemblyJobAnalytics {
+  jobId: string;
+  startedAt: string;
+  completedAt: string;
+  durationSeconds: number;
+
+  // Settings
+  resolution: string;
+  mode: string;
+
+  // Outcome
+  success: boolean;
+  outputPath?: string;
+  error?: string;
+}
+
 export interface ProjectAnalytics {
   ttsJobs: TTSJobAnalytics[];
   cleanupJobs: CleanupJobAnalytics[];
+  reassemblyJobs?: ReassemblyJobAnalytics[];
+  videoAssemblyJobs?: VideoAssemblyJobAnalytics[];
 }

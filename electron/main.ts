@@ -4785,7 +4785,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('audiobook:append-analytics', async (
     _event,
     bfpPath: string,
-    jobType: 'tts-conversion' | 'ocr-cleanup',
+    jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly',
     analytics: { jobId: string; [key: string]: unknown }
   ) => {
     const MAX_ANALYTICS_HISTORY = 10;
@@ -4802,22 +4802,30 @@ function setupIpcHandlers(): void {
       // Initialize analytics if needed
       const existingAnalytics = bfpProject.audiobook.analytics || {
         ttsJobs: [],
-        cleanupJobs: []
+        cleanupJobs: [],
+        reassemblyJobs: [],
+        videoAssemblyJobs: []
       };
 
-      // Deduplicate by jobId and append
-      if (jobType === 'tts-conversion') {
-        const dedupedJobs = (existingAnalytics.ttsJobs || []).filter(
-          (j: { jobId: string }) => j.jobId !== analytics.jobId
-        );
-        existingAnalytics.ttsJobs = [...dedupedJobs, analytics].slice(-MAX_ANALYTICS_HISTORY);
-      } else if (jobType === 'ocr-cleanup') {
-        const dedupedJobs = (existingAnalytics.cleanupJobs || []).filter(
-          (j: { jobId: string }) => j.jobId !== analytics.jobId
-        );
-        existingAnalytics.cleanupJobs = [...dedupedJobs, analytics].slice(-MAX_ANALYTICS_HISTORY);
+      // Map job type to analytics array key
+      const typeToKey: Record<string, string> = {
+        'tts-conversion': 'ttsJobs',
+        'ocr-cleanup': 'cleanupJobs',
+        'reassembly': 'reassemblyJobs',
+        'video-assembly': 'videoAssemblyJobs'
+      };
 
-        // Also set cleanedAt timestamp for OCR cleanup
+      const key = typeToKey[jobType];
+      if (key) {
+        const existing = existingAnalytics[key] || [];
+        const dedupedJobs = existing.filter(
+          (j: { jobId: string }) => j.jobId !== analytics.jobId
+        );
+        existingAnalytics[key] = [...dedupedJobs, analytics].slice(-MAX_ANALYTICS_HISTORY);
+      }
+
+      // Also set cleanedAt timestamp for OCR cleanup
+      if (jobType === 'ocr-cleanup') {
         bfpProject.audiobook.cleanedAt = new Date().toISOString();
       }
 
@@ -5092,14 +5100,11 @@ function setupIpcHandlers(): void {
       const manifest = result.manifest;
       if (!manifest.outputs) manifest.outputs = {};
 
-      // Derive VTT path from the M4B path (same directory, audiobook.vtt)
-      const outputDirRel = path.dirname(relativePath);
-      const vttRelPath = path.join(outputDirRel, 'audiobook.vtt').replace(/\\/g, '/');
-
+      // Only set the M4B path and completion time here.
+      // VTT path is handled by copyVttToBfp which runs before linkAudio.
       manifest.outputs.audiobook = {
         ...manifest.outputs.audiobook,
         path: relativePath,
-        vttPath: vttRelPath,
         completedAt: new Date().toISOString(),
       };
 
