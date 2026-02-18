@@ -99,6 +99,21 @@ let customLibraryRoot: string | null = null;
 // Tracks whether the app is actually quitting (vs just hiding the window)
 let isQuitting = false;
 
+// Zoom level persistence
+const zoomConfigPath = path.join(app.getPath('userData'), 'zoom-level.json');
+
+function loadZoomLevel(): number {
+  try {
+    const data = fsSync.readFileSync(zoomConfigPath, 'utf-8');
+    return JSON.parse(data).zoomLevel ?? 0;
+  } catch { return 0; }
+}
+
+function saveZoomLevel(level: number): void {
+  try { fsSync.writeFileSync(zoomConfigPath, JSON.stringify({ zoomLevel: level })); }
+  catch { /* ignore */ }
+}
+
 function getLibraryRoot(): string {
   if (customLibraryRoot) {
     return customLibraryRoot;
@@ -426,6 +441,10 @@ function createWindow(): void {
         </body></html>`);
     });
   }
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow?.webContents.setZoomLevel(loadZoomLevel());
+  });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -7785,6 +7804,11 @@ function setupIpcHandlers(): void {
       mainWindow?.webContents.send('editor:window-closed', projectPath);
     });
 
+    // Apply saved zoom level
+    editorWindow.webContents.on('did-finish-load', () => {
+      editorWindow.webContents.setZoomLevel(loadZoomLevel());
+    });
+
     // Load the editor route with project path as query param
     const encodedPath = encodeURIComponent(projectPath);
     if (isDev) {
@@ -7839,6 +7863,11 @@ function setupIpcHandlers(): void {
       editorWindows.delete(bfpPath);
       // Notify main window that editor closed (for refresh)
       mainWindow?.webContents.send('editor:window-closed', bfpPath);
+    });
+
+    // Apply saved zoom level
+    editorWindow.webContents.on('did-finish-load', () => {
+      editorWindow.webContents.setZoomLevel(loadZoomLevel());
     });
 
     // Load the editor route with both BFP path and source path as query params
@@ -8308,9 +8337,42 @@ app.whenReady().then(async () => {
         },
         { role: 'toggleDevTools' as const },
         { type: 'separator' as const },
-        { role: 'resetZoom' as const },
-        { role: 'zoomIn' as const },
-        { role: 'zoomOut' as const },
+        {
+          label: 'Actual Size',
+          accelerator: 'CmdOrCtrl+0',
+          click: () => {
+            saveZoomLevel(0);
+            for (const win of BrowserWindow.getAllWindows()) {
+              win.webContents.setZoomLevel(0);
+            }
+          }
+        },
+        {
+          label: 'Zoom In',
+          accelerator: 'CmdOrCtrl+=',
+          click: (_item, focusedWindow) => {
+            if (focusedWindow) {
+              const newLevel = focusedWindow.webContents.getZoomLevel() + 0.5;
+              saveZoomLevel(newLevel);
+              for (const win of BrowserWindow.getAllWindows()) {
+                win.webContents.setZoomLevel(newLevel);
+              }
+            }
+          }
+        },
+        {
+          label: 'Zoom Out',
+          accelerator: 'CmdOrCtrl+-',
+          click: (_item, focusedWindow) => {
+            if (focusedWindow) {
+              const newLevel = focusedWindow.webContents.getZoomLevel() - 0.5;
+              saveZoomLevel(newLevel);
+              for (const win of BrowserWindow.getAllWindows()) {
+                win.webContents.setZoomLevel(newLevel);
+              }
+            }
+          }
+        },
         { type: 'separator' as const },
         { role: 'togglefullscreen' as const }
       ]
