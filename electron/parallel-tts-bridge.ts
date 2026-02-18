@@ -22,6 +22,17 @@ import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
 import { getTTSLogger } from './rolling-logger';
 
+// Cap stderr buffers to prevent OOM on large books (e.g. 7983 sentences producing
+// megabytes of FFmpeg output). Only the tail is needed for error diagnostics.
+const MAX_STDERR_BYTES = 10 * 1024; // 10 KB
+function appendCapped(buf: string, chunk: string): string {
+  buf += chunk;
+  if (buf.length > MAX_STDERR_BYTES) {
+    buf = buf.slice(-MAX_STDERR_BYTES);
+  }
+  return buf;
+}
+
 // Worker log file for debugging - captures ALL worker output
 let workerLogPath: string | null = null;
 let workerLogStream: fsSync.WriteStream | null = null;
@@ -1683,7 +1694,7 @@ export async function prepareSession(
     });
 
     prepProcess.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
+      stderr = appendCapped(stderr, data.toString());
       // Log stderr for visibility
       const text = data.toString().trim();
       if (text && !text.includes('━')) {  // Skip progress bars
@@ -2494,7 +2505,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     });
 
     session.assemblyProcess.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
+      stderr = appendCapped(stderr, data.toString());
       console.log('[ASSEMBLY STDERR]', data.toString().trim());
     });
 
