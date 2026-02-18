@@ -2249,6 +2249,12 @@ export class LLWizardComponent implements OnInit {
   private isInitializing = true;
 
   constructor() {
+    // Re-scan project EPUBs whenever project dir changes (e.g. after exporting from PDF viewer)
+    effect(() => {
+      const dir = this.effectiveProjectDir();
+      if (dir) this.scanProjectEpubs();
+    });
+
     // Sync TTS language rows when target languages change
     effect(() => {
       // Skip during initialization to avoid conflicts
@@ -2268,7 +2274,7 @@ export class LLWizardComponent implements OnInit {
     this.detectedSourceLang.set(this.initialSourceLang());
     this.initializeFromSettings();
     this.checkOllamaConnection();
-    // Scan EPUBs first, then initialize TTS rows based on what's available
+    // EPUBs are scanned by the bfpPath effect — await a tick for it to complete
     await this.scanProjectEpubs();
     this.scanAvailableSessions();
     this.initializeDefaultTtsRows();

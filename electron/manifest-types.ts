@@ -29,6 +29,10 @@ export interface ProjectManifest {
   pipeline: ManifestPipeline;
   outputs: ManifestOutputs;
   editor?: ManifestEditorState;
+
+  // Organization
+  archived?: boolean;
+  sortOrder?: number;
 }
 
 export interface ManifestSource {
@@ -57,6 +61,7 @@ export interface ManifestMetadata {
   series?: string;
   seriesPosition?: number;
   outputFilename?: string;
+  contributors?: Array<{ first: string; last: string }>;
 }
 
 export interface ManifestChapter {

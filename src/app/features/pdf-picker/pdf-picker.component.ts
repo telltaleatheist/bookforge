@@ -2,7 +2,7 @@ import { Component, inject, signal, computed, HostListener, ViewChild, ElementRe
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
-import { ElectronService, Chapter } from '../../core/services/electron.service';
+import { ElectronService, Chapter, TocLine } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService, DeletedHighlight } from './services/export.service';
@@ -396,6 +396,7 @@ interface AlertModal {
               [pageImages]="pageImages()"
               [chapters]="chapters()"
               [chaptersMode]="chaptersMode()"
+              [tocSelectedBlockIds]="tocSelectedBlockIdSet()"
               [deletedPages]="deletedPages()"
               [selectedPages]="selectedPageNumbers()"
               [organizeMode]="organizeMode()"
@@ -406,6 +407,7 @@ interface AlertModal {
               (chapterDelete)="removeChapter($event)"
               (chapterSelect)="selectChapter($event)"
               (chapterRename)="renameChapter($event)"
+              (chapterLevelChange)="changeChapterLevel($event)"
               (pageDeleteToggle)="togglePageDeleted($event)"
               (pageSelect)="onPageSelect($event)"
               (deleteSelectedPages)="onDeleteSelectedPages($event)"
@@ -507,12 +509,24 @@ interface AlertModal {
             [detecting]="detectingChapters()"
             [finalizing]="finalizingChapters()"
             [selectedChapterId]="selectedChapterId()"
+            [tocMode]="tocMode()"
+            [tocEntryCount]="tocBlockIds().length"
+            [tocStep]="tocStep()"
+            [tocLines]="tocLines()"
+            [tocCheckedIndexes]="tocCheckedIndexes()"
             (cancel)="exitChaptersMode()"
             (autoDetect)="autoDetectChapters()"
+            (findSimilarChapters)="findSimilarChapters()"
+            (toggleTocMode)="toggleTocMode()"
+            (splitTocBlocks)="splitTocBlocks()"
+            (mapTocEntries)="mapTocEntries()"
+            (toggleTocLineCheck)="toggleTocLineCheck($event)"
+            (tocGoBack)="tocGoBackToBlocks()"
             (clearChapters)="clearAllChapters()"
             (selectChapter)="selectChapter($event)"
             (removeChapter)="removeChapter($event)"
             (renameChapter)="renameChapter($event)"
+            (changeLevelChapter)="changeChapterLevel($event)"
             (finalizeChapters)="finalizeChapters()"
           />
         } @else {
@@ -2683,6 +2697,14 @@ export class PdfPickerComponent implements OnInit {
   readonly detectingChapters = signal(false);
   readonly finalizingChapters = signal(false);
   readonly selectedChapterId = signal<string | null>(null);
+
+  // TOC mode state (sub-mode within chapters mode)
+  readonly tocMode = signal(false);
+  readonly tocBlockIds = signal<string[]>([]);
+  readonly tocSelectedBlockIdSet = computed(() => new Set(this.tocBlockIds()));
+  readonly tocStep = signal<'blocks' | 'lines'>('blocks');
+  readonly tocLines = signal<TocLine[]>([]);
+  readonly tocCheckedIndexes = signal<Set<number>>(new Set());
 
   // Book metadata for EPUB export
   readonly metadata = signal<BookMetadata>({});
@@ -5700,9 +5722,10 @@ export class PdfPickerComponent implements OnInit {
       this.pageRenderService.loadAllPageImages(pdfResult.page_count);
     } catch (err) {
       console.error('Failed to load project source file:', err);
+      const errorMsg = (err as Error).message || String(err);
       this.showAlert({
-        title: 'Source File Not Found',
-        message: 'Could not find the source PDF file at:\n\n' + pdfPathToLoad + '\n\nThe file may have been moved or deleted.',
+        title: 'Failed to Load Source',
+        message: `Could not load:\n${pdfPathToLoad}\n\n${errorMsg}`,
         type: 'error'
       });
     } finally {
@@ -6022,9 +6045,10 @@ export class PdfPickerComponent implements OnInit {
       }
     } catch (err) {
       console.error('Failed to load project source file:', err);
+      const errorMsg = (err as Error).message || String(err);
       this.showAlert({
-        title: 'Source File Not Found',
-        message: 'Could not find the source PDF file at:\n\n' + pdfPathToLoad + '\n\nThe file may have been moved or deleted.',
+        title: 'Failed to Load Source',
+        message: `Could not load:\n${pdfPathToLoad}\n\n${errorMsg}`,
         type: 'error'
       });
     } finally {
@@ -7092,7 +7116,7 @@ export class PdfPickerComponent implements OnInit {
     try {
       const outline = await this.electronService.extractOutline();
       if (outline && outline.length > 0) {
-        const chapters = await this.electronService.outlineToChapters(outline);
+        const chapters = await this.electronService.outlineToChapters(outline, this.deletedPages());
         if (chapters.length > 0) {
           this.chapters.set(chapters);
           this.chaptersSource.set('toc');
@@ -7106,7 +7130,7 @@ export class PdfPickerComponent implements OnInit {
   async autoDetectChapters(): Promise<void> {
     this.detectingChapters.set(true);
     try {
-      const chapters = await this.electronService.detectChapters();
+      const chapters = await this.electronService.detectChapters(this.deletedPages());
       if (chapters.length > 0) {
         // Merge with existing chapters, preferring TOC entries
         const existing = this.chapters();
@@ -7133,6 +7157,66 @@ export class PdfPickerComponent implements OnInit {
       this.showAlert({
         title: 'Detection Failed',
         message: 'Could not detect chapters: ' + (err as Error).message,
+        type: 'error'
+      });
+    } finally {
+      this.detectingChapters.set(false);
+    }
+  }
+
+  async findSimilarChapters(): Promise<void> {
+    const existing = this.chapters();
+    // Collect blockIds from existing chapters
+    const blockIds = existing
+      .map(c => c.blockId)
+      .filter((id): id is string => !!id);
+
+    if (blockIds.length < 2) {
+      this.showAlert({
+        title: 'Need More Examples',
+        message: 'Mark at least 2 chapter headings by clicking on text blocks, then try again.',
+        type: 'info'
+      });
+      return;
+    }
+
+    this.detectingChapters.set(true);
+    try {
+      const detected = await this.electronService.detectChaptersFromExamples(blockIds, this.deletedPages());
+      if (detected.length > 0) {
+        // Filter out duplicates by page proximity (within 50px on same page)
+        const newChapters = detected.filter(d => {
+          return !existing.some(e =>
+            e.page === d.page && Math.abs((e.y || 0) - (d.y || 0)) < 50
+          );
+        });
+
+        if (newChapters.length > 0) {
+          this.chapters.set([...existing, ...newChapters].sort((a, b) => {
+            if (a.page !== b.page) return a.page - b.page;
+            return (a.y || 0) - (b.y || 0);
+          }));
+          this.chaptersSource.set('mixed');
+          this.hasUnsavedChanges.set(true);
+        } else {
+          this.showAlert({
+            title: 'No New Chapters',
+            message: 'All similar blocks are already marked as chapters.',
+            type: 'info'
+          });
+        }
+      } else {
+        this.showAlert({
+          title: 'No Similar Blocks Found',
+          message: 'Could not find blocks matching your example chapters. Try marking different examples.',
+          type: 'info'
+        });
+      }
+    } catch (err) {
+      console.error('Failed to find similar chapters:', err);
+      this.showAlert({
+        title: 'Detection Failed',
+        message: 'Could not find similar chapters: ' + (err as Error).message,
         type: 'error'
       });
     } finally {
@@ -7177,6 +7261,17 @@ export class PdfPickerComponent implements OnInit {
       chapters.map(c =>
         c.id === event.chapterId
           ? { ...c, title: event.newTitle }
+          : c
+      )
+    );
+    this.hasUnsavedChanges.set(true);
+  }
+
+  changeChapterLevel(event: { chapterId: string; level: number }): void {
+    this.chapters.update(chapters =>
+      chapters.map(c =>
+        c.id === event.chapterId
+          ? { ...c, level: event.level }
           : c
       )
     );
@@ -7371,10 +7466,149 @@ export class PdfPickerComponent implements OnInit {
   }
 
   exitChaptersMode(): void {
+    this.tocMode.set(false);
+    this.tocBlockIds.set([]);
+    this.tocStep.set('blocks');
+    this.tocLines.set([]);
+    this.tocCheckedIndexes.set(new Set());
     this.setMode('select');
   }
 
+  toggleTocMode(): void {
+    const newMode = !this.tocMode();
+    this.tocMode.set(newMode);
+    if (!newMode) {
+      this.tocBlockIds.set([]);
+      this.tocStep.set('blocks');
+      this.tocLines.set([]);
+      this.tocCheckedIndexes.set(new Set());
+    }
+  }
+
+  async splitTocBlocks(): Promise<void> {
+    const tocIds = this.tocBlockIds();
+    if (tocIds.length === 0) return;
+
+    this.detectingChapters.set(true);
+    try {
+      const lines = await this.electronService.splitTocBlocks(tocIds);
+      this.tocLines.set(lines);
+
+      // Pre-check non-page-number lines
+      const checked = new Set<number>();
+      lines.forEach((line, i) => {
+        if (!line.isPageNumber) checked.add(i);
+      });
+      this.tocCheckedIndexes.set(checked);
+      this.tocStep.set('lines');
+    } catch (err) {
+      console.error('Failed to split TOC blocks:', err);
+      this.showAlert({
+        title: 'TOC Split Failed',
+        message: 'Could not split TOC blocks: ' + (err as Error).message,
+        type: 'error'
+      });
+    } finally {
+      this.detectingChapters.set(false);
+    }
+  }
+
+  toggleTocLineCheck(index: number): void {
+    const current = new Set(this.tocCheckedIndexes());
+    if (current.has(index)) {
+      current.delete(index);
+    } else {
+      current.add(index);
+    }
+    this.tocCheckedIndexes.set(current);
+  }
+
+  tocGoBackToBlocks(): void {
+    this.tocStep.set('blocks');
+    this.tocLines.set([]);
+    this.tocCheckedIndexes.set(new Set());
+  }
+
+  async mapTocEntries(): Promise<void> {
+    // Collect checked titles from line picker
+    const lines = this.tocLines();
+    const checked = this.tocCheckedIndexes();
+    const titles = lines
+      .filter((_, i) => checked.has(i))
+      .map(l => l.text);
+
+    if (titles.length === 0) return;
+
+    // Collect TOC pages from the selected blocks
+    const tocPages = [...new Set(lines.map(l => l.blockPage))];
+
+    this.detectingChapters.set(true);
+    try {
+      const result = await this.electronService.mapTitlesToChapters(titles, tocPages, this.deletedPages());
+      const existing = this.chapters();
+
+      if (result.chapters.length > 0) {
+        // Filter out duplicates by page proximity
+        const newChapters = result.chapters.filter(d =>
+          !existing.some(e => e.page === d.page && Math.abs((e.y || 0) - (d.y || 0)) < 50)
+        );
+
+        if (newChapters.length > 0) {
+          this.chapters.set([...existing, ...newChapters].sort((a, b) => {
+            if (a.page !== b.page) return a.page - b.page;
+            return (a.y || 0) - (b.y || 0);
+          }));
+          this.chaptersSource.set(existing.length > 0 ? 'mixed' : 'toc');
+          this.hasUnsavedChanges.set(true);
+        }
+
+        const mapped = result.chapters.length;
+        const unmappedCount = result.unmapped.length;
+        const msg = unmappedCount > 0
+          ? `Mapped ${mapped} chapter${mapped !== 1 ? 's' : ''}. ${unmappedCount} entr${unmappedCount !== 1 ? 'ies' : 'y'} could not be matched.`
+          : `Mapped ${mapped} chapter${mapped !== 1 ? 's' : ''}.`;
+
+        this.showAlert({ title: 'TOC Mapping Complete', message: msg, type: unmappedCount > 0 ? 'info' : 'success' });
+      } else {
+        this.showAlert({
+          title: 'No Chapters Matched',
+          message: 'Could not match any TOC entries to headings in the document. Try selecting different TOC blocks.',
+          type: 'info'
+        });
+      }
+
+      // Exit TOC mode
+      this.tocMode.set(false);
+      this.tocBlockIds.set([]);
+      this.tocStep.set('blocks');
+      this.tocLines.set([]);
+      this.tocCheckedIndexes.set(new Set());
+
+    } catch (err) {
+      console.error('Failed to map TOC entries:', err);
+      this.showAlert({
+        title: 'TOC Mapping Failed',
+        message: 'Could not map TOC entries: ' + (err as Error).message,
+        type: 'error'
+      });
+    } finally {
+      this.detectingChapters.set(false);
+    }
+  }
+
   onChapterClick(event: { block: TextBlock; level: number }): void {
+    // In TOC mode, toggle block selection for TOC mapping
+    if (this.tocMode()) {
+      const blockId = event.block.id;
+      const current = this.tocBlockIds();
+      if (current.includes(blockId)) {
+        this.tocBlockIds.set(current.filter(id => id !== blockId));
+      } else {
+        this.tocBlockIds.set([...current, blockId]);
+      }
+      return;
+    }
+
     // Check if this block is already marked as a chapter
     const existingChapter = this.chapters().find(c => c.blockId === event.block.id);
     if (existingChapter) {

@@ -439,6 +439,12 @@ export async function updateManifest(update: ManifestUpdate): Promise<ManifestSa
     if (update.editor) {
       manifest.editor = { ...manifest.editor, ...update.editor };
     }
+    if (update.archived !== undefined) {
+      manifest.archived = update.archived;
+    }
+    if (update.sortOrder !== undefined) {
+      manifest.sortOrder = update.sortOrder;
+    }
 
     return saveManifest(manifest);
   } catch (error: any) {

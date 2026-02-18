@@ -505,6 +505,7 @@ export interface DiffRequest {
 export class ProjectFilesComponent implements OnInit, OnChanges {
   readonly projectDir = input.required<string>();
   readonly projectId = input.required<string>();
+  readonly refreshTrigger = input<number>(0);
 
   readonly fileChanged = output<void>();
   readonly editFile = output<string>();
@@ -529,6 +530,9 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['projectDir'] && !changes['projectDir'].firstChange) {
+      this.scanFiles();
+    }
+    if (changes['refreshTrigger'] && !changes['refreshTrigger'].firstChange) {
       this.scanFiles();
     }
   }

@@ -105,6 +105,7 @@ export interface AudiobookMetadata {
   genre?: string;
   description?: string;
   coverPath?: string;
+  contributors?: Array<{ first: string; last: string }>;
 }
 
 /**
@@ -173,6 +174,14 @@ export function applyMetadata(filePath: string, metadata: AudiobookMetadata): Pr
       return;
     }
 
+    // Build artist string from contributors if available
+    const artistString = metadata.contributors && metadata.contributors.length > 0
+      ? metadata.contributors
+          .filter(c => c.first || c.last)
+          .map(c => [c.first, c.last].filter(Boolean).join(' '))
+          .join('; ')
+      : metadata.author;
+
     let args: string[];
 
     if (toolInfo.tool === 'tone') {
@@ -182,8 +191,8 @@ export function applyMetadata(filePath: string, metadata: AudiobookMetadata): Pr
       if (metadata.title) {
         args.push('--meta-title', metadata.title);
       }
-      if (metadata.author) {
-        args.push('--meta-artist', metadata.author);
+      if (artistString) {
+        args.push('--meta-artist', artistString);
       }
       if (metadata.year) {
         // tone requires full date format (YYYY-MM-DD), convert year-only to full date
@@ -214,8 +223,8 @@ export function applyMetadata(filePath: string, metadata: AudiobookMetadata): Pr
       if (metadata.title) {
         args.push('--name', metadata.title);
       }
-      if (metadata.author) {
-        args.push('--artist', metadata.author);
+      if (artistString) {
+        args.push('--artist', artistString);
       }
       if (metadata.year) {
         args.push('--year', metadata.year);

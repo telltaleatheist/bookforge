@@ -593,6 +593,26 @@ export function isConverting(): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Format contributors for filename:
+ * 1 author: "Last, First"
+ * 2 authors: "Last, First and Last, First"
+ * 3+: "Last, First et al."
+ */
+function formatContributorsForFilename(contributors: Array<{ first: string; last: string }>): string {
+  const valid = contributors.filter(c => c.first || c.last);
+  if (valid.length === 0) return '';
+
+  const fmt = (c: { first: string; last: string }) => {
+    if (c.last && c.first) return `${c.last}, ${c.first}`;
+    return c.last || c.first;
+  };
+
+  if (valid.length === 1) return fmt(valid[0]);
+  if (valid.length === 2) return `${fmt(valid[0])} and ${fmt(valid[1])}`;
+  return `${fmt(valid[0])} et al.`;
+}
+
+/**
  * Generate output filename from metadata
  * Format: [Title] - [Subtitle]. [Author Last], [Author First]. (year).m4b
  */
@@ -601,7 +621,8 @@ export function generateOutputFilename(
   subtitle?: string,
   author?: string,
   authorFileAs?: string,
-  year?: string
+  year?: string,
+  contributors?: Array<{ first: string; last: string }>
 ): string {
   let filename = title.trim();
 
@@ -611,7 +632,12 @@ export function generateOutputFilename(
 
   filename += '.';
 
-  if (authorFileAs?.trim()) {
+  if (contributors && contributors.length > 0) {
+    const authorStr = formatContributorsForFilename(contributors);
+    if (authorStr) {
+      filename += ` ${authorStr}.`;
+    }
+  } else if (authorFileAs?.trim()) {
     filename += ` ${authorFileAs.trim()}.`;
   } else if (author?.trim()) {
     // Auto-convert "First Last" to "Last, First"

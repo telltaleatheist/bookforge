@@ -1,5 +1,6 @@
 import { Component, inject, signal, computed, effect, OnInit, OnDestroy, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import {
   SplitPaneComponent
 } from '../../creamsicle-desktop';
@@ -44,6 +45,7 @@ import { SettingsService } from '../../core/services/settings.service';
   standalone: true,
   imports: [
     CommonModule,
+    FormsModule,
     SplitPaneComponent,
     StudioListComponent,
     AddModalComponent,
@@ -77,13 +79,29 @@ import { SettingsService } from '../../core/services/settings.service';
               </button>
             </div>
           </div>
+          <div class="search-bar">
+            <input
+              type="text"
+              placeholder="Search titles or authors..."
+              [ngModel]="searchQuery()"
+              (ngModelChange)="searchQuery.set($event)"
+              class="search-input"
+            />
+            @if (searchQuery()) {
+              <button class="search-clear" (click)="searchQuery.set('')">&times;</button>
+            }
+          </div>
           <app-studio-list
-            [articles]="studioService.articles()"
-            [books]="studioService.books()"
+            [articles]="filteredArticles()"
+            [books]="filteredBooks()"
+            [archived]="filteredArchived()"
             [selectedId]="selectedItemId()"
             (select)="selectItem($event)"
             (play)="playItem($event)"
             (contextMenu)="onContextMenu($event)"
+            (reorder)="onReorder($event)"
+            (archive)="onArchive($event)"
+            (unarchive)="onUnarchive($event)"
           />
         </div>
 
@@ -256,6 +274,7 @@ import { SettingsService } from '../../core/services/settings.service';
                   <app-project-files
                     [projectDir]="getProjectDir()"
                     [projectId]="selectedItem()?.id || ''"
+                    [refreshTrigger]="filesRefreshTrigger()"
                     (fileChanged)="onFileChanged()"
                     (editFile)="openEditorWithFile($event)"
                     (diffFiles)="onDiffFiles($event)"
@@ -275,7 +294,14 @@ import { SettingsService } from '../../core/services/settings.service';
               @if (mainTab() === 'audiobook') {
                 @switch (audiobookSubTab()) {
                   @case ('process') {
-                    @if (currentEpubPath()) {
+                    @if (needsExport()) {
+                      <div class="empty-state-panel">
+                        <div class="icon">📝</div>
+                        <p>This project needs to be finalized before processing.</p>
+                        <p class="hint">Open the editor to configure chapters, remove unwanted sections, and export as EPUB.</p>
+                        <button class="btn-open-editor" (click)="openEditor()">Open Editor</button>
+                      </div>
+                    } @else if (currentEpubPath()) {
                       <app-process-wizard
                         [epubPath]="currentEpubPath()"
                         [title]="selectedMetadata()?.title || ''"
@@ -358,7 +384,14 @@ import { SettingsService } from '../../core/services/settings.service';
               @if (mainTab() === 'language-learning') {
                 @switch (llSubTab()) {
                   @case ('process') {
-                    @if (currentEpubPath()) {
+                    @if (needsExport()) {
+                      <div class="empty-state-panel">
+                        <div class="icon">📝</div>
+                        <p>This project needs to be finalized before processing.</p>
+                        <p class="hint">Open the editor to configure chapters, remove unwanted sections, and export as EPUB.</p>
+                        <button class="btn-open-editor" (click)="openEditor()">Open Editor</button>
+                      </div>
+                    } @else if (currentEpubPath()) {
                       <app-ll-wizard
                         [epubPath]="currentEpubPath()"
                         [originalEpubPath]="selectedItem()?.epubPath || ''"
@@ -445,11 +478,16 @@ import { SettingsService } from '../../core/services/settings.service';
         [style.left.px]="contextMenuX()"
         (click)="hideContextMenu()"
       >
-        <button class="context-menu-item" (click)="openContextMenuItemFolder()">
-          Open File Location
+        @if (contextMenuSelectedIds.length <= 1) {
+          <button class="context-menu-item" (click)="openContextMenuItemFolder()">
+            Open File Location
+          </button>
+        }
+        <button class="context-menu-item" (click)="archiveContextMenuItem()">
+          {{ contextMenuItem?.archived ? 'Unarchive' : 'Archive' }}{{ contextMenuSelectedIds.length > 1 ? ' (' + contextMenuSelectedIds.length + ' items)' : '' }}
         </button>
         <button class="context-menu-item danger" (click)="deleteContextMenuItem()">
-          Delete
+          Delete{{ contextMenuSelectedIds.length > 1 ? ' (' + contextMenuSelectedIds.length + ' items)' : '' }}
         </button>
       </div>
     }
@@ -504,6 +542,55 @@ import { SettingsService } from '../../core/services/settings.service';
         flex: 1;
         overflow-y: auto;
         min-height: 0;
+      }
+    }
+
+    .search-bar {
+      position: relative;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-surface);
+
+      .search-input {
+        width: 100%;
+        padding: 6px 28px 6px 10px;
+        background: var(--bg-subtle);
+        border: 1px solid var(--border-default);
+        border-radius: 6px;
+        color: var(--text-primary);
+        font-size: 12px;
+        outline: none;
+        transition: border-color 0.2s;
+
+        &:focus {
+          border-color: var(--accent-primary);
+        }
+
+        &::placeholder {
+          color: var(--text-muted);
+        }
+      }
+
+      .search-clear {
+        position: absolute;
+        right: 18px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 18px;
+        height: 18px;
+        border: none;
+        background: none;
+        color: var(--text-muted);
+        font-size: 14px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+
+        &:hover {
+          color: var(--text-primary);
+        }
       }
     }
 
@@ -718,6 +805,8 @@ import { SettingsService } from '../../core/services/settings.service';
       &.full-height {
         padding: 0;
         overflow: hidden;
+        display: flex;
+        flex-direction: column;
       }
     }
 
@@ -774,6 +863,23 @@ import { SettingsService } from '../../core/services/settings.service';
           margin-top: 8px;
           font-size: 12px;
           color: var(--text-secondary);
+        }
+      }
+
+      .btn-open-editor {
+        margin-top: 20px;
+        padding: 10px 24px;
+        background: var(--accent-primary);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: opacity 0.2s;
+
+        &:hover {
+          opacity: 0.85;
         }
       }
     }
@@ -878,6 +984,37 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly selectedItemId = signal<string | null>(null);
   readonly fullscreenPlayer = signal<boolean>(false);
 
+  // Search
+  readonly searchQuery = signal<string>('');
+
+  private matchesSearch(item: StudioItem, query: string): boolean {
+    const q = query.toLowerCase();
+    if (item.title?.toLowerCase().includes(q)) return true;
+    if (item.author?.toLowerCase().includes(q)) return true;
+    return false;
+  }
+
+  readonly filteredBooks = computed(() => {
+    const q = this.searchQuery().trim();
+    const books = this.studioService.books();
+    if (!q) return books;
+    return books.filter(b => this.matchesSearch(b, q));
+  });
+
+  readonly filteredArticles = computed(() => {
+    const q = this.searchQuery().trim();
+    const articles = this.studioService.articles();
+    if (!q) return articles;
+    return articles.filter(a => this.matchesSearch(a, q));
+  });
+
+  readonly filteredArchived = computed(() => {
+    const q = this.searchQuery().trim();
+    const archived = this.studioService.archived();
+    if (!q) return archived;
+    return archived.filter(a => this.matchesSearch(a, q));
+  });
+
   // Tab navigation
   readonly mainTab = signal<MainTab>('files');
   readonly audiobookSubTab = signal<AudiobookSubTab>('process');
@@ -887,6 +1024,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly savingMetadata = signal<boolean>(false);
   readonly finalizingContent = signal<'idle' | 'saving' | 'done'>('idle');
   readonly disabledTabMessage = signal<string | null>(null);
+  readonly filesRefreshTrigger = signal<number>(0);
 
   // Version picker dialog
   readonly showVersionPicker = signal<boolean>(false);
@@ -896,7 +1034,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly contextMenuVisible = signal<boolean>(false);
   readonly contextMenuX = signal<number>(0);
   readonly contextMenuY = signal<number>(0);
-  private contextMenuItem: StudioItem | null = null;
+  contextMenuItem: StudioItem | null = null;
 
   // Inline diff view (shown in Files tab)
   readonly diffPaths = signal<DiffRequest | null>(null);
@@ -933,7 +1071,9 @@ export class StudioComponent implements OnInit, OnDestroy {
       year: item.year,
       language: item.language || item.sourceLang || 'en',
       coverPath: item.coverPath,
-      coverData: item.coverData
+      coverData: item.coverData,
+      outputFilename: item.outputFilename,
+      contributors: item.contributors,
     };
   });
 
@@ -941,6 +1081,13 @@ export class StudioComponent implements OnInit, OnDestroy {
     const item = this.selectedItem();
     if (!item) return '';
     return item.cleanedEpubPath || item.epubPath || '';
+  });
+
+  // True when the user hasn't finalized via the editor yet (no exported.epub)
+  readonly needsExport = computed(() => {
+    const item = this.selectedItem();
+    if (!item?.epubPath) return false;
+    return !item.epubPath.includes('exported.epub');
   });
 
   // Check if mono audiobook exists
@@ -1061,11 +1208,11 @@ export class StudioComponent implements OnInit, OnDestroy {
     if (main === 'content') return true;
     if (main === 'audiobook') {
       const sub = this.audiobookSubTab();
-      return sub === 'process' || sub === 'stream' || sub === 'play';
+      return sub === 'process' || sub === 'stream' || sub === 'play' || sub === 'review';
     }
     if (main === 'language-learning') {
       const sub = this.llSubTab();
-      return sub === 'process' || sub === 'play';
+      return sub === 'process' || sub === 'play' || sub === 'review';
     }
     return false;
   });
@@ -1094,16 +1241,32 @@ export class StudioComponent implements OnInit, OnDestroy {
 
     // Listen for editor window close events to refresh the item
     this.electronService.onEditorWindowClosed((projectPath: string) => {
-      // Find the item that matches this project path and reload it
       const item = this.selectedItem();
       if (item?.bfpPath === projectPath || item?.epubPath === projectPath) {
-        this.onItemChanged();
+        this.refreshProjectFiles();
+      }
+    });
+
+    // Listen for file save events from editor windows (updates file list in real time)
+    this.electronService.onProjectFilesChanged((projectPath: string) => {
+      const item = this.selectedItem();
+      if (item?.bfpPath === projectPath || item?.id === projectPath) {
+        this.refreshProjectFiles();
       }
     });
   }
 
   ngOnDestroy(): void {
     this.electronService.offEditorWindowClosed();
+    this.electronService.offProjectFilesChanged();
+  }
+
+  private refreshProjectFiles(): void {
+    this.filesRefreshTrigger.update(v => v + 1);
+    const id = this.selectedItemId();
+    if (id) {
+      this.studioService.reloadItem(id);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1175,7 +1338,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   onItemChanged(): void {
-    // Item was modified
+    this.refreshProjectFiles();
   }
 
   async onFileChanged(): Promise<void> {
@@ -1241,9 +1404,13 @@ export class StudioComponent implements OnInit, OnDestroy {
   // Context Menu
   // ─────────────────────────────────────────────────────────────────────────
 
-  onContextMenu(event: { event: MouseEvent; item: StudioItem }): void {
+  // Multi-selection context (IDs from the list component for bulk operations)
+  contextMenuSelectedIds: string[] = [];
+
+  onContextMenu(event: { event: MouseEvent; item: StudioItem; selectedIds: string[] }): void {
     event.event.preventDefault();
     this.contextMenuItem = event.item;
+    this.contextMenuSelectedIds = event.selectedIds;
     this.contextMenuX.set(event.event.clientX);
     this.contextMenuY.set(event.event.clientY);
     this.contextMenuVisible.set(true);
@@ -1267,6 +1434,35 @@ export class StudioComponent implements OnInit, OnDestroy {
       this.selectedItemId.set(null);
     }
     this.hideContextMenu();
+  }
+
+  async archiveContextMenuItem(): Promise<void> {
+    if (!this.contextMenuItem) return;
+    const ids = this.contextMenuSelectedIds.length > 1
+      ? this.contextMenuSelectedIds
+      : [this.contextMenuItem.id];
+    if (this.contextMenuItem.archived) {
+      await this.studioService.unarchiveItems(ids);
+    } else {
+      await this.studioService.archiveItems(ids);
+    }
+    this.hideContextMenu();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Drag/Drop Reorder & Archive
+  // ─────────────────────────────────────────────────────────────────────────
+
+  onReorder(event: { section: 'articles' | 'books' | 'archived'; orderedIds: string[] }): void {
+    this.studioService.reorderItems(event.section, event.orderedIds);
+  }
+
+  async onArchive(ids: string[]): Promise<void> {
+    await this.studioService.archiveItems(ids);
+  }
+
+  async onUnarchive(ids: string[]): Promise<void> {
+    await this.studioService.unarchiveItems(ids);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1294,7 +1490,9 @@ export class StudioComponent implements OnInit, OnDestroy {
           author: metadata.author,
           year: metadata.year,
           language: metadata.language,
-          coverData: metadata.coverData
+          coverData: metadata.coverData,
+          outputFilename: metadata.outputFilename,
+          contributors: metadata.contributors,
         });
 
         if (!result.success) {
@@ -1344,6 +1542,12 @@ export class StudioComponent implements OnInit, OnDestroy {
   async openEditor(): Promise<void> {
     const item = this.selectedItem();
     if (!item) return;
+
+    // If no exported file yet, open the source directly — no version picker needed
+    if (this.needsExport() && item.bfpPath && item.epubPath) {
+      await this.openEditorWithBfp(item.bfpPath, item.epubPath);
+      return;
+    }
 
     // If we have a BFP path, show version picker to let user choose which version to edit
     if (item.bfpPath) {

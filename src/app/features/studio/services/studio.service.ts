@@ -21,12 +21,14 @@ export class StudioService {
   // Reactive state
   private readonly _books = signal<StudioItem[]>([]);
   private readonly _articles = signal<StudioItem[]>([]);
+  private readonly _archived = signal<StudioItem[]>([]);
   private readonly _loading = signal<boolean>(false);
   private readonly _error = signal<string | null>(null);
 
   // Public computed signals
   readonly books = computed(() => this._books());
   readonly articles = computed(() => this._articles());
+  readonly archived = computed(() => this._archived());
   readonly loading = computed(() => this._loading());
   readonly error = computed(() => this._error());
 
@@ -39,6 +41,7 @@ export class StudioService {
   async loadAll(): Promise<void> {
     this._loading.set(true);
     this._error.set(null);
+    this._archived.set([]);
 
     try {
       await Promise.all([
@@ -183,6 +186,10 @@ export class StudioService {
           bilingualVttPath,
           bilingualSentencePairsPath,
           bilingualOutputs: Object.keys(bilingualOutputs).length > 0 ? bilingualOutputs : undefined,
+          outputFilename: manifest.metadata?.outputFilename,
+          contributors: manifest.metadata?.contributors,
+          archived: manifest.archived,
+          sortOrder: manifest.sortOrder,
         };
 
         // Load cover image (coverPath is library-relative, e.g. "media/cover_xxx.png")
@@ -200,14 +207,20 @@ export class StudioService {
         books.push(book);
       }
 
-      // Sort by modifiedAt descending (newest first) to ensure recently added items appear at top
-      books.sort((a, b) => {
-        const dateA = new Date(a.modifiedAt || 0).getTime();
-        const dateB = new Date(b.modifiedAt || 0).getTime();
-        return dateB - dateA;
-      });
+      // Separate archived books
+      const activeBooks = books.filter(b => !b.archived);
+      const archivedBooks = books.filter(b => b.archived);
 
-      this._books.set(books);
+      // Sort: items with sortOrder first (ascending), then by modifiedAt descending
+      this.sortItems(activeBooks);
+      this.sortItems(archivedBooks);
+
+      this._books.set(activeBooks);
+      // Merge archived books into the archived signal (combined with archived articles)
+      this._archived.update(existing => {
+        const withoutBooks = existing.filter(i => i.type !== 'book');
+        return [...withoutBooks, ...archivedBooks];
+      });
     } catch (e) {
       console.error('[StudioService] Failed to load books:', e);
     }
@@ -279,19 +292,27 @@ export class StudioService {
           epubPath: articleEpubPath,
           bfpPath: projectDir,
           hasCleaned,
+          archived: manifest.archived,
+          sortOrder: manifest.sortOrder,
         };
 
         articles.push(article);
       }
 
-      // Sort by modifiedAt descending (newest first) to ensure recently added items appear at top
-      articles.sort((a, b) => {
-        const dateA = new Date(a.modifiedAt || 0).getTime();
-        const dateB = new Date(b.modifiedAt || 0).getTime();
-        return dateB - dateA;
-      });
+      // Separate archived articles
+      const activeArticles = articles.filter(a => !a.archived);
+      const archivedArticles = articles.filter(a => a.archived);
 
-      this._articles.set(articles);
+      // Sort: items with sortOrder first (ascending), then by modifiedAt descending
+      this.sortItems(activeArticles);
+      this.sortItems(archivedArticles);
+
+      this._articles.set(activeArticles);
+      // Merge archived articles into the archived signal (combined with archived books)
+      this._archived.update(existing => {
+        const withoutArticles = existing.filter(i => i.type !== 'article');
+        return [...withoutArticles, ...archivedArticles];
+      });
     } catch (e) {
       console.error('[StudioService] Failed to load articles:', e);
     }
@@ -327,7 +348,8 @@ export class StudioService {
    */
   getItem(id: string): StudioItem | undefined {
     return this._books().find(b => b.id === id) ||
-           this._articles().find(a => a.id === id);
+           this._articles().find(a => a.id === id) ||
+           this._archived().find(a => a.id === id);
   }
 
   /**
@@ -557,6 +579,8 @@ export class StudioService {
       language?: string;
       coverPath?: string;
       coverData?: string;
+      outputFilename?: string;
+      contributors?: Array<{ first: string; last: string }>;
     }
   ): Promise<{ success: boolean; error?: string }> {
     const book = this._books().find(b => b.id === id);
@@ -581,6 +605,8 @@ export class StudioService {
           year: metadata.year ?? b.year,
           language: metadata.language ?? b.language,
           coverData: metadata.coverData ?? b.coverData,
+          outputFilename: metadata.outputFilename ?? b.outputFilename,
+          contributors: metadata.contributors ?? b.contributors,
           modifiedAt: new Date().toISOString()
         } : b)
       );
@@ -628,6 +654,84 @@ export class StudioService {
     } catch (e) {
       return { success: false, error: (e as Error).message };
     }
+  }
+
+  /**
+   * Sort items: items with sortOrder first (ascending), then by modifiedAt descending
+   */
+  private sortItems(items: StudioItem[]): void {
+    items.sort((a, b) => {
+      const aHasOrder = a.sortOrder !== undefined;
+      const bHasOrder = b.sortOrder !== undefined;
+      if (aHasOrder && bHasOrder) return a.sortOrder! - b.sortOrder!;
+      if (aHasOrder) return -1;
+      if (bHasOrder) return 1;
+      return new Date(b.modifiedAt || 0).getTime() - new Date(a.modifiedAt || 0).getTime();
+    });
+  }
+
+  /**
+   * Archive one or more items (move to Archived section)
+   */
+  async archiveItems(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      const item = this.getItem(id);
+      if (!item) continue;
+      const projectId = this.resolveProjectId(item);
+      await this.electronService.manifestUpdate({ projectId, archived: true });
+    }
+    await this.loadAll();
+  }
+
+  /**
+   * Unarchive one or more items (move back to their original sections)
+   */
+  async unarchiveItems(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      const item = this._archived().find(i => i.id === id);
+      if (!item) continue;
+      const projectId = this.resolveProjectId(item);
+      await this.electronService.manifestUpdate({ projectId, archived: false });
+    }
+    await this.loadAll();
+  }
+
+  /**
+   * Reorder items within a section by setting sortOrder on each item
+   */
+  async reorderItems(section: 'articles' | 'books' | 'archived', orderedIds: string[]): Promise<void> {
+    const items = section === 'articles' ? this._articles()
+      : section === 'books' ? this._books()
+      : this._archived();
+
+    // Optimistic local update
+    const reordered = orderedIds
+      .map(id => items.find(i => i.id === id))
+      .filter((i): i is StudioItem => !!i)
+      .map((item, idx) => ({ ...item, sortOrder: idx }));
+
+    if (section === 'articles') this._articles.set(reordered);
+    else if (section === 'books') this._books.set(reordered);
+    else this._archived.set(reordered);
+
+    // Persist sortOrder for each item
+    for (let i = 0; i < orderedIds.length; i++) {
+      const item = items.find(it => it.id === orderedIds[i]);
+      if (!item) continue;
+      const projectId = this.resolveProjectId(item);
+      await this.electronService.manifestUpdate({ projectId, sortOrder: i });
+    }
+  }
+
+  /**
+   * Resolve the manifest projectId from a StudioItem.
+   * Books use the project directory as id, but manifest needs the folder name (UUID).
+   */
+  private resolveProjectId(item: StudioItem): string {
+    if (item.type === 'article') return item.id;
+    // For books, item.id is the absolute project dir path — extract the folder name
+    const parts = item.id.split('/');
+    return parts[parts.length - 1];
   }
 
   /**

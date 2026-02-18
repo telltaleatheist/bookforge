@@ -78,6 +78,14 @@ export interface StudioItem {
     targetLang: string;
   }>;
 
+  // Metadata
+  outputFilename?: string;
+  contributors?: Array<{ first: string; last: string }>;
+
+  // Organization
+  archived?: boolean;
+  sortOrder?: number;
+
   // Error message if status is 'error'
   errorMessage?: string;
 }

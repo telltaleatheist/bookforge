@@ -9,7 +9,7 @@
  * Note: Translation and bilingual features are handled in the Bilingual tab.
  */
 
-import { Component, input, output, signal, computed, inject, OnInit } from '@angular/core';
+import { Component, input, output, signal, computed, inject, effect, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
@@ -2287,10 +2287,15 @@ export class ProcessWizardComponent implements OnInit {
     return [];
   });
 
+  // Re-scan project EPUBs whenever bfpPath changes (e.g. after exporting from PDF viewer)
+  private readonly bfpPathEffect = effect(() => {
+    const p = this.bfpPath();
+    if (p) this.scanProjectEpubs();
+  });
+
   ngOnInit(): void {
     this.initializeFromSettings();
     this.initializeTtsDefaults();
-    this.scanProjectEpubs();
     this.checkOllamaConnection();
     // Load the appropriate prompt based on initial state
     if (this.simplifyForLearning()) {

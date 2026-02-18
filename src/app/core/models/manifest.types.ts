@@ -34,6 +34,10 @@ export interface ProjectManifest {
 
   // Editor state (for books from PDF)
   editor?: ManifestEditorState;
+
+  // Organization
+  archived?: boolean;          // Hidden from active lists, shown in Archived section
+  sortOrder?: number;          // Manual sort order (ascending); fallback to modifiedAt
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -78,6 +82,7 @@ export interface ManifestMetadata {
   series?: string;
   seriesPosition?: number;
   outputFilename?: string;    // Custom output filename
+  contributors?: Array<{ first: string; last: string }>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -29,6 +29,7 @@ export interface EpubMetadata {
   identifier?: string;
   publisher?: string;
   description?: string;
+  contributors?: Array<{ first: string; last: string }>;
 }
 
 export interface EpubChapter {
@@ -469,6 +470,25 @@ export class EpubProcessor {
       publisher: getTagContent(xml, 'dc:publisher') || '',
       description: getTagContent(xml, 'dc:description') || ''
     };
+
+    // Parse all dc:creator elements into contributors
+    const creators = getAllTags(xml, 'dc:creator');
+    if (creators.length > 0) {
+      metadata.contributors = creators.map(c => {
+        const fileAs = c.attributes['opf:file-as'] || '';
+        if (fileAs && fileAs.includes(',')) {
+          const [last, first] = fileAs.split(',').map(s => s.trim());
+          return { first: first || '', last: last || '' };
+        }
+        // Fall back to parsing content as "First Last"
+        const parts = c.content.trim().split(' ');
+        if (parts.length >= 2) {
+          const last = parts.pop() || '';
+          return { first: parts.join(' '), last };
+        }
+        return { first: c.content.trim(), last: '' };
+      });
+    }
 
     // Extract year from date
     const date = getTagContent(xml, 'dc:date');
@@ -1016,8 +1036,37 @@ function updateOpfMetadata(opf: string, metadata: Partial<EpubMetadata>): string
     updateDcElement('title', metadata.title);
   }
 
-  if (metadata.author !== undefined) {
+  // Handle contributors (multiple authors) or single author
+  if (metadata.contributors && metadata.contributors.length > 0) {
+    // Remove ALL existing dc:creator elements
+    result = result.replace(/<dc:creator[^>]*>[^<]*<\/dc:creator>\s*/gi, '');
+
+    // Insert one dc:creator per contributor
+    const metadataMatch = result.match(/<metadata[^>]*>/i);
+    if (metadataMatch) {
+      const insertPoint = metadataMatch.index! + metadataMatch[0].length;
+      const creatorElements = metadata.contributors.map((c, i) => {
+        const displayName = [c.first, c.last].filter(Boolean).join(' ') || 'Unknown';
+        const fileAs = c.last && c.first ? `${c.last}, ${c.first}` : (c.last || c.first || 'Unknown');
+        const role = i === 0 ? ' opf:role="aut"' : '';
+        return `\n    <dc:creator opf:file-as="${escapeXml(fileAs)}"${role}>${escapeXml(displayName)}</dc:creator>`;
+      }).join('');
+      result = result.slice(0, insertPoint) + creatorElements + result.slice(insertPoint);
+    }
+  } else if (metadata.author !== undefined) {
     updateDcElement('creator', metadata.author);
+
+    // Handle authorFileAs as file-as attribute on creator element
+    if (metadata.authorFileAs !== undefined) {
+      const creatorRegex = /<dc:creator([^>]*)>([^<]*)<\/dc:creator>/i;
+      const creatorMatch = result.match(creatorRegex);
+      if (creatorMatch) {
+        let attributes = creatorMatch[1];
+        attributes = attributes.replace(/\s*opf:file-as="[^"]*"/g, '');
+        attributes = ` opf:file-as="${escapeXml(metadata.authorFileAs)}"` + attributes;
+        result = result.replace(creatorRegex, `<dc:creator${attributes}>${creatorMatch[2]}</dc:creator>`);
+      }
+    }
   }
 
   if (metadata.year !== undefined) {
@@ -1034,21 +1083,6 @@ function updateOpfMetadata(opf: string, metadata: Partial<EpubMetadata>): string
 
   if (metadata.description !== undefined) {
     updateDcElement('description', metadata.description);
-  }
-
-  // Handle authorFileAs as file-as attribute on creator element
-  if (metadata.authorFileAs !== undefined) {
-    // Look for opf:file-as attribute on creator
-    const creatorRegex = /<dc:creator([^>]*)>([^<]*)<\/dc:creator>/i;
-    const creatorMatch = result.match(creatorRegex);
-    if (creatorMatch) {
-      let attributes = creatorMatch[1];
-      // Remove existing file-as attribute if present
-      attributes = attributes.replace(/\s*opf:file-as="[^"]*"/g, '');
-      // Add new file-as attribute
-      attributes = ` opf:file-as="${escapeXml(metadata.authorFileAs)}"` + attributes;
-      result = result.replace(creatorRegex, `<dc:creator${attributes}>${creatorMatch[2]}</dc:creator>`);
-    }
   }
 
   return result;

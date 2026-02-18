@@ -37,6 +37,13 @@ export interface OutlineItem {
   down?: OutlineItem[];      // Nested children
 }
 
+export interface TocLine {
+  text: string;
+  blockId: string;
+  blockPage: number;
+  isPageNumber: boolean;
+}
+
 interface BrowseResult {
   path: string;
   parent: string;
@@ -645,9 +652,10 @@ export class ElectronService {
     return [];
   }
 
-  async outlineToChapters(outline: OutlineItem[]): Promise<Chapter[]> {
+  async outlineToChapters(outline: OutlineItem[], deletedPages?: Set<number>): Promise<Chapter[]> {
     if (this.isElectron) {
-      const result = await (window as any).electron.pdf.outlineToChapters(outline);
+      const deletedArr = deletedPages?.size ? Array.from(deletedPages) : undefined;
+      const result = await (window as any).electron.pdf.outlineToChapters(outline, deletedArr);
       if (result.success && result.data) {
         return result.data;
       }
@@ -655,14 +663,58 @@ export class ElectronService {
     return [];
   }
 
-  async detectChapters(): Promise<Chapter[]> {
+  async detectChapters(deletedPages?: Set<number>): Promise<Chapter[]> {
     if (this.isElectron) {
-      const result = await (window as any).electron.pdf.detectChapters();
+      const deletedArr = deletedPages?.size ? Array.from(deletedPages) : undefined;
+      const result = await (window as any).electron.pdf.detectChapters(deletedArr);
       if (result.success && result.data) {
         return result.data;
       }
     }
     return [];
+  }
+
+  async detectChaptersFromExamples(blockIds: string[], deletedPages?: Set<number>): Promise<Chapter[]> {
+    if (this.isElectron) {
+      const deletedArr = deletedPages?.size ? Array.from(deletedPages) : undefined;
+      const result = await (window as any).electron.pdf.detectChaptersFromExamples(blockIds, deletedArr);
+      if (result.success && result.data) {
+        return result.data;
+      }
+    }
+    return [];
+  }
+
+  async mapTocEntries(tocBlockIds: string[], deletedPages?: Set<number>): Promise<{ chapters: Chapter[]; unmapped: Array<{ title: string; printedPage?: number; rawLine: string }> }> {
+    if (this.isElectron) {
+      const deletedArr = deletedPages?.size ? Array.from(deletedPages) : undefined;
+      const result = await (window as any).electron.pdf.mapTocEntries(tocBlockIds, deletedArr);
+      if (result.success && result.data) {
+        return result.data;
+      }
+    }
+    return { chapters: [], unmapped: [] };
+  }
+
+  async splitTocBlocks(tocBlockIds: string[]): Promise<TocLine[]> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.splitTocBlocks(tocBlockIds);
+      if (result.success && result.data) {
+        return result.data;
+      }
+    }
+    return [];
+  }
+
+  async mapTitlesToChapters(titles: string[], tocPages: number[], deletedPages?: Set<number>): Promise<{ chapters: Chapter[]; unmapped: Array<{ title: string; rawLine: string }> }> {
+    if (this.isElectron) {
+      const deletedArr = deletedPages?.size ? Array.from(deletedPages) : undefined;
+      const result = await (window as any).electron.pdf.mapTitlesToChapters(titles, tocPages, deletedArr);
+      if (result.success && result.data) {
+        return result.data;
+      }
+    }
+    return { chapters: [], unmapped: [] };
   }
 
   async addBookmarksToPdf(pdfBase64: string, chapters: Chapter[]): Promise<string | null> {
@@ -947,6 +999,24 @@ export class ElectronService {
     }
   }
 
+  /**
+   * Subscribe to project files changed events (fired when files are saved to a project)
+   */
+  onProjectFilesChanged(callback: (projectPath: string) => void): void {
+    if (this.isElectron) {
+      (window as any).electron.editor.onFilesChanged(callback);
+    }
+  }
+
+  /**
+   * Unsubscribe from project files changed events
+   */
+  offProjectFilesChanged(): void {
+    if (this.isElectron) {
+      (window as any).electron.editor.offFilesChanged();
+    }
+  }
+
   // Library operations - copy files to library folder
   async libraryImportFile(sourcePath: string): Promise<{
     success: boolean;
@@ -1163,6 +1233,8 @@ export class ElectronService {
     language?: string;
     coverPath?: string;
     coverData?: string;
+    outputFilename?: string;
+    contributors?: Array<{ first: string; last: string }>;
   }): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.project.updateMetadata(bfpPath, metadata);

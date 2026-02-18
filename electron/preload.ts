@@ -855,8 +855,12 @@ export interface ElectronAPI {
     updateSpansForOcr: (pageNum: number, ocrBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; id?: string }>) => Promise<{ success: boolean; error?: string }>;
     // Chapter detection
     extractOutline: () => Promise<{ success: boolean; data?: OutlineItem[]; error?: string }>;
-    outlineToChapters: (outline: OutlineItem[]) => Promise<{ success: boolean; data?: Chapter[]; error?: string }>;
-    detectChapters: () => Promise<{ success: boolean; data?: Chapter[]; error?: string }>;
+    outlineToChapters: (outline: OutlineItem[], deletedPages?: number[]) => Promise<{ success: boolean; data?: Chapter[]; error?: string }>;
+    detectChapters: (deletedPages?: number[]) => Promise<{ success: boolean; data?: Chapter[]; error?: string }>;
+    detectChaptersFromExamples: (blockIds: string[], deletedPages?: number[]) => Promise<{ success: boolean; data?: Chapter[]; error?: string }>;
+    mapTocEntries: (tocBlockIds: string[], deletedPages?: number[]) => Promise<{ success: boolean; data?: { chapters: Chapter[]; unmapped: Array<{ title: string; printedPage?: number; rawLine: string }> }; error?: string }>;
+    splitTocBlocks: (tocBlockIds: string[]) => Promise<{ success: boolean; data?: Array<{ text: string; blockId: string; blockPage: number; isPageNumber: boolean }>; error?: string }>;
+    mapTitlesToChapters: (titles: string[], tocPages: number[], deletedPages?: number[]) => Promise<{ success: boolean; data?: { chapters: Chapter[]; unmapped: Array<{ title: string; rawLine: string }> }; error?: string }>;
     addBookmarks: (pdfBase64: string, chapters: Chapter[]) => Promise<{ success: boolean; data?: string; error?: string }>;
     // WYSIWYG export from canvas-rendered images
     assembleFromImages: (pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: Chapter[]) => Promise<string | null>;
@@ -1921,6 +1925,8 @@ export interface ElectronAPI {
     }>;
     onWindowClosed: (callback: (projectPath: string) => void) => void;
     offWindowClosed: () => void;
+    onFilesChanged: (callback: (projectPath: string) => void) => void;
+    offFilesChanged: () => void;
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) => Promise<{ success: boolean; error?: string }>;
   };
   pipeline: {
@@ -2041,10 +2047,18 @@ const electronAPI: ElectronAPI = {
     // Chapter detection
     extractOutline: () =>
       ipcRenderer.invoke('pdf:extract-outline'),
-    outlineToChapters: (outline: OutlineItem[]) =>
-      ipcRenderer.invoke('pdf:outline-to-chapters', outline),
-    detectChapters: () =>
-      ipcRenderer.invoke('pdf:detect-chapters'),
+    outlineToChapters: (outline: OutlineItem[], deletedPages?: number[]) =>
+      ipcRenderer.invoke('pdf:outline-to-chapters', outline, deletedPages),
+    detectChapters: (deletedPages?: number[]) =>
+      ipcRenderer.invoke('pdf:detect-chapters', deletedPages),
+    detectChaptersFromExamples: (blockIds: string[], deletedPages?: number[]) =>
+      ipcRenderer.invoke('pdf:detect-chapters-from-examples', blockIds, deletedPages),
+    mapTocEntries: (tocBlockIds: string[], deletedPages?: number[]) =>
+      ipcRenderer.invoke('pdf:map-toc-entries', tocBlockIds, deletedPages),
+    splitTocBlocks: (tocBlockIds: string[]) =>
+      ipcRenderer.invoke('pdf:split-toc-blocks', tocBlockIds),
+    mapTitlesToChapters: (titles: string[], tocPages: number[], deletedPages?: number[]) =>
+      ipcRenderer.invoke('pdf:map-titles-to-chapters', titles, tocPages, deletedPages),
     addBookmarks: (pdfBase64: string, chapters: Chapter[]) =>
       ipcRenderer.invoke('pdf:add-bookmarks', pdfBase64, chapters),
     assembleFromImages: (pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: Chapter[]) =>
@@ -3252,6 +3266,12 @@ const electronAPI: ElectronAPI = {
     },
     offWindowClosed: () => {
       ipcRenderer.removeAllListeners('editor:window-closed');
+    },
+    onFilesChanged: (callback: (projectPath: string) => void) => {
+      ipcRenderer.on('project:files-changed', (_event, projectPath) => callback(projectPath));
+    },
+    offFilesChanged: () => {
+      ipcRenderer.removeAllListeners('project:files-changed');
     },
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) =>
       ipcRenderer.invoke('editor:save-epub', epubPath, epubData),

@@ -94,9 +94,9 @@ export async function openAlignmentWindow(
     // Load the alignment route
     const isDev = !app.isPackaged;
     if (isDev) {
-      alignmentWindow.loadURL('http://localhost:4250/alignment');
+      alignmentWindow.loadURL('http://localhost:4250/#/alignment');
     } else {
-      alignmentWindow.loadFile(path.join(__dirname, '../dist/bookforge-app/browser/index.html'), {
+      alignmentWindow.loadFile(path.join(app.getAppPath(), 'dist', 'renderer', 'browser', 'index.html'), {
         hash: '/alignment'
       });
     }

@@ -19,6 +19,16 @@ import { applyMetadata } from './metadata-tools';
 
 let mainWindow: BrowserWindow | null = null;
 
+// Suppress benign mupdf WASM FinalizationRegistry errors.
+// These fire asynchronously during GC when mupdf tries to free stale page/pixmap/annotation
+// objects. They don't affect functionality — the resources are already freed by mupdf internally.
+process.on('uncaughtException', (err) => {
+  if (err instanceof WebAssembly.RuntimeError && err.stack?.includes('FinalizationRegistry')) {
+    return;
+  }
+  console.error('Uncaught exception:', err);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool Discovery
 // ─────────────────────────────────────────────────────────────────────────────
@@ -85,6 +95,9 @@ async function findPdftotext(): Promise<string | null> {
 // Custom library root (set via IPC from renderer settings)
 // Module-level so all path functions can use it
 let customLibraryRoot: string | null = null;
+
+// Tracks whether the app is actually quitting (vs just hiding the window)
+let isQuitting = false;
 
 function getLibraryRoot(): string {
   if (customLibraryRoot) {
@@ -519,20 +532,26 @@ function setupIpcHandlers(): void {
     concurrency: number = 4
   ) => {
     try {
+      const sender = event.sender;
+      const safeSend = (channel: string, data: any) => {
+        try {
+          if (!sender.isDestroyed()) sender.send(channel, data);
+        } catch { /* window closed during render */ }
+      };
       const result = await pdfAnalyzer.renderAllPagesWithPreviews(
         pdfPath,
         concurrency,
         // Preview progress callback
         (current, total) => {
-          event.sender.send('pdf:render-progress', { current, total, phase: 'preview' });
+          safeSend('pdf:render-progress', { current, total, phase: 'preview' });
         },
         // Full render callback (per-page as they complete)
         (pageNum, pagePath) => {
-          event.sender.send('pdf:page-upgraded', { pageNum, path: pagePath });
+          safeSend('pdf:page-upgraded', { pageNum, path: pagePath });
         },
         // Combined progress callback
         (current, total, phase) => {
-          event.sender.send('pdf:render-progress', { current, total, phase });
+          safeSend('pdf:render-progress', { current, total, phase });
         }
       );
       return { success: true, data: result };
@@ -821,19 +840,60 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('pdf:outline-to-chapters', async (_event, outline: any[]) => {
+  ipcMain.handle('pdf:outline-to-chapters', async (_event, outline: any[], deletedPages?: number[]) => {
     try {
-      const chapters = pdfAnalyzer.outlineToChapters(outline);
+      const deletedSet = deletedPages?.length ? new Set(deletedPages) : undefined;
+      const chapters = pdfAnalyzer.outlineToChapters(outline, deletedSet);
       return { success: true, data: chapters };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:detect-chapters', async () => {
+  ipcMain.handle('pdf:detect-chapters', async (_event, deletedPages?: number[]) => {
     try {
-      const chapters = pdfAnalyzer.detectChaptersHeuristic();
+      const deletedSet = deletedPages?.length ? new Set(deletedPages) : undefined;
+      const chapters = pdfAnalyzer.detectChaptersHeuristic(deletedSet);
       return { success: true, data: chapters };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:detect-chapters-from-examples', async (_event, exampleBlockIds: string[], deletedPages?: number[]) => {
+    try {
+      const deletedSet = deletedPages?.length ? new Set(deletedPages) : undefined;
+      const chapters = pdfAnalyzer.detectChaptersFromExamples(exampleBlockIds, deletedSet);
+      return { success: true, data: chapters };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:map-toc-entries', async (_event, tocBlockIds: string[], deletedPages?: number[]) => {
+    try {
+      const deletedSet = deletedPages?.length ? new Set(deletedPages) : undefined;
+      const result = pdfAnalyzer.mapTocEntriesToChapters(tocBlockIds, deletedSet);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:split-toc-blocks', async (_event, tocBlockIds: string[]) => {
+    try {
+      const lines = pdfAnalyzer.splitTocBlocks(tocBlockIds);
+      return { success: true, data: lines };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:map-titles-to-chapters', async (_event, titles: string[], tocPages: number[], deletedPages?: number[]) => {
+    try {
+      const deletedSet = deletedPages?.length ? new Set(deletedPages) : undefined;
+      const result = pdfAnalyzer.mapTitlesToChapters(titles, tocPages, deletedSet);
+      return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1219,6 +1279,7 @@ function setupIpcHandlers(): void {
         if (meta.series !== undefined) manifest.metadata.series = meta.series;
         if (meta.description !== undefined) manifest.metadata.description = meta.description;
         if (meta.outputFilename !== undefined) manifest.metadata.outputFilename = meta.outputFilename;
+        if (meta.contributors !== undefined) manifest.metadata.contributors = meta.contributors;
         if (meta.coverImagePath !== undefined) manifest.metadata.coverPath = meta.coverImagePath;
 
         manifest.modifiedAt = new Date().toISOString();
@@ -1253,14 +1314,15 @@ function setupIpcHandlers(): void {
         { name: 'Documents', extensions: ['docx', 'odt', 'rtf', 'txt', 'html', 'htm'] },
         { name: 'All Files', extensions: ['*'] }
       ],
-      properties: ['openFile']
+      properties: ['openFile', 'multiSelections']
     });
 
     if (result.canceled || result.filePaths.length === 0) {
       return { success: false, canceled: true };
     }
 
-    return { success: true, filePath: result.filePaths[0] };
+    // Return both single (backward compat) and multi-file results
+    return { success: true, filePath: result.filePaths[0], filePaths: result.filePaths };
   });
 
   // Open audio file picker dialog
@@ -4393,6 +4455,9 @@ function setupIpcHandlers(): void {
 
         console.log(`[audiobook:export-from-project] Exported EPUB to ${epubPath}`);
 
+        // Notify main window that project files changed
+        mainWindow?.webContents.send('project:files-changed', bfpPath);
+
         return {
           success: true,
           audiobookFolder: bfpPath,
@@ -5605,6 +5670,11 @@ function setupIpcHandlers(): void {
           skippedChunksPath: result.skippedChunksPath,
           analytics: result.analytics  // Include cleanup analytics
         });
+
+        // Notify file list so cleaned EPUB appears without manual refresh
+        if (cleanupOptions.outputDir) {
+          mainWindow.webContents.send('project:files-changed', epubGrandparent);
+        }
       }
 
       return { success: result.success, data: result };
@@ -7718,7 +7788,7 @@ function setupIpcHandlers(): void {
     // Load the editor route with project path as query param
     const encodedPath = encodeURIComponent(projectPath);
     if (isDev) {
-      editorWindow.loadURL(`http://localhost:4250/editor?project=${encodedPath}`);
+      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedPath}`);
     } else {
       const appPath = app.getAppPath();
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
@@ -7775,7 +7845,7 @@ function setupIpcHandlers(): void {
     const encodedBfp = encodeURIComponent(bfpPath);
     const encodedSource = encodeURIComponent(sourcePath);
     if (isDev) {
-      editorWindow.loadURL(`http://localhost:4250/editor?project=${encodedBfp}&source=${encodedSource}`);
+      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
     } else {
       const appPath = app.getAppPath();
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
@@ -8031,6 +8101,17 @@ function setupIpcHandlers(): void {
       await fs.writeFile(epubPath, buffer);
 
       console.log(`[EDITOR:SAVE-EPUB] Saved EPUB to ${epubPath} (${buffer.length} bytes)`);
+
+      // Notify main window that project files changed
+      // Derive project dir from the epub path (look for projects/{slug}/ pattern)
+      const projectsDir = path.join(libraryRoot, 'projects');
+      if (normalizedEpubPath.startsWith(path.normalize(projectsDir) + path.sep)) {
+        const relPath = path.relative(projectsDir, normalizedEpubPath);
+        const projectSlug = relPath.split(path.sep)[0];
+        const projectDir = path.join(projectsDir, projectSlug);
+        mainWindow?.webContents.send('project:files-changed', projectDir);
+      }
+
       return { success: true };
     } catch (err) {
       console.error('[EDITOR:SAVE-EPUB] Error:', err);
@@ -8103,7 +8184,71 @@ app.whenReady().then(async () => {
   // Auto-start library server if configured
   await autoStartLibraryServer();
 
-  // Set up application menu with Quit shortcut (Cmd+Q / Ctrl+Q)
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Window management: Cmd+W hides, Cmd+Q double-press to quit
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Cmd+W: hide the main window instead of closing
+  mainWindow!.on('close', (event) => {
+    if (!isQuitting && process.platform === 'darwin') {
+      event.preventDefault();
+      mainWindow?.hide();
+    }
+  });
+
+  // Cmd+Q: Chrome-style double-press to quit
+  let quitWarningTimeout: NodeJS.Timeout | null = null;
+  let quitPending = false;
+
+  const handleQuit = () => {
+    if (quitPending) {
+      // Second press — actually quit
+      if (quitWarningTimeout) clearTimeout(quitWarningTimeout);
+      quitPending = false;
+      isQuitting = true;
+      app.quit();
+    } else {
+      // First press — show toast, wait for second press
+      quitPending = true;
+      mainWindow?.show();
+      mainWindow?.webContents.executeJavaScript(`
+        (() => {
+          let t = document.getElementById('bf-quit-toast');
+          if (!t) {
+            t = document.createElement('div');
+            t.id = 'bf-quit-toast';
+            t.style.cssText = 'position:fixed;bottom:32px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);backdrop-filter:blur(20px);color:#fff;padding:10px 24px;border-radius:10px;font:13px/1.4 -apple-system,system-ui,sans-serif;z-index:999999;pointer-events:none;transition:opacity 0.25s;border:1px solid rgba(255,255,255,0.1);';
+            document.body.appendChild(t);
+          }
+          t.textContent = 'Press \\u2318Q again to quit';
+          t.style.opacity = '1';
+        })()
+      `).catch(() => {});
+      quitWarningTimeout = setTimeout(() => {
+        quitPending = false;
+        mainWindow?.webContents.executeJavaScript(`
+          (() => {
+            const t = document.getElementById('bf-quit-toast');
+            if (t) { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }
+          })()
+        `).catch(() => {});
+      }, 3000);
+    }
+  };
+
+  // Reload helper: re-navigate to the app instead of using webContents.reload()
+  // which can fail with file:// URLs if base href doesn't match
+  const reloadWindow = (win: BrowserWindow) => {
+    if (isDev) {
+      win.loadURL('http://localhost:4250');
+    } else {
+      const appPath = app.getAppPath();
+      const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
+      win.loadFile(indexPath);
+    }
+  };
+
+  // Set up application menu
   const isMac = process.platform === 'darwin';
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac ? [{
@@ -8115,13 +8260,19 @@ app.whenReady().then(async () => {
         { role: 'hideOthers' as const },
         { role: 'unhide' as const },
         { type: 'separator' as const },
-        { role: 'quit' as const }
+        {
+          label: 'Quit',
+          accelerator: 'CmdOrCtrl+Q',
+          click: handleQuit,
+        }
       ]
     }] : []),
     {
       label: 'File',
       submenu: [
-        isMac ? { role: 'close' as const } : { role: 'quit' as const }
+        isMac
+          ? { label: 'Close Window', accelerator: 'CmdOrCtrl+W', click: () => mainWindow?.hide() }
+          : { label: 'Quit', accelerator: 'CmdOrCtrl+Q', click: handleQuit }
       ]
     },
     {
@@ -8139,8 +8290,22 @@ app.whenReady().then(async () => {
     {
       label: 'View',
       submenu: [
-        { role: 'reload' as const },
-        { role: 'forceReload' as const },
+        {
+          label: 'Reload',
+          accelerator: 'CmdOrCtrl+R',
+          click: (_item, focusedWindow) => {
+            if (focusedWindow) reloadWindow(focusedWindow);
+          }
+        },
+        {
+          label: 'Force Reload',
+          accelerator: 'CmdOrCtrl+Shift+R',
+          click: (_item, focusedWindow) => {
+            if (focusedWindow) {
+              focusedWindow.webContents.session.clearCache().then(() => reloadWindow(focusedWindow));
+            }
+          }
+        },
         { role: 'toggleDevTools' as const },
         { type: 'separator' as const },
         { role: 'resetZoom' as const },
@@ -8155,13 +8320,16 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(menu);
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+    } else {
       createWindow();
     }
   });
 });
 
 app.on('window-all-closed', () => {
+  // On macOS, don't quit when all windows close (app stays in dock)
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -8171,6 +8339,7 @@ app.on('window-all-closed', () => {
 let cleanupDone = false;
 
 app.on('before-quit', async (event) => {
+  isQuitting = true;
   if (cleanupDone) return;
 
   // Prevent quit until cleanup is done

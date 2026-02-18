@@ -14,6 +14,7 @@ export interface EpubMetadata {
   coverPath?: string;
   coverData?: string;
   outputFilename?: string;
+  contributors?: Array<{ first: string; last: string }>;
 }
 
 @Component({
@@ -54,28 +55,35 @@ export interface EpubMetadata {
           />
         </div>
 
-        <div class="form-row">
-          <div class="form-group">
-            <label for="authorFirst">Author First</label>
-            <input
-              id="authorFirst"
-              type="text"
-              [ngModel]="formData().authorFirst"
-              (ngModelChange)="updateAuthorField('authorFirst', $event)"
-              placeholder="First name"
-            />
-          </div>
-
-          <div class="form-group">
-            <label for="authorLast">Author Last</label>
-            <input
-              id="authorLast"
-              type="text"
-              [ngModel]="formData().authorLast"
-              (ngModelChange)="updateAuthorField('authorLast', $event)"
-              placeholder="Last name"
-            />
-          </div>
+        <!-- Authors -->
+        <div class="authors-section">
+          <label class="section-label">Authors</label>
+          @for (author of formAuthors(); track $index) {
+            <div class="form-row author-row">
+              <div class="form-group">
+                <input
+                  type="text"
+                  [ngModel]="author.first"
+                  (ngModelChange)="updateAuthor($index, 'first', $event)"
+                  placeholder="First name"
+                />
+              </div>
+              <div class="form-group">
+                <input
+                  type="text"
+                  [ngModel]="author.last"
+                  (ngModelChange)="updateAuthor($index, 'last', $event)"
+                  placeholder="Last name"
+                />
+              </div>
+              @if (formAuthors().length > 1) {
+                <button class="remove-author-btn" (click)="removeAuthor($index)" title="Remove author">
+                  &times;
+                </button>
+              }
+            </div>
+          }
+          <button class="add-author-btn" (click)="addAuthor()">+ Add Author</button>
         </div>
 
         <div class="form-row">
@@ -263,6 +271,59 @@ export interface EpubMetadata {
       }
     }
 
+    .authors-section {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+
+      .section-label {
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+      }
+    }
+
+    .author-row {
+      align-items: flex-end;
+    }
+
+    .remove-author-btn {
+      flex-shrink: 0;
+      width: 28px;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      color: var(--text-muted);
+      font-size: 1.125rem;
+      cursor: pointer;
+      transition: all 0.2s;
+
+      &:hover {
+        color: var(--error);
+        border-color: var(--error);
+      }
+    }
+
+    .add-author-btn {
+      align-self: flex-start;
+      background: none;
+      border: none;
+      color: var(--accent-primary);
+      font-size: 0.8125rem;
+      cursor: pointer;
+      padding: 0.25rem 0;
+
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+
     .year-group {
       flex: 0 0 auto;
       width: 80px;
@@ -302,6 +363,9 @@ export class MetadataEditorComponent {
   // Local state for save feedback
   readonly saveSuccess = signal(false);
 
+  // Authors array (separate signal for clean reactivity)
+  readonly formAuthors = signal<Array<{ first: string; last: string }>>([{ first: '', last: '' }]);
+
   // Internal form state
   readonly formData = signal<EpubMetadata>({
     title: '',
@@ -328,6 +392,7 @@ export class MetadataEditorComponent {
   // Generated filename (used when not manually edited)
   readonly generatedFilename = computed(() => {
     const data = this.formData();
+    const authors = this.formAuthors();
     let filename = data.title || 'Untitled';
 
     if (data.subtitle) {
@@ -336,15 +401,9 @@ export class MetadataEditorComponent {
 
     filename += '.';
 
-    // Use Last, First format
-    if (data.authorLast) {
-      filename += ` ${data.authorLast}`;
-      if (data.authorFirst) {
-        filename += `, ${data.authorFirst}`;
-      }
-      filename += '.';
-    } else if (data.authorFirst) {
-      filename += ` ${data.authorFirst}.`;
+    const authorStr = this.formatAuthorsForFilename(authors);
+    if (authorStr) {
+      filename += ` ${authorStr}.`;
     }
 
     if (data.year) {
@@ -364,24 +423,30 @@ export class MetadataEditorComponent {
     effect(() => {
       const meta = this.metadata();
       if (meta) {
-        // Parse author into first/last if not already set
-        let authorFirst = meta.authorFirst || '';
-        let authorLast = meta.authorLast || '';
-
-        if (!authorFirst && !authorLast && meta.author) {
-          const parts = meta.author.trim().split(' ');
-          if (parts.length >= 2) {
-            authorLast = parts.pop() || '';
-            authorFirst = parts.join(' ');
-          } else {
-            authorFirst = meta.author;
+        // Build authors array from contributors or fall back to parsing author string
+        let authors: Array<{ first: string; last: string }>;
+        if (meta.contributors && meta.contributors.length > 0) {
+          authors = meta.contributors.map(c => ({ ...c }));
+        } else {
+          let first = meta.authorFirst || '';
+          let last = meta.authorLast || '';
+          if (!first && !last && meta.author) {
+            const parts = meta.author.trim().split(' ');
+            if (parts.length >= 2) {
+              last = parts.pop() || '';
+              first = parts.join(' ');
+            } else {
+              first = meta.author;
+            }
           }
+          authors = [{ first, last }];
         }
 
+        this.formAuthors.set(authors);
         this.formData.set({
           ...meta,
-          authorFirst,
-          authorLast
+          authorFirst: authors[0]?.first || '',
+          authorLast: authors[0]?.last || '',
         });
 
         // Reset manual edit flag when loading new metadata
@@ -414,25 +479,89 @@ export class MetadataEditorComponent {
       this.formData.update(data => ({ ...data, outputFilename: '' }));
     }
 
-    this.metadataChange.emit(this.formData());
+    this.metadataChange.emit(this.buildEmitData());
   }
 
-  updateAuthorField(field: 'authorFirst' | 'authorLast', value: string): void {
-    this.formData.update(data => {
-      const updated = { ...data, [field]: value };
-      // Also update the combined author field
-      const first = field === 'authorFirst' ? value : data.authorFirst || '';
-      const last = field === 'authorLast' ? value : data.authorLast || '';
-      updated.author = [first, last].filter(Boolean).join(' ');
+  updateAuthor(index: number, field: 'first' | 'last', value: string): void {
+    this.formAuthors.update(authors => {
+      const updated = authors.map((a, i) => i === index ? { ...a, [field]: value } : a);
       return updated;
     });
+    this.syncAuthorToFormData();
 
     // If filename wasn't manually edited, clear it to use generated
     if (!this.filenameManuallyEdited) {
       this.formData.update(data => ({ ...data, outputFilename: '' }));
     }
 
-    this.metadataChange.emit(this.formData());
+    this.metadataChange.emit(this.buildEmitData());
+  }
+
+  addAuthor(): void {
+    this.formAuthors.update(authors => [...authors, { first: '', last: '' }]);
+    this.syncAuthorToFormData();
+
+    if (!this.filenameManuallyEdited) {
+      this.formData.update(data => ({ ...data, outputFilename: '' }));
+    }
+
+    this.metadataChange.emit(this.buildEmitData());
+  }
+
+  removeAuthor(index: number): void {
+    this.formAuthors.update(authors => authors.filter((_, i) => i !== index));
+    this.syncAuthorToFormData();
+
+    if (!this.filenameManuallyEdited) {
+      this.formData.update(data => ({ ...data, outputFilename: '' }));
+    }
+
+    this.metadataChange.emit(this.buildEmitData());
+  }
+
+  private syncAuthorToFormData(): void {
+    const authors = this.formAuthors();
+    // Build combined author string from all authors: "First Last, First Last"
+    const authorStr = authors
+      .map(a => [a.first, a.last].filter(Boolean).join(' '))
+      .filter(Boolean)
+      .join(', ');
+    const first = authors[0]?.first || '';
+    const last = authors[0]?.last || '';
+    this.formData.update(data => ({
+      ...data,
+      author: authorStr,
+      authorFirst: first,
+      authorLast: last,
+    }));
+  }
+
+  private formatAuthorsForFilename(authors: Array<{ first: string; last: string }>): string {
+    const valid = authors.filter(a => a.first || a.last);
+    if (valid.length === 0) return '';
+
+    const formatOne = (a: { first: string; last: string }) => {
+      if (a.last && a.first) return `${a.last}, ${a.first}`;
+      return a.last || a.first;
+    };
+
+    if (valid.length === 1) {
+      return formatOne(valid[0]);
+    }
+    if (valid.length === 2) {
+      return `${formatOne(valid[0])} and ${formatOne(valid[1])}`;
+    }
+    // 3+: first author et al.
+    return `${formatOne(valid[0])} et al.`;
+  }
+
+  private buildEmitData(): EpubMetadata {
+    const data = this.formData();
+    const authors = this.formAuthors();
+    return {
+      ...data,
+      contributors: authors.filter(a => a.first || a.last),
+    };
   }
 
   onFilenameFocus(): void {
@@ -469,7 +598,7 @@ export class MetadataEditorComponent {
       const coverData = reader.result as string;
       this.formData.update(data => ({ ...data, coverData }));
       this.coverChange.emit(coverData);
-      this.metadataChange.emit(this.formData());
+      this.metadataChange.emit(this.buildEmitData());
     };
     reader.readAsDataURL(file);
   }
@@ -477,11 +606,11 @@ export class MetadataEditorComponent {
   removeCover(): void {
     this.formData.update(data => ({ ...data, coverData: '', coverPath: '' }));
     this.coverChange.emit('');
-    this.metadataChange.emit(this.formData());
+    this.metadataChange.emit(this.buildEmitData());
   }
 
   onSave(): void {
-    this.save.emit(this.formData());
+    this.save.emit(this.buildEmitData());
   }
 
 

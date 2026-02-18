@@ -114,6 +114,24 @@ export interface Chapter {
   confidence?: number;       // 0-1 for heuristic detection
 }
 
+export interface TocEntry {
+  title: string;
+  printedPage?: number;
+  rawLine: string;
+}
+
+export interface TocLine {
+  text: string;
+  blockId: string;
+  blockPage: number;
+  isPageNumber: boolean;
+}
+
+export interface TocMapResult {
+  chapters: Chapter[];
+  unmapped: TocEntry[];
+}
+
 // Outline item from PDF TOC
 export interface OutlineItem {
   title: string;
@@ -267,6 +285,12 @@ export class PDFAnalyzer {
     const sendProgress = onProgress || (() => {});
     sendProgress('loading', 'Loading document...');
 
+    // Clean up previous document to avoid WASM memory issues
+    if (this.doc) {
+      try { this.doc.destroy(); } catch { /* ignore */ }
+      this.doc = null;
+    }
+
     const mupdfLib = await getMupdf();
     const fileHash = await this.computeAnalysisHash(pdfPath);
 
@@ -288,7 +312,7 @@ export class PDFAnalyzer {
 
         // Layout reflowable documents (EPUBs) so page numbers are meaningful
         if (mimeType === 'application/epub+zip') {
-          this.doc.layout(800, 1200, 12);
+          this.doc.layout(600, 900, 18);
         }
 
         return cached;
@@ -318,8 +342,10 @@ export class PDFAnalyzer {
     }
 
     // Layout reflowable documents (EPUBs) so page numbers are meaningful
-    if (this.doc.isReflowable()) {
-      this.doc.layout(800, 1200, 12);
+    // Note: doc.isReflowable() has a bug in mupdf.js (missing return statement),
+    // so we use mimeType check instead, consistent with all other call sites.
+    if (mimeType === 'application/epub+zip') {
+      this.doc.layout(600, 900, 18);
     }
 
     let totalPages: number;
@@ -1350,7 +1376,7 @@ export class PDFAnalyzer {
       const mimeType = getMimeType(pdfPath);
       tempDoc = mupdfLib.Document.openDocument(data, mimeType);
       if (mimeType === 'application/epub+zip') {
-        tempDoc.layout(800, 1200, 12);
+        tempDoc.layout(600, 900, 18);
       }
       doc = tempDoc;
     }
@@ -1412,7 +1438,7 @@ export class PDFAnalyzer {
     }
 
     if (mimeType === 'application/epub+zip') {
-      doc.layout(800, 1200, 12);
+      doc.layout(600, 900, 18);
     }
 
     let totalPages;
@@ -1577,7 +1603,7 @@ export class PDFAnalyzer {
     const mimeType = getMimeType(pdfPath);
     const doc = mupdfLib.Document.openDocument(data, mimeType);
     if (mimeType === 'application/epub+zip') {
-      doc.layout(800, 1200, 12);
+      doc.layout(600, 900, 18);
     }
     const totalPages = doc.countPages();
 
@@ -3851,33 +3877,41 @@ export class PDFAnalyzer {
     const convertOutline = (items: any[]): OutlineItem[] => {
       const result: OutlineItem[] = [];
       for (const item of items) {
-        let pageNum = 0;
+        let pageNum: number | undefined;
         let yPos: number | undefined;
 
-        // Try to get page number directly
-        if (typeof item.page === 'number' && !isNaN(item.page)) {
+        // PRIMARY: Use item.page from loadOutline() — mupdf's _wasm_outline_get_page()
+        // already resolves to the absolute page number using the document's internal
+        // state (including layout for reflowable EPUBs). This is the most reliable source.
+        if (typeof item.page === 'number' && !isNaN(item.page) && item.page >= 0) {
           pageNum = item.page;
         }
-        // For EPUBs, mupdf may provide a URI instead - try to resolve it
-        else if (item.uri && this.doc) {
+
+        // SECONDARY: Try resolveLink() if item.page wasn't available
+        if (pageNum === undefined && item.uri && this.doc) {
           try {
-            // resolveLinkDestination converts a URI to a location with page + coordinates
-            const dest = this.doc.resolveLinkDestination(item.uri);
-            if (dest && typeof dest.page === 'number' && !isNaN(dest.page)) {
-              pageNum = dest.page;
-              if (typeof dest.y === 'number' && !isNaN(dest.y)) {
-                yPos = dest.y;
-              }
+            const absPage = this.doc.resolveLink(item.uri);
+            if (typeof absPage === 'number' && !isNaN(absPage) && absPage >= 0) {
+              pageNum = absPage;
             }
           } catch (e) {
-            // resolveLink may fail for some URIs, default to 0
             console.warn(`[extractOutline] Could not resolve URI: ${item.uri}`, e);
           }
         }
 
+        // Get y-coordinate from the full destination for precise positioning
+        if (item.uri && this.doc) {
+          try {
+            const dest = this.doc.resolveLinkDestination(item.uri);
+            if (dest && typeof dest.y === 'number' && !isNaN(dest.y)) {
+              yPos = dest.y;
+            }
+          } catch { /* ignore */ }
+        }
+
         const outlineItem: OutlineItem = {
           title: item.title || '',
-          page: pageNum,
+          page: pageNum ?? 0,
           y: yPos,
         };
         if (item.down && Array.isArray(item.down) && item.down.length > 0) {
@@ -3892,14 +3926,17 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Convert outline items to flat chapter list with levels
+   * Convert outline items to flat chapter list with levels.
+   * Filters out degenerate outlines where there's roughly one entry per page
+   * (common in scanned PDFs assembled from individual page files).
    */
-  outlineToChapters(outline: OutlineItem[]): Chapter[] {
+  outlineToChapters(outline: OutlineItem[], deletedPages?: Set<number>): Chapter[] {
     const chapters: Chapter[] = [];
     let idCounter = 0;
 
     const flatten = (items: OutlineItem[], level: number) => {
       for (const item of items) {
+        if (deletedPages?.has(item.page)) continue;
         chapters.push({
           id: `toc-${idCounter++}`,
           title: item.title,
@@ -3915,6 +3952,15 @@ export class PDFAnalyzer {
     };
 
     flatten(outline, 1);
+
+    // Detect degenerate outlines: if there's roughly one entry per page,
+    // these are page bookmarks (e.g., "Pagina 001.pdf"), not real chapters.
+    const pageCount = this.pageDimensions.length;
+    if (pageCount > 10 && chapters.length >= pageCount * 0.5) {
+      console.log(`[outlineToChapters] Skipping degenerate outline: ${chapters.length} entries for ${pageCount} pages`);
+      return [];
+    }
+
     return chapters;
   }
 
@@ -3925,7 +3971,7 @@ export class PDFAnalyzer {
    * - Title category blocks
    * - Bold text in top portion of page
    */
-  detectChaptersHeuristic(): Chapter[] {
+  detectChaptersHeuristic(deletedPages?: Set<number>): Chapter[] {
     if (this.blocks.length === 0) {
       return [];
     }
@@ -3938,8 +3984,9 @@ export class PDFAnalyzer {
     const numberedChapterPattern = /^(chapter|part|section)\s+[\dIVXLCDMivxlcdm]+\.?\s*[:\-]?\s*.+/i;
 
     for (const block of this.blocks) {
-      // Skip non-text blocks and very small blocks
+      // Skip non-text blocks, very small blocks, and blocks on deleted pages
       if (block.is_image || block.char_count < 3) continue;
+      if (deletedPages?.has(block.page)) continue;
 
       const text = block.text.trim();
       let confidence = 0;
@@ -4029,6 +4076,241 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Detect chapters by learning from user-provided example blocks.
+   * Builds a weighted scoring model from 2+ example chapter blocks, then
+   * scans all blocks to find similar ones.
+   */
+  detectChaptersFromExamples(exampleBlockIds: string[], deletedPages?: Set<number>): Chapter[] {
+    if (exampleBlockIds.length < 2 || this.blocks.length === 0) {
+      return [];
+    }
+
+    // 1. Look up example blocks
+    const exampleBlocks = exampleBlockIds
+      .map(id => this.blocks.find(b => b.id === id))
+      .filter((b): b is TextBlock => b !== undefined);
+
+    if (exampleBlocks.length < 2) {
+      return [];
+    }
+
+    const bodyFontSize = this.getBodyFontSize();
+
+    // 2. Extract features from examples
+    const features = exampleBlocks.map(b => {
+      const pageHeight = this.pageDimensions[b.page]?.height || 800;
+      return {
+        fontSize: b.font_size,
+        fontSizeRatio: b.font_size / bodyFontSize,
+        fontName: b.font_name,
+        isBold: b.is_bold,
+        isItalic: b.is_italic,
+        charCount: b.char_count,
+        lineCount: b.line_count,
+        yRatio: b.y / pageHeight,
+        isTopQuarter: (b.y / pageHeight) < 0.25,
+      };
+    });
+
+    // 3. Compute fingerprint with consistency weights
+
+    // Font size: median and tolerance
+    const fontSizes = features.map(f => f.fontSize).sort((a, b) => a - b);
+    const medianFontSize = fontSizes[Math.floor(fontSizes.length / 2)];
+    const fontSizeRange = Math.max(...fontSizes) - Math.min(...fontSizes);
+    // Tolerance: at least ±20% of median, or the example range + 1pt margin
+    const fontSizeTolerance = Math.max(medianFontSize * 0.2, fontSizeRange + 1);
+    // Weight: high if examples have similar sizes, low if wildly different
+    const fontSizeWeight = fontSizeRange < medianFontSize * 0.15 ? 1.0
+      : fontSizeRange < medianFontSize * 0.3 ? 0.6
+      : 0.2;
+
+    // Font name
+    const fontNames = new Set(features.map(f => f.fontName));
+    const commonFontName = fontNames.size === 1 ? features[0].fontName : null;
+    const fontNameWeight = fontNames.size === 1 ? 0.8 : 0.0;
+
+    // Bold
+    const boldValues = new Set(features.map(f => f.isBold));
+    const expectedBold = boldValues.size === 1 ? features[0].isBold : null;
+    const boldWeight = boldValues.size === 1 ? 0.8 : 0.0;
+
+    // Italic
+    const italicValues = new Set(features.map(f => f.isItalic));
+    const expectedItalic = italicValues.size === 1 ? features[0].isItalic : null;
+    const italicWeight = italicValues.size === 1 ? 0.5 : 0.0;
+
+    // Character count range with generous margin
+    const charCounts = features.map(f => f.charCount).sort((a, b) => a - b);
+    const minCharCount = Math.min(...charCounts);
+    const maxCharCount = Math.max(...charCounts);
+    const charRange = maxCharCount - minCharCount;
+    // Allow 2x the range as margin on each side, minimum 10 chars
+    const charMargin = Math.max(charRange * 2, 10);
+    const charLower = Math.max(1, minCharCount - charMargin);
+    const charUpper = maxCharCount + charMargin;
+    const charWeight = charRange < maxCharCount * 0.5 ? 0.5 : 0.2;
+
+    // Line count
+    const lineCounts = features.map(f => f.lineCount).sort((a, b) => a - b);
+    const minLineCount = Math.min(...lineCounts);
+    const maxLineCount = Math.max(...lineCounts);
+    const lineWeight = (maxLineCount - minLineCount) <= 1 ? 0.4 : 0.1;
+
+    // Y position pattern
+    const yRatios = features.map(f => f.yRatio).sort((a, b) => a - b);
+    const medianYRatio = yRatios[Math.floor(yRatios.length / 2)];
+    const yRange = Math.max(...yRatios) - Math.min(...yRatios);
+    const yTolerance = Math.max(yRange + 0.1, 0.2);
+    // Weight: high if examples cluster at similar position, low if scattered
+    const positionWeight = yRange < 0.15 ? 0.6 : yRange < 0.3 ? 0.3 : 0.1;
+
+    // Collect existing chapter blockIds for exclusion
+    const existingBlockIds = new Set(exampleBlockIds);
+
+    // 4. Score every block
+    const candidates: Array<{ block: TextBlock; confidence: number }> = [];
+
+    for (const block of this.blocks) {
+      if (block.is_image || block.char_count < 2) continue;
+      if (existingBlockIds.has(block.id)) continue;
+      if (deletedPages?.has(block.page)) continue;
+
+      const pageHeight = this.pageDimensions[block.page]?.height || 800;
+
+      let totalScore = 0;
+      let totalWeight = 0;
+
+      // Font size score
+      if (fontSizeWeight > 0) {
+        const sizeDiff = Math.abs(block.font_size - medianFontSize);
+        const fontSizeScore = sizeDiff <= fontSizeTolerance
+          ? 1.0 - (sizeDiff / fontSizeTolerance) * 0.5
+          : 0;
+        totalScore += fontSizeScore * fontSizeWeight;
+        totalWeight += fontSizeWeight;
+      }
+
+      // Font name score
+      if (fontNameWeight > 0 && commonFontName) {
+        const fontNameScore = block.font_name === commonFontName ? 1.0 : 0.0;
+        totalScore += fontNameScore * fontNameWeight;
+        totalWeight += fontNameWeight;
+      }
+
+      // Bold score
+      if (boldWeight > 0 && expectedBold !== null) {
+        const boldScore = block.is_bold === expectedBold ? 1.0 : 0.0;
+        totalScore += boldScore * boldWeight;
+        totalWeight += boldWeight;
+      }
+
+      // Italic score
+      if (italicWeight > 0 && expectedItalic !== null) {
+        const italicScore = block.is_italic === expectedItalic ? 1.0 : 0.0;
+        totalScore += italicScore * italicWeight;
+        totalWeight += italicWeight;
+      }
+
+      // Length score
+      if (charWeight > 0) {
+        let lengthScore: number;
+        if (block.char_count >= charLower && block.char_count <= charUpper) {
+          lengthScore = 1.0;
+        } else {
+          const dist = block.char_count < charLower
+            ? charLower - block.char_count
+            : block.char_count - charUpper;
+          lengthScore = Math.max(0, 1.0 - dist / charUpper);
+        }
+        totalScore += lengthScore * charWeight;
+        totalWeight += charWeight;
+      }
+
+      // Line count score
+      if (lineWeight > 0) {
+        let lineCountScore: number;
+        if (block.line_count >= minLineCount && block.line_count <= maxLineCount) {
+          lineCountScore = 1.0;
+        } else {
+          const dist = block.line_count < minLineCount
+            ? minLineCount - block.line_count
+            : block.line_count - maxLineCount;
+          lineCountScore = Math.max(0, 1.0 - dist * 0.3);
+        }
+        totalScore += lineCountScore * lineWeight;
+        totalWeight += lineWeight;
+      }
+
+      // Position score
+      if (positionWeight > 0) {
+        const yRatio = block.y / pageHeight;
+        const yDiff = Math.abs(yRatio - medianYRatio);
+        const positionScore = yDiff <= yTolerance
+          ? 1.0 - (yDiff / yTolerance) * 0.5
+          : 0;
+        totalScore += positionScore * positionWeight;
+        totalWeight += positionWeight;
+      }
+
+      const confidence = totalWeight > 0 ? totalScore / totalWeight : 0;
+
+      if (confidence >= 0.5) {
+        candidates.push({ block, confidence });
+      }
+    }
+
+    // 5. Build chapter list
+    const chapters: Chapter[] = candidates.map(({ block, confidence }) => ({
+      id: this.hashId(`example-${block.page}-${block.y}-${block.text.substring(0, 20)}`),
+      title: block.text.trim().length > 80
+        ? block.text.trim().substring(0, 77) + '...'
+        : block.text.trim(),
+      page: block.page,
+      blockId: block.id,
+      y: block.y,
+      level: this.inferChapterLevel(block.text.trim(), block.font_size, bodyFontSize),
+      source: 'heuristic' as const,
+      confidence,
+    }));
+
+    // Sort by page, then y position
+    chapters.sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return (a.y || 0) - (b.y || 0);
+    });
+
+    // 6. Merge adjacent blocks on same page (multi-line titles)
+    const merged: Chapter[] = [];
+    for (const chapter of chapters) {
+      const prev = merged[merged.length - 1];
+      if (prev && prev.page === chapter.page) {
+        const prevBlock = prev.blockId ? this.blocks.find(b => b.id === prev.blockId) : null;
+        const curBlock = chapter.blockId ? this.blocks.find(b => b.id === chapter.blockId) : null;
+
+        if (prevBlock && curBlock) {
+          const prevBottom = prevBlock.y + prevBlock.height;
+          const gap = curBlock.y - prevBottom;
+          const maxGap = Math.max(prevBlock.font_size, curBlock.font_size) * 1.5;
+          const similarFont = Math.abs(prevBlock.font_size - curBlock.font_size) < prevBlock.font_size * 0.3;
+
+          if (gap < maxGap && similarFont) {
+            const combinedTitle = `${prev.title} ${chapter.title}`.trim();
+            prev.title = combinedTitle.length > 80
+              ? combinedTitle.substring(0, 77) + '...'
+              : combinedTitle;
+            prev.confidence = Math.max(prev.confidence || 0, chapter.confidence || 0);
+            continue;
+          }
+        }
+      }
+      merged.push(chapter);
+    }
+
+    return merged;
+  }
+
+  /**
    * Infer chapter level from text pattern and font size
    */
   private inferChapterLevel(text: string, fontSize: number, bodyFontSize: number): number {
@@ -4051,6 +4333,421 @@ export class PDFAnalyzer {
 
     // Level 3: Subsections or normal heading size
     return 3;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // TOC-Based Chapter Detection
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Parse a single TOC line into a title + optional page number.
+   * Handles common TOC formats: dot leaders, tab leaders, whitespace gaps, trailing numbers.
+   */
+  private parseTocLine(line: string): TocEntry | null {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.length < 2) return null;
+
+    // Pattern 1: Dot/dash/tab leaders — "Chapter 1 ............ 23"
+    const leaderMatch = trimmed.match(/^(.+?)\s*[.\u2026\u2014\u2013\-\t]{2,}\s*(\d+)\s*$/);
+    if (leaderMatch) {
+      return { title: leaderMatch[1].trim(), printedPage: parseInt(leaderMatch[2], 10), rawLine: trimmed };
+    }
+
+    // Pattern 2: Wide whitespace gap — "Introduction   3"
+    const wideGapMatch = trimmed.match(/^(.+?)\s{3,}(\d+)\s*$/);
+    if (wideGapMatch) {
+      return { title: wideGapMatch[1].trim(), printedPage: parseInt(wideGapMatch[2], 10), rawLine: trimmed };
+    }
+
+    // Pattern 3: Trailing number with title > 3 chars — "Prologue 1"
+    const trailingMatch = trimmed.match(/^(.{4,}?)\s+(\d+)\s*$/);
+    if (trailingMatch) {
+      return { title: trailingMatch[1].trim(), printedPage: parseInt(trailingMatch[2], 10), rawLine: trimmed };
+    }
+
+    // Fallback: title only, no page number (still valid for matching)
+    return { title: trimmed, rawLine: trimmed };
+  }
+
+  /**
+   * Check if a line is purely a page number (arabic or roman numeral).
+   * Returns the arabic page number, or undefined if not a page-number-only line.
+   */
+  private parsePageNumberLine(line: string): number | undefined {
+    const trimmed = line.trim();
+    if (!trimmed) return undefined;
+
+    // Arabic numerals: "12", "287"
+    if (/^\d+$/.test(trimmed)) return parseInt(trimmed, 10);
+
+    // Roman numerals: "vii", "xi", "IV" (max ~10 chars, avoid matching words like "mill")
+    if (trimmed.length <= 10 && /^[ivxlcdm]+$/i.test(trimmed)) {
+      // Don't try to convert — roman page numbers are front matter,
+      // not useful for page offset calculation. Return -1 as sentinel.
+      return -1;
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Parse a TOC text block.
+   *
+   * Handles two layouts:
+   * 1. Alternating lines: title on one line, page number on the next
+   *    (e.g., "Preface\nvii\nChapter 1\n12")
+   * 2. Inline: title and page on the same line with leaders/whitespace
+   *    (e.g., "Chapter 1 ............ 12")
+   *
+   * Detects alternating pattern by counting how many lines are pure page numbers.
+   */
+  private parseTocBlock(block: TextBlock): TocEntry[] {
+    const entries: TocEntry[] = [];
+    const lines = block.text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+    if (lines.length === 0) return entries;
+
+    // Count page-number-only lines to detect alternating pattern
+    let pageNumLineCount = 0;
+    for (const line of lines) {
+      if (this.parsePageNumberLine(line) !== undefined) pageNumLineCount++;
+    }
+
+    // Alternating pattern: ~30%+ of lines are pure page numbers, at least 2
+    if (pageNumLineCount >= 2 && pageNumLineCount >= lines.length * 0.25) {
+      let titleLines: string[] = [];
+
+      for (const line of lines) {
+        const pageNum = this.parsePageNumberLine(line);
+
+        if (pageNum !== undefined && titleLines.length > 0) {
+          // Page number line — pair with accumulated title line(s)
+          const title = titleLines.join(' ').trim();
+          if (title) {
+            entries.push({
+              title,
+              printedPage: pageNum >= 0 ? pageNum : undefined,  // -1 = roman numeral, skip offset
+              rawLine: title + ' ' + line.trim(),
+            });
+          }
+          titleLines = [];
+        } else if (pageNum !== undefined) {
+          // Page number with no preceding title — skip
+        } else {
+          // Title line (possibly multi-line title, accumulated until next page number)
+          titleLines.push(line);
+        }
+      }
+
+      // Remaining title lines without a page number (e.g., last entry in block)
+      if (titleLines.length > 0) {
+        const title = titleLines.join(' ').trim();
+        if (title) {
+          entries.push({ title, rawLine: title });
+        }
+      }
+    } else {
+      // Inline pattern: parse each line independently (dot leaders, whitespace gaps, etc.)
+      for (const line of lines) {
+        const entry = this.parseTocLine(line);
+        if (entry) entries.push(entry);
+      }
+    }
+
+    return entries;
+  }
+
+  /**
+   * Normalize text for fuzzy matching: lowercase, strip non-alphanumeric (keep accented chars), collapse whitespace.
+   */
+  private normalizeForMatching(text: string): string {
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9\u00C0-\u024F\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * Score how well a TOC title matches a block's text using word overlap.
+   * Returns 0-1 (1 = perfect match).
+   */
+  private scoreTitleMatch(tocTitle: string, blockText: string): number {
+    const normToc = this.normalizeForMatching(tocTitle);
+    const normBlock = this.normalizeForMatching(blockText);
+
+    if (!normToc || !normBlock) return 0;
+
+    // Exact match after normalization
+    if (normToc === normBlock) return 1.0;
+
+    // Word overlap
+    const tocWords = normToc.split(' ').filter(w => w.length > 0);
+    const blockWords = normBlock.split(' ').filter(w => w.length > 0);
+
+    if (tocWords.length === 0 || blockWords.length === 0) return 0;
+
+    const blockWordSet = new Set(blockWords);
+    let overlap = 0;
+    for (const word of tocWords) {
+      if (blockWordSet.has(word)) overlap++;
+    }
+
+    return overlap / Math.min(tocWords.length, blockWords.length);
+  }
+
+  /**
+   * Map user-selected TOC blocks to chapter locations in the document.
+   *
+   * 1. Parses TOC blocks into entries (title + optional page number)
+   * 2. Skips TOC pages themselves from candidate search
+   * 3. Scores every candidate block against each TOC entry
+   * 4. Computes page offset from early matches to boost later matches
+   * 5. Returns matched chapters + unmapped entries
+   */
+  mapTocEntriesToChapters(tocBlockIds: string[], deletedPages?: Set<number>): TocMapResult {
+    if (tocBlockIds.length === 0 || this.blocks.length === 0) {
+      return { chapters: [], unmapped: [] };
+    }
+
+    // 1. Parse all TOC blocks
+    const tocPages = new Set<number>();
+    const entries: TocEntry[] = [];
+
+    for (const blockId of tocBlockIds) {
+      const block = this.blocks.find(b => b.id === blockId);
+      if (!block) continue;
+      tocPages.add(block.page);
+      entries.push(...this.parseTocBlock(block));
+    }
+
+    if (entries.length === 0) {
+      return { chapters: [], unmapped: [] };
+    }
+
+    // 2. Build candidate blocks: skip images, tiny blocks, TOC pages, deleted pages
+    const bodyFontSize = this.getBodyFontSize();
+    const candidates = this.blocks.filter(b =>
+      !b.is_image &&
+      !b.is_footnote_marker &&
+      b.char_count >= 3 &&
+      !tocPages.has(b.page) &&
+      (!deletedPages || !deletedPages.has(b.page))
+    );
+
+    // 3. For each entry, score candidates
+    const chapters: Chapter[] = [];
+    const unmapped: TocEntry[] = [];
+    const matchedPages: Array<{ printed: number; actual: number }> = [];
+    let pageOffset: number | null = null;
+
+    // Process entries — two passes. First pass without offset, second with offset for unmatched.
+    const tryMatch = (entry: TocEntry): Chapter | null => {
+      let bestScore = 0;
+      let bestBlock: TextBlock | null = null;
+
+      for (const block of candidates) {
+        // Skip blocks already claimed as chapters
+        if (chapters.some(c => c.blockId === block.id)) continue;
+
+        let score = this.scoreTitleMatch(entry.title, block.text.trim());
+        if (score < 0.5) continue;
+
+        // Bonus: font size > 1.2x body (heading-like)
+        if (block.font_size > bodyFontSize * 1.2) score += 0.1;
+
+        // Bonus: bold text
+        if (block.is_bold) score += 0.05;
+
+        // Bonus: top 35% of page
+        const pageDims = this.pageDimensions[block.page];
+        if (pageDims && block.y < pageDims.height * 0.35) score += 0.05;
+
+        // Bonus: short block (heading-like)
+        if (block.line_count <= 2 && block.char_count < 120) score += 0.05;
+
+        // Bonus: page proximity from offset
+        if (entry.printedPage != null && pageOffset != null) {
+          const expectedPage = entry.printedPage + pageOffset;
+          const dist = Math.abs(block.page - expectedPage);
+          if (dist === 0) score += 0.15;
+          else if (dist <= 2) score += 0.05;
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestBlock = block;
+        }
+      }
+
+      if (bestBlock && bestScore >= 0.5) {
+        const chapter: Chapter = {
+          id: this.hashId(`toc-${bestBlock.page}-${bestBlock.y}-${bestBlock.text.substring(0, 20)}`),
+          title: entry.title.length > 80 ? entry.title.substring(0, 77) + '...' : entry.title,
+          page: bestBlock.page,
+          blockId: bestBlock.id,
+          y: bestBlock.y,
+          level: this.inferChapterLevel(entry.title, bestBlock.font_size, bodyFontSize),
+          source: 'toc',
+          confidence: bestScore,
+        };
+
+        // Track page offset
+        if (entry.printedPage != null) {
+          matchedPages.push({ printed: entry.printedPage, actual: bestBlock.page });
+        }
+
+        return chapter;
+      }
+
+      return null;
+    };
+
+    // First pass
+    const pendingEntries: TocEntry[] = [];
+    for (const entry of entries) {
+      const chapter = tryMatch(entry);
+      if (chapter) {
+        chapters.push(chapter);
+        // Recompute offset after 2+ matches
+        if (matchedPages.length >= 2) {
+          const offsets = matchedPages.map(m => m.actual - m.printed).sort((a, b) => a - b);
+          pageOffset = offsets[Math.floor(offsets.length / 2)]; // median
+        }
+      } else {
+        pendingEntries.push(entry);
+      }
+    }
+
+    // Second pass with offset for initially-unmatched entries
+    if (pageOffset != null && pendingEntries.length > 0) {
+      for (const entry of pendingEntries) {
+        const chapter = tryMatch(entry);
+        if (chapter) {
+          chapters.push(chapter);
+        } else {
+          unmapped.push(entry);
+        }
+      }
+    } else {
+      unmapped.push(...pendingEntries);
+    }
+
+    // Sort chapters by page then y
+    chapters.sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return (a.y || 0) - (b.y || 0);
+    });
+
+    return { chapters, unmapped };
+  }
+
+  /**
+   * Split TOC blocks into individual lines, flagging page-number-only lines.
+   * Used by the interactive line picker so the user can check/uncheck titles.
+   */
+  splitTocBlocks(tocBlockIds: string[]): TocLine[] {
+    const lines: TocLine[] = [];
+
+    for (const blockId of tocBlockIds) {
+      const block = this.blocks.find(b => b.id === blockId);
+      if (!block) continue;
+
+      const rawLines = block.text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      for (const raw of rawLines) {
+        // Strip dot leaders and trailing page numbers for display,
+        // but check original for isPageNumber
+        const isPageNumber = this.parsePageNumberLine(raw) !== undefined;
+        lines.push({
+          text: raw,
+          blockId: block.id,
+          blockPage: block.page,
+          isPageNumber,
+        });
+      }
+    }
+
+    return lines;
+  }
+
+  /**
+   * Map user-selected title strings to chapter locations in the document.
+   * Unlike mapTocEntriesToChapters, this takes pre-selected titles (no heuristic parsing)
+   * and does not use page-offset bonuses since no printed page numbers are available.
+   */
+  mapTitlesToChapters(titles: string[], tocPages: number[], deletedPages?: Set<number>): TocMapResult {
+    if (titles.length === 0 || this.blocks.length === 0) {
+      return { chapters: [], unmapped: [] };
+    }
+
+    const tocPageSet = new Set(tocPages);
+    const bodyFontSize = this.getBodyFontSize();
+
+    // Build candidate blocks: skip images, tiny blocks, TOC pages, deleted pages
+    const candidates = this.blocks.filter(b =>
+      !b.is_image &&
+      !b.is_footnote_marker &&
+      b.char_count >= 3 &&
+      !tocPageSet.has(b.page) &&
+      (!deletedPages || !deletedPages.has(b.page))
+    );
+
+    const chapters: Chapter[] = [];
+    const unmapped: TocEntry[] = [];
+
+    for (const title of titles) {
+      let bestScore = 0;
+      let bestBlock: TextBlock | null = null;
+
+      for (const block of candidates) {
+        // Skip blocks already claimed
+        if (chapters.some(c => c.blockId === block.id)) continue;
+
+        let score = this.scoreTitleMatch(title, block.text.trim());
+        if (score < 0.5) continue;
+
+        // Bonus: font size > 1.2x body (heading-like)
+        if (block.font_size > bodyFontSize * 1.2) score += 0.1;
+
+        // Bonus: bold text
+        if (block.is_bold) score += 0.05;
+
+        // Bonus: top 35% of page
+        const pageDims = this.pageDimensions[block.page];
+        if (pageDims && block.y < pageDims.height * 0.35) score += 0.05;
+
+        // Bonus: short block (heading-like)
+        if (block.line_count <= 2 && block.char_count < 120) score += 0.05;
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestBlock = block;
+        }
+      }
+
+      if (bestBlock && bestScore >= 0.5) {
+        chapters.push({
+          id: this.hashId(`toc-${bestBlock.page}-${bestBlock.y}-${bestBlock.text.substring(0, 20)}`),
+          title: title.length > 80 ? title.substring(0, 77) + '...' : title,
+          page: bestBlock.page,
+          blockId: bestBlock.id,
+          y: bestBlock.y,
+          level: 1,  // User-picked titles are top-level chapters
+          source: 'toc',
+          confidence: bestScore,
+        });
+      } else {
+        unmapped.push({ title, rawLine: title });
+      }
+    }
+
+    // Sort chapters by page then y
+    chapters.sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return (a.y || 0) - (b.y || 0);
+    });
+
+    return { chapters, unmapped };
   }
 
   /**

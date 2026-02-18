@@ -529,6 +529,7 @@ type WorkflowState = 'queue' | 'metadata' | 'translate' | 'cleanup' | 'convert' 
         padding: 0.5rem;
         display: flex;
         flex-direction: column;
+        overflow: hidden;
 
         app-diff-view {
           flex: 1;

@@ -106,9 +106,10 @@ export interface CropRect {
                           [attr.y]="getBlockY(block)"
                           [attr.width]="getBlockWidth(block)"
                           [attr.height]="getBlockHeight(block)"
-                          [attr.fill]="isSelected(block.id) ? getBlockFill(block) : (isCurrentSearchResult(block.id) ? 'rgba(255, 193, 7, 0.4)' : (isSearchHighlighted(block.id) ? 'rgba(255, 193, 7, 0.2)' : 'transparent'))"
-                          [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (isCurrentSearchResult(block.id) ? '#ffc107' : (isSearchHighlighted(block.id) ? '#ffc107' : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))))"
+                          [attr.fill]="isTocSelected(block.id) ? 'rgba(6, 182, 212, 0.2)' : (isSelected(block.id) ? getBlockFill(block) : (isCurrentSearchResult(block.id) ? 'rgba(255, 193, 7, 0.4)' : (isSearchHighlighted(block.id) ? 'rgba(255, 193, 7, 0.2)' : 'transparent')))"
+                          [attr.stroke]="isTocSelected(block.id) ? 'var(--accent, #06b6d4)' : (isSelected(block.id) ? getBlockStroke(block) : (isCurrentSearchResult(block.id) ? '#ffc107' : (isSearchHighlighted(block.id) ? '#ffc107' : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent')))))"
                           [class.selected]="isSelected(block.id)"
+                          [class.toc-selected]="isTocSelected(block.id)"
                           [class.deleted]="isDeleted(block.id)"
                           [class.corrected]="hasCorrectedText(block.id)"
                           [class.moved]="hasOffset(block.id)"
@@ -214,6 +215,7 @@ export interface CropRect {
                         [style.cursor]="chaptersMode() ? 'grab' : 'default'"
                         (mousedown)="onChapterMarkerMouseDown($event, chapter, pageNum)"
                         (click)="onChapterMarkerClick($event, chapter)"
+                        (contextmenu)="onChapterMarkerContextMenu($event, chapter)"
                       >
                         <!-- Invisible hit area for easier dragging -->
                         <rect
@@ -566,9 +568,10 @@ export interface CropRect {
                             [attr.y]="getBlockY(block)"
                             [attr.width]="getBlockWidth(block)"
                             [attr.height]="getBlockHeight(block)"
-                            [attr.fill]="isSelected(block.id) ? getBlockFill(block) : (isCurrentSearchResult(block.id) ? 'rgba(255, 193, 7, 0.4)' : (isSearchHighlighted(block.id) ? 'rgba(255, 193, 7, 0.2)' : 'transparent'))"
-                            [attr.stroke]="isSelected(block.id) ? getBlockStroke(block) : (isCurrentSearchResult(block.id) ? '#ffc107' : (isSearchHighlighted(block.id) ? '#ffc107' : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent'))))"
+                            [attr.fill]="isTocSelected(block.id) ? 'rgba(6, 182, 212, 0.2)' : (isSelected(block.id) ? getBlockFill(block) : (isCurrentSearchResult(block.id) ? 'rgba(255, 193, 7, 0.4)' : (isSearchHighlighted(block.id) ? 'rgba(255, 193, 7, 0.2)' : 'transparent')))"
+                            [attr.stroke]="isTocSelected(block.id) ? 'var(--accent, #06b6d4)' : (isSelected(block.id) ? getBlockStroke(block) : (isCurrentSearchResult(block.id) ? '#ffc107' : (isSearchHighlighted(block.id) ? '#ffc107' : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent')))))"
                             [class.selected]="isSelected(block.id)"
+                            [class.toc-selected]="isTocSelected(block.id)"
                             [class.deleted]="isDeleted(block.id)"
                             [class.corrected]="hasCorrectedText(block.id)"
                             [class.moved]="hasOffset(block.id)"
@@ -922,6 +925,7 @@ export interface CropRect {
     }
 
     .pdf-viewport {
+      position: relative;
       flex: 1;
       overflow: auto;
       padding: var(--ui-spacing-lg);
@@ -1336,6 +1340,12 @@ export interface CropRect {
       fill: rgba(76, 175, 80, 0.1);
     }
 
+    .block-overlay .block-rect.toc-selected {
+      stroke: var(--accent, #06b6d4) !important;
+      stroke-width: 2;
+      fill: rgba(6, 182, 212, 0.2) !important;
+    }
+
     .block-overlay .block-rect.dimmed {
       opacity: 0.08 !important;
       stroke-width: 0.25 !important;
@@ -1689,6 +1699,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // Chapters mode inputs
   chapters = input<Chapter[]>([]);
   chaptersMode = input<boolean>(false);
+  tocSelectedBlockIds = input<Set<string>>(new Set());
   deletedPages = input<Set<number>>(new Set());  // Pages marked for exclusion from export
 
   // Page selection (for organize/chapters mode)
@@ -1746,6 +1757,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // Chapter rename output (for inline title editing on markers)
   chapterRename = output<{ chapterId: string; newTitle: string }>();
 
+  // Chapter level change output (right-click cycles level)
+  chapterLevelChange = output<{ chapterId: string; level: number }>();
+
   // Page delete output (for chapters mode)
   pageDeleteToggle = output<number>();
 
@@ -1777,8 +1791,8 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   private readonly CLICK_POSITION_TOLERANCE = 20; // SVG units - clicks within this distance are considered same position
 
   // Grid pagination - limit initial render for performance
-  readonly gridPageLimit = signal(24); // Show 24 pages initially (6x4 grid)
-  private readonly GRID_PAGE_INCREMENT = 24;
+  readonly gridPageLimit = signal(48); // Show 48 pages initially (~2 screenfuls)
+  private readonly GRID_PAGE_INCREMENT = 48;
 
   // Computed: pages to show in grid mode (paginated)
   readonly visibleGridPages = computed(() => {
@@ -1801,7 +1815,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Reset grid pagination (call when switching to grid mode or loading new doc)
   resetGridPagination(): void {
-    this.gridPageLimit.set(24);
+    this.gridPageLimit.set(48);
   }
 
   // Computed: which pages are visible based on scroll position
@@ -2347,6 +2361,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     return this.selectedBlockIds().includes(blockId);
   }
 
+  isTocSelected(blockId: string): boolean {
+    return this.tocSelectedBlockIds().has(blockId);
+  }
+
   isDeleted(blockId: string): boolean {
     return this.deletedBlockIds().has(blockId);
   }
@@ -2819,6 +2837,19 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       this.selectedChapterId.set(chapter.id);
       this.chapterSelect.emit(chapter.id);
     }
+  }
+
+  /**
+   * Handle right-click on a chapter marker to cycle level (1 → 2 → 3 → 1)
+   */
+  onChapterMarkerContextMenu(event: MouseEvent, chapter: Chapter): void {
+    if (!this.chaptersMode()) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const nextLevel = chapter.level >= 3 ? 1 : chapter.level + 1;
+    this.chapterLevelChange.emit({ chapterId: chapter.id, level: nextLevel });
   }
 
   /**
@@ -3387,14 +3418,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     const isOnPage = target.closest('.page-wrapper');
     if (isOnPage) return;
 
-    // Get position relative to the container
-    const container = target.closest('.pdf-container') || target;
-    const rect = container.getBoundingClientRect();
-    const scrollContainer = container.closest('.pdf-viewport') as HTMLElement;
-    const scrollLeft = scrollContainer?.scrollLeft || 0;
-    const scrollTop = scrollContainer?.scrollTop || 0;
-    const x = event.clientX - rect.left + scrollLeft;
-    const y = event.clientY - rect.top + scrollTop;
+    // Get position relative to pdf-viewport (the positioning parent for the marquee box)
+    const scrollContainer = this.viewport?.nativeElement as HTMLElement;
+    if (!scrollContainer) return;
+    const rect = scrollContainer.getBoundingClientRect();
+    const x = event.clientX - rect.left + scrollContainer.scrollLeft;
+    const y = event.clientY - rect.top + scrollContainer.scrollTop;
 
     this.pageMarqueeStart.set({ x, y });
     this.pageMarqueeEnd.set({ x, y });
@@ -3411,15 +3440,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   onPageMarqueeMove(event: MouseEvent): void {
     if (!this.pageMarqueeActive()) return;
 
-    const container = this.elementRef.nativeElement.querySelector('.pdf-container');
-    if (!container) return;
-
-    const rect = container.getBoundingClientRect();
-    const scrollContainer = container.closest('.pdf-viewport') as HTMLElement;
-    const scrollLeft = scrollContainer?.scrollLeft || 0;
-    const scrollTop = scrollContainer?.scrollTop || 0;
-    const x = event.clientX - rect.left + scrollLeft;
-    const y = event.clientY - rect.top + scrollTop;
+    // Get position relative to pdf-viewport (the positioning parent for the marquee box)
+    const scrollContainer = this.viewport?.nativeElement as HTMLElement;
+    if (!scrollContainer) return;
+    const rect = scrollContainer.getBoundingClientRect();
+    const x = event.clientX - rect.left + scrollContainer.scrollLeft;
+    const y = event.clientY - rect.top + scrollContainer.scrollTop;
 
     this.pageMarqueeEnd.set({ x, y });
 
@@ -3434,13 +3460,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   private selectPagesInMarquee(): void {
     const marquee = this.pageMarqueeRect();
-    const container = this.elementRef.nativeElement.querySelector('.pdf-container');
-    if (!container) return;
+    const scrollContainer = this.viewport?.nativeElement as HTMLElement;
+    if (!scrollContainer) return;
 
-    const containerRect = container.getBoundingClientRect();
-    const scrollContainer = container.closest('.pdf-viewport') as HTMLElement;
-    const scrollLeft = scrollContainer?.scrollLeft || 0;
-    const scrollTop = scrollContainer?.scrollTop || 0;
+    const viewportRect = scrollContainer.getBoundingClientRect();
+    const container = scrollContainer.querySelector('.pdf-container');
+    if (!container) return;
 
     const pageWrappers = container.querySelectorAll('.page-wrapper');
     const selectedPageNums = new Set<number>();
@@ -3450,9 +3475,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       if (pageNum < 0) return;
 
       const wrapperRect = wrapper.getBoundingClientRect();
-      // Convert wrapper rect to container-relative coordinates (accounting for scroll)
-      const wrapperLeft = wrapperRect.left - containerRect.left + scrollLeft;
-      const wrapperTop = wrapperRect.top - containerRect.top + scrollTop;
+      // Convert wrapper rect to viewport-relative coordinates (matching marquee coordinate space)
+      const wrapperLeft = wrapperRect.left - viewportRect.left + scrollContainer.scrollLeft;
+      const wrapperTop = wrapperRect.top - viewportRect.top + scrollContainer.scrollTop;
       const wrapperRight = wrapperLeft + wrapperRect.width;
       const wrapperBottom = wrapperTop + wrapperRect.height;
 
@@ -3518,17 +3543,17 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Public method to scroll to a specific page
   scrollToPage(pageNum: number): void {
-    if (!this.viewport?.nativeElement) return;
+    const container = this.getScrollContainer();
+    if (!container) return;
 
     // For virtual scroll mode, calculate the offset and scroll there
     if (this.layout() !== 'grid' && this.editorMode() !== 'select' && this.editorMode() !== 'edit') {
       const offset = this.getPageOffset(pageNum);
-      this.viewport.nativeElement.scrollTop = offset;
+      container.scrollTop = offset;
       return;
     }
 
-    const vp = this.viewport.nativeElement;
-    const pageWrapper = vp.querySelector(`.page-wrapper[data-page="${pageNum}"]`);
+    const pageWrapper = container.querySelector(`.page-wrapper[data-page="${pageNum}"]`);
 
     if (pageWrapper) {
       pageWrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });

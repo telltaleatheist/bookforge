@@ -5,13 +5,20 @@ import { StudioService } from '../../services/studio.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { StudioItem } from '../../models/studio.types';
 
+interface ImportProgress {
+  total: number;
+  completed: number;
+  current: string;
+  errors: string[];
+}
+
 /**
  * AddModalComponent - Modal for adding EPUBs or URLs
  *
  * Features:
- * - Drag & drop EPUB files
+ * - Drag & drop multiple ebook files
+ * - Browse and multi-select files
  * - Paste URL and fetch article
- * - Clean, unified interface
  */
 @Component({
   selector: 'app-add-modal',
@@ -38,12 +45,20 @@ import { StudioItem } from '../../models/studio.types';
             @if (isLoadingEpub()) {
               <div class="loading-state">
                 <div class="spinner"></div>
-                <p>{{ loadingMessage() }}</p>
+                @if (batchProgress()) {
+                  <p>{{ batchProgress()!.current }}</p>
+                  <div class="progress-bar">
+                    <div class="progress-fill" [style.width.%]="(batchProgress()!.completed / batchProgress()!.total) * 100"></div>
+                  </div>
+                  <p class="progress-count">{{ batchProgress()!.completed }} / {{ batchProgress()!.total }}</p>
+                } @else {
+                  <p>{{ loadingMessage() }}</p>
+                }
               </div>
             } @else {
               <div class="drop-icon">📚</div>
-              <p class="drop-text">Drop any ebook or PDF here</p>
-              <p class="drop-hint">EPUB, PDF, MOBI, AZW3, DOCX, and more</p>
+              <p class="drop-text">Drop any ebooks or PDFs here</p>
+              <p class="drop-hint">EPUB, PDF, MOBI, AZW3, DOCX, and more — drop multiple files at once</p>
               <button class="btn-browse" (click)="browseFiles()">
                 Browse Files
               </button>
@@ -251,6 +266,28 @@ import { StudioItem } from '../../models/studio.types';
       to { transform: rotate(360deg); }
     }
 
+    .progress-bar {
+      width: 100%;
+      max-width: 280px;
+      height: 4px;
+      background: var(--border-default);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--color-primary);
+      border-radius: 2px;
+      transition: width 0.3s ease;
+    }
+
+    .progress-count {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin: 0;
+    }
+
     .divider {
       display: flex;
       align-items: center;
@@ -356,6 +393,7 @@ export class AddModalComponent {
   readonly loadingMessage = signal<string>('Importing...');
   readonly importError = signal<string | null>(null);
   readonly urlError = signal<string | null>(null);
+  readonly batchProgress = signal<ImportProgress | null>(null);
 
   urlValue = '';
 
@@ -382,15 +420,33 @@ export class AddModalComponent {
     this.isDragOver.set(false);
 
     const files = event.dataTransfer?.files;
-    if (files && files.length > 0) {
-      this.handleFile((files[0] as any).path);
+    if (!files || files.length === 0) return;
+
+    const paths: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const filePath = (files[i] as any).path;
+      if (filePath) paths.push(filePath);
+    }
+
+    if (paths.length === 1) {
+      this.handleFile(paths[0]);
+    } else if (paths.length > 1) {
+      this.handleMultipleFiles(paths);
     }
   }
 
   async browseFiles(): Promise<void> {
     const result = await this.electronService.openPdfDialog();
-    if (result.success && result.filePath) {
-      await this.handleFile(result.filePath);
+    if (!result.success) return;
+
+    // Support multi-select: use filePaths array if available
+    const filePaths: string[] = (result as any).filePaths || (result.filePath ? [result.filePath] : []);
+    if (filePaths.length === 0) return;
+
+    if (filePaths.length === 1) {
+      await this.handleFile(filePaths[0]);
+    } else {
+      await this.handleMultipleFiles(filePaths);
     }
   }
 
@@ -399,11 +455,77 @@ export class AddModalComponent {
     const name = filePath.toLowerCase();
 
     if (name.endsWith('.epub') || name.endsWith('.pdf')) {
-      // EPUB and PDF are natively supported — create project directly
       await this.importFile(filePath);
     } else {
-      // Other formats: convert to EPUB first, then import
       await this.convertAndImport(filePath);
+    }
+  }
+
+  private async handleMultipleFiles(filePaths: string[]): Promise<void> {
+    this.importError.set(null);
+    this.isLoadingEpub.set(true);
+
+    const progress: ImportProgress = {
+      total: filePaths.length,
+      completed: 0,
+      current: '',
+      errors: [],
+    };
+    this.batchProgress.set({ ...progress });
+
+    let lastAdded: StudioItem | undefined;
+
+    for (const filePath of filePaths) {
+      const filename = filePath.split('/').pop() || filePath;
+      progress.current = `Importing ${filename}...`;
+      this.batchProgress.set({ ...progress });
+
+      try {
+        const name = filePath.toLowerCase();
+        let importPath = filePath;
+
+        // Convert non-native formats first
+        if (!name.endsWith('.epub') && !name.endsWith('.pdf')) {
+          progress.current = `Converting ${filename}...`;
+          this.batchProgress.set({ ...progress });
+          const convertResult = await this.electronService.convertEbook(filePath);
+          if (!convertResult.success || !convertResult.outputPath) {
+            progress.errors.push(`${filename}: ${convertResult.error || 'Conversion failed'}`);
+            progress.completed++;
+            this.batchProgress.set({ ...progress });
+            continue;
+          }
+          importPath = convertResult.outputPath;
+        }
+
+        const result = await this.studioService.addBook(importPath);
+        if (result.success && result.item) {
+          lastAdded = result.item;
+        } else {
+          progress.errors.push(`${filename}: ${result.error || 'Import failed'}`);
+        }
+      } catch (err) {
+        progress.errors.push(`${filename}: ${(err as Error).message}`);
+      }
+
+      progress.completed++;
+      this.batchProgress.set({ ...progress });
+    }
+
+    this.isLoadingEpub.set(false);
+    this.batchProgress.set(null);
+
+    if (progress.errors.length > 0) {
+      this.importError.set(`Failed: ${progress.errors.join('; ')}`);
+    }
+
+    if (lastAdded) {
+      this.added.emit(lastAdded);
+    }
+
+    // Close modal if everything succeeded
+    if (progress.errors.length === 0) {
+      this.close.emit();
     }
   }
 
@@ -413,14 +535,12 @@ export class AddModalComponent {
     this.loadingMessage.set(isPdf ? 'Importing PDF...' : 'Importing EPUB...');
 
     try {
-      // addBook calls audiobook:import-epub which now handles any format
       const result = await this.studioService.addBook(filePath);
 
       if (result.success) {
         if (result.item) {
           this.added.emit(result.item);
         }
-        // For PDFs, also open the editor so user can extract/edit text
         if (isPdf && result.item?.bfpPath) {
           await this.electronService.editorOpenWindowWithBfp(result.item.bfpPath, filePath);
         }
