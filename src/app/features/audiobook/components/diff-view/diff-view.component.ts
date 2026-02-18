@@ -28,7 +28,7 @@ interface DiffSegment {
 }
 
 interface EditState {
-  segmentId: string;      // Unique segment ID
+  segmentIds: string[];   // All segment IDs in the paragraph block
   chapterId: string;      // Chapter for saving
   originalValue: string;
   editedValue: string;
@@ -183,18 +183,16 @@ interface EditState {
 
             <!-- Editing overlay (positioned absolutely over the text) -->
             @if (editState(); as state) {
-              <div class="edit-overlay" [style.top.px]="editPosition().top" [style.left.px]="editPosition().left">
-                <input
-                  type="text"
-                  class="edit-input"
+              <div class="edit-overlay" [style.top.px]="editPosition().top">
+                <textarea
+                  class="edit-textarea"
                   [value]="state.editedValue"
                   (input)="onEditInput($event)"
-                  (keydown.enter)="saveEdit()"
-                  (keydown.escape)="cancelEdit()"
+                  (keydown)="onEditKeydown($event)"
                   (blur)="onEditBlur()"
-                  #editInput
-                />
-                <span class="edit-hint">Enter to save, Esc to cancel</span>
+                  #editTextarea
+                ></textarea>
+                <span class="edit-hint">Enter to save · Shift+Enter for newline · Esc to cancel</span>
               </div>
             }
           </div>
@@ -497,6 +495,8 @@ interface EditState {
       background: var(--bg-elevated);
       border-radius: 4px;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      left: 0;
+      right: 0;
     }
 
     .streaming-indicator {
@@ -581,18 +581,21 @@ interface EditState {
       }
     }
 
-    .edit-input {
+    .edit-textarea {
       font-family: inherit;
       font-size: inherit;
       line-height: inherit;
-      padding: 2px 6px;
+      padding: 8px 12px;
       border: 2px solid #ff6b35;
       border-radius: 3px;
       background: var(--bg-default);
       color: var(--text-primary);
       outline: none;
-      min-width: 100px;
-      max-width: 400px;
+      width: 100%;
+      min-height: 3em;
+      resize: none;
+      box-sizing: border-box;
+      white-space: pre-wrap;
 
       &:focus {
         box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.3);
@@ -759,14 +762,14 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   // Computed: pre-rendered HTML content for performance (avoids thousands of Angular bindings)
   readonly renderedContent = computed((): string => {
     const segments = this.currentChapterSegments();
-    const editingId = this.editState()?.segmentId;
+    const editingIds = this.editState()?.segmentIds;
 
     if (segments.length === 0) return '';
 
     // Build HTML string directly - much faster than Angular template bindings
     let html = '';
     for (const segment of segments) {
-      if (editingId === segment.id) {
+      if (editingIds?.includes(segment.id)) {
         // Editing state - will be replaced by overlay
         html += `<span class="text-editing-placeholder" data-segment-id="${this.escapeHtml(segment.id)}">...</span>`;
       } else if (segment.type === 'unchanged') {
@@ -1179,10 +1182,9 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
     const segmentId = target.getAttribute('data-segment-id');
     if (!segmentId) return;
 
-    const segments = this.currentChapterSegments();
-    const segment = segments.find(s => s.id === segmentId);
-    if (segment) {
-      this.startEdit(segment);
+    const block = this.getParagraphBlock(segmentId);
+    if (block && block.segmentIds.length > 0 && block.paragraphText.length > 0) {
+      this.startBlockEdit(block.segmentIds, block.paragraphText);
     }
   }
 
@@ -1209,53 +1211,121 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   /** Check if a specific segment is being edited */
   isEditing(segmentId: string): boolean {
     const state = this.editState();
-    return state !== null && state.segmentId === segmentId;
+    return state !== null && state.segmentIds.includes(segmentId);
   }
 
-  /** Start editing a segment */
-  startEdit(segment: DiffSegment): void {
+  /**
+   * Find the paragraph block around a clicked segment.
+   * Uses \n\n as paragraph boundaries, concatenates segment text (AI's version for changes).
+   */
+  private getParagraphBlock(clickedSegmentId: string): { segmentIds: string[], paragraphText: string } | null {
+    const segments = this.currentChapterSegments();
+    const clickedIndex = segments.findIndex(s => s.id === clickedSegmentId);
+    if (clickedIndex === -1) return null;
+
+    // Build full text using actual EPUB content (skip deletion display markers)
+    let fullText = '';
+    const ranges: { start: number; end: number }[] = [];
+    for (const seg of segments) {
+      const start = fullText.length;
+      const actualText = (seg.type === 'change' && seg.text === '(deleted)') ? '' : seg.text;
+      fullText += actualText;
+      ranges.push({ start, end: fullText.length });
+    }
+
+    // Find \n\n paragraph boundaries around the clicked segment
+    const clickedStart = ranges[clickedIndex].start;
+    const clickedEnd = ranges[clickedIndex].end;
+
+    let paraStart = 0;
+    const prevBound = fullText.lastIndexOf('\n\n', clickedStart > 0 ? clickedStart - 1 : 0);
+    if (prevBound !== -1) {
+      paraStart = prevBound + 2;
+    }
+
+    let paraEnd = fullText.length;
+    const nextBound = fullText.indexOf('\n\n', clickedEnd);
+    if (nextBound !== -1) {
+      paraEnd = nextBound;
+    }
+
+    // Collect all segments that overlap with the paragraph range
+    const segmentIds: string[] = [];
+    for (let i = 0; i < segments.length; i++) {
+      const r = ranges[i];
+      if ((r.start < paraEnd && r.end > paraStart) ||
+          (r.start === r.end && r.start >= paraStart && r.start <= paraEnd)) {
+        segmentIds.push(segments[i].id);
+      }
+    }
+
+    return { segmentIds, paragraphText: fullText.substring(paraStart, paraEnd) };
+  }
+
+  /** Start editing a paragraph block */
+  startBlockEdit(segmentIds: string[], paragraphText: string): void {
     this.hideTooltip();
     const chapterId = this.currentChapterId();
 
-    // Find the element position relative to the chapter content
+    // Find position of first segment in the block
     const container = this.chapterContentRef?.nativeElement;
-    const segmentEl = container?.querySelector(`[data-segment-id="${segment.id}"]`) as HTMLElement;
+    const firstSegmentEl = container?.querySelector(`[data-segment-id="${segmentIds[0]}"]`) as HTMLElement;
 
-    if (segmentEl && container) {
+    let top = 0;
+    if (firstSegmentEl && container) {
       const containerRect = container.getBoundingClientRect();
-      const segmentRect = segmentEl.getBoundingClientRect();
-      this.editPosition.set({
-        top: segmentRect.top - containerRect.top + container.scrollTop,
-        left: segmentRect.left - containerRect.left
-      });
+      const segmentRect = firstSegmentEl.getBoundingClientRect();
+      top = segmentRect.top - containerRect.top + container.scrollTop;
     }
 
+    this.editPosition.set({ top, left: 0 });
+
     this.editState.set({
-      segmentId: segment.id,
+      segmentIds,
       chapterId,
-      originalValue: segment.text,
-      editedValue: segment.text
+      originalValue: paragraphText,
+      editedValue: paragraphText
     });
 
     setTimeout(() => {
-      const input = document.querySelector('.edit-input') as HTMLInputElement;
-      if (input) {
-        input.focus();
-        input.select();
+      const textarea = document.querySelector('.edit-textarea') as HTMLTextAreaElement;
+      if (textarea) {
+        this.autoSizeTextarea(textarea);
+        textarea.focus();
+        textarea.selectionStart = textarea.value.length;
+        textarea.selectionEnd = textarea.value.length;
       }
     }, 0);
   }
 
-  /** Handle input changes */
+  /** Handle textarea input changes */
   onEditInput(event: Event): void {
-    const input = event.target as HTMLInputElement;
+    const textarea = event.target as HTMLTextAreaElement;
     const state = this.editState();
     if (state) {
       this.editState.set({
         ...state,
-        editedValue: input.value
+        editedValue: textarea.value
       });
+      this.autoSizeTextarea(textarea);
     }
+  }
+
+  /** Handle keydown in textarea: Enter saves, Shift+Enter inserts newline, Escape cancels */
+  onEditKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      this.saveEdit();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      this.cancelEdit();
+    }
+  }
+
+  /** Auto-size textarea to fit content */
+  private autoSizeTextarea(textarea: HTMLTextAreaElement): void {
+    textarea.style.height = 'auto';
+    textarea.style.height = textarea.scrollHeight + 'px';
   }
 
   /** Save the edit */
