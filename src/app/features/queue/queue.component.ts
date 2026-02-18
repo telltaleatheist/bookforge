@@ -46,7 +46,7 @@ import { QueueJob, JobType } from './models/queue.types';
           <div class="panel-header">
             <h3>Processing Queue</h3>
             <div class="header-actions">
-              @if (queueService.completedJobs().length > 0 || queueService.errorJobs().length > 0) {
+              @if (completedCount() > 0 || errorCount() > 0) {
                 <desktop-button
                   variant="ghost"
                   size="xs"
@@ -71,16 +71,16 @@ import { QueueJob, JobType } from './models/queue.types';
 
           <div class="queue-stats">
             <div class="stat">
-              <span class="stat-value">{{ queueService.pendingJobs().length }}</span>
+              <span class="stat-value">{{ pendingCount() }}</span>
               <span class="stat-label">Pending</span>
             </div>
             <div class="stat">
-              <span class="stat-value">{{ queueService.completedJobs().length }}</span>
+              <span class="stat-value">{{ completedCount() }}</span>
               <span class="stat-label">Complete</span>
             </div>
-            @if (queueService.errorJobs().length > 0) {
+            @if (errorCount() > 0) {
               <div class="stat error">
-                <span class="stat-value">{{ queueService.errorJobs().length }}</span>
+                <span class="stat-value">{{ errorCount() }}</span>
                 <span class="stat-label">Errors</span>
               </div>
             }
@@ -138,10 +138,11 @@ import { QueueJob, JobType } from './models/queue.types';
         <!-- Right Panel: Selected Job / Current Job / Empty State -->
         <div pane-secondary class="details-panel">
           @if (selectedJob(); as selected) {
-            <!-- Prioritize selected job - show progress if processing, otherwise details -->
-            @if (selected.status === 'processing') {
+            <!-- Workflow jobs always show pipeline view; standalone jobs show progress when processing -->
+            @if (isWorkflowJob(selected) || selected.status === 'processing') {
               <app-job-progress
                 [job]="selected"
+                [childJobs]="selectedChildJobs()"
                 [message]="progressMessage()"
                 (cancel)="cancelJob(selected.id)"
               />
@@ -503,14 +504,26 @@ export class QueueComponent implements OnInit, OnDestroy {
     return this.queueService.jobs().find(j => j.id === id) || null;
   });
 
-  // Computed: active jobs (pending + processing)
+  // Computed: active jobs (pending + processing), excluding sub-jobs
   readonly activeJobs = computed(() => {
-    return this.queueService.jobs().filter(j => j.status === 'pending' || j.status === 'processing');
+    return this.queueService.jobs().filter(j => (j.status === 'pending' || j.status === 'processing') && !j.parentJobId);
   });
 
-  // Computed: finished jobs (complete + error)
+  // Computed: finished jobs (complete + error), excluding sub-jobs
   readonly finishedJobs = computed(() => {
-    return this.queueService.jobs().filter(j => j.status === 'complete' || j.status === 'error');
+    return this.queueService.jobs().filter(j => (j.status === 'complete' || j.status === 'error') && !j.parentJobId);
+  });
+
+  // Local stats excluding sub-jobs
+  readonly pendingCount = computed(() => this.queueService.jobs().filter(j => j.status === 'pending' && !j.parentJobId).length);
+  readonly completedCount = computed(() => this.queueService.jobs().filter(j => j.status === 'complete' && !j.parentJobId).length);
+  readonly errorCount = computed(() => this.queueService.jobs().filter(j => j.status === 'error' && !j.parentJobId).length);
+
+  // Child jobs for selected workflow
+  readonly selectedChildJobs = computed(() => {
+    const s = this.selectedJob();
+    if (!s?.workflowId || s.parentJobId) return [];
+    return this.queueService.getChildJobs(s.id);
   });
 
   // Accordion state
@@ -689,6 +702,10 @@ export class QueueComponent implements OnInit, OnDestroy {
     } else {
       console.error('Failed to save text edit:', result.error);
     }
+  }
+
+  isWorkflowJob(job: QueueJob): boolean {
+    return !!(job.workflowId && !job.parentJobId);
   }
 
   private getStatusText(): string {

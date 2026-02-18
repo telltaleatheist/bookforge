@@ -27,10 +27,7 @@ interface DragState {
           [class.selected]="job.id === selectedJobId()"
           [class.dragging]="dragState()?.draggedIndex === i"
           [class.drag-over]="dragState()?.dragOverIndex === i && dragState()?.draggedIndex !== i"
-          [class.sub-item]="job.parentJobId"
-          [class.sub-item-complete]="job.parentJobId && job.status === 'complete'"
-          [class.master-job]="job.workflowId && !job.parentJobId"
-          [attr.draggable]="job.status === 'pending' && !job.parentJobId"
+          [attr.draggable]="job.status === 'pending'"
           (click)="select.emit(job.id)"
           (dragstart)="onDragStart($event, i, job)"
           (dragover)="onDragOver($event, i, job)"
@@ -64,25 +61,19 @@ interface DragState {
               </span>
               <span class="book-title">{{ job.metadata?.title || 'Untitled' }}</span>
             </div>
-            <!-- Hide author and model for sub-items (they're shown on master job) -->
-            @if (!job.parentJobId) {
-              @if (job.metadata?.author) {
-                <div class="job-meta">{{ job.metadata!.author }}</div>
-              }
-              @if (job.type === 'ocr-cleanup' && getOcrModel(job)) {
-                <div class="job-meta model">&#129302; {{ getOcrModel(job) }}</div>
-              }
-              @if (job.type === 'translation' && getTranslationInfo(job)) {
-                <div class="job-meta model">&#127760; {{ getTranslationInfo(job) }}</div>
-              }
+            @if (job.metadata?.author) {
+              <div class="job-meta">{{ job.metadata!.author }}</div>
             }
-            @if ((job.status === 'processing' || isMasterJob(job)) && job.progress !== undefined) {
+            @if (job.type === 'ocr-cleanup' && getOcrModel(job)) {
+              <div class="job-meta model">&#129302; {{ getOcrModel(job) }}</div>
+            }
+            @if (job.type === 'translation' && getTranslationInfo(job)) {
+              <div class="job-meta model">&#127760; {{ getTranslationInfo(job) }}</div>
+            }
+            @if (job.status === 'processing' && job.progress !== undefined) {
               <div class="progress-bar">
                 <div class="progress-fill" [style.width.%]="job.progress"></div>
               </div>
-              @if (job.progressMessage) {
-                <div class="progress-message">{{ job.progressMessage }}</div>
-              }
             }
             @if (job.status === 'error' && job.error) {
               <div class="error-message">{{ job.error }}</div>
@@ -99,65 +90,62 @@ interface DragState {
             }
           </div>
 
-          <!-- Actions (hidden for sub-items in workflow) -->
-          @if (!job.parentJobId) {
-            <div class="job-actions">
-              @if (job.status === 'pending') {
-                <button
-                  class="run-btn"
-                  title="Run now (standalone)"
-                  (click)="runNow.emit(job.id); $event.stopPropagation()"
-                >
-                  <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor">
-                    <path d="M0 0v12l10-6z"/>
-                  </svg>
-                </button>
-                <button
-                  class="remove-btn"
-                  title="Remove"
-                  (click)="remove.emit(job.id); $event.stopPropagation()"
-                >
-                  ✕
-                </button>
-              }
-              @if (job.status === 'processing') {
-                <button
-                  class="cancel-btn"
-                  title="Cancel"
-                  (click)="cancel.emit(job.id); $event.stopPropagation()"
-                >
-                  ■
-                </button>
-              }
-              @if (job.status === 'error') {
-                <desktop-button
-                  variant="ghost"
-                  size="xs"
-                  [iconOnly]="true"
-                  title="Retry"
-                  (click)="retry.emit(job.id); $event.stopPropagation()"
-                >
-                  &#8635;
-                </desktop-button>
-                <button
-                  class="remove-btn"
-                  title="Remove"
-                  (click)="remove.emit(job.id); $event.stopPropagation()"
-                >
-                  ✕
-                </button>
-              }
-              @if (job.status === 'complete') {
-                <button
-                  class="remove-btn"
-                  title="Remove"
-                  (click)="remove.emit(job.id); $event.stopPropagation()"
-                >
-                  ✕
-                </button>
-              }
-            </div>
-          }
+          <div class="job-actions">
+            @if (job.status === 'pending') {
+              <button
+                class="run-btn"
+                title="Run now (standalone)"
+                (click)="runNow.emit(job.id); $event.stopPropagation()"
+              >
+                <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor">
+                  <path d="M0 0v12l10-6z"/>
+                </svg>
+              </button>
+              <button
+                class="remove-btn"
+                title="Remove"
+                (click)="remove.emit(job.id); $event.stopPropagation()"
+              >
+                ✕
+              </button>
+            }
+            @if (job.status === 'processing') {
+              <button
+                class="cancel-btn"
+                title="Cancel"
+                (click)="cancel.emit(job.id); $event.stopPropagation()"
+              >
+                ■
+              </button>
+            }
+            @if (job.status === 'error') {
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                [iconOnly]="true"
+                title="Retry"
+                (click)="retry.emit(job.id); $event.stopPropagation()"
+              >
+                &#8635;
+              </desktop-button>
+              <button
+                class="remove-btn"
+                title="Remove"
+                (click)="remove.emit(job.id); $event.stopPropagation()"
+              >
+                ✕
+              </button>
+            }
+            @if (job.status === 'complete') {
+              <button
+                class="remove-btn"
+                title="Remove"
+                (click)="remove.emit(job.id); $event.stopPropagation()"
+              >
+                ✕
+              </button>
+            }
+          </div>
         </div>
       } @empty {
         <div class="empty-list">
@@ -235,58 +223,6 @@ interface DragState {
         background: color-mix(in srgb, var(--accent) 10%, var(--bg-subtle));
       }
 
-      &.sub-item {
-        margin-left: 1.5rem;
-        position: relative;
-        padding: 0.5rem 0.75rem;
-
-        // Use pseudo-element for left indicator so it's not affected by state border colors
-        &::before {
-          content: '';
-          position: absolute;
-          left: 0;
-          top: 0;
-          bottom: 0;
-          width: 3px;
-          background: var(--border-subtle);
-          border-radius: 3px 0 0 3px;
-        }
-
-        &.sub-item-complete {
-          opacity: 0.7;
-
-          &::before {
-            background: var(--success);
-          }
-
-          &:hover {
-            opacity: 0.9;
-          }
-        }
-
-        &.processing::before {
-          background: var(--accent);
-        }
-
-        &.error::before {
-          background: var(--error);
-        }
-      }
-
-      &.master-job {
-        position: relative;
-
-        &::before {
-          content: '';
-          position: absolute;
-          left: 0;
-          top: 0;
-          bottom: 0;
-          width: 3px;
-          background: var(--accent);
-          border-radius: 3px 0 0 3px;
-        }
-      }
     }
 
     .status-indicator {
@@ -421,12 +357,6 @@ interface DragState {
       background: var(--accent);
       border-radius: 2px;
       transition: width 0.3s ease;
-    }
-
-    .progress-message {
-      font-size: 0.6875rem;
-      color: var(--text-tertiary);
-      margin-top: 0.25rem;
     }
 
     .error-message {
@@ -576,10 +506,6 @@ export class JobListComponent {
 
   onDragEnd(): void {
     this.dragState.set(null);
-  }
-
-  isMasterJob(job: QueueJob): boolean {
-    return !!(job.workflowId && !job.parentJobId);
   }
 
   getJobTypeLabel(type: JobType): string {

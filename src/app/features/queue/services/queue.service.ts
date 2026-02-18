@@ -294,6 +294,10 @@ export class QueueService {
     this._jobs().filter(j => j.status === 'pending' || j.status === 'processing').length
   );
 
+  getChildJobs(masterJobId: string): QueueJob[] {
+    return this._jobs().filter(j => j.parentJobId === masterJobId);
+  }
+
   constructor() {
     this.setupIpcListeners();
 
@@ -1197,7 +1201,24 @@ export class QueueService {
       isResume: job.isResumeJob
     });
 
-    this._jobs.update(jobs => [...jobs, job]);
+    this._jobs.update(jobs => {
+      // Child jobs: insert right after master + existing siblings to keep groups together
+      if (job.parentJobId) {
+        const newJobs = [...jobs];
+        // Find the last index occupied by the master or any sibling
+        let insertAfter = -1;
+        for (let i = 0; i < newJobs.length; i++) {
+          if (newJobs[i].id === job.parentJobId || newJobs[i].parentJobId === job.parentJobId) {
+            insertAfter = i;
+          }
+        }
+        if (insertAfter >= 0) {
+          newJobs.splice(insertAfter + 1, 0, job);
+          return newJobs;
+        }
+      }
+      return [...jobs, job];
+    });
 
     // Don't auto-start - user must manually start the queue
 
@@ -1249,6 +1270,47 @@ export class QueueService {
         config: job.config ? { ...job.config, ...configUpdate } as typeof job.config : undefined
       };
     }));
+  }
+
+  /**
+   * Normalize job array so child jobs are always grouped after their master.
+   * Fixes legacy state where children could be scattered in the array.
+   */
+  private normalizeJobGrouping(): void {
+    const jobs = this._jobs();
+    // Build a map: masterJobId -> child jobs (in their current order)
+    const childrenOf = new Map<string, QueueJob[]>();
+    const topLevel: QueueJob[] = [];
+
+    for (const j of jobs) {
+      if (j.parentJobId) {
+        const siblings = childrenOf.get(j.parentJobId) || [];
+        siblings.push(j);
+        childrenOf.set(j.parentJobId, siblings);
+      } else {
+        topLevel.push(j);
+      }
+    }
+
+    // Rebuild: for each top-level job, append its children right after it
+    const normalized: QueueJob[] = [];
+    for (const j of topLevel) {
+      normalized.push(j);
+      const children = childrenOf.get(j.id);
+      if (children) {
+        normalized.push(...children);
+        childrenOf.delete(j.id);
+      }
+    }
+
+    // Append any orphaned children (master not found) — cleanupOrphanedSubItems will handle them
+    for (const orphans of childrenOf.values()) {
+      normalized.push(...orphans);
+    }
+
+    if (normalized.length === jobs.length) {
+      this._jobs.set(normalized);
+    }
   }
 
   /**
@@ -1774,23 +1836,36 @@ export class QueueService {
    */
   reorderJobsById(fromId: string, toId: string): boolean {
     const jobs = this._jobs();
-    const fromIndex = jobs.findIndex(j => j.id === fromId);
-    let toIndex = jobs.findIndex(j => j.id === toId);
+    const fromJob = jobs.find(j => j.id === fromId);
+    if (!fromJob || fromJob.status !== 'pending') return false;
 
-    if (fromIndex === -1 || toIndex === -1) return false;
-    if (fromIndex === toIndex) return false;
-
-    const job = jobs[fromIndex];
-    if (job.status !== 'pending') return false;
-
-    const newJobs = [...jobs];
-    newJobs.splice(fromIndex, 1);
-    // After removal, indices shift - recalculate toIndex
-    if (fromIndex < toIndex) {
-      toIndex--;
+    // Collect the "block" to move: the job itself + any children (if it's a master)
+    const isMaster = fromJob.workflowId && !fromJob.parentJobId;
+    const blockIds = new Set<string>([fromId]);
+    if (isMaster) {
+      for (const j of jobs) {
+        if (j.parentJobId === fromId) blockIds.add(j.id);
+      }
     }
-    newJobs.splice(toIndex, 0, job);
-    this._jobs.set(newJobs);
+
+    // Split array: everything NOT in the block, and the block itself (preserving order)
+    const rest: QueueJob[] = [];
+    const block: QueueJob[] = [];
+    for (const j of jobs) {
+      if (blockIds.has(j.id)) {
+        block.push(j);
+      } else {
+        rest.push(j);
+      }
+    }
+
+    // Find target position in the rest array
+    const toIndex = rest.findIndex(j => j.id === toId);
+    if (toIndex === -1) return false;
+
+    // Insert block at target position
+    rest.splice(toIndex, 0, ...block);
+    this._jobs.set(rest);
     return true;
   }
 
@@ -3543,8 +3618,9 @@ export class QueueService {
 
         this._jobs.set(jobs);
 
-        // Clean up orphaned sub-items (sub-items whose master job doesn't exist)
+        // Clean up orphaned sub-items, then normalize grouping
         this.cleanupOrphanedSubItems();
+        this.normalizeJobGrouping();
 
         // Don't restore isRunning - user should manually restart
         // this._isRunning.set(state.isRunning || false);

@@ -11,7 +11,7 @@
 import { Component, input, output, computed, signal, effect, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { QueueJob, ParallelWorkerProgress } from '../../models/queue.types';
+import { QueueJob, JobType, ParallelWorkerProgress } from '../../models/queue.types';
 
 // ETA calculation state
 interface ETAState {
@@ -34,44 +34,53 @@ interface ETAState {
     @if (job(); as currentJob) {
       <div class="progress-panel">
         <div class="progress-header">
-          <h3>Processing</h3>
-          <desktop-button
-            variant="ghost"
-            size="sm"
-            (click)="cancel.emit()"
-          >
-            Cancel
-          </desktop-button>
+          <h3>{{ currentJob.status === 'complete' ? 'Complete' : currentJob.status === 'error' ? 'Error' : 'Processing' }}</h3>
+          @if (currentJob.status === 'processing') {
+            <desktop-button
+              variant="ghost"
+              size="sm"
+              (click)="cancel.emit()"
+            >
+              Cancel
+            </desktop-button>
+          }
         </div>
 
         <div class="job-details">
-          <div class="job-type">
-            @if (currentJob.type === 'ocr-cleanup') {
-              <span class="type-icon">&#128221;</span>
-              <span>OCR Cleanup</span>
-            } @else if (currentJob.type === 'translation') {
-              <span class="type-icon">&#127760;</span>
-              <span>Translation</span>
-            } @else if (currentJob.type === 'tts-conversion') {
-              <span class="type-icon">&#127911;</span>
-              <span>TTS Conversion</span>
-            } @else if (currentJob.type === 'reassembly') {
-              <span class="type-icon">&#128295;</span>
-              <span>Reassembly</span>
-            } @else if (currentJob.type === 'resemble-enhance') {
-              <span class="type-icon">&#10024;</span>
-              <span>Audio Enhancement</span>
-            } @else if (currentJob.type === 'bilingual-cleanup') {
-              <span class="type-icon">&#128221;</span>
-              <span>Bilingual Cleanup</span>
-            } @else if (currentJob.type === 'bilingual-translation') {
-              <span class="type-icon">&#127891;</span>
-              <span>Bilingual Translation</span>
-            } @else if (currentJob.type === 'bilingual-assembly') {
-              <span class="type-icon">&#127925;</span>
-              <span>Bilingual Assembly</span>
-            }
-          </div>
+          @if (!isWorkflow()) {
+            <div class="job-type">
+              @if (currentJob.type === 'ocr-cleanup') {
+                <span class="type-icon">&#128221;</span>
+                <span>OCR Cleanup</span>
+              } @else if (currentJob.type === 'translation') {
+                <span class="type-icon">&#127760;</span>
+                <span>Translation</span>
+              } @else if (currentJob.type === 'tts-conversion') {
+                <span class="type-icon">&#127911;</span>
+                <span>TTS Conversion</span>
+              } @else if (currentJob.type === 'reassembly') {
+                <span class="type-icon">&#128295;</span>
+                <span>Reassembly</span>
+              } @else if (currentJob.type === 'resemble-enhance') {
+                <span class="type-icon">&#10024;</span>
+                <span>Audio Enhancement</span>
+              } @else if (currentJob.type === 'bilingual-cleanup') {
+                <span class="type-icon">&#128221;</span>
+                <span>Bilingual Cleanup</span>
+              } @else if (currentJob.type === 'bilingual-translation') {
+                <span class="type-icon">&#127891;</span>
+                <span>Bilingual Translation</span>
+              } @else if (currentJob.type === 'bilingual-assembly') {
+                <span class="type-icon">&#127925;</span>
+                <span>Bilingual Assembly</span>
+              }
+            </div>
+          } @else {
+            <div class="job-type">
+              <span class="type-icon">&#9881;</span>
+              <span>Workflow</span>
+            </div>
+          }
 
           <div class="job-title">{{ currentJob.metadata?.title || 'Untitled' }}</div>
           @if (currentJob.metadata?.author) {
@@ -79,179 +88,227 @@ interface ETAState {
           }
         </div>
 
-        <div class="progress-visual">
-          <div class="progress-bar-large">
-            <div
-              class="progress-fill"
-              [style.width.%]="currentJob.progress || 0"
-            ></div>
+        @if (currentJob.status === 'processing') {
+          <div class="progress-visual">
+            <div class="progress-bar-large">
+              <div
+                class="progress-fill"
+                [style.width.%]="currentJob.progress || 0"
+              ></div>
+            </div>
+            <div class="progress-text">
+              {{ (currentJob.progress || 0) | number:'1.1-1' }}%
+            </div>
           </div>
-          <div class="progress-text">
-            {{ (currentJob.progress || 0) | number:'1.1-1' }}%
-          </div>
-        </div>
-
-        @if (currentJob.progressMessage && currentJob.type !== 'resemble-enhance') {
-          <div class="progress-message">{{ currentJob.progressMessage }}</div>
         }
 
-        <div class="progress-stats">
-          <div class="stat">
-            <span class="stat-label">Elapsed</span>
-            <span class="stat-value">{{ elapsedTimeFormatted() }}</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">ETA</span>
-            <span class="stat-value">{{ getEtaDisplay(currentJob) }}</span>
-          </div>
-          @if (job()?.type === 'reassembly') {
-            <div class="stat">
-              <span class="stat-label">Phase</span>
-              <span class="stat-value">{{ getReassemblyPhase() }}</span>
-            </div>
-          } @else if (job()?.type === 'bilingual-cleanup' || job()?.type === 'bilingual-translation') {
-            <div class="stat">
-              <span class="stat-label">Phase</span>
-              <span class="stat-value">{{ getBilingualPhase() }}</span>
-            </div>
-            @if (job()?.currentChunk && job()?.totalChunks) {
-              <div class="stat">
-                <span class="stat-label">{{ isMonoTranslation() ? 'Paragraphs' : 'Sentences' }}</span>
-                <span class="stat-value">{{ job()!.currentChunk }}/{{ job()!.totalChunks }}</span>
+        @if (isWorkflow()) {
+          <!-- Workflow pipeline view -->
+          <div class="workflow-steps">
+            @for (step of childJobs(); track step.id) {
+              <div class="workflow-step" [class]="step.status">
+                <div class="step-header">
+                  <span class="step-status-icon">
+                    @switch (step.status) {
+                      @case ('pending') { <span>&#9711;</span> }
+                      @case ('processing') { <span class="spinning">&#10227;</span> }
+                      @case ('complete') { <span>&#10003;</span> }
+                      @case ('error') { <span>&#10007;</span> }
+                    }
+                  </span>
+                  <span class="step-type">{{ getStepLabel(step.type) }}</span>
+                  @if (step.status === 'processing' && step.progress !== undefined) {
+                    <span class="step-pct">{{ step.progress | number:'1.0-0' }}%</span>
+                  }
+                </div>
+                @if (step.status === 'processing') {
+                  <div class="step-progress-bar">
+                    <div class="step-progress-fill" [style.width.%]="step.progress || 0"></div>
+                  </div>
+                  @if (step.progressMessage) {
+                    <div class="step-message">{{ step.progressMessage }}</div>
+                  }
+                }
+                @if (step.status === 'error' && step.error) {
+                  <div class="step-error">{{ step.error }}</div>
+                }
               </div>
             }
-          } @else if (job()?.totalChunksInJob) {
-            <div class="stat">
-              <span class="stat-label">Chunks</span>
-              <span class="stat-value">{{ job()!.chunksCompletedInJob || 0 }}/{{ job()!.totalChunksInJob }}</span>
+          </div>
+
+          @if (currentJob.status === 'processing') {
+            <div class="progress-stats">
+              <div class="stat">
+                <span class="stat-label">Elapsed</span>
+                <span class="stat-value">{{ elapsedTimeFormatted() }}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">ETA</span>
+                <span class="stat-value">{{ getEtaDisplay(currentJob) }}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Steps</span>
+                <span class="stat-value">{{ getCompletedStepCount() }}/{{ childJobs().length }}</span>
+              </div>
             </div>
           }
-        </div>
+        } @else {
+          <!-- Single-job progress view -->
+          @if (currentJob.progressMessage && currentJob.type !== 'resemble-enhance') {
+            <div class="progress-message">{{ currentJob.progressMessage }}</div>
+          }
 
-        <!-- Per-Worker Progress (for parallel TTS) -->
-        @if (hasWorkers()) {
-          <div class="workers-section">
-            <div class="workers-header">Workers</div>
-            <div class="workers-grid">
-              @for (worker of currentJob.parallelWorkers; track worker.id) {
-                <div class="worker-row" [class.complete]="worker.status === 'complete'" [class.error]="worker.status === 'error'">
-                  <span class="worker-label">W{{ worker.id }}</span>
-                  <div class="worker-progress-bar">
-                    <div
-                      class="worker-progress-fill"
-                      [style.width.%]="getWorkerPercentage(worker, currentJob)"
-                    ></div>
-                  </div>
-                  <span class="worker-pct">{{ getWorkerPercentage(worker, currentJob) | number:'1.0-0' }}%</span>
+          <div class="progress-stats">
+            <div class="stat">
+              <span class="stat-label">Elapsed</span>
+              <span class="stat-value">{{ elapsedTimeFormatted() }}</span>
+            </div>
+            <div class="stat">
+              <span class="stat-label">ETA</span>
+              <span class="stat-value">{{ getEtaDisplay(currentJob) }}</span>
+            </div>
+            @if (job()?.type === 'reassembly') {
+              <div class="stat">
+                <span class="stat-label">Phase</span>
+                <span class="stat-value">{{ getReassemblyPhase() }}</span>
+              </div>
+            } @else if (job()?.type === 'bilingual-cleanup' || job()?.type === 'bilingual-translation') {
+              <div class="stat">
+                <span class="stat-label">Phase</span>
+                <span class="stat-value">{{ getBilingualPhase() }}</span>
+              </div>
+              @if (job()?.currentChunk && job()?.totalChunks) {
+                <div class="stat">
+                  <span class="stat-label">{{ isMonoTranslation() ? 'Paragraphs' : 'Sentences' }}</span>
+                  <span class="stat-value">{{ job()!.currentChunk }}/{{ job()!.totalChunks }}</span>
                 </div>
               }
-            </div>
-          </div>
-        }
-
-        <!-- TTS Phases Progress (TTS Conversion + Assembly) -->
-        <!-- Only show phases for TTS jobs that have internal assembly (not skipAssembly) -->
-        @if (currentJob.type === 'tts-conversion' && currentJob.ttsPhase && !hasSkipAssembly(currentJob)) {
-          <div class="phases-section">
-            <div class="phases-header">Phases</div>
-            <div class="phases-grid">
-              <!-- TTS Conversion Phase -->
-              <div class="phase-row" [class.active]="currentJob.ttsPhase === 'converting'" [class.complete]="currentJob.ttsConversionProgress === 100">
-                <span class="phase-label">TTS Conversion</span>
-                <div class="phase-progress-bar">
-                  <div
-                    class="phase-progress-fill"
-                    [style.width.%]="currentJob.ttsConversionProgress || 0"
-                  ></div>
-                </div>
-                <span class="phase-pct">{{ currentJob.ttsConversionProgress || 0 | number:'1.0-0' }}%</span>
+            } @else if (job()?.totalChunksInJob) {
+              <div class="stat">
+                <span class="stat-label">Chunks</span>
+                <span class="stat-value">{{ job()!.chunksCompletedInJob || 0 }}/{{ job()!.totalChunksInJob }}</span>
               </div>
-              <!-- Assembly Phase -->
-              <div class="phase-row" [class.active]="currentJob.ttsPhase === 'assembling'" [class.complete]="currentJob.assemblyProgress === 100" [class.pending]="currentJob.ttsPhase === 'converting' || currentJob.ttsPhase === 'preparing'">
-                <span class="phase-label">Assembly</span>
-                <div class="phase-progress-bar">
-                  <div
-                    class="phase-progress-fill"
-                    [style.width.%]="currentJob.assemblyProgress || 0"
-                  ></div>
-                </div>
-                <span class="phase-pct">
-                  @if (currentJob.ttsPhase === 'assembling' || currentJob.assemblyProgress) {
-                    {{ currentJob.assemblyProgress || 0 | number:'1.0-0' }}%
-                  } @else {
-                    --
-                  }
-                </span>
-              </div>
-            </div>
-            @if (currentJob.ttsPhase === 'assembling' && currentJob.assemblySubPhase) {
-              <div class="assembly-subphase">{{ getAssemblySubPhaseLabel(currentJob.assemblySubPhase) }}</div>
             }
           </div>
-        }
 
-        <!-- Bilingual Assembly Phases -->
-        @if (currentJob.type === 'bilingual-assembly') {
-          <div class="phases-section">
-            <div class="phases-header">Assembly Phases</div>
-            <div class="phases-grid">
-              <!-- Combining Phase -->
-              <div class="phase-row"
-                   [class.active]="currentJob.assemblySubPhase === 'combining'"
-                   [class.complete]="isAssemblyPhaseComplete('combining', currentJob)">
-                <span class="phase-label">Combining</span>
-                <div class="phase-progress-bar">
-                  <div
-                    class="phase-progress-fill"
-                    [style.width.%]="getAssemblyPhaseProgress('combining', currentJob)"
-                  ></div>
-                </div>
-                <span class="phase-pct">{{ getAssemblyPhasePct('combining', currentJob) }}</span>
-              </div>
-              <!-- VTT Phase -->
-              <div class="phase-row"
-                   [class.active]="currentJob.assemblySubPhase === 'vtt'"
-                   [class.complete]="isAssemblyPhaseComplete('vtt', currentJob)"
-                   [class.pending]="!isAssemblyPhaseStarted('vtt', currentJob)">
-                <span class="phase-label">Subtitles</span>
-                <div class="phase-progress-bar">
-                  <div
-                    class="phase-progress-fill"
-                    [style.width.%]="getAssemblyPhaseProgress('vtt', currentJob)"
-                  ></div>
-                </div>
-                <span class="phase-pct">{{ getAssemblyPhasePct('vtt', currentJob) }}</span>
-              </div>
-              <!-- Encoding Phase -->
-              <div class="phase-row"
-                   [class.active]="currentJob.assemblySubPhase === 'encoding'"
-                   [class.complete]="isAssemblyPhaseComplete('encoding', currentJob)"
-                   [class.pending]="!isAssemblyPhaseStarted('encoding', currentJob)">
-                <span class="phase-label">Encoding M4B</span>
-                <div class="phase-progress-bar">
-                  <div
-                    class="phase-progress-fill"
-                    [style.width.%]="getAssemblyPhaseProgress('encoding', currentJob)"
-                  ></div>
-                </div>
-                <span class="phase-pct">{{ getAssemblyPhasePct('encoding', currentJob) }}</span>
-              </div>
-              <!-- Metadata Phase -->
-              <div class="phase-row"
-                   [class.active]="currentJob.assemblySubPhase === 'metadata'"
-                   [class.complete]="isAssemblyPhaseComplete('metadata', currentJob)"
-                   [class.pending]="!isAssemblyPhaseStarted('metadata', currentJob)">
-                <span class="phase-label">Metadata</span>
-                <div class="phase-progress-bar">
-                  <div
-                    class="phase-progress-fill"
-                    [style.width.%]="getAssemblyPhaseProgress('metadata', currentJob)"
-                  ></div>
-                </div>
-                <span class="phase-pct">{{ getAssemblyPhasePct('metadata', currentJob) }}</span>
+          <!-- Per-Worker Progress (for parallel TTS) -->
+          @if (hasWorkers()) {
+            <div class="workers-section">
+              <div class="workers-header">Workers</div>
+              <div class="workers-grid">
+                @for (worker of currentJob.parallelWorkers; track worker.id) {
+                  <div class="worker-row" [class.complete]="worker.status === 'complete'" [class.error]="worker.status === 'error'">
+                    <span class="worker-label">W{{ worker.id }}</span>
+                    <div class="worker-progress-bar">
+                      <div
+                        class="worker-progress-fill"
+                        [style.width.%]="getWorkerPercentage(worker, currentJob)"
+                      ></div>
+                    </div>
+                    <span class="worker-pct">{{ getWorkerPercentage(worker, currentJob) | number:'1.0-0' }}%</span>
+                  </div>
+                }
               </div>
             </div>
-          </div>
+          }
+
+          <!-- TTS Phases Progress (TTS Conversion + Assembly) -->
+          @if (currentJob.type === 'tts-conversion' && currentJob.ttsPhase && !hasSkipAssembly(currentJob)) {
+            <div class="phases-section">
+              <div class="phases-header">Phases</div>
+              <div class="phases-grid">
+                <div class="phase-row" [class.active]="currentJob.ttsPhase === 'converting'" [class.complete]="currentJob.ttsConversionProgress === 100">
+                  <span class="phase-label">TTS Conversion</span>
+                  <div class="phase-progress-bar">
+                    <div
+                      class="phase-progress-fill"
+                      [style.width.%]="currentJob.ttsConversionProgress || 0"
+                    ></div>
+                  </div>
+                  <span class="phase-pct">{{ currentJob.ttsConversionProgress || 0 | number:'1.0-0' }}%</span>
+                </div>
+                <div class="phase-row" [class.active]="currentJob.ttsPhase === 'assembling'" [class.complete]="currentJob.assemblyProgress === 100" [class.pending]="currentJob.ttsPhase === 'converting' || currentJob.ttsPhase === 'preparing'">
+                  <span class="phase-label">Assembly</span>
+                  <div class="phase-progress-bar">
+                    <div
+                      class="phase-progress-fill"
+                      [style.width.%]="currentJob.assemblyProgress || 0"
+                    ></div>
+                  </div>
+                  <span class="phase-pct">
+                    @if (currentJob.ttsPhase === 'assembling' || currentJob.assemblyProgress) {
+                      {{ currentJob.assemblyProgress || 0 | number:'1.0-0' }}%
+                    } @else {
+                      --
+                    }
+                  </span>
+                </div>
+              </div>
+              @if (currentJob.ttsPhase === 'assembling' && currentJob.assemblySubPhase) {
+                <div class="assembly-subphase">{{ getAssemblySubPhaseLabel(currentJob.assemblySubPhase) }}</div>
+              }
+            </div>
+          }
+
+          <!-- Bilingual Assembly Phases -->
+          @if (currentJob.type === 'bilingual-assembly') {
+            <div class="phases-section">
+              <div class="phases-header">Assembly Phases</div>
+              <div class="phases-grid">
+                <div class="phase-row"
+                     [class.active]="currentJob.assemblySubPhase === 'combining'"
+                     [class.complete]="isAssemblyPhaseComplete('combining', currentJob)">
+                  <span class="phase-label">Combining</span>
+                  <div class="phase-progress-bar">
+                    <div
+                      class="phase-progress-fill"
+                      [style.width.%]="getAssemblyPhaseProgress('combining', currentJob)"
+                    ></div>
+                  </div>
+                  <span class="phase-pct">{{ getAssemblyPhasePct('combining', currentJob) }}</span>
+                </div>
+                <div class="phase-row"
+                     [class.active]="currentJob.assemblySubPhase === 'vtt'"
+                     [class.complete]="isAssemblyPhaseComplete('vtt', currentJob)"
+                     [class.pending]="!isAssemblyPhaseStarted('vtt', currentJob)">
+                  <span class="phase-label">Subtitles</span>
+                  <div class="phase-progress-bar">
+                    <div
+                      class="phase-progress-fill"
+                      [style.width.%]="getAssemblyPhaseProgress('vtt', currentJob)"
+                    ></div>
+                  </div>
+                  <span class="phase-pct">{{ getAssemblyPhasePct('vtt', currentJob) }}</span>
+                </div>
+                <div class="phase-row"
+                     [class.active]="currentJob.assemblySubPhase === 'encoding'"
+                     [class.complete]="isAssemblyPhaseComplete('encoding', currentJob)"
+                     [class.pending]="!isAssemblyPhaseStarted('encoding', currentJob)">
+                  <span class="phase-label">Encoding M4B</span>
+                  <div class="phase-progress-bar">
+                    <div
+                      class="phase-progress-fill"
+                      [style.width.%]="getAssemblyPhaseProgress('encoding', currentJob)"
+                    ></div>
+                  </div>
+                  <span class="phase-pct">{{ getAssemblyPhasePct('encoding', currentJob) }}</span>
+                </div>
+                <div class="phase-row"
+                     [class.active]="currentJob.assemblySubPhase === 'metadata'"
+                     [class.complete]="isAssemblyPhaseComplete('metadata', currentJob)"
+                     [class.pending]="!isAssemblyPhaseStarted('metadata', currentJob)">
+                  <span class="phase-label">Metadata</span>
+                  <div class="phase-progress-bar">
+                    <div
+                      class="phase-progress-fill"
+                      [style.width.%]="getAssemblyPhaseProgress('metadata', currentJob)"
+                    ></div>
+                  </div>
+                  <span class="phase-pct">{{ getAssemblyPhasePct('metadata', currentJob) }}</span>
+                </div>
+              </div>
+            </div>
+          }
         }
       </div>
     } @else {
@@ -563,15 +620,124 @@ interface ETAState {
       margin-top: 0.25rem;
       padding-left: 5.75rem;
     }
+
+    /* Workflow Pipeline View */
+    .workflow-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .workflow-step {
+      padding: 0.625rem 0.75rem;
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      transition: all 0.15s ease;
+
+      &.pending {
+        opacity: 0.6;
+      }
+
+      &.processing {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 5%, var(--bg-base));
+      }
+
+      &.complete {
+        border-color: var(--success);
+
+        .step-status-icon {
+          color: var(--success);
+        }
+      }
+
+      &.error {
+        border-color: var(--error);
+
+        .step-status-icon {
+          color: var(--error);
+        }
+      }
+    }
+
+    .step-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .step-status-icon {
+      flex-shrink: 0;
+      width: 1.25rem;
+      text-align: center;
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+
+      .processing & {
+        color: var(--accent);
+      }
+    }
+
+    .step-type {
+      flex: 1;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .step-pct {
+      font-size: 0.75rem;
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .step-progress-bar {
+      height: 3px;
+      background: var(--bg-elevated);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 0.375rem;
+      margin-left: 1.75rem;
+    }
+
+    .step-progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+      transition: width 0.3s ease;
+    }
+
+    .step-message {
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
+      margin-top: 0.25rem;
+      margin-left: 1.75rem;
+    }
+
+    .step-error {
+      font-size: 0.75rem;
+      color: var(--error);
+      margin-top: 0.25rem;
+      margin-left: 1.75rem;
+    }
   `]
 })
 export class JobProgressComponent implements OnDestroy {
   // Inputs
   readonly job = input<QueueJob | null>(null);
+  readonly childJobs = input<QueueJob[]>([]);
   readonly message = input<string | undefined>(undefined);
 
   // Outputs
   readonly cancel = output<void>();
+
+  // Workflow detection
+  readonly isWorkflow = computed(() => {
+    const j = this.job();
+    return j ? !!(j.workflowId && !j.parentJobId) : false;
+  });
 
   // Timer state - updates every second
   private timerInterval: ReturnType<typeof setInterval> | null = null;
@@ -1199,6 +1365,24 @@ export class JobProgressComponent implements OnDestroy {
   isMonoTranslation(): boolean {
     const j = this.job();
     return j?.type === 'bilingual-translation' && !!(j.config as any)?.monoTranslation;
+  }
+
+  getStepLabel(type: JobType): string {
+    switch (type) {
+      case 'ocr-cleanup': return 'AI Cleanup';
+      case 'translation': return 'Translation';
+      case 'tts-conversion': return 'TTS';
+      case 'reassembly': return 'Reassembly';
+      case 'resemble-enhance': return 'Audio Enhancement';
+      case 'bilingual-cleanup': return 'AI Cleanup';
+      case 'bilingual-translation': return 'Translation';
+      case 'bilingual-assembly': return 'Assembly';
+      default: return type;
+    }
+  }
+
+  getCompletedStepCount(): number {
+    return this.childJobs().filter(j => j.status === 'complete').length;
   }
 
   getAssemblySubPhaseLabel(subPhase: string | undefined): string {
