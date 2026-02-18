@@ -9,6 +9,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
+import * as os from 'os';
 import { promisify } from 'util';
 import * as cheerio from 'cheerio';
 
@@ -640,6 +641,62 @@ export class EpubProcessor {
 
 const deflateRaw = promisify(zlib.deflateRaw);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared CRC32 utility
+// ─────────────────────────────────────────────────────────────────────────────
+
+let crc32Table: number[] | null = null;
+
+function getCrc32Table(): number[] {
+  if (crc32Table) return crc32Table;
+
+  const table: number[] = [];
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) {
+      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[i] = c >>> 0;
+  }
+  crc32Table = table;
+  return table;
+}
+
+function computeCrc32(data: Buffer): number {
+  let crc = 0xFFFFFFFF;
+  const table = getCrc32Table();
+  for (let i = 0; i < data.length; i++) {
+    crc = (crc >>> 8) ^ table[(crc ^ data[i]) & 0xFF];
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Retry logic for writing output files (shared by ZipWriter and StreamingZipWriter)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Copy a temp file to the output path with retry logic for Windows file locking.
+ * Deletes the temp file after successful copy or on final failure.
+ */
+async function copyTempToOutput(tempPath: string, outputPath: string): Promise<void> {
+  const maxRetries = 5;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      await fs.copyFile(tempPath, outputPath);
+      await fs.unlink(tempPath);
+      return;
+    } catch (err: any) {
+      if ((err.code === 'EPERM' || err.code === 'EBUSY') && attempt < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+        continue;
+      }
+      try { await fs.unlink(tempPath); } catch { /* ignore */ }
+      throw err;
+    }
+  }
+}
+
 export class ZipWriter {
   private entries: Array<{ name: string; data: Buffer; isCompressed: boolean }> = [];
 
@@ -665,8 +722,7 @@ export class ZipWriter {
         compressionMethod = 0; // Store
       }
 
-      // CRC32 of uncompressed data
-      const crc = this.crc32(entry.data);
+      const crc = computeCrc32(entry.data);
 
       // Local file header
       const localHeader = Buffer.alloc(30 + nameBuffer.length);
@@ -722,58 +778,144 @@ export class ZipWriter {
     eocd.writeUInt32LE(offset, 16); // Central dir offset
     eocd.writeUInt16LE(0, 20); // Comment length
 
-    // Write to a temp file in the OS temp directory first, then rename into place.
-    // This avoids EPERM errors when the target file is briefly locked by external
-    // processes (e.g. Syncthing, antivirus, search indexer). Using the OS temp dir
-    // ensures the temp file won't be picked up by folder-sync tools.
     const output = Buffer.concat([...fileData, ...centralDirectory, eocd]);
     const tempPath = path.join(os.tmpdir(), `bookforge-epub-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
     await fs.writeFile(tempPath, output);
+    await copyTempToOutput(tempPath, outputPath);
+  }
+}
 
-    // Copy temp file into place with retry. On Windows, the target file may be
-    // briefly locked by Syncthing, antivirus, or search indexer. Using copyFile
-    // (not rename) because temp and output may be on different drives.
-    const maxRetries = 5;
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        await fs.copyFile(tempPath, outputPath);
-        await fs.unlink(tempPath);
-        return;
-      } catch (err: any) {
-        if ((err.code === 'EPERM' || err.code === 'EBUSY') && attempt < maxRetries - 1) {
-          await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
-          continue;
-        }
-        await fs.unlink(tempPath);
-        throw err;
-      }
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+// Streaming ZIP Writer — writes entries directly to disk, keeping only
+// central directory metadata (~50 bytes/entry) in memory.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface CentralDirRecord {
+  nameBuffer: Buffer;
+  compressionMethod: number;
+  crc: number;
+  compressedSize: number;
+  uncompressedSize: number;
+  localHeaderOffset: number;
+}
+
+export class StreamingZipWriter {
+  private fd: number | null = null;
+  private tempPath: string = '';
+  private offset: number = 0;
+  private centralDirRecords: CentralDirRecord[] = [];
+
+  async open(): Promise<void> {
+    this.tempPath = path.join(os.tmpdir(), `bookforge-stream-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+    this.fd = fsSync.openSync(this.tempPath, 'w');
+    this.offset = 0;
+    this.centralDirRecords = [];
   }
 
-  private crc32(data: Buffer): number {
-    let crc = 0xFFFFFFFF;
-    const table = this.getCrc32Table();
-    for (let i = 0; i < data.length; i++) {
-      crc = (crc >>> 8) ^ table[(crc ^ data[i]) & 0xFF];
+  async addFile(name: string, data: Buffer, compress: boolean = true): Promise<void> {
+    if (this.fd === null) {
+      throw new Error('StreamingZipWriter not open');
     }
-    return (crc ^ 0xFFFFFFFF) >>> 0;
+
+    const nameBuffer = Buffer.from(name, 'utf8');
+    let compressedData: Buffer;
+    let compressionMethod: number;
+
+    if (compress && data.length > 0) {
+      compressedData = await deflateRaw(data) as Buffer;
+      compressionMethod = 8; // Deflate
+    } else {
+      compressedData = data;
+      compressionMethod = 0; // Store
+    }
+
+    const crc = computeCrc32(data);
+
+    // Local file header
+    const localHeader = Buffer.alloc(30 + nameBuffer.length);
+    localHeader.writeUInt32LE(0x04034b50, 0); // Signature
+    localHeader.writeUInt16LE(20, 4); // Version needed
+    localHeader.writeUInt16LE(0, 6); // Flags
+    localHeader.writeUInt16LE(compressionMethod, 8);
+    localHeader.writeUInt16LE(0, 10); // Modified time
+    localHeader.writeUInt16LE(0, 12); // Modified date
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(compressedData.length, 18);
+    localHeader.writeUInt32LE(data.length, 22);
+    localHeader.writeUInt16LE(nameBuffer.length, 26);
+    localHeader.writeUInt16LE(0, 28); // Extra field length
+    nameBuffer.copy(localHeader, 30);
+
+    // Write local header + data directly to disk
+    const localHeaderOffset = this.offset;
+    fsSync.writeSync(this.fd, localHeader, 0, localHeader.length);
+    this.offset += localHeader.length;
+    fsSync.writeSync(this.fd, compressedData, 0, compressedData.length);
+    this.offset += compressedData.length;
+
+    // Keep only the central directory metadata in memory
+    this.centralDirRecords.push({
+      nameBuffer,
+      compressionMethod,
+      crc,
+      compressedSize: compressedData.length,
+      uncompressedSize: data.length,
+      localHeaderOffset
+    });
   }
 
-  private static crc32Table: number[] | null = null;
-
-  private getCrc32Table(): number[] {
-    if (ZipWriter.crc32Table) return ZipWriter.crc32Table;
-
-    const table: number[] = [];
-    for (let i = 0; i < 256; i++) {
-      let c = i;
-      for (let j = 0; j < 8; j++) {
-        c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-      }
-      table[i] = c >>> 0;
+  async finalize(outputPath: string): Promise<void> {
+    if (this.fd === null) {
+      throw new Error('StreamingZipWriter not open');
     }
-    ZipWriter.crc32Table = table;
-    return table;
+
+    // Write central directory entries
+    const centralDirOffset = this.offset;
+    for (const rec of this.centralDirRecords) {
+      const centralEntry = Buffer.alloc(46 + rec.nameBuffer.length);
+      centralEntry.writeUInt32LE(0x02014b50, 0); // Signature
+      centralEntry.writeUInt16LE(20, 4); // Version made by
+      centralEntry.writeUInt16LE(20, 6); // Version needed
+      centralEntry.writeUInt16LE(0, 8); // Flags
+      centralEntry.writeUInt16LE(rec.compressionMethod, 10);
+      centralEntry.writeUInt16LE(0, 12); // Modified time
+      centralEntry.writeUInt16LE(0, 14); // Modified date
+      centralEntry.writeUInt32LE(rec.crc, 16);
+      centralEntry.writeUInt32LE(rec.compressedSize, 20);
+      centralEntry.writeUInt32LE(rec.uncompressedSize, 24);
+      centralEntry.writeUInt16LE(rec.nameBuffer.length, 28);
+      centralEntry.writeUInt16LE(0, 30); // Extra field length
+      centralEntry.writeUInt16LE(0, 32); // Comment length
+      centralEntry.writeUInt16LE(0, 34); // Disk number
+      centralEntry.writeUInt16LE(0, 36); // Internal attributes
+      centralEntry.writeUInt32LE(0, 38); // External attributes
+      centralEntry.writeUInt32LE(rec.localHeaderOffset, 42);
+      rec.nameBuffer.copy(centralEntry, 46);
+
+      fsSync.writeSync(this.fd, centralEntry, 0, centralEntry.length);
+      this.offset += centralEntry.length;
+    }
+
+    const centralDirSize = this.offset - centralDirOffset;
+
+    // EOCD
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0); // Signature
+    eocd.writeUInt16LE(0, 4); // Disk number
+    eocd.writeUInt16LE(0, 6); // Central dir disk
+    eocd.writeUInt16LE(this.centralDirRecords.length, 8); // Entries on disk
+    eocd.writeUInt16LE(this.centralDirRecords.length, 10); // Total entries
+    eocd.writeUInt32LE(centralDirSize, 12);
+    eocd.writeUInt32LE(centralDirOffset, 16); // Central dir offset
+    eocd.writeUInt16LE(0, 20); // Comment length
+
+    fsSync.writeSync(this.fd, eocd, 0, eocd.length);
+    fsSync.closeSync(this.fd);
+    this.fd = null;
+
+    // Copy temp file to output with retry logic
+    await copyTempToOutput(this.tempPath, outputPath);
+    this.centralDirRecords = [];
   }
 }
 
@@ -2165,7 +2307,6 @@ function getTextContent(node: any): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { execSync, exec } from 'child_process';
-import * as os from 'os';
 
 export interface DiffSegment {
   text: string;

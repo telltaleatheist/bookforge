@@ -2072,26 +2072,14 @@ export async function cleanupEpub(
 
         if (intermediateExists) {
           isResuming = true;
-          const { EpubProcessor: ResumeEpubProcessor } = await import('./epub-processor.js');
-          const resumeProcessor = new ResumeEpubProcessor();
-          await resumeProcessor.open(outputPath);
 
+          // Don't load completed chapter XHTML into memory — saveModifiedEpubLocal
+          // reads previously-saved chapters directly from the output EPUB on demand.
           for (const chapterId of checkpoint.completedChapters) {
-            const chapter = chapters.find(c => c.id === chapterId);
-            if (chapter) {
-              const href = structure!.rootPath ? `${structure!.rootPath}/${chapter.href}` : chapter.href;
-              try {
-                const xhtml = await resumeProcessor.readFile(href);
-                modifiedChapters.set(chapterId, xhtml);
-                completedChapterIds.add(chapterId);
-                chaptersAddedToDiffCache.add(chapterId);  // Diff cache already has these
-              } catch {
-                console.warn(`[AI-CLEANUP] Could not read chapter ${chapterId} from intermediate EPUB, will re-process`);
-              }
-            }
+            completedChapterIds.add(chapterId);
+            chaptersAddedToDiffCache.add(chapterId);  // Diff cache already has these
           }
 
-          resumeProcessor.close();
           chunksCompletedInJob = checkpoint.completedChunkCount;
           chaptersProcessed = completedChapterIds.size;
 
@@ -2142,24 +2130,73 @@ export async function cleanupEpub(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PHASE 1: Pre-scan all chapters to calculate total chunks in job
-    // Mode 'structure': Uses cheerio to extract block elements (preserves HTML)
-    // Mode 'full': Sends entire XHTML body to AI (can fix structural issues)
+    // PHASE 1: Pre-scan all chapters to count chunks (metadata only — no XHTML stored)
     // ─────────────────────────────────────────────────────────────────────────
     console.log(`[AI-CLEANUP] Pre-scanning chapters (mode: ${cleanupMode})...`);
 
-    // Store original XHTML for each chapter (needed for head/styles preservation)
+    // Lazily populated: stores XHTML only for the current chapter being processed
     const chapterXhtmlMap: Map<string, string> = new Map();
 
     // Simple chunk structure - just text chunks
     interface ChunkInfo {
       text: string;  // Plain text with paragraphs separated by blank lines
     }
-    const chapterChunks: { chapter: typeof chapters[0]; chunks: ChunkInfo[] }[] = [];
+
+    // Lightweight metadata from pre-scan (no XHTML or chunk text stored)
+    interface ChapterMeta {
+      chapter: typeof chapters[0];
+      chunkCount: number;
+      href: string;  // resolved href for reading from EPUB
+    }
+    const chapterMetas: ChapterMeta[] = [];
     let totalChunksInJob = 0;
 
+    // Helper: split text into chunks at paragraph boundaries
+    const splitTextIntoChunks = (chapterText: string): ChunkInfo[] => {
+      const chunks: ChunkInfo[] = [];
+      if (chapterText.length <= CHUNK_SIZE) {
+        chunks.push({ text: chapterText });
+      } else {
+        const paragraphs = chapterText.split(/\n\s*\n/);
+        let currentChunk = '';
+
+        for (const para of paragraphs) {
+          const wouldBe = currentChunk ? currentChunk + '\n\n' + para : para;
+
+          if (wouldBe.length > CHUNK_SIZE && currentChunk) {
+            chunks.push({ text: currentChunk });
+            currentChunk = para;
+          } else {
+            currentChunk = wouldBe;
+          }
+        }
+
+        if (currentChunk) {
+          chunks.push({ text: currentChunk });
+        }
+      }
+      return chunks;
+    };
+
+    // Helper: load a chapter's XHTML and split into chunks on demand
+    const loadChapterChunks = async (
+      proc: InstanceType<typeof import('./epub-processor.js').EpubProcessor>,
+      href: string
+    ): Promise<{ xhtml: string; chunks: ChunkInfo[] } | null> => {
+      let xhtml: string;
+      try {
+        xhtml = await proc.readFile(href);
+      } catch {
+        return null;
+      }
+
+      const chapterText = extractChapterAsText(xhtml);
+      if (!chapterText.trim()) return null;
+
+      return { xhtml, chunks: splitTextIntoChunks(chapterText) };
+    };
+
     for (const chapter of chapters) {
-      // Read the raw XHTML
       const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
       let xhtml: string;
       try {
@@ -2168,50 +2205,19 @@ export async function cleanupEpub(
         continue; // Skip chapters that can't be read
       }
 
-      // Store original XHTML for later (to preserve head/styles)
-      chapterXhtmlMap.set(chapter.id, xhtml);
-
-      // Extract text as flowing prose (paragraphs separated by blank lines)
       const chapterText = extractChapterAsText(xhtml);
-      if (!chapterText.trim()) {
-        continue; // Skip empty chapters
+      if (!chapterText.trim()) continue;
+
+      // Count chunks without storing the text
+      const chunkCount = splitTextIntoChunks(chapterText).length;
+      if (chunkCount > 0) {
+        chapterMetas.push({ chapter, chunkCount, href });
+        totalChunksInJob += chunkCount;
       }
-
-      const uniqueChunks: ChunkInfo[] = [];
-
-      // If chapter fits in one chunk, send it all
-      if (chapterText.length <= CHUNK_SIZE) {
-        uniqueChunks.push({ text: chapterText });
-      } else {
-        // Split at paragraph boundaries (blank lines)
-        const paragraphs = chapterText.split(/\n\s*\n/);
-        let currentChunk = '';
-
-        for (const para of paragraphs) {
-          const wouldBe = currentChunk ? currentChunk + '\n\n' + para : para;
-
-          if (wouldBe.length > CHUNK_SIZE && currentChunk) {
-            // Save current chunk and start new one
-            uniqueChunks.push({ text: currentChunk });
-            currentChunk = para;
-          } else {
-            currentChunk = wouldBe;
-          }
-        }
-
-        // Don't forget the last chunk
-        if (currentChunk) {
-          uniqueChunks.push({ text: currentChunk });
-        }
-      }
-
-      if (uniqueChunks.length > 0) {
-        chapterChunks.push({ chapter, chunks: uniqueChunks });
-        totalChunksInJob += uniqueChunks.length;
-      }
+      // xhtml and chapterText go out of scope — not stored
     }
 
-    console.log(`[AI-CLEANUP] Total chunks in job: ${totalChunksInJob} across ${chapterChunks.length} non-empty chapters (mode: ${cleanupMode})`);
+    console.log(`[AI-CLEANUP] Total chunks in job: ${totalChunksInJob} across ${chapterMetas.length} non-empty chapters (mode: ${cleanupMode})`);
 
     if (totalChunksInJob === 0) {
       processor.close();
@@ -2224,27 +2230,24 @@ export async function cleanupEpub(
     if (testMode) {
       console.log(`[AI-CLEANUP] TEST MODE: Limiting to first ${TEST_MODE_CHUNK_LIMIT} chunks`);
       let chunksRemaining = TEST_MODE_CHUNK_LIMIT;
-      const limitedChapterChunks: typeof chapterChunks = [];
+      const limitedMetas: typeof chapterMetas = [];
 
-      for (const { chapter, chunks } of chapterChunks) {
+      for (const meta of chapterMetas) {
         if (chunksRemaining <= 0) break;
 
-        if (chunks.length <= chunksRemaining) {
-          // Take all chunks from this chapter
-          limitedChapterChunks.push({ chapter, chunks });
-          chunksRemaining -= chunks.length;
+        if (meta.chunkCount <= chunksRemaining) {
+          limitedMetas.push(meta);
+          chunksRemaining -= meta.chunkCount;
         } else {
-          // Take only the remaining chunks we need
-          limitedChapterChunks.push({ chapter, chunks: chunks.slice(0, chunksRemaining) });
+          limitedMetas.push({ ...meta, chunkCount: chunksRemaining });
           chunksRemaining = 0;
         }
       }
 
-      // Replace the arrays with limited versions
-      chapterChunks.length = 0;
-      chapterChunks.push(...limitedChapterChunks);
+      chapterMetas.length = 0;
+      chapterMetas.push(...limitedMetas);
       totalChunksInJob = Math.min(totalChunksInJob, TEST_MODE_CHUNK_LIMIT);
-      console.log(`[AI-CLEANUP] TEST MODE: Processing ${totalChunksInJob} chunks across ${chapterChunks.length} chapters`);
+      console.log(`[AI-CLEANUP] TEST MODE: Processing ${totalChunksInJob} chunks across ${chapterMetas.length} chapters`);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2260,6 +2263,7 @@ export async function cleanupEpub(
       console.log(`[AI-CLEANUP] Using PARALLEL chunk-level processing with ${workerCount} workers`);
 
       // Flatten all chunks into a single queue with metadata
+      // For parallel, we must load all chunk text into the queue upfront
       interface ChunkWork {
         chapterId: string;
         chapterTitle: string;
@@ -2271,48 +2275,57 @@ export async function cleanupEpub(
 
       const chunkQueue: ChunkWork[] = [];
       let overallNumber = 0;
-      for (let chapterIdx = 0; chapterIdx < chapterChunks.length; chapterIdx++) {
-        const { chapter, chunks } = chapterChunks[chapterIdx];
+      for (let chapterIdx = 0; chapterIdx < chapterMetas.length; chapterIdx++) {
+        const meta = chapterMetas[chapterIdx];
         // Skip chapters already completed from checkpoint
-        if (completedChapterIds.has(chapter.id)) {
-          overallNumber += chunks.length;
+        if (completedChapterIds.has(meta.chapter.id)) {
+          overallNumber += meta.chunkCount;
           continue;
         }
-        for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+        // Load chunks on demand for this chapter
+        const loaded = await loadChapterChunks(processor, meta.href);
+        if (!loaded) {
+          overallNumber += meta.chunkCount;
+          continue;
+        }
+        // In test mode, chunkCount may be limited — only take that many
+        const chunksToUse = loaded.chunks.slice(0, meta.chunkCount);
+        for (let chunkIdx = 0; chunkIdx < chunksToUse.length; chunkIdx++) {
           overallNumber++;
           chunkQueue.push({
-            chapterId: chapter.id,
-            chapterTitle: chapter.title,
+            chapterId: meta.chapter.id,
+            chapterTitle: meta.chapter.title,
             chapterIndex: chapterIdx,
             chunkIndex: chunkIdx,
             overallChunkNumber: overallNumber,
-            text: chunks[chunkIdx].text
+            text: chunksToUse[chunkIdx].text
           });
         }
+        // Don't store XHTML yet — it will be loaded in trySaveChapter
       }
 
       console.log(`[AI-CLEANUP] Created chunk queue with ${chunkQueue.length} items`);
 
-      // Results storage
+      // Results storage — keyed by chapter for efficient lookup and cleanup
       interface ChunkResult {
         chapterId: string;
         chunkIndex: number;
         cleanedText: string;
       }
-      const results: ChunkResult[] = [];
+      const resultsByChapter = new Map<string, ChunkResult[]>();
       let totalChunksCompleted = chunksCompletedInJob;  // Start from checkpoint count if resuming
 
       // Track chunks needed per chapter for incremental saving
       const chunksPerChapter = new Map<string, number>();
       const completedChunksPerChapter = new Map<string, number>();
       const savedChapters = new Set<string>();
-      for (const { chapter, chunks } of chapterChunks) {
-        chunksPerChapter.set(chapter.id, chunks.length);
-        if (completedChapterIds.has(chapter.id)) {
-          completedChunksPerChapter.set(chapter.id, chunks.length);
-          savedChapters.add(chapter.id);
+      for (const meta of chapterMetas) {
+        chunksPerChapter.set(meta.chapter.id, meta.chunkCount);
+        if (completedChapterIds.has(meta.chapter.id)) {
+          completedChunksPerChapter.set(meta.chapter.id, meta.chunkCount);
+          savedChapters.add(meta.chapter.id);
         } else {
-          completedChunksPerChapter.set(chapter.id, 0);
+          completedChunksPerChapter.set(meta.chapter.id, 0);
         }
       }
 
@@ -2325,12 +2338,27 @@ export async function cleanupEpub(
 
         if (completed >= needed) {
           // All chunks for this chapter are done - collect and save
-          const chapterResults = results
-            .filter(r => r.chapterId === chapterId)
-            .sort((a, b) => a.chunkIndex - b.chunkIndex);
+          const chapterResults = resultsByChapter.get(chapterId);
+          if (!chapterResults || chapterResults.length === 0) return;
 
-          const originalXhtml = chapterXhtmlMap.get(chapterId);
-          if (originalXhtml && chapterResults.length > 0) {
+          chapterResults.sort((a, b) => a.chunkIndex - b.chunkIndex);
+
+          // Load XHTML on demand if not already cached
+          let originalXhtml = chapterXhtmlMap.get(chapterId);
+          if (!originalXhtml) {
+            const meta = chapterMetas.find(m => m.chapter.id === chapterId);
+            if (meta) {
+              try {
+                originalXhtml = await processor!.readFile(meta.href);
+                chapterXhtmlMap.set(chapterId, originalXhtml);
+              } catch {
+                console.warn(`[AI-CLEANUP] Could not read XHTML for chapter ${chapterId}`);
+                return;
+              }
+            }
+          }
+
+          if (originalXhtml) {
             const cleanedText = chapterResults.map(c => c.cleanedText).join('\n\n');
             const paragraphs = splitTextIntoParagraphs(cleanedText);
             const rebuiltXhtml = rebuildChapterFromParagraphs(originalXhtml, paragraphs);
@@ -2338,20 +2366,22 @@ export async function cleanupEpub(
 
             // Save to disk immediately
             try {
-              await saveModifiedEpubLocal(processor!, modifiedChapters, outputPath);
+              await saveModifiedEpubLocal(processor!, modifiedChapters, outputPath, savedChapters);
               savedChapters.add(chapterId);
               completedChapterIds.add(chapterId);
               console.log(`[AI-CLEANUP] Saved chapter ${chapterId} (${chapterResults.length} chunks)`);
 
+              // Free memory — chapter data is now on disk
+              modifiedChapters.delete(chapterId);
+              chapterXhtmlMap.delete(chapterId);
+              resultsByChapter.delete(chapterId);
+
               // Add to diff cache if not already added
               if (!chaptersAddedToDiffCache.has(chapterId)) {
-                const chapterInfo = chapterChunks.find(cc => cc.chapter.id === chapterId);
-                const chapterTitle = chapterInfo?.chapter.title || chapterId;
+                const meta = chapterMetas.find(m => m.chapter.id === chapterId);
+                const chapterTitle = meta?.chapter.title || chapterId;
                 const originalText = extractChapterAsText(originalXhtml);
-                // IMPORTANT: Extract cleaned text from the rebuilt XHTML, not raw AI text.
-                // This ensures diff positions match what hydration will extract from the EPUB.
-                const rebuiltXhtml = modifiedChapters.get(chapterId);
-                const cleanedTextForDiff = rebuiltXhtml ? extractChapterAsText(rebuiltXhtml) : cleanedText;
+                const cleanedTextForDiff = extractChapterAsText(rebuiltXhtml);
                 await addChapterDiff(chapterId, chapterTitle, originalText, cleanedTextForDiff);
                 chaptersAddedToDiffCache.add(chapterId);
               }
@@ -2362,7 +2392,7 @@ export async function cleanupEpub(
                   version: 1,
                   sourceEpubPath: epubPath,
                   outputFilename,
-                  totalChapters: chapterChunks.length,
+                  totalChapters: chapterMetas.length,
                   totalChunks: totalChunksInJob,
                   completedChapters: [...completedChapterIds],
                   completedChunkCount: totalChunksCompleted,
@@ -2393,7 +2423,7 @@ export async function cleanupEpub(
           jobId,
           phase: 'processing',
           currentChapter: 0, // Not meaningful for chunk-level
-          totalChapters: chapterChunks.length,
+          totalChapters: chapterMetas.length,
           currentChunk: totalChunksCompleted,
           totalChunks: totalChunksInJob,
           percentage,
@@ -2424,11 +2454,15 @@ export async function cleanupEpub(
               totalChunks: totalChunksInJob
             };
             const cleaned = await cleanChunkWithProvider(work.text, systemPrompt, config, 3, abortController.signal, chunkMeta);
-            results.push({
+            const result: ChunkResult = {
               chapterId: work.chapterId,
               chunkIndex: work.chunkIndex,
               cleanedText: cleaned
-            });
+            };
+            if (!resultsByChapter.has(work.chapterId)) {
+              resultsByChapter.set(work.chapterId, []);
+            }
+            resultsByChapter.get(work.chapterId)!.push(result);
             await updateProgress(work.chapterId, work.chapterTitle);
           } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -2439,11 +2473,15 @@ export async function cleanupEpub(
               throw error; // Re-throw to stop all workers
             }
             // For recoverable errors, keep original text
-            results.push({
+            const result: ChunkResult = {
               chapterId: work.chapterId,
               chunkIndex: work.chunkIndex,
               cleanedText: work.text
-            });
+            };
+            if (!resultsByChapter.has(work.chapterId)) {
+              resultsByChapter.set(work.chapterId, []);
+            }
+            resultsByChapter.get(work.chapterId)!.push(result);
             await updateProgress(work.chapterId, work.chapterTitle);
           }
         }
@@ -2458,30 +2496,31 @@ export async function cleanupEpub(
         throw new Error('Job cancelled');
       }
 
-      // Reassemble: group by chapter, sort by chunk index (only for chapters not already saved)
-      const chapterResultsMap = new Map<string, ChunkResult[]>();
-      for (const result of results) {
-        // Skip chapters that were already saved incrementally
-        if (savedChapters.has(result.chapterId)) continue;
-
-        if (!chapterResultsMap.has(result.chapterId)) {
-          chapterResultsMap.set(result.chapterId, []);
-        }
-        chapterResultsMap.get(result.chapterId)!.push(result);
-      }
-
       // Process any remaining unsaved chapters (partial chapters from stuck workers)
-      for (const [chapterId, chunks] of chapterResultsMap) {
-        chunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+      let remainingCount = 0;
+      for (const [chapterId, chapterResults] of resultsByChapter) {
+        if (savedChapters.has(chapterId)) continue;
+        remainingCount++;
 
-        const originalXhtml = chapterXhtmlMap.get(chapterId);
+        chapterResults.sort((a, b) => a.chunkIndex - b.chunkIndex);
+
+        // Load XHTML on demand
+        let originalXhtml = chapterXhtmlMap.get(chapterId);
         if (!originalXhtml) {
-          console.warn(`[AI-CLEANUP] No original XHTML for chapter ${chapterId}`);
-          continue;
+          const meta = chapterMetas.find(m => m.chapter.id === chapterId);
+          if (meta) {
+            try {
+              originalXhtml = await processor!.readFile(meta.href);
+            } catch {
+              console.warn(`[AI-CLEANUP] No original XHTML for chapter ${chapterId}`);
+              continue;
+            }
+          }
         }
+        if (!originalXhtml) continue;
 
         // Join all chunk results into one cleaned text
-        const cleanedText = chunks.map(c => c.cleanedText).join('\n\n');
+        const cleanedText = chapterResults.map(c => c.cleanedText).join('\n\n');
 
         // Split into paragraphs and rebuild XHTML
         const paragraphs = splitTextIntoParagraphs(cleanedText);
@@ -2491,17 +2530,17 @@ export async function cleanupEpub(
 
         // Add to diff cache (these chapters weren't saved incrementally)
         if (!chaptersAddedToDiffCache.has(chapterId)) {
-          const chapterInfo = chapterChunks.find(cc => cc.chapter.id === chapterId);
-          const chapterTitle = chapterInfo?.chapter.title || chapterId;
+          const meta = chapterMetas.find(m => m.chapter.id === chapterId);
+          const chapterTitle = meta?.chapter.title || chapterId;
           const originalText = extractChapterAsText(originalXhtml);
           const cleanedTextForDiff = extractChapterAsText(rebuiltXhtml);
           await addChapterDiff(chapterId, chapterTitle, originalText, cleanedTextForDiff);
           chaptersAddedToDiffCache.add(chapterId);
         }
       }
-      chaptersProcessed = savedChapters.size + chapterResultsMap.size;
+      chaptersProcessed = savedChapters.size + remainingCount;
 
-      console.log(`[AI-CLEANUP] Saved ${savedChapters.size} chapters incrementally, ${chapterResultsMap.size} in final pass (${results.length} total chunks)`);
+      console.log(`[AI-CLEANUP] Saved ${savedChapters.size} chapters incrementally, ${remainingCount} in final pass`);
 
     } else {
       // ─────────────────────────────────────────────────────────────────────────
@@ -2509,19 +2548,28 @@ export async function cleanupEpub(
       // ─────────────────────────────────────────────────────────────────────────
       console.log('[AI-CLEANUP] Using SEQUENTIAL processing');
 
-      for (let i = 0; i < chapterChunks.length; i++) {
+      for (let i = 0; i < chapterMetas.length; i++) {
         // Check for cancellation before each chapter
         if (abortController.signal.aborted) {
           console.log(`[AI-CLEANUP] Job ${jobId} cancelled before chapter ${i + 1}`);
           throw new Error('Job cancelled');
         }
 
-        const { chapter, chunks: uniqueChunks } = chapterChunks[i];
+        const meta = chapterMetas[i];
+        const { chapter } = meta;
 
         // Skip already-completed chapters (from checkpoint resume)
         if (completedChapterIds.has(chapter.id)) {
           continue;
         }
+
+        // Load chapter XHTML and chunks on demand
+        const loaded = await loadChapterChunks(processor, meta.href);
+        if (!loaded) continue;
+
+        // In test mode, chunkCount may be limited
+        const uniqueChunks = loaded.chunks.slice(0, meta.chunkCount);
+        chapterXhtmlMap.set(chapter.id, loaded.xhtml);
 
         // Collect cleaned text from all chunks in this chapter
         const cleanedChunkTexts: string[] = [];
@@ -2542,7 +2590,7 @@ export async function cleanupEpub(
             jobId,
             phase: 'processing',
             currentChapter: i + 1,
-            totalChapters: chapterChunks.length,
+            totalChapters: chapterMetas.length,
             currentChunk: currentChunkInJob,
             totalChunks: totalChunksInJob,
             percentage: Math.round((chunksCompletedInJob / totalChunksInJob) * 90),
@@ -2576,28 +2624,6 @@ export async function cleanupEpub(
             // Check if too many chunks have fallen back to original text
             checkFallbackThreshold();
 
-            // Save incrementally every 5 chunks (or on last chunk of chapter)
-            const isLastChunkOfChapter = c === uniqueChunks.length - 1;
-            const shouldSave = isLastChunkOfChapter || chunksCompletedInJob % 5 === 0;
-
-            if (shouldSave) {
-              const originalXhtml = chapterXhtmlMap.get(chapter.id);
-              if (originalXhtml) {
-                // Join cleaned chunks and rebuild chapter
-                const cleanedText = cleanedChunkTexts.join('\n\n');
-                const paragraphs = splitTextIntoParagraphs(cleanedText);
-                const rebuiltXhtml = rebuildChapterFromParagraphs(originalXhtml, paragraphs);
-                modifiedChapters.set(chapter.id, rebuiltXhtml);
-              }
-
-              try {
-                await saveModifiedEpubLocal(processor, modifiedChapters, outputPath);
-                if (global.gc) global.gc();
-              } catch (saveError) {
-                console.error(`Failed to save after chunk ${currentChunkInJob}:`, saveError);
-              }
-            }
-
             // Track first chunk completion for rate calculation
             if (firstChunkCompletedAt === null) {
               firstChunkCompletedAt = Date.now();
@@ -2607,7 +2633,7 @@ export async function cleanupEpub(
               jobId,
               phase: 'processing',
               currentChapter: i + 1,
-              totalChapters: chapterChunks.length,
+              totalChapters: chapterMetas.length,
               currentChunk: chunksCompletedInJob,
               totalChunks: totalChunksInJob,
               percentage: Math.round((chunksCompletedInJob / totalChunksInJob) * 90),
@@ -2642,7 +2668,7 @@ export async function cleanupEpub(
                 jobId,
                 phase: 'error',
                 currentChapter: i + 1,
-                totalChapters: chapterChunks.length,
+                totalChapters: chapterMetas.length,
                 currentChunk: currentChunkInJob,
                 totalChunks: totalChunksInJob,
                 percentage: Math.round((chunksCompletedInJob / totalChunksInJob) * 90),
@@ -2678,9 +2704,15 @@ export async function cleanupEpub(
         chaptersProcessed++;
         completedChapterIds.add(chapter.id);
 
-        // Save after each chapter
+        // Save at chapter boundary only
         try {
-          await saveModifiedEpubLocal(processor, modifiedChapters, outputPath);
+          await saveModifiedEpubLocal(processor, modifiedChapters, outputPath, completedChapterIds);
+
+          // Free memory — chapter data is now on disk
+          modifiedChapters.delete(chapter.id);
+          chapterXhtmlMap.delete(chapter.id);
+
+          if (global.gc) global.gc();
         } catch (saveError) {
           console.error(`Failed to save after chapter ${i + 1}:`, saveError);
         }
@@ -2691,7 +2723,7 @@ export async function cleanupEpub(
             version: 1,
             sourceEpubPath: epubPath,
             outputFilename,
-            totalChapters: chapterChunks.length,
+            totalChapters: chapterMetas.length,
             totalChunks: totalChunksInJob,
             completedChapters: [...completedChapterIds],
             completedChunkCount: chunksCompletedInJob,
@@ -2718,7 +2750,7 @@ export async function cleanupEpub(
       outputPath
     });
 
-    await saveModifiedEpubLocal(processor, modifiedChapters, outputPath);
+    await saveModifiedEpubLocal(processor, modifiedChapters, outputPath, completedChapterIds);
     processor.close();
     processor = null;
 
@@ -2856,55 +2888,80 @@ export async function cleanupEpub(
 }
 
 /**
- * Save modified EPUB using a dedicated processor instance.
- * This is used by cleanupEpub to avoid conflicts with the global processor.
+ * Save modified EPUB using StreamingZipWriter to avoid buffering the entire EPUB in memory.
+ *
+ * For each entry:
+ * 1. If the chapter is in `modifiedChapters` → write the modified XHTML
+ * 2. If the chapter is in `previouslySavedChapterIds` (already saved in a prior pass
+ *    but evicted from modifiedChapters to save memory) → read from the existing output EPUB
+ * 3. Otherwise → read from the original EPUB via processor
  */
 async function saveModifiedEpubLocal(
   processor: InstanceType<typeof import('./epub-processor.js').EpubProcessor>,
   modifiedChapters: Map<string, string>,
-  outputPath: string
+  outputPath: string,
+  previouslySavedChapterIds?: Set<string>
 ): Promise<void> {
-  const { ZipWriter } = await import('./epub-processor.js');
+  const { StreamingZipWriter, ZipReader } = await import('./epub-processor.js');
 
   const structure = processor.getStructure();
   if (!structure) {
     throw new Error('No EPUB structure');
   }
 
-  const zipWriter = new ZipWriter();
+  // Build a lookup: entry path → chapter id (for chapters that are modified or previously saved)
+  const entryToChapterId = new Map<string, string>();
+  for (const chapter of structure.chapters) {
+    const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
+    entryToChapterId.set(href, chapter.id);
+  }
+
+  // Open the existing output EPUB for reading previously-saved chapters
+  let outputReader: InstanceType<typeof import('./epub-processor.js').ZipReader> | null = null;
+  if (previouslySavedChapterIds && previouslySavedChapterIds.size > 0) {
+    try {
+      await fsPromises.access(outputPath);
+      outputReader = new ZipReader(outputPath);
+      await outputReader.open();
+    } catch {
+      // Output EPUB doesn't exist yet — no previously saved chapters to read
+      outputReader = null;
+    }
+  }
+
+  const zipWriter = new StreamingZipWriter();
+  await zipWriter.open();
 
   // Get all entries from the original EPUB
   const entries = (processor as any).zipReader?.getEntries() || [];
 
   for (const entryName of entries) {
-    // Check if this is a chapter file that was modified
-    let isModified = false;
-    let modifiedContent: string | null = null;
+    const chapterId = entryToChapterId.get(entryName);
 
-    for (const chapter of structure.chapters) {
-      // Match using rootPath like the original implementation
-      const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
-      if (entryName === href && modifiedChapters.has(chapter.id)) {
-        isModified = true;
-        modifiedContent = modifiedChapters.get(chapter.id) || null;
-        break;
-      }
-    }
-
-    if (isModified && modifiedContent !== null) {
-      // modifiedContent is now the fully rebuilt XHTML from cheerio's replaceBlockTexts
-      zipWriter.addFile(entryName, Buffer.from(modifiedContent, 'utf8'));
+    if (chapterId && modifiedChapters.has(chapterId)) {
+      // Chapter was just modified — write the new XHTML
+      const modifiedContent = modifiedChapters.get(chapterId)!;
+      await zipWriter.addFile(entryName, Buffer.from(modifiedContent, 'utf8'));
+    } else if (chapterId && previouslySavedChapterIds?.has(chapterId) && outputReader) {
+      // Chapter was previously saved but evicted from memory — read from output EPUB
+      const data = await outputReader.readEntry(entryName);
+      await zipWriter.addFile(entryName, data);
     } else {
-      // Copy file as-is
+      // Copy from original EPUB as-is
       const data = await processor.readBinaryFile(entryName);
-      // Don't compress mimetype file (EPUB spec requirement)
       const compress = entryName !== 'mimetype';
-      zipWriter.addFile(entryName, data, compress);
+      await zipWriter.addFile(entryName, data, compress);
     }
   }
 
-  // Write the output file
-  await zipWriter.write(outputPath);
+  // Close the output reader BEFORE finalize copies the temp file to outputPath.
+  // On Windows, the file can't be overwritten while a reader has it open.
+  if (outputReader) {
+    outputReader.close();
+    outputReader = null;
+  }
+
+  await zipWriter.finalize(outputPath);
 }
 
 /**
