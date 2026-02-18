@@ -103,6 +103,62 @@ export interface CleanupResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Cleanup Checkpoint (resume support)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface CleanupCheckpoint {
+  version: number;
+  sourceEpubPath: string;
+  outputFilename: string;
+  totalChapters: number;
+  totalChunks: number;
+  completedChapters: string[];
+  completedChunkCount: number;
+  provider: string;
+  model: string;
+  cleanupMode: string;
+  simplifyForChildren: boolean;
+  updatedAt: string;
+}
+
+function getCheckpointPath(outputDir: string): string {
+  return path.join(outputDir, 'cleanup-progress.json');
+}
+
+async function loadCheckpoint(outputDir: string): Promise<CleanupCheckpoint | null> {
+  try {
+    const data = await fsPromises.readFile(getCheckpointPath(outputDir), 'utf-8');
+    const checkpoint = JSON.parse(data) as CleanupCheckpoint;
+    if (checkpoint.version !== 1) return null;
+    return checkpoint;
+  } catch {
+    return null;
+  }
+}
+
+async function saveCheckpoint(outputDir: string, checkpoint: CleanupCheckpoint): Promise<void> {
+  const checkpointPath = getCheckpointPath(outputDir);
+  const tmpPath = checkpointPath + '.tmp';
+  await fsPromises.writeFile(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf-8');
+  await fsPromises.rename(tmpPath, checkpointPath);
+}
+
+async function deleteCheckpoint(outputDir: string): Promise<void> {
+  try {
+    await fsPromises.unlink(getCheckpointPath(outputDir));
+  } catch {
+    // File doesn't exist, that's fine
+  }
+}
+
+function getProviderModel(config: AIProviderConfig): string {
+  if (config.provider === 'ollama') return config.ollama?.model || 'unknown';
+  if (config.provider === 'claude') return config.claude?.model || 'unknown';
+  if (config.provider === 'openai') return config.openai?.model || 'unknown';
+  return 'unknown';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1990,28 +2046,100 @@ export async function cleanupEpub(
     const outputFilename = options?.simplifyForChildren ? 'simplified.epub' : 'cleaned.epub';
     const outputPath = path.join(epubDir, outputFilename);
 
-    // Delete any existing output EPUB to start fresh
-    try {
-      await fsPromises.unlink(outputPath);
-    } catch {
-      // File doesn't exist, that's fine
-    }
-
-    // Delete any existing skipped-chunks.json from previous runs
-    const oldSkippedChunksPath = path.join(epubDir, 'skipped-chunks.json');
-    try {
-      await fsPromises.unlink(oldSkippedChunksPath);
-      console.log('[AI-CLEANUP] Removed old skipped-chunks.json from previous run');
-    } catch {
-      // File doesn't exist, that's fine
-    }
-
-    // Clear any existing diff cache and start new session
-    await clearDiffCache(outputPath);
-    await startDiffCache(outputPath, epubPath);
-
     // Track which chapters have been added to diff cache (for parallel processing)
     const chaptersAddedToDiffCache = new Set<string>();
+
+    // Track completed chapters for resume (populated from checkpoint below)
+    const completedChapterIds = new Set<string>();
+    let isResuming = false;
+
+    // Check for existing checkpoint (skip for test mode — test runs are fast)
+    if (!testMode) {
+      const checkpoint = await loadCheckpoint(epubDir);
+      if (checkpoint
+          && checkpoint.sourceEpubPath === epubPath
+          && checkpoint.outputFilename === outputFilename
+          && checkpoint.provider === config.provider
+          && checkpoint.model === getProviderModel(config)
+          && checkpoint.cleanupMode === cleanupMode
+          && checkpoint.simplifyForChildren === !!options?.simplifyForChildren) {
+        // Valid checkpoint — check that intermediate EPUB still exists
+        let intermediateExists = false;
+        try {
+          await fsPromises.access(outputPath);
+          intermediateExists = true;
+        } catch { /* doesn't exist */ }
+
+        if (intermediateExists) {
+          isResuming = true;
+          const { EpubProcessor: ResumeEpubProcessor } = await import('./epub-processor.js');
+          const resumeProcessor = new ResumeEpubProcessor();
+          await resumeProcessor.open(outputPath);
+
+          for (const chapterId of checkpoint.completedChapters) {
+            const chapter = chapters.find(c => c.id === chapterId);
+            if (chapter) {
+              const href = structure!.rootPath ? `${structure!.rootPath}/${chapter.href}` : chapter.href;
+              try {
+                const xhtml = await resumeProcessor.readFile(href);
+                modifiedChapters.set(chapterId, xhtml);
+                completedChapterIds.add(chapterId);
+                chaptersAddedToDiffCache.add(chapterId);  // Diff cache already has these
+              } catch {
+                console.warn(`[AI-CLEANUP] Could not read chapter ${chapterId} from intermediate EPUB, will re-process`);
+              }
+            }
+          }
+
+          resumeProcessor.close();
+          chunksCompletedInJob = checkpoint.completedChunkCount;
+          chaptersProcessed = completedChapterIds.size;
+
+          console.log(`[AI-CLEANUP] Resuming: ${completedChapterIds.size}/${checkpoint.totalChapters} chapters already complete (${chunksCompletedInJob} chunks)`);
+
+          sendProgress({
+            jobId,
+            phase: 'processing',
+            currentChapter: completedChapterIds.size,
+            totalChapters: chapters.length,
+            currentChunk: chunksCompletedInJob,
+            totalChunks: 0, // Will be updated after pre-scan
+            percentage: 5,
+            message: `Resuming — ${completedChapterIds.size} chapters already complete`,
+            outputPath
+          });
+        } else {
+          console.log('[AI-CLEANUP] Checkpoint found but intermediate EPUB is missing, starting fresh');
+          await deleteCheckpoint(epubDir);
+        }
+      }
+    }
+
+    // If not resuming, start clean
+    if (!isResuming) {
+      // Delete any existing output EPUB to start fresh
+      try {
+        await fsPromises.unlink(outputPath);
+      } catch {
+        // File doesn't exist, that's fine
+      }
+
+      // Delete any existing skipped-chunks.json from previous runs
+      const oldSkippedChunksPath = path.join(epubDir, 'skipped-chunks.json');
+      try {
+        await fsPromises.unlink(oldSkippedChunksPath);
+        console.log('[AI-CLEANUP] Removed old skipped-chunks.json from previous run');
+      } catch {
+        // File doesn't exist, that's fine
+      }
+
+      // Clear any existing diff cache and start new session
+      await clearDiffCache(outputPath);
+      await startDiffCache(outputPath, epubPath);
+    } else {
+      // Resuming: diff cache already has data, just start the session for appending
+      await startDiffCache(outputPath, epubPath);
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 1: Pre-scan all chapters to calculate total chunks in job
@@ -2145,6 +2273,11 @@ export async function cleanupEpub(
       let overallNumber = 0;
       for (let chapterIdx = 0; chapterIdx < chapterChunks.length; chapterIdx++) {
         const { chapter, chunks } = chapterChunks[chapterIdx];
+        // Skip chapters already completed from checkpoint
+        if (completedChapterIds.has(chapter.id)) {
+          overallNumber += chunks.length;
+          continue;
+        }
         for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
           overallNumber++;
           chunkQueue.push({
@@ -2167,7 +2300,7 @@ export async function cleanupEpub(
         cleanedText: string;
       }
       const results: ChunkResult[] = [];
-      let totalChunksCompleted = 0;
+      let totalChunksCompleted = chunksCompletedInJob;  // Start from checkpoint count if resuming
 
       // Track chunks needed per chapter for incremental saving
       const chunksPerChapter = new Map<string, number>();
@@ -2175,7 +2308,12 @@ export async function cleanupEpub(
       const savedChapters = new Set<string>();
       for (const { chapter, chunks } of chapterChunks) {
         chunksPerChapter.set(chapter.id, chunks.length);
-        completedChunksPerChapter.set(chapter.id, 0);
+        if (completedChapterIds.has(chapter.id)) {
+          completedChunksPerChapter.set(chapter.id, chunks.length);
+          savedChapters.add(chapter.id);
+        } else {
+          completedChunksPerChapter.set(chapter.id, 0);
+        }
       }
 
       // Helper to try saving a completed chapter
@@ -2202,6 +2340,7 @@ export async function cleanupEpub(
             try {
               await saveModifiedEpubLocal(processor!, modifiedChapters, outputPath);
               savedChapters.add(chapterId);
+              completedChapterIds.add(chapterId);
               console.log(`[AI-CLEANUP] Saved chapter ${chapterId} (${chapterResults.length} chunks)`);
 
               // Add to diff cache if not already added
@@ -2215,6 +2354,24 @@ export async function cleanupEpub(
                 const cleanedTextForDiff = rebuiltXhtml ? extractChapterAsText(rebuiltXhtml) : cleanedText;
                 await addChapterDiff(chapterId, chapterTitle, originalText, cleanedTextForDiff);
                 chaptersAddedToDiffCache.add(chapterId);
+              }
+
+              // Save checkpoint (skip in test mode)
+              if (!testMode) {
+                await saveCheckpoint(epubDir, {
+                  version: 1,
+                  sourceEpubPath: epubPath,
+                  outputFilename,
+                  totalChapters: chapterChunks.length,
+                  totalChunks: totalChunksInJob,
+                  completedChapters: [...completedChapterIds],
+                  completedChunkCount: totalChunksCompleted,
+                  provider: config.provider,
+                  model: getProviderModel(config),
+                  cleanupMode,
+                  simplifyForChildren: !!options?.simplifyForChildren,
+                  updatedAt: new Date().toISOString()
+                });
               }
             } catch (saveError) {
               console.error(`[AI-CLEANUP] Failed to save chapter ${chapterId}:`, saveError);
@@ -2360,6 +2517,11 @@ export async function cleanupEpub(
         }
 
         const { chapter, chunks: uniqueChunks } = chapterChunks[i];
+
+        // Skip already-completed chapters (from checkpoint resume)
+        if (completedChapterIds.has(chapter.id)) {
+          continue;
+        }
 
         // Collect cleaned text from all chunks in this chapter
         const cleanedChunkTexts: string[] = [];
@@ -2514,12 +2676,31 @@ export async function cleanupEpub(
           await addChapterDiff(chapter.id, chapter.title, originalText, cleanedTextForDiff);
         }
         chaptersProcessed++;
+        completedChapterIds.add(chapter.id);
 
         // Save after each chapter
         try {
           await saveModifiedEpubLocal(processor, modifiedChapters, outputPath);
         } catch (saveError) {
           console.error(`Failed to save after chapter ${i + 1}:`, saveError);
+        }
+
+        // Save checkpoint (skip in test mode)
+        if (!testMode) {
+          await saveCheckpoint(epubDir, {
+            version: 1,
+            sourceEpubPath: epubPath,
+            outputFilename,
+            totalChapters: chapterChunks.length,
+            totalChunks: totalChunksInJob,
+            completedChapters: [...completedChapterIds],
+            completedChunkCount: chunksCompletedInJob,
+            provider: config.provider,
+            model: getProviderModel(config),
+            cleanupMode,
+            simplifyForChildren: !!options?.simplifyForChildren,
+            updatedAt: new Date().toISOString()
+          });
         }
       }
     } // End of else (sequential processing)
@@ -2543,6 +2724,9 @@ export async function cleanupEpub(
 
     // Finalize diff cache (mark as complete)
     await finalizeDiffCache();
+
+    // Delete checkpoint — cleanup is complete, no resume needed
+    await deleteCheckpoint(epubDir);
 
     // Clean up abort controller
     activeCleanupJobs.delete(jobId);
