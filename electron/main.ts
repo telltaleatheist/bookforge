@@ -4968,29 +4968,37 @@ function setupIpcHandlers(): void {
       // Copy VTT to audiobook folder as subtitles.vtt
       const vttDestPath = path.join(audiobookFolder, 'subtitles.vtt');
       await fs.mkdir(audiobookFolder, { recursive: true });
-      await fs.copyFile(vttSourcePath, vttDestPath);
-      console.log('[AUDIOBOOK] Copied VTT to:', vttDestPath);
 
-      // Delete the source VTT file after successful copy
-      try {
-        await fs.unlink(vttSourcePath);
-        console.log('[AUDIOBOOK] Deleted source VTT:', vttSourcePath);
+      // Skip copy+delete if VTT is already at the destination (BFP workflow puts it there directly)
+      const resolvedSource = path.resolve(vttSourcePath);
+      const resolvedDest = path.resolve(vttDestPath);
+      if (resolvedSource === resolvedDest) {
+        console.log('[AUDIOBOOK] VTT already in correct location:', vttDestPath);
+      } else {
+        await fs.copyFile(vttSourcePath, vttDestPath);
+        console.log('[AUDIOBOOK] Copied VTT to:', vttDestPath);
 
-        // If source was in a vtt subfolder, try to remove the folder if empty
-        const vttSubfolderPath = path.join(outputDir, 'vtt');
-        if (vttSourcePath.startsWith(vttSubfolderPath)) {
-          try {
-            const remaining = await fs.readdir(vttSubfolderPath);
-            if (remaining.length === 0) {
-              await fs.rmdir(vttSubfolderPath);
-              console.log('[AUDIOBOOK] Removed empty vtt folder:', vttSubfolderPath);
+        // Delete the source VTT file after successful copy
+        try {
+          await fs.unlink(vttSourcePath);
+          console.log('[AUDIOBOOK] Deleted source VTT:', vttSourcePath);
+
+          // If source was in a vtt subfolder, try to remove the folder if empty
+          const vttSubfolderPath = path.join(outputDir, 'vtt');
+          if (vttSourcePath.startsWith(vttSubfolderPath)) {
+            try {
+              const remaining = await fs.readdir(vttSubfolderPath);
+              if (remaining.length === 0) {
+                await fs.rmdir(vttSubfolderPath);
+                console.log('[AUDIOBOOK] Removed empty vtt folder:', vttSubfolderPath);
+              }
+            } catch {
+              // Folder removal is best-effort
             }
-          } catch {
-            // Folder removal is best-effort
           }
+        } catch (deleteErr) {
+          console.warn('[AUDIOBOOK] Failed to delete source VTT (non-fatal):', deleteErr);
         }
-      } catch (deleteErr) {
-        console.warn('[AUDIOBOOK] Failed to delete source VTT (non-fatal):', deleteErr);
       }
 
       // Update manifest with vttPath
@@ -5181,12 +5189,24 @@ function setupIpcHandlers(): void {
       const manifest = result.manifest;
       if (!manifest.outputs) manifest.outputs = {};
 
-      // Only set the M4B path and completion time here.
-      // VTT path is handled by copyVttToBfp which runs before linkAudio.
+      // Detect VTT alongside the M4B so Play button works immediately
+      const audioDir = path.dirname(audioPath);
+      let vttRelPath: string | undefined;
+      try {
+        const dirFiles = await fs.readdir(audioDir);
+        // Prefer subtitles.vtt, then any .vtt file
+        const vttFile = dirFiles.find(f => f === 'subtitles.vtt')
+          || dirFiles.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
+        if (vttFile) {
+          vttRelPath = path.relative(bfpPath, path.join(audioDir, vttFile)).replace(/\\/g, '/');
+        }
+      } catch { /* dir read failed, skip vtt detection */ }
+
       manifest.outputs.audiobook = {
         ...manifest.outputs.audiobook,
         path: relativePath,
         completedAt: new Date().toISOString(),
+        ...(vttRelPath && { vttPath: vttRelPath }),
       };
 
       const saveResult = await manifestService.saveManifest(manifest);
