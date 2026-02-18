@@ -4851,19 +4851,23 @@ export class PdfPickerComponent implements OnInit {
       );
 
       if (result.success) {
-        this.finalized.emit({
+        const emitSuccess = () => this.finalized.emit({
           success: true,
           epubPath: result.filename  // 'exported.epub' - the filename in the audiobook folder
         });
 
         const savedName = savePath ? savePath.split('/').pop() : 'exported.epub';
         if (result.warning) {
+          // Wait for user to acknowledge the warning before emitting finalized
+          // (which triggers window close in embedded mode)
           this.showAlert({
             title: 'Saved with Warning',
             message: result.warning,
-            type: 'warning'
+            type: 'warning',
+            onConfirm: emitSuccess
           });
         } else {
+          emitSuccess();
           this.showAlert({
             title: 'Saved',
             message: `Saved to ${savedName}.`,

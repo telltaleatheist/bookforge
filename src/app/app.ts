@@ -111,10 +111,10 @@ export class App implements OnInit {
   private readonly router = inject(Router);
 
   // Hide nav rail for standalone popup windows (alignment, editor, etc.)
-  // Use window.location.pathname for immediate check on window load
+  // App uses hash routing, so the route is in the hash fragment, not pathname
   readonly isStandaloneWindow = computed(() => {
-    const pathname = window.location.pathname;
-    return pathname.startsWith('/alignment') || pathname.startsWith('/editor');
+    const hash = window.location.hash;
+    return hash.startsWith('#/alignment') || hash.startsWith('#/editor');
   });
 
   // Navigation items for the nav rail
