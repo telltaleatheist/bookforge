@@ -11,6 +11,13 @@ import * as fs from 'fs';
 import { BrowserWindow } from 'electron';
 import { getCondaPath, getFfmpegPath, getDeepFilterCondaEnv } from './tool-paths';
 
+const MAX_STDERR_BYTES = 10 * 1024;
+function appendCapped(buf: string, chunk: string): string {
+  buf += chunk;
+  if (buf.length > MAX_STDERR_BYTES) buf = buf.slice(-MAX_STDERR_BYTES);
+  return buf;
+}
+
 // Supported audio formats
 const SUPPORTED_FORMATS = ['.m4b', '.m4a', '.mp3', '.wav', '.flac', '.ogg', '.opus'];
 
@@ -176,8 +183,7 @@ export async function denoiseFile(inputPath: string): Promise<DenoiseResult> {
       });
 
       activeProcess.stderr?.on('data', (data) => {
-        stderr += data.toString();
-        console.log('[DEEPFILTER STDERR]', data.toString().trim());
+        stderr = appendCapped(stderr, data.toString());
       });
 
       activeProcess.on('close', (code) => {

@@ -8,6 +8,13 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 
+const MAX_STDERR_BYTES = 10 * 1024;
+function appendCapped(buf: string, chunk: string): string {
+  buf += chunk;
+  if (buf.length > MAX_STDERR_BYTES) buf = buf.slice(-MAX_STDERR_BYTES);
+  return buf;
+}
+
 // Tool type detection
 type MetadataTool = 'tone' | 'm4b-tool';
 
@@ -146,7 +153,7 @@ export function removeCover(filePath: string): Promise<void> {
     });
 
     proc.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
+      stderr = appendCapped(stderr, data.toString());
       console.log('[METADATA-TOOLS STDERR]', data.toString().trim());
     });
 
@@ -273,7 +280,7 @@ export function applyMetadata(filePath: string, metadata: AudiobookMetadata): Pr
     });
 
     proc.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
+      stderr = appendCapped(stderr, data.toString());
       console.log('[METADATA-TOOLS STDERR]', data.toString().trim());
     });
 

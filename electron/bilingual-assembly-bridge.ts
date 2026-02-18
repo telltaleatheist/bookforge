@@ -13,6 +13,13 @@ import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
+
+const MAX_STDERR_BYTES = 10 * 1024;
+function appendCapped(buf: string, chunk: string): string {
+  buf += chunk;
+  if (buf.length > MAX_STDERR_BYTES) buf = buf.slice(-MAX_STDERR_BYTES);
+  return buf;
+}
 import {
   getCondaRunArgs,
   getCondaPath,
@@ -299,13 +306,20 @@ export async function runBilingualAssembly(
       });
     }
 
-    let stdout = '';
+    let jsonBuffer = '';
+    let foundJsonMarker = false;
     let stderr = '';
     let lastProgress = 10;
 
     proc.stdout.on('data', (data) => {
       const output = data.toString();
-      stdout += output;
+      // Only accumulate stdout after the JSON result marker (avoid unbounded memory growth)
+      if (foundJsonMarker) {
+        jsonBuffer += output;
+      } else if (output.includes('---JSON_RESULT---')) {
+        foundJsonMarker = true;
+        jsonBuffer = output.substring(output.indexOf('---JSON_RESULT---'));
+      }
       console.log('[BILINGUAL-ASSEMBLY]', output.trim());
 
       // Update progress based on log messages
@@ -328,8 +342,7 @@ export async function runBilingualAssembly(
     });
 
     proc.stderr.on('data', (data) => {
-      stderr += data.toString();
-      console.error('[BILINGUAL-ASSEMBLY STDERR]', data.toString().trim());
+      stderr = appendCapped(stderr, data.toString());
     });
 
     proc.on('close', async (code) => {
@@ -342,10 +355,9 @@ export async function runBilingualAssembly(
         return;
       }
 
-      // Parse JSON result from stdout
+      // Parse JSON result from stdout (only accumulated after marker was found)
       const jsonMarker = '---JSON_RESULT---';
-      const jsonStart = stdout.indexOf(jsonMarker);
-      if (jsonStart === -1) {
+      if (!foundJsonMarker) {
         const error = 'No JSON result in output';
         emitComplete(jobId, { success: false, error });
         resolve({ success: false, error });
@@ -353,7 +365,7 @@ export async function runBilingualAssembly(
       }
 
       try {
-        const jsonStr = stdout.slice(jsonStart + jsonMarker.length).trim();
+        const jsonStr = jsonBuffer.slice(jsonBuffer.indexOf(jsonMarker) + jsonMarker.length).trim();
         const rawResult = JSON.parse(jsonStr);
 
         // Convert snake_case from Python to camelCase for TypeScript

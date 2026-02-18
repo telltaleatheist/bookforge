@@ -13,6 +13,13 @@ import * as os from 'os';
 import * as logger from './audiobook-logger';
 import { getDefaultE2aPath, getCondaRunArgs, getCondaPath } from './e2a-paths';
 
+const MAX_STDERR_BYTES = 10 * 1024;
+function appendCapped(buf: string, chunk: string): string {
+  buf += chunk;
+  if (buf.length > MAX_STDERR_BYTES) buf = buf.slice(-MAX_STDERR_BYTES);
+  return buf;
+}
+
 /**
  * Kill a process and all its children (process tree)
  * On Windows, uses taskkill /F /T to force kill the entire tree
@@ -408,7 +415,7 @@ export async function startConversion(
     });
 
     currentProcess.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
+      stderr = appendCapped(stderr, data.toString());
       // Also parse stderr for progress (some tools output there)
       const lines = data.toString().split('\n');
       for (const line of lines) {

@@ -26,6 +26,13 @@ import {
   windowsToWslPath
 } from './tool-paths';
 
+const MAX_STDERR_BYTES = 10 * 1024;
+function appendCapped(buf: string, chunk: string): string {
+  buf += chunk;
+  if (buf.length > MAX_STDERR_BYTES) buf = buf.slice(-MAX_STDERR_BYTES);
+  return buf;
+}
+
 // Supported audio formats
 const SUPPORTED_FORMATS = ['.m4b', '.m4a', '.mp3', '.wav', '.flac', '.ogg', '.opus'];
 
@@ -286,9 +293,8 @@ export async function enhanceFile(inputPath: string): Promise<EnhanceResult> {
       });
 
       activeProcess.stderr?.on('data', (data) => {
-        stderr += data.toString();
         const output = data.toString();
-        console.log('[RESEMBLE STDERR]', output.trim());
+        stderr = appendCapped(stderr, output);
 
         // Progress also comes through stderr for tqdm
         const progressMatch = output.match(/(\d+)%\|/);
@@ -756,7 +762,7 @@ export async function enhanceFileForQueue(
       activeProcess.stdout?.on('data', handleOutput);
 
       activeProcess.stderr?.on('data', (data) => {
-        stderr += data.toString();
+        stderr = appendCapped(stderr, data.toString());
         handleOutput(data);
       });
 

@@ -2442,7 +2442,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
 
     session.assemblyProcess.stdout?.on('data', (data: Buffer) => {
       const output = data.toString();
-      console.log('[ASSEMBLY]', output.trim());
+      writeWorkerLog(`[ASSEMBLY] ${output.trim()}`);
 
       // Parse chapter number: "[ASSEMBLE] Chapter N: sentences X-Y"
       const chapterMatch = output.match(/\[ASSEMBLE\] Chapter (\d+):/);
@@ -2506,7 +2506,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
 
     session.assemblyProcess.stderr?.on('data', (data: Buffer) => {
       stderr = appendCapped(stderr, data.toString());
-      console.log('[ASSEMBLY STDERR]', data.toString().trim());
+      writeWorkerLog(`[ASSEMBLY STDERR] ${data.toString().trim()}`);
     });
 
     session.assemblyProcess.on('close', async (code) => {

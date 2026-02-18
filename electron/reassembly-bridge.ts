@@ -12,6 +12,13 @@ import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } fr
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 
+const MAX_STDERR_BYTES = 10 * 1024;
+function appendCapped(buf: string, chunk: string): string {
+  buf += chunk;
+  if (buf.length > MAX_STDERR_BYTES) buf = buf.slice(-MAX_STDERR_BYTES);
+  return buf;
+}
+
 /**
  * Check if a path is a WSL UNC path (\\wsl$\... or \\wsl.localhost\...)
  */
@@ -1286,8 +1293,7 @@ export async function startReassembly(
 
     proc.stderr?.on('data', (data) => {
       const line = data.toString();
-      stderr += line;
-      console.log('[REASSEMBLY] stderr:', line);
+      stderr = appendCapped(stderr, line);
 
       // FFmpeg outputs progress to stderr, not stdout
       // Parse FFmpeg progress during encoding phase

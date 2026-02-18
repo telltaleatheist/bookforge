@@ -22,6 +22,13 @@ import {
 } from '../../plugin-types';
 import { getPluginRegistry } from '../../plugin-registry';
 
+const MAX_STDERR_BYTES = 10 * 1024;
+function appendCapped(buf: string, chunk: string): string {
+  buf += chunk;
+  if (buf.length > MAX_STDERR_BYTES) buf = buf.slice(-MAX_STDERR_BYTES);
+  return buf;
+}
+
 interface SuryaTextLine {
   text: string;
   confidence: number;
@@ -491,7 +498,7 @@ export class SuryaOcrPlugin extends BasePlugin {
       let stderr = '';
 
       proc.stderr.on('data', (data) => {
-        stderr += data.toString();
+        stderr = appendCapped(stderr, data.toString());
       });
 
       proc.on('close', (code) => {
@@ -701,7 +708,7 @@ export class SuryaOcrPlugin extends BasePlugin {
       let stderr = '';
 
       proc.stderr.on('data', (data) => {
-        stderr += data.toString();
+        stderr = appendCapped(stderr, data.toString());
       });
 
       proc.on('close', (code) => {
@@ -753,7 +760,7 @@ export class SuryaOcrPlugin extends BasePlugin {
 
       proc.stderr.on('data', (data) => {
         const output = data.toString();
-        stderr += output;
+        stderr = appendCapped(stderr, output);
 
         // Parse progress from tqdm output (e.g., "Recognizing: 50%|████")
         const progressMatch = output.match(/(\d+)%\|/);

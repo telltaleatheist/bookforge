@@ -16,6 +16,13 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import * as cheerio from 'cheerio';
 
+const MAX_STDERR_BYTES = 10 * 1024;
+function appendCapped(buf: string, chunk: string): string {
+  buf += chunk;
+  if (buf.length > MAX_STDERR_BYTES) buf = buf.slice(-MAX_STDERR_BYTES);
+  return buf;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -405,7 +412,7 @@ export async function applyChaptersToM4b(
       let stderr = '';
 
       ffmpeg.stderr.on('data', (data) => {
-        stderr += data.toString();
+        stderr = appendCapped(stderr, data.toString());
       });
 
       ffmpeg.on('close', async (code) => {
