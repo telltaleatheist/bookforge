@@ -185,6 +185,7 @@ let skippedChunks: SkippedChunk[] = [];  // Detailed tracking of all skipped chu
 const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break point
 const TIMEOUT_MS = 180000; // 3 minutes per chunk
 const MAX_FALLBACK_COUNT = 10;  // Abort job if this many chunks fall back to original text
+const TRUNCATION_RETRY_REMINDER = 'IMPORTANT REMINDER: You must return ALL of the text content. Do not summarize, condense, or skip sections. Minor length reduction from removing artifacts is fine, but the full text must be preserved.\n\n';
 
 /**
  * Get total number of chunks that fell back to original text (all failure types)
@@ -363,12 +364,12 @@ EXPAND ABBREVIATIONS:
 FIX OCR ERRORS: broken words, character misreads (rn→m, cl→d).
 FIX STYLISTIC SPACING: collapse decorative letter/word spacing into normal readable text.
 
-REMOVE REFERENCE NUMBERS:
-- Stray numbers at the end of sentences or paragraphs (footnote/endnote references)
-- Numbers that appear after punctuation and don't fit the prose context
-- Superscript-style reference markers that got flattened into text
-- Pattern: sentence ending with punctuation followed by a bare number (e.g., "...the end." 5 or "...was true." 12)
-- These are citation markers, not part of the narrative - remove them entirely
+REMOVE FOOTNOTE/REFERENCE NUMBERS (DO THIS BEFORE NUMBER CONVERSION):
+- Bracketed references: [1], [23], (1), (23) → DELETE entirely
+- Numbers GLUED to punctuation: "said.13 The" or "lecture).53" → DELETE the number, keep punctuation
+- Numbers after punctuation with a space: "...sentence. 3" or "...quote." 7 → DELETE the number
+- Numbers at start of sentences after normal ending: "...common. 13 In" → DELETE "13 "
+- A number (1-999) immediately after punctuation is almost always a footnote. DELETE it.
 
 REMOVE: page numbers, running headers/footers, stray artifacts.
 
@@ -1139,7 +1140,8 @@ async function cleanChunkWithClaude(
   apiKey: string,
   model: string = 'claude-3-5-sonnet-20241022',
   abortSignal?: AbortSignal,
-  chunkMeta?: ChunkMeta
+  chunkMeta?: ChunkMeta,
+  isRetry: boolean = false
 ): Promise<string> {
   // Detect simplification mode from prompt - expect shorter output
   const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING');
@@ -1235,11 +1237,12 @@ async function cleanChunkWithClaude(
         return cleanedFirst + cleanedSecond;
       }
 
-      console.warn(`Claude returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
+      console.warn(`Claude returned ${cleaned.length} chars vs ${text.length} input (${Math.round(cleaned.length / text.length * 100)}%)`);
       console.warn(`[CLAUDE RESPONSE START]\n${cleaned.substring(0, 500)}...\n[CLAUDE RESPONSE END]`);
-      // Track fallbacks - both copyright and general truncation
-      if (chunkMeta) {
-        if (isCopyrightRefusal) {
+
+      // Copyright refusals for small chunks — track and fall back
+      if (isCopyrightRefusal) {
+        if (chunkMeta) {
           copyrightFallbackCount++;
           skippedChunks.push({
             chapterTitle: chunkMeta.chapterTitle,
@@ -1250,19 +1253,44 @@ async function cleanChunkWithClaude(
             text: text,
             aiResponse: cleaned.substring(0, 500)
           });
-        } else {
-          // Truncated output (not copyright-related)
-          truncatedFallbackCount++;
-          skippedChunks.push({
-            chapterTitle: chunkMeta.chapterTitle,
-            chunkIndex: chunkMeta.chunkIndex,
-            overallChunkNumber: chunkMeta.overallChunkNumber,
-            totalChunks: chunkMeta.totalChunks,
-            reason: 'truncated',
-            text: text,
-            aiResponse: cleaned.substring(0, 500)
-          });
         }
+        return text;
+      }
+
+      // Truncated output (not copyright-related) — retry then split
+      if (!isRetry) {
+        console.warn(`[Claude] Truncation detected, retrying with reminder`);
+        const retryResult = await cleanChunkWithClaude(TRUNCATION_RETRY_REMINDER + text, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
+        if (retryResult !== TRUNCATION_RETRY_REMINDER + text) {
+          return retryResult;
+        }
+      }
+
+      if (text.length >= 2000) {
+        console.warn(`[Claude] Splitting truncated chunk (${text.length} chars) in half`);
+        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
+        const firstHalf = text.substring(0, midpoint);
+        const secondHalf = text.substring(midpoint);
+
+        const cleanedFirst = await cleanChunkWithClaude(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
+        const cleanedSecond = await cleanChunkWithClaude(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
+
+        return cleanedFirst + cleanedSecond;
+      }
+
+      // All retries exhausted — fall back to original
+      console.warn(`[Claude] All retries exhausted - using original to prevent content loss`);
+      if (chunkMeta) {
+        truncatedFallbackCount++;
+        skippedChunks.push({
+          chapterTitle: chunkMeta.chapterTitle,
+          chunkIndex: chunkMeta.chunkIndex,
+          overallChunkNumber: chunkMeta.overallChunkNumber,
+          totalChunks: chunkMeta.totalChunks,
+          reason: 'truncated',
+          text: text,
+          aiResponse: cleaned.substring(0, 500)
+        });
       }
       return text;
     }
@@ -1283,7 +1311,8 @@ async function cleanChunkWithOpenAI(
   apiKey: string,
   model: string = 'gpt-4o',
   abortSignal?: AbortSignal,
-  chunkMeta?: ChunkMeta
+  chunkMeta?: ChunkMeta,
+  isRetry: boolean = false
 ): Promise<string> {
   // Detect simplification mode from prompt - expect shorter output
   const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING');
@@ -1375,10 +1404,12 @@ async function cleanChunkWithOpenAI(
         return cleanedFirst + cleanedSecond;
       }
 
-      console.warn(`OpenAI returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
-      // Track fallbacks - both copyright and general truncation
-      if (chunkMeta) {
-        if (isCopyrightRefusal) {
+      console.warn(`OpenAI returned ${cleaned.length} chars vs ${text.length} input (${Math.round(cleaned.length / text.length * 100)}%)`);
+      console.warn(`[OPENAI RESPONSE START]\n${cleaned.substring(0, 500)}...\n[OPENAI RESPONSE END]`);
+
+      // Copyright refusals for small chunks — track and fall back
+      if (isCopyrightRefusal) {
+        if (chunkMeta) {
           copyrightFallbackCount++;
           skippedChunks.push({
             chapterTitle: chunkMeta.chapterTitle,
@@ -1389,19 +1420,44 @@ async function cleanChunkWithOpenAI(
             text: text,
             aiResponse: cleaned.substring(0, 500)
           });
-        } else {
-          // Truncated output (not copyright-related)
-          truncatedFallbackCount++;
-          skippedChunks.push({
-            chapterTitle: chunkMeta.chapterTitle,
-            chunkIndex: chunkMeta.chunkIndex,
-            overallChunkNumber: chunkMeta.overallChunkNumber,
-            totalChunks: chunkMeta.totalChunks,
-            reason: 'truncated',
-            text: text,
-            aiResponse: cleaned.substring(0, 500)
-          });
         }
+        return text;
+      }
+
+      // Truncated output (not copyright-related) — retry then split
+      if (!isRetry) {
+        console.warn(`[OpenAI] Truncation detected, retrying with reminder`);
+        const retryResult = await cleanChunkWithOpenAI(TRUNCATION_RETRY_REMINDER + text, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
+        if (retryResult !== TRUNCATION_RETRY_REMINDER + text) {
+          return retryResult;
+        }
+      }
+
+      if (text.length >= 2000) {
+        console.warn(`[OpenAI] Splitting truncated chunk (${text.length} chars) in half`);
+        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
+        const firstHalf = text.substring(0, midpoint);
+        const secondHalf = text.substring(midpoint);
+
+        const cleanedFirst = await cleanChunkWithOpenAI(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
+        const cleanedSecond = await cleanChunkWithOpenAI(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
+
+        return cleanedFirst + cleanedSecond;
+      }
+
+      // All retries exhausted — fall back to original
+      console.warn(`[OpenAI] All retries exhausted - using original to prevent content loss`);
+      if (chunkMeta) {
+        truncatedFallbackCount++;
+        skippedChunks.push({
+          chapterTitle: chunkMeta.chapterTitle,
+          chunkIndex: chunkMeta.chunkIndex,
+          overallChunkNumber: chunkMeta.overallChunkNumber,
+          totalChunks: chunkMeta.totalChunks,
+          reason: 'truncated',
+          text: text,
+          aiResponse: cleaned.substring(0, 500)
+        });
       }
       return text;
     }
@@ -1501,7 +1557,8 @@ async function cleanChunk(
   systemPrompt: string,
   model: string = DEFAULT_MODEL,
   abortSignal?: AbortSignal,
-  chunkMeta?: ChunkMeta
+  chunkMeta?: ChunkMeta,
+  isRetry: boolean = false
 ): Promise<string> {
   console.log('[AI-BRIDGE] cleanChunk using model:', model);
 
@@ -1565,9 +1622,34 @@ async function cleanChunk(
   // When simplifying, we expect shorter output (use 30% threshold instead of 70%).
   const lengthThreshold = isSimplifying ? 0.3 : 0.7;
   if (cleaned.length < text.length * lengthThreshold) {
-    console.warn(`Ollama returned ${cleaned.length} chars vs ${text.length} input - using original to prevent content loss`);
+    console.warn(`Ollama returned ${cleaned.length} chars vs ${text.length} input (${Math.round(cleaned.length / text.length * 100)}%)`);
     console.warn(`[OLLAMA RESPONSE START]\n${cleaned.substring(0, 500)}...\n[OLLAMA RESPONSE END]`);
-    // Track truncation fallback
+
+    // Retry once with a reminder prefix
+    if (!isRetry) {
+      console.warn(`[Ollama] Truncation detected, retrying with reminder`);
+      const retryResult = await cleanChunk(TRUNCATION_RETRY_REMINDER + text, systemPrompt, model, abortSignal, chunkMeta, true);
+      // If retry succeeded (returned something other than the reminder+original), use it
+      if (retryResult !== TRUNCATION_RETRY_REMINDER + text) {
+        return retryResult;
+      }
+    }
+
+    // Split in half if chunk is large enough
+    if (text.length >= 2000) {
+      console.warn(`[Ollama] Splitting truncated chunk (${text.length} chars) in half`);
+      const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
+      const firstHalf = text.substring(0, midpoint);
+      const secondHalf = text.substring(midpoint);
+
+      const cleanedFirst = await cleanChunk(firstHalf, systemPrompt, model, abortSignal, chunkMeta, true);
+      const cleanedSecond = await cleanChunk(secondHalf, systemPrompt, model, abortSignal, chunkMeta, true);
+
+      return cleanedFirst + cleanedSecond;
+    }
+
+    // All retries exhausted — fall back to original
+    console.warn(`[Ollama] All retries exhausted - using original to prevent content loss`);
     if (chunkMeta) {
       truncatedFallbackCount++;
       skippedChunks.push({
