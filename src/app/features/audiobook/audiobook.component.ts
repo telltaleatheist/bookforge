@@ -1634,9 +1634,13 @@ export class AudiobookComponent implements OnInit {
     );
 
     if (result.success) {
-      console.log('Text edit saved to EPUB');
+      console.log('[Audiobook] Text edit saved to EPUB, refreshing diff view');
+      // Refresh diff view to show updated text
+      if (this.diffViewRef) {
+        this.diffViewRef.refresh();
+      }
     } else {
-      console.error('Failed to save text edit:', result.error);
+      console.error('[Audiobook] Failed to save text edit:', result.error);
     }
   }
 

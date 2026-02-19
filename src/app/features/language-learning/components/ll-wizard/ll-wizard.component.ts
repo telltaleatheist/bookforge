@@ -91,6 +91,14 @@ interface SourceStage {
               <h3>AI Cleanup</h3>
               <p class="step-desc">Clean up OCR artifacts and formatting issues using AI.</p>
 
+              <!-- Existing cleanup notice -->
+              @if (hasExistingCleanup()) {
+                <div class="existing-cleanup-banner">
+                  <span>Previous cleanup found. Running again will resume where it left off.</span>
+                  <button class="start-over-btn" (click)="clearCleanupStage()">Start Over</button>
+                </div>
+              }
+
               <!-- Source EPUB Selection -->
               <div class="config-section">
                 <label class="field-label">Source EPUB</label>
@@ -1315,6 +1323,36 @@ interface SourceStage {
       }
     }
 
+    .existing-cleanup-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 10px 12px;
+      background: color-mix(in srgb, var(--info, var(--accent)) 10%, transparent);
+      border: 1px solid color-mix(in srgb, var(--info, var(--accent)) 40%, transparent);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+
+      .start-over-btn {
+        flex-shrink: 0;
+        padding: 4px 12px;
+        border: 1px solid var(--border-default);
+        border-radius: 4px;
+        background: transparent;
+        color: var(--text-primary);
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+
+        &:hover {
+          background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+        }
+      }
+    }
+
     .warning-banner {
       display: block;
       width: 100%;
@@ -1979,7 +2017,7 @@ export class LLWizardComponent implements OnInit {
   readonly testMode = signal(false);
   readonly testModeChunks = signal(5);
   readonly customInstructions = signal('');
-  readonly hasExistingCleaned = computed(() => {
+  readonly hasExistingCleanup = computed(() => {
     return this.availableEpubs().some(e => e.filename === 'cleaned.epub' || e.filename === 'simplified.epub');
   });
 
@@ -2536,6 +2574,23 @@ export class LLWizardComponent implements OnInit {
       this.availableEpubs.set([]);
     } finally {
       this.scanningEpubs.set(false);
+    }
+  }
+
+  /** Delete existing cleanup output so the next run starts fresh */
+  async clearCleanupStage(): Promise<void> {
+    const projectDir = this.effectiveProjectDir();
+    if (!projectDir) return;
+
+    const electron = (window as any).electron;
+    if (!electron?.pipeline?.deleteCleanup) return;
+
+    const result = await electron.pipeline.deleteCleanup(projectDir);
+    if (result.success) {
+      console.log('[LLWizard] Cleanup stage cleared:', result.message);
+      await this.scanProjectEpubs();
+    } else {
+      console.error('[LLWizard] Failed to clear cleanup stage:', result.error);
     }
   }
 

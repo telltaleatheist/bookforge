@@ -2,7 +2,7 @@
  * Queue Component - Main page for the unified processing queue
  */
 
-import { Component, inject, signal, computed, OnInit, OnDestroy, DestroyRef } from '@angular/core';
+import { Component, inject, signal, computed, OnInit, OnDestroy, DestroyRef, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
   SplitPaneComponent,
@@ -496,6 +496,7 @@ export class QueueComponent implements OnInit, OnDestroy {
 
   // Diff modal state
   readonly diffModalPaths = signal<{ originalPath: string; cleanedPath: string } | null>(null);
+  @ViewChild(DiffViewComponent) diffViewRef?: DiffViewComponent;
 
   // Computed: get the selected job object
   readonly selectedJob = computed(() => {
@@ -698,9 +699,12 @@ export class QueueComponent implements OnInit, OnDestroy {
     );
 
     if (result.success) {
-      console.log('Text edit saved to EPUB');
+      console.log('[Queue] Text edit saved to EPUB, refreshing diff view');
+      if (this.diffViewRef) {
+        this.diffViewRef.refresh();
+      }
     } else {
-      console.error('Failed to save text edit:', result.error);
+      console.error('[Queue] Failed to save text edit:', result.error);
     }
   }
 

@@ -61,18 +61,18 @@ FIX STYLISTIC SPACING
 - Fix unusual inter-character spacing: "w o r d" → "word"
 
 REMOVE FOOTNOTE/REFERENCE NUMBERS (DO THIS BEFORE NUMBER CONVERSION)
-Footnote and reference numbers should be DELETED, not converted to words:
+Footnote and reference numbers must be DELETED, not converted to words:
 - Bracketed references: [1], [23], (1), (23) → DELETE entirely
-- Superscript-style numbers attached to punctuation: "said.13 The" or "claim13 that" → DELETE the number
-- Numbers that appear AFTER sentence-ending punctuation with a space: "...end of sentence. 3" or "...a quote." 7 → DELETE the trailing number
+- Numbers GLUED to punctuation (no space): "said.13 The" or "lecture).53" → DELETE the number, keep the punctuation ("said. The", "lecture).")
+- Numbers after punctuation WITH a space: "...end of sentence. 3" or "...a quote." 7 → DELETE the trailing number
 - Numbers after colons or other punctuation at paragraph end: "...became clear: 5" → DELETE " 5"
-- Numbers that appear at the START of a sentence when the previous sentence ended normally: "...was common. 13 In Los Angeles" → DELETE "13 "
+- Numbers at the START of a sentence after a normal ending: "...was common. 13 In Los Angeles" → DELETE "13 "
 - Stray numbers at the END of a paragraph that don't fit the context - these are reference markers
 - Small standalone numbers (1-999) that interrupt the flow between sentences are almost always footnote markers, NOT content
 
-KEY PATTERN: If a sentence or paragraph ends with punctuation followed by a space and then a bare number (especially 1-3 digits), that number is almost certainly a footnote/endnote reference and should be DELETED.
+KEY PATTERN: A number (1-999) that appears immediately after punctuation — whether touching the punctuation like ".53" or separated by a space like ". 53" — is almost always a footnote reference. DELETE it.
 
-PARAGRAPH-END NUMBERS: Pay special attention to numbers at the very END of a paragraph. A paragraph that ends with "...some conclusion. 7" or "...final point." 12 has a stray reference number that must be deleted. The paragraph shouldn't end with punctuation + number.
+PARAGRAPH-END NUMBERS: Pay special attention to numbers at the very END of a paragraph. A paragraph that ends with "...some conclusion. 7" or "...final point."12 has a stray reference number that must be deleted.
 
 If a number doesn't make grammatical sense in the prose context, it's probably a footnote marker - DELETE it
 
@@ -80,12 +80,14 @@ Example of footnote removal:
 INPUT:
 The panic spread rapidly.13 In Los Angeles, children said that teachers had molested them.14 Similar accusations arose in other cities. 15
 
-This was a national phenomenon. 16
+"The Question of the Church-Community" (lecture).53
+October nineteen thirty-six (second course).54
 
 OUTPUT:
 The panic spread rapidly. In Los Angeles, children said that teachers had molested them. Similar accusations arose in other cities.
 
-This was a national phenomenon.
+"The Question of the Church-Community" (lecture).
+October nineteen thirty-six (second course).
 
 REMOVE PAGE ARTIFACTS
 These are artifacts from PDF-to-ebook conversion that interrupt the text flow:

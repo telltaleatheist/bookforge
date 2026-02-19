@@ -7557,7 +7557,7 @@ function setupIpcHandlers(): void {
 
       for (const file of files) {
         const filePath = path.join(cleanupDir, file);
-        if (file.endsWith('.epub') || file.endsWith('.diff.json') || file === 'skipped-chunks.json') {
+        if (file.endsWith('.epub') || file.endsWith('.diff.json') || file === 'skipped-chunks.json' || file === 'cleanup-progress.json') {
           await fs.unlink(filePath);
           deletedFiles.push(file);
         }

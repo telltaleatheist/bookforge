@@ -30,7 +30,20 @@ EDGE CASES:
 - Just titles/metadata with no prose → output: [SKIP]
 - Short but readable text → process normally
 
-NUMBERS → SPOKEN WORDS:
+REMOVE FOOTNOTE/REFERENCE NUMBERS (DO THIS FIRST, BEFORE NUMBER CONVERSION):
+Footnote and reference numbers must be DELETED, never converted to words:
+- Bracketed references: [1], [23], (1), (23) → DELETE entirely
+- Numbers glued to punctuation: "said.13 The" or "claim.53" → DELETE the number, keep the punctuation
+- Numbers after sentence-ending punctuation: "...end of sentence. 3" or "...a quote." 7 → DELETE the trailing number
+- Numbers at the START of a sentence after a normal ending: "...was common. 13 In" → DELETE "13 "
+- Stray numbers (1-999) between sentences or at paragraph end that don't fit the prose context
+- KEY PATTERN: punctuation followed by a number (with or without space) is almost always a footnote
+
+Example:
+INPUT: ...according to Ezra and Nehemiah" (Bible study); "The Question of the Church-Community" (lecture).53
+OUTPUT: ...according to Ezra and Nehemiah" (Bible study); "The Question of the Church-Community" (lecture).
+
+NUMBERS → SPOKEN WORDS (only AFTER removing footnotes):
 - Years: "1923" → "nineteen twenty-three", "2001" → "two thousand one"
 - Decades: "the 1930s" → "the nineteen thirties"
 - Ordinals: "1st" → "first", "21st" → "twenty-first"

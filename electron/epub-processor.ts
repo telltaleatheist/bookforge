@@ -1540,7 +1540,8 @@ export async function getChapterComparison(
 
 /**
  * Edit specific text within an EPUB file.
- * Finds and replaces the old text with new text in the specified chapter.
+ * Uses plain-text extraction to match user edits from the diff view,
+ * then rebuilds the chapter XHTML with the modified text.
  */
 export async function editEpubText(
   epubPath: string,
@@ -1549,6 +1550,76 @@ export async function editEpubText(
   newText: string
 ): Promise<{ success: boolean; error?: string }> {
   const processor = new EpubProcessor();
+
+  // Helper to extract plain text from XHTML (same as replaceTextInEpub)
+  function extractText(xhtml: string): string {
+    let text = xhtml.replace(/<head[\s\S]*?<\/head>/gi, '');
+    text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
+    text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
+    text = text.replace(/<h1[^>]*>[\s\S]*?<\/h1>/gi, '');
+    text = text.replace(/([^.!?\s])<\/h[2-6]>/gi, '$1.');
+    text = text.replace(/<\/p>/gi, '\n\n');
+    text = text.replace(/<\/h[2-6]>/gi, '\n\n');
+    text = text.replace(/<\/li>/gi, '\n\n');
+    text = text.replace(/<\/blockquote>/gi, '\n\n');
+    text = text.replace(/<\/figcaption>/gi, '\n\n');
+    text = text.replace(/<br\s*\/?>/gi, '\n');
+    text = text.replace(/<(p|h[2-6]|li|blockquote|figcaption)([\s>])/gi, '\n\n<$1$2');
+    text = text.replace(/<[^>]+>/g, ' ');
+    text = text.replace(/&nbsp;/g, ' ');
+    text = text.replace(/&amp;/g, '&');
+    text = text.replace(/&lt;/g, '<');
+    text = text.replace(/&gt;/g, '>');
+    text = text.replace(/&quot;/g, '"');
+    text = text.replace(/&apos;/g, "'");
+    text = text.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)));
+    text = text.replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
+    text = text.replace(/[^\S\n]+/g, ' ');
+    text = text.replace(/\n\s*\n/g, '\n\n');
+    text = text.replace(/^ +| +$/gm, '');
+    return text.trim();
+  }
+
+  function escapeXml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  function rebuildXhtml(originalXhtml: string, newPlainText: string): string {
+    const bodyMatch = originalXhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    if (!bodyMatch) return originalXhtml;
+
+    const bodyContent = bodyMatch[1];
+    const newBlocks = newPlainText.split(/\n\n+/).map(b => b.trim()).filter(b => b.length > 0);
+    if (newBlocks.length === 0) return originalXhtml;
+
+    const blockPattern = /<(p|h[1-6]|li|blockquote|figcaption)([^>]*)>([\s\S]*?)<\/\1>/gi;
+    interface BlockMatch { full: string; tag: string; attrs: string; content: string; startIndex: number; hasText: boolean; }
+    const matches: BlockMatch[] = [];
+    let match;
+    while ((match = blockPattern.exec(bodyContent)) !== null) {
+      const textContent = match[3].replace(/<[^>]+>/g, '').replace(/&[^;]+;/g, ' ').trim();
+      matches.push({ full: match[0], tag: match[1], attrs: match[2], content: match[3], startIndex: match.index, hasText: textContent.length > 0 });
+    }
+    const textMatches = matches.filter(m => m.hasText);
+
+    if (textMatches.length === newBlocks.length) {
+      let newBodyContent = bodyContent;
+      for (let i = textMatches.length - 1; i >= 0; i--) {
+        const m = textMatches[i];
+        const newElement = `<${m.tag}${m.attrs}>${escapeXml(newBlocks[i])}</${m.tag}>`;
+        newBodyContent = newBodyContent.substring(0, m.startIndex) + newElement + newBodyContent.substring(m.startIndex + m.full.length);
+      }
+      return originalXhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>${newBodyContent}</body>`);
+    }
+
+    const paragraphs = newBlocks.map(p => `<p>${escapeXml(p)}</p>`).join('\n');
+    return originalXhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${paragraphs}\n</body>`);
+  }
 
   try {
     const structure = await processor.open(epubPath);
@@ -1565,12 +1636,33 @@ export async function editEpubText(
     // Read the current XHTML content
     const xhtml = await processor.readFile(href);
 
-    // Find the old text and replace it
-    if (!xhtml.includes(oldText)) {
-      return { success: false, error: 'Text not found in chapter' };
+    // Extract plain text to match against the user's edit
+    const extractedText = extractText(xhtml);
+    const normalizedOld = oldText.replace(/\s+/g, ' ').trim();
+    const normalizedExtracted = extractedText.replace(/\s+/g, ' ').trim();
+
+    if (!normalizedExtracted.includes(normalizedOld)) {
+      return { success: false, error: 'Text not found in chapter (plain text match failed)' };
     }
 
-    const newXhtml = xhtml.replace(oldText, newText);
+    // Replace in extracted text and rebuild XHTML
+    let modifiedText = extractedText.replace(oldText, newText);
+    if (modifiedText === extractedText) {
+      // Try flexible whitespace matching
+      const escapedOld = oldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const flexPattern = escapedOld.replace(/\s+/g, '\\s+');
+      const regex = new RegExp(flexPattern, 's');
+      modifiedText = extractedText.replace(regex, newText);
+    }
+
+    if (modifiedText === extractedText) {
+      return { success: false, error: 'Text replacement produced no changes' };
+    }
+
+    const newXhtml = rebuildXhtml(xhtml, modifiedText);
+    if (newXhtml === xhtml) {
+      return { success: false, error: 'XHTML rebuild produced no changes' };
+    }
 
     // Create new EPUB with the modified chapter
     const zipWriter = new ZipWriter();
@@ -1578,10 +1670,8 @@ export async function editEpubText(
 
     for (const entryName of entries) {
       if (entryName === href) {
-        // Write modified content
         zipWriter.addFile(entryName, Buffer.from(newXhtml, 'utf8'));
       } else {
-        // Copy file as-is
         const data = await processor.readBinaryFile(entryName);
         const compress = entryName !== 'mimetype';
         zipWriter.addFile(entryName, data, compress);
@@ -1592,9 +1682,16 @@ export async function editEpubText(
     const tempPath = epubPath + '.tmp';
     await zipWriter.write(tempPath);
 
-    // Replace original with temp
     const fs = await import('fs/promises');
     await fs.rename(tempPath, epubPath);
+
+    // Invalidate the diff cache since the EPUB changed
+    const diffCachePath = epubPath.replace('.epub', '.diff.json');
+    try {
+      await fs.unlink(diffCachePath);
+    } catch {
+      // Cache file may not exist - that's fine
+    }
 
     return { success: true };
   } catch (error) {
