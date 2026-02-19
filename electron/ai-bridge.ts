@@ -1148,7 +1148,7 @@ async function cleanChunkWithClaude(
 
   // Chain abort signals - if parent aborts, abort this request too
   if (abortSignal) {
-    abortSignal.addEventListener('abort', () => controller.abort());
+    abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
   }
 
   try {
@@ -1292,7 +1292,7 @@ async function cleanChunkWithOpenAI(
 
   // Chain abort signals - if parent aborts, abort this request too
   if (abortSignal) {
-    abortSignal.addEventListener('abort', () => controller.abort());
+    abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
   }
 
   try {
@@ -1513,7 +1513,7 @@ async function cleanChunk(
 
   // Chain abort signals - if parent aborts, abort this request too
   if (abortSignal) {
-    abortSignal.addEventListener('abort', () => controller.abort());
+    abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
   }
 
   const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {

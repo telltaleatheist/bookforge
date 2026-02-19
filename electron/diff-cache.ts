@@ -11,6 +11,7 @@
 
 import { promises as fsPromises } from 'fs';
 import path from 'path';
+import { diffWords } from 'diff';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -119,13 +120,12 @@ export async function addChapterDiff(
   const diffPath = currentOutputPath.replace('.epub', '.diff.json');
 
   try {
-    // Read existing cache
+    // Read existing cache from disk
     let cache: DiffCacheFile;
     try {
       const data = await fsPromises.readFile(diffPath, 'utf-8');
       cache = JSON.parse(data) as DiffCacheFile;
     } catch {
-      // File doesn't exist or is corrupt - create new
       cache = {
         version: 1,
         createdAt: cacheStartTime || new Date().toISOString(),
@@ -139,8 +139,6 @@ export async function addChapterDiff(
     // Compute diff for this chapter
     const { changes, changeCount } = computeCompactDiff(originalText, cleanedText);
 
-    // Check if chapter already exists (in case of retry/duplicate call)
-    const existingIndex = cache.chapters.findIndex(ch => ch.id === id);
     const chapterData: DiffCacheChapter = {
       id,
       title,
@@ -150,17 +148,17 @@ export async function addChapterDiff(
       changes
     };
 
+    // Check if chapter already exists (in case of retry/duplicate call)
+    const existingIndex = cache.chapters.findIndex(ch => ch.id === id);
     if (existingIndex >= 0) {
-      // Update existing
       cache.chapters[existingIndex] = chapterData;
     } else {
-      // Add new
       cache.chapters.push(chapterData);
     }
 
     cache.updatedAt = new Date().toISOString();
 
-    // Write back
+    // Write back — chapter diff data is not retained in memory
     await fsPromises.writeFile(diffPath, JSON.stringify(cache, null, 2), 'utf-8');
     console.log(`[DIFF-CACHE] Added chapter "${title}" (${cache.chapters.length} total, ${changeCount} changes)`);
   } catch (err) {
@@ -250,182 +248,76 @@ export async function loadDiffCacheFile(cleanedEpubPath: string): Promise<DiffCa
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Diff Computation (compact format)
+// Diff Computation
+//
+// Uses the `diff` library (Myers' algorithm) for word-level diffing.
+// O(nD) time/space where D = number of edits — effectively linear for
+// AI cleanup where most text is unchanged. No large DP tables.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Tokenize text into words (ignoring whitespace for comparison).
- */
-function tokenize(text: string): string[] {
-  return text.split(/\s+/).filter(token => token.length > 0);
-}
-
-/**
- * Normalize text for comparison (remove invisible characters).
- */
-function normalize(text: string): string {
-  return text
-    .replace(/\u00AD/g, '') // Soft hyphens
-    .replace(/[\u200B-\u200D\uFEFF]/g, '') // Zero-width chars
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
-}
-
-/**
- * Compute LCS table for dynamic programming diff.
- */
-function computeLCSTable(original: string[], cleaned: string[]): number[][] {
-  const m = original.length;
-  const n = cleaned.length;
-  const dp: number[][] = Array(m + 1).fill(null).map(() => Array(n + 1).fill(0));
-
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (normalize(original[i - 1]) === normalize(cleaned[j - 1])) {
-        dp[i][j] = dp[i - 1][j - 1] + 1;
-      } else {
-        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
-      }
-    }
-  }
-
-  return dp;
-}
-
-interface DiffOperation {
-  type: 'unchanged' | 'added' | 'removed';
-  text: string;
-}
-
-/**
- * Backtrack through LCS to produce diff operations.
- */
-function backtrackDiff(original: string[], cleaned: string[], dp: number[][]): DiffOperation[] {
-  let i = original.length;
-  let j = cleaned.length;
-  const ops: DiffOperation[] = [];
-
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && normalize(original[i - 1]) === normalize(cleaned[j - 1])) {
-      ops.push({ type: 'unchanged', text: cleaned[j - 1] });
-      i--;
-      j--;
-    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      ops.push({ type: 'added', text: cleaned[j - 1] });
-      j--;
-    } else {
-      ops.push({ type: 'removed', text: original[i - 1] });
-      i--;
-    }
-  }
-
-  return ops.reverse();
-}
-
-/**
- * Compute a compact diff representation.
- * Instead of storing the full DiffWord[] array (which duplicates unchanged text),
- * we store only the changes with their positions.
+ * Compute a compact diff using Myers' word-level diff.
+ *
+ * The `diff` library's `diffWords` returns contiguous text spans tagged as
+ * added/removed/unchanged. We convert these to our DiffChange[] format
+ * which stores only the changes with character positions into the cleaned text.
  */
 export function computeCompactDiff(
   originalText: string,
   cleanedText: string
 ): { changes: DiffChange[]; changeCount: number } {
-  const originalWords = tokenize(originalText);
-  const cleanedWords = tokenize(cleanedText);
-
-  // Handle empty cases
-  if (originalWords.length === 0 && cleanedWords.length === 0) {
+  if (!originalText && !cleanedText) {
     return { changes: [], changeCount: 0 };
   }
 
-  if (originalWords.length === 0) {
-    // Everything is added
+  if (!originalText) {
     return {
       changes: [{ pos: 0, len: cleanedText.length, add: cleanedText }],
       changeCount: 1
     };
   }
 
-  if (cleanedWords.length === 0) {
-    // Everything is removed
+  if (!cleanedText) {
     return {
       changes: [{ pos: 0, len: 0, rem: originalText }],
       changeCount: 1
     };
   }
 
-  // Compute word-level diff
-  const dp = computeLCSTable(originalWords, cleanedWords);
-  const ops = backtrackDiff(originalWords, cleanedWords, dp);
+  const parts = diffWords(originalText, cleanedText);
 
-  // Convert operations to compact changes
   const changes: DiffChange[] = [];
   let changeCount = 0;
-
-  // Track position in cleaned text
   let cleanedPos = 0;
 
-  // Group consecutive changes
   let i = 0;
-  while (i < ops.length) {
-    const op = ops[i];
+  while (i < parts.length) {
+    const part = parts[i];
 
-    if (op.type === 'unchanged') {
-      // Skip to next word position in cleaned text
-      const wordEnd = cleanedText.indexOf(op.text, cleanedPos);
-      if (wordEnd >= 0) {
-        cleanedPos = wordEnd + op.text.length;
-      }
+    if (!part.added && !part.removed) {
+      // Unchanged — advance position in cleaned text
+      cleanedPos += part.value.length;
       i++;
     } else {
-      // Collect all consecutive changes (removed + added)
+      // Collect consecutive added/removed parts into one change
       let removed = '';
       let added = '';
+      const changeStart = cleanedPos;
 
-      while (i < ops.length && ops[i].type !== 'unchanged') {
-        if (ops[i].type === 'removed') {
-          removed += (removed ? ' ' : '') + ops[i].text;
-        } else if (ops[i].type === 'added') {
-          added += (added ? ' ' : '') + ops[i].text;
+      while (i < parts.length && (parts[i].added || parts[i].removed)) {
+        if (parts[i].removed) {
+          removed += parts[i].value;
+        } else {
+          added += parts[i].value;
+          cleanedPos += parts[i].value.length;
         }
         i++;
       }
 
-      // Find the added text position in cleaned text
-      // IMPORTANT: pos should be where the added text ACTUALLY starts (after any whitespace)
-      // This ensures unchanged text before the change includes the whitespace
-      let actualPos = cleanedPos;
-      let addedLen = 0;
-      if (added) {
-        const firstWord = added.split(' ')[0];
-        const addedStart = cleanedText.indexOf(firstWord, cleanedPos);
-        if (addedStart >= 0) {
-          actualPos = addedStart;  // Start at the actual first word, not after previous word
-          // Find the end of all added words
-          let endPos = addedStart;
-          const addedWords = added.split(' ');
-          for (const word of addedWords) {
-            const wordPos = cleanedText.indexOf(word, endPos);
-            if (wordPos >= 0) {
-              endPos = wordPos + word.length;
-            }
-          }
-          addedLen = endPos - addedStart;  // Length is just the added words, not including leading space
-          cleanedPos = endPos;
-        }
-      }
-
-      // Use the actual cleaned text span for `add` (not the word-joined string)
-      // to ensure `len` always equals `add.length`. The word-joined `added` may
-      // differ from the real text when whitespace between words isn't a single space
-      // (e.g., double space after periods, newlines, etc.).
-      const addText = added && addedLen > 0
-        ? cleanedText.slice(actualPos, actualPos + addedLen)
-        : (added || undefined);
       changes.push({
-        pos: actualPos,
-        len: addedLen,
-        add: addText,
+        pos: changeStart,
+        len: added.length,
+        add: added || undefined,
         rem: removed || undefined
       });
       changeCount++;
