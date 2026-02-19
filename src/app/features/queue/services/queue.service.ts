@@ -362,12 +362,22 @@ export class QueueService {
       });
     });
 
-    // Listen for parallel TTS progress updates
+    // Listen for parallel TTS progress updates (rAF-coalesced)
     if (electron.parallelTts) {
+      let pendingParallelData: any = null;
+      let parallelRaf: number | null = null;
       this.unsubscribeParallelProgress = electron.parallelTts.onProgress((data) => {
-        this.ngZone.run(() => {
-          this.handleParallelProgressUpdate(data.jobId, data.progress);
-        });
+        pendingParallelData = data;
+        if (!parallelRaf) {
+          parallelRaf = requestAnimationFrame(() => {
+            parallelRaf = null;
+            if (pendingParallelData) {
+              const d = pendingParallelData;
+              pendingParallelData = null;
+              this.ngZone.run(() => this.handleParallelProgressUpdate(d.jobId, d.progress));
+            }
+          });
+        }
       });
 
       this.unsubscribeParallelComplete = electron.parallelTts.onComplete((data) => {
@@ -396,30 +406,75 @@ export class QueueService {
       }
     }
 
-    // Listen for reassembly progress updates
+    // Listen for reassembly progress updates.
+    // Coalesce with rAF so at most one ngZone.run per frame — prevents
+    // change detection storms when the renderer is loading heavy components.
     if (electron.reassembly) {
+      let pendingReassemblyData: any = null;
+      let reassemblyRaf: number | null = null;
       this.unsubscribeReassemblyProgress = electron.reassembly.onProgress((data) => {
-        this.ngZone.run(() => {
-          this.handleReassemblyProgressUpdate(data.jobId, data.progress);
-        });
+        // Always process completion/error immediately
+        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
+          this.ngZone.run(() => this.handleReassemblyProgressUpdate(data.jobId, data.progress));
+          return;
+        }
+        pendingReassemblyData = data;
+        if (!reassemblyRaf) {
+          reassemblyRaf = requestAnimationFrame(() => {
+            reassemblyRaf = null;
+            if (pendingReassemblyData) {
+              const d = pendingReassemblyData;
+              pendingReassemblyData = null;
+              this.ngZone.run(() => this.handleReassemblyProgressUpdate(d.jobId, d.progress));
+            }
+          });
+        }
       });
     }
 
     // Listen for language learning progress updates
     if (electron.languageLearning) {
+      let pendingLLData: any = null;
+      let llRaf: number | null = null;
       this.unsubscribeLanguageLearningProgress = electron.languageLearning.onProgress((data) => {
-        this.ngZone.run(() => {
-          this.handleLanguageLearningProgressUpdate(data.jobId, data.progress);
-        });
+        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
+          this.ngZone.run(() => this.handleLanguageLearningProgressUpdate(data.jobId, data.progress));
+          return;
+        }
+        pendingLLData = data;
+        if (!llRaf) {
+          llRaf = requestAnimationFrame(() => {
+            llRaf = null;
+            if (pendingLLData) {
+              const d = pendingLLData;
+              pendingLLData = null;
+              this.ngZone.run(() => this.handleLanguageLearningProgressUpdate(d.jobId, d.progress));
+            }
+          });
+        }
       });
     }
 
-    // Listen for LL split pipeline job progress (cleanup + translation)
+    // Listen for LL split pipeline job progress (cleanup + translation, rAF-coalesced)
     if (electron.bilingualCleanup) {
+      let pendingLLJobData: any = null;
+      let llJobRaf: number | null = null;
       this.unsubscribeLLJobProgress = electron.bilingualCleanup.onProgress((data) => {
-        this.ngZone.run(() => {
-          this.handleLLJobProgressUpdate(data.jobId, data.progress);
-        });
+        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
+          this.ngZone.run(() => this.handleLLJobProgressUpdate(data.jobId, data.progress));
+          return;
+        }
+        pendingLLJobData = data;
+        if (!llJobRaf) {
+          llJobRaf = requestAnimationFrame(() => {
+            llJobRaf = null;
+            if (pendingLLJobData) {
+              const d = pendingLLJobData;
+              pendingLLJobData = null;
+              this.ngZone.run(() => this.handleLLJobProgressUpdate(d.jobId, d.progress));
+            }
+          });
+        }
       });
     }
   }
@@ -457,7 +512,7 @@ export class QueueService {
         return {
           ...job,
           progress: progress.percentage || 0,
-          status: progress.phase === 'complete' ? 'completed' as JobStatus :
+          status: progress.phase === 'complete' ? 'complete' as JobStatus :
                   progress.phase === 'error' ? 'error' as JobStatus :
                   'processing' as JobStatus,
           currentChapter: progress.currentChapter,
@@ -467,6 +522,7 @@ export class QueueService {
         };
       })
     );
+    this.bubbleProgressToMaster(jobId);
   }
 
   private handleLanguageLearningProgressUpdate(jobId: string, progress: any): void {
@@ -486,6 +542,7 @@ export class QueueService {
         };
       })
     );
+    this.bubbleProgressToMaster(jobId);
   }
 
   private handleProgressUpdate(progress: QueueProgress): void {
@@ -510,7 +567,7 @@ export class QueueService {
         };
       })
     );
-    // Don't save on every progress update - too frequent
+    this.bubbleProgressToMaster(progress.jobId);
   }
 
   private handleParallelProgressUpdate(jobId: string, progress: ParallelAggregatedProgress): void {
@@ -584,7 +641,7 @@ export class QueueService {
         };
       })
     );
-    // Don't save on every progress update - too frequent
+    this.bubbleProgressToMaster(jobId);
   }
 
   /**
@@ -1333,6 +1390,39 @@ export class QueueService {
   }
 
   /**
+   * Bubble a child job's progress to its master job.
+   * Called from progress handlers so the master bar tracks the active child.
+   * Throttled to avoid excessive signal updates (progress fires frequently).
+   */
+  private _lastMasterBubbleTime = 0;
+  private _pendingMasterBubble: ReturnType<typeof setTimeout> | null = null;
+  private bubbleProgressToMaster(childJobId: string): void {
+    const child = this._jobs().find(j => j.id === childJobId);
+    if (!child?.parentJobId || !child.workflowId) return;
+
+    const now = Date.now();
+    const workflowId = child.workflowId;
+    const masterJobId = child.parentJobId;
+
+    // Throttle: update master at most every 500ms
+    if (now - this._lastMasterBubbleTime >= 500) {
+      this._lastMasterBubbleTime = now;
+      if (this._pendingMasterBubble) {
+        clearTimeout(this._pendingMasterBubble);
+        this._pendingMasterBubble = null;
+      }
+      this.updateMasterJobProgress(workflowId, masterJobId);
+    } else if (!this._pendingMasterBubble) {
+      // Schedule a trailing update so we don't miss the last progress value
+      this._pendingMasterBubble = setTimeout(() => {
+        this._pendingMasterBubble = null;
+        this._lastMasterBubbleTime = Date.now();
+        this.updateMasterJobProgress(workflowId, masterJobId);
+      }, 500);
+    }
+  }
+
+  /**
    * Update master job progress based on child job completion
    */
   private updateMasterJobProgress(workflowId: string, masterJobId: string): void {
@@ -1344,8 +1434,11 @@ export class QueueService {
 
     if (totalChildren === 0) return;
 
-    // Calculate progress as percentage of completed children
-    const progress = Math.round((completedChildren / totalChildren) * 100);
+    // Calculate progress factoring in the active child's progress.
+    // e.g. 3 steps, 1 done, 1 at 50% → (1 + 0.5) / 3 = 50%
+    const processingChild = childJobs.find(j => j.status === 'processing');
+    const processingFraction = processingChild ? (processingChild.progress || 0) / 100 : 0;
+    const progress = Math.round(((completedChildren + processingFraction) / totalChildren) * 100);
 
     // Determine master job status
     let masterStatus: JobStatus = 'processing';

@@ -1351,6 +1351,20 @@ export class ElectronService {
   }
 
   /**
+   * Check multiple file paths for existence in a single IPC call
+   */
+  async fsBatchExists(filePaths: string[]): Promise<Record<string, boolean>> {
+    if (this.isElectron) {
+      try {
+        return await (window as any).electron.fs.batchExists(filePaths);
+      } catch {
+        return {};
+      }
+    }
+    return {};
+  }
+
+  /**
    * Read a text file and return its contents
    */
   async readTextFile(filePath: string): Promise<string | null> {

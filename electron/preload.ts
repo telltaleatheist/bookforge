@@ -873,6 +873,7 @@ export interface ElectronAPI {
     }>;
     readBinary: (filePath: string) => Promise<{ success: boolean; data?: Uint8Array; error?: string }>;
     exists: (filePath: string) => Promise<boolean>;
+    batchExists: (filePaths: string[]) => Promise<Record<string, boolean>>;
     writeText: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>;
     deleteFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     deleteDirectory: (dirPath: string) => Promise<{ success: boolean; error?: string }>;
@@ -2075,6 +2076,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('fs:read-audio', audioPath),
     exists: (filePath: string) =>
       ipcRenderer.invoke('fs:exists', filePath),
+    batchExists: (filePaths: string[]) =>
+      ipcRenderer.invoke('fs:batch-exists', filePaths),
     writeText: (filePath: string, content: string) =>
       ipcRenderer.invoke('fs:write-text', filePath, content),
     deleteFile: (filePath: string) =>

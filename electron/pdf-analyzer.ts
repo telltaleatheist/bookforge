@@ -1209,11 +1209,16 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Compute SHA256 hash of a file for cache keying
+   * Compute SHA256 hash of a file for cache keying (streaming, no full-file buffer)
    */
-  private computeFileHash(filePath: string): string {
-    const data = fs.readFileSync(filePath);
-    return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
+  private computeFileHash(filePath: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const hash = crypto.createHash('sha256');
+      const stream = fs.createReadStream(filePath);
+      stream.on('data', (chunk) => hash.update(chunk));
+      stream.on('end', () => resolve(hash.digest('hex').substring(0, 16)));
+      stream.on('error', reject);
+    });
   }
 
   /**
@@ -1358,7 +1363,7 @@ export class PDFAnalyzer {
     }
 
     // Compute file hash for cache key
-    const fileHash = this.computeFileHash(targetPath);
+    const fileHash = await this.computeFileHash(targetPath);
     const quality: 'preview' | 'full' = scale <= 1.0 ? 'preview' : 'full';
 
     // Check if already cached
@@ -1420,7 +1425,7 @@ export class PDFAnalyzer {
     progressCallback?: (current: number, total: number, phase: 'preview' | 'full') => void
   ): Promise<{ previewPaths: string[]; fileHash: string }> {
     const mupdfLib = await getMupdf();
-    const fileHash = this.computeFileHash(pdfPath);
+    const fileHash = await this.computeFileHash(pdfPath);
     this.currentFileHash = fileHash;
 
     // Open document with error handling for memory issues
@@ -1595,7 +1600,7 @@ export class PDFAnalyzer {
     progressCallback?: (current: number, total: number) => void
   ): Promise<string[]> {
     const mupdfLib = await getMupdf();
-    const fileHash = this.computeFileHash(pdfPath);
+    const fileHash = await this.computeFileHash(pdfPath);
     this.currentFileHash = fileHash;
 
     // Open document

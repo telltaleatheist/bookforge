@@ -96,6 +96,26 @@ async function findPdftotext(): Promise<string | null> {
 // Module-level so all path functions can use it
 let customLibraryRoot: string | null = null;
 
+// Persist library root so the main process can read it at startup (before renderer loads)
+const libraryRootConfigPath = path.join(app.getPath('userData'), 'library-root.json');
+
+function loadPersistedLibraryRoot(): string | null {
+  try {
+    const data = fsSync.readFileSync(libraryRootConfigPath, 'utf-8');
+    const parsed = JSON.parse(data);
+    if (parsed.libraryRoot && fsSync.existsSync(parsed.libraryRoot)) {
+      return parsed.libraryRoot;
+    }
+  } catch { /* no persisted root */ }
+  return null;
+}
+
+function persistLibraryRoot(libraryRoot: string | null): void {
+  try {
+    fsSync.writeFileSync(libraryRootConfigPath, JSON.stringify({ libraryRoot }));
+  } catch { /* ignore */ }
+}
+
 // Tracks whether the app is actually quitting (vs just hiding the window)
 let isQuitting = false;
 
@@ -994,6 +1014,20 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('fs:batch-exists', async (_event, filePaths: string[]) => {
+    const fs = await import('fs/promises');
+    const results: Record<string, boolean> = {};
+    await Promise.all(filePaths.map(async (p) => {
+      try {
+        await fs.access(p);
+        results[p] = true;
+      } catch {
+        results[p] = false;
+      }
+    }));
+    return results;
+  });
+
   ipcMain.handle('fs:write-text', async (_event, filePath: string, content: string) => {
     const fs = await import('fs/promises');
     try {
@@ -1458,6 +1492,7 @@ function setupIpcHandlers(): void {
     }
 
     customLibraryRoot = libraryPath;
+    persistLibraryRoot(libraryPath);
     // Sync to manifest service
     manifestService.setLibraryBasePath(libraryPath);
     return { success: true };
@@ -2876,13 +2911,11 @@ function setupIpcHandlers(): void {
       const diffJsonPath = targetPath.replace('.epub', '.diff.json');
       try {
         await fs.access(diffJsonPath);
-        const { loadDiffCacheFile } = await import('./diff-cache.js');
-        const existing = await loadDiffCacheFile(targetPath);
-        if (existing?.completed) {
-          // Cache exists — don't overwrite even if it's for a different pair.
-          // On-demand loading handles mismatched pairs.
-          return { success: true, cached: true };
-        }
+        // Cache file exists — skip precomputation regardless of completed state.
+        // Incomplete caches are regenerated on-demand when the user views the diff.
+        // This prevents heavy CPU-bound diff work from blocking the main process
+        // during normal navigation.
+        return { success: true, cached: true };
       } catch {
         // No existing cache — generate it
       }
@@ -2926,6 +2959,10 @@ function setupIpcHandlers(): void {
             changeCount,
             changes,
           });
+
+          // Yield the event loop between chapters so diff computation
+          // doesn't block IPC handlers for seconds on large books
+          await new Promise(resolve => setImmediate(resolve));
         }
 
         const now = new Date().toISOString();
@@ -8229,6 +8266,16 @@ app.whenReady().then(async () => {
     registry.setMainWindow(mainWindow);
   }
   await loadBuiltinPlugins(registry);
+
+  // Restore persisted library root before auto-starting the library server.
+  // The renderer sets this via IPC, but that happens after the window loads —
+  // too late for auto-start. So we persist it to userData and read it here.
+  const persistedRoot = loadPersistedLibraryRoot();
+  if (persistedRoot && !customLibraryRoot) {
+    customLibraryRoot = persistedRoot;
+    manifestService.setLibraryBasePath(persistedRoot);
+    console.log('[Startup] Restored persisted library root:', persistedRoot);
+  }
 
   // Auto-start library server if configured
   await autoStartLibraryServer();

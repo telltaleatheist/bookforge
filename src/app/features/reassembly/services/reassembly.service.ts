@@ -90,15 +90,29 @@ export class ReassemblyService {
   }
 
   private setupProgressListener(): void {
+    let pendingProgress: any = null;
+    let progressRaf: number | null = null;
     this.unsubscribeProgress = this.electronService.onReassemblyProgress((data) => {
-      this.ngZone.run(() => {
-        this._progress.set(data.progress);
-
-        // If complete or error, clear job ID
-        if (data.progress.phase === 'complete' || data.progress.phase === 'error') {
+      // Completion/error: process immediately
+      if (data.progress.phase === 'complete' || data.progress.phase === 'error') {
+        this.ngZone.run(() => {
+          this._progress.set(data.progress);
           this._currentJobId.set(null);
-        }
-      });
+        });
+        return;
+      }
+      // Coalesce progress updates to one per animation frame
+      pendingProgress = data.progress;
+      if (!progressRaf) {
+        progressRaf = requestAnimationFrame(() => {
+          progressRaf = null;
+          if (pendingProgress) {
+            const p = pendingProgress;
+            pendingProgress = null;
+            this.ngZone.run(() => this._progress.set(p));
+          }
+        });
+      }
     });
   }
 

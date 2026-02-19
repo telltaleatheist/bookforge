@@ -70,28 +70,64 @@ export class StudioService {
       const projectsPath = this.libraryService.projectsPath();
       if (!projectsPath) return;
 
-      const books: StudioItem[] = [];
+      // Collect ALL file paths to check across ALL books in one batch IPC call
+      const allPaths: string[] = [];
+      const bookPathMaps: Array<{ manifest: any; projectDir: string; paths: Record<string, string> }> = [];
 
       for (const manifest of result.projects) {
         const projectDir = `${projectsPath}/${manifest.projectId}`;
+        const paths: Record<string, string> = {};
 
-        // Standard audiobook output — only from manifest, no filesystem fallback
-        let audiobookPath: string | undefined;
-        let vttPath: string | undefined;
+        // Standard audiobook
         if (manifest.outputs?.audiobook?.path) {
-          const absPath = `${projectDir}/${manifest.outputs.audiobook.path}`;
-          if (await this.electronService.fsExists(absPath)) {
-            audiobookPath = absPath;
-          }
+          paths['audiobook'] = `${projectDir}/${manifest.outputs.audiobook.path}`;
           if (manifest.outputs.audiobook.vttPath) {
-            const absVtt = `${projectDir}/${manifest.outputs.audiobook.vttPath}`;
-            if (await this.electronService.fsExists(absVtt)) {
-              vttPath = absVtt;
+            paths['vtt'] = `${projectDir}/${manifest.outputs.audiobook.vttPath}`;
+          }
+        }
+
+        // Bilingual outputs
+        if (manifest.outputs?.bilingualAudiobooks) {
+          for (const [key, bilingual] of Object.entries(manifest.outputs.bilingualAudiobooks) as [string, AudiobookOutput][]) {
+            paths[`bi-audio-${key}`] = `${projectDir}/${bilingual.path}`;
+            if (bilingual.vttPath) {
+              paths[`bi-vtt-${key}`] = `${projectDir}/${bilingual.vttPath}`;
             }
           }
         }
 
-        // Bilingual audiobook outputs (all language pairs)
+        // Cleanup
+        paths['simplified'] = `${projectDir}/stages/01-cleanup/simplified.epub`;
+        paths['cleaned'] = `${projectDir}/stages/01-cleanup/cleaned.epub`;
+        paths['skipped'] = `${projectDir}/stages/01-cleanup/skipped-chunks.json`;
+
+        // Source files
+        paths['source-exported'] = `${projectDir}/source/exported.epub`;
+        paths['source-original'] = `${projectDir}/source/original.epub`;
+        paths['source-pdf'] = `${projectDir}/source/original.pdf`;
+
+        allPaths.push(...Object.values(paths));
+        bookPathMaps.push({ manifest, projectDir, paths });
+      }
+
+      // Single IPC call to check all paths at once
+      const existsMap = await this.electronService.fsBatchExists(allPaths);
+
+      // Process all books in parallel (cover loading is the only remaining IPC)
+      const books = await Promise.all(bookPathMaps.map(async ({ manifest, projectDir, paths }) => {
+        const exists = (key: string) => !!existsMap[paths[key]];
+
+        // Standard audiobook
+        let audiobookPath: string | undefined;
+        let vttPath: string | undefined;
+        if (paths['audiobook'] && exists('audiobook')) {
+          audiobookPath = paths['audiobook'];
+          if (paths['vtt'] && exists('vtt')) {
+            vttPath = paths['vtt'];
+          }
+        }
+
+        // Bilingual outputs
         let bilingualAudioPath: string | undefined;
         let bilingualVttPath: string | undefined;
         let bilingualSentencePairsPath: string | undefined;
@@ -99,24 +135,23 @@ export class StudioService {
 
         if (manifest.outputs?.bilingualAudiobooks) {
           for (const [key, bilingual] of Object.entries(manifest.outputs.bilingualAudiobooks) as [string, AudiobookOutput][]) {
-            const absAudio = `${projectDir}/${bilingual.path}`;
-            const audioExists = await this.electronService.fsExists(absAudio);
-            if (!audioExists) continue;
+            if (!exists(`bi-audio-${key}`)) continue;
 
-            const absVtt = bilingual.vttPath ? `${projectDir}/${bilingual.vttPath}` : undefined;
-            const vttExists = absVtt ? await this.electronService.fsExists(absVtt) : false;
+            const absAudio = paths[`bi-audio-${key}`];
+            const vttKey = `bi-vtt-${key}`;
+            const vttExists = paths[vttKey] ? exists(vttKey) : false;
+            const absVtt = paths[vttKey];
             const absPairs = bilingual.sentencePairsPath ? `${projectDir}/${bilingual.sentencePairsPath}` : undefined;
 
             const [src, tgt] = key.split('-');
             bilingualOutputs[key] = {
               audioPath: absAudio,
-              vttPath: vttExists ? absVtt! : absAudio.replace('.m4b', '.vtt'),
+              vttPath: vttExists ? absVtt : absAudio.replace('.m4b', '.vtt'),
               sentencePairsPath: absPairs,
               sourceLang: src,
               targetLang: tgt,
             };
 
-            // First entry populates legacy single-pair fields
             if (!bilingualAudioPath) {
               bilingualAudioPath = absAudio;
               bilingualVttPath = vttExists ? absVtt : undefined;
@@ -125,44 +160,28 @@ export class StudioService {
           }
         }
 
-        // Cleanup state - check for actual cleaned files, not manifest status
-        // Check for simplified.epub or cleaned.epub in stages/01-cleanup/
+        // Cleanup state
         let cleanedEpubPath: string | undefined;
         let hasCleaned = false;
-
-        // Check for simplified first (takes priority if it exists)
-        const simplifiedPath = `${projectDir}/stages/01-cleanup/simplified.epub`;
-        const cleanedPath = `${projectDir}/stages/01-cleanup/cleaned.epub`;
-
-        if (await this.electronService.fsExists(simplifiedPath)) {
-          cleanedEpubPath = simplifiedPath;
+        if (exists('simplified')) {
+          cleanedEpubPath = paths['simplified'];
           hasCleaned = true;
-        } else if (await this.electronService.fsExists(cleanedPath)) {
-          cleanedEpubPath = cleanedPath;
+        } else if (exists('cleaned')) {
+          cleanedEpubPath = paths['cleaned'];
           hasCleaned = true;
         }
 
-        // Skipped chunks
         let skippedChunksPath: string | undefined;
-        if (hasCleaned) {
-          const skippedFile = `${projectDir}/stages/01-cleanup/skipped-chunks.json`;
-          if (await this.electronService.fsExists(skippedFile)) {
-            skippedChunksPath = skippedFile;
-          }
+        if (hasCleaned && exists('skipped')) {
+          skippedChunksPath = paths['skipped'];
         }
 
-        // Detect actual source file: exported.epub > original.epub > original.pdf > any original.*
+        // Source file (priority order)
         let epubPath = '';
-        for (const name of ['exported.epub', 'original.epub', 'original.pdf']) {
-          const candidate = `${projectDir}/source/${name}`;
-          if (await this.electronService.fsExists(candidate)) {
-            epubPath = candidate;
-            break;
-          }
-        }
-        if (!epubPath) {
-          epubPath = `${projectDir}/source/original.epub`;
-        }
+        if (exists('source-exported')) epubPath = paths['source-exported'];
+        else if (exists('source-original')) epubPath = paths['source-original'];
+        else if (exists('source-pdf')) epubPath = paths['source-pdf'];
+        if (!epubPath) epubPath = `${projectDir}/source/original.epub`;
 
         const book: StudioItem = {
           id: projectDir,
@@ -192,7 +211,7 @@ export class StudioService {
           sortOrder: manifest.sortOrder,
         };
 
-        // Load cover image (coverPath is library-relative, e.g. "media/cover_xxx.png")
+        // Load cover image (coverPath is library-relative)
         if (manifest.metadata?.coverPath) {
           try {
             const coverResult = await this.electronService.mediaLoadImage(manifest.metadata.coverPath);
@@ -204,8 +223,8 @@ export class StudioService {
           }
         }
 
-        books.push(book);
-      }
+        return book;
+      }));
 
       // Separate archived books
       const activeBooks = books.filter(b => !b.archived);
@@ -241,44 +260,44 @@ export class StudioService {
       const projectsPath = this.libraryService.projectsPath();
       if (!projectsPath) return;
 
-      const articles: StudioItem[] = [];
+      // Collect all paths for batch existence check
+      const allPaths: string[] = [];
+      const articlePathMaps: Array<{ manifest: any; projectDir: string; paths: Record<string, string> }> = [];
 
       for (const manifest of result.projects) {
         const projectDir = `${projectsPath}/${manifest.projectId}`;
+        const paths: Record<string, string> = {
+          'simplified': `${projectDir}/stages/01-cleanup/simplified.epub`,
+          'cleaned': `${projectDir}/stages/01-cleanup/cleaned.epub`,
+          'source-exported': `${projectDir}/source/exported.epub`,
+          'source-original': `${projectDir}/source/original.epub`,
+          'source-pdf': `${projectDir}/source/original.pdf`,
+        };
+        allPaths.push(...Object.values(paths));
+        articlePathMaps.push({ manifest, projectDir, paths });
+      }
 
-        // Determine status from pipeline/outputs - check for actual cleaned files
-        // Check for simplified.epub or cleaned.epub in stages/01-cleanup/
-        let hasCleaned = false;
-        const simplifiedPath = `${projectDir}/stages/01-cleanup/simplified.epub`;
-        const cleanedPath = `${projectDir}/stages/01-cleanup/cleaned.epub`;
+      // Single IPC call for all articles
+      const existsMap = await this.electronService.fsBatchExists(allPaths);
 
-        if (await this.electronService.fsExists(simplifiedPath)) {
-          hasCleaned = true;
-        } else if (await this.electronService.fsExists(cleanedPath)) {
-          hasCleaned = true;
-        }
+      const articles: StudioItem[] = articlePathMaps.map(({ manifest, projectDir, paths }) => {
+        const exists = (key: string) => !!existsMap[paths[key]];
 
+        const hasCleaned = exists('simplified') || exists('cleaned');
         const hasAudiobook = !!manifest.outputs?.audiobook?.path;
         let status: StudioItem['status'] = 'draft';
         if (hasAudiobook) status = 'completed';
         else if (hasCleaned) status = 'ready';
 
-        // Detect actual source file: exported.epub > original.epub > original.pdf > any original.*
         let articleEpubPath = '';
-        for (const name of ['exported.epub', 'original.epub', 'original.pdf']) {
-          const candidate = `${projectDir}/source/${name}`;
-          if (await this.electronService.fsExists(candidate)) {
-            articleEpubPath = candidate;
-            break;
-          }
-        }
-        if (!articleEpubPath) {
-          articleEpubPath = `${projectDir}/source/original.epub`;
-        }
+        if (exists('source-exported')) articleEpubPath = paths['source-exported'];
+        else if (exists('source-original')) articleEpubPath = paths['source-original'];
+        else if (exists('source-pdf')) articleEpubPath = paths['source-pdf'];
+        if (!articleEpubPath) articleEpubPath = `${projectDir}/source/original.epub`;
 
-        const article: StudioItem = {
+        return {
           id: manifest.projectId,
-          type: 'article',
+          type: 'article' as const,
           title: manifest.metadata?.title || 'Untitled',
           author: manifest.metadata?.author || manifest.metadata?.byline,
           status,
@@ -295,9 +314,7 @@ export class StudioService {
           archived: manifest.archived,
           sortOrder: manifest.sortOrder,
         };
-
-        articles.push(article);
-      }
+      });
 
       // Separate archived articles
       const activeArticles = articles.filter(a => !a.archived);

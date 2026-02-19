@@ -113,7 +113,7 @@ interface BfpMetadata {
  * The session's source_epub_path points directly to the project output folder (e.g., .../projects/Book_Name/output/cleaned.epub)
  * Metadata comes from project.json - if it doesn't exist, there's no BFP metadata
  */
-function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined): BfpMetadata | null {
+async function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined): Promise<BfpMetadata | null> {
   if (!sourceEpubPath) return null;
 
   // Convert WSL path to Windows if needed
@@ -124,14 +124,12 @@ function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined): BfpMe
 
   // Get the BFP folder (parent of cleaned.epub, simplified.epub, or exported.epub)
   const bfpFolder = path.dirname(windowsPath);
-  if (!fs.existsSync(bfpFolder)) return null;
 
   // project.json is the single source of truth for BFP metadata
   const projectJsonPath = path.join(bfpFolder, 'project.json');
-  if (!fs.existsSync(projectJsonPath)) return null;
 
   try {
-    const content = fs.readFileSync(projectJsonPath, 'utf-8');
+    const content = await fs.promises.readFile(projectJsonPath, 'utf-8');
     const project = JSON.parse(content);
 
     const bfpMetadata: BfpMetadata = {
@@ -151,13 +149,14 @@ function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined): BfpMe
     // Resolve relative cover path to absolute
     if (bfpMetadata.coverPath && !path.isAbsolute(bfpMetadata.coverPath)) {
       const absoluteCoverPath = path.join(bfpFolder, bfpMetadata.coverPath);
-      if (fs.existsSync(absoluteCoverPath)) {
+      try {
+        await fs.promises.access(absoluteCoverPath);
         bfpMetadata.coverPath = absoluteCoverPath;
-      }
+      } catch { /* cover doesn't exist, leave relative */ }
     }
 
     return bfpMetadata;
-  } catch (err) {
+  } catch {
     return null;
   }
 }
@@ -271,19 +270,13 @@ export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: str
   const sessions: E2aSession[] = [];
   const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
 
-  // Scan e2a tmp folder for active sessions
-  if (fs.existsSync(tmpPath)) {
-    const entries = fs.readdirSync(tmpPath, { withFileTypes: true });
-
+  // Scan e2a tmp folder for active sessions (async I/O to avoid blocking main process)
+  try {
+    const entries = await fs.promises.readdir(tmpPath, { withFileTypes: true });
     for (const entry of entries) {
-      // Look for ebook-* directories
-      if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) {
-        continue;
-      }
-
+      if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
       const sessionDir = path.join(tmpPath, entry.name);
       const sessionId = entry.name.replace('ebook-', '');
-
       try {
         const session = await parseSession(sessionId, sessionDir);
         if (session) {
@@ -294,40 +287,39 @@ export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: str
         console.error(`[REASSEMBLY] Error parsing session ${sessionId}:`, err);
       }
     }
+  } catch {
+    // tmp folder doesn't exist — that's fine
   }
 
   // Scan project folders for cached sessions in stages/03-tts/sessions/{lang}/
   if (libraryPath) {
     const projectsDir = path.join(libraryPath, 'projects');
     try {
-      if (fs.existsSync(projectsDir)) {
-        const projectDirs = fs.readdirSync(projectsDir, { withFileTypes: true });
-        for (const projectEntry of projectDirs) {
-          if (!projectEntry.isDirectory()) continue;
-          const projectPath = path.join(projectsDir, projectEntry.name);
-
-          const stagesSessionDir = path.join(projectPath, 'stages', '03-tts', 'sessions');
-          if (!fs.existsSync(stagesSessionDir)) continue;
-
-          const langDirs = fs.readdirSync(stagesSessionDir, { withFileTypes: true });
-          for (const langEntry of langDirs) {
-            if (!langEntry.isDirectory()) continue;
-            const langDir = path.join(stagesSessionDir, langEntry.name);
-            const langEntries = fs.readdirSync(langDir, { withFileTypes: true });
-            for (const entry of langEntries) {
-              if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
-              const sessionDir = path.join(langDir, entry.name);
-              const sessionId = entry.name.replace('ebook-', '');
-              if (sessions.some(s => s.sessionId === sessionId)) continue;
-              try {
-                const session = await parseSession(sessionId, sessionDir);
-                if (session) {
-                  session.source = 'bfp-cache';
-                  sessions.push(session);
-                }
-              } catch (err) {
-                console.error(`[REASSEMBLY] Error parsing cached session ${sessionId}:`, err);
+      const projectDirs = await fs.promises.readdir(projectsDir, { withFileTypes: true });
+      for (const projectEntry of projectDirs) {
+        if (!projectEntry.isDirectory()) continue;
+        const stagesSessionDir = path.join(projectsDir, projectEntry.name, 'stages', '03-tts', 'sessions');
+        let langDirs;
+        try {
+          langDirs = await fs.promises.readdir(stagesSessionDir, { withFileTypes: true });
+        } catch { continue; }
+        for (const langEntry of langDirs) {
+          if (!langEntry.isDirectory()) continue;
+          const langDir = path.join(stagesSessionDir, langEntry.name);
+          const langEntries = await fs.promises.readdir(langDir, { withFileTypes: true });
+          for (const entry of langEntries) {
+            if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
+            const sessionDir = path.join(langDir, entry.name);
+            const sessionId = entry.name.replace('ebook-', '');
+            if (sessions.some(s => s.sessionId === sessionId)) continue;
+            try {
+              const session = await parseSession(sessionId, sessionDir);
+              if (session) {
+                session.source = 'bfp-cache';
+                sessions.push(session);
               }
+            } catch (err) {
+              console.error(`[REASSEMBLY] Error parsing cached session ${sessionId}:`, err);
             }
           }
         }
@@ -348,8 +340,8 @@ export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: str
  * BFP metadata is extracted from source_epub_path in the session state
  */
 async function parseSession(sessionId: string, sessionDir: string): Promise<E2aSession | null> {
-  // Find the hash subfolder
-  const subEntries = fs.readdirSync(sessionDir, { withFileTypes: true });
+  // Find the hash subfolder (async)
+  const subEntries = await fs.promises.readdir(sessionDir, { withFileTypes: true });
   const hashDir = subEntries.find(e => e.isDirectory());
 
   if (!hashDir) {
@@ -359,50 +351,83 @@ async function parseSession(sessionId: string, sessionDir: string): Promise<E2aS
   const processDir = path.join(sessionDir, hashDir.name);
   const sentencesDir = path.join(processDir, 'chapters', 'sentences');
 
-  // Check if sentences folder exists
-  if (!fs.existsSync(sentencesDir)) {
+  // Check if sentences folder exists (async)
+  try {
+    await fs.promises.access(sentencesDir);
+  } catch {
     return null;
   }
 
-  // Parse session state
-  const sessionState = parseSessionState(processDir);
-  const chapterSentences = parseChapterSentences(processDir);
+  // Parse session state + chapter sentences + read sentence files — all async, in parallel
+  const [sessionState, chapterSentences, sentenceFiles, stats] = await Promise.all([
+    parseSessionState(processDir),
+    parseChapterSentences(processDir),
+    fs.promises.readdir(sentencesDir).catch(() => [] as string[]),
+    fs.promises.stat(sessionDir)
+  ]);
 
-  // Count completed sentences
-  const completedSentences = countCompletedSentences(sentencesDir);
+  // Single pass over sentence files: count completed, estimate total, build sets for chapters
+  const completedSetNew = new Set<number>();
+  const completedSetOld = new Set<number>();
+  let hasNewFormat = false;
+  let hasOldFormat = false;
+  let maxNumNew = -1;
+  let maxNumOld = 0;
 
-  // Determine total sentences (session-state.json uses snake_case)
-  let totalSentences = sessionState?.total_sentences || chapterSentences?.total_sentences || 0;
-
-  // If still no total, estimate from highest sentence file number
-  if (totalSentences === 0) {
-    totalSentences = estimateTotalFromFiles(sentencesDir);
+  for (const file of sentenceFiles) {
+    const matchNew = file.match(/^(\d+)\.flac$/);
+    if (matchNew) {
+      hasNewFormat = true;
+      const num = parseInt(matchNew[1], 10);
+      completedSetNew.add(num);
+      if (num > maxNumNew) maxNumNew = num;
+    }
+    const matchOld = file.match(/^sentence_(\d+)\.flac$/);
+    if (matchOld) {
+      hasOldFormat = true;
+      const num = parseInt(matchOld[1], 10);
+      completedSetOld.add(num);
+      if (num > maxNumOld) maxNumOld = num;
+    }
   }
 
-  // Build chapter info (chapter_titles is a separate array in session-state.json)
+  const completedSentences = completedSetNew.size + completedSetOld.size;
+
+  // Determine total sentences
+  let totalSentences = sessionState?.total_sentences || chapterSentences?.total_sentences || 0;
+  if (totalSentences === 0) {
+    totalSentences = maxNumNew >= 0 ? maxNumNew + 1 : maxNumOld;
+  }
+
+  // Build chapter info from the already-read file list (no additional readdir)
   const chapterTitles: string[] = sessionState?.chapter_titles || [];
-  const chapters = buildChapterInfo(
-    sessionState?.chapters || chapterSentences?.chapters || [],
-    sentencesDir,
-    chapterTitles
-  );
+  const chaptersData = sessionState?.chapters || chapterSentences?.chapters || [];
+  const chapters: E2aChapter[] = chaptersData.map((ch: any, index: number) => {
+    let completedCount = 0;
+    for (let i = ch.sentence_start; i <= ch.sentence_end; i++) {
+      if (hasNewFormat && completedSetNew.has(i)) completedCount++;
+      else if (hasOldFormat && completedSetOld.has(i + 1)) completedCount++;
+    }
+    return {
+      chapterNum: ch.chapter_num,
+      title: chapterTitles[index] || ch.title,
+      sentenceStart: ch.sentence_start,
+      sentenceEnd: ch.sentence_end,
+      sentenceCount: ch.sentence_count,
+      completedCount,
+      excluded: false
+    };
+  });
 
-  // Get folder stats for dates
-  const stats = fs.statSync(sessionDir);
+  // Get BFP metadata from source_epub_path
+  const bfpMetadata = await getBfpMetadataFromSourcePath(sessionState?.source_epub_path);
 
-  // Get BFP metadata from source_epub_path (the single source of truth when available)
-  const bfpMetadata = getBfpMetadataFromSourcePath(sessionState?.source_epub_path);
-
-  // Build metadata: use BFP when available, otherwise use e2a session data
-  // No mixing - one source or the other
   let metadata: E2aSession['metadata'];
-
   if (bfpMetadata) {
-    // BFP is the source of truth
     metadata = {
       title: bfpMetadata.title,
       author: bfpMetadata.author,
-      language: sessionState?.metadata?.language,  // Language only from epub
+      language: sessionState?.metadata?.language,
       epubPath: sessionState?.source_epub_path,
       coverPath: bfpMetadata.coverPath,
       year: bfpMetadata.year,
@@ -414,24 +439,19 @@ async function parseSession(sessionId: string, sessionDir: string): Promise<E2aS
       outputFilename: bfpMetadata.outputFilename
     };
   } else {
-    // No BFP - use e2a session data
     metadata = {
       title: sessionState?.metadata?.title,
       author: sessionState?.metadata?.creator,
       language: sessionState?.metadata?.language,
       epubPath: sessionState?.epub_path,
       coverPath: findCoverImage(processDir),
-      year: undefined,
-      narrator: undefined,
-      series: undefined,
-      seriesNumber: undefined,
-      genre: undefined,
-      description: undefined,
+      year: undefined, narrator: undefined, series: undefined,
+      seriesNumber: undefined, genre: undefined, description: undefined,
       outputFilename: undefined
     };
   }
 
-  const session: E2aSession = {
+  return {
     sessionId,
     sessionDir,
     processDir,
@@ -440,212 +460,51 @@ async function parseSession(sessionId: string, sessionDir: string): Promise<E2aS
     completedSentences,
     percentComplete: totalSentences > 0 ? Math.round((completedSentences / totalSentences) * 100) : 0,
     chapters,
-    // Convert dates to strings for IPC serialization
     createdAt: stats.birthtime.toISOString() as any,
     modifiedAt: stats.mtime.toISOString() as any,
-    // Store BFP path if linked
     bfpPath: bfpMetadata?.bfpPath
   };
-
-  return session;
 }
 
 /**
- * Parse session-state.json if it exists
+ * Parse session-state.json if it exists (async)
  */
-function parseSessionState(processDir: string): any | null {
+async function parseSessionState(processDir: string): Promise<any | null> {
   const statePath = path.join(processDir, 'session-state.json');
-
-  if (!fs.existsSync(statePath)) {
-    return null;
-  }
-
   try {
-    const content = fs.readFileSync(statePath, 'utf-8');
+    const content = await fs.promises.readFile(statePath, 'utf-8');
     return JSON.parse(content);
-  } catch (err) {
-    console.error(`[REASSEMBLY] Error parsing session-state.json:`, err);
+  } catch {
     return null;
   }
 }
 
 /**
  * Find cover image in processDir
- * e2a saves covers as cleaned.jpg, or it could be cover.jpg, cover.png, etc.
  */
 function findCoverImage(processDir: string): string | undefined {
   const coverNames = [
-    'cleaned.jpg',
-    'cleaned.png',
-    'cover.jpg',
-    'cover.jpeg',
-    'cover.png',
-    'cover.webp'
+    'cleaned.jpg', 'cleaned.png', 'cover.jpg',
+    'cover.jpeg', 'cover.png', 'cover.webp'
   ];
-
   for (const name of coverNames) {
     const coverPath = path.join(processDir, name);
-    if (fs.existsSync(coverPath)) {
-      return coverPath;
-    }
+    if (fs.existsSync(coverPath)) return coverPath;
   }
-
   return undefined;
 }
 
 /**
- * Parse chapter_sentences.json if it exists
+ * Parse chapter_sentences.json if it exists (async)
  */
-function parseChapterSentences(processDir: string): any | null {
+async function parseChapterSentences(processDir: string): Promise<any | null> {
   const chapterPath = path.join(processDir, 'chapter_sentences.json');
-
-  if (!fs.existsSync(chapterPath)) {
-    return null;
-  }
-
   try {
-    const content = fs.readFileSync(chapterPath, 'utf-8');
+    const content = await fs.promises.readFile(chapterPath, 'utf-8');
     return JSON.parse(content);
-  } catch (err) {
-    console.error(`[REASSEMBLY] Error parsing chapter_sentences.json:`, err);
+  } catch {
     return null;
   }
-}
-
-/**
- * Count completed FLAC files in the sentences folder
- * Supports both formats:
- * - New format: 0.flac, 1.flac, 2.flac, ... (0-indexed)
- * - Old format: sentence_0001.flac, sentence_0002.flac, ... (1-indexed)
- */
-function countCompletedSentences(sentencesDir: string): number {
-  if (!fs.existsSync(sentencesDir)) {
-    return 0;
-  }
-
-  const files = fs.readdirSync(sentencesDir);
-  // Count files matching either format
-  return files.filter(f => /^\d+\.flac$/.test(f) || /^sentence_\d+\.flac$/.test(f)).length;
-}
-
-/**
- * Estimate total sentences from the highest numbered sentence file
- * Supports both formats:
- * - New format: 0.flac, 1.flac (0-indexed, so total = max + 1)
- * - Old format: sentence_0001.flac (1-indexed, so total = max)
- */
-function estimateTotalFromFiles(sentencesDir: string): number {
-  if (!fs.existsSync(sentencesDir)) {
-    return 0;
-  }
-
-  const files = fs.readdirSync(sentencesDir);
-  let maxNumNew = -1;  // For new format (0-indexed)
-  let maxNumOld = 0;   // For old format (1-indexed)
-
-  for (const file of files) {
-    // New format: 0.flac, 1.flac, etc.
-    const matchNew = file.match(/^(\d+)\.flac$/);
-    if (matchNew) {
-      const num = parseInt(matchNew[1], 10);
-      if (num > maxNumNew) {
-        maxNumNew = num;
-      }
-    }
-
-    // Old format: sentence_0001.flac, etc.
-    const matchOld = file.match(/^sentence_(\d+)\.flac$/);
-    if (matchOld) {
-      const num = parseInt(matchOld[1], 10);
-      if (num > maxNumOld) {
-        maxNumOld = num;
-      }
-    }
-  }
-
-  // Return whichever format was found
-  if (maxNumNew >= 0) {
-    return maxNumNew + 1;  // 0-indexed, so total = max + 1
-  }
-  return maxNumOld;  // 1-indexed, so total = max
-}
-
-/**
- * Build chapter info with completion counts
- * Supports both file naming formats:
- * - New format: 0.flac, 1.flac (0-indexed, matching sentence_start/end directly)
- * - Old format: sentence_0001.flac (1-indexed, so sentence_start 0 = file sentence_0001)
- */
-function buildChapterInfo(
-  chaptersData: Array<{
-    chapter_num: number;
-    title?: string;
-    sentence_start: number;
-    sentence_end: number;
-    sentence_count: number;
-  }>,
-  sentencesDir: string,
-  chapterTitles: string[] = []
-): E2aChapter[] {
-  if (!chaptersData || chaptersData.length === 0) {
-    return [];
-  }
-
-  // Detect which format is in use and build completed set
-  const completedSetNew = new Set<number>();  // 0-indexed
-  const completedSetOld = new Set<number>();  // 1-indexed
-  let hasNewFormat = false;
-  let hasOldFormat = false;
-
-  if (fs.existsSync(sentencesDir)) {
-    const files = fs.readdirSync(sentencesDir);
-    for (const file of files) {
-      // New format: 0.flac, 1.flac, etc. (0-indexed)
-      const matchNew = file.match(/^(\d+)\.flac$/);
-      if (matchNew) {
-        hasNewFormat = true;
-        completedSetNew.add(parseInt(matchNew[1], 10));
-      }
-
-      // Old format: sentence_0001.flac, etc. (1-indexed)
-      const matchOld = file.match(/^sentence_(\d+)\.flac$/);
-      if (matchOld) {
-        hasOldFormat = true;
-        completedSetOld.add(parseInt(matchOld[1], 10));
-      }
-    }
-  }
-
-  return chaptersData.map((ch, index) => {
-    // Count completed sentences in this chapter's range
-    let completedCount = 0;
-    for (let i = ch.sentence_start; i <= ch.sentence_end; i++) {
-      if (hasNewFormat) {
-        // New format: direct match (0-indexed)
-        if (completedSetNew.has(i)) {
-          completedCount++;
-        }
-      } else if (hasOldFormat) {
-        // Old format: offset by 1 (sentence_start 0 = sentence_0001.flac)
-        if (completedSetOld.has(i + 1)) {
-          completedCount++;
-        }
-      }
-    }
-
-    // Get title from chapterTitles array (0-indexed) or from chapter object
-    const title = chapterTitles[index] || ch.title;
-
-    return {
-      chapterNum: ch.chapter_num,
-      title,
-      sentenceStart: ch.sentence_start,
-      sentenceEnd: ch.sentence_end,
-      sentenceCount: ch.sentence_count,
-      completedCount,
-      excluded: false
-    };
-  });
 }
 
 /**
@@ -658,7 +517,9 @@ export async function getSession(sessionId: string, customTmpPath?: string): Pro
   const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
   const sessionDir = path.join(tmpPath, `ebook-${sessionId}`);
 
-  if (!fs.existsSync(sessionDir)) {
+  try {
+    await fs.promises.access(sessionDir);
+  } catch {
     return null;
   }
 
@@ -871,7 +732,7 @@ export async function startReassembly(
   }
 
   // Find the epub path from session state
-  let sessionState = parseSessionState(config.processDir);
+  let sessionState = await parseSessionState(config.processDir);
 
   // Update session metadata with user-provided values before reassembly
   // This allows user to override epub's built-in metadata
@@ -1079,9 +940,51 @@ export async function startReassembly(
     // Encoding: 65-90% (FLAC to M4B with AAC)
     // Metadata: 90-100% (chapter markers, tags, m4b-tool)
 
-    proc.stdout?.on('data', (data) => {
+    // Throttle stdout progress (Assemble/Export %) to avoid flooding renderer
+    const STDOUT_THROTTLE_MS = 500;
+    let lastStdoutProgressTime = 0;
+    let pendingStdoutProgress: any = null;
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      const now = Date.now();
+      const throttleExpired = now - lastStdoutProgressTime >= STDOUT_THROTTLE_MS;
+
+      // ── Fast path: skip high-frequency progress lines during throttle window ──
+      // "Assemble - XX%" and "Export - XX%" fire hundreds of times per second.
+      // Calling data.toString() + regex on each creates V8 string objects faster
+      // than GC can collect them, causing OOM on large books (30+ chapters).
+      // Buffer.includes() searches raw bytes without allocating JS strings.
+      if (!throttleExpired) {
+        const hasHighFreq = data.includes('Assemble') || data.includes('Export') || data.includes('speed=');
+        if (hasHighFreq) {
+          // Check if the chunk ALSO contains a rare phase-transition pattern.
+          // These are infrequent (per-chapter / per-phase) and must be processed.
+          const hasRare =
+            data.includes('completed!') ||   // "Assemble completed!"
+            data.includes('Assembling') ||   // "Assembling all N chapters"
+            data.includes('[ASSEMBLE]') ||   // "[ASSEMBLE] Chapter N"
+            data.includes('Combining') ||    // "Combining chapter N" / "Combining chapters into final"
+            data.includes('Combined') ||     // "Combined block audio file saved"
+            data.includes('Concatenat') ||   // "Concatenating"
+            data.includes('Splitting') ||    // "Splitting disabled"
+            data.includes('Creating') ||     // "Creating subtitles" / "Creating single file"
+            data.includes('flac') ||         // "flac (native) -> aac"
+            data.includes('Output #0') ||    // "Output #0, ipod"
+            data.includes('Adding') ||       // "Adding metadata"
+            data.includes('success') ||      // '"success": true'
+            data.includes('saved to');       // "Audiobook saved to:"
+          if (!hasRare) return; // Pure progress line — skip toString() entirely
+        }
+        // Lines with no known pattern at all: still skip during throttle to avoid
+        // toString() on unknown high-frequency output (ffmpeg stats, debug logs).
+        if (!hasHighFreq && !data.includes('Chapter') && !data.includes('success') &&
+            !data.includes('saved to') && !data.includes('Output') && !data.includes('metadata') &&
+            !data.includes('Adding') && !data.includes('Creating') && !data.includes('.m4b')) {
+          return;
+        }
+      }
+
       const line = data.toString();
-      console.log('[REASSEMBLY] stdout:', line);
 
       // Parse progress from e2a output
       // Parse "Assemble - XX%" progress lines (per-chapter sentence combining progress)
@@ -1091,18 +994,15 @@ export async function startReassembly(
         currentPhase = 'combining';
 
         // Calculate overall progress: combining phase is 0-50% of total
-        // Formula: ((chaptersCompleted) + currentChapterProgress/100) / totalChapters * 50
         let overallPct: number;
         if (totalChapters > 0 && currentChapter > 0) {
-          // chaptersCompleted = currentChapter - 1 (since currentChapter is being processed)
           const completedChapters = currentChapter - 1;
           overallPct = Math.round(((completedChapters + currentChapterProgress / 100) / totalChapters) * 50);
         } else {
-          // Fallback if we don't know totals yet - just show current chapter progress scaled
           overallPct = Math.round(currentChapterProgress * 0.4);
         }
 
-        sendProgress(mainWindow, jobId, {
+        pendingStdoutProgress = {
           phase: 'combining',
           percentage: overallPct,
           currentChapter: currentChapter || undefined,
@@ -1110,7 +1010,7 @@ export async function startReassembly(
           message: currentChapter > 0 && totalChapters > 0
             ? `Combining chapter ${currentChapter}/${totalChapters}`
             : `Combining sentences`
-        });
+        };
       }
 
       // Parse "Export - XX%" progress lines (encoding to M4B)
@@ -1118,15 +1018,23 @@ export async function startReassembly(
       if (exportMatch) {
         const pct = parseFloat(exportMatch[1]);
 
-        // Export phase is 50-95% of total progress
         const totalPct = Math.round(50 + pct * 0.45);
         currentPhase = 'encoding';
-        lastProgressUpdate = Date.now();
-        sendProgress(mainWindow, jobId, {
+        pendingStdoutProgress = {
           phase: 'encoding',
           percentage: totalPct,
           message: `Encoding M4B (${pct.toFixed(0)}%)`
-        });
+        };
+      }
+
+      // Flush pending progress at most every STDOUT_THROTTLE_MS
+      if (pendingStdoutProgress) {
+        if (throttleExpired) {
+          lastStdoutProgressTime = now;
+          lastProgressUpdate = now;
+          sendProgress(mainWindow, jobId, pendingStdoutProgress);
+          pendingStdoutProgress = null;
+        }
       }
 
       // "Assemble completed!" indicates chapter combining is done, moving to concatenation
@@ -1291,7 +1199,30 @@ export async function startReassembly(
       }
     });
 
-    proc.stderr?.on('data', (data) => {
+    // Throttle stderr progress to avoid flooding the renderer with IPC messages.
+    // FFmpeg emits progress lines many times per second; each sendProgress triggers
+    // Angular change detection, which can freeze the UI.
+    const STDERR_THROTTLE_MS = 1000;
+    let lastStderrProgressTime = 0;
+    let pendingStderrProgress: { phase: string; percentage: number; message: string } | null = null;
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      const now = Date.now();
+      const stderrThrottleExpired = now - lastStderrProgressTime >= STDERR_THROTTLE_MS;
+
+      // ── Fast path: skip high-frequency FFmpeg progress during throttle window ──
+      // FFmpeg emits size=/time=/speed= lines many times per second. Same OOM risk
+      // as stdout Assemble/Export lines. Only convert to string when throttle expires
+      // or when the chunk contains a rare pattern (VTT, cover, Export start).
+      if (!stderrThrottleExpired) {
+        const hasFFmpegProgress = data.includes('size=') || data.includes('time=') || data.includes('speed=');
+        const hasExport = data.includes('Export');
+        if (hasFFmpegProgress || hasExport) {
+          const hasRare = data.includes('VTT') || data.includes('cover') || data.includes('Adding');
+          if (!hasRare) return;
+        }
+      }
+
       const line = data.toString();
       stderr = appendCapped(stderr, line);
 
@@ -1306,18 +1237,15 @@ export async function startReassembly(
           const seconds = parseInt(timeMatch[3], 10);
           const totalSeconds = hours * 3600 + minutes * 60 + seconds;
 
-          // Use time to estimate progress - typical audiobooks are 5-20 hours
-          // We'll cap at 90% since we don't know total duration
           const estimatedProgress = Math.min(85, 50 + Math.floor(totalSeconds / 600) * 5);
 
           currentPhase = 'encoding';
-          if (!encodingStartTime) encodingStartTime = Date.now();
-          lastProgressUpdate = Date.now();
-          sendProgress(mainWindow, jobId, {
+          if (!encodingStartTime) encodingStartTime = now;
+          pendingStderrProgress = {
             phase: 'encoding',
             percentage: estimatedProgress,
             message: `Encoding: ${hours}h ${minutes}m ${seconds}s processed...`
-          });
+          };
         }
 
         // Parse size for additional feedback
@@ -1325,13 +1253,12 @@ export async function startReassembly(
         if (sizeMatch && !timeMatch) {
           const sizeMB = Math.round(parseInt(sizeMatch[1], 10) / 1024);
           currentPhase = 'encoding';
-          if (!encodingStartTime) encodingStartTime = Date.now();
-          lastProgressUpdate = Date.now();
-          sendProgress(mainWindow, jobId, {
+          if (!encodingStartTime) encodingStartTime = now;
+          pendingStderrProgress = {
             phase: 'encoding',
             percentage: 70,
             message: `Encoding: ${sizeMB}MB written...`
-          });
+          };
         }
       }
 
@@ -1339,7 +1266,6 @@ export async function startReassembly(
       const exportMatchStderr = line.match(/Export\s*-\s*([\d.]+)%/);
       if (exportMatchStderr) {
         const pct = parseFloat(exportMatchStderr[1]);
-        const now = Date.now();
 
         // Track export start for ETA calculation
         if (exportStartTime === 0 || pct < lastExportPct) {
@@ -1362,12 +1288,21 @@ export async function startReassembly(
         const totalPct = Math.round(50 + pct * 0.45);
         currentPhase = 'encoding';
         if (!encodingStartTime) encodingStartTime = now;
-        lastProgressUpdate = now;
-        sendProgress(mainWindow, jobId, {
+        pendingStderrProgress = {
           phase: 'encoding',
           percentage: totalPct,
           message: `Encoding M4B (${pct.toFixed(1)}%)${etaDisplay}`
-        });
+        };
+      }
+
+      // Flush pending progress at most once per second
+      if (pendingStderrProgress) {
+        if (stderrThrottleExpired) {
+          lastStderrProgressTime = now;
+          lastProgressUpdate = now;
+          sendProgress(mainWindow, jobId, pendingStderrProgress as any);
+          pendingStderrProgress = null;
+        }
       }
 
       // Check for VTT/subtitle creation progress
@@ -1392,6 +1327,16 @@ export async function startReassembly(
     proc.on('close', async (code) => {
       clearInterval(heartbeatInterval);
       activeReassemblies.delete(jobId);
+
+      // Flush any pending throttled progress
+      if (pendingStdoutProgress) {
+        sendProgress(mainWindow, jobId, pendingStdoutProgress);
+        pendingStdoutProgress = null;
+      }
+      if (pendingStderrProgress) {
+        sendProgress(mainWindow, jobId, pendingStderrProgress as any);
+        pendingStderrProgress = null;
+      }
 
       if (code === 0) {
         // Find the output file if we don't have it yet
@@ -1533,15 +1478,17 @@ export function isE2aAvailable(customTmpPath?: string): boolean {
 export async function getBfpCachedSession(bfpPath: string): Promise<E2aSession | null> {
   // Canonical location: stages/03-tts/sessions/{lang}/ebook-{uuid}/
   const stagesSessionDir = path.join(bfpPath, 'stages', '03-tts', 'sessions');
-  if (!fs.existsSync(stagesSessionDir)) {
+  try {
+    await fs.promises.access(stagesSessionDir);
+  } catch {
     return null;
   }
 
-  const langDirs = fs.readdirSync(stagesSessionDir, { withFileTypes: true });
+  const langDirs = await fs.promises.readdir(stagesSessionDir, { withFileTypes: true });
   for (const langEntry of langDirs) {
     if (!langEntry.isDirectory()) continue;
     const langDir = path.join(stagesSessionDir, langEntry.name);
-    const entries = fs.readdirSync(langDir, { withFileTypes: true });
+    const entries = await fs.promises.readdir(langDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
       const sessionDir = path.join(langDir, entry.name);
