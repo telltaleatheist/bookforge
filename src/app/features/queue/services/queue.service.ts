@@ -563,6 +563,7 @@ export class QueueService {
           chunksCompletedInJob: progress.chunksCompletedInJob,
           totalChunksInJob: progress.totalChunksInJob,
           chunkCompletedAt: progress.chunkCompletedAt,
+          chunksDoneInSession: progress.completedInSession || progress.chunksCompletedInJob,
           progressMessage: progress.message
         };
       })

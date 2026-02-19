@@ -413,6 +413,7 @@ export interface QueueProgress {
   chunksCompletedInJob?: number;  // Chunks completed so far (0-indexed)
   totalChunksInJob?: number;      // Total chunks in entire job
   chunkCompletedAt?: number;      // Timestamp when last chunk completed
+  completedInSession?: number;    // Chunks completed in THIS session only (excludes checkpoint)
 }
 
 // Job result from IPC

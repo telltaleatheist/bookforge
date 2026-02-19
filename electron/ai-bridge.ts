@@ -1760,6 +1760,7 @@ export interface EpubCleanupProgress {
   chunksCompletedInJob?: number;  // Cumulative chunks completed across all chapters
   totalChunksInJob?: number;      // Total chunks in entire job (same as totalChunks)
   chunkCompletedAt?: number;      // Timestamp when last chunk completed
+  completedInSession?: number;    // Chunks completed in THIS session only (excludes checkpoint)
 }
 
 export interface CleanupJobAnalytics {
@@ -2024,6 +2025,7 @@ export async function cleanupEpub(
 
     let chaptersProcessed = 0;
     let chunksCompletedInJob = 0;  // Cumulative chunk counter across all chapters
+    let chunksCompletedInSession = 0;  // Chunks completed in THIS session (excludes checkpoint)
     let totalCharactersProcessed = 0;  // Track total characters for analytics
     const cleanupStartTime = Date.now();  // Track start time for analytics
     let firstChunkCompletedAt: number | null = null;  // Track first chunk time for rate calculation
@@ -2597,7 +2599,8 @@ export async function cleanupEpub(
             message: `Processing chunk ${currentChunkInJob}/${totalChunksInJob}: ${chapter.title}`,
             outputPath,
             chunksCompletedInJob,
-            totalChunksInJob
+            totalChunksInJob,
+            completedInSession: chunksCompletedInSession
           });
 
           try {
@@ -2618,8 +2621,9 @@ export async function cleanupEpub(
             // Collect cleaned text
             cleanedChunkTexts.push(cleaned);
 
-            // Increment counter
+            // Increment counters
             chunksCompletedInJob++;
+            chunksCompletedInSession++;
 
             // Check if too many chunks have fallen back to original text
             checkFallbackThreshold();
@@ -2641,7 +2645,8 @@ export async function cleanupEpub(
               outputPath,
               chunksCompletedInJob,
               totalChunksInJob,
-              chunkCompletedAt: Date.now()
+              chunkCompletedAt: Date.now(),
+              completedInSession: chunksCompletedInSession
             });
           } catch (error) {
             const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
@@ -2683,6 +2688,7 @@ export async function cleanupEpub(
             console.warn(`[AI-CLEANUP] Chunk ${currentChunkInJob} failed - using original text`);
             cleanedChunkTexts.push(chunkInfo.text);
             chunksCompletedInJob++;
+            chunksCompletedInSession++;
           }
         }
 
