@@ -414,6 +414,8 @@ export class QueueService {
       this.unsubscribeReassemblyProgress = electron.reassembly.onProgress((data) => {
         // Always process completion/error immediately
         if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
+          // Clear any pending RAF data so a stale progress event doesn't overwrite completion
+          pendingReassemblyData = null;
           this.ngZone.run(() => this.handleReassemblyProgressUpdate(data.jobId, data.progress));
           return;
         }
@@ -437,6 +439,7 @@ export class QueueService {
       let llRaf: number | null = null;
       this.unsubscribeLanguageLearningProgress = electron.languageLearning.onProgress((data) => {
         if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
+          pendingLLData = null;
           this.ngZone.run(() => this.handleLanguageLearningProgressUpdate(data.jobId, data.progress));
           return;
         }
@@ -1990,7 +1993,9 @@ export class QueueService {
     // Get pending jobs, but skip:
     // - Master workflow jobs (they don't process themselves)
     // - TTS placeholder jobs (waiting for translation to set epubPath)
-    const pending = this._jobs().filter(j => {
+    // - Jobs whose workflow sibling is still processing (e.g., don't start reassembly while TTS is running)
+    const allJobs = this._jobs();
+    const pending = allJobs.filter(j => {
       if (j.status !== 'pending') return false;
       // Skip master workflow jobs (audiobook containers)
       if (j.type === 'audiobook' && j.workflowId && !j.parentJobId) return false;
@@ -1998,6 +2003,17 @@ export class QueueService {
       if (j.type === 'tts-conversion' && (j.metadata as any)?.bilingualPlaceholder) return false;
       // Skip bilingual assembly placeholder jobs that are waiting for TTS to complete
       if (j.type === 'bilingual-assembly' && (j.metadata as any)?.bilingualPlaceholder) return false;
+      // Skip jobs whose workflow has a sibling still processing
+      // (e.g., don't start reassembly while TTS is still running in the same workflow)
+      if (j.parentJobId && j.workflowId) {
+        const hasSiblingInProgress = allJobs.some(s =>
+          s.id !== j.id &&
+          s.workflowId === j.workflowId &&
+          s.parentJobId === j.parentJobId &&
+          s.status === 'processing'
+        );
+        if (hasSiblingInProgress) return false;
+      }
       return true;
     });
     if (pending.length === 0) return;

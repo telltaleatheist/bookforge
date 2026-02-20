@@ -280,6 +280,37 @@ export function applyMetadata(
 
     console.log(`[METADATA-TOOLS] Applying metadata: ${toolInfo.path} ${args.join(' ')}`);
 
+    // Back up the file before m4b-tool touches it — m4b-tool can corrupt files
+    // even when it reports an error (e.g., invalid atom size during chapter reimport)
+    const backupPath = filePath + '.metadata-bak';
+    try {
+      fs.copyFileSync(filePath, backupPath);
+      console.log(`[METADATA-TOOLS] Backed up file to: ${backupPath}`);
+    } catch (backupErr) {
+      console.error('[METADATA-TOOLS] Failed to create backup, skipping metadata:', backupErr);
+      resolve();
+      return;
+    }
+
+    function restoreBackup() {
+      try {
+        if (fs.existsSync(backupPath)) {
+          fs.copyFileSync(backupPath, filePath);
+          console.log(`[METADATA-TOOLS] Restored file from backup after failure`);
+        }
+      } catch (restoreErr) {
+        console.error('[METADATA-TOOLS] Failed to restore backup:', restoreErr);
+      }
+    }
+
+    function removeBackup() {
+      try {
+        if (fs.existsSync(backupPath)) {
+          fs.unlinkSync(backupPath);
+        }
+      } catch { /* non-critical */ }
+    }
+
     const proc = spawn(toolInfo.path, args, {
       shell: os.platform() === 'win32' && toolInfo.tool === 'm4b-tool'
     });
@@ -294,28 +325,41 @@ export function applyMetadata(
       clearTimeout(timeoutTimer);
       if (onAbort) options!.signal!.removeEventListener('abort', onAbort);
       if (resolution === 'resolve') {
+        removeBackup();
         resolve();
       } else {
+        restoreBackup();
+        removeBackup();
         reject(error);
       }
     }
 
-    // Timeout: kill and resolve (metadata is non-critical)
+    // Timeout: kill, restore, and resolve (metadata is non-critical)
     const timeoutTimer = setTimeout(() => {
       if (settled) return;
       console.warn(`[METADATA-TOOLS] Timeout after ${timeoutMs}ms, killing process`);
       proc.kill('SIGKILL');
-      settle('resolve');
+      restoreBackup();
+      removeBackup();
+      settled = true;
+      clearTimeout(timeoutTimer);
+      if (onAbort) options!.signal!.removeEventListener('abort', onAbort);
+      resolve();
     }, timeoutMs);
 
-    // AbortSignal: kill and resolve
+    // AbortSignal: kill, restore, and resolve
     let onAbort: (() => void) | null = null;
     if (options?.signal) {
       onAbort = () => {
         if (settled) return;
         console.log('[METADATA-TOOLS] Aborted, killing process');
         proc.kill('SIGKILL');
-        settle('resolve');
+        restoreBackup();
+        removeBackup();
+        settled = true;
+        clearTimeout(timeoutTimer);
+        options!.signal!.removeEventListener('abort', onAbort!);
+        resolve();
       };
       options.signal.addEventListener('abort', onAbort, { once: true });
     }
