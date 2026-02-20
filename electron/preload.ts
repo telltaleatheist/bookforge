@@ -1210,7 +1210,6 @@ export interface ElectronAPI {
       deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
       useParallel?: boolean;
       parallelWorkers?: number;
-      cleanupMode?: 'structure' | 'full';
       testMode?: boolean;
       testModeChunks?: number;
       enableAiCleanup?: boolean;
@@ -2413,7 +2412,6 @@ const electronAPI: ElectronAPI = {
       deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
       useParallel?: boolean;
       parallelWorkers?: number;
-      cleanupMode?: 'structure' | 'full';
       testMode?: boolean;
       testModeChunks?: number;
       enableAiCleanup?: boolean;

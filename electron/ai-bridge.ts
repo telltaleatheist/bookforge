@@ -116,7 +116,6 @@ interface CleanupCheckpoint {
   completedChunkCount: number;
   provider: string;
   model: string;
-  cleanupMode: string;
   simplifyForChildren: boolean;
   updatedAt: string;
 }
@@ -326,75 +325,16 @@ function findBestBreakPoint(text: string, targetEnd: number, minStart: number): 
 // OCR Cleanup Prompt
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Path to the editable prompt files
+// Path to the prompt file (must exist — no silent fallbacks)
 const PROMPT_FILE_PATH = path.join(__dirname, 'prompts', 'tts-cleanup.txt');
-const PROMPT_FILE_PATH_FULL = path.join(__dirname, 'prompts', 'tts-cleanup-full.txt');
-
-// Default prompt (used if file doesn't exist)
-const DEFAULT_PROMPT = `You are preparing ebook text for text-to-speech (TTS) audiobook narration.
-
-OUTPUT FORMAT: Respond with ONLY the processed book text. Start immediately with the book content.
-FORBIDDEN: Never write "Here is", "I'll help", "Could you", "please provide", or ANY conversational language. You are not having a conversation.
-
-CRITICAL RULES:
-- NEVER summarize. Output must be the same length as input (with minor variations from edits).
-- NEVER paraphrase or rewrite sentences unless fixing an error.
-- NEVER skip or omit any content.
-- NEVER respond as if you are an AI assistant.
-- Process the text LINE BY LINE, making only the specific fixes below.
-
-EDGE CASES:
-- Empty/whitespace input → output: [SKIP]
-- Garbage/unreadable characters → output: [SKIP]
-- Just titles/metadata with no prose → output: [SKIP]
-- Short but readable text → process normally
-
-NUMBERS → SPOKEN WORDS:
-- Years: "1923" → "nineteen twenty-three", "2001" → "two thousand one"
-- Decades: "the 1930s" → "the nineteen thirties"
-- Ordinals: "1st" → "first", "21st" → "twenty-first"
-- Cardinals: "3 men" → "three men"
-- Currency: "$5.50" → "five dollars and fifty cents"
-- Roman numerals: "Chapter IV" → "Chapter Four", "Henry VIII" → "Henry the Eighth"
-
-EXPAND ABBREVIATIONS:
-- Titles: "Mr." → "Mister", "Dr." → "Doctor"
-- Common: "e.g." → "for example", "i.e." → "that is", "etc." → "and so on"
-
-FIX OCR ERRORS: broken words, character misreads (rn→m, cl→d).
-FIX STYLISTIC SPACING: collapse decorative letter/word spacing into normal readable text.
-
-REMOVE FOOTNOTE/REFERENCE NUMBERS (DO THIS BEFORE NUMBER CONVERSION):
-- Bracketed references: [1], [23], (1), (23) → DELETE entirely
-- Numbers GLUED to punctuation: "said.13 The" or "lecture).53" → DELETE the number, keep punctuation
-- Numbers after punctuation with a space: "...sentence. 3" or "...quote." 7 → DELETE the number
-- Numbers at start of sentences after normal ending: "...common. 13 In" → DELETE "13 "
-- A number (1-999) immediately after punctuation is almost always a footnote. DELETE it.
-
-REMOVE: page numbers, running headers/footers, stray artifacts.
-
-Start your response with the first word of the book text. No introduction.`;
-
-// Default prompt for full mode (used if file doesn't exist)
-const DEFAULT_PROMPT_FULL = `You are preparing ebook XHTML content for text-to-speech (TTS) audiobook narration.
-The input contains HTML tags like <p>, <h1>, <em>, etc. PRESERVE ALL TAGS.
-OUTPUT: Respond with ONLY the processed XHTML. No preamble.
-NUMBERS → SPOKEN WORDS, EXPAND ABBREVIATIONS, FIX OCR ERRORS.
-Start your response with the first character of the XHTML content.`;
 
 /**
- * Load the TTS cleanup prompt from file
+ * Load the TTS cleanup prompt from file.
+ * Throws if the file doesn't exist — prompt files are required, not optional.
  */
-export async function loadPrompt(mode: 'structure' | 'full' = 'structure'): Promise<string> {
-  const filePath = mode === 'full' ? PROMPT_FILE_PATH_FULL : PROMPT_FILE_PATH;
-  const defaultPrompt = mode === 'full' ? DEFAULT_PROMPT_FULL : DEFAULT_PROMPT;
-  try {
-    const content = await fsPromises.readFile(filePath, 'utf-8');
-    return content.trim();
-  } catch {
-    // File doesn't exist, return default
-    return defaultPrompt;
-  }
+export async function loadPrompt(): Promise<string> {
+  const content = await fsPromises.readFile(PROMPT_FILE_PATH, 'utf-8');
+  return content.trim();
 }
 
 /**
@@ -436,30 +376,24 @@ async function buildCleanupPromptAsync(): Promise<string> {
 }
 
 /**
- * Synchronous version for backwards compatibility
- * Uses cached prompt or default
+ * Synchronous access to cached prompt.
+ * Prompt is loaded on module init and must succeed.
  */
 let cachedPrompt: string | null = null;
-let cachedPromptFull: string | null = null;
 
-function buildCleanupPrompt(_options: AICleanupOptions, mode: 'structure' | 'full' = 'structure'): string {
-  if (mode === 'full') {
-    return cachedPromptFull || DEFAULT_PROMPT_FULL;
+function buildCleanupPrompt(_options: AICleanupOptions): string {
+  if (!cachedPrompt) {
+    throw new Error('Prompt file not loaded. Check that prompts/ directory exists.');
   }
-  return cachedPrompt || DEFAULT_PROMPT;
+  return cachedPrompt;
 }
 
-// Load prompts on module init
-loadPrompt('structure').then(prompt => {
+// Load prompt on module init — fail loudly if file is missing
+loadPrompt().then(prompt => {
   cachedPrompt = prompt;
-}).catch(() => {
-  cachedPrompt = DEFAULT_PROMPT;
-});
-
-loadPrompt('full').then(prompt => {
-  cachedPromptFull = prompt;
-}).catch(() => {
-  cachedPromptFull = DEFAULT_PROMPT_FULL;
+  console.log(`[AI-BRIDGE] Loaded cleanup prompt (${prompt.length} chars)`);
+}).catch(err => {
+  console.error('[AI-BRIDGE] FATAL: Failed to load tts-cleanup.txt:', err);
 });
 
 /**
@@ -467,18 +401,17 @@ loadPrompt('full').then(prompt => {
  * Same as buildCleanupPrompt but exposed for queue use.
  * Now supports language-specific prompts to avoid unwanted translation behavior.
  */
-export function getOcrCleanupSystemPrompt(mode: 'structure' | 'full' = 'structure', languageCode?: string): string {
+export function getOcrCleanupSystemPrompt(languageCode?: string): string {
   // If a language code is provided and we have a specific prompt for it, use that
   if (languageCode && hasLanguageSpecificPrompt(languageCode)) {
-    const prompt = getCleanupPromptForLanguage(languageCode, mode);
-    console.log(`[AI-BRIDGE] Using ${languageCode.toUpperCase()} language-specific prompt (mode: ${mode})`);
+    const prompt = getCleanupPromptForLanguage(languageCode);
+    console.log(`[AI-BRIDGE] Using ${languageCode.toUpperCase()} language-specific prompt`);
     return prompt;
   }
 
   // Otherwise fall back to the default English prompt
-  const prompt = buildCleanupPrompt({ fixHyphenation: true, fixOcrArtifacts: true, expandAbbreviations: true }, mode);
-  // Debug: log first 200 chars of prompt to verify it's the correct version
-  console.log(`[AI-BRIDGE] Using system prompt (mode: ${mode}, first 200 chars):`, prompt.substring(0, 200).replace(/\n/g, ' '));
+  const prompt = buildCleanupPrompt({ fixHyphenation: true, fixOcrArtifacts: true, expandAbbreviations: true });
+  console.log(`[AI-BRIDGE] Using system prompt (first 200 chars):`, prompt.substring(0, 200).replace(/\n/g, ' '));
   return prompt;
 }
 
@@ -1692,7 +1625,7 @@ export async function cleanupText(
 
   // Reload prompt from disk so external changes (e.g., Syncthing pull) take effect
   // without restarting the app
-  cachedPrompt = await loadPrompt('structure');
+  cachedPrompt = await loadPrompt();
   const systemPrompt = buildCleanupPrompt(options);
 
   // Split text into chunks at logical break points
@@ -1763,7 +1696,7 @@ export async function cleanupChapterStreaming(
   }
 
   // Reload prompt from disk so external changes take effect without restart
-  cachedPrompt = await loadPrompt('structure');
+  cachedPrompt = await loadPrompt();
   const systemPrompt = buildCleanupPrompt(options);
 
   try {
@@ -1903,7 +1836,6 @@ export async function cleanupEpub(
     useDetailedCleanup?: boolean;
     useParallel?: boolean;
     parallelWorkers?: number;
-    cleanupMode?: 'structure' | 'full';
     testMode?: boolean;
     testModeChunks?: number;  // Number of chunks to process in test mode
     enableAiCleanup?: boolean;  // Standard OCR/formatting cleanup (default: true)
@@ -1914,7 +1846,6 @@ export async function cleanupEpub(
   }
 ): Promise<EpubCleanupResult> {
   // Debug logging to trace provider selection
-  const cleanupMode = options?.cleanupMode || 'structure';
   const testMode = options?.testMode || false;
   const TEST_MODE_CHUNK_LIMIT = options?.testModeChunks || 5;
   console.log('[AI-BRIDGE] cleanupEpub called with:', {
@@ -1926,7 +1857,6 @@ export async function cleanupEpub(
     exampleCount: options?.deletedBlockExamples?.length || 0,
     useParallel: options?.useParallel,
     parallelWorkers: options?.parallelWorkers,
-    cleanupMode,
     testMode
   });
 
@@ -2074,7 +2004,7 @@ export async function cleanupEpub(
     } else if (enableAiCleanup && simplifyForChildren) {
       // BOTH: Standard cleanup + simplification
       // Use language-specific prompt to prevent unwanted translation
-      systemPrompt = getOcrCleanupSystemPrompt(cleanupMode, bookLanguage);
+      systemPrompt = getOcrCleanupSystemPrompt(bookLanguage);
       if (options?.useDetailedCleanup && options.deletedBlockExamples && options.deletedBlockExamples.length > 0) {
         const examplesSection = buildExamplesSection(options.deletedBlockExamples);
         systemPrompt = systemPrompt + examplesSection;
@@ -2090,7 +2020,7 @@ export async function cleanupEpub(
     } else {
       // CLEANUP ONLY: Standard cleanup without simplification
       // Use language-specific prompt to prevent unwanted translation
-      systemPrompt = getOcrCleanupSystemPrompt(cleanupMode, bookLanguage);
+      systemPrompt = getOcrCleanupSystemPrompt(bookLanguage);
       if (options?.useDetailedCleanup && options.deletedBlockExamples && options.deletedBlockExamples.length > 0) {
         const examplesSection = buildExamplesSection(options.deletedBlockExamples);
         systemPrompt = systemPrompt + examplesSection;
@@ -2145,7 +2075,6 @@ export async function cleanupEpub(
           && checkpoint.outputFilename === outputFilename
           && checkpoint.provider === config.provider
           && checkpoint.model === getProviderModel(config)
-          && checkpoint.cleanupMode === cleanupMode
           && checkpoint.simplifyForChildren === !!options?.simplifyForChildren) {
         // Valid checkpoint — check that intermediate EPUB still exists
         let intermediateExists = false;
@@ -2216,7 +2145,7 @@ export async function cleanupEpub(
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 1: Pre-scan all chapters to count chunks (metadata only — no XHTML stored)
     // ─────────────────────────────────────────────────────────────────────────
-    console.log(`[AI-CLEANUP] Pre-scanning chapters (mode: ${cleanupMode})...`);
+    console.log(`[AI-CLEANUP] Pre-scanning chapters...`);
 
     // Lazily populated: stores XHTML only for the current chapter being processed
     const chapterXhtmlMap: Map<string, string> = new Map();
@@ -2301,7 +2230,7 @@ export async function cleanupEpub(
       // xhtml and chapterText go out of scope — not stored
     }
 
-    console.log(`[AI-CLEANUP] Total chunks in job: ${totalChunksInJob} across ${chapterMetas.length} non-empty chapters (mode: ${cleanupMode})`);
+    console.log(`[AI-CLEANUP] Total chunks in job: ${totalChunksInJob} across ${chapterMetas.length} non-empty chapters`);
 
     if (totalChunksInJob === 0) {
       processor.close();
@@ -2482,7 +2411,6 @@ export async function cleanupEpub(
                   completedChunkCount: totalChunksCompleted,
                   provider: config.provider,
                   model: getProviderModel(config),
-                  cleanupMode,
                   simplifyForChildren: !!options?.simplifyForChildren,
                   updatedAt: new Date().toISOString()
                 });
@@ -2817,7 +2745,6 @@ export async function cleanupEpub(
             completedChunkCount: chunksCompletedInJob,
             provider: config.provider,
             model: getProviderModel(config),
-            cleanupMode,
             simplifyForChildren: !!options?.simplifyForChildren,
             updatedAt: new Date().toISOString()
           });

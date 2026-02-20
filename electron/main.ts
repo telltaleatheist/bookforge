@@ -5574,8 +5574,6 @@ function setupIpcHandlers(): void {
       // Parallel processing options (Claude/OpenAI only)
       useParallel?: boolean;
       parallelWorkers?: number;
-      // Cleanup mode: 'structure' preserves HTML, 'full' sends HTML to AI
-      cleanupMode?: 'structure' | 'full';
       // Test mode: only process first N chunks
       testMode?: boolean;
       testModeChunks?: number;
@@ -5596,7 +5594,6 @@ function setupIpcHandlers(): void {
       exampleCount: aiConfig?.deletedBlockExamples?.length || 0,
       useParallel: aiConfig?.useParallel,
       parallelWorkers: aiConfig?.parallelWorkers,
-      cleanupMode: aiConfig?.cleanupMode,
       testMode: aiConfig?.testMode,
       aiConfig: aiConfig ? {
         provider: aiConfig.provider,
@@ -5645,7 +5642,6 @@ function setupIpcHandlers(): void {
         deletedBlockExamples?: Array<{ text: string; category: 'header' | 'footer' | 'page_number' | 'custom' | 'block'; page?: number }>;
         useParallel?: boolean;
         parallelWorkers?: number;
-        cleanupMode?: 'structure' | 'full';
         testMode?: boolean;
         testModeChunks?: number;
         enableAiCleanup?: boolean;
@@ -5667,9 +5663,6 @@ function setupIpcHandlers(): void {
       } catch {
         // Not a manifest project, use default behavior (write alongside source)
       }
-
-      // Set cleanup mode (default to 'structure' for backwards compatibility)
-      cleanupOptions.cleanupMode = aiConfig.cleanupMode || 'structure';
 
       // Set test mode and test chunks
       cleanupOptions.testMode = aiConfig.testMode || false;

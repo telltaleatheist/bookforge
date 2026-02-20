@@ -453,6 +453,23 @@ export class EpubProcessor {
     return this.extractTextFromXhtml(xhtml);
   }
 
+  /**
+   * Get raw XHTML content for a chapter.
+   */
+  async getChapterXhtml(chapterId: string): Promise<string> {
+    if (!this.structure) {
+      throw new Error('EPUB not open');
+    }
+
+    const chapter = this.structure.chapters.find(c => c.id === chapterId);
+    if (!chapter) {
+      throw new Error(`Chapter not found: ${chapterId}`);
+    }
+
+    const href = this.resolvePath(chapter.href);
+    return await this.readFile(href);
+  }
+
   private parseContainer(xml: string): string {
     const rootfile = getAllTags(xml, 'rootfile')[0];
     if (!rootfile?.attributes['full-path']) {
@@ -620,6 +637,11 @@ export class EpubProcessor {
     text = text.replace(/&apos;/g, "'");
     text = text.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)));
     text = text.replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
+
+    // Remove soft hyphens: rejoin words split across lines (e.g., "psy\u00AD\nchiatry" → "psychiatry")
+    text = text.replace(/\u00AD\s*/g, '');
+    // Also handle the HTML entity form
+    text = text.replace(/&shy;\s*/g, '');
 
     // Clean up whitespace WITHIN paragraphs (preserve paragraph breaks)
     // First, normalize spaces within lines (but not newlines)
@@ -1513,10 +1535,14 @@ export async function getChapterComparison(
       fs.access(cleanedPath).then(() => true).catch(() => false)
     ]);
 
+    // IMPORTANT: Use extractChapterAsText (cheerio-based, block-level extraction)
+    // to match how the diff cache was computed. Using getChapterText (regex-based)
+    // produces different text, causing character position misalignment in hydration.
     if (originalExists) {
       await originalProcessor.open(originalPath);
       try {
-        originalText = await originalProcessor.getChapterText(chapterId);
+        const xhtml = await originalProcessor.getChapterXhtml(chapterId);
+        originalText = extractChapterAsText(xhtml);
       } catch {
         // Chapter not found in original
       }
@@ -1525,7 +1551,8 @@ export async function getChapterComparison(
     if (cleanedExists) {
       await cleanedProcessor.open(cleanedPath);
       try {
-        cleanedText = await cleanedProcessor.getChapterText(chapterId);
+        const xhtml = await cleanedProcessor.getChapterXhtml(chapterId);
+        cleanedText = extractChapterAsText(xhtml);
       } catch {
         // Chapter not found in cleaned
       }
@@ -1574,6 +1601,8 @@ export async function editEpubText(
     text = text.replace(/&apos;/g, "'");
     text = text.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)));
     text = text.replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
+    text = text.replace(/\u00AD\s*/g, '');
+    text = text.replace(/&shy;\s*/g, '');
     text = text.replace(/[^\S\n]+/g, ' ');
     text = text.replace(/\n\s*\n/g, '\n\n');
     text = text.replace(/^ +| +$/gm, '');
@@ -1743,6 +1772,8 @@ export async function replaceTextInEpub(
     text = text.replace(/&apos;/g, "'");
     text = text.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)));
     text = text.replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
+    text = text.replace(/\u00AD\s*/g, '');
+    text = text.replace(/&shy;\s*/g, '');
     text = text.replace(/[^\S\n]+/g, ' ');
     text = text.replace(/\n\s*\n/g, '\n\n');
     text = text.replace(/^ +| +$/gm, '');
@@ -2557,7 +2588,8 @@ export function extractBlockTexts(xhtml: string): string[] {
 
   $(BLOCK_SELECTORS).each((_, el) => {
     // Get text content (strips nested tags, decodes entities)
-    const text = $(el).text().trim();
+    // Strip soft hyphens and rejoin words split across lines
+    const text = $(el).text().replace(/\u00AD\s*/g, '').trim();
     // Only include elements that have actual text
     if (text.length > 0) {
       texts.push(text);
@@ -2575,7 +2607,7 @@ export function extractBlockTextsWithTags(xhtml: string): Array<{ text: string; 
   const $ = cheerio.load(xhtml, { xmlMode: true });
   const blocks: Array<{ text: string; tagName: string }> = [];
   $(BLOCK_SELECTORS).each((_, el) => {
-    const text = $(el).text().trim();
+    const text = $(el).text().replace(/\u00AD\s*/g, '').trim();
     if (text.length > 0) {
       blocks.push({ text, tagName: (el as any).tagName?.toLowerCase() || 'p' });
     }

@@ -44,6 +44,5 @@ export const PROMPTS = {
   LL_SIMPLIFY: 'll-simplify',
   LL_CLEANUP: 'll-cleanup',
   TTS_CLEANUP: 'tts-cleanup',
-  TTS_CLEANUP_FULL: 'tts-cleanup-full',
   MONO_TRANSLATION: 'mono-translation'
 } as const;

@@ -119,8 +119,6 @@ export interface OcrCleanupConfig {
   // Parallel processing (only for non-local APIs: Claude, OpenAI)
   parallelWorkers?: number;  // 1-5, default 1 (sequential)
   useParallel?: boolean;     // Enable parallel processing
-  // Cleanup mode: 'structure' preserves HTML, 'full' sends HTML to AI for structural fixes
-  cleanupMode?: 'structure' | 'full';
   // Test mode: only process first N chunks
   testMode?: boolean;
   testModeChunks?: number;  // Number of chunks to process in test mode

@@ -72,7 +72,6 @@ declare global {
           deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
           useParallel?: boolean;
           parallelWorkers?: number;
-          cleanupMode?: 'structure' | 'full';
           testMode?: boolean;
           testModeChunks?: number;
           simplifyForLearning?: boolean;
@@ -2079,7 +2078,6 @@ export class QueueService {
           deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
           useParallel?: boolean;
           parallelWorkers?: number;
-          cleanupMode?: 'structure' | 'full';
           testMode?: boolean;
           testModeChunks?: number;
           enableAiCleanup?: boolean;
@@ -2106,8 +2104,6 @@ export class QueueService {
           // Parallel processing (Claude/OpenAI only)
           useParallel: config.useParallel,
           parallelWorkers: config.parallelWorkers,
-          // Cleanup mode
-          cleanupMode: config.cleanupMode || 'structure',
           // Test mode
           testMode: config.testMode,
           testModeChunks: config.testModeChunks,
@@ -2117,14 +2113,13 @@ export class QueueService {
           cleanupPrompt: config.cleanupPrompt,
           customInstructions: config.customInstructions
         };
-        console.log('[QUEUE] Job config from storage:', { testMode: config.testMode, cleanupMode: config.cleanupMode, enableAiCleanup: config.enableAiCleanup, simplifyForLearning: config.simplifyForLearning, fullConfig: JSON.stringify(config) });
-        console.log('[QUEUE] Built aiConfig:', { testMode: aiConfig.testMode, cleanupMode: aiConfig.cleanupMode });
+        console.log('[QUEUE] Job config from storage:', { testMode: config.testMode, enableAiCleanup: config.enableAiCleanup, simplifyForLearning: config.simplifyForLearning, fullConfig: JSON.stringify(config) });
+        console.log('[QUEUE] Built aiConfig:', { testMode: aiConfig.testMode });
         console.log('[QUEUE] Calling runOcrCleanup with:', {
           jobId: job.id,
           model: config.aiModel,
           useDetailedCleanup: config.useDetailedCleanup,
           exampleCount: config.deletedBlockExamples?.length || 0,
-          cleanupMode: config.cleanupMode || 'structure',
           testMode: config.testMode,
           aiConfig: {
             provider: aiConfig.provider,
@@ -3249,8 +3244,7 @@ export class QueueService {
         // Parallel processing (Claude/OpenAI only)
         useParallel: config.useParallel,
         parallelWorkers: config.parallelWorkers,
-        // Cleanup mode and test mode
-        cleanupMode: config.cleanupMode,
+        // Test mode
         testMode: config.testMode,
         testModeChunks: config.testModeChunks,
         // Processing options
