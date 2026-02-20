@@ -152,7 +152,18 @@ async function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined):
       try {
         await fs.promises.access(absoluteCoverPath);
         bfpMetadata.coverPath = absoluteCoverPath;
-      } catch { /* cover doesn't exist, leave relative */ }
+      } catch {
+        // Relative path doesn't exist — clear it so manifest fallback can kick in
+        bfpMetadata.coverPath = undefined;
+      }
+    } else if (bfpMetadata.coverPath && path.isAbsolute(bfpMetadata.coverPath)) {
+      // Absolute path — verify it exists (may be from another platform)
+      try {
+        await fs.promises.access(bfpMetadata.coverPath);
+      } catch {
+        console.warn(`[REASSEMBLY] BFP cover path not found (cross-platform?): ${bfpMetadata.coverPath}`);
+        bfpMetadata.coverPath = undefined;
+      }
     }
 
     return bfpMetadata;
@@ -260,6 +271,12 @@ export interface ReassemblyProgress {
 
 // Active reassembly processes
 const activeReassemblies = new Map<string, ChildProcess>();
+
+// Active metadata AbortControllers (so stopReassembly can cancel metadata)
+const activeMetadataAborts = new Map<string, AbortController>();
+
+// Active heartbeat intervals (so stopReassembly can clear them)
+const activeHeartbeats = new Map<string, NodeJS.Timeout>();
 
 /**
  * Scan the e2a tmp folder for incomplete sessions
@@ -698,7 +715,14 @@ export async function startReassembly(
 
   // No symlink needed - we pass --session_dir to e2a to tell it where the session is
 
-  // Resolve cover from manifest if not provided in config
+  // Validate cover path exists on this machine — cross-platform synced projects may
+  // have paths from another OS (e.g., /Volumes/... from Mac when running on Windows)
+  if (config.metadata?.coverPath && !fs.existsSync(config.metadata.coverPath)) {
+    console.warn(`[REASSEMBLY] Cover path does not exist (cross-platform?): ${config.metadata.coverPath}`);
+    config.metadata.coverPath = undefined;
+  }
+
+  // Resolve cover from manifest if not provided or invalid
   if (!config.metadata?.coverPath && config.outputDir) {
     const projectDir = path.dirname(config.outputDir); // outputDir is {projectDir}/output
     const projectId = path.basename(projectDir);
@@ -933,6 +957,7 @@ export async function startReassembly(
         }
       }
     }, 5000);
+    activeHeartbeats.set(jobId, heartbeatInterval);
 
     // Progress ranges for each phase:
     // Combining chapters: 0-50% (sentences into chapter FLACs)
@@ -1326,6 +1351,14 @@ export async function startReassembly(
 
     proc.on('close', async (code) => {
       clearInterval(heartbeatInterval);
+      activeHeartbeats.delete(jobId);
+
+      // If stopReassembly() already removed this job, the close event is a ghost — clean up and bail
+      if (!activeReassemblies.has(jobId)) {
+        console.log('[REASSEMBLY] Close event after stop, ignoring (ghost prevention)');
+        resolve({ success: false, error: 'Cancelled by user' });
+        return;
+      }
       activeReassemblies.delete(jobId);
 
       // Flush any pending throttled progress
@@ -1421,6 +1454,7 @@ export async function startReassembly(
 
     proc.on('error', (err) => {
       clearInterval(heartbeatInterval);
+      activeHeartbeats.delete(jobId);
       activeReassemblies.delete(jobId);
       sendProgress(mainWindow, jobId, {
         phase: 'error',
@@ -1439,11 +1473,39 @@ export async function startReassembly(
 export function stopReassembly(jobId: string): boolean {
   const proc = activeReassemblies.get(jobId);
   if (!proc) {
+    // Even if the main process is gone, there may be a stuck metadata subprocess
+    const metadataAbort = activeMetadataAborts.get(jobId);
+    if (metadataAbort) {
+      metadataAbort.abort();
+      activeMetadataAborts.delete(jobId);
+      return true;
+    }
     return false;
   }
 
-  proc.kill('SIGTERM');
+  // Abort any in-flight metadata subprocess
+  activeMetadataAborts.get(jobId)?.abort();
+  activeMetadataAborts.delete(jobId);
+
+  // Clear heartbeat interval
+  const hb = activeHeartbeats.get(jobId);
+  if (hb) {
+    clearInterval(hb);
+    activeHeartbeats.delete(jobId);
+  }
+
+  // Remove from active map BEFORE killing so the close handler knows it was cancelled
   activeReassemblies.delete(jobId);
+  proc.kill('SIGTERM');
+
+  // Send cancellation progress so the UI cleans up the progress bar
+  const mainWindow = BrowserWindow.getAllWindows()[0] ?? null;
+  sendProgress(mainWindow, jobId, {
+    phase: 'error',
+    percentage: 0,
+    error: 'Cancelled by user'
+  });
+
   return true;
 }
 
@@ -1576,13 +1638,21 @@ async function applyMetadataWithM4bTool(
     message: `Applying extended metadata with ${toolInfo.tool}...`
   });
 
+  const controller = new AbortController();
+  activeMetadataAborts.set(jobId, controller);
+
   try {
-    await applyMetadata(m4bPath, metadataToApply);
+    await applyMetadata(m4bPath, metadataToApply, {
+      timeoutMs: 60_000,
+      signal: controller.signal
+    });
     console.log('[REASSEMBLY] Metadata applied successfully');
     return { success: true };
   } catch (err) {
     console.error('[REASSEMBLY] Metadata application failed:', err);
     // Don't fail the whole job - metadata is non-critical
     return { success: true };
+  } finally {
+    activeMetadataAborts.delete(jobId);
   }
 }

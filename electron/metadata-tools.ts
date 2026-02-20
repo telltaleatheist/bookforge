@@ -172,11 +172,22 @@ export function removeCover(filePath: string): Promise<void> {
 /**
  * Apply metadata to an audiobook file
  */
-export function applyMetadata(filePath: string, metadata: AudiobookMetadata): Promise<void> {
+export function applyMetadata(
+  filePath: string,
+  metadata: AudiobookMetadata,
+  options?: { timeoutMs?: number; signal?: AbortSignal }
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const toolInfo = getMetadataToolPath();
     if (!toolInfo) {
       console.log('[METADATA-TOOLS] No metadata tool found, skipping metadata application');
+      resolve();
+      return;
+    }
+
+    // Check if already aborted before doing any work
+    if (options?.signal?.aborted) {
+      console.log('[METADATA-TOOLS] Already aborted, skipping metadata application');
       resolve();
       return;
     }
@@ -274,6 +285,40 @@ export function applyMetadata(filePath: string, metadata: AudiobookMetadata): Pr
     });
 
     let stderr = '';
+    let settled = false;
+    const timeoutMs = options?.timeoutMs ?? 60_000;
+
+    function settle(resolution: 'resolve' | 'reject', error?: Error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      if (onAbort) options!.signal!.removeEventListener('abort', onAbort);
+      if (resolution === 'resolve') {
+        resolve();
+      } else {
+        reject(error);
+      }
+    }
+
+    // Timeout: kill and resolve (metadata is non-critical)
+    const timeoutTimer = setTimeout(() => {
+      if (settled) return;
+      console.warn(`[METADATA-TOOLS] Timeout after ${timeoutMs}ms, killing process`);
+      proc.kill('SIGKILL');
+      settle('resolve');
+    }, timeoutMs);
+
+    // AbortSignal: kill and resolve
+    let onAbort: (() => void) | null = null;
+    if (options?.signal) {
+      onAbort = () => {
+        if (settled) return;
+        console.log('[METADATA-TOOLS] Aborted, killing process');
+        proc.kill('SIGKILL');
+        settle('resolve');
+      };
+      options.signal.addEventListener('abort', onAbort, { once: true });
+    }
 
     proc.stdout?.on('data', (data: Buffer) => {
       console.log('[METADATA-TOOLS]', data.toString().trim());
@@ -286,13 +331,13 @@ export function applyMetadata(filePath: string, metadata: AudiobookMetadata): Pr
 
     proc.on('close', (code) => {
       if (code === 0) {
-        resolve();
+        settle('resolve');
       } else {
-        reject(new Error(`Metadata application failed with code ${code}: ${stderr}`));
+        settle('reject', new Error(`Metadata application failed with code ${code}: ${stderr}`));
       }
     });
 
-    proc.on('error', reject);
+    proc.on('error', (err) => settle('reject', err));
   });
 }
 

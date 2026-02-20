@@ -5965,6 +5965,17 @@ function setupIpcHandlers(): void {
       console.error('[IPC] Error cancelling parallel TTS job:', err);
     }
 
+    // Try to cancel reassembly job
+    try {
+      const { stopReassembly } = await import('./reassembly-bridge.js');
+      if (stopReassembly(jobId)) {
+        console.log('[IPC] Reassembly job cancelled:', jobId);
+        cancelled = true;
+      }
+    } catch (err) {
+      console.error('[IPC] Error cancelling reassembly job:', err);
+    }
+
     // Try the legacy running jobs map
     const job = runningJobs.get(jobId);
     if (job) {
