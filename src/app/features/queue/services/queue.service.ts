@@ -2474,19 +2474,32 @@ export class QueueService {
         }
 
         // Runtime session discovery — resolve session data from BFP cache if not provided
+        // Retry with backoff because session caching (from TTS completion handler) may still
+        // be in-flight when this job starts — the TTS completion event can race with processNext
         if (!config.sessionId && job.bfpPath) {
           console.log('[QUEUE] Reassembly: discovering session from BFP cache...');
-          const sessionResult = await (electron.reassembly as any).getBfpSession(job.bfpPath);
-          if (sessionResult.success && sessionResult.data) {
-            const s = sessionResult.data;
+          let sessionData: any = null;
+          const retryDelays = [0, 2000, 5000, 10000]; // immediate, then 2s, 5s, 10s
+          for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+            if (attempt > 0) {
+              console.log(`[QUEUE] Reassembly: session not found, retrying in ${retryDelays[attempt]}ms (attempt ${attempt + 1}/${retryDelays.length})...`);
+              await new Promise(r => setTimeout(r, retryDelays[attempt]));
+            }
+            const sessionResult = await (electron.reassembly as any).getBfpSession(job.bfpPath);
+            if (sessionResult.success && sessionResult.data) {
+              sessionData = sessionResult.data;
+              break;
+            }
+          }
+          if (sessionData) {
             config = {
               ...config,
-              sessionId: s.sessionId,
-              sessionDir: s.sessionDir,
-              processDir: s.processDir,
-              totalChapters: s.chapters?.filter((ch: any) => !ch.excluded)?.length || 0,
+              sessionId: sessionData.sessionId,
+              sessionDir: sessionData.sessionDir,
+              processDir: sessionData.processDir,
+              totalChapters: sessionData.chapters?.filter((ch: any) => !ch.excluded)?.length || 0,
             };
-            console.log(`[QUEUE] Reassembly: found session ${s.sessionId}, ${config.totalChapters} chapters`);
+            console.log(`[QUEUE] Reassembly: found session ${sessionData.sessionId}, ${config.totalChapters} chapters`);
           } else {
             throw new Error('No TTS session found in project — run TTS first');
           }
