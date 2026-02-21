@@ -1468,7 +1468,13 @@ export class QueueService {
     // Calculate progress factoring in the active child's progress.
     // e.g. 3 steps, 1 done, 1 at 50% → (1 + 0.5) / 3 = 50%
     const processingChild = childJobs.find(j => j.status === 'processing');
-    const processingFraction = processingChild ? (processingChild.progress || 0) / 100 : 0;
+    // For TTS jobs, calculate progress from chunks (step.progress can be 0 during conversion)
+    let childProgress = processingChild?.progress || 0;
+    if (processingChild?.type === 'tts-conversion' && processingChild.totalChunksInJob) {
+      const chunkPct = ((processingChild.chunksCompletedInJob || 0) / processingChild.totalChunksInJob) * 100;
+      childProgress = Math.max(childProgress, chunkPct);
+    }
+    const processingFraction = processingChild ? childProgress / 100 : 0;
     const progress = Math.round(((completedChildren + processingFraction) / totalChildren) * 100);
 
     // Determine master job status

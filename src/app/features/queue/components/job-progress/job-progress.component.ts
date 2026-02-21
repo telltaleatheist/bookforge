@@ -117,8 +117,8 @@ interface ETAState {
                     }
                   </span>
                   <span class="step-type">{{ getStepLabel(step.type) }}</span>
-                  @if (step.status === 'processing' && step.progress !== undefined) {
-                    <span class="step-pct">{{ step.progress | number:'1.0-0' }}%</span>
+                  @if (step.status === 'processing') {
+                    <span class="step-pct">{{ getStepProgressPct(step) | number:'1.0-0' }}%</span>
                   }
                 </div>
                 @if (getStepConfigSummary(step); as tags) {
@@ -132,10 +132,83 @@ interface ETAState {
                 }
                 @if (step.status === 'processing') {
                   <div class="step-progress-bar">
-                    <div class="step-progress-fill" [style.width.%]="step.progress || 0"></div>
+                    <div class="step-progress-fill" [style.width.%]="getStepProgressPct(step)"></div>
                   </div>
-                  @if (step.progressMessage) {
-                    <div class="step-message">{{ step.progressMessage }}</div>
+                  @if (step.type === 'tts-conversion' && step.totalChunksInJob) {
+                    <!-- TTS-specific progress details -->
+                    <div class="step-tts-details">
+                      <span class="step-tts-chunks">{{ step.chunksCompletedInJob || 0 }}/{{ step.totalChunksInJob }} chunks</span>
+                      @if (step.ttsPhase) {
+                        <span class="step-tts-phase">{{ getTtsPhaseLabel(step.ttsPhase) }}</span>
+                      }
+                    </div>
+                    @if (step.parallelWorkers && step.parallelWorkers.length > 1) {
+                      <div class="step-workers-grid">
+                        @for (worker of step.parallelWorkers; track worker.id) {
+                          <div class="worker-row" [class.complete]="worker.status === 'complete'" [class.error]="worker.status === 'error'">
+                            <span class="worker-label">W{{ worker.id }}</span>
+                            <div class="worker-progress-bar">
+                              <div
+                                class="worker-progress-fill"
+                                [style.width.%]="getWorkerPercentage(worker, step)"
+                              ></div>
+                            </div>
+                            <span class="worker-pct">{{ getWorkerPercentage(worker, step) | number:'1.0-0' }}%</span>
+                          </div>
+                        }
+                      </div>
+                    }
+                    @if (step.ttsPhase && !hasSkipAssembly(step)) {
+                      <div class="step-phases-grid">
+                        <div class="phase-row" [class.active]="step.ttsPhase === 'converting'" [class.complete]="step.ttsConversionProgress === 100">
+                          <span class="phase-label">TTS Conversion</span>
+                          <div class="phase-progress-bar">
+                            <div class="phase-progress-fill" [style.width.%]="step.ttsConversionProgress || 0"></div>
+                          </div>
+                          <span class="phase-pct">{{ step.ttsConversionProgress || 0 | number:'1.0-0' }}%</span>
+                        </div>
+                        <div class="phase-row" [class.active]="step.ttsPhase === 'assembling'" [class.complete]="step.assemblyProgress === 100" [class.pending]="step.ttsPhase === 'converting' || step.ttsPhase === 'preparing'">
+                          <span class="phase-label">Assembly</span>
+                          <div class="phase-progress-bar">
+                            <div class="phase-progress-fill" [style.width.%]="step.assemblyProgress || 0"></div>
+                          </div>
+                          <span class="phase-pct">
+                            @if (step.ttsPhase === 'assembling' || step.assemblyProgress) {
+                              {{ step.assemblyProgress || 0 | number:'1.0-0' }}%
+                            } @else {
+                              --
+                            }
+                          </span>
+                        </div>
+                      </div>
+                      @if (step.ttsPhase === 'assembling' && step.assemblySubPhase) {
+                        <div class="step-message">{{ getAssemblySubPhaseLabel(step.assemblySubPhase) }}</div>
+                      }
+                    }
+                  } @else if (step.type === 'reassembly') {
+                    <!-- Reassembly-specific progress details -->
+                    @if (step.currentChapter && step.totalChapters) {
+                      <div class="step-tts-details">
+                        <span class="step-tts-chunks">Chapter {{ step.currentChapter }}/{{ step.totalChapters }}</span>
+                        <span class="step-tts-phase">{{ getReassemblyPhaseForStep(step) }}</span>
+                      </div>
+                    }
+                    @if (step.progressMessage) {
+                      <div class="step-message">{{ step.progressMessage }}</div>
+                    }
+                  } @else {
+                    @if (step.totalChunksInJob) {
+                      <div class="step-tts-details">
+                        <span class="step-tts-chunks">{{ step.chunksCompletedInJob || 0 }}/{{ step.totalChunksInJob }} chunks</span>
+                      </div>
+                    } @else if (step.currentChunk && step.totalChunks) {
+                      <div class="step-tts-details">
+                        <span class="step-tts-chunks">{{ step.currentChunk }}/{{ step.totalChunks }}</span>
+                      </div>
+                    }
+                    @if (step.progressMessage) {
+                      <div class="step-message">{{ step.progressMessage }}</div>
+                    }
                   }
                 }
                 @if (step.status === 'error' && step.error) {
@@ -747,6 +820,41 @@ interface ETAState {
       font-size: 0.75rem;
       color: var(--error);
       margin-top: 0.25rem;
+      margin-left: 1.75rem;
+    }
+
+    .step-tts-details {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 0.25rem;
+      margin-left: 1.75rem;
+      font-size: 0.6875rem;
+      color: var(--text-secondary);
+    }
+
+    .step-tts-chunks {
+      font-weight: 500;
+    }
+
+    .step-tts-phase {
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .step-workers-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      margin-top: 0.375rem;
+      margin-left: 1.75rem;
+    }
+
+    .step-phases-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+      margin-top: 0.375rem;
       margin-left: 1.75rem;
     }
   `]
@@ -1473,6 +1581,40 @@ export class JobProgressComponent implements OnDestroy {
       case 'orpheus': return 'Orpheus';
       default: return engine.charAt(0).toUpperCase() + engine.slice(1);
     }
+  }
+
+  // Get effective progress percentage for a workflow step
+  // For TTS jobs, calculates from chunks since step.progress stays at 0
+  getStepProgressPct(step: QueueJob): number {
+    if (step.type === 'tts-conversion' && step.totalChunksInJob) {
+      const chunksCompleted = step.chunksCompletedInJob || 0;
+      return Math.min(100, (chunksCompleted / step.totalChunksInJob) * 100);
+    }
+    return step.progress || 0;
+  }
+
+  getTtsPhaseLabel(phase: string): string {
+    switch (phase) {
+      case 'preparing': return 'Preparing';
+      case 'converting': return 'Converting';
+      case 'assembling': return 'Assembling';
+      default: return phase;
+    }
+  }
+
+  getReassemblyPhaseForStep(step: QueueJob): string {
+    const progress = step.progress || 0;
+    const message = step.progressMessage?.toLowerCase() || '';
+
+    if (message.includes('concatenat')) return 'Concatenating';
+    if (message.includes('encod') || message.includes('aac')) return 'Encoding';
+    if (message.includes('metadata') || message.includes('chapter marker')) return 'Metadata';
+    if (message.includes('finaliz')) return 'Finalizing';
+
+    if (progress < 50) return 'Combining';
+    if (progress < 65) return 'Concatenating';
+    if (progress < 90) return 'Encoding';
+    return 'Metadata';
   }
 
   getCompletedStepCount(): number {
