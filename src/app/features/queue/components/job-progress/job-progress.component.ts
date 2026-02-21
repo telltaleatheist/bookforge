@@ -121,6 +121,15 @@ interface ETAState {
                     <span class="step-pct">{{ step.progress | number:'1.0-0' }}%</span>
                   }
                 </div>
+                @if (getStepConfigSummary(step); as tags) {
+                  @if (tags.length > 0) {
+                    <div class="step-config">
+                      @for (tag of tags; track tag) {
+                        <span class="config-tag">{{ tag }}</span>
+                      }
+                    </div>
+                  }
+                }
                 @if (step.status === 'processing') {
                   <div class="step-progress-bar">
                     <div class="step-progress-fill" [style.width.%]="step.progress || 0"></div>
@@ -714,6 +723,23 @@ interface ETAState {
       color: var(--text-tertiary);
       margin-top: 0.25rem;
       margin-left: 1.75rem;
+    }
+
+    .step-config {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+      margin-top: 0.25rem;
+      margin-left: 1.75rem;
+    }
+
+    .config-tag {
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
+      background: var(--bg-elevated);
+      padding: 0.0625rem 0.375rem;
+      border-radius: 3px;
+      white-space: nowrap;
     }
 
     .step-error {
@@ -1378,6 +1404,73 @@ export class JobProgressComponent implements OnDestroy {
       case 'bilingual-translation': return 'Translation';
       case 'bilingual-assembly': return 'Assembly';
       default: return type;
+    }
+  }
+
+  getStepConfigSummary(step: QueueJob): string[] {
+    const config = step.config as any;
+    if (!config) return [];
+    const tags: string[] = [];
+
+    switch (step.type) {
+      case 'ocr-cleanup':
+      case 'bilingual-cleanup': {
+        if (config.aiProvider && config.aiModel) {
+          tags.push(`${this.formatProviderShort(config.aiProvider)} ${config.aiModel}`);
+        }
+        if (config.simplifyForLearning) tags.push('Simplify');
+        if (config.testMode && config.testModeChunks) tags.push(`Test: ${config.testModeChunks} chunks`);
+        break;
+      }
+      case 'translation':
+      case 'bilingual-translation': {
+        if (config.aiProvider && config.aiModel) {
+          tags.push(`${this.formatProviderShort(config.aiProvider)} ${config.aiModel}`);
+        }
+        if (config.sourceLang && config.targetLang) {
+          tags.push(`${config.sourceLang} → ${config.targetLang}`);
+        }
+        if (config.monoTranslation) tags.push('Mono');
+        if (config.testMode && config.testModeChunks) tags.push(`Test: ${config.testModeChunks} chunks`);
+        break;
+      }
+      case 'tts-conversion': {
+        if (config.ttsEngine) tags.push(this.capitalizeEngine(config.ttsEngine));
+        if (config.fineTuned) tags.push(config.fineTuned);
+        if (config.speed && config.speed !== 1) tags.push(`${config.speed}×`);
+        if (config.device) tags.push(config.device.toUpperCase());
+        if (config.useParallel && config.parallelWorkers && config.parallelWorkers > 1) {
+          tags.push(`${config.parallelWorkers} workers`);
+        }
+        break;
+      }
+      case 'bilingual-assembly': {
+        if (config.sourceLang && config.targetLang) {
+          tags.push(`${config.sourceLang} → ${config.targetLang}`);
+        }
+        if (config.pattern) tags.push(config.pattern);
+        break;
+      }
+      // reassembly: no config tags needed
+    }
+
+    return tags;
+  }
+
+  private formatProviderShort(provider: string): string {
+    switch (provider) {
+      case 'ollama': return 'Ollama';
+      case 'claude': return 'Claude';
+      case 'openai': return 'OpenAI';
+      default: return provider;
+    }
+  }
+
+  private capitalizeEngine(engine: string): string {
+    switch (engine.toLowerCase()) {
+      case 'xtts': return 'XTTS';
+      case 'orpheus': return 'Orpheus';
+      default: return engine.charAt(0).toUpperCase() + engine.slice(1);
     }
   }
 

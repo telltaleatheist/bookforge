@@ -6,7 +6,7 @@ import { Component, input, output, computed, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { QueueJob, OcrCleanupConfig, TtsConversionConfig, BilingualTranslationJobConfig } from '../../models/queue.types';
+import { QueueJob, OcrCleanupConfig, TtsConversionConfig, BilingualTranslationJobConfig, BilingualCleanupJobConfig, BilingualAssemblyJobConfig, TranslationJobConfig, ReassemblyJobConfig } from '../../models/queue.types';
 import { QueueService } from '../../services/queue.service';
 
 @Component({
@@ -80,6 +80,15 @@ import { QueueService } from '../../services/queue.service';
           } @else if (selectedJob.type === 'bilingual-assembly') {
             <span class="type-icon">&#127925;</span>
             <span class="type-label">Bilingual Assembly</span>
+          } @else if (selectedJob.type === 'translation') {
+            <span class="type-icon">&#127760;</span>
+            <span class="type-label">Translation</span>
+          } @else if (selectedJob.type === 'reassembly') {
+            <span class="type-icon">&#128295;</span>
+            <span class="type-label">Reassembly</span>
+          } @else if (selectedJob.type === 'resemble-enhance') {
+            <span class="type-icon">&#10024;</span>
+            <span class="type-label">Audio Enhancement</span>
           }
         </div>
 
@@ -133,19 +142,55 @@ import { QueueService } from '../../services/queue.service';
                 <span class="info-label">Model</span>
                 <span class="info-value">{{ selectedJob.config.aiModel }}</span>
               </div>
+              @if (selectedJob.config.simplifyForLearning) {
+                <div class="info-row">
+                  <span class="info-label">Mode</span>
+                  <span class="info-value">Simplify for Learners</span>
+                </div>
+              }
+              @if (selectedJob.config.useParallel && selectedJob.config.parallelWorkers) {
+                <div class="info-row">
+                  <span class="info-label">Workers</span>
+                  <span class="info-value">{{ selectedJob.config.parallelWorkers }}</span>
+                </div>
+              }
+              @if (selectedJob.config.testMode) {
+                <div class="info-row">
+                  <span class="info-label">Test Mode</span>
+                  <span class="info-value">{{ selectedJob.config.testModeChunks }} chunks</span>
+                </div>
+              }
+            }
+            @if (isBilingualCleanupConfig(selectedJob.config)) {
+              <div class="info-row">
+                <span class="info-label">AI Provider</span>
+                <span class="info-value">{{ formatProvider(selectedJob.config.aiProvider) }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Model</span>
+                <span class="info-value">{{ selectedJob.config.aiModel }}</span>
+              </div>
+              @if (selectedJob.config.simplifyForLearning) {
+                <div class="info-row">
+                  <span class="info-label">Mode</span>
+                  <span class="info-value">Simplify for Learners</span>
+                </div>
+              }
+              @if (selectedJob.config.testMode) {
+                <div class="info-row">
+                  <span class="info-label">Test Mode</span>
+                  <span class="info-value">{{ selectedJob.config.testModeChunks }} chunks</span>
+                </div>
+              }
             }
             @if (isTtsConfig(selectedJob.config)) {
               <div class="info-row">
-                <span class="info-label">Device</span>
-                <span class="info-value">{{ selectedJob.config.device.toUpperCase() }}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">Voice Model</span>
-                <span class="info-value">{{ selectedJob.config.fineTuned }}</span>
-              </div>
-              <div class="info-row">
                 <span class="info-label">TTS Engine</span>
-                <span class="info-value">{{ selectedJob.config.ttsEngine }}</span>
+                <span class="info-value">{{ capitalizeEngine(selectedJob.config.ttsEngine) }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Voice</span>
+                <span class="info-value">{{ selectedJob.config.fineTuned }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Language</span>
@@ -155,6 +200,98 @@ import { QueueService } from '../../services/queue.service';
                 <span class="info-label">Speed</span>
                 <span class="info-value">{{ selectedJob.config.speed }}x</span>
               </div>
+              <div class="info-row">
+                <span class="info-label">Device</span>
+                <span class="info-value">{{ selectedJob.config.device.toUpperCase() }}</span>
+              </div>
+              @if (selectedJob.config.useParallel && selectedJob.config.parallelWorkers) {
+                <div class="info-row">
+                  <span class="info-label">Workers</span>
+                  <span class="info-value">{{ selectedJob.config.parallelWorkers }}</span>
+                </div>
+              }
+            }
+            @if (isTranslationConfig(selectedJob.config)) {
+              <div class="info-row">
+                <span class="info-label">AI Provider</span>
+                <span class="info-value">{{ formatProvider(selectedJob.config.aiProvider) }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Model</span>
+                <span class="info-value">{{ selectedJob.config.aiModel }}</span>
+              </div>
+            }
+            @if (isBilingualTranslationConfig(selectedJob.config)) {
+              <div class="info-row">
+                <span class="info-label">AI Provider</span>
+                <span class="info-value">{{ formatProvider(selectedJob.config.aiProvider) }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Model</span>
+                <span class="info-value">{{ selectedJob.config.aiModel }}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">Languages</span>
+                <span class="info-value">{{ selectedJob.config.sourceLang }} → {{ selectedJob.config.targetLang }}</span>
+              </div>
+              @if (selectedJob.config.splitGranularity) {
+                <div class="info-row">
+                  <span class="info-label">Split</span>
+                  <span class="info-value">{{ selectedJob.config.splitGranularity }}</span>
+                </div>
+              }
+              @if (selectedJob.config.monoTranslation) {
+                <div class="info-row">
+                  <span class="info-label">Mode</span>
+                  <span class="info-value">Mono (full book)</span>
+                </div>
+              }
+              @if (selectedJob.config.testMode) {
+                <div class="info-row">
+                  <span class="info-label">Test Mode</span>
+                  <span class="info-value">{{ selectedJob.config.testModeChunks }} chunks</span>
+                </div>
+              }
+            }
+            @if (isBilingualAssemblyConfig(selectedJob.config)) {
+              @if (selectedJob.config.sourceLang && selectedJob.config.targetLang) {
+                <div class="info-row">
+                  <span class="info-label">Languages</span>
+                  <span class="info-value">{{ selectedJob.config.sourceLang }} → {{ selectedJob.config.targetLang }}</span>
+                </div>
+              }
+              @if (selectedJob.config.pauseDuration !== undefined) {
+                <div class="info-row">
+                  <span class="info-label">Pause</span>
+                  <span class="info-value">{{ selectedJob.config.pauseDuration }}s</span>
+                </div>
+              }
+              @if (selectedJob.config.gapDuration !== undefined) {
+                <div class="info-row">
+                  <span class="info-label">Gap</span>
+                  <span class="info-value">{{ selectedJob.config.gapDuration }}s</span>
+                </div>
+              }
+              @if (selectedJob.config.pattern) {
+                <div class="info-row">
+                  <span class="info-label">Pattern</span>
+                  <span class="info-value">{{ selectedJob.config.pattern }}</span>
+                </div>
+              }
+            }
+            @if (isReassemblyConfig(selectedJob.config)) {
+              @if (selectedJob.config.sessionId) {
+                <div class="info-row">
+                  <span class="info-label">Session</span>
+                  <span class="info-value">{{ selectedJob.config.sessionId.slice(0, 8) }}...</span>
+                </div>
+              }
+              @if (selectedJob.config.excludedChapters.length > 0) {
+                <div class="info-row">
+                  <span class="info-label">Excluded</span>
+                  <span class="info-value">{{ selectedJob.config.excludedChapters.length }} chapters</span>
+                </div>
+              }
             }
           </div>
         }
@@ -505,13 +642,37 @@ export class JobDetailsComponent {
     return config?.type === 'tts-conversion';
   }
 
+  isBilingualCleanupConfig(config: any): config is BilingualCleanupJobConfig {
+    return config?.type === 'bilingual-cleanup';
+  }
+
   isBilingualTranslationConfig(config: any): config is BilingualTranslationJobConfig {
     return config?.type === 'bilingual-translation';
+  }
+
+  isTranslationConfig(config: any): config is TranslationJobConfig {
+    return config?.type === 'translation';
+  }
+
+  isBilingualAssemblyConfig(config: any): config is BilingualAssemblyJobConfig {
+    return config?.type === 'bilingual-assembly';
+  }
+
+  isReassemblyConfig(config: any): config is ReassemblyJobConfig {
+    return config?.type === 'reassembly';
   }
 
   onAutoApproveAlignmentChange(job: QueueJob, event: Event): void {
     const checked = (event.target as HTMLInputElement).checked;
     this.queueService.updateJobConfig(job.id, { autoApproveAlignment: checked });
+  }
+
+  capitalizeEngine(engine: string): string {
+    switch (engine.toLowerCase()) {
+      case 'xtts': return 'XTTS';
+      case 'orpheus': return 'Orpheus';
+      default: return engine.charAt(0).toUpperCase() + engine.slice(1);
+    }
   }
 
   formatProvider(provider: string): string {
