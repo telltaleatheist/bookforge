@@ -735,7 +735,7 @@ interface ETAState {
 
     .config-tag {
       font-size: 0.6875rem;
-      color: var(--text-secondary);
+      color: var(--text-primary);
       background: var(--bg-elevated);
       border: 1px solid var(--border-default);
       padding: 0.0625rem 0.375rem;
