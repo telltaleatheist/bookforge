@@ -363,7 +363,7 @@ interface DragState {
       white-space: nowrap;
 
       &.model {
-        color: var(--text-tertiary);
+        color: var(--text-secondary);
         font-size: 0.6875rem;
       }
     }
