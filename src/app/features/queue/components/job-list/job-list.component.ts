@@ -134,6 +134,13 @@ interface DragState {
               >
                 ■
               </button>
+              <button
+                class="remove-btn"
+                title="Remove"
+                (click)="remove.emit(job.id); $event.stopPropagation()"
+              >
+                ✕
+              </button>
             }
             @if (job.status === 'error') {
               <desktop-button
@@ -404,6 +411,7 @@ interface DragState {
     .job-item:hover .job-actions .run-btn,
     .job-item:hover .job-actions .remove-btn,
     .job-item.processing .job-actions .cancel-btn,
+    .job-item.processing .job-actions .remove-btn,
     .job-item.error .job-actions .remove-btn {
       opacity: 1;
     }

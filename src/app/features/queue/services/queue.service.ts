@@ -1294,26 +1294,46 @@ export class QueueService {
     const job = this._jobs().find(j => j.id === jobId);
     if (!job) return false;
 
-    // If job is processing, cancel it first
-    if (job.status === 'processing') {
-      const electron = window.electron;
-      if (electron?.queue) {
-        await electron.queue.cancelJob(jobId);
-      }
-      this._currentJobId.set(null);
-    }
-
-    // Check if this is a master job (has workflowId but no parentJobId)
+    const electron = window.electron;
     const isMasterJob = job.workflowId && !job.parentJobId;
 
+    if (isMasterJob && electron?.queue) {
+      // Cancel ALL processing children by their own IDs (not the master's)
+      const children = this._jobs().filter(j => j.workflowId === job.workflowId && j.id !== jobId);
+      for (const child of children) {
+        if (child.status === 'processing') {
+          await electron.queue.cancelJob(child.id);
+        }
+      }
+    }
+
+    // Cancel this specific job if it's processing
+    if (job.status === 'processing' && electron?.queue) {
+      await electron.queue.cancelJob(jobId);
+    }
+
+    // Clear currentJobId if any removed job was current
+    const currentId = this._currentJobId();
     if (isMasterJob) {
-      // Remove this job and all child jobs in the same workflow
+      const workflowJobs = this._jobs().filter(j => j.workflowId === job.workflowId);
+      if (workflowJobs.some(j => j.id === currentId)) {
+        this._currentJobId.set(null);
+      }
+      // Remove master and all children
       this._jobs.update(jobs => jobs.filter(j =>
         j.id !== jobId && j.workflowId !== job.workflowId
       ));
     } else {
-      // Just remove this single job
+      if (currentId === jobId) this._currentJobId.set(null);
       this._jobs.update(jobs => jobs.filter(j => j.id !== jobId));
+    }
+
+    // Clean up any resulting orphans (e.g. master with no children left)
+    this.cleanupOrphanedSubItems();
+
+    // Resume queue if it was running
+    if (this._isRunning()) {
+      await this.processNext();
     }
 
     return true;
@@ -1382,13 +1402,21 @@ export class QueueService {
     const jobIds = new Set(jobs.map(j => j.id));
 
     // Find sub-items whose parentJobId doesn't exist in the queue
-    const orphanedIds = jobs
+    const orphanedChildIds = jobs
       .filter(j => j.parentJobId && !jobIds.has(j.parentJobId))
       .map(j => j.id);
 
-    if (orphanedIds.length > 0) {
-      console.log(`[QUEUE] Removing ${orphanedIds.length} orphaned sub-items:`, orphanedIds);
-      this._jobs.update(jobs => jobs.filter(j => !orphanedIds.includes(j.id)));
+    // Find orphaned masters (masters with no remaining children)
+    const orphanedMasterIds = jobs
+      .filter(j => j.workflowId && !j.parentJobId)
+      .filter(master => !jobs.some(j => j.parentJobId === master.id))
+      .map(j => j.id);
+
+    const allOrphanedIds = [...orphanedChildIds, ...orphanedMasterIds];
+
+    if (allOrphanedIds.length > 0) {
+      console.log(`[QUEUE] Removing ${allOrphanedIds.length} orphaned jobs (${orphanedChildIds.length} children, ${orphanedMasterIds.length} masters):`, allOrphanedIds);
+      this._jobs.update(jobs => jobs.filter(j => !allOrphanedIds.includes(j.id)));
     }
   }
 
