@@ -91,11 +91,11 @@ interface DragState {
           </div>
 
           <div class="job-actions">
-            @if (job.id === selectedJobId()) {
+            @if (job.id === subtaskViewJobId()) {
               <button
                 class="view-btn active"
                 title="Return to main progress view"
-                (click)="select.emit(job.id); $event.stopPropagation()"
+                (click)="toggleView.emit(job.id); $event.stopPropagation()"
               >
                 &#9666; Overview
               </button>
@@ -103,7 +103,7 @@ interface DragState {
               <button
                 class="view-btn"
                 title="View sub-tasks and step details"
-                (click)="select.emit(job.id); $event.stopPropagation()"
+                (click)="toggleView.emit(job.id); $event.stopPropagation()"
               >
                 Sub-tasks
               </button>
@@ -497,12 +497,14 @@ export class JobListComponent {
   // Inputs
   readonly jobs = input<QueueJob[]>([]);
   readonly selectedJobId = input<string | null>(null);
+  readonly subtaskViewJobId = input<string | null>(null);
 
   // Outputs
   readonly remove = output<string>();
   readonly retry = output<string>();
   readonly cancel = output<string>();
   readonly select = output<string>();
+  readonly toggleView = output<string>();
   readonly reorder = output<{ fromId: string; toId: string }>();
   readonly runNow = output<string>();  // Run job standalone (doesn't chain to next)
 

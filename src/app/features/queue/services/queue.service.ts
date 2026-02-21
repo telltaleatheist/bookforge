@@ -1985,6 +1985,28 @@ export class QueueService {
   }
 
   /**
+   * Handle inline job completion: clean up standalone tracking or advance the queue.
+   * Job types that handle completion inline (reassembly, bilingual-*, video-assembly)
+   * must call this instead of directly calling processNext(), so standalone jobs
+   * don't accidentally trigger the next queue item.
+   */
+  private async finishJob(jobId: string): Promise<void> {
+    const standaloneIds = this._standaloneJobIds();
+    if (standaloneIds.has(jobId)) {
+      const newSet = new Set(standaloneIds);
+      newSet.delete(jobId);
+      this._standaloneJobIds.set(newSet);
+      console.log(`[QUEUE] Standalone job ${jobId} completed, not processing next`);
+      return;
+    }
+
+    this._currentJobId.set(null);
+    if (this._isRunning()) {
+      await this.processNext();
+    }
+  }
+
+  /**
    * Process the next pending job in the queue
    */
   private async processNext(): Promise<void> {
@@ -2615,9 +2637,8 @@ export class QueueService {
           this.updateMasterJobProgress(job.workflowId, job.parentJobId);
         }
 
-        // Clear current job and process next
-        this._currentJobId.set(null);
-        await this.processNext();
+        // Finish job (standalone-aware: won't advance queue for standalone jobs)
+        await this.finishJob(job.id);
       } else if (job.type === 'resemble-enhance') {
         // Resemble Enhance job - audio enhancement/denoising
         const config = job.config as ResembleEnhanceJobConfig | undefined;
@@ -2702,9 +2723,8 @@ export class QueueService {
           this.updateMasterJobProgress(job.workflowId, job.parentJobId);
         }
 
-        // Clear current job and process next (the translation job)
-        this._currentJobId.set(null);
-        await this.processNext();
+        // Finish job (standalone-aware: won't advance queue for standalone jobs)
+        await this.finishJob(job.id);
 
       } else if (job.type === 'bilingual-translation') {
         // Language Learning Translation job
@@ -2759,11 +2779,10 @@ export class QueueService {
           this.updateMasterJobProgress(job.workflowId, job.parentJobId);
         }
 
-        // For mono translation, skip the dual-EPUB workflow — just advance the queue
+        // For mono translation, skip the dual-EPUB workflow — just finish
         if (config.monoTranslation) {
           console.log('[QUEUE] Mono translation complete, skipping dual-EPUB workflow');
-          this._currentJobId.set(null);
-          await this.processNext();
+          await this.finishJob(job.id);
           return;
         }
 
@@ -2966,9 +2985,8 @@ export class QueueService {
           }
         }
 
-        // Clear current job and process next
-        this._currentJobId.set(null);
-        await this.processNext();
+        // Finish job (standalone-aware: won't advance queue for standalone jobs)
+        await this.finishJob(job.id);
 
       } else if (job.type === 'bilingual-assembly') {
         // Bilingual Assembly job - combines source and target TTS outputs
@@ -3103,9 +3121,8 @@ export class QueueService {
           this.updateMasterJobProgress(job.workflowId, job.parentJobId);
         }
 
-        // Clear current job and process next
-        this._currentJobId.set(null);
-        await this.processNext();
+        // Finish job (standalone-aware: won't advance queue for standalone jobs)
+        await this.finishJob(job.id);
 
       } else if (job.type === 'video-assembly') {
         // Video Assembly job - renders subtitle MP4 from M4B + VTT
@@ -3219,9 +3236,8 @@ export class QueueService {
           this.updateMasterJobProgress(job.workflowId, job.parentJobId);
         }
 
-        // Clear current job and process next
-        this._currentJobId.set(null);
-        await this.processNext();
+        // Finish job (standalone-aware: won't advance queue for standalone jobs)
+        await this.finishJob(job.id);
       }
     } catch (err) {
       // Error starting job

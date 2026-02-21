@@ -92,10 +92,12 @@ import { QueueJob, JobType } from './models/queue.types';
               <app-job-list
                 [jobs]="activeJobs()"
                 [selectedJobId]="selectedJobId()"
+                [subtaskViewJobId]="subtaskViewJobId()"
                 (remove)="removeJob($event)"
                 (retry)="retryJob($event)"
                 (cancel)="cancelJob($event)"
                 (select)="selectJob($event)"
+                (toggleView)="toggleViewMode($event)"
                 (reorder)="reorderJobs($event)"
                 (runNow)="runJobStandalone($event)"
               />
@@ -121,10 +123,12 @@ import { QueueJob, JobType } from './models/queue.types';
                     <app-job-list
                       [jobs]="finishedJobs()"
                       [selectedJobId]="selectedJobId()"
+                      [subtaskViewJobId]="subtaskViewJobId()"
                       (remove)="removeJob($event)"
                       (retry)="retryJob($event)"
                       (cancel)="cancelJob($event)"
                       (select)="selectJob($event)"
+                      (toggleView)="toggleViewMode($event)"
                       (reorder)="reorderJobs($event)"
                       (runNow)="runJobStandalone($event)"
                     />
@@ -139,8 +143,8 @@ import { QueueJob, JobType } from './models/queue.types';
         <!-- Right Panel: Selected Job / Current Job / Empty State -->
         <div pane-secondary class="details-panel">
           @if (selectedJob(); as selected) {
-            <!-- Workflow jobs always show pipeline view; standalone jobs show progress when processing -->
-            @if (isWorkflowJob(selected) || selected.status === 'processing') {
+            <!-- Show pipeline/progress view when sub-tasks view is active for this job -->
+            @if (subtaskViewJobId() === selected.id) {
               <app-job-progress
                 [job]="selected"
                 [childJobs]="selectedChildJobs()"
@@ -496,6 +500,9 @@ export class QueueComponent implements OnInit, OnDestroy {
   // Selected job state
   readonly selectedJobId = signal<string | null>(null);
 
+  // Sub-task view state: which job is showing the pipeline/progress view
+  readonly subtaskViewJobId = signal<string | null>(null);
+
   // Diff modal state
   readonly diffModalPaths = signal<{ originalPath: string; cleanedPath: string } | null>(null);
   @ViewChild(DiffViewComponent) diffViewRef?: DiffViewComponent;
@@ -623,6 +630,12 @@ export class QueueComponent implements OnInit, OnDestroy {
   }
 
   async removeJob(jobId: string): Promise<void> {
+    if (this.subtaskViewJobId() === jobId) {
+      this.subtaskViewJobId.set(null);
+    }
+    if (this.selectedJobId() === jobId) {
+      this.selectedJobId.set(null);
+    }
     await this.queueService.removeJob(jobId);
   }
 
@@ -670,11 +683,25 @@ export class QueueComponent implements OnInit, OnDestroy {
   }
 
   selectJob(jobId: string): void {
-    // Toggle selection if clicking the same job
-    if (this.selectedJobId() === jobId) {
-      this.selectedJobId.set(null);
+    this.selectedJobId.set(jobId);
+
+    // Auto-show sub-tasks view for processing jobs
+    const job = this.queueService.jobs().find(j => j.id === jobId);
+    if (job && job.status === 'processing') {
+      this.subtaskViewJobId.set(jobId);
     } else {
-      this.selectedJobId.set(jobId);
+      this.subtaskViewJobId.set(null);
+    }
+  }
+
+  toggleViewMode(jobId: string): void {
+    // Also select the job when toggling view
+    this.selectedJobId.set(jobId);
+
+    if (this.subtaskViewJobId() === jobId) {
+      this.subtaskViewJobId.set(null);
+    } else {
+      this.subtaskViewJobId.set(jobId);
     }
   }
 
