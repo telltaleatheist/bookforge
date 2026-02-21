@@ -2082,16 +2082,18 @@ export class QueueService {
       if (j.type === 'tts-conversion' && (j.metadata as any)?.bilingualPlaceholder) return false;
       // Skip bilingual assembly placeholder jobs that are waiting for TTS to complete
       if (j.type === 'bilingual-assembly' && (j.metadata as any)?.bilingualPlaceholder) return false;
-      // Skip jobs whose workflow has a sibling still processing
-      // (e.g., don't start reassembly while TTS is still running in the same workflow)
+      // Skip workflow jobs whose earlier siblings haven't completed yet.
+      // Workflows execute in array order (OCR → TTS → Reassembly), so a later
+      // step must not start until all preceding steps in the same workflow are complete.
       if (j.parentJobId && j.workflowId) {
-        const hasSiblingInProgress = allJobs.some(s =>
+        const hasIncompleteEarlierSibling = allJobs.some(s =>
           s.id !== j.id &&
           s.workflowId === j.workflowId &&
           s.parentJobId === j.parentJobId &&
-          s.status === 'processing'
+          s.status !== 'complete' &&
+          allJobs.indexOf(s) < allJobs.indexOf(j)
         );
-        if (hasSiblingInProgress) return false;
+        if (hasIncompleteEarlierSibling) return false;
       }
       return true;
     });
