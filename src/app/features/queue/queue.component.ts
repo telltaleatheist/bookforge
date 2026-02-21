@@ -644,7 +644,7 @@ export class QueueComponent implements OnInit, OnDestroy {
   }
 
   cancelJob(jobId: string): void {
-    this.queueService.cancelCurrent();
+    this.queueService.cancelJob(jobId);
   }
 
   async showInFolder(filePath: string): Promise<void> {

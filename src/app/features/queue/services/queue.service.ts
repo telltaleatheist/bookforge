@@ -1736,13 +1736,24 @@ export class QueueService {
    * Force clear all jobs from the queue (use with caution)
    */
   clearAll(): void {
-    // Cancel any running job first
+    const electron = window.electron;
+
+    // Cancel the queue's current job
     const currentId = this._currentJobId();
     if (currentId) {
-      const electron = window.electron;
       electron?.queue?.cancelJob(currentId);
       this._currentJobId.set(null);
     }
+
+    // Cancel any standalone jobs
+    const standaloneIds = this._standaloneJobIds();
+    if (standaloneIds.size > 0 && electron?.queue) {
+      for (const id of standaloneIds) {
+        electron.queue.cancelJob(id);
+      }
+      this._standaloneJobIds.set(new Set());
+    }
+
     this._jobs.set([]);
     this._isRunning.set(false);
     console.log('[QUEUE] All jobs cleared');
@@ -1833,15 +1844,24 @@ export class QueueService {
   async cancelCurrent(): Promise<boolean> {
     const currentId = this._currentJobId();
     if (!currentId) return false;
+    return this.cancelJob(currentId);
+  }
+
+  /**
+   * Cancel a specific job by ID (works for both queue and standalone jobs)
+   */
+  async cancelJob(jobId: string): Promise<boolean> {
+    const job = this._jobs().find(j => j.id === jobId);
+    if (!job || job.status !== 'processing') return false;
 
     const electron = window.electron;
     if (!electron?.queue) return false;
 
-    const result = await electron.queue.cancelJob(currentId);
+    const result = await electron.queue.cancelJob(jobId);
     if (result.success) {
       this._jobs.update(jobs =>
         jobs.map(j => {
-          if (j.id !== currentId) return j;
+          if (j.id !== jobId) return j;
           return {
             ...j,
             status: 'error' as JobStatus,
@@ -1849,11 +1869,20 @@ export class QueueService {
           };
         })
       );
-      this._currentJobId.set(null);
 
-      // Process next if running
-      if (this._isRunning()) {
-        await this.processNext();
+      // Clean up standalone tracking if this was a standalone job
+      const standaloneIds = this._standaloneJobIds();
+      if (standaloneIds.has(jobId)) {
+        const newSet = new Set(standaloneIds);
+        newSet.delete(jobId);
+        this._standaloneJobIds.set(newSet);
+        console.log(`[QUEUE] Standalone job ${jobId} cancelled`);
+      } else if (this._currentJobId() === jobId) {
+        this._currentJobId.set(null);
+        // Process next if running
+        if (this._isRunning()) {
+          await this.processNext();
+        }
       }
     }
 
