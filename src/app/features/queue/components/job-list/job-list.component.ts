@@ -91,6 +91,23 @@ interface DragState {
           </div>
 
           <div class="job-actions">
+            @if (job.id === selectedJobId()) {
+              <button
+                class="view-btn active"
+                title="Return to main progress view"
+                (click)="select.emit(job.id); $event.stopPropagation()"
+              >
+                &#9666; Overview
+              </button>
+            } @else {
+              <button
+                class="view-btn"
+                title="View sub-tasks and step details"
+                (click)="select.emit(job.id); $event.stopPropagation()"
+              >
+                Sub-tasks
+              </button>
+            }
             @if (job.status === 'pending') {
               <button
                 class="run-btn"
@@ -376,16 +393,18 @@ interface DragState {
       display: flex;
       align-items: center;
       gap: 0.25rem;
+    }
+
+    .job-actions .run-btn,
+    .job-actions .remove-btn {
       opacity: 0;
       transition: opacity 0.15s ease;
     }
 
-    .job-item:hover .job-actions {
-      opacity: 1;
-    }
-
-    .job-item.processing .job-actions,
-    .job-item.error .job-actions {
+    .job-item:hover .job-actions .run-btn,
+    .job-item:hover .job-actions .remove-btn,
+    .job-item.processing .job-actions .cancel-btn,
+    .job-item.error .job-actions .remove-btn {
       opacity: 1;
     }
 
@@ -434,6 +453,35 @@ interface DragState {
 
       &:hover {
         background: color-mix(in srgb, var(--warning, orange) 30%, transparent);
+      }
+    }
+
+    .view-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 22px;
+      padding: 0 0.5rem;
+      border: 1px solid var(--border-default);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.65rem;
+      font-weight: 500;
+      background: transparent;
+      color: var(--text-secondary);
+      transition: all 0.15s ease;
+      white-space: nowrap;
+
+      &:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+        border-color: var(--accent);
+      }
+
+      &.active {
+        background: color-mix(in srgb, var(--accent) 15%, transparent);
+        color: var(--accent);
+        border-color: var(--accent);
       }
     }
 

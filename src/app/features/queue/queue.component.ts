@@ -133,6 +133,7 @@ import { QueueJob, JobType } from './models/queue.types';
               </div>
             }
           </div>
+
         </div>
 
         <!-- Right Panel: Selected Job / Current Job / Empty State -->
@@ -406,6 +407,7 @@ import { QueueJob, JobType } from './models/queue.types';
       color: var(--text-muted);
       margin-top: 0.5rem;
     }
+
 
     .instructions {
       text-align: left;
