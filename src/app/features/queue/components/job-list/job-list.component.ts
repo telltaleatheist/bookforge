@@ -91,7 +91,7 @@ interface DragState {
           </div>
 
           <div class="job-actions">
-            @if (job.id === subtaskViewJobId()) {
+            @if (subtaskViewJobIds().has(job.id)) {
               <button
                 class="view-btn active"
                 title="Return to main progress view"
@@ -505,7 +505,7 @@ export class JobListComponent {
   // Inputs
   readonly jobs = input<QueueJob[]>([]);
   readonly selectedJobId = input<string | null>(null);
-  readonly subtaskViewJobId = input<string | null>(null);
+  readonly subtaskViewJobIds = input<Set<string>>(new Set());
 
   // Outputs
   readonly remove = output<string>();
