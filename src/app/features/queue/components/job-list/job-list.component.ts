@@ -91,23 +91,14 @@ interface DragState {
           </div>
 
           <div class="job-actions">
-            @if (subtaskViewJobIds().has(job.id)) {
-              <button
-                class="view-btn active"
-                title="Return to main progress view"
-                (click)="toggleView.emit(job.id); $event.stopPropagation()"
-              >
-                &#9666; Overview
-              </button>
-            } @else {
-              <button
-                class="view-btn"
-                title="View sub-tasks and step details"
-                (click)="toggleView.emit(job.id); $event.stopPropagation()"
-              >
-                Sub-tasks
-              </button>
-            }
+            <button
+              class="view-btn"
+              [class.active]="subtaskViewJobIds().has(job.id)"
+              [title]="subtaskViewJobIds().has(job.id) ? 'Return to main progress view' : 'View sub-tasks and step details'"
+              (click)="onToggleView(job.id); $event.stopPropagation()"
+            >
+              {{ subtaskViewJobIds().has(job.id) ? '\u25C2 Overview' : 'Sub-tasks' }}
+            </button>
             @if (job.status === 'pending') {
               <button
                 class="run-btn"
@@ -512,7 +503,13 @@ export class JobListComponent {
   readonly retry = output<string>();
   readonly cancel = output<string>();
   readonly select = output<string>();
-  readonly toggleView = output<string>();
+  readonly toggleView = output<{ jobId: string; show: boolean }>();
+
+  onToggleView(jobId: string): void {
+    // Capture desired state at click time — NOT a toggle
+    const wantsSubtasks = !this.subtaskViewJobIds().has(jobId);
+    this.toggleView.emit({ jobId, show: wantsSubtasks });
+  }
   readonly reorder = output<{ fromId: string; toId: string }>();
   readonly runNow = output<string>();  // Run job standalone (doesn't chain to next)
 

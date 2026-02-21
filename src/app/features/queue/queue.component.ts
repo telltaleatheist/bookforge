@@ -97,7 +97,7 @@ import { QueueJob, JobType } from './models/queue.types';
                 (retry)="retryJob($event)"
                 (cancel)="cancelJob($event)"
                 (select)="selectJob($event)"
-                (toggleView)="toggleViewMode($event)"
+                (toggleView)="setViewMode($event.jobId, $event.show)"
                 (reorder)="reorderJobs($event)"
                 (runNow)="runJobStandalone($event)"
               />
@@ -128,7 +128,7 @@ import { QueueJob, JobType } from './models/queue.types';
                       (retry)="retryJob($event)"
                       (cancel)="cancelJob($event)"
                       (select)="selectJob($event)"
-                      (toggleView)="toggleViewMode($event)"
+                      (toggleView)="setViewMode($event.jobId, $event.show)"
                       (reorder)="reorderJobs($event)"
                       (runNow)="runJobStandalone($event)"
                     />
@@ -142,18 +142,25 @@ import { QueueJob, JobType } from './models/queue.types';
 
         <!-- Right Panel: Selected Job / Current Job / Empty State -->
         <div pane-secondary class="details-panel">
-          @if (selectedJob(); as selected) {
-            <!-- Show pipeline/progress view when sub-tasks view is active for this job -->
-            @if (selectedInSubtaskView()) {
+          @switch (rightPanel().view) {
+            @case ('workflow') {
+              <!-- Workflow pipeline: step cards for all children -->
               <app-job-progress
-                [job]="selected"
-                [childJobs]="selectedChildJobs()"
-                [message]="progressMessage()"
-                (cancel)="cancelJob(selected.id)"
+                [job]="$any(rightPanel()).job"
+                [childJobs]="$any(rightPanel()).childJobs"
+                (cancel)="cancelJob($any(rightPanel()).job.id)"
               />
-            } @else {
+            }
+            @case ('childJob') {
+              <!-- Drilled into active child: individual progress with chunks/workers/ETA -->
+              <app-job-progress
+                [job]="$any(rightPanel()).job"
+                (cancel)="cancelJob($any(rightPanel()).job.id)"
+              />
+            }
+            @case ('details') {
               <app-job-details
-                [job]="selected"
+                [job]="$any(rightPanel()).job"
                 (remove)="removeJob($event)"
                 (retry)="retryJob($event)"
                 (runNow)="runJobStandalone($event)"
@@ -161,52 +168,52 @@ import { QueueJob, JobType } from './models/queue.types';
                 (showInFolder)="showInFolder($event)"
               />
             }
-          } @else if (queueService.currentJob(); as currentJob) {
-            <!-- No selection - default to showing queue's current job -->
-            <app-job-progress
-              [job]="currentJob"
-              [message]="progressMessage()"
-              (cancel)="cancelCurrent()"
-            />
-          } @else if (queueService.jobs().length === 0) {
-            <!-- Empty state -->
-            <div class="empty-state">
-              <div class="empty-icon">&#9881;</div>
-              <h2>Processing Queue</h2>
-              <p>Add jobs from the Audiobook Producer to process them automatically.</p>
-              <div class="instructions">
-                <h4>How to use:</h4>
-                <ol>
-                  <li>Go to the Audiobook Producer</li>
-                  <li>Select an EPUB file</li>
-                  <li>Choose "Add to Queue" for OCR Cleanup or TTS Conversion</li>
-                  <li>Return here and click "Start Processing"</li>
-                </ol>
+            @case ('current') {
+              <app-job-progress
+                [job]="$any(rightPanel()).job"
+                [message]="$any(rightPanel()).message"
+                (cancel)="cancelCurrent()"
+              />
+            }
+            @case ('empty') {
+              <div class="empty-state">
+                <div class="empty-icon">&#9881;</div>
+                <h2>Processing Queue</h2>
+                <p>Add jobs from the Audiobook Producer to process them automatically.</p>
+                <div class="instructions">
+                  <h4>How to use:</h4>
+                  <ol>
+                    <li>Go to the Audiobook Producer</li>
+                    <li>Select an EPUB file</li>
+                    <li>Choose "Add to Queue" for OCR Cleanup or TTS Conversion</li>
+                    <li>Return here and click "Start Processing"</li>
+                  </ol>
+                </div>
               </div>
-            </div>
-          } @else {
-            <!-- Queue idle / ready to start - prompt to select a job -->
-            <div class="idle-state">
-              @if (queueService.isRunning()) {
-                <div class="idle-icon">&#10003;</div>
-                <h3>Queue Running</h3>
-                <p>Waiting for next job to process.</p>
-              } @else {
-                <div class="idle-icon">&#9654;</div>
-                <h3>Ready to Process</h3>
-                <p>{{ activeJobs().length }} job(s) in queue</p>
-                <p class="hint">Click a job to view details</p>
-                @if (activeJobs().length > 0) {
-                  <desktop-button
-                    variant="primary"
-                    size="md"
-                    (click)="startQueue()"
-                  >
-                    Start Processing
-                  </desktop-button>
+            }
+            @case ('idle') {
+              <div class="idle-state">
+                @if (queueService.isRunning()) {
+                  <div class="idle-icon">&#10003;</div>
+                  <h3>Queue Running</h3>
+                  <p>Waiting for next job to process.</p>
+                } @else {
+                  <div class="idle-icon">&#9654;</div>
+                  <h3>Ready to Process</h3>
+                  <p>{{ activeJobs().length }} job(s) in queue</p>
+                  <p class="hint">Click a job to view details</p>
+                  @if (activeJobs().length > 0) {
+                    <desktop-button
+                      variant="primary"
+                      size="md"
+                      (click)="startQueue()"
+                    >
+                      Start Processing
+                    </desktop-button>
+                  }
                 }
-              }
-            </div>
+              </div>
+            }
           }
         </div>
       </desktop-split-pane>
@@ -503,15 +510,6 @@ export class QueueComponent implements OnInit, OnDestroy {
   // Sub-task view state: tracks which jobs are showing the pipeline/progress view
   readonly subtaskViewJobIds = signal<Set<string>>(new Set());
 
-  // Computed: whether the currently selected job is in subtask view
-  // Using a computed avoids inline Set.has() calls in the template which can have
-  // change detection issues with @if structural directives
-  readonly selectedInSubtaskView = computed(() => {
-    const id = this.selectedJobId();
-    if (!id) return false;
-    return this.subtaskViewJobIds().has(id);
-  });
-
   // Diff modal state
   readonly diffModalPaths = signal<{ originalPath: string; cleanedPath: string } | null>(null);
   @ViewChild(DiffViewComponent) diffViewRef?: DiffViewComponent;
@@ -521,6 +519,62 @@ export class QueueComponent implements OnInit, OnDestroy {
     const id = this.selectedJobId();
     if (!id) return null;
     return this.queueService.jobs().find(j => j.id === id) || null;
+  });
+
+  // Single computed that drives the entire right panel.
+  // Returns a discriminated union so the template uses one @switch with no nested conditions.
+  //
+  // Views:
+  //   'workflow'  — Workflow pipeline: step cards showing all children (AI Cleanup ✓, TTS 5%, Reassembly)
+  //   'childJob'  — Active child job drilled-in: individual progress with chunks, workers, ETA
+  //   'details'   — Job details: BOOK / CONFIGURATION / TIMELINE (non-workflow or non-processing jobs)
+  //   'current'   — No selection, show queue's current job progress
+  //   'empty'     — No jobs at all
+  //   'idle'      — Jobs exist but none selected, queue idle
+  readonly rightPanel = computed<
+    | { view: 'workflow';  job: QueueJob; childJobs: QueueJob[] }
+    | { view: 'childJob';  job: QueueJob }
+    | { view: 'details';  job: QueueJob }
+    | { view: 'current';  job: QueueJob; message: string | undefined }
+    | { view: 'empty' }
+    | { view: 'idle' }
+  >(() => {
+    const selected = this.selectedJob();
+    if (selected) {
+      const isWorkflow = !!(selected.workflowId && !selected.parentJobId);
+      const inSubtaskView = this.subtaskViewJobIds().has(selected.id);
+
+      if (isWorkflow && inSubtaskView) {
+        // Sub-tasks mode: drill into the active child job
+        const children = this.queueService.getChildJobs(selected.id);
+        const activeChild = children.find(c => c.status === 'processing')
+          || children.find(c => c.status !== 'complete')
+          || children[0];
+        if (activeChild) {
+          return { view: 'childJob', job: activeChild };
+        }
+      }
+
+      if (isWorkflow) {
+        // Overview mode: show workflow pipeline with step cards
+        const childJobs = this.queueService.getChildJobs(selected.id);
+        return { view: 'workflow', job: selected, childJobs };
+      }
+
+      // Non-workflow job: show details
+      return { view: 'details', job: selected };
+    }
+
+    const current = this.queueService.currentJob();
+    if (current) {
+      return { view: 'current', job: current, message: this.progressMessage() };
+    }
+
+    if (this.queueService.jobs().length === 0) {
+      return { view: 'empty' };
+    }
+
+    return { view: 'idle' };
   });
 
   // Computed: active jobs (pending + processing), excluding sub-jobs
@@ -537,13 +591,6 @@ export class QueueComponent implements OnInit, OnDestroy {
   readonly pendingCount = computed(() => this.queueService.jobs().filter(j => j.status === 'pending' && !j.parentJobId).length);
   readonly completedCount = computed(() => this.queueService.jobs().filter(j => j.status === 'complete' && !j.parentJobId).length);
   readonly errorCount = computed(() => this.queueService.jobs().filter(j => j.status === 'error' && !j.parentJobId).length);
-
-  // Child jobs for selected workflow
-  readonly selectedChildJobs = computed(() => {
-    const s = this.selectedJob();
-    if (!s?.workflowId || s.parentJobId) return [];
-    return this.queueService.getChildJobs(s.id);
-  });
 
   // Accordion state
   readonly completedExpanded = signal(false);
@@ -701,24 +748,33 @@ export class QueueComponent implements OnInit, OnDestroy {
 
     // Auto-show sub-tasks view for processing jobs (if not already set)
     const job = this.queueService.jobs().find(j => j.id === jobId);
+    console.log(`[SELECT-JOB] jobId=${jobId}, jobFound=${!!job}, jobStatus=${job?.status}, jobType=${job?.type}, isWorkflow=${!!(job?.workflowId && !job?.parentJobId)}`);
     if (job && job.status === 'processing' && !this.subtaskViewJobIds().has(jobId)) {
       const newSet = new Set(this.subtaskViewJobIds());
       newSet.add(jobId);
       this.subtaskViewJobIds.set(newSet);
+      console.log(`[SELECT-JOB] Auto-added ${jobId} to subtask view`);
     }
+    console.log(`[SELECT-JOB] result: inSubtaskView=${this.subtaskViewJobIds().has(jobId)}, rightPanel=${this.rightPanel().view}`);
   }
 
-  toggleViewMode(jobId: string): void {
-    // Also select the job when toggling view
+  setViewMode(jobId: string, showSubtasks: boolean): void {
     this.selectedJobId.set(jobId);
 
-    const newSet = new Set(this.subtaskViewJobIds());
-    if (newSet.has(jobId)) {
-      newSet.delete(jobId);
-    } else {
+    const current = this.subtaskViewJobIds();
+    const isInSet = current.has(jobId);
+
+    // Only update if the state actually needs to change
+    if (showSubtasks && !isInSet) {
+      const newSet = new Set(current);
       newSet.add(jobId);
+      this.subtaskViewJobIds.set(newSet);
+    } else if (!showSubtasks && isInSet) {
+      const newSet = new Set(current);
+      newSet.delete(jobId);
+      this.subtaskViewJobIds.set(newSet);
     }
-    this.subtaskViewJobIds.set(newSet);
+    console.log(`[VIEW-SET] jobId=${jobId}, showSubtasks=${showSubtasks}, rightPanel=${this.rightPanel().view}`);
   }
 
   openDiffModal(paths: { originalPath: string; cleanedPath: string }): void {
