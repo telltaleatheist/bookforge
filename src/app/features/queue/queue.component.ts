@@ -683,9 +683,12 @@ export class QueueComponent implements OnInit, OnDestroy {
   }
 
   selectJob(jobId: string): void {
+    // If already selected, don't change anything (preserve current view mode)
+    if (this.selectedJobId() === jobId) return;
+
     this.selectedJobId.set(jobId);
 
-    // Auto-show sub-tasks view for processing jobs
+    // Auto-show sub-tasks view for processing jobs, overview for others
     const job = this.queueService.jobs().find(j => j.id === jobId);
     if (job && job.status === 'processing') {
       this.subtaskViewJobId.set(jobId);
