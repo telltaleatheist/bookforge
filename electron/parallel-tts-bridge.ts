@@ -2034,7 +2034,13 @@ function startWorker(
 
     if (code === 0) {
       worker.status = 'complete';
-      worker.completedSentences = worker.sentenceEnd - worker.sentenceStart + 1;
+      // For non-resume jobs, set completedSentences to the full range (safety net
+      // in case progress lines were missed). For resume jobs, keep the incremental
+      // count from progress lines — setting it to the full range would double-count
+      // sentences that were already done before the resume.
+      if (!session.isResumeJob) {
+        worker.completedSentences = worker.sentenceEnd - worker.sentenceStart + 1;
+      }
       logger.log('INFO', session.jobId, `Worker ${workerId} completed`, {
         duration,
         sentences: worker.completedSentences
