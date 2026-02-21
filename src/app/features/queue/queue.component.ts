@@ -144,7 +144,7 @@ import { QueueJob, JobType } from './models/queue.types';
         <div pane-secondary class="details-panel">
           @if (selectedJob(); as selected) {
             <!-- Show pipeline/progress view when sub-tasks view is active for this job -->
-            @if (subtaskViewJobIds().has(selected.id)) {
+            @if (selectedInSubtaskView()) {
               <app-job-progress
                 [job]="selected"
                 [childJobs]="selectedChildJobs()"
@@ -502,6 +502,15 @@ export class QueueComponent implements OnInit, OnDestroy {
 
   // Sub-task view state: tracks which jobs are showing the pipeline/progress view
   readonly subtaskViewJobIds = signal<Set<string>>(new Set());
+
+  // Computed: whether the currently selected job is in subtask view
+  // Using a computed avoids inline Set.has() calls in the template which can have
+  // change detection issues with @if structural directives
+  readonly selectedInSubtaskView = computed(() => {
+    const id = this.selectedJobId();
+    if (!id) return false;
+    return this.subtaskViewJobIds().has(id);
+  });
 
   // Diff modal state
   readonly diffModalPaths = signal<{ originalPath: string; cleanedPath: string } | null>(null);
