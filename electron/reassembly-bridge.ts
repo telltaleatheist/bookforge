@@ -912,7 +912,15 @@ export async function startReassembly(
       });
     } else {
       // Standard Windows/macOS/Linux spawn
-      const condaArgs = [...getCondaRunArgs(e2aPath), ...appArgs];
+      // Insert --cwd before 'python' so conda explicitly sets the working directory.
+      // e2a's lib/conf.py uses open('VERSION.txt') with a relative path, which requires
+      // cwd to be the e2a root. spawn's cwd option doesn't reliably propagate through
+      // conda run in packaged Electron apps.
+      const baseCondaArgs = getCondaRunArgs(e2aPath);
+      const pythonIdx = baseCondaArgs.indexOf('python');
+      const condaArgs = pythonIdx >= 0
+        ? [...baseCondaArgs.slice(0, pythonIdx), '--cwd', e2aPath, ...baseCondaArgs.slice(pythonIdx), ...appArgs]
+        : [...baseCondaArgs, '--cwd', e2aPath, ...appArgs];
       console.log('[REASSEMBLY] Running command: conda', condaArgs.join(' '));
 
       proc = spawn(getCondaPath(), condaArgs, {
