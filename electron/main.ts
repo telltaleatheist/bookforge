@@ -5282,7 +5282,20 @@ function setupIpcHandlers(): void {
       const safeFilename = basename.replace(/[<>:"/\\|?*]/g, '_');
       const externalPath = path.join(externalDir, `${safeFilename}.m4b`);
 
-      await fs.copyFile(m4bPath, externalPath);
+      // Atomic copy: write to .tmp- file then rename, so Syncthing never sees partial files
+      const tmpPath = path.join(externalDir, `.tmp-${safeFilename}.m4b`);
+      await fs.copyFile(m4bPath, tmpPath);
+      try {
+        await fs.rename(tmpPath, externalPath);
+      } catch (renameErr: any) {
+        // EXDEV = cross-filesystem; rename not possible, fall back to direct copy
+        if (renameErr.code === 'EXDEV') {
+          await fs.copyFile(m4bPath, externalPath);
+          await fs.unlink(tmpPath).catch(() => {});
+        } else {
+          throw renameErr;
+        }
+      }
       console.log('[audiobook:copy-to-external] Copied M4B to:', externalPath);
 
       return { success: true, externalPath };
@@ -5404,14 +5417,19 @@ function setupIpcHandlers(): void {
       }
 
       if (audioPath && fsSync.existsSync(audioPath)) {
-        await fs.copyFile(audioPath, projectAudioPath);
+        // Atomic copy: write to .tmp- then rename so Syncthing never sees partial files
+        const tmpAudio = path.join(outputDir, `.tmp-bilingual-${langKey}.m4b`);
+        await fs.copyFile(audioPath, tmpAudio);
+        await fs.rename(tmpAudio, projectAudioPath);
         console.log('[bilingual-assembly:finalize-output] Copied M4B to:', projectAudioPath);
       } else {
         return { success: false, error: `Audio file not found: ${audioPath}` };
       }
 
       if (vttPath && fsSync.existsSync(vttPath)) {
-        await fs.copyFile(vttPath, projectVttPath);
+        const tmpVtt = path.join(outputDir, `.tmp-bilingual-${langKey}.vtt`);
+        await fs.copyFile(vttPath, tmpVtt);
+        await fs.rename(tmpVtt, projectVttPath);
         console.log('[bilingual-assembly:finalize-output] Copied VTT to:', projectVttPath);
       }
 
@@ -5510,7 +5528,19 @@ function setupIpcHandlers(): void {
           // Sanitize filename for filesystem (keep apostrophes, remove only truly invalid chars)
           const safeFilename = outputBasename.replace(/[<>:"/\\|?*]/g, '_');
           const externalM4bPath = path.join(externalAudiobooksDir, `${safeFilename}.m4b`);
-          await fs.copyFile(projectAudioPath, externalM4bPath);
+          // Atomic copy: write to .tmp- then rename so Syncthing never sees partial files
+          const tmpExternal = path.join(externalAudiobooksDir, `.tmp-${safeFilename}.m4b`);
+          await fs.copyFile(projectAudioPath, tmpExternal);
+          try {
+            await fs.rename(tmpExternal, externalM4bPath);
+          } catch (renameErr: any) {
+            if (renameErr.code === 'EXDEV') {
+              await fs.copyFile(projectAudioPath, externalM4bPath);
+              await fs.unlink(tmpExternal).catch(() => {});
+            } else {
+              throw renameErr;
+            }
+          }
           console.log('[bilingual-assembly:finalize-output] Copied M4B to external:', externalM4bPath);
         } catch (err) {
           console.error('[bilingual-assembly:finalize-output] Failed to copy to external audiobooks dir (non-fatal):', err);

@@ -278,6 +278,27 @@ const activeMetadataAborts = new Map<string, AbortController>();
 // Active heartbeat intervals (so stopReassembly can clear them)
 const activeHeartbeats = new Map<string, NodeJS.Timeout>();
 
+// Active staging directories (so stopReassembly and error handlers can clean up)
+const activeStagingDirs = new Map<string, string>();
+
+/**
+ * Remove a staging directory and clean up the map entry.
+ * Logs but does not throw on failure.
+ */
+function cleanupStagingDir(jobId: string): void {
+  const stagingDir = activeStagingDirs.get(jobId);
+  if (!stagingDir) return;
+  activeStagingDirs.delete(jobId);
+  try {
+    if (fs.existsSync(stagingDir)) {
+      fs.rmSync(stagingDir, { recursive: true, force: true });
+      console.log(`[REASSEMBLY] Cleaned up staging dir: ${stagingDir}`);
+    }
+  } catch (err) {
+    console.warn('[REASSEMBLY] Failed to clean up staging dir (non-fatal):', err);
+  }
+}
+
 /**
  * Scan the e2a tmp folder for incomplete sessions
  * BFP metadata is extracted from each session's source_epub_path
@@ -831,26 +852,12 @@ export async function startReassembly(
   // Get language from session state
   const language = sessionState?.metadata?.language || 'en';
 
-  // Clean up old standard audiobook output files before writing new ones
-  if (config.outputDir && fs.existsSync(config.outputDir)) {
-    try {
-      const existing = fs.readdirSync(config.outputDir);
-      for (const file of existing) {
-        // Only remove standard audiobook files, not bilingual-* or session/
-        if (file.startsWith('bilingual-') || file === 'session') continue;
-        if (file.endsWith('.m4b') || file.endsWith('.vtt') || file.endsWith('.mp4')) {
-          const filePath = path.join(config.outputDir, file);
-          const stat = fs.statSync(filePath);
-          if (stat.isFile()) {
-            fs.unlinkSync(filePath);
-            console.log(`[REASSEMBLY] Cleaned up old output file: ${file}`);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[REASSEMBLY] Failed to clean old output files (non-fatal):', err);
-    }
-  }
+  // Create staging directory inside output/ so e2a writes there (same filesystem = atomic rename).
+  // Dot-prefix makes Syncthing unlikely to index partial files.
+  const stagingDir = path.join(config.outputDir, `.staging-${jobId}`);
+  fs.mkdirSync(stagingDir, { recursive: true });
+  activeStagingDirs.set(jobId, stagingDir);
+  console.log(`[REASSEMBLY] Created staging dir: ${stagingDir}`);
 
   // Send initial progress
   sendProgress(mainWindow, jobId, {
@@ -871,7 +878,7 @@ export async function startReassembly(
       appPath,
       '--headless',
       '--ebook', epubPath,
-      '--output_dir', config.outputDir,
+      '--output_dir', stagingDir,
       '--session', config.sessionId,
       '--session_dir', config.sessionDir,
       '--device', 'CPU',
@@ -1373,14 +1380,14 @@ export async function startReassembly(
 
       if (code === 0) {
         // Find the output file if we don't have it yet
-        if (!outputPath && config.outputDir) {
-          // Try to find the output file in the output directory
+        if (!outputPath && stagingDir) {
+          // Try to find the output file in the staging directory
           // Exclude macOS resource forks (._* files)
-          const outputFiles = fs.readdirSync(config.outputDir).filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
+          const outputFiles = fs.readdirSync(stagingDir).filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
           if (outputFiles.length > 0) {
             // Find the most recently modified m4b
             const sortedFiles = outputFiles
-              .map(f => ({ name: f, path: path.join(config.outputDir, f), mtime: fs.statSync(path.join(config.outputDir, f)).mtime }))
+              .map(f => ({ name: f, path: path.join(stagingDir, f), mtime: fs.statSync(path.join(stagingDir, f)).mtime }))
               .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
             outputPath = sortedFiles[0].path;
           }
@@ -1433,6 +1440,54 @@ export async function startReassembly(
           await applyMetadataWithM4bTool(outputPath, config.metadata, mainWindow, jobId);
         }
 
+        // ── Atomic move: staging → output dir ──
+        // All post-processing is done in staging. Now atomically move files to
+        // config.outputDir so Syncthing only ever sees complete files.
+        if (outputPath && fs.existsSync(outputPath)) {
+          try {
+            // Delete old standard audiobook files from outputDir (same logic as the removed pre-cleanup)
+            if (fs.existsSync(config.outputDir)) {
+              const existing = fs.readdirSync(config.outputDir);
+              for (const file of existing) {
+                if (file.startsWith('bilingual-') || file === 'session' || file.startsWith('.staging-')) continue;
+                if (file.endsWith('.m4b') || file.endsWith('.vtt') || file.endsWith('.mp4')) {
+                  const filePath = path.join(config.outputDir, file);
+                  const stat = fs.statSync(filePath);
+                  if (stat.isFile()) {
+                    fs.unlinkSync(filePath);
+                    console.log(`[REASSEMBLY] Cleaned up old output file: ${file}`);
+                  }
+                }
+              }
+            }
+
+            // Move all files from staging to output dir
+            const stagingFiles = fs.readdirSync(stagingDir);
+            for (const file of stagingFiles) {
+              const src = path.join(stagingDir, file);
+              const dest = path.join(config.outputDir, file);
+              if (fs.statSync(src).isFile()) {
+                fs.renameSync(src, dest);
+                console.log(`[REASSEMBLY] Moved ${file} from staging to output`);
+                // Update outputPath if this is the M4B we're tracking
+                if (src === outputPath) {
+                  outputPath = dest;
+                }
+              }
+            }
+
+            // Clean up empty staging dir
+            cleanupStagingDir(jobId);
+          } catch (moveErr) {
+            console.error('[REASSEMBLY] Failed to move files from staging (falling back):', moveErr);
+            // Files are still in staging — try to salvage by updating outputPath
+            cleanupStagingDir(jobId);
+          }
+        } else {
+          // No output file found — clean up staging
+          cleanupStagingDir(jobId);
+        }
+
         sendProgress(mainWindow, jobId, {
           phase: 'complete',
           percentage: 100,
@@ -1441,6 +1496,7 @@ export async function startReassembly(
         reassemblyLog.info('Reassembly complete', { jobId, outputPath });
         resolve({ success: true, outputPath });
       } else {
+        cleanupStagingDir(jobId);
         const errorMsg = stderr || `Process exited with code ${code}`;
         sendProgress(mainWindow, jobId, {
           phase: 'error',
@@ -1456,6 +1512,7 @@ export async function startReassembly(
       clearInterval(heartbeatInterval);
       activeHeartbeats.delete(jobId);
       activeReassemblies.delete(jobId);
+      cleanupStagingDir(jobId);
       sendProgress(mainWindow, jobId, {
         phase: 'error',
         percentage: 0,
@@ -1496,6 +1553,7 @@ export function stopReassembly(jobId: string): boolean {
 
   // Remove from active map BEFORE killing so the close handler knows it was cancelled
   activeReassemblies.delete(jobId);
+  cleanupStagingDir(jobId);
   proc.kill('SIGTERM');
 
   // Send cancellation progress so the UI cleans up the progress bar
