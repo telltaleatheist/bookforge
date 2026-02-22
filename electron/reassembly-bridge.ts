@@ -11,6 +11,7 @@ import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
+import { getFfmpegPath } from './tool-paths';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -912,20 +913,26 @@ export async function startReassembly(
       });
     } else {
       // Standard Windows/macOS/Linux spawn
-      // Insert --cwd before 'python' so conda explicitly sets the working directory.
-      // e2a's lib/conf.py uses open('VERSION.txt') with a relative path, which requires
-      // cwd to be the e2a root. spawn's cwd option doesn't reliably propagate through
-      // conda run in packaged Electron apps.
-      const baseCondaArgs = getCondaRunArgs(e2aPath);
-      const pythonIdx = baseCondaArgs.indexOf('python');
-      const condaArgs = pythonIdx >= 0
-        ? [...baseCondaArgs.slice(0, pythonIdx), '--cwd', e2aPath, ...baseCondaArgs.slice(pythonIdx), ...appArgs]
-        : [...baseCondaArgs, '--cwd', e2aPath, ...appArgs];
+      const condaArgs = [...getCondaRunArgs(e2aPath), ...appArgs];
       console.log('[REASSEMBLY] Running command: conda', condaArgs.join(' '));
+
+      // Packaged Electron apps have a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
+      // e2a's Python code (pydub) shells out to ffmpeg/ffprobe, which live in
+      // /opt/homebrew/bin or /usr/local/bin. Enrich PATH so they're found.
+      const spawnEnv: Record<string, string> = {
+        ...process.env as Record<string, string>,
+        PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8',
+      };
+      const ffmpegDir = path.dirname(getFfmpegPath());
+      if (ffmpegDir && ffmpegDir !== '.' && !(spawnEnv.PATH || '').includes(ffmpegDir)) {
+        spawnEnv.PATH = `${ffmpegDir}${path.delimiter}${spawnEnv.PATH || ''}`;
+        console.log(`[REASSEMBLY] Enriched PATH with ffmpeg dir: ${ffmpegDir}`);
+      }
 
       proc = spawn(getCondaPath(), condaArgs, {
         cwd: e2aPath,
-        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+        env: spawnEnv,
       });
     }
 
