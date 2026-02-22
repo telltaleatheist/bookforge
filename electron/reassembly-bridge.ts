@@ -1211,6 +1211,8 @@ export async function startReassembly(
             const result = JSON.parse(jsonMatch[0]);
             if (result.output_files && result.output_files[0]) {
               outputPath = result.output_files[0];
+              // e2a running in WSL emits /mnt/... paths — convert to Windows
+              if (sessionInWsl) outputPath = wslToWindowsPath(outputPath);
               console.log('[REASSEMBLY] Output path from JSON:', outputPath);
             }
           }
@@ -1227,6 +1229,8 @@ export async function startReassembly(
         const pathMatch = line.match(/(?:Audiobook saved to:|Output:)\s*(.+\.m4b)/i);
         if (pathMatch) {
           outputPath = pathMatch[1].trim();
+          // e2a running in WSL emits /mnt/... paths — convert to Windows
+          if (sessionInWsl) outputPath = wslToWindowsPath(outputPath);
         }
       }
     });
