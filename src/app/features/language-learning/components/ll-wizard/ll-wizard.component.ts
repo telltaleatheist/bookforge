@@ -1984,6 +1984,7 @@ export class LLWizardComponent implements OnInit {
   readonly originalEpubPath = input<string>('');
   readonly title = input<string>('');
   readonly author = input<string>('');
+  readonly year = input<string>('');
   readonly itemType = input<'book' | 'article'>('book');
   readonly bfpPath = input<string>('');
   readonly projectId = input<string>('');
@@ -3432,6 +3433,8 @@ export class LLWizardComponent implements OnInit {
             projectDir: projectDir,
             metadata: {
               title: `Assembly (${sourceLang.toUpperCase()}-${targetLang.toUpperCase()})`,
+              author: this.author(),
+              year: this.year() || undefined,
               bilingualPlaceholder: { role: 'assembly', projectId: this.projectId() },
             },
             config: {
@@ -3458,6 +3461,8 @@ export class LLWizardComponent implements OnInit {
             projectDir: projectDir,
             metadata: {
               title: `Assembly (${sourceLang.toUpperCase()}-${targetLang.toUpperCase()})`,
+              author: this.author(),
+              year: this.year() || undefined,
             },
             config: {
               type: 'bilingual-assembly',

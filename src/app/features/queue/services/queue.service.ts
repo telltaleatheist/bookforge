@@ -706,17 +706,19 @@ export class QueueService {
    * Returns ResumeCheckResult if found and valid, null otherwise.
    */
   private async checkBfpForResumableSession(
-    bfpPath: string,
+    _bfpPath: string,
     epubPath: string
   ): Promise<ResumeCheckResult | null> {
     const electron = window.electron as any;
     if (!electron?.parallelTts?.checkResumeFast) {
+      console.log('[QUEUE] checkResumeFast not available');
       return null;
     }
 
     try {
-      // First check for a resumable session using the epub path
-      // This will find the session directory and scan for completed sentences
+      // Check for a resumable session using the epub path
+      // This scans e2a's tmp/ folder for sessions matching this epub
+      console.log(`[QUEUE] Checking for resumable session: ${epubPath}`);
       const result = await electron.parallelTts.checkResumeFast(epubPath);
 
       if (result.success && result.data?.success) {
@@ -724,9 +726,12 @@ export class QueueService {
 
         // Only auto-resume if there's actual progress (not starting fresh)
         if (resumeData.completedSentences && resumeData.completedSentences > 0) {
-          console.log(`[QUEUE] Found resumable session: ${resumeData.completedSentences}/${resumeData.totalSentences} sentences complete`);
+          console.log(`[QUEUE] Found resumable session: ${resumeData.completedSentences}/${resumeData.totalSentences} sentences, sessionId=${resumeData.sessionId}`);
           return resumeData;
         }
+        console.log(`[QUEUE] Session found but no progress (${resumeData.completedSentences} sentences)`);
+      } else {
+        console.log(`[QUEUE] No resumable session found: ipcSuccess=${result.success}, dataSuccess=${result.data?.success}, error=${result.data?.error || result.error || 'none'}`);
       }
 
       return null;
@@ -810,6 +815,8 @@ export class QueueService {
           ...job,
           status: finalStatus,
           error: result.wasStopped ? undefined : result.error, // Clear error for stopped jobs
+          // Mark stopped jobs so TTS auto-resumes instead of starting fresh
+          wasInterrupted: result.wasStopped ? true : job.wasInterrupted,
           progress: result.success ? 100 : job.progress,
           completedAt: result.success ? new Date() : job.completedAt,
           outputPath: result.outputPath || job.outputPath,
@@ -2456,9 +2463,10 @@ export class QueueService {
             };
             shouldResume = true;
             console.log(`[QUEUE] Explicit resume job from ${job.resumeCompletedSentences} sentences`);
-          } else if (job.wasInterrupted && job.bfpPath) {
-            // Mode 2: Job was interrupted by app close/crash — try to resume
-            resumeCheckResult = await this.checkBfpForResumableSession(job.bfpPath, epubPathForTts);
+          } else if (job.wasInterrupted) {
+            // Mode 2: Job was interrupted by app close/crash/user stop — try to resume
+            console.log(`[QUEUE] Checking for resumable session: epubPath=${epubPathForTts}, bfpPath=${job.bfpPath || 'none'}, projectDir=${job.projectDir || 'none'}`);
+            resumeCheckResult = await this.checkBfpForResumableSession(job.bfpPath || job.projectDir || '', epubPathForTts);
             if (resumeCheckResult?.success && !resumeCheckResult.complete) {
               shouldResume = true;
               this._jobs.update(jobs => jobs.map(j => {
@@ -2472,7 +2480,7 @@ export class QueueService {
               }));
               console.log(`[QUEUE] Auto-resuming interrupted job: ${resumeCheckResult.completedSentences}/${resumeCheckResult.totalSentences} sentences`);
             } else {
-              console.log(`[QUEUE] Interrupted job has no resumable session, starting fresh`);
+              console.log(`[QUEUE] Interrupted job has no resumable session (result: ${JSON.stringify(resumeCheckResult?.error || resumeCheckResult?.complete ? 'complete' : 'null')}), starting fresh`);
             }
           }
           // Mode 3: Fresh start — clean old sessions
@@ -2674,11 +2682,13 @@ export class QueueService {
               if (el?.audiobook?.copyToExternal) {
                 const title = (job.metadata as any)?.title || (job.metadata as any)?.bookTitle || '';
                 const author = (job.metadata as any)?.author || '';
+                const year = (job.metadata as any)?.year || '';
                 const copyResult = await el.audiobook.copyToExternal({
                   m4bPath: result.data.outputPath,
                   externalDir,
                   title,
                   author,
+                  year,
                 });
                 if (copyResult.success) {
                   console.log('[QUEUE] Copied audiobook to external dir:', copyResult.externalPath);
@@ -3148,13 +3158,17 @@ export class QueueService {
         if (result.data?.audioPath && job.projectDir) {
           const bilingualAssembly = (window.electron as any)?.bilingualAssembly;
           if (bilingualAssembly?.finalizeOutput) {
-            // Build metadata-based filename base: "{Title}. {Author}"
+            // Build metadata-based filename base: "{Title}. {Author}. (Year)"
             // The finalize handler appends "(language learning, english-german)" with full language names
             const title = config.title || config.projectId || 'Audiobook';
-            const author = job.metadata?.author || '';
+            const author = (job.metadata as any)?.author || '';
+            const year = (job.metadata as any)?.year || '';
             let metadataFilename = title;
             if (author && !title.includes(author)) {
               metadataFilename += `. ${author}`;
+            }
+            if (year) {
+              metadataFilename += `. (${year})`;
             }
 
             const externalAudiobooksDir = this.settingsService.get<string>('externalAudiobooksDir') || '';

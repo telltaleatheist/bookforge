@@ -5261,9 +5261,10 @@ function setupIpcHandlers(): void {
     externalDir: string;
     title?: string;
     author?: string;
+    year?: string;
   }) => {
     try {
-      const { m4bPath, externalDir, title, author } = params;
+      const { m4bPath, externalDir, title, author, year } = params;
       if (!m4bPath || !externalDir) {
         return { success: false, error: 'Missing m4bPath or externalDir' };
       }
@@ -5274,12 +5275,10 @@ function setupIpcHandlers(): void {
 
       await fs.mkdir(externalDir, { recursive: true });
 
-      // Build filename: "Title. Author.m4b" or just "Title.m4b"
-      let basename = title || 'audiobook';
-      if (author && author !== 'Unknown' && !basename.includes(author)) {
-        basename += `. ${author}`;
-      }
-      const safeFilename = basename.replace(/[<>:"/\\|?*]/g, '_');
+      // Build filename using shared utility: "Title. Author. (Year).m4b"
+      const { generateOutputFilename } = await import('./tts-bridge.js');
+      const safeFilename = generateOutputFilename(title || 'audiobook', undefined, author, undefined, year)
+        .replace(/\.m4b$/, '');
       const externalPath = path.join(externalDir, `${safeFilename}.m4b`);
 
       // Atomic copy: write to .tmp- file then rename, so Syncthing never sees partial files

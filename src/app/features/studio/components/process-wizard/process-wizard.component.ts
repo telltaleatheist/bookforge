@@ -3260,6 +3260,7 @@ export class ProcessWizardComponent implements OnInit {
             metadata: {
               title: this.title(),
               author: this.author(),
+              year: this.year() || undefined,
             },
             workflowId,
             parentJobId: masterJobId,
@@ -3291,7 +3292,7 @@ export class ProcessWizardComponent implements OnInit {
             epubPath: session.processDir,
             bfpPath: this.bfpPath(),
             config: reassemblyConfig,
-            metadata: { title: reassemblyConfig.metadata.title, author: reassemblyConfig.metadata.author },
+            metadata: { title: reassemblyConfig.metadata.title, author: reassemblyConfig.metadata.author, year: reassemblyConfig.metadata.year },
             workflowId,
             parentJobId: masterJobId,
           });

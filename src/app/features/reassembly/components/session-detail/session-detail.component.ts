@@ -1388,7 +1388,8 @@ export class SessionDetailComponent {
       config,
       metadata: {
         title: config.metadata?.title,
-        author: config.metadata?.author
+        author: config.metadata?.author,
+        year: config.metadata?.year,
       },
       workflowId,
     });
