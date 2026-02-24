@@ -25,6 +25,7 @@ import {
   getWslDistro,
   windowsToWslPath
 } from './tool-paths';
+import { buildCondaSpawnEnv } from './e2a-paths';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -236,10 +237,9 @@ export async function enhanceFile(inputPath: string): Promise<EnhanceResult> {
 
     await new Promise<void>((resolve, reject) => {
       // Build environment with device-specific settings
-      const envVars: NodeJS.ProcessEnv = {
-        ...process.env,
+      const envVars: Record<string, string> = buildCondaSpawnEnv({
         PYTHONUNBUFFERED: '1',
-      };
+      });
 
       if (useWsl) {
         // Use WSL for Resemble Enhance on Windows
@@ -702,10 +702,9 @@ export async function enhanceFileForQueue(
 
     await new Promise<void>((resolve, reject) => {
       // Build environment with device-specific settings
-      const envVars: NodeJS.ProcessEnv = {
-        ...process.env,
+      const envVars: Record<string, string> = buildCondaSpawnEnv({
         PYTHONUNBUFFERED: '1',
-      };
+      });
 
       if (useWsl) {
         // Use WSL for Resemble Enhance on Windows

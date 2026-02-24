@@ -1205,6 +1205,7 @@ import {
   wslPathToWindows,
   wslToWindowsPath,
   shellEscapeArgs,
+  buildCondaSpawnEnv,
 } from './e2a-paths';
 
 // Helper to get conda run args - always uses fresh e2aPath from centralized config
@@ -1704,7 +1705,7 @@ export async function prepareSession(
       args,
       {
         cwd: getDefaultE2aPath(),
-        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
+        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
         shell: false
       },
       settings.ttsEngine
@@ -1969,7 +1970,7 @@ function startWorker(
     args,
     {
       cwd: getDefaultE2aPath(),
-      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
+      env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
       shell: false
     },
     settings.ttsEngine
@@ -2403,7 +2404,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       args,
       {
         cwd: getDefaultE2aPath(),
-        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
+        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
         shell: false
       },
       settings.ttsEngine  // Pass TTS engine to check if WSL should be used
@@ -4290,7 +4291,7 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
 
     const resumeCheckProcess = spawn(getCondaPath(), args, {
       cwd: getDefaultE2aPath(),
-      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
+      env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
     });
 
     resumeCheckProcess.stdout?.on('data', (data: Buffer) => {
@@ -4385,7 +4386,7 @@ export async function listResumableSessions(): Promise<Array<{
 
     const listProcess = spawn(getCondaPath(), args, {
       cwd: getDefaultE2aPath(),
-      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' },
+      env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
     });
 
     listProcess.stdout?.on('data', (data: Buffer) => {

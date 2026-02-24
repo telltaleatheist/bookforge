@@ -278,6 +278,36 @@ export function wslToWindowsPath(wslPath: string): string {
 export { shouldUseWsl2ForAllTts, shouldUseWsl2ForOrpheus, getWslDistro, getWslCondaPath, getWslE2aPath, getWslOrpheusCondaEnv, wslPathToWindows };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Safe env builder for conda spawns
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build a spawn-safe environment by spreading process.env and adding extras.
+ *
+ * On Windows, process.env is a case-insensitive proxy, but spreading it into
+ * a plain object loses that property.  conda's `conda run` can further strip
+ * entries during environment activation, sometimes dropping System32 from PATH
+ * which breaks its internal `chcp` call.  This helper guarantees System32 is
+ * always present.
+ */
+export function buildCondaSpawnEnv(extra: Record<string, string> = {}): Record<string, string> {
+  const env: Record<string, string> = {
+    ...(process.env as Record<string, string>),
+    ...extra,
+  };
+
+  if (process.platform === 'win32') {
+    const pathKey = Object.keys(env).find(k => k.toUpperCase() === 'PATH') || 'PATH';
+    const system32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+    if (!(env[pathKey] || '').toLowerCase().includes(system32.toLowerCase())) {
+      env[pathKey] = `${system32}${path.delimiter}${env[pathKey] || ''}`;
+    }
+  }
+
+  return env;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Exports
 // ─────────────────────────────────────────────────────────────────────────────
 

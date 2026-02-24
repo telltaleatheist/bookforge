@@ -10,6 +10,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { BrowserWindow } from 'electron';
 import { getCondaPath, getFfmpegPath, getDeepFilterCondaEnv } from './tool-paths';
+import { buildCondaSpawnEnv } from './e2a-paths';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -160,7 +161,7 @@ export async function denoiseFile(inputPath: string): Promise<DenoiseResult> {
         'run', '-n', condaEnv, '--no-capture-output',
         'deepFilter', inputWav, '-o', denoisedWav
       ], {
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1' }),
         windowsHide: true
       });
 

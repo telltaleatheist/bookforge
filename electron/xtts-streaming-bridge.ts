@@ -10,7 +10,7 @@ import { BrowserWindow, app } from 'electron';
 import * as path from 'path';
 import * as readline from 'readline';
 import * as fs from 'fs';
-import { getDefaultE2aPath, getCondaRunArgs, getCondaPath } from './e2a-paths';
+import { getDefaultE2aPath, getCondaRunArgs, getCondaPath, buildCondaSpawnEnv } from './e2a-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -100,7 +100,7 @@ export async function startSession(): Promise<{ success: boolean; voices?: strin
       const condaArgs = [...getCondaRunArgs(E2A_PATH), scriptPath];
       pythonProcess = spawn(getCondaPath(), condaArgs, {
         cwd: E2A_PATH,
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1' }),
         shell: true,
         stdio: ['pipe', 'pipe', 'pipe']
       });

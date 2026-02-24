@@ -30,6 +30,7 @@ import {
   getWslCondaPath,
   getWslE2aPath,
   windowsToWslPath,
+  buildCondaSpawnEnv,
 } from './e2a-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -302,7 +303,7 @@ export async function runBilingualAssembly(
 
       proc = spawn(condaPath, args, {
         cwd: e2aPath,
-        env: { ...process.env }
+        env: buildCondaSpawnEnv()
       });
     }
 

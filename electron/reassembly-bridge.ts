@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
-import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath } from './e2a-paths';
+import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv } from './e2a-paths';
 import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
@@ -908,7 +908,7 @@ export async function startReassembly(
 
       proc = spawn('wsl.exe', wslArgs, {
         cwd: e2aPath,
-        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }),
         shell: false
       });
     } else {
@@ -919,18 +919,12 @@ export async function startReassembly(
       // Packaged Electron apps have a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
       // e2a's Python code (pydub) shells out to ffmpeg/ffprobe, which live in
       // /opt/homebrew/bin or /usr/local/bin. Enrich PATH so they're found.
-      const spawnEnv: Record<string, string> = {
-        ...process.env as Record<string, string>,
+      const spawnEnv = buildCondaSpawnEnv({
         PYTHONUNBUFFERED: '1',
         PYTHONIOENCODING: 'utf-8',
-      };
+      });
       const ffmpegDir = path.dirname(getFfmpegPath());
       if (ffmpegDir && ffmpegDir !== '.') {
-        // On Windows, env vars are case-insensitive but process.env stores the
-        // original casing (typically 'Path'). When spread into a plain object,
-        // case-insensitivity is lost. Find the actual key to avoid creating a
-        // duplicate 'PATH' that clobbers the real 'Path' (which strips System32
-        // and breaks conda's chcp calls).
         const pathKey = Object.keys(spawnEnv).find(k => k.toUpperCase() === 'PATH') || 'PATH';
         if (!(spawnEnv[pathKey] || '').includes(ffmpegDir)) {
           spawnEnv[pathKey] = `${ffmpegDir}${path.delimiter}${spawnEnv[pathKey] || ''}`;
