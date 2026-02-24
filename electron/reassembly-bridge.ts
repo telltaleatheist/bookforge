@@ -925,9 +925,17 @@ export async function startReassembly(
         PYTHONIOENCODING: 'utf-8',
       };
       const ffmpegDir = path.dirname(getFfmpegPath());
-      if (ffmpegDir && ffmpegDir !== '.' && !(spawnEnv.PATH || '').includes(ffmpegDir)) {
-        spawnEnv.PATH = `${ffmpegDir}${path.delimiter}${spawnEnv.PATH || ''}`;
-        console.log(`[REASSEMBLY] Enriched PATH with ffmpeg dir: ${ffmpegDir}`);
+      if (ffmpegDir && ffmpegDir !== '.') {
+        // On Windows, env vars are case-insensitive but process.env stores the
+        // original casing (typically 'Path'). When spread into a plain object,
+        // case-insensitivity is lost. Find the actual key to avoid creating a
+        // duplicate 'PATH' that clobbers the real 'Path' (which strips System32
+        // and breaks conda's chcp calls).
+        const pathKey = Object.keys(spawnEnv).find(k => k.toUpperCase() === 'PATH') || 'PATH';
+        if (!(spawnEnv[pathKey] || '').includes(ffmpegDir)) {
+          spawnEnv[pathKey] = `${ffmpegDir}${path.delimiter}${spawnEnv[pathKey] || ''}`;
+          console.log(`[REASSEMBLY] Enriched ${pathKey} with ffmpeg dir: ${ffmpegDir}`);
+        }
       }
 
       proc = spawn(getCondaPath(), condaArgs, {
