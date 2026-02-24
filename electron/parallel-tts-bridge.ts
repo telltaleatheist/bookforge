@@ -3727,132 +3727,185 @@ function extractTitleFromPath(folderPath: string): string {
 }
 
 /**
- * Find session directory for an epub by scanning e2a's tmp folder
+ * Normalize a file path to a canonical form for comparison.
+ * Converts Windows paths, WSL /mnt/ paths, and UNC \\wsl$\ paths
+ * all to lowercase forward-slash Windows-style (e.g. c:/users/...).
+ * On Mac/Linux, just lowercases and normalizes slashes.
+ */
+function normalizePathForComparison(p: string): string {
+  if (!p) return '';
+  let normalized = p.replace(/\\/g, '/').toLowerCase();
+
+  // WSL /mnt/c/... → c:/...
+  const mntMatch = normalized.match(/^\/mnt\/([a-z])(\/.*)?$/);
+  if (mntMatch) {
+    normalized = `${mntMatch[1]}:${mntMatch[2] || '/'}`;
+  }
+
+  // UNC \\wsl$\distro\... or //wsl$/distro/... → strip to WSL-native, then leave as-is
+  // These are WSL-internal paths, not Windows drive paths — just normalize slashes
+  const uncMatch = normalized.match(/^\/\/wsl[\$.](?:localhost)?\/[^/]+\/(.*)/);
+  if (uncMatch) {
+    normalized = `/${uncMatch[1]}`;
+  }
+
+  return normalized;
+}
+
+/**
+ * Get all e2a tmp directories to search for sessions.
+ * Returns the Windows e2a tmp dir, plus the WSL e2a tmp dir (via UNC) when WSL is enabled.
+ */
+function getSessionTmpDirs(): string[] {
+  const dirs: string[] = [];
+
+  // Always include the Windows/native e2a tmp dir
+  const nativeTmp = path.join(getDefaultE2aPath(), 'tmp');
+  dirs.push(nativeTmp);
+
+  // On Windows, also include the WSL e2a tmp dir if WSL TTS is enabled
+  if (os.platform() === 'win32' && (shouldUseWsl2ForAllTts() || shouldUseWsl2ForOrpheus())) {
+    const wslE2aPath = getWslE2aPath();
+    const wslTmpDir = `${wslE2aPath}/tmp`;
+    // Convert WSL path to Windows UNC so Node.js can read it
+    const uncTmpDir = wslPathToWindows(wslTmpDir);
+    // Only add if it's a different path than the native one
+    if (uncTmpDir !== nativeTmp) {
+      dirs.push(uncTmpDir);
+    }
+  }
+
+  return dirs;
+}
+
+/**
+ * Check if a session's stored epub path matches the search epub path.
+ * Handles cross-platform path format differences (Windows vs WSL vs UNC).
+ */
+function epubPathsMatch(storedPath: string, searchPath: string): boolean {
+  return normalizePathForComparison(storedPath) === normalizePathForComparison(searchPath);
+}
+
+/**
+ * Find session directory for an epub by scanning e2a's tmp folder(s)
  * Returns the session directory path if found, or null
- * Matches by exact epub path only (epub_path or source_epub_path in session state)
+ * Matches by normalized epub path (epub_path or source_epub_path in session state)
+ * Searches both Windows and WSL tmp directories when WSL is enabled.
  *
  * When multiple sessions match the same epub:
  * - Prefers incomplete sessions over complete ones (for resume functionality)
  * - Among incomplete sessions, prefers the most recent (by folder modification time)
  */
 async function findSessionForEpub(epubPath: string): Promise<string | null> {
-  const tmpDir = path.join(getDefaultE2aPath(), 'tmp');
+  const tmpDirs = getSessionTmpDirs();
 
-  console.log(`[PARALLEL-TTS] e2aPath: ${getDefaultE2aPath()}`);
-  console.log(`[PARALLEL-TTS] tmpDir: ${tmpDir}`);
-  console.log(`[PARALLEL-TTS] Quick search for session matching: ${epubPath}`);
+  console.log(`[PARALLEL-TTS] Searching ${tmpDirs.length} tmp dir(s) for session matching: ${epubPath}`);
+  for (const d of tmpDirs) console.log(`[PARALLEL-TTS]   tmpDir: ${d}`);
 
-  try {
-    // Check if tmp dir exists
+  // Collect ALL matching sessions across all tmp dirs
+  interface SessionMatch {
+    sessionPath: string;
+    processPath: string;
+    totalSentences: number;
+    completedSentences: number;
+    isComplete: boolean;
+    mtime: number;
+  }
+  const matches: SessionMatch[] = [];
+
+  for (const tmpDir of tmpDirs) {
     try {
-      await fs.access(tmpDir);
-    } catch {
-      console.log(`[PARALLEL-TTS] No tmp directory - no sessions to check`);
-      return null;
-    }
-
-    // List all session directories (ebook-{UUID})
-    const sessionDirs = await fs.readdir(tmpDir);
-    const ebookDirs = sessionDirs.filter(d => d.startsWith('ebook-'));
-
-    if (ebookDirs.length === 0) {
-      console.log(`[PARALLEL-TTS] No session directories found`);
-      return null;
-    }
-
-    console.log(`[PARALLEL-TTS] Checking ${ebookDirs.length} session(s) for exact match`);
-
-    // Collect ALL matching sessions with their completion status
-    interface SessionMatch {
-      sessionPath: string;
-      processPath: string;
-      totalSentences: number;
-      completedSentences: number;
-      isComplete: boolean;
-      mtime: number;
-    }
-    const matches: SessionMatch[] = [];
-
-    for (const sessionDir of ebookDirs) {
-      const sessionPath = path.join(tmpDir, sessionDir);
-
+      // Check if tmp dir exists
       try {
-        const sessionStat = await fs.stat(sessionPath);
-        if (!sessionStat.isDirectory()) continue;
-
-        // List process directories (hash folders)
-        const processDirs = await fs.readdir(sessionPath);
-
-        for (const processDir of processDirs) {
-          const processPath = path.join(sessionPath, processDir);
-          const statePath = path.join(processPath, 'session-state.json');
-
-          try {
-            const stateContent = await fs.readFile(statePath, 'utf-8');
-            const state = JSON.parse(stateContent);
-
-            // Check if this session matches the epub path
-            const matches_epub = state.epub_path === epubPath;
-            const matches_source = state.source_epub_path === epubPath;
-
-            if (matches_epub || matches_source) {
-              console.log(`[PARALLEL-TTS] Found matching session ${sessionDir}:`);
-              console.log(`[PARALLEL-TTS]   total_sentences: ${state.total_sentences}`);
-
-              // Quick count of completed sentences
-              const sentencesDir = state.chapters_dir_sentences;
-              let completedCount = 0;
-              if (sentencesDir) {
-                const sentencesDirReadable = toReadablePath(sentencesDir);
-                try {
-                  const files = await fs.readdir(sentencesDirReadable);
-                  completedCount = files.filter(f => f.endsWith('.flac')).length;
-                } catch {
-                  // Can't read sentences dir
-                }
-              }
-
-              const totalSentences = state.total_sentences || 0;
-              const isComplete = completedCount >= totalSentences && totalSentences > 0;
-
-              console.log(`[PARALLEL-TTS]   completed: ${completedCount}/${totalSentences} (${isComplete ? 'COMPLETE' : 'INCOMPLETE'})`);
-
-              matches.push({
-                sessionPath,
-                processPath,
-                totalSentences,
-                completedSentences: completedCount,
-                isComplete,
-                mtime: sessionStat.mtimeMs
-              });
-            }
-          } catch {
-            // No session-state.json or invalid JSON - skip
-            continue;
-          }
-        }
+        await fs.access(tmpDir);
       } catch {
+        console.log(`[PARALLEL-TTS] Tmp dir not accessible: ${tmpDir}`);
         continue;
       }
+
+      // List all session directories (ebook-{UUID})
+      const sessionDirs = await fs.readdir(tmpDir);
+      const ebookDirs = sessionDirs.filter(d => d.startsWith('ebook-'));
+
+      if (ebookDirs.length === 0) continue;
+
+      console.log(`[PARALLEL-TTS] Checking ${ebookDirs.length} session(s) in ${tmpDir}`);
+
+      for (const sessionDir of ebookDirs) {
+        const sessionPath = path.join(tmpDir, sessionDir);
+
+        try {
+          const sessionStat = await fs.stat(sessionPath);
+          if (!sessionStat.isDirectory()) continue;
+
+          // List process directories (hash folders)
+          const processDirs = await fs.readdir(sessionPath);
+
+          for (const processDir of processDirs) {
+            const processPath = path.join(sessionPath, processDir);
+            const statePath = path.join(processPath, 'session-state.json');
+
+            try {
+              const stateContent = await fs.readFile(statePath, 'utf-8');
+              const state = JSON.parse(stateContent);
+
+              // Check if this session matches the epub path (normalized comparison)
+              if (epubPathsMatch(state.epub_path || '', epubPath) ||
+                  epubPathsMatch(state.source_epub_path || '', epubPath)) {
+                console.log(`[PARALLEL-TTS] Found matching session ${sessionDir}:`);
+                console.log(`[PARALLEL-TTS]   total_sentences: ${state.total_sentences}`);
+
+                // Quick count of completed sentences
+                const sentencesDir = state.chapters_dir_sentences;
+                let completedCount = 0;
+                if (sentencesDir) {
+                  const sentencesDirReadable = toReadablePath(sentencesDir);
+                  try {
+                    const files = await fs.readdir(sentencesDirReadable);
+                    completedCount = files.filter(f => f.endsWith('.flac')).length;
+                  } catch {
+                    // Can't read sentences dir
+                  }
+                }
+
+                const totalSentences = state.total_sentences || 0;
+                const isComplete = completedCount >= totalSentences && totalSentences > 0;
+
+                console.log(`[PARALLEL-TTS]   completed: ${completedCount}/${totalSentences} (${isComplete ? 'COMPLETE' : 'INCOMPLETE'})`);
+
+                matches.push({
+                  sessionPath,
+                  processPath,
+                  totalSentences,
+                  completedSentences: completedCount,
+                  isComplete,
+                  mtime: sessionStat.mtimeMs
+                });
+              }
+            } catch {
+              // No session-state.json or invalid JSON - skip
+              continue;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+    } catch (err) {
+      console.error(`[PARALLEL-TTS] Error scanning tmp dir ${tmpDir}:`, err);
     }
-
-    if (matches.length === 0) {
-      console.log(`[PARALLEL-TTS] No matching session found`);
-      return null;
-    }
-
-    // Always return the most recent session (by folder modification time)
-    matches.sort((a, b) => b.mtime - a.mtime);
-    const best = matches[0];
-    console.log(`[PARALLEL-TTS] Selected most recent session: ${best.sessionPath} (${best.completedSentences}/${best.totalSentences}, ${best.isComplete ? 'complete' : 'incomplete'})`);
-    return best.sessionPath;
-
-  } catch (err) {
-    console.error('[PARALLEL-TTS] Error scanning for sessions:', err);
   }
 
-  console.log(`[PARALLEL-TTS] No matching session found`);
-  return null;
+  if (matches.length === 0) {
+    console.log(`[PARALLEL-TTS] No matching session found`);
+    return null;
+  }
+
+  // Always return the most recent session (by folder modification time)
+  matches.sort((a, b) => b.mtime - a.mtime);
+  const best = matches[0];
+  console.log(`[PARALLEL-TTS] Selected most recent session: ${best.sessionPath} (${best.completedSentences}/${best.totalSentences}, ${best.isComplete ? 'complete' : 'incomplete'})`);
+  return best.sessionPath;
 }
 
 /**
@@ -3862,73 +3915,69 @@ async function findSessionForEpub(epubPath: string): Promise<string | null> {
  * @returns Number of sessions deleted
  */
 export async function deleteSessionsForEpub(epubPath: string): Promise<number> {
-  const tmpDir = path.join(getDefaultE2aPath(), 'tmp');
+  const tmpDirs = getSessionTmpDirs();
 
   console.log(`[PARALLEL-TTS] Deleting sessions for: ${epubPath}`);
 
-  try {
-    // Check if tmp dir exists
+  let deletedCount = 0;
+
+  for (const tmpDir of tmpDirs) {
     try {
-      await fs.access(tmpDir);
-    } catch {
-      console.log(`[PARALLEL-TTS] No tmp directory - nothing to delete`);
-      return 0;
-    }
-
-    // List all session directories (ebook-{UUID})
-    const sessionDirs = await fs.readdir(tmpDir);
-    const ebookDirs = sessionDirs.filter(d => d.startsWith('ebook-'));
-
-    if (ebookDirs.length === 0) {
-      return 0;
-    }
-
-    let deletedCount = 0;
-
-    for (const sessionDir of ebookDirs) {
-      const sessionPath = path.join(tmpDir, sessionDir);
-
+      // Check if tmp dir exists
       try {
-        const sessionStat = await fs.stat(sessionPath);
-        if (!sessionStat.isDirectory()) continue;
-
-        // List process directories (hash folders)
-        const processDirs = await fs.readdir(sessionPath);
-
-        for (const processDir of processDirs) {
-          const processPath = path.join(sessionPath, processDir);
-          const statePath = path.join(processPath, 'session-state.json');
-
-          try {
-            const stateContent = await fs.readFile(statePath, 'utf-8');
-            const state = JSON.parse(stateContent);
-
-            // Check if this session matches the epub path
-            const matchesEpub = state.epub_path === epubPath;
-            const matchesSource = state.source_epub_path === epubPath;
-
-            if (matchesEpub || matchesSource) {
-              console.log(`[PARALLEL-TTS] Deleting session: ${sessionPath}`);
-              await fs.rm(sessionPath, { recursive: true, force: true });
-              deletedCount++;
-              break; // Session folder deleted, move to next
-            }
-          } catch {
-            // No session-state.json or invalid - skip
-            continue;
-          }
-        }
+        await fs.access(tmpDir);
       } catch {
         continue;
       }
-    }
 
-    console.log(`[PARALLEL-TTS] Deleted ${deletedCount} session(s) for ${epubPath}`);
-    return deletedCount;
-  } catch (err) {
-    console.error('[PARALLEL-TTS] Error deleting sessions:', err);
-    return 0;
+      // List all session directories (ebook-{UUID})
+      const sessionDirs = await fs.readdir(tmpDir);
+      const ebookDirs = sessionDirs.filter(d => d.startsWith('ebook-'));
+
+      if (ebookDirs.length === 0) continue;
+
+      for (const sessionDir of ebookDirs) {
+        const sessionPath = path.join(tmpDir, sessionDir);
+
+        try {
+          const sessionStat = await fs.stat(sessionPath);
+          if (!sessionStat.isDirectory()) continue;
+
+          // List process directories (hash folders)
+          const processDirs = await fs.readdir(sessionPath);
+
+          for (const processDir of processDirs) {
+            const processPath = path.join(sessionPath, processDir);
+            const statePath = path.join(processPath, 'session-state.json');
+
+            try {
+              const stateContent = await fs.readFile(statePath, 'utf-8');
+              const state = JSON.parse(stateContent);
+
+              // Check if this session matches the epub path (normalized comparison)
+              if (epubPathsMatch(state.epub_path || '', epubPath) ||
+                  epubPathsMatch(state.source_epub_path || '', epubPath)) {
+                console.log(`[PARALLEL-TTS] Deleting session: ${sessionPath}`);
+                await fs.rm(sessionPath, { recursive: true, force: true });
+                deletedCount++;
+                break; // Session folder deleted, move to next
+              }
+            } catch {
+              // No session-state.json or invalid - skip
+              continue;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+    } catch (err) {
+      console.error(`[PARALLEL-TTS] Error scanning tmp dir ${tmpDir} for deletion:`, err);
+    }
   }
+
+  console.log(`[PARALLEL-TTS] Deleted ${deletedCount} session(s) for ${epubPath}`);
+  return deletedCount;
 }
 
 /**
