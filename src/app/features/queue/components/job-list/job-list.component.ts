@@ -27,7 +27,7 @@ interface DragState {
           [class.selected]="job.id === selectedJobId()"
           [class.dragging]="dragState()?.draggedIndex === i"
           [class.drag-over]="dragState()?.dragOverIndex === i && dragState()?.draggedIndex !== i"
-          [attr.draggable]="job.status === 'pending'"
+          [attr.draggable]="true"
           (click)="select.emit(job.id)"
           (dragstart)="onDragStart($event, i, job)"
           (dragover)="onDragOver($event, i, job)"
@@ -524,18 +524,11 @@ export class JobListComponent {
   readonly dragState = signal<DragState | null>(null);
 
   onDragStart(event: DragEvent, index: number, job: QueueJob): void {
-    if (job.status !== 'pending') {
-      event.preventDefault();
-      return;
-    }
     event.dataTransfer?.setData('text/plain', index.toString());
     this.dragState.set({ draggedIndex: index, dragOverIndex: -1 });
   }
 
   onDragOver(event: DragEvent, index: number, job: QueueJob): void {
-    // Only allow dropping on pending jobs
-    if (job.status !== 'pending') return;
-
     event.preventDefault();
     const state = this.dragState();
     if (state && state.dragOverIndex !== index) {

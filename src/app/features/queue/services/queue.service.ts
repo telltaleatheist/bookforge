@@ -1840,6 +1840,29 @@ export class QueueService {
       }
     }
 
+    // Reposition the retried job to just after the currently processing job
+    // so it appears below the running item in the UI (not above it).
+    const processingIdx = this._jobs().findIndex(j => j.status === 'processing' && !j.parentJobId);
+    if (processingIdx >= 0) {
+      const retriedIdx = this._jobs().findIndex(j => j.id === jobId);
+      if (retriedIdx >= 0 && retriedIdx < processingIdx) {
+        this._jobs.update(jobs => {
+          const newJobs = [...jobs];
+          // Collect the retried job and any children that belong to it
+          const idsToMove = new Set([jobId]);
+          for (const j of newJobs) {
+            if (j.parentJobId === jobId) idsToMove.add(j.id);
+          }
+          const toMove = newJobs.filter(j => idsToMove.has(j.id));
+          const remaining = newJobs.filter(j => !idsToMove.has(j.id));
+          // Find the processing job in the remaining array and insert after it
+          const newProcessingIdx = remaining.findIndex(j => j.status === 'processing' && !j.parentJobId);
+          remaining.splice(newProcessingIdx + 1, 0, ...toMove);
+          return remaining;
+        });
+      }
+    }
+
     // Try to process if queue is running
     if (this._isRunning() && !this._currentJobId()) {
       await this.processNext();
@@ -2049,7 +2072,7 @@ export class QueueService {
   reorderJobsById(fromId: string, toId: string): boolean {
     const jobs = this._jobs();
     const fromJob = jobs.find(j => j.id === fromId);
-    if (!fromJob || fromJob.status !== 'pending') return false;
+    if (!fromJob) return false;
 
     // Collect the "block" to move: the job itself + any children (if it's a master)
     const isMaster = fromJob.workflowId && !fromJob.parentJobId;
