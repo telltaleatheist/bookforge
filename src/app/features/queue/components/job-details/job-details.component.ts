@@ -56,6 +56,9 @@ import { QueueService } from '../../services/queue.service';
               </desktop-button>
             }
             @if (selectedJob.status === 'complete') {
+              <desktop-button variant="primary" size="xs" (click)="retry.emit(selectedJob.id)">
+                Retry
+              </desktop-button>
               <desktop-button variant="ghost" size="xs" (click)="remove.emit(selectedJob.id)">
                 Remove
               </desktop-button>

@@ -137,11 +137,10 @@ interface DragState {
               <desktop-button
                 variant="ghost"
                 size="xs"
-                [iconOnly]="true"
                 title="Retry"
                 (click)="retry.emit(job.id); $event.stopPropagation()"
               >
-                &#8635;
+                Retry
               </desktop-button>
               <button
                 class="remove-btn"
@@ -152,6 +151,14 @@ interface DragState {
               </button>
             }
             @if (job.status === 'complete') {
+              <desktop-button
+                variant="ghost"
+                size="xs"
+                title="Retry"
+                (click)="retry.emit(job.id); $event.stopPropagation()"
+              >
+                Retry
+              </desktop-button>
               <button
                 class="remove-btn"
                 title="Remove"

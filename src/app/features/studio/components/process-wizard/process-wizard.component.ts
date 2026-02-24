@@ -2607,13 +2607,13 @@ export class ProcessWizardComponent implements OnInit {
         }));
         this.ollamaModels.set(models);
 
-        // Validate selected cleanup model exists
+        // Only default to first model when no model is set at all.
+        // If the user's saved model isn't in the list (e.g., not pulled yet),
+        // keep it — don't silently override with a different model.
         const currentModel = this.cleanupModel();
-        const modelExists = models.some((m: { value: string }) => m.value === currentModel);
-        if ((!currentModel || !modelExists) && models.length > 0) {
+        if (!currentModel && models.length > 0) {
           this.cleanupModel.set(models[0].value);
         }
-        // Also initialize translate model if empty
         const currentTranslateModel = this.translateModel();
         if (!currentTranslateModel && models.length > 0) {
           this.translateModel.set(models[0].value);
@@ -2679,50 +2679,65 @@ export class ProcessWizardComponent implements OnInit {
   selectCleanupProvider(provider: AIProvider): void {
     if (provider === 'claude' && !this.hasClaudeKey()) return;
     if (provider === 'openai' && !this.hasOpenAIKey()) return;
+    if (provider === this.cleanupProvider()) return; // Re-clicking same provider — keep current model
 
     this.cleanupProvider.set(provider);
     const config = this.settingsService.getAIConfig();
 
     if (provider === 'ollama') {
       const models = this.ollamaModels();
-      this.cleanupModel.set(models.length > 0 ? models[0].value : config.ollama.model);
+      // Prefer settings-saved model, fall back to first available
+      const saved = config.ollama.model;
+      const match = saved && models.some(m => m.value === saved);
+      this.cleanupModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
     } else if (provider === 'claude') {
       if (this.claudeModels().length === 0) {
         this.fetchClaudeModels(config.claude.apiKey);
       }
       const models = this.claudeModels();
-      this.cleanupModel.set(models.length > 0 ? models[0].value : config.claude.model);
+      const saved = config.claude.model;
+      const match = saved && models.some(m => m.value === saved);
+      this.cleanupModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
     } else if (provider === 'openai') {
       if (this.openaiModels().length === 0) {
         this.fetchOpenAIModels(config.openai.apiKey);
       }
       const models = this.openaiModels();
-      this.cleanupModel.set(models.length > 0 ? models[0].value : config.openai.model);
+      const saved = config.openai.model;
+      const match = saved && models.some(m => m.value === saved);
+      this.cleanupModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
     }
   }
 
   selectTranslateProvider(provider: AIProvider): void {
     if (provider === 'claude' && !this.hasClaudeKey()) return;
     if (provider === 'openai' && !this.hasOpenAIKey()) return;
+    if (provider === this.translateProvider()) return; // Re-clicking same provider — keep current model
 
     this.translateProvider.set(provider);
     const config = this.settingsService.getAIConfig();
 
     if (provider === 'ollama') {
       const models = this.ollamaModels();
-      this.translateModel.set(models.length > 0 ? models[0].value : config.ollama.model);
+      const saved = config.ollama.model;
+      const match = saved && models.some(m => m.value === saved);
+      this.translateModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
     } else if (provider === 'claude') {
       if (this.claudeModels().length === 0) {
         this.fetchClaudeModels(config.claude.apiKey);
       }
       const models = this.claudeModels();
-      this.translateModel.set(models.length > 0 ? models[0].value : config.claude.model);
+      const saved = config.claude.model;
+      const match = saved && models.some(m => m.value === saved);
+      this.translateModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
     } else if (provider === 'openai') {
       if (this.openaiModels().length === 0) {
         this.fetchOpenAIModels(config.openai.apiKey);
       }
       const models = this.openaiModels();
-      this.translateModel.set(models.length > 0 ? models[0].value : config.openai.model);
+      const saved = config.openai.model;
+      const match = saved && models.some(m => m.value === saved);
+      this.translateModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
     }
   }
 

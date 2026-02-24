@@ -786,13 +786,9 @@ export class QueueService {
     const completedJob = this._jobs().find(j => j.id === result.jobId);
     console.log('[QUEUE] Found completed job:', completedJob ? `type=${completedJob.type}, id=${completedJob.id}, status=${completedJob.status}` : 'NOT FOUND');
 
-    // Guard against double-processing — inline + event-based handlers can both call this.
-    // The first handler does the full work (session caching, chaining, processNext).
-    // The second handler must NOT call processNext() — doing so would start the next job
-    // while the first handler is still awaiting async work (e.g., WSL session caching),
-    // causing race conditions where chained jobs can't find the session yet.
+    // Guard against double-processing (status-based, for non-race cases like retries)
     if (completedJob && (completedJob.status === 'complete' || completedJob.status === 'error')) {
-      console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping (first handler will call processNext)`);
+      console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping`);
       return;
     }
 
@@ -1773,26 +1769,76 @@ export class QueueService {
   }
 
   /**
-   * Retry a failed job
+   * Retry a failed or completed job.
+   * For workflow (master) jobs, only resets non-complete children — subtasks that
+   * already succeeded are left alone.
    */
   async retryJob(jobId: string): Promise<boolean> {
     const job = this._jobs().find(j => j.id === jobId);
-    if (!job || job.status !== 'error') return false;
+    if (!job || (job.status !== 'error' && job.status !== 'complete')) return false;
 
-    // Reset job to pending
-    this._jobs.update(jobs =>
-      jobs.map(j => {
-        if (j.id !== jobId) return j;
-        return {
-          ...j,
-          status: 'pending' as JobStatus,
-          error: undefined,
-          progress: undefined,
-          startedAt: undefined,
-          completedAt: undefined
-        };
-      })
-    );
+    // A "master" job is a container (type 'audiobook') that has children via parentJobId.
+    // LL wizard uses flat workflows (all peers share workflowId, no parentJobId) — not master/child.
+    const hasChildren = this._jobs().some(j => j.parentJobId === jobId);
+
+    if (hasChildren) {
+      // Master job: only reset children that didn't complete successfully
+      const childIdsToReset = new Set(
+        this._jobs()
+          .filter(j => j.parentJobId === jobId && j.status !== 'complete')
+          .map(j => j.id)
+      );
+      console.log(`[QUEUE] Retrying workflow ${jobId}: resetting master + ${childIdsToReset.size} non-complete child(ren)`);
+
+      this._jobs.update(jobs =>
+        jobs.map(j => {
+          if (j.id === jobId || childIdsToReset.has(j.id)) {
+            return {
+              ...j,
+              status: 'pending' as JobStatus,
+              error: undefined,
+              progress: undefined,
+              startedAt: undefined,
+              completedAt: undefined
+            };
+          }
+          return j;
+        })
+      );
+    } else {
+      // Single job, flat workflow peer, or child job: reset just this one
+      this._jobs.update(jobs =>
+        jobs.map(j => {
+          if (j.id !== jobId) return j;
+          return {
+            ...j,
+            status: 'pending' as JobStatus,
+            error: undefined,
+            progress: undefined,
+            startedAt: undefined,
+            completedAt: undefined
+          };
+        })
+      );
+
+      // If this is a child job, also reset the master so it tracks progress again
+      if (job.parentJobId) {
+        const masterId = job.parentJobId;
+        this._jobs.update(jobs =>
+          jobs.map(j => {
+            if (j.id !== masterId) return j;
+            return {
+              ...j,
+              status: 'pending' as JobStatus,
+              error: undefined,
+              progress: undefined,
+              startedAt: undefined,
+              completedAt: undefined
+            };
+          })
+        );
+      }
+    }
 
     // Try to process if queue is running
     if (this._isRunning() && !this._currentJobId()) {
@@ -2511,25 +2557,15 @@ export class QueueService {
             await electron.parallelTts.startConversion(job.id, parallelConfig);
           }
 
-          // Wait for TTS to actually finish (the invoke above returns immediately)
-          const ttsResult = await ttsComplete;
-          console.log(`[QUEUE] Parallel TTS inline completion: success=${ttsResult.success}, jobId=${job.id}`);
-
-          // Delegate to handleJobComplete for all TTS-specific logic
-          // (session caching, processNext, etc.)
-          // This is idempotent — if the event-based handler already processed this, it's a no-op
-          // because _currentJobId will have been cleared and the "not the current job" branch runs.
-          await this.handleJobComplete({
-            jobId: job.id,
-            success: ttsResult.success,
-            outputPath: ttsResult.outputPath,
-            error: ttsResult.error,
-            analytics: ttsResult.analytics,
-            wasStopped: ttsResult.wasStopped,
-            stopInfo: ttsResult.stopInfo,
-            sessionId: ttsResult.sessionId,
-            sessionDir: ttsResult.sessionDir,
-          });
+          // Wait for TTS to actually finish (the invoke above returns immediately).
+          // The constructor listener (line ~382) handles all completion logic — session
+          // caching, status update, chaining, and processNext(). We only await here so
+          // processNext() doesn't fall through to the next job prematurely.
+          // Do NOT call handleJobComplete here — that caused a double-call race where the
+          // second invocation deleted the just-cached session and then failed mid-copy.
+          await ttsComplete;
+          console.log(`[QUEUE] Parallel TTS inline await resolved for jobId=${job.id}, constructor listener handled completion`);
+          return;
 
         } else {
           // Use sequential TTS conversion

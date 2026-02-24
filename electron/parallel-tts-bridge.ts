@@ -465,6 +465,36 @@ export async function cacheSessionToProject(
     const destDir = path.join(langSessionParent, sessionFolderName);
     const tempDestDir = path.join(langSessionParent, `.tmp-${sessionFolderName}`);
 
+    // Idempotency: if the destination already has a valid cached session, return early.
+    // This prevents a second call from deleting the just-cached session and failing mid-copy.
+    try {
+      await fs.access(destDir);
+      // destDir exists — check if it contains a valid session (chapters/sentences/ somewhere)
+      let existingSentencesDir: string | null = null;
+      const directSentences = path.join(destDir, 'chapters', 'sentences');
+      try {
+        await fs.access(directSentences);
+        existingSentencesDir = directSentences;
+      } catch {
+        // Check hash subdir: ebook-{uuid}/{hash}/chapters/sentences/
+        const entries = await fs.readdir(destDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && !entry.name.startsWith('.')) {
+            const hashSentences = path.join(destDir, entry.name, 'chapters', 'sentences');
+            try {
+              await fs.access(hashSentences);
+              existingSentencesDir = hashSentences;
+              break;
+            } catch { /* not this subdir */ }
+          }
+        }
+      }
+      if (existingSentencesDir) {
+        console.log(`[PARALLEL-TTS] Session already cached at ${destDir}, skipping re-copy`);
+        return { success: true, cachedSentencesDir: existingSentencesDir };
+      }
+    } catch { /* destDir doesn't exist — proceed with caching */ }
+
     await fs.mkdir(langSessionParent, { recursive: true });
 
     // Clean up any leftover temp dir from a previous failed attempt

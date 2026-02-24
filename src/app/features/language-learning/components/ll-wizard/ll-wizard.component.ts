@@ -2431,12 +2431,14 @@ export class LLWizardComponent implements OnInit {
         }));
         this.ollamaModels.set(models);
 
-        // Validate selected models exist
+        // Only default to first model when no model is set at all.
+        // If the user's saved model isn't in the list (e.g., not pulled yet),
+        // keep it — don't silently override with a different model.
         if (models.length > 0) {
-          if (!this.cleanupModel() || !models.some((m: { value: string }) => m.value === this.cleanupModel())) {
+          if (!this.cleanupModel()) {
             this.cleanupModel.set(models[0].value);
           }
-          if (!this.translateModel() || !models.some((m: { value: string }) => m.value === this.translateModel())) {
+          if (!this.translateModel()) {
             this.translateModel.set(models[0].value);
           }
         }
@@ -2671,23 +2673,27 @@ export class LLWizardComponent implements OnInit {
   selectCleanupProvider(provider: AIProvider): void {
     if (provider === 'claude' && !this.hasClaudeKey()) return;
     if (provider === 'openai' && !this.hasOpenAIKey()) return;
+    if (provider === this.cleanupProvider()) return; // Re-clicking same provider — keep current model
 
     this.cleanupProvider.set(provider);
+    const config = this.settingsService.getAIConfig();
     const models = this.getModelsForProvider(provider);
-    if (models.length > 0) {
-      this.cleanupModel.set(models[0].value);
-    }
+    const saved = (config as any)[provider]?.model;
+    const match = saved && models.some(m => m.value === saved);
+    this.cleanupModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
   }
 
   selectTranslateProvider(provider: AIProvider): void {
     if (provider === 'claude' && !this.hasClaudeKey()) return;
     if (provider === 'openai' && !this.hasOpenAIKey()) return;
+    if (provider === this.translateProvider()) return; // Re-clicking same provider — keep current model
 
     this.translateProvider.set(provider);
+    const config = this.settingsService.getAIConfig();
     const models = this.getModelsForProvider(provider);
-    if (models.length > 0) {
-      this.translateModel.set(models[0].value);
-    }
+    const saved = (config as any)[provider]?.model;
+    const match = saved && models.some(m => m.value === saved);
+    this.translateModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
   }
 
   private getModelsForProvider(provider: AIProvider): { value: string; label: string }[] {
