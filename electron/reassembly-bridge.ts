@@ -853,6 +853,34 @@ export async function startReassembly(
   // Get language from session state
   const language = sessionState?.metadata?.language || 'en';
 
+  // Pre-validate sentence files: check that all expected sentences exist before spawning e2a.
+  // This catches TTS gaps early with a clear error instead of a cryptic "conda run failed."
+  if (sessionState?.chapters && sessionState.total_sentences) {
+    const sentencesDir = path.join(config.processDir, 'chapters', 'sentences');
+    if (fs.existsSync(sentencesDir)) {
+      const existingFiles = new Set(fs.readdirSync(sentencesDir));
+      const missing: number[] = [];
+      for (let i = 0; i < sessionState.total_sentences; i++) {
+        // Check for both .flac and .wav extensions
+        if (!existingFiles.has(`${i}.flac`) && !existingFiles.has(`${i}.wav`)) {
+          missing.push(i);
+        }
+      }
+      if (missing.length > 0) {
+        const total = sessionState.total_sentences;
+        const present = total - missing.length;
+        const rangeStr = missing.length <= 10
+          ? missing.join(', ')
+          : `${missing[0]}-${missing[missing.length - 1]}`;
+        const errorMsg = `TTS incomplete: ${missing.length} of ${total} sentence files missing (${present}/${total} present). Missing: ${rangeStr}. Please re-run TTS to generate the missing files.`;
+        console.error(`[REASSEMBLY] ${errorMsg}`);
+        reassemblyLog.error('Pre-validation failed', { jobId, missing: missing.length, total });
+        return { success: false, error: errorMsg };
+      }
+      console.log(`[REASSEMBLY] Sentence validation passed: ${sessionState.total_sentences} files found`);
+    }
+  }
+
   // Create staging directory inside output/ so e2a writes there (same filesystem = atomic rename).
   // Dot-prefix makes Syncthing unlikely to index partial files.
   const stagingDir = path.join(config.outputDir, `.staging-${jobId}`);
