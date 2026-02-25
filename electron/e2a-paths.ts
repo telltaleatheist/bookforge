@@ -299,8 +299,12 @@ export function buildCondaSpawnEnv(extra: Record<string, string> = {}): Record<s
   if (process.platform === 'win32') {
     const pathKey = Object.keys(env).find(k => k.toUpperCase() === 'PATH') || 'PATH';
     const system32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
-    if (!(env[pathKey] || '').toLowerCase().includes(system32.toLowerCase())) {
-      env[pathKey] = `${system32}${path.delimiter}${env[pathKey] || ''}`;
+    // Always prepend System32 — conda's env activation can replace PATH entirely,
+    // so even if System32 is already present, putting it first ensures it survives.
+    env[pathKey] = `${system32}${path.delimiter}${env[pathKey] || ''}`;
+    // Ensure COMSPEC is set so conda can find cmd.exe for .bat activation scripts
+    if (!env.COMSPEC) {
+      env.COMSPEC = path.join(system32, 'cmd.exe');
     }
   }
 
