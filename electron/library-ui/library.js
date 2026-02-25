@@ -201,7 +201,7 @@ class LibraryManager {
   }
 
   downloadBook(book) {
-    const displayName = book.outputFilename || book.downloadPath.split('/').pop() || 'audiobook.m4b';
+    const displayName = book.outputFilename || book.downloadPath.split(/[/\\]/).pop() || 'audiobook.m4b';
     const url = `/api/download?path=${encodeURIComponent(book.downloadPath)}&filename=${encodeURIComponent(displayName)}`;
 
     const a = document.createElement('a');

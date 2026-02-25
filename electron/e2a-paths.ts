@@ -207,11 +207,22 @@ export function getCondaPath(): string {
 
 /**
  * Escape arguments for shell: true spawn calls.
- * Node.js spawn with shell:true joins args with spaces and passes to
- * /bin/sh -c with NO escaping — special characters like apostrophes
- * in file paths (e.g., "Aesop's Fables") break the shell.
+ * Node.js spawn with shell:true uses /bin/sh on Unix and cmd.exe on Windows.
+ * These have different quoting rules:
+ * - Unix: wrap in single quotes, escape embedded single quotes
+ * - Windows cmd.exe: wrap in double quotes, escape embedded double quotes
  */
 export function shellEscapeArgs(args: string[]): string[] {
+  if (process.platform === 'win32') {
+    // cmd.exe: wrap in double quotes, double any embedded double quotes
+    return args.map(arg => {
+      if (/[\s"^&|<>()!%]/.test(arg)) {
+        return `"${arg.replace(/"/g, '""')}"`;
+      }
+      return arg;
+    });
+  }
+  // Unix: wrap in single quotes, escape embedded single quotes
   return args.map(arg => {
     if (/['\s"\\$`!#&|;(){}[\]*?<>~]/.test(arg)) {
       return `'${arg.replace(/'/g, "'\\''")}'`;
