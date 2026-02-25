@@ -101,6 +101,10 @@ export class StudioService {
         paths['cleaned'] = `${projectDir}/stages/01-cleanup/cleaned.epub`;
         paths['skipped'] = `${projectDir}/stages/01-cleanup/skipped-chunks.json`;
 
+        // Translation & TTS cache (directory existence)
+        paths['translate-dir'] = `${projectDir}/stages/02-translate`;
+        paths['tts-sessions-dir'] = `${projectDir}/stages/03-tts/sessions`;
+
         // Source files
         paths['source-exported'] = `${projectDir}/source/exported.epub`;
         paths['source-original'] = `${projectDir}/source/original.epub`;
@@ -176,6 +180,10 @@ export class StudioService {
           skippedChunksPath = paths['skipped'];
         }
 
+        // Translation & TTS cache state
+        const hasTranslated = exists('translate-dir');
+        const hasTtsCache = exists('tts-sessions-dir');
+
         // Source file (priority order)
         let epubPath = '';
         if (exists('source-exported')) epubPath = paths['source-exported'];
@@ -198,6 +206,8 @@ export class StudioService {
           coverPath: manifest.metadata?.coverPath ? `${this.libraryService.libraryPath()}/${manifest.metadata.coverPath}` : undefined,
           hasCleaned,
           cleanedEpubPath,
+          hasTranslated,
+          hasTtsCache,
           audiobookPath,
           vttPath,
           skippedChunksPath,

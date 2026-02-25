@@ -489,9 +489,30 @@ import { SettingsService } from '../../core/services/settings.service';
             Export M4B...
           </button>
         }
-        @if (canExportToExternal()) {
-          <button class="context-menu-item" (click)="exportToExternalFolder()">Copy to Audiobooks Folder{{ contextMenuSelectedIds.length > 1 ? ' (' + contextMenuSelectedIds.length + ')' : '' }}</button>
+        @if (contextMenuSelectedIds.length <= 1 && hasAnyStage()) {
+          <div class="context-menu-separator"></div>
+          @if (contextMenuItem?.hasCleaned) {
+            <button class="context-menu-item warning" (click)="deleteStage('cleanup')">
+              Delete AI Cleanup
+            </button>
+          }
+          @if (contextMenuItem?.hasTranslated) {
+            <button class="context-menu-item warning" (click)="deleteStage('translation')">
+              Delete Translation
+            </button>
+          }
+          @if (contextMenuItem?.hasTtsCache) {
+            <button class="context-menu-item warning" (click)="deleteStage('tts')">
+              Delete TTS Cache
+            </button>
+          }
+          @if (contextMenuItem?.audiobookPath || contextMenuItem?.bilingualAudioPath) {
+            <button class="context-menu-item warning" (click)="deleteStage('output')">
+              Delete Output
+            </button>
+          }
         }
+        <div class="context-menu-separator"></div>
         <button class="context-menu-item" (click)="archiveContextMenuItem()">
           {{ contextMenuItem?.archived ? 'Unarchive' : 'Archive' }}{{ contextMenuSelectedIds.length > 1 ? ' (' + contextMenuSelectedIds.length + ' items)' : '' }}
         </button>
@@ -977,6 +998,16 @@ import { SettingsService } from '../../core/services/settings.service';
       &.danger {
         color: var(--text-danger, #ef4444);
       }
+
+      &.warning {
+        color: var(--text-warning, #f59e0b);
+      }
+    }
+
+    .context-menu-separator {
+      height: 1px;
+      background: var(--border-subtle);
+      margin: 4px 0;
     }
 
     .export-toast {
@@ -1511,38 +1542,54 @@ export class StudioComponent implements OnInit, OnDestroy {
     }
   }
 
-  canExportToExternal(): boolean {
-    return !!this.settingsService.get<string>('externalAudiobooksDir');
+  hasAnyStage(): boolean {
+    const item = this.contextMenuItem;
+    if (!item) return false;
+    return !!(item.hasCleaned || item.hasTranslated || item.hasTtsCache || item.audiobookPath || item.bilingualAudioPath);
   }
 
-  async exportToExternalFolder(): Promise<void> {
-    const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
-    if (!externalDir) return;
-    const ids = this.contextMenuSelectedIds.length > 1
-      ? this.contextMenuSelectedIds
-      : this.contextMenuItem ? [this.contextMenuItem.id] : [];
-    const allItems = [...this.studioService.books(), ...this.studioService.archived()];
-    let exported = 0;
-    let skipped = 0;
-    for (const id of ids) {
-      const item = allItems.find(i => i.id === id);
-      if (!item?.audiobookPath) { skipped++; continue; }
-      const electron = (window as any).electron;
-      if (!electron?.audiobook?.copyToExternal) continue;
-      try {
-        await electron.audiobook.copyToExternal({
-          m4bPath: item.audiobookPath, externalDir,
-          title: item.title, author: item.author, year: item.year,
-        });
-        exported++;
-      } catch { skipped++; }
-    }
-    const msg = exported > 0
-      ? `Exported ${exported} audiobook${exported > 1 ? 's' : ''}${skipped > 0 ? `, ${skipped} skipped` : ''}`
-      : `No audiobooks to export (${skipped} skipped)`;
-    this.exportStatus.set(msg);
-    setTimeout(() => this.exportStatus.set(null), 3000);
+  async deleteStage(stage: 'cleanup' | 'translation' | 'tts' | 'output'): Promise<void> {
+    const item = this.contextMenuItem;
+    if (!item?.bfpPath) return;
     this.hideContextMenu();
+
+    const electron = (window as any).electron;
+    const labels: Record<string, string> = {
+      cleanup: 'AI Cleanup',
+      translation: 'Translation',
+      tts: 'TTS Cache',
+      output: 'Output',
+    };
+
+    try {
+      let result: { success: boolean; message?: string; error?: string };
+      switch (stage) {
+        case 'cleanup':
+          result = await electron.pipeline.deleteCleanup(item.bfpPath);
+          break;
+        case 'translation':
+          result = await electron.pipeline.deleteTranslation(item.bfpPath);
+          break;
+        case 'tts':
+          result = await electron.pipeline.deleteTtsCache(item.bfpPath);
+          break;
+        case 'output':
+          result = await electron.pipeline.deleteOutput(item.bfpPath);
+          break;
+      }
+
+      if (result.success) {
+        this.exportStatus.set(`Deleted ${labels[stage]}`);
+        // Refresh the list to update stage indicators
+        await this.studioService.loadBooks();
+      } else {
+        this.exportStatus.set(`Failed to delete ${labels[stage]}: ${result.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error(`[STUDIO] Delete ${stage} failed:`, err);
+      this.exportStatus.set(`Failed to delete ${labels[stage]}`);
+    }
+    setTimeout(() => this.exportStatus.set(null), 3000);
   }
 
   // ─────────────────────────────────────────────────────────────────────────

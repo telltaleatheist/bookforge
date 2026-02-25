@@ -54,24 +54,28 @@ interface SourceStage {
     <div class="wizard">
       <!-- Step Indicator -->
       <div class="step-indicator">
-        <div class="step" [class.active]="currentStep() === 'cleanup'" [class.completed]="isStepCompleted('cleanup')" [class.skipped]="isStepSkipped('cleanup')">
+        <div class="step" [class.active]="currentStep() === 'cleanup'" [class.completed]="isStepCompleted('cleanup')" [class.skipped]="isStepSkipped('cleanup')" [class.has-data]="hasStageData('cleanup')">
           <span class="step-num">1</span>
           <span class="step-label">AI Cleanup</span>
+          @if (hasStageData('cleanup')) { <span class="data-dot" title="Data exists"></span> }
         </div>
         <div class="step-connector"></div>
-        <div class="step" [class.active]="currentStep() === 'translate'" [class.completed]="isStepCompleted('translate')" [class.skipped]="isStepSkipped('translate')">
+        <div class="step" [class.active]="currentStep() === 'translate'" [class.completed]="isStepCompleted('translate')" [class.skipped]="isStepSkipped('translate')" [class.has-data]="hasStageData('translate')">
           <span class="step-num">2</span>
           <span class="step-label">Translate</span>
+          @if (hasStageData('translate')) { <span class="data-dot" title="Data exists"></span> }
         </div>
         <div class="step-connector"></div>
-        <div class="step" [class.active]="currentStep() === 'tts'" [class.completed]="isStepCompleted('tts')" [class.skipped]="isStepSkipped('tts')">
+        <div class="step" [class.active]="currentStep() === 'tts'" [class.completed]="isStepCompleted('tts')" [class.skipped]="isStepSkipped('tts')" [class.has-data]="hasStageData('tts')">
           <span class="step-num">3</span>
           <span class="step-label">TTS</span>
+          @if (hasStageData('tts')) { <span class="data-dot" title="Data exists"></span> }
         </div>
         <div class="step-connector"></div>
-        <div class="step" [class.active]="currentStep() === 'assembly'" [class.completed]="isStepCompleted('assembly')" [class.skipped]="isStepSkipped('assembly')">
+        <div class="step" [class.active]="currentStep() === 'assembly'" [class.completed]="isStepCompleted('assembly')" [class.skipped]="isStepSkipped('assembly')" [class.has-data]="hasStageData('assembly')">
           <span class="step-num">4</span>
           <span class="step-label">Assembly</span>
+          @if (hasStageData('assembly')) { <span class="data-dot" title="Data exists"></span> }
         </div>
         <div class="step-connector"></div>
         <div class="step" [class.active]="currentStep() === 'review'" [class.completed]="isStepCompleted('review')">
@@ -1078,6 +1082,19 @@ interface SourceStage {
           text-decoration: line-through;
         }
       }
+
+      &.has-data:not(.active):not(.completed) {
+        opacity: 0.85;
+        border-color: rgba(34, 197, 94, 0.4);
+      }
+    }
+
+    .data-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #22c55e;
+      flex-shrink: 0;
     }
 
     .step-num {
@@ -2159,6 +2176,7 @@ export class LLWizardComponent implements OnInit {
 
   readonly scanningEpubs = signal(false);
   readonly availableEpubs = signal<AvailableEpub[]>([]);
+  readonly stagesWithData = signal<Set<string>>(new Set());
 
   // ─────────────────────────────────────────────────────────────────────────
   // Connection/Model State
@@ -2572,6 +2590,24 @@ export class LLWizardComponent implements OnInit {
         isSource: e.isSource
       })));
       this.availableEpubs.set(epubs);
+
+      // Detect which stages have existing data
+      const dataSet = new Set<string>();
+      if (epubs.some(e => e.isCleaned)) {
+        dataSet.add('cleanup');
+      }
+      if (epubs.some(e => e.isTranslated)) {
+        dataSet.add('translate');
+      }
+
+      // Check TTS cache and output via batch exists
+      const ttsDir = `${projectDir}/stages/03-tts/sessions`;
+      const outputDir = `${projectDir}/output`;
+      const existsMap = await this.electronService.fsBatchExists([ttsDir, outputDir]);
+      if (existsMap[ttsDir]) dataSet.add('tts');
+      if (existsMap[outputDir]) dataSet.add('assembly');
+
+      this.stagesWithData.set(dataSet);
     } catch (err) {
       console.error('Failed to scan project EPUBs:', err);
       this.availableEpubs.set([]);
@@ -2893,6 +2929,10 @@ export class LLWizardComponent implements OnInit {
 
   isStepSkipped(step: LLWizardStep): boolean {
     return this._skippedSteps.has(step);
+  }
+
+  hasStageData(step: string): boolean {
+    return this.stagesWithData().has(step);
   }
 
   toggleAiCleanup(): void {

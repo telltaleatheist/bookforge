@@ -7673,6 +7673,39 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Delete output files (audiobook.m4b, audiobook.vtt, bilingual outputs)
+  ipcMain.handle('pipeline:delete-output', async (_event, projectPath: string) => {
+    try {
+      const outputDir = path.join(projectPath, 'output');
+
+      if (!fsSync.existsSync(outputDir)) {
+        return { success: true, message: 'No output directory found' };
+      }
+
+      const files = await fs.readdir(outputDir);
+      const deletedFiles: string[] = [];
+
+      for (const file of files) {
+        const filePath = path.join(outputDir, file);
+        await fs.unlink(filePath);
+        deletedFiles.push(file);
+      }
+
+      // Try to remove the directory if empty
+      try {
+        await fs.rmdir(outputDir);
+      } catch {
+        // Directory not empty, that's fine
+      }
+
+      console.log('[PIPELINE] Deleted output files:', deletedFiles);
+      return { success: true, deletedFiles, message: `Deleted ${deletedFiles.length} output files` };
+    } catch (err) {
+      console.error('[PIPELINE] Failed to delete output:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Delete all pipeline stages (cleanup + translation + TTS)
   ipcMain.handle('pipeline:delete-all', async (_event, projectPath: string) => {
     try {

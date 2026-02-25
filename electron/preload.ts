@@ -1946,6 +1946,12 @@ export interface ElectronAPI {
       message?: string;
       error?: string;
     }>;
+    deleteOutput: (projectPath: string) => Promise<{
+      success: boolean;
+      deletedFiles?: string[];
+      message?: string;
+      error?: string;
+    }>;
     deleteAll: (projectPath: string) => Promise<{
       success: boolean;
       results?: {
@@ -3284,6 +3290,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pipeline:delete-translation', projectPath),
     deleteTtsCache: (projectPath: string, language?: string) =>
       ipcRenderer.invoke('pipeline:delete-tts-cache', projectPath, language),
+    deleteOutput: (projectPath: string) =>
+      ipcRenderer.invoke('pipeline:delete-output', projectPath),
     deleteAll: (projectPath: string) =>
       ipcRenderer.invoke('pipeline:delete-all', projectPath),
   },

@@ -59,6 +59,7 @@ export interface StudioItem {
   hasCleaned?: boolean;
   cleanedEpubPath?: string;
   hasTranslated?: boolean;
+  hasTtsCache?: boolean;
   audiobookPath?: string;
   vttPath?: string;
   skippedChunksPath?: string;
