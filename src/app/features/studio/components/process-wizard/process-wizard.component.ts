@@ -3033,9 +3033,7 @@ export class ProcessWizardComponent implements OnInit {
       const cleanupSource = this.resolveLatestSource('cleanup');
       let currentEpubPath = cleanupSource;
 
-      // Get external audiobooks directory for TTS jobs (books only, not articles)
-      const externalDir = this.settingsService.get('externalAudiobooksDir') as string | undefined;
-      const outputDir = externalDir || this.libraryService.audiobooksPath() || '';
+      const outputDir = this.libraryService.audiobooksPath() || '';
 
       // Create master job for audiobook production
       const masterJob = await this.queueService.addJob({

@@ -2113,7 +2113,7 @@ export class ElectronService {
   // Library Server
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async libraryServerStart(config: { booksPath: string; port: number }): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[]; booksPath: string }; error?: string }> {
+  async libraryServerStart(config: { port: number }): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[] }; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.libraryServer.start(config);
     }
@@ -2127,7 +2127,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async libraryServerGetStatus(): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[]; booksPath: string }; error?: string }> {
+  async libraryServerGetStatus(): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[] }; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.libraryServer.getStatus();
     }

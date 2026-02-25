@@ -2506,8 +2506,7 @@ export class QueueService {
             skipAssembly: config.skipAssembly,
             // Temp folder workflow for Syncthing compatibility
             bfpPath: job.bfpPath,
-            isArticle: !!(job.projectDir && job.projectDir.replace(/\\/g, '/').includes('/language-learning/projects/')),
-            externalAudiobooksDir: this.settingsService.get<string>('externalAudiobooksDir')
+            isArticle: !!(job.projectDir && job.projectDir.replace(/\\/g, '/').includes('/language-learning/projects/'))
           };
 
           // Resume logic — three modes:
@@ -2731,35 +2730,6 @@ export class QueueService {
             endsWithM4b: result.data?.outputPath?.endsWith('.m4b'),
             bfpPath: job.bfpPath
           });
-        }
-
-        // Copy to external audiobooks directory
-        if (result.data?.outputPath?.endsWith('.m4b')) {
-          const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
-          if (externalDir) {
-            try {
-              const el = (window as any).electron;
-              if (el?.audiobook?.copyToExternal) {
-                const title = (job.metadata as any)?.title || (job.metadata as any)?.bookTitle || '';
-                const author = (job.metadata as any)?.author || '';
-                const year = (job.metadata as any)?.year || '';
-                const copyResult = await el.audiobook.copyToExternal({
-                  m4bPath: result.data.outputPath,
-                  externalDir,
-                  title,
-                  author,
-                  year,
-                });
-                if (copyResult.success) {
-                  console.log('[QUEUE] Copied audiobook to external dir:', copyResult.externalPath);
-                } else {
-                  console.error('[QUEUE] Failed to copy to external dir:', copyResult.error);
-                }
-              }
-            } catch (err) {
-              console.error('[QUEUE] Error copying to external dir:', err);
-            }
-          }
         }
 
         // Reload studio item
@@ -3231,8 +3201,6 @@ export class QueueService {
               metadataFilename += `. (${year})`;
             }
 
-            const externalAudiobooksDir = this.settingsService.get<string>('externalAudiobooksDir') || '';
-
             const finalizeResult = await bilingualAssembly.finalizeOutput({
               audioPath: result.data.audioPath,
               vttPath: result.data.vttPath,
@@ -3240,7 +3208,6 @@ export class QueueService {
               projectId: config.projectId,
               sourceLang: config.sourceLang || 'en',
               targetLang: config.targetLang || 'de',
-              externalAudiobooksDir: externalAudiobooksDir || undefined,
               metadataFilename,
               sentencePairsPath: config.sentencePairsPath,
             });
@@ -3310,7 +3277,6 @@ export class QueueService {
         });
 
         // Start the video assembly (async - returns immediately)
-        const externalAudiobooksDir = this.settingsService.get<string>('externalAudiobooksDir') || '';
         const startResult = await videoAssembly.run(job.id, {
           projectId: config.projectId,
           bfpPath: config.bfpPath,
@@ -3322,7 +3288,6 @@ export class QueueService {
           sourceLang: config.sourceLang,
           targetLang: config.targetLang,
           resolution: config.resolution,
-          externalAudiobooksDir: externalAudiobooksDir || undefined,
           outputFilename: config.outputFilename || job.metadata?.outputFilename,
         });
 

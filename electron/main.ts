@@ -147,7 +147,7 @@ function getLibraryServerConfigPath(): string {
 }
 
 // Load library server config from file
-async function loadLibraryServerConfig(): Promise<{ enabled: boolean; booksPath: string; port: number } | null> {
+async function loadLibraryServerConfig(): Promise<{ enabled: boolean; port: number } | null> {
   try {
     const configPath = getLibraryServerConfigPath();
     if (!fsSync.existsSync(configPath)) {
@@ -161,7 +161,7 @@ async function loadLibraryServerConfig(): Promise<{ enabled: boolean; booksPath:
 }
 
 // Save library server config to file
-async function saveLibraryServerConfig(config: { enabled: boolean; booksPath: string; port: number }): Promise<void> {
+async function saveLibraryServerConfig(config: { enabled: boolean; port: number }): Promise<void> {
   const configPath = getLibraryServerConfigPath();
   const dir = path.dirname(configPath);
   if (!fsSync.existsSync(dir)) {
@@ -173,10 +173,10 @@ async function saveLibraryServerConfig(config: { enabled: boolean; booksPath: st
 // Auto-start library server if enabled
 async function autoStartLibraryServer(): Promise<void> {
   const config = await loadLibraryServerConfig();
-  if (config && config.enabled && config.booksPath) {
+  if (config && config.enabled) {
     try {
       console.log('[LibraryServer] Auto-starting with config:', config);
-      await libraryServer.start({ booksPath: config.booksPath, port: config.port });
+      await libraryServer.start({ port: config.port });
     } catch (err) {
       console.error('[LibraryServer] Auto-start failed:', err);
     }
@@ -1448,6 +1448,33 @@ function setupIpcHandlers(): void {
     }
 
     return { success: true, filePath: result.filePath };
+  });
+
+  ipcMain.handle('dialog:save-m4b', async (_event, defaultName?: string, defaultDir?: string) => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export M4B',
+      defaultPath: defaultDir ? path.join(defaultDir, defaultName || 'audiobook.m4b') : (defaultName || 'audiobook.m4b'),
+      filters: [
+        { name: 'M4B Audiobook', extensions: ['m4b'] }
+      ]
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { success: false, canceled: true };
+    }
+
+    return { success: true, filePath: result.filePath };
+  });
+
+  ipcMain.handle('audiobook:copy-to-path', async (_event, source: string, dest: string) => {
+    try {
+      await fs.copyFile(source, dest);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   // Native confirmation dialog
@@ -3175,7 +3202,7 @@ function setupIpcHandlers(): void {
   // Library Server handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  ipcMain.handle('library-server:start', async (_event, config: { booksPath: string; port: number }) => {
+  ipcMain.handle('library-server:start', async (_event, config: { port: number }) => {
     try {
       // Stop existing server if running
       if (libraryServer.isRunning()) {
@@ -3568,7 +3595,6 @@ function setupIpcHandlers(): void {
     sourceLang: string;
     targetLang?: string;
     resolution: '480p' | '720p' | '1080p';
-    externalAudiobooksDir?: string;
     outputFilename?: string;
   }) => {
     try {
@@ -3695,7 +3721,7 @@ function setupIpcHandlers(): void {
 
   // Helper to generate a unique project folder name (with timestamp for uniqueness)
   const generateProjectId = (filename: string): string => {
-    const baseName = filename.replace(/\.epub$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const baseName = filename.replace(/\.epub$/i, '').replace(/['"''""/\\]/g, '').replace(/[^a-zA-Z0-9_\-.,()]/g, '_').replace(/_+/g, '_');
     const timestamp = Date.now().toString(36);
     return `${baseName}_${timestamp}`;
   };
@@ -3719,7 +3745,7 @@ function setupIpcHandlers(): void {
 
   // Helper to generate a stable project ID (without timestamp, for deduplication)
   const generateStableProjectId = (filename: string): string => {
-    return filename.replace(/\.epub$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    return filename.replace(/\.epub$/i, '').replace(/['"''""/\\]/g, '').replace(/[^a-zA-Z0-9_\-.,()]/g, '_').replace(/_+/g, '_');
   };
 
   // Helper to find existing project folder by stable ID prefix
@@ -4624,13 +4650,14 @@ function setupIpcHandlers(): void {
       }
 
       // Generate human-readable slug for folder name
-      const cleanTitle = title.replace(/[^a-zA-Z0-9\s]/g, '').trim();
-      const cleanAuthor = author.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+      // Strip quotes and slashes (shell-unsafe), keep periods/commas/parens
+      const cleanTitle = title.replace(/['"''""/\\]/g, '').trim();
+      const cleanAuthor = author.replace(/['"''""/\\]/g, '').trim();
       const yearStr = year ? `_(${year})` : '';
       let slug = `${cleanTitle.replace(/\s+/g, '_')}_-_${cleanAuthor.replace(/\s+/g, '_')}${yearStr}`;
 
-      // Ensure slug is valid as a folder name
-      slug = slug.replace(/[^a-zA-Z0-9_\-()]/g, '_').replace(/_+/g, '_').substring(0, 100);
+      // Ensure slug is valid as a folder name — strip OS-invalid and shell-unsafe chars
+      slug = slug.replace(/[<>:"|?*'"''""/\\]/g, '_').replace(/_+/g, '_').substring(0, 150);
 
       // Create project directory with human-readable name
       const projectsFolder = getProjectsFolder();
@@ -5375,7 +5402,7 @@ function setupIpcHandlers(): void {
   });
 
   // Finalize bilingual assembly output for manifest projects
-  // Copies audio+VTT to project output dir, updates manifest, copies M4B to external audiobooks dir
+  // Copies audio+VTT to project output dir, updates manifest
   ipcMain.handle('bilingual-assembly:finalize-output', async (_event, params: {
     audioPath: string;
     vttPath?: string;
@@ -5383,15 +5410,14 @@ function setupIpcHandlers(): void {
     projectId: string;
     sourceLang: string;
     targetLang: string;
-    externalAudiobooksDir?: string;
     metadataFilename?: string; // e.g., "Aesop's Fables. Aesopus. (2011). Unknown (language learning)"
     sentencePairsPath?: string; // Absolute path to sentence_pairs_{lang}.json
   }) => {
     try {
-      const { audioPath, vttPath, projectDir, sourceLang, targetLang, externalAudiobooksDir, metadataFilename, sentencePairsPath } = params;
+      const { audioPath, vttPath, projectDir, sourceLang, targetLang, metadataFilename, sentencePairsPath } = params;
       // projectId may be a full absolute path (from StudioItem.id) — use folder name
       const projectId = path.basename(projectDir);
-      console.log('[bilingual-assembly:finalize-output] Params:', { audioPath, vttPath, projectDir, projectId, sourceLang, targetLang, externalAudiobooksDir, metadataFilename, sentencePairsPath });
+      console.log('[bilingual-assembly:finalize-output] Params:', { audioPath, vttPath, projectDir, projectId, sourceLang, targetLang, metadataFilename, sentencePairsPath });
 
       // 1. Ensure project output dir exists
       const outputDir = path.join(projectDir, 'output');
@@ -5487,63 +5513,6 @@ function setupIpcHandlers(): void {
         console.log('[bilingual-assembly:finalize-output] Manifest updated with bilingual output');
       } else {
         console.error('[bilingual-assembly:finalize-output] Failed to update manifest:', manifestResult.error);
-      }
-
-      // 5. Copy M4B (with metadata) to external audiobooks dir
-      if (externalAudiobooksDir) {
-        try {
-          await fs.mkdir(externalAudiobooksDir, { recursive: true });
-
-          // Language code → full English name
-          const langNames: Record<string, string> = {
-            en: 'english', de: 'german', es: 'spanish', fr: 'french', it: 'italian',
-            pt: 'portuguese', nl: 'dutch', pl: 'polish', ru: 'russian',
-            ja: 'japanese', zh: 'chinese', ko: 'korean', ar: 'arabic',
-            hi: 'hindi', sv: 'swedish', da: 'danish', no: 'norwegian', fi: 'finnish',
-            el: 'greek', tr: 'turkish', cs: 'czech', hu: 'hungarian', ro: 'romanian',
-            uk: 'ukrainian', th: 'thai', vi: 'vietnamese', id: 'indonesian',
-          };
-          const srcName = langNames[sourceLang] || sourceLang;
-          const tgtName = langNames[targetLang] || targetLang;
-
-          // Build filename: "{Title}. {Author} (language learning, english-german)"
-          let outputBasename = metadataFilename || '';
-          if (!outputBasename) {
-            const manifestResult2 = await manifestService.getManifest(projectId);
-            if (manifestResult2.success && manifestResult2.manifest) {
-              const meta = manifestResult2.manifest.metadata;
-              const title = meta.title || projectId;
-              const author = meta.author || '';
-              outputBasename = title;
-              if (author && author !== 'Unknown' && !title.includes(author)) {
-                outputBasename += `. ${author}`;
-              }
-            } else {
-              outputBasename = projectId;
-            }
-          }
-          outputBasename += ` (language learning, ${srcName}-${tgtName})`;
-
-          // Sanitize filename for filesystem (keep apostrophes, remove only truly invalid chars)
-          const safeFilename = outputBasename.replace(/[<>:"/\\|?*]/g, '_');
-          const externalM4bPath = path.join(externalAudiobooksDir, `${safeFilename}.m4b`);
-          // Atomic copy: write to .tmp- then rename so Syncthing never sees partial files
-          const tmpExternal = path.join(externalAudiobooksDir, `.tmp-${safeFilename}.m4b`);
-          await fs.copyFile(projectAudioPath, tmpExternal);
-          try {
-            await fs.rename(tmpExternal, externalM4bPath);
-          } catch (renameErr: any) {
-            if (renameErr.code === 'EXDEV') {
-              await fs.copyFile(projectAudioPath, externalM4bPath);
-              await fs.unlink(tmpExternal).catch(() => {});
-            } else {
-              throw renameErr;
-            }
-          }
-          console.log('[bilingual-assembly:finalize-output] Copied M4B to external:', externalM4bPath);
-        } catch (err) {
-          console.error('[bilingual-assembly:finalize-output] Failed to copy to external audiobooks dir (non-fatal):', err);
-        }
       }
 
       return { success: true, projectAudioPath, projectVttPath };

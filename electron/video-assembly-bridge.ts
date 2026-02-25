@@ -27,7 +27,6 @@ export interface VideoAssemblyConfig {
   sourceLang: string;
   targetLang?: string;
   resolution: '480p' | '720p' | '1080p';
-  externalAudiobooksDir?: string;
   outputFilename?: string;
 }
 
@@ -560,25 +559,6 @@ export async function startVideoAssembly(
 
     if (job.cancelled) throw new Error('Cancelled');
 
-    // Copy to external audiobooks dir if configured
-    if (config.externalAudiobooksDir) {
-      try {
-        await fs.mkdir(config.externalAudiobooksDir, { recursive: true });
-        let extFilename: string;
-        if (config.outputFilename) {
-          // Use the user-configured filename, sanitize and add .mp4
-          const sanitized = config.outputFilename.replace(/\.mp4$/i, '').replace(/[<>:"/\\|?*]/g, '_');
-          extFilename = `${sanitized}.mp4`;
-        } else {
-          extFilename = outputFilename;
-        }
-        const extPath = path.join(config.externalAudiobooksDir, extFilename);
-        await fs.copyFile(outputPath, extPath);
-        console.log(`[VideoAssembly] Copied to external: ${extPath}`);
-      } catch (err) {
-        console.error('[VideoAssembly] Failed to copy to external dir:', err);
-      }
-    }
 
     // ── Phase 4: Complete (100%) ──
     sendProgress(mainWindow, jobId, 'complete', 100, 'Video assembly complete');

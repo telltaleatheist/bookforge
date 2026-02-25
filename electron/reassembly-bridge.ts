@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
-import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv } from './e2a-paths';
+import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
 import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
@@ -913,8 +913,11 @@ export async function startReassembly(
       });
     } else {
       // Standard Windows/macOS/Linux spawn
+      // Use shell: true + shellEscapeArgs to handle paths with apostrophes/quotes
+      // (conda run re-invokes through a shell, so paths must be properly escaped)
       const condaArgs = [...getCondaRunArgs(e2aPath), ...appArgs];
-      console.log('[REASSEMBLY] Running command: conda', condaArgs.join(' '));
+      const escapedArgs = shellEscapeArgs(condaArgs);
+      console.log('[REASSEMBLY] Running command: conda', escapedArgs.join(' '));
 
       // Packaged Electron apps have a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
       // e2a's Python code (pydub) shells out to ffmpeg/ffprobe, which live in
@@ -932,9 +935,10 @@ export async function startReassembly(
         }
       }
 
-      proc = spawn(getCondaPath(), condaArgs, {
+      proc = spawn(getCondaPath(), escapedArgs, {
         cwd: e2aPath,
         env: spawnEnv,
+        shell: true,
       });
     }
 

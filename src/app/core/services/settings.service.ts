@@ -135,8 +135,8 @@ export class SettingsService {
           {
             key: 'externalAudiobooksDir',
             type: 'path',
-            label: 'External Audiobooks Folder',
-            description: 'Where completed book audiobooks are copied (for Syncthing/media server). Articles stay in their project folder only. Leave empty to disable external copy.',
+            label: 'Default Export Folder',
+            description: 'Default folder for the Export M4B dialog (for Syncthing/media server). Leave empty to use system default.',
             default: '/Volumes/Callisto/books/audiobooks',
             placeholder: '/Volumes/Callisto/books/audiobooks',
           },
@@ -412,7 +412,6 @@ export class SettingsService {
     // Initialize library server config with defaults
     defaults['libraryServerConfig'] = {
       enabled: false,
-      booksPath: '',
       port: 8765
     };
 
@@ -464,15 +463,15 @@ export class SettingsService {
   /**
    * Library server configuration interface
    */
-  getLibraryServerConfig(): { enabled: boolean; booksPath: string; port: number } {
-    const config = this.values()['libraryServerConfig'] as { enabled: boolean; booksPath: string; port: number } | undefined;
-    return config || { enabled: false, booksPath: '', port: 8765 };
+  getLibraryServerConfig(): { enabled: boolean; port: number } {
+    const config = this.values()['libraryServerConfig'] as { enabled: boolean; port: number } | undefined;
+    return config || { enabled: false, port: 8765 };
   }
 
   /**
    * Set library server configuration
    */
-  setLibraryServerConfig(config: { enabled: boolean; booksPath: string; port: number }): void {
+  setLibraryServerConfig(config: { enabled: boolean; port: number }): void {
     this.values.update(v => ({ ...v, libraryServerConfig: config }));
     this.saveSettings();
   }
@@ -480,7 +479,7 @@ export class SettingsService {
   /**
    * Update library server configuration
    */
-  updateLibraryServerConfig(updates: Partial<{ enabled: boolean; booksPath: string; port: number }>): void {
+  updateLibraryServerConfig(updates: Partial<{ enabled: boolean; port: number }>): void {
     const current = this.getLibraryServerConfig();
     this.setLibraryServerConfig({ ...current, ...updates });
   }

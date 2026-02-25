@@ -228,17 +228,13 @@ export function getTempOutputDir(jobId: string): string {
  *
  * @param tempDir - Temp folder containing m4b and vtt files
  * @param bfpPath - BFP project folder (copies to {bfp}/audiobook/)
- * @param externalAudiobooksDir - External folder for books (optional, not used for articles)
- * @param isArticle - If true, skip external copy (articles stay in BFP only)
  * @returns Final paths for audio and VTT
  */
 export async function copyToFinalDestination(
   tempDir: string,
   bfpPath: string | undefined,
-  externalAudiobooksDir: string | undefined,
-  isArticle: boolean = false
 ): Promise<{ audioPath: string; vttPath: string | undefined }> {
-  console.log('[PARALLEL-TTS] copyToFinalDestination:', { tempDir, bfpPath, externalAudiobooksDir, isArticle });
+  console.log('[PARALLEL-TTS] copyToFinalDestination:', { tempDir, bfpPath });
 
   // Find m4b and vtt files in temp dir
   const files = await fs.readdir(tempDir);
@@ -295,20 +291,7 @@ export async function copyToFinalDestination(
     console.log('[PARALLEL-TTS] No bfpPath provided, keeping files in temp location');
   }
 
-  // Step 2: Copy to external audiobooks folder (for books only, not articles)
-  if (!isArticle && externalAudiobooksDir && bfpPath) {
-    try {
-      await fs.mkdir(externalAudiobooksDir, { recursive: true });
-      const externalPath = path.join(externalAudiobooksDir, m4bFile);
-      await fs.copyFile(tempM4bPath, externalPath);
-      console.log(`[PARALLEL-TTS] Copied m4b to external: ${externalPath}`);
-    } catch (err) {
-      // Don't fail the job if external copy fails (e.g., network drive unavailable)
-      console.error('[PARALLEL-TTS] Failed to copy to external audiobooks folder:', err);
-    }
-  }
-
-  // Step 3: Clean up temp folder
+  // Step 2: Clean up temp folder
   if (bfpPath) {
     try {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -667,12 +650,10 @@ export async function scanProjectSessions(
 
 /**
  * Post-process output after e2a writes directly to the BFP audiobook folder.
- * Renames VTT to standard name and optionally copies m4b to external folder.
+ * Renames VTT to standard name.
  */
 async function postProcessOutput(
   outputDir: string,
-  externalAudiobooksDir?: string,
-  isArticle?: boolean
 ): Promise<{ audioPath: string; vttPath?: string }> {
   const files = await fs.readdir(outputDir);
   const m4bFile = files.find(f => f.endsWith('.m4b') && !f.startsWith('._'));
@@ -698,18 +679,6 @@ async function postProcessOutput(
   if (vttFile && vttFile !== 'subtitles.vtt') {
     await fs.rename(path.join(outputDir, vttFile), path.join(outputDir, 'subtitles.vtt'));
     vttFile = 'subtitles.vtt';
-  }
-
-  // Copy m4b to external audiobooks folder (for books only, not articles)
-  if (!isArticle && externalAudiobooksDir && m4bFile) {
-    try {
-      await fs.mkdir(externalAudiobooksDir, { recursive: true });
-      const externalPath = path.join(externalAudiobooksDir, m4bFile);
-      await fs.copyFile(path.join(outputDir, m4bFile), externalPath);
-      console.log(`[PARALLEL-TTS] Copied m4b to external: ${externalPath}`);
-    } catch (err) {
-      console.error('[PARALLEL-TTS] Failed to copy to external audiobooks folder:', err);
-    }
   }
 
   return {
@@ -1133,10 +1102,7 @@ export interface ParallelConversionConfig {
   bfpPath?: string;
   // Is this an article (language learning) vs a book?
   // Articles: copy to BFP audiobook/ only
-  // Books: also copy to externalAudiobooksDir
   isArticle?: boolean;
-  // External audiobooks directory - for books, final m4b is also copied here
-  externalAudiobooksDir?: string;
 }
 
 export interface ParallelTtsSettings {
@@ -2322,8 +2288,6 @@ async function finalizeOutputPath(processedPath: string, session: ConversionSess
     try {
       const result = await postProcessOutput(
         config.outputDir,
-        config.externalAudiobooksDir,
-        config.isArticle || false
       );
       console.log('[PARALLEL-TTS] Post-processing complete:', result);
       return result.audioPath;
@@ -3264,9 +3228,6 @@ export async function startParallelConversion(
     effectiveOutputDir = getAudiobookDirFromBfp(config.bfpPath);
     await fs.mkdir(effectiveOutputDir, { recursive: true });
     console.log(`[PARALLEL-TTS] Outputting directly to BFP audiobook folder: ${effectiveOutputDir}`);
-    if (config.externalAudiobooksDir && !config.isArticle) {
-      console.log(`[PARALLEL-TTS] Will also copy to external: ${config.externalAudiobooksDir}`);
-    }
   } else if (config.outputDir && config.outputDir.trim() !== '') {
     // No BFP: output directly to outputDir
     effectiveOutputDir = config.outputDir;

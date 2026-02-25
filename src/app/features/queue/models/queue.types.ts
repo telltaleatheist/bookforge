@@ -329,8 +329,7 @@ export interface VideoAssemblyJobConfig {
   sourceLang: string;
   targetLang?: string;         // bilingual only
   resolution: '480p' | '720p' | '1080p';
-  externalAudiobooksDir?: string;
-  outputFilename?: string;          // Custom filename for external copy (without extension)
+  outputFilename?: string;          // Custom filename (without extension)
 }
 
 // Audiobook job configuration - master container for audiobook production workflows

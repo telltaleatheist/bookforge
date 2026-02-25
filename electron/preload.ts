@@ -780,11 +780,9 @@ export interface LibraryServerStatus {
   running: boolean;
   port: number;
   addresses: string[];
-  booksPath: string;
 }
 
 export interface LibraryServerConfig {
-  booksPath: string;
   port: number;
 }
 
@@ -894,6 +892,7 @@ export interface ElectronAPI {
     openAudio: () => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     saveEpub: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     saveText: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+    saveM4b: (defaultName?: string, defaultDir?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     confirm: (options: {
       title: string;
       message: string;
@@ -1094,6 +1093,7 @@ export interface ElectronAPI {
     linkAudio: (bfpPath: string, audioPath: string) => Promise<{ success: boolean; error?: string }>;
     linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) => Promise<{ success: boolean; error?: string }>;
     copyToExternal: (params: { m4bPath: string; externalDir: string; title?: string; author?: string; year?: string }) => Promise<{ success: boolean; externalPath?: string; error?: string }>;
+    copyToPath: (source: string, dest: string) => Promise<{ success: boolean; error?: string }>;
   };
   epub: {
     parse: (epubPath: string) => Promise<{ success: boolean; data?: EpubStructure; error?: string }>;
@@ -1387,7 +1387,6 @@ export interface ElectronAPI {
       projectId: string;
       sourceLang: string;
       targetLang: string;
-      externalAudiobooksDir?: string;
       metadataFilename?: string;
       sentencePairsPath?: string;
     }) => Promise<{ success: boolean; projectAudioPath?: string; projectVttPath?: string; error?: string }>;
@@ -1404,7 +1403,6 @@ export interface ElectronAPI {
       sourceLang: string;
       targetLang?: string;
       resolution: '480p' | '720p' | '1080p';
-      externalAudiobooksDir?: string;
       outputFilename?: string;
     }) => Promise<{ success: boolean; jobId?: string; error?: string }>;
     cancel: (jobId: string) => Promise<{ success: boolean; error?: string }>;
@@ -2109,6 +2107,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('dialog:save-epub', defaultName),
     saveText: (defaultName?: string) =>
       ipcRenderer.invoke('dialog:save-text', defaultName),
+    saveM4b: (defaultName?: string, defaultDir?: string) =>
+      ipcRenderer.invoke('dialog:save-m4b', defaultName, defaultDir),
     confirm: (options: {
       title: string;
       message: string;
@@ -2210,6 +2210,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:link-bilingual-audio', bfpPath, audioPath, vttPath, sentencePairsPath),
     copyToExternal: (params: { m4bPath: string; externalDir: string; title?: string; author?: string; year?: string }) =>
       ipcRenderer.invoke('audiobook:copy-to-external', params),
+    copyToPath: (source: string, dest: string) =>
+      ipcRenderer.invoke('audiobook:copy-to-path', source, dest),
   },
   epub: {
     parse: (epubPath: string) =>
@@ -2666,7 +2668,6 @@ const electronAPI: ElectronAPI = {
       projectId: string;
       sourceLang: string;
       targetLang: string;
-      externalAudiobooksDir?: string;
       metadataFilename?: string;
       sentencePairsPath?: string;
     }) =>
@@ -2684,7 +2685,6 @@ const electronAPI: ElectronAPI = {
       sourceLang: string;
       targetLang?: string;
       resolution: '480p' | '720p' | '1080p';
-      externalAudiobooksDir?: string;
       outputFilename?: string;
     }) =>
       ipcRenderer.invoke('video-assembly:run', jobId, config),

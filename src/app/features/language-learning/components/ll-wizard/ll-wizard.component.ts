@@ -3296,10 +3296,7 @@ export class LLWizardComponent implements OnInit {
           }
         }
 
-        // Get assembly config values when chaining
-        const audiobooksDir = assemblyChained
-          ? (this.settingsService.get<string>('externalAudiobooksDir') || '')
-          : '';
+        const audiobooksDir = '';
         const targetEpubPath = assemblyChained ? resolvedEpubs.get(asmTargetLang)?.path : undefined;
         const targetRow = assemblyChained
           ? this.ttsLanguageRows().find(r => r.language === asmTargetLang)
@@ -3430,7 +3427,7 @@ export class LLWizardComponent implements OnInit {
       if (!this._skippedSteps.has('assembly') && this.assemblySourceLang() && this.assemblyTargetLang()) {
         const sourceLang = this.assemblySourceLang();
         const targetLang = this.assemblyTargetLang();
-        const audiobooksDir = this.settingsService.get<string>('externalAudiobooksDir') || '';
+        const audiobooksDir = '';
 
         if (!this._skippedSteps.has('tts')) {
           // Assembly chained to TTS — placeholder activated by target TTS completion handler

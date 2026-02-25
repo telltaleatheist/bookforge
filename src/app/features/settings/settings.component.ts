@@ -405,33 +405,6 @@ import {
                 <div class="settings-group">
                   <h4>Configuration</h4>
 
-                  <!-- Books Folder -->
-                  <div class="field-row">
-                    <div class="field-info">
-                      <label class="field-label">Books Folder</label>
-                      <p class="field-description">Location of your book library</p>
-                    </div>
-                    <div class="field-control">
-                      <div class="path-input-group">
-                        <input
-                          type="text"
-                          class="text-input path-input"
-                          [value]="libraryServerConfig().booksPath"
-                          placeholder="Select a folder..."
-                          readonly
-                        />
-                        <desktop-button
-                          variant="ghost"
-                          size="sm"
-                          (click)="browseForBooksFolder()"
-                          [disabled]="libraryServerStatus()?.running ?? false"
-                        >
-                          Browse...
-                        </desktop-button>
-                      </div>
-                    </div>
-                  </div>
-
                   <!-- Port -->
                   <div class="field-row">
                     <div class="field-info">
@@ -468,7 +441,7 @@ import {
                       variant="primary"
                       size="md"
                       (click)="startLibraryServer()"
-                      [disabled]="libraryServerLoading() || !libraryServerConfig().booksPath"
+                      [disabled]="libraryServerLoading()"
                     >
                       {{ libraryServerLoading() ? 'Starting...' : 'Start Server' }}
                     </desktop-button>
@@ -484,8 +457,8 @@ import {
                 <!-- Help text -->
                 <div class="help-text">
                   <p>
-                    Start the server to browse your book library from any device on your network.
-                    Access the library from your phone or tablet using the URLs shown above.
+                    Shares audiobooks from your BookForge library over the network.
+                    Access from any device using the URLs shown above.
                   </p>
                 </div>
               </div>
@@ -1910,7 +1883,7 @@ export class SettingsComponent implements OnInit {
 
   // Library Server section state
   readonly libraryServerConfig = computed(() => this.settingsService.getLibraryServerConfig());
-  readonly libraryServerStatus = signal<{ running: boolean; port: number; addresses: string[]; booksPath: string } | null>(null);
+  readonly libraryServerStatus = signal<{ running: boolean; port: number; addresses: string[] } | null>(null);
   readonly libraryServerLoading = signal(false);
   readonly libraryServerError = signal<string | null>(null);
 
@@ -2283,23 +2256,17 @@ export class SettingsComponent implements OnInit {
 
   async startLibraryServer(): Promise<void> {
     const config = this.libraryServerConfig();
-    if (!config.booksPath) {
-      this.libraryServerError.set('Please select a books folder first');
-      return;
-    }
 
     this.libraryServerLoading.set(true);
     this.libraryServerError.set(null);
 
     try {
       const result = await this.electronService.libraryServerStart({
-        booksPath: config.booksPath,
         port: config.port
       });
 
       if (result.success && result.data) {
         this.libraryServerStatus.set(result.data);
-        // Update config to mark as enabled
         this.settingsService.updateLibraryServerConfig({ enabled: true });
       } else {
         this.libraryServerError.set(result.error || 'Failed to start server');
@@ -2318,8 +2285,7 @@ export class SettingsComponent implements OnInit {
     try {
       const result = await this.electronService.libraryServerStop();
       if (result.success) {
-        this.libraryServerStatus.set({ running: false, port: 0, addresses: [], booksPath: '' });
-        // Update config to mark as disabled
+        this.libraryServerStatus.set({ running: false, port: 0, addresses: [] });
         this.settingsService.updateLibraryServerConfig({ enabled: false });
       } else {
         this.libraryServerError.set(result.error || 'Failed to stop server');
@@ -2331,19 +2297,9 @@ export class SettingsComponent implements OnInit {
     }
   }
 
-  async browseForBooksFolder(): Promise<void> {
-    const result = await this.electronService.openFolderDialog();
-    if (result.success && result.folderPath) {
-      this.settingsService.updateLibraryServerConfig({ booksPath: result.folderPath });
-      // Auto-start or restart server with new path
-      await this.restartLibraryServer();
-    }
-  }
-
   async updateLibraryServerPort(port: number): Promise<void> {
     if (port >= 1 && port <= 65535) {
       this.settingsService.updateLibraryServerConfig({ port });
-      // Restart server if running with new port
       if (this.libraryServerStatus()?.running) {
         await this.restartLibraryServer();
       }
@@ -2352,22 +2308,16 @@ export class SettingsComponent implements OnInit {
 
   private async restartLibraryServer(): Promise<void> {
     const config = this.libraryServerConfig();
-    if (!config.booksPath) {
-      return;
-    }
 
     this.libraryServerLoading.set(true);
     this.libraryServerError.set(null);
 
     try {
-      // Stop if running
       if (this.libraryServerStatus()?.running) {
         await this.electronService.libraryServerStop();
       }
 
-      // Start with current config
       const result = await this.electronService.libraryServerStart({
-        booksPath: config.booksPath,
         port: config.port
       });
 

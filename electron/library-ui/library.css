@@ -232,75 +232,11 @@ body {
   font-size: 48px;
 }
 
-/* Sections */
-.sections-container {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.section {
-  background: var(--bg-surface);
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-.section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px;
-  cursor: pointer;
-  user-select: none;
-  transition: background 0.2s;
-}
-
-.section-header:hover {
-  background: var(--bg-hover);
-}
-
-.section-header:active {
-  background: var(--bg-elevated);
-}
-
-.section-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.section-title h2 {
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.section-count {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  background: var(--bg-elevated);
-  padding: 2px 8px;
-  border-radius: 10px;
-}
-
-.section-toggle {
-  font-size: 14px;
-  color: var(--text-tertiary);
-  transition: transform 0.2s;
-}
-
-.section.collapsed .section-toggle {
-  transform: rotate(-90deg);
-}
-
-.section-books {
+/* Books Grid */
+.books-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 12px;
-  padding: 0 16px 16px;
-}
-
-.section.collapsed .section-books {
-  display: none;
 }
 
 /* Book Card */
@@ -369,8 +305,6 @@ body {
   border-radius: 4px;
 }
 
-.book-type-badge.epub { background: #3b82f6; }
-.book-type-badge.pdf { background: #ef4444; }
 .book-type-badge.m4b { background: #8b5cf6; }
 
 .book-info {
@@ -427,15 +361,14 @@ body {
     padding: 24px;
   }
 
-  .section-books {
+  .books-grid {
     grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
     gap: 16px;
-    padding: 0 20px 20px;
   }
 }
 
 @media (min-width: 1024px) {
-  .section-books {
+  .books-grid {
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: 20px;
   }

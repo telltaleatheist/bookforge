@@ -1,7 +1,8 @@
 /**
- * Library Server - HTTP server for browsing and downloading books from the network
+ * Library Server - HTTP server for browsing and downloading audiobooks from the network
  *
- * Provides a mobile-friendly web interface for accessing the book library
+ * Discovers audiobooks from BookForge manifest data (not flat file scanning).
+ * Provides a mobile-friendly web interface for accessing audiobooks
  * from any device on the local network.
  */
 
@@ -12,16 +13,13 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as os from 'os';
 
-// Import from epub-processor for cover extraction
-import { EpubProcessor } from './epub-processor';
-import { pdfAnalyzer } from './pdf-analyzer';
+import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath } from './manifest-service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface LibraryServerConfig {
-  booksPath: string;
   port: number;
 }
 
@@ -29,23 +27,18 @@ export interface LibraryServerStatus {
   running: boolean;
   port: number;
   addresses: string[];
-  booksPath: string;
 }
 
-interface BookInfo {
-  path: string;
-  filename: string;
+interface AudiobookEntry {
+  projectId: string;
   title: string;
   author: string;
-  type: 'epub' | 'pdf' | 'm4b' | 'unknown';
+  type: 'audiobook' | 'bilingual';
+  langPair?: string;         // e.g. "en-de" for bilingual
   size: number;
-  modifiedAt: string;
-}
-
-interface SectionInfo {
-  name: string;
-  path: string;
-  bookCount: number;
+  downloadPath: string;      // absolute path to M4B
+  outputFilename?: string;   // metadata-defined display filename (e.g. "Title. Author. (Year).m4b")
+  coverPath?: string;        // absolute path to cover image (from manifest)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -55,7 +48,6 @@ interface SectionInfo {
 export class LibraryServer {
   private app: Application;
   private server: http.Server | null = null;
-  private booksPath: string;
   private port: number = 8765;
 
   // Cover cache to avoid repeated extraction
@@ -64,7 +56,6 @@ export class LibraryServer {
 
   constructor() {
     this.app = express();
-    this.booksPath = '';
     this.setupRoutes();
   }
 
@@ -82,15 +73,14 @@ export class LibraryServer {
     });
 
     // API Routes
-    this.app.get('/api/sections', this.getSections.bind(this));
-    this.app.get('/api/books/:section', this.getBooks.bind(this));
+    this.app.get('/api/books', this.getBooks.bind(this));
     this.app.get('/api/cover', this.getCover.bind(this));
     this.app.get('/api/download', this.downloadFile.bind(this));
     this.app.get('/api/audio', this.streamAudio.bind(this));
 
     // Health check
     this.app.get('/api/health', (_req: Request, res: Response) => {
-      res.json({ status: 'ok', booksPath: this.booksPath });
+      res.json({ status: 'ok' });
     });
 
     // Serve static files at root (simpler setup)
@@ -103,23 +93,11 @@ export class LibraryServer {
   }
 
   async start(config: LibraryServerConfig): Promise<void> {
-    this.booksPath = config.booksPath;
     this.port = config.port;
-
-    // Verify books path exists
-    try {
-      const stats = await fs.stat(this.booksPath);
-      if (!stats.isDirectory()) {
-        throw new Error('Books path is not a directory');
-      }
-    } catch (err) {
-      throw new Error(`Invalid books path: ${this.booksPath}`);
-    }
 
     return new Promise((resolve, reject) => {
       this.server = this.app.listen(this.port, '0.0.0.0', () => {
         console.log(`[LibraryServer] Started on port ${this.port}`);
-        console.log(`[LibraryServer] Books path: ${this.booksPath}`);
         resolve();
       });
 
@@ -156,7 +134,6 @@ export class LibraryServer {
       running: this.isRunning(),
       port: this.port,
       addresses: this.getNetworkAddresses(),
-      booksPath: this.booksPath
     };
   }
 
@@ -167,16 +144,13 @@ export class LibraryServer {
     for (const [, nets] of Object.entries(interfaces)) {
       if (!nets) continue;
       for (const net of nets) {
-        // Skip internal (loopback) addresses
         if (net.internal) continue;
-        // Only IPv4 addresses
         if (net.family === 'IPv4') {
           addresses.push(`http://${net.address}:${this.port}`);
         }
       }
     }
 
-    // Also add hostname
     const hostname = os.hostname();
     addresses.push(`http://${hostname}:${this.port}`);
 
@@ -184,115 +158,83 @@ export class LibraryServer {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // Audiobook Discovery (from manifests)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private async getAudiobookProjects(): Promise<AudiobookEntry[]> {
+    const result = await listProjects();
+    if (!result.success || !result.projects) return [];
+
+    const entries: AudiobookEntry[] = [];
+
+    for (const manifest of result.projects) {
+      const projectDir = getProjectPath(manifest.projectId);
+
+      // Resolve cover image absolute path
+      let coverAbsPath: string | undefined;
+      if (manifest.metadata.coverPath) {
+        const candidatePath = path.join(getLibraryBasePath(), manifest.metadata.coverPath);
+        if (fsSync.existsSync(candidatePath)) {
+          coverAbsPath = candidatePath;
+        }
+      }
+
+      // Check standard audiobook output
+      if (manifest.outputs?.audiobook?.path) {
+        const absPath = path.join(projectDir, manifest.outputs.audiobook.path);
+        if (fsSync.existsSync(absPath)) {
+          try {
+            const stats = fsSync.statSync(absPath);
+            entries.push({
+              projectId: manifest.projectId,
+              title: manifest.metadata.title || manifest.projectId,
+              author: manifest.metadata.author || '',
+              type: 'audiobook',
+              size: stats.size,
+              downloadPath: absPath,
+              outputFilename: manifest.metadata.outputFilename,
+              coverPath: coverAbsPath,
+            });
+          } catch { /* skip if stat fails */ }
+        }
+      }
+
+      // Check bilingual audiobook outputs
+      if (manifest.outputs?.bilingualAudiobooks) {
+        for (const [langPair, output] of Object.entries(manifest.outputs.bilingualAudiobooks)) {
+          if (!output?.path) continue;
+          const absPath = path.join(projectDir, output.path);
+          if (!fsSync.existsSync(absPath)) continue;
+          try {
+            const stats = fsSync.statSync(absPath);
+            entries.push({
+              projectId: manifest.projectId,
+              title: manifest.metadata.title || manifest.projectId,
+              author: manifest.metadata.author || '',
+              type: 'bilingual',
+              langPair,
+              size: stats.size,
+              downloadPath: absPath,
+              coverPath: coverAbsPath,
+            });
+          } catch { /* skip */ }
+        }
+      }
+    }
+
+    // Sort by title
+    entries.sort((a, b) => a.title.localeCompare(b.title));
+    return entries;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // API Handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  private async getSections(_req: Request, res: Response): Promise<void> {
+  private async getBooks(_req: Request, res: Response): Promise<void> {
     try {
-      const sections: SectionInfo[] = [];
-
-      // Recursively find all directories with books
-      await this.collectSections(this.booksPath, '', sections);
-
-      // Check for files at the root level
-      const entries = await fs.readdir(this.booksPath, { withFileTypes: true });
-      const files = entries.filter(e => e.isFile() && this.isBookFile(e.name));
-
-      // If there are files at the root level, add a "Root" section
-      if (files.length > 0) {
-        sections.unshift({
-          name: 'Books',
-          path: '.',
-          bookCount: files.length
-        });
-      }
-
-      // Sort sections: "Books" first, then "audiobooks", then "xtts conversions", then alphabetically
-      sections.sort((a, b) => {
-        const order = (s: SectionInfo) => {
-          const name = s.name.toLowerCase();
-          if (s.path === '.') return 0;  // "Books" (root) first
-          if (name === 'audiobooks') return 1;
-          if (name === 'xtts conversions') return 2;
-          return 3;  // Everything else
-        };
-        const orderA = order(a);
-        const orderB = order(b);
-        if (orderA !== orderB) return orderA - orderB;
-        return a.name.localeCompare(b.name);
-      });
-
-      res.json({ sections });
-    } catch (err) {
-      console.error('[LibraryServer] Error getting sections:', err);
-      res.status(500).json({ error: 'Failed to get sections' });
-    }
-  }
-
-  /**
-   * Recursively collect all directories that contain books as sections
-   */
-  private async collectSections(basePath: string, relativePath: string, sections: SectionInfo[]): Promise<void> {
-    try {
-      const fullPath = relativePath ? path.join(basePath, relativePath) : basePath;
-      const entries = await fs.readdir(fullPath, { withFileTypes: true });
-
-      // Find directories (exclude hidden and vtt)
-      const directories = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'vtt');
-
-      for (const dir of directories) {
-        const dirRelPath = relativePath ? `${relativePath}/${dir.name}` : dir.name;
-        const dirFullPath = path.join(basePath, dirRelPath);
-
-        // Count books directly in this folder
-        const bookCount = await this.countBooksInFolder(dirFullPath);
-
-        // Add as section if it has books
-        if (bookCount > 0) {
-          sections.push({
-            name: dir.name,
-            path: dirRelPath,
-            bookCount
-          });
-        }
-
-        // Recursively check subdirectories
-        await this.collectSections(basePath, dirRelPath, sections);
-      }
-    } catch (err) {
-      console.error('[LibraryServer] Error collecting sections:', err);
-    }
-  }
-
-  private async getBooks(req: Request, res: Response): Promise<void> {
-    try {
-      const sectionParam = req.params.section;
-      if (typeof sectionParam !== 'string') {
-        res.status(400).json({ error: 'Invalid section parameter' });
-        return;
-      }
-      const section = decodeURIComponent(sectionParam);
-
-      // Security: prevent directory traversal
-      if (section.includes('..')) {
-        res.status(400).json({ error: 'Invalid section path' });
-        return;
-      }
-
-      const sectionPath = section === '.'
-        ? this.booksPath
-        : path.join(this.booksPath, section);
-
-      // Verify path is within books directory
-      const resolvedPath = path.resolve(sectionPath);
-      if (!resolvedPath.startsWith(path.resolve(this.booksPath))) {
-        res.status(403).json({ error: 'Access denied' });
-        return;
-      }
-
-      const books = await this.getBooksInFolder(sectionPath);
-
-      res.json({ books });
+      const entries = await this.getAudiobookProjects();
+      res.json({ books: entries });
     } catch (err) {
       console.error('[LibraryServer] Error getting books:', err);
       res.status(500).json({ error: 'Failed to get books' });
@@ -301,38 +243,40 @@ export class LibraryServer {
 
   private async getCover(req: Request, res: Response): Promise<void> {
     try {
-      const bookPath = req.query.path as string;
-      if (!bookPath) {
-        res.status(400).json({ error: 'Missing path parameter' });
+      const projectId = req.query.projectId as string;
+      const downloadPath = req.query.downloadPath as string;
+
+      if (!projectId && !downloadPath) {
+        res.status(400).json({ error: 'Missing projectId or downloadPath parameter' });
         return;
       }
 
-      // Security: prevent directory traversal
-      if (bookPath.includes('..')) {
-        res.status(400).json({ error: 'Invalid path' });
-        return;
-      }
-
-      const fullPath = path.join(this.booksPath, bookPath);
-
-      // Verify path is within books directory
-      const resolvedPath = path.resolve(fullPath);
-      if (!resolvedPath.startsWith(path.resolve(this.booksPath))) {
-        res.status(403).json({ error: 'Access denied' });
-        return;
-      }
-
-      // Check cache
-      const cached = this.coverCache.get(fullPath);
+      // Check cache (key by projectId or downloadPath)
+      const cacheKey = projectId || downloadPath;
+      const cached = this.coverCache.get(cacheKey);
       if (cached && Date.now() - cached.timestamp < this.COVER_CACHE_TTL) {
         res.json({ cover: cached.data });
         return;
       }
 
-      const cover = await this.extractCover(fullPath);
+      let cover: string | null = null;
+
+      // Try manifest cover image first (if projectId provided)
+      if (projectId) {
+        cover = await this.loadManifestCover(projectId);
+      }
+
+      // Fall back to extracting cover from the M4B file
+      if (!cover && downloadPath) {
+        if (!this.isPathWithinLibrary(downloadPath)) {
+          res.status(403).json({ error: 'Access denied' });
+          return;
+        }
+        cover = await this.extractAudioCover(downloadPath);
+      }
+
       if (cover) {
-        // Cache the result
-        this.coverCache.set(fullPath, { data: cover, timestamp: Date.now() });
+        this.coverCache.set(cacheKey, { data: cover, timestamp: Date.now() });
         res.json({ cover });
       } else {
         res.json({ cover: null });
@@ -345,51 +289,40 @@ export class LibraryServer {
 
   private async downloadFile(req: Request, res: Response): Promise<void> {
     try {
-      const bookPath = req.query.path as string;
-      if (!bookPath) {
+      const filePath = req.query.path as string;
+      if (!filePath) {
         res.status(400).json({ error: 'Missing path parameter' });
         return;
       }
 
-      // Security: prevent directory traversal
-      if (bookPath.includes('..')) {
-        res.status(400).json({ error: 'Invalid path' });
-        return;
-      }
-
-      const fullPath = path.join(this.booksPath, bookPath);
-
-      // Verify path is within books directory
-      const resolvedPath = path.resolve(fullPath);
-      if (!resolvedPath.startsWith(path.resolve(this.booksPath))) {
+      // Security: verify path is within library
+      if (!this.isPathWithinLibrary(filePath)) {
         res.status(403).json({ error: 'Access denied' });
         return;
       }
 
       // Check file exists
       try {
-        await fs.access(fullPath);
+        await fs.access(filePath);
       } catch {
         res.status(404).json({ error: 'File not found' });
         return;
       }
 
-      const filename = path.basename(fullPath);
-      const ext = path.extname(fullPath).toLowerCase();
+      // Use the display filename from query params if provided, otherwise fall back to on-disk name
+      const displayName = req.query.filename as string | undefined;
+      const filename = displayName || path.basename(filePath);
+      const ext = path.extname(filePath).toLowerCase();
 
-      // Set content type based on extension
       const contentTypes: Record<string, string> = {
-        '.epub': 'application/epub+zip',
-        '.pdf': 'application/pdf',
         '.m4b': 'audio/mp4',
         '.m4a': 'audio/mp4',
-        '.mp3': 'audio/mpeg'
+        '.mp3': 'audio/mpeg',
       };
 
       const contentType = contentTypes[ext] || 'application/octet-stream';
 
-      // Get file size for Content-Length
-      const stats = await fs.stat(fullPath);
+      const stats = await fs.stat(filePath);
 
       // Create ASCII-safe filename fallback and RFC 5987 encoded filename
       const safeFilename = filename.replace(/[^\x20-\x7E]/g, '_');
@@ -397,11 +330,10 @@ export class LibraryServer {
 
       res.setHeader('Content-Type', contentType);
       res.setHeader('Content-Length', stats.size);
-      // Use both filename (ASCII fallback) and filename* (UTF-8) for maximum compatibility
       res.setHeader('Content-Disposition',
         `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`);
 
-      const fileStream = fsSync.createReadStream(fullPath);
+      const fileStream = fsSync.createReadStream(filePath);
       fileStream.pipe(res);
     } catch (err) {
       console.error('[LibraryServer] Error downloading file:', err);
@@ -411,7 +343,6 @@ export class LibraryServer {
 
   /**
    * Stream audio files with Range header support for seeking
-   * Accepts absolute paths (for local playback only)
    */
   private async streamAudio(req: Request, res: Response): Promise<void> {
     try {
@@ -428,9 +359,9 @@ export class LibraryServer {
         return;
       }
 
-      // Security: only allow absolute paths starting with /Volumes (Mac) or drive letter (Windows)
-      // Windows paths may use forward or back slashes (E:/ or E:\)
-      const isValidPath = filePath.startsWith('/Volumes/') ||
+      // Security: verify path is within library or known system paths
+      const isValidPath = this.isPathWithinLibrary(filePath) ||
+                          filePath.startsWith('/Volumes/') ||
                           filePath.startsWith('/Users/') ||
                           /^[A-Z]:[\\\/]/i.test(filePath);
       if (!isValidPath) {
@@ -438,7 +369,6 @@ export class LibraryServer {
         return;
       }
 
-      // Check file exists
       let stats: fsSync.Stats;
       try {
         stats = fsSync.statSync(filePath);
@@ -449,7 +379,6 @@ export class LibraryServer {
 
       const fileSize = stats.size;
 
-      // Content type based on extension
       const contentTypes: Record<string, string> = {
         '.m4b': 'audio/mp4',
         '.m4a': 'audio/mp4',
@@ -460,13 +389,12 @@ export class LibraryServer {
       };
       const contentType = contentTypes[ext] || 'audio/mp4';
 
-      // CORS headers for Electron renderer
+      // CORS headers
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Range');
       res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
 
-      // Parse Range header for seeking support
       const range = req.headers.range;
       if (range) {
         const parts = range.replace(/bytes=/, '').split('-');
@@ -483,7 +411,6 @@ export class LibraryServer {
         const stream = fsSync.createReadStream(filePath, { start, end });
         stream.pipe(res);
       } else {
-        // No range - send entire file
         res.setHeader('Content-Length', fileSize);
         res.setHeader('Content-Type', contentType);
         res.setHeader('Accept-Ranges', 'bytes');
@@ -501,159 +428,54 @@ export class LibraryServer {
   // Helper Methods
   // ─────────────────────────────────────────────────────────────────────────────
 
-  private isBookFile(filename: string): boolean {
-    const ext = path.extname(filename).toLowerCase();
-    return ['.epub', '.pdf', '.m4b', '.m4a'].includes(ext);
+  /**
+   * Verify a path is within the library directory (projects or library base)
+   */
+  private isPathWithinLibrary(filePath: string): boolean {
+    const resolved = path.resolve(filePath);
+    const projectsDir = path.resolve(getProjectsPath());
+    const libraryDir = path.resolve(getLibraryBasePath());
+    return resolved.startsWith(projectsDir) || resolved.startsWith(libraryDir);
   }
 
-  private async countBooksInFolder(folderPath: string): Promise<number> {
+  /**
+   * Load cover from the manifest's coverPath (library-relative image file)
+   */
+  private async loadManifestCover(projectId: string): Promise<string | null> {
     try {
-      const entries = await fs.readdir(folderPath, { withFileTypes: true });
-      let count = 0;
+      const manifestPath = path.join(getProjectPath(projectId), 'manifest.json');
+      if (!fsSync.existsSync(manifestPath)) return null;
 
-      for (const entry of entries) {
-        if (entry.isFile() && this.isBookFile(entry.name)) {
-          count++;
-        }
-        // Don't recurse - subdirectories are separate sections
+      const content = await fs.readFile(manifestPath, 'utf-8');
+      const manifest = JSON.parse(content);
+      const coverPath = manifest.metadata?.coverPath;
+      if (!coverPath) return null;
+
+      const absPath = path.join(getLibraryBasePath(), coverPath);
+      if (!fsSync.existsSync(absPath)) return null;
+
+      const buffer = await fs.readFile(absPath);
+      let mimeType = 'image/jpeg';
+      if (buffer[0] === 0x89 && buffer[1] === 0x50) {
+        mimeType = 'image/png';
       }
-
-      return count;
-    } catch {
-      return 0;
-    }
-  }
-
-  private async getBooksInFolder(folderPath: string, relativePath: string = ''): Promise<BookInfo[]> {
-    const books: BookInfo[] = [];
-
-    try {
-      const entries = await fs.readdir(folderPath, { withFileTypes: true });
-
-      for (const entry of entries) {
-        // Skip hidden files/folders and the vtt folder
-        if (entry.name.startsWith('.') || entry.name === 'vtt') continue;
-
-        const entryPath = path.join(folderPath, entry.name);
-        const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-
-        if (entry.isFile() && this.isBookFile(entry.name)) {
-          const stats = await fs.stat(entryPath);
-          const ext = path.extname(entry.name).toLowerCase();
-
-          books.push({
-            path: relPath,
-            filename: entry.name,
-            title: this.extractTitleFromFilename(entry.name),
-            author: '',
-            type: this.getBookType(ext),
-            size: stats.size,
-            modifiedAt: stats.mtime.toISOString()
-          });
-        }
-        // Don't recurse into subdirectories - they appear as separate sections
-      }
+      return `data:${mimeType};base64,${buffer.toString('base64')}`;
     } catch (err) {
-      console.error('[LibraryServer] Error reading folder:', folderPath, err);
-    }
-
-    // Sort by title
-    books.sort((a, b) => a.title.localeCompare(b.title));
-
-    return books;
-  }
-
-  private extractTitleFromFilename(filename: string): string {
-    // Remove extension
-    let title = path.basename(filename, path.extname(filename));
-
-    // Replace underscores and hyphens with spaces
-    title = title.replace(/[_-]/g, ' ');
-
-    // Remove common suffixes like (1), [copy], etc.
-    title = title.replace(/\s*[\(\[][^\)\]]*[\)\]]\s*$/, '');
-
-    return title.trim();
-  }
-
-  private getBookType(ext: string): 'epub' | 'pdf' | 'm4b' | 'unknown' {
-    switch (ext) {
-      case '.epub': return 'epub';
-      case '.pdf': return 'pdf';
-      case '.m4b':
-      case '.m4a': return 'm4b';
-      default: return 'unknown';
-    }
-  }
-
-  private async extractCover(filePath: string): Promise<string | null> {
-    const ext = path.extname(filePath).toLowerCase();
-
-    try {
-      switch (ext) {
-        case '.epub':
-          return await this.extractEpubCover(filePath);
-        case '.pdf':
-          return await this.extractPdfCover(filePath);
-        case '.m4b':
-        case '.m4a':
-          return await this.extractAudioCover(filePath);
-        default:
-          return null;
-      }
-    } catch (err) {
-      console.error('[LibraryServer] Error extracting cover:', filePath, err);
+      console.error('[LibraryServer] Error loading manifest cover:', err);
       return null;
     }
   }
 
-  private async extractEpubCover(filePath: string): Promise<string | null> {
-    const processor = new EpubProcessor();
-    try {
-      await processor.open(filePath);
-      const coverBuffer = await processor.getCover();
-      processor.close();
-
-      if (coverBuffer) {
-        // Detect image type from magic bytes
-        let mimeType = 'image/jpeg';
-        if (coverBuffer[0] === 0x89 && coverBuffer[1] === 0x50) {
-          mimeType = 'image/png';
-        }
-        return `data:${mimeType};base64,${coverBuffer.toString('base64')}`;
-      }
-    } catch (err) {
-      console.error('[LibraryServer] Error extracting EPUB cover:', err);
-    }
-    return null;
-  }
-
-  private async extractPdfCover(filePath: string): Promise<string | null> {
-    try {
-      // Use pdfAnalyzer to render first page at low resolution as cover
-      // First analyze the PDF to load it
-      await pdfAnalyzer.analyze(filePath, 1);
-
-      // Render first page at scale 0.5 for a thumbnail
-      const imageBase64 = await pdfAnalyzer.renderPage(0, 0.5, filePath);
-      if (imageBase64) {
-        return `data:image/png;base64,${imageBase64}`;
-      }
-    } catch (err) {
-      console.error('[LibraryServer] Error extracting PDF cover:', err);
-    }
-    return null;
-  }
-
+  /**
+   * Extract cover image embedded in M4B/M4A audio files
+   */
   private async extractAudioCover(filePath: string): Promise<string | null> {
     try {
-      // Dynamic import for ESM-only music-metadata package
       const mm = await import('music-metadata');
       const metadata = await mm.parseFile(filePath);
       const picture = metadata.common.picture?.[0];
 
       if (picture) {
-        // picture.data is Uint8Array, convert to Buffer for base64 encoding
         const base64 = Buffer.from(picture.data).toString('base64');
         return `data:${picture.format};base64,${base64}`;
       }

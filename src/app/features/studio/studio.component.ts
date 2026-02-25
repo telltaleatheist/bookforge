@@ -484,6 +484,14 @@ import { SettingsService } from '../../core/services/settings.service';
             Open File Location
           </button>
         }
+        @if (contextMenuSelectedIds.length <= 1 && contextMenuItem?.audiobookPath) {
+          <button class="context-menu-item" (click)="exportM4b()">
+            Export M4B...
+          </button>
+        }
+        @if (canExportToExternal()) {
+          <button class="context-menu-item" (click)="exportToExternalFolder()">Copy to Audiobooks Folder{{ contextMenuSelectedIds.length > 1 ? ' (' + contextMenuSelectedIds.length + ')' : '' }}</button>
+        }
         <button class="context-menu-item" (click)="archiveContextMenuItem()">
           {{ contextMenuItem?.archived ? 'Unarchive' : 'Archive' }}{{ contextMenuSelectedIds.length > 1 ? ' (' + contextMenuSelectedIds.length + ' items)' : '' }}
         </button>
@@ -491,6 +499,11 @@ import { SettingsService } from '../../core/services/settings.service';
           Delete{{ contextMenuSelectedIds.length > 1 ? ' (' + contextMenuSelectedIds.length + ' items)' : '' }}
         </button>
       </div>
+    }
+
+    <!-- Export Status Toast -->
+    @if (exportStatus()) {
+      <div class="export-toast">{{ exportStatus() }}</div>
     }
 
     <!-- Version Picker Dialog -->
@@ -955,6 +968,7 @@ import { SettingsService } from '../../core/services/settings.service';
       font-size: 13px;
       color: var(--text-primary);
       cursor: pointer;
+      white-space: nowrap;
 
       &:hover {
         background: var(--bg-hover);
@@ -963,6 +977,22 @@ import { SettingsService } from '../../core/services/settings.service';
       &.danger {
         color: var(--text-danger, #ef4444);
       }
+    }
+
+    .export-toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 10px 20px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 13px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      z-index: 2000;
+      animation: fadeIn 0.2s ease;
     }
 
   `]
@@ -1036,6 +1066,9 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly contextMenuX = signal<number>(0);
   readonly contextMenuY = signal<number>(0);
   contextMenuItem: StudioItem | null = null;
+
+  // Export status toast
+  readonly exportStatus = signal<string | null>(null);
 
   // Inline diff view (shown in Files tab)
   readonly diffPaths = signal<DiffRequest | null>(null);
@@ -1447,6 +1480,68 @@ export class StudioComponent implements OnInit, OnDestroy {
     } else {
       await this.studioService.archiveItems(ids);
     }
+    this.hideContextMenu();
+  }
+
+  async exportM4b(): Promise<void> {
+    const item = this.contextMenuItem;
+    if (!item?.audiobookPath) return;
+    this.hideContextMenu();
+
+    // Use the metadata-defined output filename, falling back to the on-disk filename
+    const defaultName = item.outputFilename
+      || item.audiobookPath.split('/').pop()
+      || 'audiobook.m4b';
+
+    // Use external audiobooks folder as default directory if configured
+    const defaultDir = this.settingsService.get<string>('externalAudiobooksDir') || '';
+
+    const electron = (window as any).electron;
+    const result = await electron.dialog.saveM4b(defaultName, defaultDir || undefined);
+    if (!result?.success || !result.filePath) return;
+
+    try {
+      await electron.audiobook.copyToPath(item.audiobookPath, result.filePath);
+      this.exportStatus.set('Exported M4B successfully');
+      setTimeout(() => this.exportStatus.set(null), 3000);
+    } catch (err) {
+      console.error('[STUDIO] Export M4B failed:', err);
+      this.exportStatus.set('Export failed');
+      setTimeout(() => this.exportStatus.set(null), 3000);
+    }
+  }
+
+  canExportToExternal(): boolean {
+    return !!this.settingsService.get<string>('externalAudiobooksDir');
+  }
+
+  async exportToExternalFolder(): Promise<void> {
+    const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
+    if (!externalDir) return;
+    const ids = this.contextMenuSelectedIds.length > 1
+      ? this.contextMenuSelectedIds
+      : this.contextMenuItem ? [this.contextMenuItem.id] : [];
+    const allItems = [...this.studioService.books(), ...this.studioService.archived()];
+    let exported = 0;
+    let skipped = 0;
+    for (const id of ids) {
+      const item = allItems.find(i => i.id === id);
+      if (!item?.audiobookPath) { skipped++; continue; }
+      const electron = (window as any).electron;
+      if (!electron?.audiobook?.copyToExternal) continue;
+      try {
+        await electron.audiobook.copyToExternal({
+          m4bPath: item.audiobookPath, externalDir,
+          title: item.title, author: item.author, year: item.year,
+        });
+        exported++;
+      } catch { skipped++; }
+    }
+    const msg = exported > 0
+      ? `Exported ${exported} audiobook${exported > 1 ? 's' : ''}${skipped > 0 ? `, ${skipped} skipped` : ''}`
+      : `No audiobooks to export (${skipped} skipped)`;
+    this.exportStatus.set(msg);
+    setTimeout(() => this.exportStatus.set(null), 3000);
     this.hideContextMenu();
   }
 

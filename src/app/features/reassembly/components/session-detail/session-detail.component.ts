@@ -1343,8 +1343,7 @@ export class SessionDetailComponent {
       outputDir = bfpFolder;
       console.log('[REASSEMBLY] Using BFP folder as output:', outputDir);
     } else {
-      const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
-      outputDir = externalDir || this.libraryService.audiobooksPath() || '';
+      outputDir = this.libraryService.audiobooksPath() || '';
     }
 
     // Get e2a tmp path from settings (passed to backend so it can derive app path)
@@ -1398,8 +1397,6 @@ export class SessionDetailComponent {
     if (this.generateVideo()) {
       const title = this.editTitle || session.metadata?.title || 'Untitled';
       const author = this.editAuthor || session.metadata?.author || '';
-      const externalDir = this.settingsService.get<string>('externalAudiobooksDir');
-
       // Build external filename from metadata: "{Title}. {Author}" or user's outputFilename
       const userFilename = this.editOutputFilename || session.metadata?.outputFilename;
       let videoOutputFilename: string;
@@ -1428,7 +1425,6 @@ export class SessionDetailComponent {
           title,
           sourceLang: 'en',
           resolution: this.videoResolution(),
-          externalAudiobooksDir: externalDir || undefined,
           outputFilename: videoOutputFilename,
         },
         workflowId,
