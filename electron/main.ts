@@ -7687,11 +7687,11 @@ function setupIpcHandlers(): void {
 
       for (const file of files) {
         const filePath = path.join(outputDir, file);
-        await fs.unlink(filePath);
+        await fs.rm(filePath, { recursive: true, force: true });
         deletedFiles.push(file);
       }
 
-      // Try to remove the directory if empty
+      // Remove the directory itself
       try {
         await fs.rmdir(outputDir);
       } catch {
