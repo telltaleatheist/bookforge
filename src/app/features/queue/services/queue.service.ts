@@ -517,8 +517,9 @@ export class QueueService {
           status: progress.phase === 'complete' ? 'complete' as JobStatus :
                   progress.phase === 'error' ? 'error' as JobStatus :
                   'processing' as JobStatus,
-          currentChapter: progress.currentChapter,
-          totalChapters: progress.totalChapters,
+          // Only update chapter fields when actually sent — encoding phase omits them
+          currentChapter: progress.currentChapter ?? job.currentChapter,
+          totalChapters: progress.totalChapters ?? job.totalChapters,
           progressMessage: progress.message || progress.phase,
           error: progress.error
         };

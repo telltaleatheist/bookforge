@@ -938,7 +938,12 @@ export class JobProgressComponent implements OnDestroy {
 
         // During encoding/export phase (progress >= 50%), trigger on progress changes
         // Since no chapters complete during encoding, we need progress-based updates
-        if (progress >= 50 && this.etaState.firstWorkTime) {
+        if (progress >= 50) {
+          // Initialize firstWorkTime if it wasn't set during combining (e.g. fast combine)
+          if (this.etaState.firstWorkTime === null) {
+            this.etaState.firstWorkTime = Date.now();
+            console.log('[ETA] Reassembly: encoding phase started — timer initialized');
+          }
           // Track last progress to avoid recalculating on every render
           const lastProgress = this.etaState.lastProgress || 0;
           if (progress > lastProgress + 1) {  // Only recalculate every 1%+ change
