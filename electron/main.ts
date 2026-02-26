@@ -3721,7 +3721,7 @@ function setupIpcHandlers(): void {
 
   // Helper to generate a unique project folder name (with timestamp for uniqueness)
   const generateProjectId = (filename: string): string => {
-    const baseName = filename.replace(/\.epub$/i, '').replace(/['"''""/\\]/g, '').replace(/[^a-zA-Z0-9_\-.,()]/g, '_').replace(/_+/g, '_');
+    const baseName = filename.replace(/\.epub$/i, '').replace(/['"''""/\\()]/g, '').replace(/[^a-zA-Z0-9_\-.,]/g, '_').replace(/_+/g, '_');
     const timestamp = Date.now().toString(36);
     return `${baseName}_${timestamp}`;
   };
@@ -3745,7 +3745,7 @@ function setupIpcHandlers(): void {
 
   // Helper to generate a stable project ID (without timestamp, for deduplication)
   const generateStableProjectId = (filename: string): string => {
-    return filename.replace(/\.epub$/i, '').replace(/['"''""/\\]/g, '').replace(/[^a-zA-Z0-9_\-.,()]/g, '_').replace(/_+/g, '_');
+    return filename.replace(/\.epub$/i, '').replace(/['"''""/\\()]/g, '').replace(/[^a-zA-Z0-9_\-.,]/g, '_').replace(/_+/g, '_');
   };
 
   // Helper to find existing project folder by stable ID prefix
