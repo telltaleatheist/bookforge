@@ -881,6 +881,10 @@ export class QueueService {
       );
     }
 
+    // Post-completion tasks (session caching, audio linking, bilingual chaining).
+    // Wrapped in try/catch to guarantee processNext() runs even if something here fails.
+    try {
+
     // Copy VTT file to BFP audiobook folder for TTS and reassembly jobs (for chapter recovery)
     if (result.success && result.outputPath && completedJob?.bfpPath &&
         (completedJob.type === 'tts-conversion' || completedJob.type === 'reassembly')) {
@@ -1162,6 +1166,10 @@ export class QueueService {
       }
     }
 
+    } catch (postCompletionErr) {
+      console.error('[QUEUE] Error in post-completion tasks (session caching, linking, chaining):', postCompletionErr);
+    }
+
     // Update master job progress when a child job completes
     if (completedJob?.parentJobId && completedJob.workflowId) {
       this.updateMasterJobProgress(completedJob.workflowId, completedJob.parentJobId);
@@ -1178,20 +1186,23 @@ export class QueueService {
       return;
     }
 
-    // Only clear current job and process next if this IS the current queue job
-    // This prevents a failed TTS job from interrupting a running OCR job
+    // Clear current job if it matches (may already be cleared by safety net or reassigned to next job)
     if (this._currentJobId() === result.jobId) {
       this._currentJobId.set(null);
-
-      // Process next job if queue is running
-      if (this._isRunning()) {
-        console.log(`[QUEUE] Job ${result.jobId} completed, processing next job`);
-        this.processNext();
-      } else {
-        console.log(`[QUEUE] Job ${result.jobId} completed but queue is paused, not processing next`);
-      }
+      console.log(`[QUEUE] Cleared _currentJobId for completed job ${result.jobId}`);
     } else {
-      console.log(`[QUEUE] Job ${result.jobId} completed but is not the current job (${this._currentJobId()}), not processing next`);
+      console.log(`[QUEUE] Job ${result.jobId} completed, _currentJobId is ${this._currentJobId()} (already advanced or cleared)`);
+    }
+
+    // ALWAYS try to advance the queue. processNext() is idempotent — returns
+    // immediately if a job is already running. This ensures the queue advances
+    // even when _currentJobId was already cleared/reassigned by the safety net
+    // (e.g., TTS completion where session caching delays handleJobComplete).
+    if (this._isRunning()) {
+      console.log(`[QUEUE] Job ${result.jobId} completed, calling processNext`);
+      this.processNext();
+    } else {
+      console.log(`[QUEUE] Job ${result.jobId} completed but queue is paused, not processing next`);
     }
   }
 
@@ -2154,7 +2165,10 @@ export class QueueService {
    * Process the next pending job in the queue
    */
   private async processNext(): Promise<void> {
-    if (this._currentJobId()) return; // Already processing
+    if (this._currentJobId()) {
+      console.log(`[QUEUE] processNext: already processing job ${this._currentJobId()}, returning`);
+      return;
+    }
 
     // Get pending jobs, but skip:
     // - Master workflow jobs (they don't process themselves)
@@ -2180,13 +2194,20 @@ export class QueueService {
           s.status !== 'complete' &&
           allJobs.indexOf(s) < allJobs.indexOf(j)
         );
-        if (hasIncompleteEarlierSibling) return false;
+        if (hasIncompleteEarlierSibling) {
+          console.log(`[QUEUE] processNext: skipping ${j.type} job ${j.id} — has incomplete earlier sibling`);
+          return false;
+        }
       }
       return true;
     });
-    if (pending.length === 0) return;
+    if (pending.length === 0) {
+      console.log(`[QUEUE] processNext: no eligible pending jobs found (total jobs: ${allJobs.length}, pending: ${allJobs.filter(j => j.status === 'pending').length})`);
+      return;
+    }
 
     const nextJob = pending[0];
+    console.log(`[QUEUE] processNext: picking next job: ${nextJob.type} (${nextJob.id})`);
 
     // If this job is part of a workflow, ensure the master job is marked as processing
     if (nextJob.parentJobId) {
@@ -2632,7 +2653,21 @@ export class QueueService {
           // Do NOT call handleJobComplete here — that caused a double-call race where the
           // second invocation deleted the just-cached session and then failed mid-copy.
           await ttsComplete;
-          console.log(`[QUEUE] Parallel TTS inline await resolved for jobId=${job.id}, constructor listener handled completion`);
+          const currentId = this._currentJobId();
+          console.log(`[QUEUE] Parallel TTS inline await resolved for jobId=${job.id}, _currentJobId=${currentId}, isRunning=${this._isRunning()}`);
+
+          // Safety net: ensure processNext() runs even if the constructor listener's
+          // handleJobComplete hasn't reached it yet (e.g., awaiting session caching).
+          // processNext() is idempotent — if already processing, it returns immediately.
+          if (currentId === job.id || !currentId) {
+            this._currentJobId.set(null);
+            if (this._isRunning()) {
+              console.log(`[QUEUE] Parallel TTS safety net: clearing _currentJobId and calling processNext for job ${job.id}`);
+              this.processNext();
+            }
+          } else {
+            console.log(`[QUEUE] Parallel TTS safety net: _currentJobId already advanced to ${currentId}, skipping`);
+          }
           return;
 
         } else {
@@ -2777,9 +2812,13 @@ export class QueueService {
           });
         }
 
-        // Reload studio item
+        // Reload studio item (non-fatal — must not block master update or queue advance)
         if (job.bfpPath) {
-          await this.studioService.reloadItem(job.bfpPath);
+          try {
+            await this.studioService.reloadItem(job.bfpPath);
+          } catch (err) {
+            console.error('[QUEUE] Failed to reload studio item after reassembly:', err);
+          }
         }
 
         // Update master job progress
@@ -3400,6 +3439,11 @@ export class QueueService {
           };
         })
       );
+
+      // Update master job progress so workflow status reflects the error
+      if (job.parentJobId && job.workflowId) {
+        this.updateMasterJobProgress(job.workflowId, job.parentJobId);
+      }
 
       // Check if this was a standalone job
       const standaloneIds = this._standaloneJobIds();
