@@ -1100,10 +1100,25 @@ export class ElectronService {
   }
 
   /**
+   * Extract metadata from an EPUB file without importing it.
+   * Used to pre-populate the metadata confirmation modal.
+   */
+  async extractEpubMetadata(epubSourcePath: string): Promise<{
+    success: boolean;
+    metadata?: { title: string; author: string; year: string; language: string; coverData: string | null };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.audiobook.extractMetadata(epubSourcePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * Import an EPUB file directly, creating both a BFP file and audiobook folder.
    * Used for drag/drop import without going through the PDF editor.
    */
-  async audiobookImportEpub(epubSourcePath: string): Promise<{
+  async audiobookImportEpub(epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string }): Promise<{
     success: boolean;
     bfpPath?: string;
     audiobookFolder?: string;
@@ -1112,7 +1127,7 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.audiobook.importEpub(epubSourcePath);
+      return (window as any).electron.audiobook.importEpub(epubSourcePath, confirmedMetadata);
     }
     return { success: false, error: 'Not running in Electron' };
   }

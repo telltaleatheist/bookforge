@@ -1044,8 +1044,14 @@ export interface ElectronAPI {
       epubPath?: string;
       error?: string;
     }>;
+    // Extract metadata from EPUB without importing
+    extractMetadata: (epubSourcePath: string) => Promise<{
+      success: boolean;
+      metadata?: { title: string; author: string; year: string; language: string; coverData: string | null };
+      error?: string;
+    }>;
     // Import EPUB directly (creates BFP + audiobook folder)
-    importEpub: (epubSourcePath: string) => Promise<{
+    importEpub: (epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string }) => Promise<{
       success: boolean;
       bfpPath?: string;
       audiobookFolder?: string;
@@ -2197,9 +2203,12 @@ const electronAPI: ElectronAPI = {
     // Unified audiobook export (saves to BFP project folder)
     exportFromProject: (bfpPath: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string) =>
       ipcRenderer.invoke('audiobook:export-from-project', bfpPath, epubData, deletedBlockExamples, savePath),
+    // Extract metadata from EPUB without importing
+    extractMetadata: (epubSourcePath: string) =>
+      ipcRenderer.invoke('audiobook:extract-epub-metadata', epubSourcePath),
     // Import EPUB directly (creates BFP + audiobook folder)
-    importEpub: (epubSourcePath: string) =>
-      ipcRenderer.invoke('audiobook:import-epub', epubSourcePath),
+    importEpub: (epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string }) =>
+      ipcRenderer.invoke('audiobook:import-epub', epubSourcePath, confirmedMetadata),
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) =>
       ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
     appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly', analytics: { jobId: string; [key: string]: unknown }) =>

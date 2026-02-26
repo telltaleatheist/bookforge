@@ -383,14 +383,14 @@ export class StudioService {
    * Add book from EPUB file
    * Creates a BFP project file and audiobook folder for the EPUB
    */
-  async addBook(epubPath: string): Promise<{ success: boolean; item?: StudioItem; error?: string }> {
+  async addBook(epubPath: string, metadata?: { title: string; author: string; year?: string; language?: string }): Promise<{ success: boolean; item?: StudioItem; error?: string }> {
     if (!this.electronService.isRunningInElectron) {
       return { success: false, error: 'Not running in Electron' };
     }
 
     try {
       // Import EPUB - this creates both a BFP file and audiobook folder
-      const result = await this.electronService.audiobookImportEpub(epubPath);
+      const result = await this.electronService.audiobookImportEpub(epubPath, metadata);
 
       if (!result.success) {
         return { success: false, error: result.error || 'Failed to import EPUB' };

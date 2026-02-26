@@ -4616,36 +4616,109 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Import an EPUB file directly - creates both BFP and audiobook folder
-  // This is for adding EPUBs via drag/drop without going through the PDF editor
-  ipcMain.handle('audiobook:import-epub', async (
+  // Extract metadata from an EPUB file without importing it
+  // Used to pre-populate the metadata confirmation modal
+  ipcMain.handle('audiobook:extract-epub-metadata', async (
     _event,
     epubSourcePath: string
   ) => {
     try {
-      const filename = path.basename(epubSourcePath);
-      const ext = path.extname(filename).toLowerCase();
+      const { EpubProcessor } = await import('./epub-processor.js');
+      const processor = new EpubProcessor();
+      const structure = await processor.open(epubSourcePath);
 
-      // Strip any extension for title parsing
+      const metadata = structure.metadata;
+      let coverData: string | null = null;
+      const coverBuffer = await processor.getCover();
+      if (coverBuffer) {
+        let mimeType = 'image/jpeg';
+        if (coverBuffer[0] === 0x89 && coverBuffer[1] === 0x50) {
+          mimeType = 'image/png';
+        }
+        coverData = `data:${mimeType};base64,${coverBuffer.toString('base64')}`;
+      }
+      processor.close();
+
+      return {
+        success: true,
+        metadata: {
+          title: metadata?.title || '',
+          author: metadata?.author || '',
+          year: metadata?.year || '',
+          language: metadata?.language || 'en',
+          coverData,
+        }
+      };
+    } catch (err) {
+      console.error('[audiobook:extract-epub-metadata] Error:', err);
+      // Fall back to filename parsing
+      const filename = path.basename(epubSourcePath);
       let title = filename.replace(/\.[^.]+$/i, '');
       let author = 'Unknown';
-      let year: number | undefined;
+      let year = '';
 
-      // Try to parse author and year from filename (format: Title_-_Author_Year)
       const titleAuthorMatch = title.match(/^(.+?)_-_(.+?)_\((\d{4})\)$/);
       if (titleAuthorMatch) {
         title = titleAuthorMatch[1].replace(/_/g, ' ');
         author = titleAuthorMatch[2].replace(/_/g, ' ');
-        year = parseInt(titleAuthorMatch[3]);
+        year = titleAuthorMatch[3];
       } else {
-        // Simpler format without year
         const simpleMatch = title.match(/^(.+?)_-_(.+)$/);
         if (simpleMatch) {
           title = simpleMatch[1].replace(/_/g, ' ');
           author = simpleMatch[2].replace(/_/g, ' ');
         } else {
-          // Just use filename as title
           title = title.replace(/[._]/g, ' ');
+        }
+      }
+
+      return {
+        success: true,
+        metadata: { title, author, year, language: 'en', coverData: null }
+      };
+    }
+  });
+
+  // Import an EPUB file directly - creates both BFP and audiobook folder
+  // This is for adding EPUBs via drag/drop without going through the PDF editor
+  ipcMain.handle('audiobook:import-epub', async (
+    _event,
+    epubSourcePath: string,
+    confirmedMetadata?: { title: string; author: string; year?: string; language?: string }
+  ) => {
+    try {
+      const filename = path.basename(epubSourcePath);
+      const ext = path.extname(filename).toLowerCase();
+
+      let title: string;
+      let author: string;
+      let year: number | undefined;
+      let language = 'en';
+
+      if (confirmedMetadata) {
+        // Use metadata confirmed by the user
+        title = confirmedMetadata.title;
+        author = confirmedMetadata.author;
+        year = confirmedMetadata.year ? parseInt(confirmedMetadata.year) : undefined;
+        language = confirmedMetadata.language || 'en';
+      } else {
+        // Fall back to filename parsing
+        title = filename.replace(/\.[^.]+$/i, '');
+        author = 'Unknown';
+
+        const titleAuthorMatch = title.match(/^(.+?)_-_(.+?)_\((\d{4})\)$/);
+        if (titleAuthorMatch) {
+          title = titleAuthorMatch[1].replace(/_/g, ' ');
+          author = titleAuthorMatch[2].replace(/_/g, ' ');
+          year = parseInt(titleAuthorMatch[3]);
+        } else {
+          const simpleMatch = title.match(/^(.+?)_-_(.+)$/);
+          if (simpleMatch) {
+            title = simpleMatch[1].replace(/_/g, ' ');
+            author = simpleMatch[2].replace(/_/g, ' ');
+          } else {
+            title = title.replace(/[._]/g, ' ');
+          }
         }
       }
 
@@ -4716,8 +4789,9 @@ function setupIpcHandlers(): void {
           title,
           author,
           year,
-          language: 'en'
+          language
         },
+        sortOrder: -1,
         chapters: [],
         pipeline: {},
         outputs: {}

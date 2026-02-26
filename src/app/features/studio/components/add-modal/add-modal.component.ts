@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { StudioService } from '../../services/studio.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { StudioItem } from '../../models/studio.types';
+import { ImportMetadataModalComponent, ImportMetadata } from '../import-metadata-modal/import-metadata-modal.component';
 
 interface ImportProgress {
   total: number;
@@ -23,8 +24,16 @@ interface ImportProgress {
 @Component({
   selector: 'app-add-modal',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, ImportMetadataModalComponent],
   template: `
+    @if (showMetadataConfirm()) {
+      <app-import-metadata-modal
+        [initialMetadata]="pendingMetadata()!"
+        [coverData]="pendingCoverData()"
+        (confirm)="onMetadataConfirmed($event)"
+        (cancel)="onMetadataCancelled()"
+      />
+    }
     <div class="modal-backdrop" (click)="close.emit()">
       <div class="modal-content" (click)="$event.stopPropagation()">
         <div class="modal-header">
@@ -394,11 +403,19 @@ export class AddModalComponent {
   readonly importError = signal<string | null>(null);
   readonly urlError = signal<string | null>(null);
   readonly batchProgress = signal<ImportProgress | null>(null);
+  readonly showMetadataConfirm = signal<boolean>(false);
+  readonly pendingMetadata = signal<ImportMetadata | null>(null);
+  readonly pendingCoverData = signal<string | null>(null);
+  private pendingFilePath: string | null = null;
 
   urlValue = '';
 
   @HostListener('document:keydown.escape')
   onEscapeKey(): void {
+    if (this.showMetadataConfirm()) {
+      // Let the metadata modal handle its own escape
+      return;
+    }
     this.close.emit();
   }
 
@@ -498,7 +515,25 @@ export class AddModalComponent {
           importPath = convertResult.outputPath;
         }
 
-        const result = await this.studioService.addBook(importPath);
+        // For EPUBs, auto-extract metadata for better folder names
+        let metadata: ImportMetadata | undefined;
+        if (importPath.toLowerCase().endsWith('.epub')) {
+          try {
+            const extractResult = await this.electronService.extractEpubMetadata(importPath);
+            if (extractResult.success && extractResult.metadata) {
+              metadata = {
+                title: extractResult.metadata.title,
+                author: extractResult.metadata.author,
+                year: extractResult.metadata.year,
+                language: extractResult.metadata.language,
+              };
+            }
+          } catch {
+            // Extraction failed — import without metadata
+          }
+        }
+
+        const result = await this.studioService.addBook(importPath, metadata);
         if (result.success && result.item) {
           lastAdded = result.item;
         } else {
@@ -530,12 +565,67 @@ export class AddModalComponent {
   }
 
   private async importFile(filePath: string): Promise<void> {
+    const isPdf = filePath.toLowerCase().endsWith('.pdf');
+    const isEpub = filePath.toLowerCase().endsWith('.epub');
+
+    // For EPUBs, extract metadata and show confirmation modal
+    if (isEpub) {
+      this.isLoadingEpub.set(true);
+      this.loadingMessage.set('Reading metadata...');
+      try {
+        const extractResult = await this.electronService.extractEpubMetadata(filePath);
+        this.isLoadingEpub.set(false);
+
+        if (extractResult.success && extractResult.metadata) {
+          this.pendingFilePath = filePath;
+          this.pendingMetadata.set({
+            title: extractResult.metadata.title,
+            author: extractResult.metadata.author,
+            year: extractResult.metadata.year,
+            language: extractResult.metadata.language,
+          });
+          this.pendingCoverData.set(extractResult.metadata.coverData);
+          this.showMetadataConfirm.set(true);
+        } else {
+          // Extraction failed — import directly without metadata modal
+          await this.doImport(filePath);
+        }
+      } catch {
+        this.isLoadingEpub.set(false);
+        await this.doImport(filePath);
+      }
+      return;
+    }
+
+    // PDFs and other formats: import directly
+    await this.doImport(filePath);
+  }
+
+  async onMetadataConfirmed(metadata: ImportMetadata): Promise<void> {
+    this.showMetadataConfirm.set(false);
+    const filePath = this.pendingFilePath;
+    this.pendingFilePath = null;
+    this.pendingMetadata.set(null);
+    this.pendingCoverData.set(null);
+    if (filePath) {
+      await this.doImport(filePath, metadata);
+    }
+  }
+
+  onMetadataCancelled(): void {
+    this.showMetadataConfirm.set(false);
+    this.pendingFilePath = null;
+    this.pendingMetadata.set(null);
+    this.pendingCoverData.set(null);
+  }
+
+  private async doImport(filePath: string, metadata?: ImportMetadata): Promise<void> {
     this.isLoadingEpub.set(true);
     const isPdf = filePath.toLowerCase().endsWith('.pdf');
     this.loadingMessage.set(isPdf ? 'Importing PDF...' : 'Importing EPUB...');
 
     try {
-      const result = await this.studioService.addBook(filePath);
+      const result = await this.studioService.addBook(filePath, metadata);
 
       if (result.success) {
         if (result.item) {
