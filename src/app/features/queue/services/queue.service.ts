@@ -99,9 +99,13 @@ declare global {
         onSessionCreated: (callback: (data: { jobId: string; sessionId: string; sessionDir: string; processDir: string; totalSentences: number; totalChapters: number }) => void) => () => void;
         // Resume support
         checkResumeFast: (epubPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
+        checkResumeFromDir: (processDir: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
         checkResume: (sessionPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
         resumeConversion: (jobId: string, config: any, resumeInfo: ResumeCheckResult) => Promise<{ success: boolean; data?: any; error?: string }>;
         buildResumeInfo: (prepInfo: any, settings: any) => Promise<{ success: boolean; data?: TtsResumeInfo; error?: string }>;
+      };
+      sessionCache?: {
+        scanProject: (projectDir: string) => Promise<{ success: boolean; sessions?: Array<{ language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }>; error?: string }>;
       };
       shell?: {
         openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
@@ -2552,6 +2556,47 @@ export class QueueService {
               console.log(`[QUEUE] Interrupted job has no resumable session (result: ${JSON.stringify(resumeCheckResult?.error || resumeCheckResult?.complete ? 'complete' : 'null')}), starting fresh`);
             }
           }
+          // Mode 2.5: Check project-cached sessions before starting fresh.
+          // Sessions are cached in stages/03-tts/sessions/{lang}/ after TTS completes (or partial).
+          // If a partial session exists for this language, auto-resume it.
+          if (!shouldResume) {
+            const projectDirForResume = job.bfpPath || job.projectDir || '';
+            if (projectDirForResume && electron?.sessionCache?.scanProject && electron?.parallelTts?.checkResumeFromDir) {
+              try {
+                const scanResult = await electron.sessionCache.scanProject(projectDirForResume);
+                if (scanResult.success && scanResult.sessions?.length) {
+                  const jobLang = (config.language || '').toLowerCase();
+                  // Find a session matching this job's language
+                  const matchingSession = scanResult.sessions.find(
+                    (s: any) => s.language.toLowerCase() === jobLang
+                  ) || (scanResult.sessions.length === 1 ? scanResult.sessions[0] : null);
+
+                  if (matchingSession) {
+                    const resumeResult = await electron.parallelTts.checkResumeFromDir(matchingSession.sessionDir);
+                    if (resumeResult.success && resumeResult.data?.success && !resumeResult.data.complete
+                        && (resumeResult.data.completedSentences ?? 0) > 0) {
+                      const data = resumeResult.data;
+                      resumeCheckResult = data;
+                      shouldResume = true;
+                      this._jobs.update(jobs => jobs.map(j => {
+                        if (j.id !== job.id) return j;
+                        return {
+                          ...j,
+                          isResumeJob: true,
+                          resumeCompletedSentences: data.completedSentences,
+                          resumeMissingSentences: data.missingSentences
+                        };
+                      }));
+                      console.log(`[QUEUE] Auto-resuming from cached session: ${data.completedSentences}/${data.totalSentences} sentences (lang=${matchingSession.language})`);
+                    }
+                  }
+                }
+              } catch (err) {
+                console.warn('[QUEUE] Error checking cached sessions for auto-resume:', err);
+              }
+            }
+          }
+
           // Mode 3: Fresh start — clean old sessions
           if (!shouldResume) {
             (parallelConfig as any).cleanSession = true;

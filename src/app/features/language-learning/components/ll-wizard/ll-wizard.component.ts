@@ -3449,7 +3449,6 @@ export class LLWizardComponent implements OnInit {
               parallelWorkers: this.ttsWorkers(),
               sentencePerParagraph: true,
               skipHeadings: true,
-              cleanSession: true,
               testMode: this.ttsTestMode(),
               testSentences: this.ttsTestSentences(),
               // Skip assembly - only generate sentence audio files

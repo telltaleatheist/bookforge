@@ -395,6 +395,10 @@ export async function cacheSessionToBfp(
     await fs.rename(tempDestDir, destDir);
     console.log(`[PARALLEL-TTS] Session cached to: ${destDir}`);
 
+    // Rewrite session-state.json paths to point to the cached location.
+    // The original paths reference the e2a tmp dir (possibly on another OS/WSL).
+    await rewriteSessionStatePaths(destDir);
+
     // Remove original from e2a tmp
     try {
       if (isWslSession && process.platform === 'win32') {
@@ -556,6 +560,9 @@ export async function cacheSessionToProject(
       } catch { /* readdir failed */ }
     }
 
+    // Rewrite session-state.json paths to point to the cached location.
+    await rewriteSessionStatePaths(destDir);
+
     console.log(`[PARALLEL-TTS] LL session cached: ${destDir}`);
     console.log(`[PARALLEL-TTS] Cached sentences dir: ${cachedSentencesDir}`);
 
@@ -565,6 +572,48 @@ export async function cacheSessionToProject(
     console.error(`[PARALLEL-TTS] ${error}`);
     return { success: false, error };
   }
+}
+
+/**
+ * Rewrite absolute paths in session-state.json to match the current cached location.
+ * e2a writes paths that reference the original tmp dir (e.g., /home/user/.../tmp/ebook-xxx/hash/).
+ * When the session is cached to a project folder (and synced across Mac/Windows/WSL via Syncthing),
+ * those paths become stale. This rewrites them to the actual on-disk location.
+ *
+ * @param sessionDir - The ebook-{uuid} directory (may contain a hash subdirectory)
+ */
+async function rewriteSessionStatePaths(sessionDir: string): Promise<void> {
+  // Find processDir: either sessionDir itself or a hash subdirectory
+  let processDir = sessionDir;
+  const directState = path.join(sessionDir, 'session-state.json');
+  try {
+    await fs.access(directState);
+  } catch {
+    const entries = await fs.readdir(sessionDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith('.') && !entry.name.startsWith('ebook-')) {
+        const candidatePath = path.join(sessionDir, entry.name, 'session-state.json');
+        try {
+          await fs.access(candidatePath);
+          processDir = path.join(sessionDir, entry.name);
+          break;
+        } catch { /* not this subdir */ }
+      }
+    }
+  }
+
+  const statePath = path.join(processDir, 'session-state.json');
+  const stateContent = await fs.readFile(statePath, 'utf-8');
+  const state = JSON.parse(stateContent);
+
+  state.chapters_dir_sentences = path.join(processDir, 'chapters', 'sentences');
+  state.chapters_dir = path.join(processDir, 'chapters');
+  if (state.epub_path) {
+    state.epub_path = path.join(processDir, path.basename(state.epub_path));
+  }
+
+  await fs.writeFile(statePath, JSON.stringify(state, null, 2));
+  console.log(`[PARALLEL-TTS] Rewrote session-state.json paths → ${processDir}`);
 }
 
 /**
@@ -1841,6 +1890,7 @@ function startWorker(
       ...condaRunArgs(settings.ttsEngine),
       workerPath,
       '--session', prepInfo.sessionId,
+      '--session_dir', prepInfo.sessionDir,
       '--device', deviceArg,
       '--tts_engine', settings.ttsEngine
     ];
@@ -1880,6 +1930,7 @@ function startWorker(
       appPath,
       '--headless',
       '--session', prepInfo.sessionId,
+      '--session_dir', prepInfo.sessionDir,
       '--device', appDeviceArg,
       '--output_dir', config.outputDir,
       '--worker_mode',
