@@ -2150,6 +2150,115 @@ export class ElectronService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // Ebook Library
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async ebookLibraryInit(): Promise<{ success: boolean; data?: { ebookMetaAvailable: boolean }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.init();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryScan(): Promise<{ success: boolean; data?: { books: any[] }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.scan();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryAddBooks(paths: string[], category: string): Promise<{ success: boolean; data?: { added: any[]; duplicates: any[] }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.addBooks(paths, category);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryRemoveBook(relativePath: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.removeBook(relativePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryMoveBooks(paths: string[], category: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.moveBooks(paths, category);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryUpdateMetadata(relativePath: string, metadata: any): Promise<{ success: boolean; data?: { book: any }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.updateMetadata(relativePath, metadata);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryGetCover(relativePath: string): Promise<{ success: boolean; data?: { coverData: string | null }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.getCover(relativePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibrarySetCover(relativePath: string, base64Data: string): Promise<{ success: boolean; data?: { book: any }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.setCover(relativePath, base64Data);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryListCategories(): Promise<{ success: boolean; data?: { categories: any[] }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.listCategories();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryCreateCategory(name: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.createCategory(name);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryDeleteCategory(name: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.deleteCategory(name);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryRenameCategory(oldName: string, newName: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.renameCategory(oldName, newName);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryImportToStudio(relativePath: string): Promise<{ success: boolean; data?: { absolutePath: string; metadata: any }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.importToStudio(relativePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryRevealBook(relativePath: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.revealBook(relativePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryOpenCategoryFolder(categoryName: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.openCategoryFolder(categoryName);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // Tool Paths Configuration
   // ─────────────────────────────────────────────────────────────────────────────
 

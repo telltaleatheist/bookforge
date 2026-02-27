@@ -117,6 +117,37 @@ body {
   display: none;
 }
 
+/* Tab Toggle */
+.tab-toggle {
+  display: flex;
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.tab-btn {
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tab-btn:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.tab-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
 [data-theme="light"] .moon-icon {
   display: inline;
 }
@@ -306,6 +337,14 @@ body {
 }
 
 .book-type-badge.m4b { background: #8b5cf6; }
+.book-type-badge.format-epub { background: rgba(46, 125, 50, 0.9); }
+.book-type-badge.format-pdf { background: rgba(198, 40, 40, 0.9); }
+.book-type-badge.format-azw3,
+.book-type-badge.format-azw,
+.book-type-badge.format-mobi { background: rgba(255, 143, 0, 0.9); }
+.book-type-badge.format-fb2 { background: rgba(21, 101, 192, 0.9); }
+.book-type-badge.format-cbz,
+.book-type-badge.format-cbr { background: rgba(142, 36, 170, 0.9); }
 
 .book-info {
   padding: 10px;

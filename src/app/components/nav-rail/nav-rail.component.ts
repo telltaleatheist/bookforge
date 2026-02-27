@@ -199,6 +199,12 @@ export class NavRailComponent {
   // Default navigation items
   readonly items = input<NavRailItem[]>([
     {
+      id: 'library',
+      icon: '\u{1F4DA}', // Books emoji
+      label: 'Library',
+      route: '/library'
+    },
+    {
       id: 'studio',
       icon: '\u{1F3AC}', // Clapper board emoji
       label: 'Studio',

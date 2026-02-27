@@ -11,14 +11,18 @@
 <body>
   <nav class="navbar">
     <div class="nav-title">
-      <span class="logo">📚</span>
+      <span class="logo">\u{1F4DA}</span>
       <h1>BookForge Library</h1>
     </div>
     <div class="nav-controls">
+      <div class="tab-toggle">
+        <button class="tab-btn active" id="tab-audiobooks" data-tab="audiobooks">Audiobooks</button>
+        <button class="tab-btn" id="tab-ebooks" data-tab="ebooks">Ebooks</button>
+      </div>
       <span class="load-status" id="load-status"></span>
       <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
-        <span class="sun-icon">☀️</span>
-        <span class="moon-icon">🌙</span>
+        <span class="sun-icon">\u{2600}\u{FE0F}</span>
+        <span class="moon-icon">\u{1F319}</span>
       </button>
     </div>
   </nav>
@@ -26,13 +30,13 @@
   <div class="stats-bar">
     <div class="stat">
       <span class="stat-value" id="total-books">0</span>
-      <span class="stat-label">Audiobooks</span>
+      <span class="stat-label" id="stat-label">Audiobooks</span>
     </div>
   </div>
 
   <div class="search-container">
     <input type="text" class="search-box" id="search-box" placeholder="Search audiobooks...">
-    <button class="clear-search" id="clear-search" style="display: none;">✕</button>
+    <button class="clear-search" id="clear-search" style="display: none;">\u{2715}</button>
   </div>
 
   <main class="content">

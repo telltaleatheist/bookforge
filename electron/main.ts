@@ -9,6 +9,7 @@ import { getOcrService } from './ocr-service';
 import { getPluginRegistry } from './plugins/plugin-registry';
 import { loadBuiltinPlugins } from './plugins/plugin-loader';
 import { libraryServer } from './library-server';
+import * as ebookLibrary from './ebook-library';
 import { getHeadlessOcrService } from './headless-ocr';
 import { initializeLoggers, getMainLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
@@ -3234,6 +3235,161 @@ function setupIpcHandlers(): void {
   ipcMain.handle('library-server:status', async () => {
     try {
       return { success: true, data: libraryServer.getStatus() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Ebook Library
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('ebookLibrary:init', async () => {
+    try {
+      const data = await ebookLibrary.initLibrary();
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:scan', async () => {
+    try {
+      const books = await ebookLibrary.scanLibrary();
+      return { success: true, data: { books } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:add-books', async (_event, paths: string[], category: string) => {
+    try {
+      const result = await ebookLibrary.addBooks(paths, category);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:remove-book', async (_event, relativePath: string) => {
+    try {
+      await ebookLibrary.removeBook(relativePath);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:move-books', async (_event, paths: string[], category: string) => {
+    try {
+      await ebookLibrary.moveBooks(paths, category);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:update-metadata', async (_event, relativePath: string, metadata: any) => {
+    try {
+      const result = await ebookLibrary.updateBookMetadata(relativePath, metadata);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:get-cover', async (_event, relativePath: string) => {
+    try {
+      const coverData = await ebookLibrary.getCoverData(relativePath);
+      return { success: true, data: { coverData } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:set-cover', async (_event, relativePath: string, base64Data: string) => {
+    try {
+      await ebookLibrary.setBookCover(relativePath, base64Data);
+      // Re-read the book entry from cache to return updated data
+      const books = await ebookLibrary.scanLibrary();
+      const book = books.find(b => b.relativePath === relativePath);
+      return { success: true, data: { book } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:list-categories', async () => {
+    try {
+      const categories = await ebookLibrary.listCategories();
+      return { success: true, data: { categories } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:create-category', async (_event, name: string) => {
+    try {
+      await ebookLibrary.createCategory(name);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:delete-category', async (_event, name: string) => {
+    try {
+      await ebookLibrary.deleteCategory(name);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:rename-category', async (_event, oldName: string, newName: string) => {
+    try {
+      await ebookLibrary.renameCategory(oldName, newName);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:reveal-book', async (_event, relativePath: string) => {
+    try {
+      const absolutePath = ebookLibrary.getAbsolutePath(relativePath);
+      const { shell } = await import('electron');
+      shell.showItemInFolder(absolutePath);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:open-category-folder', async (_event, categoryName: string) => {
+    try {
+      const absolutePath = ebookLibrary.getAbsolutePath(categoryName);
+      const { shell } = await import('electron');
+      await shell.openPath(absolutePath);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:import-to-studio', async (_event, relativePath: string) => {
+    try {
+      const absolutePath = ebookLibrary.getAbsolutePath(relativePath);
+      // Read metadata from library cache for the import
+      const meta = await ebookLibrary.readMetadata(absolutePath);
+      const confirmedMeta = {
+        title: meta.title,
+        author: meta.authorFull || meta.authorLast || 'Unknown',
+        year: meta.year ? String(meta.year) : undefined,
+        language: meta.language,
+      };
+      // Return the path + metadata so the renderer can call audiobook:import-epub
+      return { success: true, data: { absolutePath, metadata: confirmedMeta } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

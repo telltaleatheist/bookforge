@@ -3,14 +3,12 @@ import { Routes } from '@angular/router';
 export const routes: Routes = [
   {
     path: '',
-    redirectTo: 'studio',
+    redirectTo: 'library',
     pathMatch: 'full'
   },
   {
-    // Library route now redirects to studio (merged in Feb 2025)
     path: 'library',
-    redirectTo: 'studio',
-    pathMatch: 'full'
+    loadComponent: () => import('./features/library/library.component').then(m => m.LibraryComponent)
   },
   {
     path: 'studio',

@@ -118,13 +118,18 @@ export class App implements OnInit {
   });
 
   // Navigation items for the nav rail
-  // Library was removed (Feb 2025) - Studio is now the main entry point
   readonly navItems: NavRailItem[] = [
     {
       id: 'studio',
       icon: '\u{1F3A7}', // Headphones emoji
       label: 'Studio',
       route: '/studio'
+    },
+    {
+      id: 'library',
+      icon: '\u{1F4DA}', // Books emoji
+      label: 'Library',
+      route: '/library'
     },
     {
       id: 'queue',

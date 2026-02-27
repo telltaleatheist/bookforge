@@ -14,6 +14,7 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 
 import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath } from './manifest-service';
+import { scanLibrary, getCoverData, getEbooksRoot } from './ebook-library';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -77,6 +78,11 @@ export class LibraryServer {
     this.app.get('/api/cover', this.getCover.bind(this));
     this.app.get('/api/download', this.downloadFile.bind(this));
     this.app.get('/api/audio', this.streamAudio.bind(this));
+
+    // Ebook Library Routes
+    this.app.get('/api/ebooks', this.getEbooks.bind(this));
+    this.app.get('/api/ebook-cover', this.getEbookCover.bind(this));
+    this.app.get('/api/ebook-download', this.downloadEbook.bind(this));
 
     // Health check
     this.app.get('/api/health', (_req: Request, res: Response) => {
@@ -421,6 +427,90 @@ export class LibraryServer {
     } catch (err) {
       console.error('[LibraryServer] Error streaming audio:', err);
       res.status(500).json({ error: 'Failed to stream audio' });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Ebook Library Handlers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private async getEbooks(_req: Request, res: Response): Promise<void> {
+    try {
+      const books = await scanLibrary();
+      res.json({ ebooks: books });
+    } catch (err) {
+      console.error('[LibraryServer] Error getting ebooks:', err);
+      res.status(500).json({ error: 'Failed to get ebooks' });
+    }
+  }
+
+  private async getEbookCover(req: Request, res: Response): Promise<void> {
+    try {
+      const relativePath = req.query.path as string;
+      if (!relativePath) {
+        res.status(400).json({ error: 'Missing path parameter' });
+        return;
+      }
+
+      const coverData = await getCoverData(relativePath);
+      res.json({ cover: coverData });
+    } catch (err) {
+      console.error('[LibraryServer] Error getting ebook cover:', err);
+      res.status(500).json({ error: 'Failed to get ebook cover' });
+    }
+  }
+
+  private async downloadEbook(req: Request, res: Response): Promise<void> {
+    try {
+      const relativePath = req.query.path as string;
+      if (!relativePath) {
+        res.status(400).json({ error: 'Missing path parameter' });
+        return;
+      }
+
+      const ebooksRoot = getEbooksRoot();
+      const absolutePath = path.join(ebooksRoot, relativePath);
+
+      // Security: verify path is within ebooks directory
+      const resolved = path.resolve(absolutePath);
+      if (!resolved.startsWith(path.resolve(ebooksRoot))) {
+        res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+
+      try {
+        await fs.access(absolutePath);
+      } catch {
+        res.status(404).json({ error: 'File not found' });
+        return;
+      }
+
+      const filename = path.basename(absolutePath);
+      const ext = path.extname(filename).toLowerCase();
+
+      const contentTypes: Record<string, string> = {
+        '.epub': 'application/epub+zip',
+        '.pdf': 'application/pdf',
+        '.azw3': 'application/x-mobi8-ebook',
+        '.mobi': 'application/x-mobipocket-ebook',
+      };
+
+      const contentType = contentTypes[ext] || 'application/octet-stream';
+      const stats = await fs.stat(absolutePath);
+
+      const safeFilename = filename.replace(/[^\x20-\x7E]/g, '_');
+      const encodedFilename = encodeURIComponent(filename).replace(/'/g, '%27');
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', stats.size);
+      res.setHeader('Content-Disposition',
+        `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`);
+
+      const fileStream = fsSync.createReadStream(absolutePath);
+      fileStream.pipe(res);
+    } catch (err) {
+      console.error('[LibraryServer] Error downloading ebook:', err);
+      res.status(500).json({ error: 'Failed to download ebook' });
     }
   }
 
