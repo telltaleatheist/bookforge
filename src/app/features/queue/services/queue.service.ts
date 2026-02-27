@@ -370,6 +370,13 @@ export class QueueService {
       let pendingParallelData: any = null;
       let parallelRaf: number | null = null;
       this.unsubscribeParallelProgress = electron.parallelTts.onProgress((data) => {
+        // Always process completion/error immediately (same pattern as reassembly)
+        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
+          // Clear pending RAF data so a stale progress event doesn't overwrite completion
+          pendingParallelData = null;
+          this.ngZone.run(() => this.handleParallelProgressUpdate(data.jobId, data.progress));
+          return;
+        }
         pendingParallelData = data;
         if (!parallelRaf) {
           parallelRaf = requestAnimationFrame(() => {
@@ -384,6 +391,8 @@ export class QueueService {
       });
 
       this.unsubscribeParallelComplete = electron.parallelTts.onComplete((data) => {
+        // Clear any pending progress RAF so it can't overwrite the completion status
+        pendingParallelData = null;
         this.ngZone.run(async () => {
           await this.handleJobComplete({
             jobId: data.jobId,
@@ -582,6 +591,10 @@ export class QueueService {
     this._jobs.update(jobs =>
       jobs.map(job => {
         if (job.id !== jobId) return job;
+
+        // Don't overwrite terminal statuses — handleJobComplete may have already
+        // marked this job as complete/error before this RAF-coalesced update fires
+        if (job.status === 'complete' || job.status === 'error') return job;
 
         // For resume jobs, ensure progress is capped at 100% and uses correct counts
         let displayProgress = progress.percentage;
