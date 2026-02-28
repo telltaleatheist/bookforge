@@ -3265,7 +3265,6 @@ export class LLWizardComponent implements OnInit {
       // 3. TTS jobs (one per language row, or resume partial sessions)
       if (!this._skippedSteps.has('tts')) {
        // Check if assembly chaining is needed (TTS → Assembly via bilingual workflow pattern)
-       // Computed here so both resume and fresh paths can use it.
        const assemblyChained = !this._skippedSteps.has('assembly')
          && !!this.assemblySourceLang() && !!this.assemblyTargetLang();
 
@@ -3285,7 +3284,6 @@ export class LLWizardComponent implements OnInit {
             type: 'tts-conversion',
             epubPath: resumeData.sourceEpubPath || '',
             projectDir,
-            bfpPath: assemblyChained ? undefined : this.bfpPath(),
             metadata: { title: `TTS Continue (${session.language.toUpperCase()})` },
             config: {
               type: 'tts-conversion',
@@ -3293,10 +3291,10 @@ export class LLWizardComponent implements OnInit {
               useParallel: true,
               parallelMode: 'sentences',
               parallelWorkers: this.ttsWorkers(),
-              skipAssembly: assemblyChained,
+              skipAssembly: true,
               sentencePerParagraph: true,
               skipHeadings: true,
-              outputDir: assemblyChained ? `/tmp/bookforge-tts-${Date.now()}` : '',
+              outputDir: `/tmp/bookforge-tts-${Date.now()}`,
             },
             resumeInfo: {
               success: true,
@@ -3373,13 +3371,6 @@ export class LLWizardComponent implements OnInit {
           // Build metadata with chaining info when assembly is enabled
           const metadata: any = {
             title: `TTS (${row.language.toUpperCase()})`,
-            // When no assembly step, include book metadata so e2a labels the M4B correctly
-            ...(!assemblyChained && {
-              bookTitle: this.projectTitle() || this.title(),
-              author: this.author(),
-              year: this.year() || undefined,
-              outputFilename: `${this.projectTitle() || this.title() || 'audiobook'}.m4b`,
-            }),
           };
 
           if (soloTts && (row.language === asmSourceLang || row.language === asmTargetLang)) {
@@ -3441,9 +3432,7 @@ export class LLWizardComponent implements OnInit {
             type: 'tts-conversion',
             epubPath: resolved.path,
             projectDir: projectDir,
-            // When assembly is chained, bfpPath isn't needed (assembly handles output).
-            // When no assembly, bfpPath enables audio linking to the project after TTS.
-            bfpPath: assemblyChained ? undefined : this.bfpPath(),
+            bfpPath: undefined,
             metadata,
             config: {
               type: 'tts-conversion',
@@ -3464,12 +3453,10 @@ export class LLWizardComponent implements OnInit {
               skipHeadings: true,
               testMode: this.ttsTestMode(),
               testSentences: this.ttsTestSentences(),
-              // Only skip assembly when a separate bilingual assembly step will handle it.
-              // When no assembly is configured, let e2a produce the full M4B.
-              skipAssembly: assemblyChained,
-              // When assembly is chained, use temp dir (assembly reads sentences from cached session).
-              // When no assembly, use empty string so e2a writes M4B to its default location.
-              outputDir: assemblyChained ? `/tmp/bookforge-tts-${Date.now()}` : '',
+              // Skip assembly - only generate sentence audio files
+              skipAssembly: true,
+              // Output to temp directory
+              outputDir: `/tmp/bookforge-tts-${Date.now()}`,
             },
             workflowId,
           });
