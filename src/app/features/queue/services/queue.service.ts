@@ -939,6 +939,11 @@ export class QueueService {
               console.log(`[QUEUE] Session cached, sentences at: ${cacheResult.cachedSentencesDir}`);
               // Update outputPath to cached location so chaining handler uses persistent paths
               result.outputPath = cacheResult.cachedSentencesDir;
+              // Also update the job's stored outputPath so queue state reflects the
+              // persistent cached path instead of the ephemeral e2a tmp path
+              this._jobs.update(jobs =>
+                jobs.map(j => j.id === result.jobId ? { ...j, outputPath: cacheResult.cachedSentencesDir } : j)
+              );
             } else {
               console.error('[QUEUE] Failed to cache session:', cacheResult.error);
             }
@@ -2669,17 +2674,17 @@ export class QueueService {
           const currentId = this._currentJobId();
           console.log(`[QUEUE] Parallel TTS inline await resolved for jobId=${job.id}, _currentJobId=${currentId}, isRunning=${this._isRunning()}`);
 
-          // Safety net: ensure processNext() runs even if the constructor listener's
-          // handleJobComplete hasn't reached it yet (e.g., awaiting session caching).
-          // processNext() is idempotent — if already processing, it returns immediately.
+          // Clear _currentJobId so the queue isn't stuck, but do NOT call processNext()
+          // here. handleJobComplete (from the constructor listener) must finish session
+          // caching before the next job starts — otherwise a chained reassembly job may
+          // start before the TTS session is cached to the project, causing "No TTS session
+          // found" errors. handleJobComplete always calls processNext() after all async
+          // post-completion work (session caching, chaining) is done.
           if (currentId === job.id || !currentId) {
             this._currentJobId.set(null);
-            if (this._isRunning()) {
-              console.log(`[QUEUE] Parallel TTS safety net: clearing _currentJobId and calling processNext for job ${job.id}`);
-              this.processNext();
-            }
+            console.log(`[QUEUE] Parallel TTS: cleared _currentJobId for job ${job.id}, handleJobComplete will call processNext after session caching`);
           } else {
-            console.log(`[QUEUE] Parallel TTS safety net: _currentJobId already advanced to ${currentId}, skipping`);
+            console.log(`[QUEUE] Parallel TTS: _currentJobId already advanced to ${currentId}`);
           }
           return;
 
