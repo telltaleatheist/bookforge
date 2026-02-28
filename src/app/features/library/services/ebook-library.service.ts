@@ -15,8 +15,8 @@ export class EbookLibraryService {
   private readonly _loading = signal(false);
   private readonly _searchQuery = signal('');
   private readonly _activeCategory = signal('All Books');
-  private readonly _sortBy = signal<'title' | 'author' | 'year' | 'dateAdded'>('title');
-  private readonly _sortAsc = signal(true);
+  private readonly _sortBy = signal<'title' | 'author' | 'year' | 'dateAdded'>('dateAdded');
+  private readonly _sortAsc = signal(false);
   private readonly _formatFilter = signal<string[]>([]);
   private readonly _ebookMetaAvailable = signal(false);
   private readonly _selectedBooks = signal<Set<string>>(new Set());
@@ -129,15 +129,18 @@ export class EbookLibraryService {
     const result = await this.electronService.ebookLibraryScan();
     if (result.success && result.data) {
       // Preserve already-loaded cover data across refreshes
-      const existingCovers = new Map<string, string>();
+      // Index by both relativePath and filename so renames don't lose covers
+      const coverByPath = new Map<string, string>();
+      const coverByFilename = new Map<string, string>();
       for (const book of this._books()) {
         if (book.coverData) {
-          existingCovers.set(book.relativePath, book.coverData);
+          coverByPath.set(book.relativePath, book.coverData);
+          coverByFilename.set(book.filename, book.coverData);
         }
       }
 
       const books = result.data.books.map((b: LibraryBook) => {
-        const cover = existingCovers.get(b.relativePath);
+        const cover = coverByPath.get(b.relativePath) || coverByFilename.get(b.filename);
         return cover ? { ...b, coverData: cover } : b;
       });
 
@@ -146,7 +149,21 @@ export class EbookLibraryService {
   }
 
   private async loadAllCovers(): Promise<void> {
-    const books = this._books();
+    const books = this._books().filter(b => !b.coverData);
+    this.loadCoversForBooks(books);
+  }
+
+  /**
+   * Load covers for specific books by their relative paths (used after addBooks)
+   */
+  private async loadCoversForPaths(paths: string[]): Promise<void> {
+    const pathSet = new Set(paths);
+    const books = this._books().filter(b => pathSet.has(b.relativePath) && !b.coverData);
+    this.loadCoversForBooks(books);
+  }
+
+  private async loadCoversForBooks(books: LibraryBook[]): Promise<void> {
+    if (books.length === 0) return;
     // Load covers in batches of 4 to avoid overwhelming IPC
     const batchSize = 4;
     for (let i = 0; i < books.length; i += batchSize) {
@@ -186,6 +203,11 @@ export class EbookLibraryService {
     if (result.success && result.data) {
       await this.loadBooks();
       await this.loadCategories();
+      // Load covers for newly added books
+      const addedPaths = result.data.added.map((b: LibraryBook) => b.relativePath);
+      if (addedPaths.length > 0) {
+        this.loadCoversForPaths(addedPaths);
+      }
       return result.data;
     }
     return { added: [], duplicates: [] };
@@ -234,8 +256,14 @@ export class EbookLibraryService {
     const result = await this.electronService.ebookLibraryUpdateMetadata(relativePath, metadata);
     if (result.success && result.data) {
       const updated = result.data.book;
-      // If relativePath changed (file was renamed), update selection
+      // If relativePath changed (file was renamed), remap in local state
+      // so loadBooks() can preserve cover data under the new path
       if (updated.relativePath !== relativePath) {
+        this._books.update(books =>
+          books.map(b => b.relativePath === relativePath
+            ? { ...b, relativePath: updated.relativePath, filename: updated.filename }
+            : b)
+        );
         this._selectedBookPath.set(updated.relativePath);
       }
       await this.loadBooks();
@@ -365,6 +393,10 @@ export class EbookLibraryService {
 
   setActiveCategory(category: string): void {
     this._activeCategory.set(category);
+  }
+
+  toggleSortDir(): void {
+    this._sortAsc.update(v => !v);
   }
 
   setSortBy(field: 'title' | 'author' | 'year' | 'dateAdded'): void {

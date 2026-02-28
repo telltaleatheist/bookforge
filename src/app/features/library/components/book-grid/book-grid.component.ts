@@ -56,6 +56,11 @@ import type { LibraryBook } from '../../models/library.types';
             <option value="year">Year</option>
             <option value="dateAdded">Date Added</option>
           </select>
+          <button
+            class="sort-dir-btn"
+            (click)="libraryService.toggleSortDir()"
+            [title]="libraryService.sortAsc() ? 'Ascending' : 'Descending'"
+          >{{ libraryService.sortAsc() ? '\u2191' : '\u2193' }}</button>
         </div>
       </div>
 
@@ -216,6 +221,25 @@ import type { LibraryBook } from '../../models/library.types';
       cursor: pointer;
     }
 
+    .sort-dir-btn {
+      background: var(--bg-default);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-size: 0.85rem;
+      width: 28px;
+      height: 28px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+
+      &:hover {
+        background: var(--bg-hover);
+      }
+    }
+
     .book-grid {
       display: flex;
       flex-wrap: wrap;
@@ -229,10 +253,11 @@ import type { LibraryBook } from '../../models/library.types';
 
     .selection-rect {
       position: absolute;
-      border: 2px solid #06b6d4;
+      outline: 2px solid #06b6d4;
       background: rgba(6, 182, 212, 0.12);
       pointer-events: none;
       z-index: 1000;
+      box-sizing: border-box;
     }
 
     .selection-rect:not(.active) {

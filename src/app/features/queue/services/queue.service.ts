@@ -1204,7 +1204,7 @@ export class QueueService {
       return;
     }
 
-    // Clear current job if it matches (may already be cleared by safety net or reassigned to next job)
+    // Clear current job if it matches (may already be cleared or reassigned to next job)
     if (this._currentJobId() === result.jobId) {
       this._currentJobId.set(null);
       console.log(`[QUEUE] Cleared _currentJobId for completed job ${result.jobId}`);
@@ -2671,21 +2671,16 @@ export class QueueService {
           // Do NOT call handleJobComplete here — that caused a double-call race where the
           // second invocation deleted the just-cached session and then failed mid-copy.
           await ttsComplete;
-          const currentId = this._currentJobId();
-          console.log(`[QUEUE] Parallel TTS inline await resolved for jobId=${job.id}, _currentJobId=${currentId}, isRunning=${this._isRunning()}`);
+          console.log(`[QUEUE] Parallel TTS inline await resolved for jobId=${job.id}, _currentJobId=${this._currentJobId()}, isRunning=${this._isRunning()}`);
 
-          // Clear _currentJobId so the queue isn't stuck, but do NOT call processNext()
-          // here. handleJobComplete (from the constructor listener) must finish session
-          // caching before the next job starts — otherwise a chained reassembly job may
-          // start before the TTS session is cached to the project, causing "No TTS session
-          // found" errors. handleJobComplete always calls processNext() after all async
-          // post-completion work (session caching, chaining) is done.
-          if (currentId === job.id || !currentId) {
-            this._currentJobId.set(null);
-            console.log(`[QUEUE] Parallel TTS: cleared _currentJobId for job ${job.id}, handleJobComplete will call processNext after session caching`);
-          } else {
-            console.log(`[QUEUE] Parallel TTS: _currentJobId already advanced to ${currentId}`);
-          }
+          // Do NOT clear _currentJobId here. handleJobComplete (from the constructor
+          // listener) owns the entire completion flow: it marks the job complete, caches
+          // the TTS session to the project, and THEN clears _currentJobId + calls
+          // processNext(). Clearing _currentJobId here opened a race window where the
+          // job was marked complete and _currentJobId was null, allowing a premature
+          // processNext() to start reassembly before session caching finished.
+          // handleJobComplete always reaches lines 1207-1221 (outside try/catch),
+          // so _currentJobId will be cleared and processNext() called reliably.
           return;
 
         } else {

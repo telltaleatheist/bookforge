@@ -1,4 +1,4 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject, signal, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { EbookLibraryService } from './services/ebook-library.service';
 import { CategorySidebarComponent } from './components/category-sidebar/category-sidebar.component';
@@ -40,6 +40,16 @@ import type { LibraryBook } from './models/library.types';
             <div class="drop-icon">\u{1F4E5}</div>
             <div>Drop ebooks to add to library</div>
           </div>
+        </div>
+      }
+
+      <!-- Import progress toast -->
+      @if (importMessage()) {
+        <div class="import-toast" [class.success]="!isImporting()">
+          @if (isImporting()) {
+            <div class="import-spinner"></div>
+          }
+          <span>{{ importMessage() }}</span>
         </div>
       }
     </div>
@@ -85,6 +95,48 @@ import type { LibraryBook } from './models/library.types';
       font-size: 3rem;
       margin-bottom: 8px;
     }
+
+    .import-toast {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 0.85rem;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+      z-index: 200;
+      animation: toastIn 0.2s ease-out;
+
+      &.success {
+        border-color: #22c55e;
+      }
+    }
+
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+      to { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+
+    .import-spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid var(--border-default);
+      border-top-color: var(--accent-primary);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
   `]
 })
 export class LibraryComponent implements OnInit {
@@ -93,12 +145,46 @@ export class LibraryComponent implements OnInit {
   isDragOver = false;
   private dragCounter = 0;
 
+  readonly isImporting = signal(false);
+  readonly importMessage = signal<string | null>(null);
+  private importToastTimer: ReturnType<typeof setTimeout> | null = null;
+
   async ngOnInit(): Promise<void> {
     await this.libraryService.init();
   }
 
   async addBooks(paths: string[]): Promise<void> {
-    await this.libraryService.addBooks(paths);
+    // Clear any previous toast
+    if (this.importToastTimer) {
+      clearTimeout(this.importToastTimer);
+      this.importToastTimer = null;
+    }
+
+    const count = paths.length;
+    this.isImporting.set(true);
+    this.importMessage.set(`Importing ${count} ${count === 1 ? 'book' : 'books'}...`);
+
+    const result = await this.libraryService.addBooks(paths);
+
+    this.isImporting.set(false);
+
+    // Show result message
+    const added = result.added.length;
+    const dupes = result.duplicates.length;
+    if (added > 0 && dupes > 0) {
+      this.importMessage.set(`Added ${added} ${added === 1 ? 'book' : 'books'}, ${dupes} already in library`);
+    } else if (added > 0) {
+      this.importMessage.set(`Added ${added} ${added === 1 ? 'book' : 'books'}`);
+    } else if (dupes > 0) {
+      this.importMessage.set(`${dupes} ${dupes === 1 ? 'book' : 'books'} already in library`);
+    } else {
+      this.importMessage.set('No books added');
+    }
+
+    // Auto-dismiss after 3 seconds
+    this.importToastTimer = setTimeout(() => {
+      this.importMessage.set(null);
+    }, 3000);
   }
 
   onBookDoubleClick(book: LibraryBook): void {
