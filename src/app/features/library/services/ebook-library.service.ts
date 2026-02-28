@@ -129,18 +129,15 @@ export class EbookLibraryService {
     const result = await this.electronService.ebookLibraryScan();
     if (result.success && result.data) {
       // Preserve already-loaded cover data across refreshes
-      // Index by both relativePath and filename so renames don't lose covers
-      const coverByPath = new Map<string, string>();
-      const coverByFilename = new Map<string, string>();
+      const existingCovers = new Map<string, string>();
       for (const book of this._books()) {
         if (book.coverData) {
-          coverByPath.set(book.relativePath, book.coverData);
-          coverByFilename.set(book.filename, book.coverData);
+          existingCovers.set(book.relativePath, book.coverData);
         }
       }
 
       const books = result.data.books.map((b: LibraryBook) => {
-        const cover = coverByPath.get(b.relativePath) || coverByFilename.get(b.filename);
+        const cover = existingCovers.get(b.relativePath);
         return cover ? { ...b, coverData: cover } : b;
       });
 
