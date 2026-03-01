@@ -87,10 +87,14 @@ import { EbookLibraryService } from '../../services/ebook-library.service';
             </div>
           }
 
+          @if (saveWarning()) {
+            <div class="save-warning">{{ saveWarning() }}</div>
+          }
+
           <button
             class="btn btn-primary"
             (click)="save()"
-            [disabled]="saving() || !libraryService.ebookMetaAvailable()"
+            [disabled]="saving()"
           >
             {{ saving() ? 'Saving...' : 'Save' }}
           </button>
@@ -250,6 +254,15 @@ import { EbookLibraryService } from '../../services/ebook-library.service';
       text-align: center;
     }
 
+    .save-warning {
+      font-size: 0.7rem;
+      color: var(--accent-warning, #f59e0b);
+      padding: 6px 8px;
+      background: color-mix(in srgb, var(--accent-warning, #f59e0b) 10%, transparent);
+      border-radius: 4px;
+      text-align: center;
+    }
+
     .btn {
       padding: 6px 12px;
       border: none;
@@ -309,6 +322,7 @@ export class BookMetadataComponent {
   editCategory = '';
 
   saving = signal(false);
+  saveWarning = signal<string | null>(null);
   coverPreview = signal<string | null>(null);
   private pendingCoverData: string | null = null;
 
@@ -325,6 +339,7 @@ export class BookMetadataComponent {
         this.editLanguage = book.language || '';
         this.editCategory = book.category || 'Uncategorized';
         this.coverPreview.set(null);
+        this.saveWarning.set(null);
         this.pendingCoverData = null;
 
         // Load cover if not already loaded
@@ -370,9 +385,10 @@ export class BookMetadataComponent {
     if (!book) return;
 
     this.saving.set(true);
+    this.saveWarning.set(null);
     try {
       // Save metadata to file (may rename the file, changing relativePath)
-      const updated = await this.libraryService.updateMetadata(book.relativePath, {
+      const result = await this.libraryService.updateMetadata(book.relativePath, {
         title: this.editTitle,
         subtitle: this.editSubtitle || undefined,
         authorFirst: this.editAuthorFirst || undefined,
@@ -383,7 +399,10 @@ export class BookMetadataComponent {
         year: this.editYear || undefined,
         language: this.editLanguage || undefined,
       });
-      const currentPath = updated?.relativePath || book.relativePath;
+      if (result?.warning) {
+        this.saveWarning.set(result.warning);
+      }
+      const currentPath = result?.book?.relativePath || book.relativePath;
 
       // Move to new category if changed
       if (this.editCategory !== book.category) {

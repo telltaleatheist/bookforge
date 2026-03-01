@@ -3380,8 +3380,15 @@ function setupIpcHandlers(): void {
   ipcMain.handle('ebookLibrary:import-to-studio', async (_event, relativePath: string) => {
     try {
       const absolutePath = ebookLibrary.getAbsolutePath(relativePath);
-      // Read from library cache first (has user-edited metadata), fall back to file
-      const meta = ebookLibrary.getCachedMetadata(relativePath) || await ebookLibrary.readMetadata(absolutePath);
+      // Metadata priority: cache (user-edited) → file (ebook-meta) → filename parsing
+      let meta = ebookLibrary.getCachedMetadata(relativePath);
+      if (!meta) {
+        try {
+          meta = await ebookLibrary.readMetadata(absolutePath);
+        } catch {
+          meta = ebookLibrary.parseFilename(path.basename(absolutePath));
+        }
+      }
       const coverData = await ebookLibrary.getCoverData(relativePath);
       const confirmedMeta = {
         title: meta.title,
@@ -4903,13 +4910,11 @@ function setupIpcHandlers(): void {
         slug = `${slug}_${timestamp}`;
       }
 
-      // Create the full project structure manually
+      // Create the project structure — only source and output dirs
+      // Stage dirs (01-cleanup, 02-translate, 03-tts) are created when those stages actually run
       const projectDir = path.join(projectsFolder, slug);
       await fs.mkdir(projectDir, { recursive: true });
       await fs.mkdir(path.join(projectDir, 'source'), { recursive: true });
-      await fs.mkdir(path.join(projectDir, 'stages', '01-cleanup'), { recursive: true });
-      await fs.mkdir(path.join(projectDir, 'stages', '02-translate'), { recursive: true });
-      await fs.mkdir(path.join(projectDir, 'stages', '03-tts', 'sessions'), { recursive: true });
       await fs.mkdir(path.join(projectDir, 'output'), { recursive: true });
 
       // Determine source type and copy file

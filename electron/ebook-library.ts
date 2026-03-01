@@ -387,7 +387,7 @@ export async function setCover(filePath: string, coverPath: string): Promise<voi
  * "Title. LastName, FirstName. (Year).ext"
  * "Title. Author.ext"
  */
-function parseFilename(filename: string): BookMetadata {
+export function parseFilename(filename: string): BookMetadata {
   const ext = path.extname(filename);
   const base = filename.replace(ext, '');
 
@@ -779,12 +779,20 @@ export async function moveBooks(relativePaths: string[], targetCategory: string)
 export async function updateBookMetadata(
   relativePath: string,
   meta: Partial<BookMetadata>
-): Promise<{ book: LibraryBookEntry }> {
+): Promise<{ book: LibraryBookEntry; warning?: string }> {
   const root = getEbooksRoot();
   const absolutePath = path.join(root, relativePath);
+  const ext = path.extname(relativePath).toLowerCase();
 
-  // Write metadata to the ebook file
-  await writeMetadata(absolutePath, meta);
+  // Try to write metadata to the ebook file
+  // Fails for PDFs and other formats that ebook-meta can't write to
+  let warning: string | undefined;
+  try {
+    await writeMetadata(absolutePath, meta);
+  } catch (err) {
+    warning = `File metadata not updated (${ext} files don't support embedded metadata writes)`;
+    console.warn(`[EbookLibrary] ${warning}:`, (err as Error).message);
+  }
 
   // Build the new full metadata by merging old cache + new values
   const cache = loadCache();
@@ -801,7 +809,6 @@ export async function updateBookMetadata(
   const merged: BookMetadata = { ...oldMeta, ...meta };
 
   // Determine if we need to rename the file
-  const ext = path.extname(relativePath);
   const newFilename = generateFilename(merged, ext);
   const oldFilename = path.basename(relativePath);
   const category = path.dirname(relativePath);
@@ -868,6 +875,7 @@ export async function updateBookMetadata(
       fileSize: stat.size,
       dateAdded: cache[finalRelativePath].dateAdded,
     },
+    warning,
   };
 }
 

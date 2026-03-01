@@ -249,7 +249,7 @@ export class EbookLibraryService {
     }
   }
 
-  async updateMetadata(relativePath: string, metadata: any): Promise<LibraryBook | null> {
+  async updateMetadata(relativePath: string, metadata: any): Promise<{ book: LibraryBook; warning?: string } | null> {
     const result = await this.electronService.ebookLibraryUpdateMetadata(relativePath, metadata);
     if (result.success && result.data) {
       const updated = result.data.book;
@@ -264,7 +264,7 @@ export class EbookLibraryService {
         this._selectedBookPath.set(updated.relativePath);
       }
       await this.loadBooks();
-      return updated;
+      return { book: updated, warning: result.data.warning };
     }
     return null;
   }
