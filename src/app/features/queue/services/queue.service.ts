@@ -524,6 +524,11 @@ export class QueueService {
     this._jobs.update(jobs =>
       jobs.map(job => {
         if (job.id !== jobId) return job;
+
+        // Don't overwrite terminal statuses — handleJobComplete may have already
+        // marked this job as complete/error before this RAF-coalesced update fires
+        if (job.status === 'complete' || job.status === 'error') return job;
+
         return {
           ...job,
           progress: progress.percentage || 0,
@@ -545,6 +550,11 @@ export class QueueService {
     this._jobs.update(jobs =>
       jobs.map(job => {
         if (job.id !== jobId) return job;
+
+        // Don't overwrite terminal statuses — handleJobComplete may have already
+        // marked this job as complete/error before this RAF-coalesced update fires
+        if (job.status === 'complete' || job.status === 'error') return job;
+
         return {
           ...job,
           progress: progress.percentage || 0,
@@ -565,6 +575,11 @@ export class QueueService {
     this._jobs.update(jobs =>
       jobs.map(job => {
         if (job.id !== progress.jobId) return job;
+
+        // Don't overwrite terminal statuses — handleJobComplete may have already
+        // marked this job as complete/error before this RAF-coalesced update fires
+        if (job.status === 'complete' || job.status === 'error') return job;
+
         return {
           ...job,
           progress: progress.progress,
@@ -917,6 +932,31 @@ export class QueueService {
         }
       } catch (err) {
         console.error('[QUEUE] Failed to auto-link audio to BFP:', err);
+      }
+    }
+
+    // Write pipeline.cleanup status to manifest after AI cleanup completes
+    if (result.success && completedJob?.type === 'ocr-cleanup' && completedJob.bfpPath) {
+      try {
+        const electron = (window as any).electron;
+        if (electron?.audiobook?.updatePipeline) {
+          const projectId = completedJob.bfpPath.replace(/\\/g, '/').split('/').pop();
+          if (projectId) {
+            const outputRelPath = result.outputPath
+              ? 'stages/01-cleanup/' + result.outputPath.replace(/\\/g, '/').split('/').pop()
+              : undefined;
+            console.log(`[QUEUE] Writing pipeline.cleanup to manifest for project: ${projectId}`);
+            await electron.audiobook.updatePipeline(projectId, {
+              cleanup: {
+                status: 'complete',
+                outputPath: outputRelPath,
+                completedAt: new Date().toISOString(),
+              }
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[QUEUE] Failed to write pipeline.cleanup to manifest:', err);
       }
     }
 

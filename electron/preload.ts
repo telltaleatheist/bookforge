@@ -1096,6 +1096,7 @@ export interface ElectronAPI {
       }>;
       error?: string;
     }>;
+    updatePipeline: (projectId: string, pipelineData: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>;
     linkAudio: (bfpPath: string, audioPath: string) => Promise<{ success: boolean; error?: string }>;
     linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) => Promise<{ success: boolean; error?: string }>;
     copyToExternal: (params: { m4bPath: string; externalDir: string; title?: string; author?: string; year?: string }) => Promise<{ success: boolean; externalPath?: string; error?: string }>;
@@ -2236,6 +2237,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:get-folder', bfpPath),
     listProjectsWithAudiobook: () =>
       ipcRenderer.invoke('audiobook:list-projects-with-audiobook'),
+    updatePipeline: (projectId: string, pipelineData: Record<string, unknown>) =>
+      ipcRenderer.invoke('audiobook:update-pipeline', projectId, pipelineData),
     linkAudio: (bfpPath: string, audioPath: string) =>
       ipcRenderer.invoke('audiobook:link-audio', bfpPath, audioPath),
     linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) =>

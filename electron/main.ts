@@ -5534,6 +5534,24 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Update pipeline stage data in the project manifest
+  ipcMain.handle('audiobook:update-pipeline', async (_event, projectId: string, pipelineData: Record<string, unknown>) => {
+    try {
+      if (!projectId || !pipelineData) {
+        return { success: false, error: 'Missing projectId or pipelineData' };
+      }
+      console.log('[audiobook:update-pipeline] projectId:', projectId, 'keys:', Object.keys(pipelineData));
+      const result = await manifestService.updateManifest({
+        projectId,
+        pipeline: pipelineData as any,
+      });
+      return { success: result.success, error: result.error };
+    } catch (err) {
+      console.error('[audiobook:update-pipeline] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Copy standard audiobook to external audiobooks directory
   ipcMain.handle('audiobook:copy-to-external', async (_event, params: {
     m4bPath: string;
