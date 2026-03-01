@@ -549,35 +549,23 @@ export class StudioService {
   async deleteItem(id: string): Promise<{ success: boolean; error?: string }> {
     const book = this._books().find(b => b.id === id);
     const article = this._articles().find(a => a.id === id);
+    const archivedItem = this._archived().find(a => a.id === id);
 
-    if (book && book.bfpPath) {
-      try {
-        // Delete book project using projects:delete handler
-        // This properly deletes: BFP file, audiobook folder, .bak file, and clears cache
-        const result = await this.electronService.projectsDelete([book.bfpPath]);
-        if (result.success) {
-          this._books.update(books => books.filter(b => b.id !== id));
-        }
-        return { success: result.success, error: result.error };
-      } catch (e) {
-        return { success: false, error: (e as Error).message };
+    const item = book || article || archivedItem;
+    if (!item) return { success: false, error: 'Item not found' };
+
+    try {
+      const projectId = this.resolveProjectId(item);
+      const result = await this.electronService.manifestDelete(projectId);
+      if (result.success) {
+        this._books.update(books => books.filter(b => b.id !== id));
+        this._articles.update(articles => articles.filter(a => a.id !== id));
+        this._archived.update(items => items.filter(i => i.id !== id));
       }
+      return result;
+    } catch (e) {
+      return { success: false, error: (e as Error).message };
     }
-
-    if (article) {
-      try {
-        // Delete article project using ElectronService
-        const result = await this.electronService.languageLearningDeleteProject(id);
-        if (result.success) {
-          this._articles.update(articles => articles.filter(a => a.id !== id));
-        }
-        return result;
-      } catch (e) {
-        return { success: false, error: (e as Error).message };
-      }
-    }
-
-    return { success: false, error: 'Item not found' };
   }
 
   /**

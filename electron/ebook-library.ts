@@ -1059,6 +1059,26 @@ export function getAbsolutePath(relativePath: string): string {
   return path.join(getEbooksRoot(), relativePath);
 }
 
+/**
+ * Get metadata from the library cache for a book.
+ * This returns the user-edited metadata (from the library panel),
+ * not the raw file metadata from ebook-meta.
+ */
+export function getCachedMetadata(relativePath: string): BookMetadata | null {
+  const cache = loadCache();
+  const cached = cache[relativePath];
+  if (!cached) return null;
+  return {
+    title: cached.title,
+    subtitle: cached.subtitle,
+    authorFirst: cached.authorFirst,
+    authorLast: cached.authorLast,
+    authorFull: cached.authorFull,
+    year: cached.year,
+    language: cached.language,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Duplicate Detection
 // ─────────────────────────────────────────────────────────────────────────────

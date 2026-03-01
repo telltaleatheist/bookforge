@@ -28,10 +28,11 @@ import type { LibraryBook } from './models/library.types';
       <div class="main-area">
         <app-book-grid
           (bookDoubleClicked)="onBookDoubleClick($event)"
+          (importCompleted)="onImportCompleted($event)"
         />
       </div>
 
-      <app-book-metadata />
+      <app-book-metadata (importCompleted)="onImportCompleted($event)" />
 
       <!-- Full-screen drop overlay -->
       @if (isDragOver) {
@@ -191,6 +192,21 @@ export class LibraryComponent implements OnInit {
     // Double-click could open in system viewer or import to studio
     // For now, just select it
     this.libraryService.selectBook(book.relativePath);
+  }
+
+  onImportCompleted(result: { success: boolean; title: string }): void {
+    if (this.importToastTimer) {
+      clearTimeout(this.importToastTimer);
+    }
+    this.isImporting.set(false);
+    this.importMessage.set(
+      result.success
+        ? `Imported "${result.title}" to Studio`
+        : `Failed to import "${result.title}"`
+    );
+    this.importToastTimer = setTimeout(() => {
+      this.importMessage.set(null);
+    }, 3000);
   }
 
   onDragEnter(event: DragEvent): void {

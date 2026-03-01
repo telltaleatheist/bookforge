@@ -1051,7 +1051,7 @@ export interface ElectronAPI {
       error?: string;
     }>;
     // Import EPUB directly (creates BFP + audiobook folder)
-    importEpub: (epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string }) => Promise<{
+    importEpub: (epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string; subtitle?: string; coverData?: string }) => Promise<{
       success: boolean;
       bfpPath?: string;
       audiobookFolder?: string;
@@ -1982,7 +1982,7 @@ export interface ElectronAPI {
     createCategory: (name: string) => Promise<{ success: boolean; error?: string }>;
     deleteCategory: (name: string) => Promise<{ success: boolean; error?: string }>;
     renameCategory: (oldName: string, newName: string) => Promise<{ success: boolean; error?: string }>;
-    importToStudio: (relativePath: string) => Promise<{ success: boolean; data?: { absolutePath: string; metadata: any }; error?: string }>;
+    importToStudio: (relativePath: string) => Promise<{ success: boolean; data?: { absolutePath: string; metadata: any; coverData?: string | null }; error?: string }>;
     revealBook: (relativePath: string) => Promise<{ success: boolean; error?: string }>;
     openCategoryFolder: (categoryName: string) => Promise<{ success: boolean; error?: string }>;
   };
@@ -2224,7 +2224,7 @@ const electronAPI: ElectronAPI = {
     extractMetadata: (epubSourcePath: string) =>
       ipcRenderer.invoke('audiobook:extract-epub-metadata', epubSourcePath),
     // Import EPUB directly (creates BFP + audiobook folder)
-    importEpub: (epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string }) =>
+    importEpub: (epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string; subtitle?: string; coverData?: string }) =>
       ipcRenderer.invoke('audiobook:import-epub', epubSourcePath, confirmedMetadata),
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) =>
       ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),

@@ -2239,7 +2239,7 @@ function setupIpcHandlers(): void {
           metadata: {
             title: meta.title || '',
             author: meta.author || '',
-            year: meta.year || '',
+            year: meta.year != null ? String(meta.year) : '',
             language: meta.language || 'en',
           },
           created_at: manifest.createdAt || new Date().toISOString(),
@@ -3380,16 +3380,18 @@ function setupIpcHandlers(): void {
   ipcMain.handle('ebookLibrary:import-to-studio', async (_event, relativePath: string) => {
     try {
       const absolutePath = ebookLibrary.getAbsolutePath(relativePath);
-      // Read metadata from library cache for the import
-      const meta = await ebookLibrary.readMetadata(absolutePath);
+      // Read from library cache first (has user-edited metadata), fall back to file
+      const meta = ebookLibrary.getCachedMetadata(relativePath) || await ebookLibrary.readMetadata(absolutePath);
+      const coverData = await ebookLibrary.getCoverData(relativePath);
       const confirmedMeta = {
         title: meta.title,
+        subtitle: meta.subtitle,
         author: meta.authorFull || meta.authorLast || 'Unknown',
         year: meta.year ? String(meta.year) : undefined,
         language: meta.language,
       };
-      // Return the path + metadata so the renderer can call audiobook:import-epub
-      return { success: true, data: { absolutePath, metadata: confirmedMeta } };
+      // Return the path + metadata + cover so the renderer can call audiobook:import-epub
+      return { success: true, data: { absolutePath, metadata: confirmedMeta, coverData } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -4840,7 +4842,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('audiobook:import-epub', async (
     _event,
     epubSourcePath: string,
-    confirmedMetadata?: { title: string; author: string; year?: string; language?: string }
+    confirmedMetadata?: { title: string; author: string; year?: string; language?: string; subtitle?: string; coverData?: string }
   ) => {
     try {
       const filename = path.basename(epubSourcePath);
@@ -4850,6 +4852,7 @@ function setupIpcHandlers(): void {
       let author: string;
       let year: number | undefined;
       let language = 'en';
+      let subtitle: string | undefined;
 
       if (confirmedMetadata) {
         // Use metadata confirmed by the user
@@ -4857,6 +4860,7 @@ function setupIpcHandlers(): void {
         author = confirmedMetadata.author;
         year = confirmedMetadata.year ? parseInt(confirmedMetadata.year) : undefined;
         language = confirmedMetadata.language || 'en';
+        subtitle = confirmedMetadata.subtitle;
       } else {
         // Fall back to filename parsing
         title = filename.replace(/\.[^.]+$/i, '');
@@ -4943,9 +4947,11 @@ function setupIpcHandlers(): void {
         },
         metadata: {
           title,
+          subtitle,
           author,
           year,
-          language
+          language,
+          coverPath: undefined as string | undefined,
         },
         sortOrder: -1,
         chapters: [],
@@ -4955,6 +4961,17 @@ function setupIpcHandlers(): void {
 
       const manifestPath = path.join(projectDir, 'manifest.json');
       await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      // Save cover image to media folder and update manifest
+      if (confirmedMetadata?.coverData) {
+        try {
+          const coverRelPath = await saveImageToMedia(confirmedMetadata.coverData, 'cover');
+          manifest.metadata.coverPath = coverRelPath;
+          await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+        } catch (coverErr) {
+          console.warn('[audiobook:import] Failed to save cover:', coverErr);
+        }
+      }
 
       console.log(`[audiobook:import] Created manifest project: ${projectDir}`);
       console.log(`[audiobook:import] Copied ${sourceType} to: ${sourcePath}`);

@@ -334,12 +334,17 @@ export class EbookLibraryService {
     }
   }
 
-  async importToStudio(relativePath: string): Promise<{ absolutePath: string; metadata: any } | null> {
+  async importToStudio(relativePath: string): Promise<{ success: boolean; title: string }> {
     const result = await this.electronService.ebookLibraryImportToStudio(relativePath);
-    if (result.success && result.data) {
-      return result.data;
+    if (!result.success || !result.data) {
+      return { success: false, title: '' };
     }
-    return null;
+    const { absolutePath, metadata, coverData } = result.data;
+    const importResult = await this.electronService.audiobookImportEpub(absolutePath, {
+      ...metadata,
+      coverData: coverData || undefined,
+    });
+    return { success: importResult.success, title: metadata.title || '' };
   }
 
   selectBook(relativePath: string | null): void {

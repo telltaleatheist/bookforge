@@ -217,6 +217,18 @@ export class NavRailComponent {
       route: '/queue'
     },
     {
+      id: 'past-sessions',
+      icon: '\u{1F4C1}', // File folder emoji
+      label: 'Sessions',
+      route: '/reassembly'
+    },
+    {
+      id: 'post-processing',
+      icon: '\u{1F3A7}', // Headphone emoji
+      label: 'Post',
+      route: '/post-processing'
+    },
+    {
       id: 'settings',
       icon: '\u{2699}', // Gear emoji
       label: 'Settings',

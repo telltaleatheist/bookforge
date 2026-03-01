@@ -1118,7 +1118,7 @@ export class ElectronService {
    * Import an EPUB file directly, creating both a BFP file and audiobook folder.
    * Used for drag/drop import without going through the PDF editor.
    */
-  async audiobookImportEpub(epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string }): Promise<{
+  async audiobookImportEpub(epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string; subtitle?: string; coverData?: string }): Promise<{
     success: boolean;
     bfpPath?: string;
     audiobookFolder?: string;
@@ -2237,7 +2237,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ebookLibraryImportToStudio(relativePath: string): Promise<{ success: boolean; data?: { absolutePath: string; metadata: any }; error?: string }> {
+  async ebookLibraryImportToStudio(relativePath: string): Promise<{ success: boolean; data?: { absolutePath: string; metadata: any; coverData?: string | null }; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.ebookLibrary.importToStudio(relativePath);
     }

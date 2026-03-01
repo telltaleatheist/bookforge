@@ -236,12 +236,20 @@ export async function runLLCleanup(
   await fs.mkdir(cleanupStageDir, { recursive: true });
   const cleanedEpubPath = path.join(cleanupStageDir, cleanedFilename);
 
-  // Handle startFresh flag - delete existing output if starting fresh
-  if (config.startFresh !== false) {  // Default to true if not specified
+  // Handle startFresh flag - delete existing output if explicitly requested
+  // Default to false so that cleanupEpub's checkpoint system can resume interrupted jobs
+  if (config.startFresh === true) {
     try {
       await fs.stat(cleanedEpubPath);
       console.log(`[LL-CLEANUP] startFresh=true, deleting existing ${cleanedFilename}`);
       await fs.unlink(cleanedEpubPath);
+    } catch {
+      // File doesn't exist, nothing to delete
+    }
+    // Also clean up checkpoint so cleanupEpub doesn't try to resume
+    try {
+      await fs.unlink(path.join(cleanupStageDir, 'cleanup-progress.json'));
+      console.log(`[LL-CLEANUP] Deleted cleanup checkpoint`);
     } catch {
       // File doesn't exist, nothing to delete
     }
@@ -259,15 +267,15 @@ export async function runLLCleanup(
   let workingOnCleaned = false;
 
   // Check if we should read from an existing cleaned/simplified version
-  // Only use existing output if startFresh is false
-  if (config.startFresh === false) {
+  // Only use existing output if not starting fresh
+  if (config.startFresh !== true) {
     try {
       await fs.stat(cleanedEpubPath);
       readFromPath = cleanedEpubPath;
       workingOnCleaned = true;
-      console.log(`[LL-CLEANUP] startFresh=false, using existing cleaned EPUB: ${cleanedFilename}`);
+      console.log(`[LL-CLEANUP] Resuming, using existing cleaned EPUB: ${cleanedFilename}`);
     } catch {
-      console.log(`[LL-CLEANUP] startFresh=false but no existing cleaned EPUB, will read from source: ${path.basename(sourceEpubPath)}`);
+      console.log(`[LL-CLEANUP] No existing cleaned EPUB, reading from source: ${path.basename(sourceEpubPath)}`);
     }
   } else {
     console.log(`[LL-CLEANUP] startFresh=true, reading from source: ${path.basename(sourceEpubPath)}`);

@@ -110,6 +110,7 @@ import type { LibraryBook } from '../../models/library.types';
           (click)="$event.stopPropagation()"
         >
           <button class="ctx-item" (click)="revealBook()">Open</button>
+          <button class="ctx-item" (click)="importToStudio()">Import to Studio</button>
           @if (libraryService.categories().length > 0) {
             <div class="ctx-separator"></div>
             <div class="ctx-label">Move to</div>
@@ -343,6 +344,7 @@ export class BookGridComponent implements OnDestroy {
   private readonly electronService = inject(ElectronService);
   private readonly cdr = inject(ChangeDetectorRef);
   readonly bookDoubleClicked = output<LibraryBook>();
+  readonly importCompleted = output<{ success: boolean; title: string }>();
   readonly gridContainerRef = viewChild<ElementRef<HTMLElement>>('gridContainer');
   readonly bookGridRef = viewChild<ElementRef<HTMLElement>>('bookGrid');
 
@@ -449,6 +451,13 @@ export class BookGridComponent implements OnDestroy {
     } else if (this.contextMenuBookPath) {
       await this.libraryService.moveBooks([this.contextMenuBookPath], category);
     }
+  }
+
+  async importToStudio(): Promise<void> {
+    this.bookContextMenuVisible.set(false);
+    if (!this.contextMenuBookPath) return;
+    const result = await this.libraryService.importToStudio(this.contextMenuBookPath);
+    this.importCompleted.emit(result);
   }
 
   // --- Marquee Selection ---

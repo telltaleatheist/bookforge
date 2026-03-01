@@ -64,6 +64,7 @@ export interface ManifestSource {
 
 export interface ManifestMetadata {
   title: string;
+  subtitle?: string;
   author: string;             // Author or byline for articles
   authorFileAs?: string;      // "Last, First" format for sorting
   year?: string;

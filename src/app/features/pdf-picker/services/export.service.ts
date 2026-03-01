@@ -170,7 +170,7 @@ export class ExportService {
       };
     }
 
-    const bookTitle = (pdfName || 'Untitled').replace(/\.pdf$/i, '');
+    const bookTitle = pdfName.replace(/\.pdf$/i, '');
 
     // Group blocks by page to preserve page structure
     const pageMap = new Map<number, string[]>();
@@ -851,7 +851,7 @@ export class ExportService {
       return { success: false, message: 'No text to export. All blocks have been deleted.' };
     }
 
-    const bookTitle = metadata?.title || (pdfName || 'Untitled').replace(/\.(pdf|epub)$/i, '');
+    const bookTitle = metadata?.title || pdfName.replace(/\.(pdf|epub)$/i, '');
 
     const sortedChapters = [...exportChapters].sort((a, b) => {
       if (a.page !== b.page) return a.page - b.page;
@@ -948,7 +948,7 @@ export class ExportService {
   }
 
   private generateFilename(pdfName: string, extension: string): string {
-    const baseName = (pdfName || 'Untitled')
+    const baseName = pdfName
       .replace(/\.(pdf|epub)$/i, '')
       .replace(/[^a-zA-Z0-9_-]/g, '_');
     const timestamp = new Date().toISOString().slice(0, 10);

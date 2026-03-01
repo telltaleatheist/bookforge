@@ -2070,6 +2070,18 @@ export async function cleanupEpub(
     // Check for existing checkpoint (skip for test mode — test runs are fast)
     if (!testMode) {
       const checkpoint = await loadCheckpoint(epubDir);
+      if (checkpoint) {
+        const currentModel = getProviderModel(config);
+        const mismatches: string[] = [];
+        if (checkpoint.sourceEpubPath !== epubPath) mismatches.push(`sourceEpubPath: "${checkpoint.sourceEpubPath}" vs "${epubPath}"`);
+        if (checkpoint.outputFilename !== outputFilename) mismatches.push(`outputFilename: "${checkpoint.outputFilename}" vs "${outputFilename}"`);
+        if (checkpoint.provider !== config.provider) mismatches.push(`provider: "${checkpoint.provider}" vs "${config.provider}"`);
+        if (checkpoint.model !== currentModel) mismatches.push(`model: "${checkpoint.model}" vs "${currentModel}"`);
+        if (checkpoint.simplifyForChildren !== !!options?.simplifyForChildren) mismatches.push(`simplifyForChildren: ${checkpoint.simplifyForChildren} vs ${!!options?.simplifyForChildren}`);
+        if (mismatches.length > 0) {
+          console.log(`[AI-CLEANUP] Checkpoint found but config changed, starting fresh. Mismatches: ${mismatches.join(', ')}`);
+        }
+      }
       if (checkpoint
           && checkpoint.sourceEpubPath === epubPath
           && checkpoint.outputFilename === outputFilename

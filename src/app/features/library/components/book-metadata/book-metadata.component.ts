@@ -1,8 +1,7 @@
-import { Component, inject, signal, computed, effect } from '@angular/core';
+import { Component, inject, signal, computed, effect, output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { EbookLibraryService } from '../../services/ebook-library.service';
-import { ElectronService } from '../../../../core/services/electron.service';
 
 @Component({
   selector: 'app-book-metadata',
@@ -37,27 +36,23 @@ import { ElectronService } from '../../../../core/services/electron.service';
             <input class="field-input" [(ngModel)]="editSubtitle" placeholder="Optional" />
           </label>
 
-          <div class="field-row">
-            <label class="field flex-1">
-              <span class="field-label">Author Last</span>
-              <input class="field-input" [(ngModel)]="editAuthorLast" />
-            </label>
-            <label class="field flex-1">
-              <span class="field-label">First</span>
-              <input class="field-input" [(ngModel)]="editAuthorFirst" />
-            </label>
-          </div>
+          <label class="field">
+            <span class="field-label">Author Last</span>
+            <input class="field-input" [(ngModel)]="editAuthorLast" />
+          </label>
+          <label class="field">
+            <span class="field-label">Author First</span>
+            <input class="field-input" [(ngModel)]="editAuthorFirst" />
+          </label>
 
-          <div class="field-row">
-            <label class="field flex-1">
-              <span class="field-label">Year</span>
-              <input class="field-input" type="number" [(ngModel)]="editYear" />
-            </label>
-            <label class="field flex-1">
-              <span class="field-label">Language</span>
-              <input class="field-input" [(ngModel)]="editLanguage" placeholder="eng" />
-            </label>
-          </div>
+          <label class="field">
+            <span class="field-label">Year</span>
+            <input class="field-input" type="number" [(ngModel)]="editYear" />
+          </label>
+          <label class="field">
+            <span class="field-label">Language</span>
+            <input class="field-input" [(ngModel)]="editLanguage" placeholder="eng" />
+          </label>
 
           <label class="field">
             <span class="field-label">Category</span>
@@ -211,6 +206,9 @@ import { ElectronService } from '../../../../core/services/electron.service';
       font-size: 0.8rem;
       padding: 4px 6px;
       outline: none;
+      box-sizing: border-box;
+      width: 100%;
+      min-width: 0;
 
       &:focus {
         border-color: var(--accent-primary);
@@ -300,7 +298,7 @@ import { ElectronService } from '../../../../core/services/electron.service';
 })
 export class BookMetadataComponent {
   readonly libraryService = inject(EbookLibraryService);
-  private readonly electronService = inject(ElectronService);
+  readonly importCompleted = output<{ success: boolean; title: string }>();
 
   editTitle = '';
   editSubtitle = '';
@@ -407,12 +405,8 @@ export class BookMetadataComponent {
   async importToStudio(): Promise<void> {
     const book = this.libraryService.selectedBook();
     if (!book) return;
-
     const result = await this.libraryService.importToStudio(book.relativePath);
-    if (result) {
-      // Call the existing audiobook import flow
-      await this.electronService.audiobookImportEpub(result.absolutePath, result.metadata);
-    }
+    this.importCompleted.emit(result);
   }
 
   async remove(): Promise<void> {

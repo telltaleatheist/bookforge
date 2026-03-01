@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, effect, OnInit, OnDestroy, ViewChild } from '@angular/core';
+import { Component, inject, signal, computed, effect, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -475,6 +475,7 @@ import { SettingsService } from '../../core/services/settings.service';
     @if (contextMenuVisible()) {
       <div
         class="context-menu"
+        #contextMenuEl
         [style.top.px]="contextMenuY()"
         [style.left.px]="contextMenuX()"
         (click)="hideContextMenu()"
@@ -1097,6 +1098,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly contextMenuX = signal<number>(0);
   readonly contextMenuY = signal<number>(0);
   contextMenuItem: StudioItem | null = null;
+  @ViewChild('contextMenuEl') contextMenuEl?: ElementRef<HTMLElement>;
 
   // Export status toast
   readonly exportStatus = signal<string | null>(null);
@@ -1479,6 +1481,19 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.contextMenuX.set(event.event.clientX);
     this.contextMenuY.set(event.event.clientY);
     this.contextMenuVisible.set(true);
+
+    // Clamp position after the menu renders so it stays within the viewport
+    requestAnimationFrame(() => {
+      const el = this.contextMenuEl?.nativeElement;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom > window.innerHeight) {
+        this.contextMenuY.set(Math.max(0, window.innerHeight - rect.height - 8));
+      }
+      if (rect.right > window.innerWidth) {
+        this.contextMenuX.set(Math.max(0, window.innerWidth - rect.width - 8));
+      }
+    });
   }
 
   hideContextMenu(): void {
@@ -1493,10 +1508,14 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   async deleteContextMenuItem(): Promise<void> {
     if (!this.contextMenuItem) return;
-
-    const result = await this.studioService.deleteItem(this.contextMenuItem.id);
-    if (result.success && this.selectedItemId() === this.contextMenuItem.id) {
-      this.selectedItemId.set(null);
+    const ids = this.contextMenuSelectedIds.length > 1
+      ? this.contextMenuSelectedIds
+      : [this.contextMenuItem.id];
+    for (const id of ids) {
+      const result = await this.studioService.deleteItem(id);
+      if (result.success && this.selectedItemId() === id) {
+        this.selectedItemId.set(null);
+      }
     }
     this.hideContextMenu();
   }
