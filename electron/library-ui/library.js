@@ -152,7 +152,7 @@ class LibraryManager {
 
     card.innerHTML = `
       <div class="book-cover">
-        <span class="placeholder">\u{1F3A7}</span>
+        <span class="placeholder">🎧</span>
         <span class="book-type-badge m4b">${this.escapeHtml(typeLabel)}</span>
       </div>
       <div class="book-info">
@@ -233,7 +233,7 @@ class LibraryManager {
 
     card.innerHTML = `
       <div class="book-cover">
-        <span class="placeholder">\u{1F4D6}</span>
+        <span class="placeholder">📖</span>
         <span class="book-type-badge ${formatClass}">${format}</span>
       </div>
       <div class="book-info">
