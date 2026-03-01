@@ -2188,7 +2188,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ebookLibraryUpdateMetadata(relativePath: string, metadata: any): Promise<{ success: boolean; data?: { book: any }; error?: string }> {
+  async ebookLibraryUpdateMetadata(relativePath: string, metadata: any): Promise<{ success: boolean; data?: { book: any; warning?: string }; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.ebookLibrary.updateMetadata(relativePath, metadata);
     }
