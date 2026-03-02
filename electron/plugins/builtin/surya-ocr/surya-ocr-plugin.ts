@@ -699,6 +699,7 @@ export class SuryaOcrPlugin extends BasePlugin {
       const args = [
         inputPath,
         '--output_dir', outputDir,
+        '--disable_math',  // Math mode produces garbled output on book text
       ];
 
       const proc = spawn(suryaPath, args, {
@@ -749,6 +750,7 @@ export class SuryaOcrPlugin extends BasePlugin {
       const args = [
         inputDir,
         '--output_dir', outputDir,
+        '--disable_math',  // Math mode produces garbled output on book text
       ];
 
       const proc = spawn(suryaPath, args, {
@@ -972,11 +974,26 @@ export class SuryaOcrPlugin extends BasePlugin {
       }
     }
 
+    // Filter out low-confidence noise (scan artifacts, dots, smudges)
+    const filtered = allTextLines.filter(l => {
+      // Drop lines with very low confidence
+      if (l.confidence < 0.5) return false;
+      // Drop lines that are only whitespace or single punctuation
+      const stripped = l.text.replace(/\s+/g, '');
+      if (stripped.length <= 1 && /^[.\-,;:!?*·•]?$/.test(stripped)) return false;
+      return true;
+    });
+
+    // Strip any residual HTML/math tags from text (Surya can emit <sup>, <math>, etc.)
+    for (const line of filtered) {
+      line.text = line.text.replace(/<[^>]+>/g, '');
+    }
+
     // Empty result is valid - page may have no text
     return {
-      text: allTextLines.map(l => l.text).join('\n'),
-      confidence: allTextLines.length > 0 ? 0.9 : 1.0,
-      textLines: allTextLines,
+      text: filtered.map(l => l.text).join('\n'),
+      confidence: filtered.length > 0 ? 0.9 : 1.0,
+      textLines: filtered,
     };
   }
 

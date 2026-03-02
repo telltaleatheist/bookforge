@@ -112,6 +112,23 @@ export interface OcrCompletionEvent {
             </div>
           </div>
 
+          <!-- Surya Layout Detection (when Tesseract selected and Surya available) -->
+          @if (settings().engine === 'tesseract' && suryaLayoutAvailable()) {
+            <div class="section">
+              <label class="checkbox-option">
+                <input
+                  type="checkbox"
+                  [checked]="useSuryaLayout()"
+                  (change)="useSuryaLayout.set($any($event.target).checked)"
+                />
+                <span class="checkbox-label">
+                  <strong>Use Surya for categorization</strong>
+                  <span class="checkbox-hint">Runs Surya layout detection to classify headers, footnotes, captions, etc. Adds processing time per page.</span>
+                </span>
+              </label>
+            </div>
+          }
+
           <!-- Language (Tesseract) - always reserve space to prevent layout shift -->
           <div class="section language-section" [class.hidden]="settings().engine !== 'tesseract' || !engineAvailable()">
             <h3 class="section-title">Language</h3>
@@ -212,7 +229,7 @@ export interface OcrCompletionEvent {
                 @if (processingPage()) {
                   <div class="processing-hint">
                     <span class="spinner"></span>
-                    <span>{{ settings().engine === 'surya' ? 'Running Surya OCR (this may take a moment)...' : 'Processing with Tesseract...' }}</span>
+                    <span>{{ settings().engine === 'surya' ? 'Running Surya OCR (this may take a moment)...' : useSuryaLayout() ? 'Processing with Tesseract + Surya layout...' : 'Processing with Tesseract...' }}</span>
                   </div>
                 }
               </div>
@@ -788,6 +805,8 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
   // Surya layout detection availability (separate from OCR)
   readonly suryaLayoutAvailable = signal(false);
+  // When true, run Surya layout detection alongside Tesseract for categorization
+  readonly useSuryaLayout = signal(true);
 
   readonly availableLanguages = signal<string[]>(['eng']);
   readonly scope = signal<OcrScope>('all');
@@ -1043,9 +1062,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
           }
         }
 
-        // Step 2: Run Surya layout detection ONLY if Surya is the selected engine
-        // (Don't run Surya when Tesseract is selected - it causes unnecessary memory pressure)
-        if (result && engine === 'surya' && this.suryaLayoutAvailable()) {
+        // Step 2: Run Surya layout detection if Surya is the engine, or if
+        // Tesseract is the engine and the user opted into Surya categorization
+        const runLayout = engine === 'surya' || (engine === 'tesseract' && this.useSuryaLayout());
+        if (result && runLayout && this.suryaLayoutAvailable()) {
           try {
             console.log(`[OCR] Running Surya layout detection for page ${pageNum}`);
             const layoutResult = await this.pluginService.detectLayout('surya-ocr', imageData);
@@ -1091,7 +1111,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
     // Auto-apply results to document
     if (this.results().length > 0) {
-      this.ocrCompleted.emit({ results: this.results(), useSuryaCategories: this.settings().engine === 'surya' });
+      this.ocrCompleted.emit({ results: this.results(), useSuryaCategories: this.settings().engine === 'surya' || this.useSuryaLayout() });
     }
   }
 
@@ -1120,7 +1140,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
     // Normal mode: start regular background OCR job
     const getImage = this.getPageImage();
     // Auto-set category detection based on engine: Surya uses its own, Tesseract uses heuristics
-    const useSuryaCategoriesForEngine = engine === 'surya';
+    const useSuryaCategoriesForEngine = engine === 'surya' || this.useSuryaLayout();
 
     // Start background job
     const jobId = await this.ocrJobService.startJob(
@@ -1165,7 +1185,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
     // Emit already processed results immediately (before modal closes)
     const alreadyProcessedResults = this.results();
     if (alreadyProcessedResults.length > 0) {
-      this.ocrCompleted.emit({ results: alreadyProcessedResults, useSuryaCategories: this.settings().engine === 'surya' });
+      this.ocrCompleted.emit({ results: alreadyProcessedResults, useSuryaCategories: this.settings().engine === 'surya' || this.useSuryaLayout() });
     }
 
     if (remainingPages.length === 0) {
@@ -1216,7 +1236,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
   }
 
   applyResults(): void {
-    this.ocrCompleted.emit({ results: this.results(), useSuryaCategories: this.settings().engine === 'surya' });
+    this.ocrCompleted.emit({ results: this.results(), useSuryaCategories: this.settings().engine === 'surya' || this.useSuryaLayout() });
     this.close.emit();
   }
 }

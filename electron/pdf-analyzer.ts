@@ -2390,6 +2390,52 @@ export class PDFAnalyzer {
       return pdfData.toString('base64');
     }
 
+    // Strip existing text from pages that will receive OCR text.
+    // This removes the old (potentially bad) invisible OCR text layer
+    // so only fresh OCR text remains in the exported PDF.
+    for (const [pageNum] of ocrByPage) {
+      try {
+        const pageObj = pdfDoc.findPage(pageNum);
+        const contents = pageObj.get('Contents');
+        if (!contents || contents.isNull()) continue;
+
+        const stripStream = (streamObj: any): any => {
+          try {
+            const raw = streamObj.readStream();
+            // Use latin1 to preserve all bytes 1:1 during round-trip
+            const text = Buffer.from(raw.asUint8Array()).toString('latin1');
+            const stripped = text.replace(/\bBT\b[\s\S]*?\bET\b/g, '');
+            if (stripped.length === text.length) return null; // no text found, keep original
+            return pdfDoc.addStream(Buffer.from(stripped, 'latin1'), {});
+          } catch {
+            return null; // keep original on error
+          }
+        };
+
+        if (contents.isArray()) {
+          const len = contents.length;
+          for (let i = 0; i < len; i++) {
+            const streamRef = contents.get(i);
+            if (!streamRef || streamRef.isNull()) continue;
+            const resolved = streamRef.isIndirect() ? streamRef.resolve() : streamRef;
+            const newStream = stripStream(resolved);
+            if (newStream) {
+              contents.put(i, newStream);
+            }
+          }
+        } else {
+          const resolved = contents.isIndirect() ? contents.resolve() : contents;
+          const newStream = stripStream(resolved);
+          if (newStream) {
+            pageObj.put('Contents', newStream);
+          }
+        }
+        console.log(`[embedOcrText] Stripped old text from page ${pageNum}`);
+      } catch (err) {
+        console.warn(`[embedOcrText] Failed to strip text from page ${pageNum}:`, err);
+      }
+    }
+
     // Create font dictionary for Helvetica
     const fontDict = pdfDoc.addObject({
       Type: 'Font',
@@ -2414,7 +2460,7 @@ export class PDFAnalyzer {
           .replace(/\(/g, '\\(')
           .replace(/\)/g, '\\)');
 
-        const fontSize = Math.max(8, Math.min(block.font_size || 12, 24));
+        const fontSize = Math.max(6, Math.min(block.font_size || 12, 48));
         const x = block.x;
         const y = pageHeight - block.y - block.height;
 
@@ -2676,7 +2722,7 @@ export class PDFAnalyzer {
 
           // Calculate position (PDF coordinates: origin at bottom-left, y increases upward)
           // OCR coordinates: origin at top-left, y increases downward
-          const fontSize = Math.max(8, Math.min(block.font_size || 12, 24));
+          const fontSize = Math.max(6, Math.min(block.font_size || 12, 48));
           const x = block.x;
           const y = pageHeight - block.y - block.height;  // Flip y-axis
 

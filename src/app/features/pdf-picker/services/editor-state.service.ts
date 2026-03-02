@@ -167,6 +167,7 @@ export class PdfEditorStateService {
     libraryPath?: string;
     fileHash?: string;
     deletedBlockIds?: Set<string>;
+    deletedPages?: Set<number>;
     pageOrder?: number[];
     blockEdits?: Map<string, BlockEdit>;
     textCorrections?: Map<string, string>;  // Legacy support
@@ -181,7 +182,7 @@ export class PdfEditorStateService {
     this.fileHash.set(data.fileHash || '');
     this.deletedBlockIds.set(data.deletedBlockIds || new Set());
     this.pageOrder.set(data.pageOrder || []);
-    this.deletedPages.set(new Set());  // Always reset deleted pages for new document
+    this.deletedPages.set(data.deletedPages || new Set());
     this.removeBackgrounds.set(false);  // Always reset background removal for new document
     this.showTextLayer.set(false);  // Always reset text layer visibility for new document
 
@@ -913,6 +914,20 @@ export class PdfEditorStateService {
   addBlocks(newBlocks: TextBlock[]): void {
     if (newBlocks.length === 0) return;
     this.blocks.update(existing => [...existing, ...newBlocks]);
+    this.markChanged();
+  }
+
+  // Permanently remove blocks from the document (not undoable)
+  removeBlocks(blockIds: string[]): void {
+    if (blockIds.length === 0) return;
+    const idsToRemove = new Set(blockIds);
+    this.blocks.update(existing => existing.filter(b => !idsToRemove.has(b.id)));
+    // Also clean up any deleted references to these blocks
+    this.deletedBlockIds.update(deleted => {
+      const updated = new Set(deleted);
+      for (const id of blockIds) updated.delete(id);
+      return updated;
+    });
     this.markChanged();
   }
 

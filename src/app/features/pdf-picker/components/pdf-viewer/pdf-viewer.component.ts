@@ -1674,6 +1674,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // Show text layer mode - display all extracted text overlays for OCR verification
   showTextLayer = input<boolean>(false);
 
+  // Per-layer visibility filters (used when showTextLayer is true)
+  showPdfTextBlocks = input<boolean>(true);
+  showOcrTextBlocks = input<boolean>(true);
+
   // Explicitly blanked pages - pages that have been rendered as blank (due to image deletion)
   // This is controlled by the parent and used to show text overlays
   blankedPages = input<Set<number>>(new Set());
@@ -2480,12 +2484,19 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       }
     }
 
-    // Show Text Layer mode: show all text blocks as overlays for OCR verification
+    // Show Text Layer mode: show text blocks as overlays for OCR verification
     // This is useful for scanned PDFs with invisible OCR text layer
     if (this.showTextLayer()) {
+      // Hide deleted blocks entirely in text layer mode (no crossed-out display)
+      if (this.isDeleted(block.id)) return false;
       // Skip image blocks without meaningful text content
       if (block.is_image && (!block.text || block.text.trim().length < 5)) {
         return false;
+      }
+      // Filter by layer type
+      if (!block.is_image) {
+        if (block.is_ocr && !this.showOcrTextBlocks()) return false;
+        if (!block.is_ocr && !this.showPdfTextBlocks()) return false;
       }
       return true;
     }

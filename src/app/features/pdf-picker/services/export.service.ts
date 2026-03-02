@@ -834,18 +834,19 @@ export class ExportService {
     deletedHighlights?: DeletedHighlight[],
     metadata?: BookMetadata
   ): { success: boolean; blob?: Blob; message?: string; chapterCount?: number; blockCount?: number; warning?: string } {
-    console.log('[generateEpubBlobInternal] Input blocks:', blocks.length);
-    console.log('[generateEpubBlobInternal] Deleted IDs:', deletedIds.size);
-    console.log('[generateEpubBlobInternal] Deleted pages:', deletedPages?.size || 0);
+    console.log('[generateEpub] Input blocks:', blocks.length,
+      'deletedIds:', deletedIds.size,
+      'deletedPages:', deletedPages ? `Set(${deletedPages.size}): [${[...deletedPages].join(',')}]` : 'undefined',
+      'pages in blocks:', [...new Set(blocks.map(b => b.page))].slice(0, 5).join(','));
 
     const exportBlocks = blocks
       .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
       .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
 
-    console.log('[generateEpubBlobInternal] Export blocks after filtering:', exportBlocks.length);
-    console.log('[generateEpubBlobInternal] Blocks filtered out:', blocks.length - exportBlocks.length);
-
     const exportChapters = chapters.filter(c => !deletedPages?.has(c.page));
+
+    console.log('[generateEpub] After filter:', exportBlocks.length, 'blocks,',
+      'first page:', exportBlocks[0]?.page, 'pages:', [...new Set(exportBlocks.map(b => b.page))].slice(0, 5).join(','));
 
     if (exportBlocks.length === 0) {
       return { success: false, message: 'No text to export. All blocks have been deleted.' };

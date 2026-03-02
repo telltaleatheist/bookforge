@@ -28,6 +28,8 @@ export interface BackgroundJob {
           [class.error]="job.status === 'error'"
           [class.queued]="job.status === 'queued'"
           [class.cancelled]="job.status === 'cancelled'"
+          [class.clickable]="job.status === 'running' || job.status === 'queued'"
+          (click)="(job.status === 'running' || job.status === 'queued') && restore.emit(job.id)"
         >
           <div class="job-header">
             <span class="job-icon">
@@ -117,6 +119,14 @@ export interface BackgroundJob {
       &.cancelled {
         border-color: var(--text-tertiary, #666);
         opacity: 0.7;
+      }
+
+      &.clickable {
+        cursor: pointer;
+
+        &:hover {
+          border-color: var(--accent, #ff9500);
+        }
       }
     }
 
@@ -211,4 +221,5 @@ export class BackgroundProgressComponent {
   @Input() jobs: BackgroundJob[] = [];
   @Output() dismiss = new EventEmitter<string>();
   @Output() cancel = new EventEmitter<string>();
+  @Output() restore = new EventEmitter<string>();
 }

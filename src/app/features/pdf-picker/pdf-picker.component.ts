@@ -127,7 +127,7 @@ interface BookForgeProject {
   source_name: string;
   library_path?: string;  // Path to copy in library
   file_hash?: string;     // SHA256 hash for duplicate detection
-  deleted_block_ids: string[];
+  deleted_block_ids?: string[];
   deleted_highlight_ids?: string[];  // Deleted custom category highlights
   page_order?: number[];  // Custom page order for organize mode
   custom_categories?: CustomCategoryData[];  // User-created categories with regex/sample matches
@@ -315,15 +315,45 @@ interface AlertModal {
                 <span class="menu-icon">🖼️</span>
                 <span class="menu-text">Remove Backgrounds</span>
               </button>
-              <button
-                class="menu-item"
-                [class.active]="showTextLayer()"
-                title="Show extracted text layer (for OCR verification)"
-                (click)="toggleShowTextLayer()"
-              >
-                <span class="menu-icon">Aa</span>
-                <span class="menu-text">Show Text Layer</span>
-              </button>
+              <div class="text-layers-section">
+                <button
+                  class="menu-item"
+                  [class.active]="textLayersExpanded()"
+                  title="Show/manage text layers"
+                  (click)="textLayersExpanded.set(!textLayersExpanded())"
+                >
+                  <span class="menu-icon">Aa</span>
+                  <span class="menu-text">Text Layers</span>
+                  <span class="menu-chevron">{{ textLayersExpanded() ? '▾' : '▸' }}</span>
+                </button>
+                @if (textLayersExpanded()) {
+                  <div class="text-layers-list">
+                    @for (layer of textLayers(); track layer.id) {
+                      <div class="text-layer-row">
+                        <label class="text-layer-toggle" [title]="layer.label">
+                          <input
+                            type="checkbox"
+                            [checked]="layer.visible"
+                            (change)="toggleTextLayerVisibility(layer.id)"
+                          />
+                          <span class="text-layer-label">{{ layer.label }}</span>
+                          <span class="text-layer-count">{{ layer.count }}</span>
+                        </label>
+                        @if (layer.count > 0) {
+                          <button
+                            class="text-layer-delete"
+                            title="Delete all {{ layer.label }} blocks"
+                            (click)="deleteTextLayer(layer.id)"
+                          >×</button>
+                        }
+                      </div>
+                    }
+                    @if (textLayers().length === 0) {
+                      <div class="text-layer-empty">No text blocks</div>
+                    }
+                  </div>
+                }
+              </div>
               <button
                 class="menu-item"
                 [class.disabled]="lightweightMode()"
@@ -392,6 +422,8 @@ interface AlertModal {
               [regexSearchMode]="regexPanelExpanded()"
               [removeBackgrounds]="removeBackgrounds()"
               [showTextLayer]="showTextLayer()"
+              [showPdfTextBlocks]="showPdfTextLayer()"
+              [showOcrTextBlocks]="showOcrTextLayer()"
               [blankedPages]="blankedPages()"
               [pageImages]="pageImages()"
               [chapters]="chapters()"
@@ -533,7 +565,7 @@ interface AlertModal {
           <app-categories-panel
             pane-secondary
             [categories]="categoriesArray()"
-            [blocks]="blocks()"
+            [blocks]="textLayerFilteredBlocks()"
             [selectedBlockIds]="selectedBlockIds()"
             [includedChars]="includedChars()"
             [excludedChars]="excludedChars()"
@@ -610,6 +642,7 @@ interface AlertModal {
       [jobs]="backgroundJobs()"
       (dismiss)="onDismissBackgroundJob($event)"
       (cancel)="onCancelBackgroundJob($event)"
+      (restore)="onRestoreBackgroundJob($event)"
     />
 
     <!-- File Picker Modal (not shown in embedded mode) -->
@@ -1199,6 +1232,7 @@ interface AlertModal {
         width: 24px;
         text-align: center;
         flex-shrink: 0;
+        color: var(--text-secondary);
       }
 
       .menu-text {
@@ -1858,6 +1892,80 @@ interface AlertModal {
       pointer-events: none;
     }
 
+    .menu-chevron {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--text-tertiary);
+    }
+
+    .text-layers-list {
+      padding: 0 var(--ui-spacing-xs);
+    }
+
+    .text-layer-row {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-xs);
+      padding: 3px var(--ui-spacing-sm);
+      border-radius: $radius-sm;
+
+      &:hover {
+        background: var(--hover-bg);
+      }
+    }
+
+    .text-layer-toggle {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-xs);
+      flex: 1;
+      cursor: pointer;
+      min-width: 0;
+
+      input[type="checkbox"] {
+        margin: 0;
+        flex-shrink: 0;
+      }
+    }
+
+    .text-layer-label {
+      font-size: var(--ui-font-xs);
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .text-layer-count {
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      flex-shrink: 0;
+    }
+
+    .text-layer-delete {
+      background: none;
+      border: none;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+      border-radius: $radius-sm;
+      flex-shrink: 0;
+
+      &:hover {
+        color: var(--danger);
+        background: var(--danger-subtle, rgba(255, 0, 0, 0.1));
+      }
+    }
+
+    .text-layer-empty {
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      padding: var(--ui-spacing-xs) var(--ui-spacing-sm);
+      font-style: italic;
+    }
+
     .lightweight-placeholder {
       display: flex;
       flex-direction: column;
@@ -2123,8 +2231,44 @@ export class PdfPickerComponent implements OnInit {
   readonly layout = signal<'vertical' | 'grid'>('grid');
   // Remove backgrounds state is managed by editor state service for undo/redo
   readonly removeBackgrounds = computed(() => this.editorState.removeBackgrounds());
-  // Show text layer overlay (for OCR verification on scanned PDFs)
-  readonly showTextLayer = computed(() => this.editorState.showTextLayer());
+  // Text layer management
+  readonly textLayersExpanded = signal(false);
+  readonly showPdfTextLayer = signal(true);
+  readonly showOcrTextLayer = signal(true);
+  // Show text layer overlay — true when panel is expanded (viewer uses layer filters)
+  readonly showTextLayer = computed(() => this.textLayersExpanded());
+  // Computed text layer info — counts ALL blocks including soft-deleted ones
+  readonly textLayers = computed(() => {
+    const blocks = this.blocks();
+    let pdfCount = 0;
+    let ocrCount = 0;
+    for (const b of blocks) {
+      if (b.is_image) continue;
+      if (b.is_ocr) ocrCount++;
+      else pdfCount++;
+    }
+    const layers: Array<{ id: string; label: string; count: number; visible: boolean }> = [];
+    if (pdfCount > 0 || ocrCount === 0) {
+      layers.push({ id: 'pdf', label: 'PDF Text', count: pdfCount, visible: this.showPdfTextLayer() });
+    }
+    if (ocrCount > 0) {
+      layers.push({ id: 'ocr', label: 'OCR Text', count: ocrCount, visible: this.showOcrTextLayer() });
+    }
+    return layers;
+  });
+  // Blocks filtered by text layer visibility — used for the right panel
+  readonly textLayerFilteredBlocks = computed(() => {
+    const allBlocks = this.blocks();
+    if (!this.textLayersExpanded()) return allBlocks;
+    const showPdf = this.showPdfTextLayer();
+    const showOcr = this.showOcrTextLayer();
+    if (showPdf && showOcr) return allBlocks;
+    return allBlocks.filter(b => {
+      if (b.is_image) return true;
+      if (b.is_ocr) return showOcr;
+      return showPdf;
+    });
+  });
   // Pages that have been explicitly rendered as blank (due to image deletion)
   readonly blankedPages = signal<Set<number>>(new Set());
   // Split size = window width minus sidebar width (keeps sidebar fixed)
@@ -2588,6 +2732,16 @@ export class PdfPickerComponent implements OnInit {
     return result;
   }
 
+  /** Get blocks for export, filtering out blocks whose category is disabled */
+  private getExportableBlocks(): TextBlock[] {
+    const categories = this.categories();
+    const allBlocks = this.blocks();
+    return allBlocks.filter(b => {
+      const cat = categories[b.category_id];
+      return !cat || cat.enabled !== false;
+    });
+  }
+
   // Combined highlights: when regex panel is open, ONLY show regex preview (hide others)
   // Also filters out highlights for disabled categories
   readonly combinedHighlights = computed<CategoryHighlights>(() => {
@@ -3032,11 +3186,30 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * Toggle showing extracted text layer overlay for OCR verification.
-   * Useful for scanned PDFs with invisible OCR text.
+   * Toggle visibility of a specific text layer type.
    */
-  toggleShowTextLayer(): void {
-    this.editorState.showTextLayer.update(v => !v);
+  toggleTextLayerVisibility(layerId: string): void {
+    if (layerId === 'pdf') {
+      this.showPdfTextLayer.update(v => !v);
+    } else if (layerId === 'ocr') {
+      this.showOcrTextLayer.update(v => !v);
+    }
+  }
+
+  /**
+   * Permanently remove all blocks of a specific text layer type.
+   */
+  deleteTextLayer(layerId: string): void {
+    const blocks = this.blocks();
+    const idsToRemove: string[] = [];
+    for (const b of blocks) {
+      if (b.is_image) continue;
+      if (layerId === 'pdf' && !b.is_ocr) idsToRemove.push(b.id);
+      if (layerId === 'ocr' && b.is_ocr) idsToRemove.push(b.id);
+    }
+    if (idsToRemove.length > 0) {
+      this.editorState.removeBlocks(idsToRemove);
+    }
   }
 
   /**
@@ -4352,7 +4525,7 @@ export class PdfPickerComponent implements OnInit {
 
   async exportText(): Promise<void> {
     const result = await this.exportService.exportText(
-      this.blocks(),
+      this.getExportableBlocks(),
       this.deletedBlockIds(),
       this.pdfName(),
       this.textCorrections(),
@@ -4374,7 +4547,7 @@ export class PdfPickerComponent implements OnInit {
     const deletedHighlights = this.getDeletedHighlights();
     const result = chapters.length > 0
       ? await this.exportService.exportEpubWithChapters(
-          this.blocks(),
+          this.getExportableBlocks(),
           this.deletedBlockIds(),
           chapters,
           this.pdfName(),
@@ -4383,7 +4556,7 @@ export class PdfPickerComponent implements OnInit {
           deletedHighlights
         )
       : await this.exportService.exportEpub(
-          this.blocks(),
+          this.getExportableBlocks(),
           this.deletedBlockIds(),
           this.pdfName(),
           this.textCorrections(),
@@ -4583,7 +4756,7 @@ export class PdfPickerComponent implements OnInit {
     this.loadingText.set('Exporting text...');
 
     const result = await this.exportService.exportText(
-      this.blocks(),
+      this.getExportableBlocks(),
       this.deletedBlockIds(),
       this.pdfName(),
       this.editorState.textCorrections(),
@@ -4662,7 +4835,7 @@ export class PdfPickerComponent implements OnInit {
     const deletedHighlights = this.getDeletedHighlights();
     const result = chapters.length > 0
       ? await this.exportService.exportEpubWithChapters(
-          this.blocks(),
+          this.getExportableBlocks(),
           this.deletedBlockIds(),
           chapters,
           this.pdfName(),
@@ -4671,7 +4844,7 @@ export class PdfPickerComponent implements OnInit {
           deletedHighlights
         )
       : await this.exportService.exportEpub(
-          this.blocks(),
+          this.getExportableBlocks(),
           this.deletedBlockIds(),
           this.pdfName(),
           this.editorState.textCorrections(),
@@ -4769,7 +4942,7 @@ export class PdfPickerComponent implements OnInit {
     const deletedHighlights = this.getDeletedHighlights();
 
     const result = await this.exportService.exportToAudiobook(
-      this.blocks(),
+      this.getExportableBlocks(),
       this.deletedBlockIds(),
       chapters,
       this.pdfName(),
@@ -4836,7 +5009,7 @@ export class PdfPickerComponent implements OnInit {
 
       // Export to audiobook folder - NEVER modifies the original source file
       const result = await this.exportService.exportToAudiobook(
-        this.blocks(),
+        this.getExportableBlocks(),
         this.deletedBlockIds(),
         chapters,
         this.pdfName(),
@@ -5272,8 +5445,52 @@ export class PdfPickerComponent implements OnInit {
       this.metadata.set(project.metadata);
     }
 
+    // Restore OCR blocks and categories - these replace PDF-analyzed blocks on their pages
+    if (project.ocr_blocks && project.ocr_blocks.length > 0) {
+      const ocrPages = [...new Set(project.ocr_blocks.map(b => b.page))];
+      this.editorState.replaceTextBlocksOnPages(ocrPages, project.ocr_blocks);
+
+      for (const pageNum of ocrPages) {
+        const pageBlocks = project.ocr_blocks.filter(b => b.page === pageNum);
+        const ocrBlocksForSpans = pageBlocks.map(b => ({
+          x: b.x,
+          y: b.y,
+          width: b.width,
+          height: b.height,
+          text: b.text,
+          font_size: b.font_size,
+          id: b.id
+        }));
+        this.electronService.updateSpansForOcr(pageNum, ocrBlocksForSpans);
+      }
+
+      if (project.ocr_categories) {
+        this.editorState.categories.set(project.ocr_categories);
+      }
+    }
+
+    // Restore block edits (text corrections, position/size changes)
+    if (project.block_edits) {
+      this.editorState.blockEdits.set(new Map(Object.entries(project.block_edits)));
+    }
+
+    // Restore remove backgrounds state
+    if (project.remove_backgrounds) {
+      this.editorState.removeBackgrounds.set(true);
+    }
+
+    // Suppress auto-save triggered by replaceTextBlocksOnPages() during restore.
+    // Loading existing state should not be treated as a user change.
+    if (this.autoSaveTimeout) {
+      clearTimeout(this.autoSaveTimeout);
+      this.autoSaveTimeout = null;
+    }
+    this.editorState.hasUnsavedChanges.set(false);
+
     console.log('[restoreProjectState] Restored project from:', projectFilePath,
-      'chapters:', project.chapters?.length || 0);
+      'chapters:', project.chapters?.length || 0,
+      'ocrBlocks:', project.ocr_blocks?.length || 0,
+      'ocrCategories:', project.ocr_categories ? Object.keys(project.ocr_categories).length : 0);
   }
 
   // Schedule auto-save (debounced)
@@ -5316,6 +5533,7 @@ export class PdfPickerComponent implements OnInit {
         undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
         redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
         ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
+        ocr_categories: ocrBlocks.length > 0 ? this.categories() : undefined,
         chapters: chapters.length > 0 ? chapters : undefined,
         chapters_source: chapters.length > 0 ? chaptersSource : undefined,
         deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
@@ -5363,6 +5581,7 @@ export class PdfPickerComponent implements OnInit {
         undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
         redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
         ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
+        ocr_categories: ocrBlocks.length > 0 ? this.categories() : undefined,
         chapters: chapters.length > 0 ? chapters : undefined,
         chapters_source: chapters.length > 0 ? chaptersSource : undefined,
         deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
@@ -5409,6 +5628,7 @@ export class PdfPickerComponent implements OnInit {
       undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
       redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
       ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
+      ocr_categories: ocrBlocks.length > 0 ? this.categories() : undefined,
       chapters: chapters.length > 0 ? chapters : undefined,
       chapters_source: chapters.length > 0 ? chaptersSource : undefined,
       deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
@@ -5523,18 +5743,18 @@ export class PdfPickerComponent implements OnInit {
       library_path: this.libraryPath(),
       file_hash: this.fileHash(),
       deleted_block_ids: [...this.deletedBlockIds()],
-      deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : undefined,
-      page_order: order.length > 0 ? order : undefined,
-      custom_categories: customCategories.length > 0 ? customCategories : undefined,
+      deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : [],
+      page_order: order.length > 0 ? order : [],
       block_edits: blockEditsRecord,
-      undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
-      redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
-      remove_backgrounds: this.removeBackgrounds() || undefined,
+      remove_backgrounds: this.removeBackgrounds() || false,
+      deleted_pages: [...this.deletedPages()],
       ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
       ocr_categories: categoriesToSave,
+      custom_categories: customCategories.length > 0 ? customCategories : undefined,
+      undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
+      redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
       chapters: chapters.length > 0 ? chapters : undefined,
       chapters_source: chapters.length > 0 ? chaptersSource : undefined,
-      deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
       metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
       created_at: new Date().toISOString(),
       modified_at: new Date().toISOString()
@@ -5544,12 +5764,15 @@ export class PdfPickerComponent implements OnInit {
 
     if (result.success) {
       this.hasUnsavedChanges.set(false);
-    } else if (result.error && !silent) {
-      this.showAlert({
-        title: 'Save Failed',
-        message: 'Failed to save project: ' + result.error,
-        type: 'error'
-      });
+    } else {
+      console.error('[saveProjectToPath] FAILED:', result.error, 'path:', filePath);
+      if (!silent) {
+        this.showAlert({
+          title: 'Save Failed',
+          message: 'Failed to save project: ' + result.error,
+          type: 'error'
+        });
+      }
     }
   }
 
@@ -5675,6 +5898,7 @@ export class PdfPickerComponent implements OnInit {
         libraryPath: pdfPathToLoad,
         fileHash: fileHash || '',
         deletedBlockIds: new Set(project.deleted_block_ids || []),
+        deletedPages: new Set<number>(project.deleted_pages || []),
         pageOrder: project.page_order || [],
         blockEdits: blockEditsMap
       });
@@ -5706,11 +5930,6 @@ export class PdfPickerComponent implements OnInit {
         this.tryLoadOutline();
       }
 
-      // Restore deleted pages
-      if (project.deleted_pages && project.deleted_pages.length > 0) {
-        this.deletedPages.set(new Set(project.deleted_pages));
-      }
-
       // Restore metadata
       if (project.metadata) {
         this.metadata.set(project.metadata);
@@ -5724,6 +5943,13 @@ export class PdfPickerComponent implements OnInit {
 
       // Start page rendering in background (non-blocking)
       this.pageRenderService.loadAllPageImages(pdfResult.page_count);
+
+      // Suppress auto-save triggered during restore — loading state is not a user change
+      if (this.autoSaveTimeout) {
+        clearTimeout(this.autoSaveTimeout);
+        this.autoSaveTimeout = null;
+      }
+      this.editorState.hasUnsavedChanges.set(false);
     } catch (err) {
       console.error('Failed to load project source file:', err);
       const errorMsg = (err as Error).message || String(err);
@@ -5814,7 +6040,6 @@ export class PdfPickerComponent implements OnInit {
       const exists = await this.electronService.fsExists(overridePath);
       if (exists) {
         pdfPathToLoad = overridePath;
-        console.log('[loadProjectFromPath] Using override source path:', overridePath);
       }
     }
 
@@ -5836,19 +6061,15 @@ export class PdfPickerComponent implements OnInit {
     if (!pdfPathToLoad) {
       const exportedEpubPath = (project as any).audiobook?.exportedEpubPath;
       if (exportedEpubPath) {
-        // Check if the exported EPUB exists
         const exists = await this.electronService.fsExists(exportedEpubPath);
         if (exists) {
           pdfPathToLoad = exportedEpubPath;
           usingExportedEpub = true;
-          console.log('[loadProjectFromPath] Using exported EPUB as source:', exportedEpubPath);
         } else {
-          // Try cross-platform path translation (BFP from another OS)
           const translated = await this.electronService.libraryTranslatePath(exportedEpubPath);
           if (translated.success && translated.translated) {
             pdfPathToLoad = translated.translated;
             usingExportedEpub = true;
-            console.log('[loadProjectFromPath] Using cross-platform translated exported EPUB:', translated.translated);
           }
         }
       }
@@ -5872,19 +6093,12 @@ export class PdfPickerComponent implements OnInit {
       const docId = this.generateDocumentId();
 
       // Determine if we're loading the original source or a derived version (exported/cleaned)
-      // Derived versions have deletions baked in, so we shouldn't load deletion state for them
-      // Original = library_path or resolved from source_path
-      // Derived = exported.epub, cleaned.epub, simplified.epub, or any file in the audiobook folder
       const resolvedOriginalPath = project.library_path || project.source_path;
       const isLoadingOriginal = !usingExportedEpub && (
         !this.overrideSourcePath() ||  // No override = loading original
         pdfPathToLoad === resolvedOriginalPath ||  // Override matches original
         pdfPathToLoad === project.library_path  // Override is the library copy
       );
-
-      console.log('[loadProjectFromPath] isLoadingOriginal:', isLoadingOriginal);
-      console.log('[loadProjectFromPath] pdfPathToLoad:', pdfPathToLoad);
-      console.log('[loadProjectFromPath] library_path:', project.library_path);
 
       const deletedBlockIds = isLoadingOriginal
         ? new Set<string>(project.deleted_block_ids || [])
@@ -5946,6 +6160,7 @@ export class PdfPickerComponent implements OnInit {
         libraryPath: pdfPathToLoad,
         fileHash: project.file_hash || '',
         deletedBlockIds: deletedBlockIds,
+        deletedPages: deletedPages,
         pageOrder: pageOrder,
         blockEdits: blockEditsMap
       });
@@ -5980,18 +6195,14 @@ export class PdfPickerComponent implements OnInit {
         this.tryLoadOutline();
       }
 
-      // Set deleted pages signal (already computed above based on isLoadingOriginal)
-      if (deletedPages.size > 0) {
-        this.deletedPages.set(deletedPages);
-      }
-
       // Restore metadata
       if (project.metadata) {
         this.metadata.set(project.metadata);
       }
 
-      // Restore OCR blocks and categories - these replace PDF-analyzed blocks on their pages
-      if (project.ocr_blocks && project.ocr_blocks.length > 0) {
+      // Restore OCR blocks and categories - only for original source file
+      // OCR blocks are from the original PDF and don't match derived files (EPUB pages differ)
+      if (isLoadingOriginal && project.ocr_blocks && project.ocr_blocks.length > 0) {
         // Get the pages that have OCR blocks
         const ocrPages = [...new Set(project.ocr_blocks.map(b => b.page))];
         // Replace PDF blocks with OCR blocks on those pages
@@ -6018,8 +6229,8 @@ export class PdfPickerComponent implements OnInit {
         }
       }
 
-      // Restore remove backgrounds state
-      if (project.remove_backgrounds) {
+      // Restore remove backgrounds state - only for original source file
+      if (isLoadingOriginal && project.remove_backgrounds) {
         this.editorState.removeBackgrounds.set(true);
       }
 
@@ -6031,7 +6242,8 @@ export class PdfPickerComponent implements OnInit {
 
       // Always initialize page rendering (so OCR can work)
       // But only load pages if NOT in lightweight mode
-      this.pageRenderService.initialize(this.effectivePath(), pdfResult.page_count);
+      const renderPath = this.effectivePath();
+      this.pageRenderService.initialize(renderPath, pdfResult.page_count);
 
       // Show document immediately
       this.pdfLoaded.set(true);
@@ -6047,6 +6259,14 @@ export class PdfPickerComponent implements OnInit {
           this.pageRenderService.loadAllPageImages(pdfResult.page_count);
         }
       }
+
+      // Suppress auto-save triggered by replaceTextBlocksOnPages() during restore.
+      // Loading existing state should not be treated as a user change.
+      if (this.autoSaveTimeout) {
+        clearTimeout(this.autoSaveTimeout);
+        this.autoSaveTimeout = null;
+      }
+      this.editorState.hasUnsavedChanges.set(false);
     } catch (err) {
       console.error('Failed to load project source file:', err);
       const errorMsg = (err as Error).message || String(err);
@@ -7752,9 +7972,10 @@ export class PdfPickerComponent implements OnInit {
     // Default to body category or first available category
     const defaultCategoryId = bodyCategoryId || Object.keys(categories)[0] || 'body';
 
-    // Full-res images are always rendered at 2.5x scale (FULL_SCALE in pdf-analyzer.ts)
-    // OCR bbox coordinates are in image pixels, so divide by 2.5 to get PDF coordinates
-    const renderScale = 2.5;
+    // Page images are rendered at a scale that depends on document size
+    // (matches effectiveScale in pdf-analyzer.ts renderPages)
+    const totalPageCount = this.totalPages();
+    const renderScale = totalPageCount > 200 ? 1.5 : totalPageCount > 100 ? 2.0 : 2.5;
 
     // Convert OCR text lines to TextBlocks
     const newBlocks: TextBlock[] = [];
@@ -7870,9 +8091,9 @@ export class PdfPickerComponent implements OnInit {
     }
 
     // Post-process OCR blocks: merge lines into paragraphs and apply smart categorization
-    // Only use Surya layout blocks for categorization if the user opted in
-    const layoutDataForCategorization = useSuryaCategories ? layoutBlocksByPage : undefined;
-    const processedResult = this.ocrPostProcessor.processOcrBlocks(newBlocks, pageDims, layoutDataForCategorization);
+    // Always pass layout data when available — used for paragraph grouping even without Surya categories
+    const layoutData = layoutBlocksByPage.size > 0 ? layoutBlocksByPage : undefined;
+    const processedResult = this.ocrPostProcessor.processOcrBlocks(newBlocks, pageDims, layoutData);
     const processedBlocks = processedResult.blocks;
     const newCategories = processedResult.categories;
 
@@ -8063,6 +8284,13 @@ export class PdfPickerComponent implements OnInit {
     this.ocrJobService.cancelJob(jobId);
   }
 
+  /**
+   * Restore a background job by reopening the OCR settings modal
+   */
+  onRestoreBackgroundJob(_jobId: string): void {
+    this.showOcrSettings.set(true);
+  }
+
   // Tab management methods
   onTabSelected(tab: DocumentTab): void {
     if (tab.id === this.activeDocumentId()) return;
@@ -8175,6 +8403,7 @@ export class PdfPickerComponent implements OnInit {
       libraryPath: doc.libraryPath,
       fileHash: doc.fileHash,
       deletedBlockIds: doc.deletedBlockIds,
+      deletedPages: doc.deletedPages,
       pageOrder: doc.pageOrder
     });
 

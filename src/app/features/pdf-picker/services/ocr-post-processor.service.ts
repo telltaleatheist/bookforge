@@ -51,6 +51,14 @@ interface LineBlock {
   centerX: number;  // Center X position for alignment detection
 }
 
+/** Cross-page context computed in Pass 1, consumed by per-page Pass 2. */
+interface GlobalContext {
+  /** Mode font size across ALL pages — immune to title-page skew. */
+  globalBodySize: number;
+  /** Normalized text strings that repeat on 3+ pages at fixed Y positions. */
+  repeatingTexts: Set<string>;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -141,8 +149,14 @@ export class OcrPostProcessorService {
   };
 
   /**
-   * Process raw OCR blocks (line-by-line) into structured paragraphs with categories
-   * If layoutBlocks are provided (from Surya), use them for categorization instead of heuristics
+   * Process raw OCR blocks (line-by-line) into structured paragraphs with categories.
+   *
+   * Two-pass architecture:
+   *   Pass 1 (global): Compute global body font size across all pages, detect
+   *     cross-page repeating text at fixed Y positions (running headers/footers).
+   *   Pass 2 (per-page): Merge lines into paragraphs and classify using global context.
+   *
+   * If layoutBlocks are provided (from Surya), use them for categorization instead of heuristics.
    */
   processOcrBlocks(
     rawBlocks: TextBlock[],
@@ -165,14 +179,17 @@ export class OcrPostProcessorService {
       blocksByPage.get(block.page)!.push(block);
     }
 
-    // Process each page
+    // ── Pass 1: Global analysis ──────────────────────────────────────────
+    const globalContext = this.buildGlobalContext(blocksByPage, pageDimensions);
+
+    // ── Pass 2: Per-page processing ──────────────────────────────────────
     const processedBlocks: TextBlock[] = [];
     const categoryCounts: Record<string, { blocks: number; chars: number }> = {};
 
     for (const [pageNum, pageBlocks] of blocksByPage) {
       const dims = pageDimensions[pageNum] || { width: 600, height: 800 };
       const pageLayoutBlocks = layoutBlocksByPage?.get(pageNum);
-      const processed = this.processPage(pageBlocks, dims, pageNum, pageLayoutBlocks);
+      const processed = this.processPage(pageBlocks, dims, pageNum, pageLayoutBlocks, globalContext);
 
       for (const block of processed) {
         processedBlocks.push(block);
@@ -208,13 +225,108 @@ export class OcrPostProcessorService {
   }
 
   /**
-   * Process blocks on a single page
+   * Pass 1: Build global context across all pages.
+   *
+   * 1. Global body font size — mode across all pages, so title pages with
+   *    oversized text don't skew per-page body size estimation.
+   * 2. Cross-page repeating text — text that appears at a similar Y position
+   *    (within 2% of page height) on 3+ pages is a running header or footer.
+   *    This is the single strongest signal for header/footer detection.
+   */
+  private buildGlobalContext(
+    blocksByPage: Map<number, TextBlock[]>,
+    pageDimensions: PageDimension[]
+  ): GlobalContext {
+    const totalPages = blocksByPage.size;
+
+    // ── Global body font size (mode across all pages) ────────────────────
+    const globalSizeFreq = new Map<number, number>();
+    for (const [, pageBlocks] of blocksByPage) {
+      for (const block of pageBlocks) {
+        if (block.font_size > 0) {
+          const rounded = Math.round(block.font_size);
+          globalSizeFreq.set(rounded, (globalSizeFreq.get(rounded) || 0) + 1);
+        }
+      }
+    }
+    let globalBodySize = 12;
+    let maxFreq = 0;
+    for (const [size, freq] of globalSizeFreq) {
+      if (freq > maxFreq) { maxFreq = freq; globalBodySize = size; }
+    }
+
+    // ── Cross-page repeating text detection ──────────────────────────────
+    // Collect short text at extreme Y positions (top 12% / bottom 12%) from each page.
+    // Normalize text for fuzzy matching: lowercase, collapse whitespace, strip page numbers.
+    const candidates: Array<{ normalized: string; yPct: number; page: number }> = [];
+
+    for (const [pageNum, pageBlocks] of blocksByPage) {
+      const dims = pageDimensions[pageNum] || { width: 600, height: 800 };
+      for (const block of pageBlocks) {
+        const yPct = block.y / dims.height;
+        const bottomPct = (block.y + block.height) / dims.height;
+        // Only consider text in the margin zones and short enough to be a running head/foot
+        if ((bottomPct < 0.12 || yPct > 0.88) && block.text.length < 200) {
+          const normalized = this.normalizeForRepeatDetection(block.text);
+          if (normalized.length > 0) {
+            candidates.push({ normalized, yPct, page: pageNum });
+          }
+        }
+      }
+    }
+
+    // Group candidates by normalized text + approximate Y band (within 2% of page height)
+    // A "repeat" = same text appearing on 3+ different pages (or 2+ if total pages ≤ 4)
+    const repeatThreshold = totalPages <= 4 ? 2 : 3;
+    const repeatingTexts = new Set<string>();
+
+    // Build a map: normalized text → set of pages it appears on
+    const textPageMap = new Map<string, Set<number>>();
+    for (const c of candidates) {
+      if (!textPageMap.has(c.normalized)) {
+        textPageMap.set(c.normalized, new Set());
+      }
+      textPageMap.get(c.normalized)!.add(c.page);
+    }
+
+    for (const [text, pages] of textPageMap) {
+      if (pages.size >= repeatThreshold) {
+        repeatingTexts.add(text);
+      }
+    }
+
+    if (repeatingTexts.size > 0) {
+      console.log(`[OCR PostProc] Global: Found ${repeatingTexts.size} cross-page repeating text(s) across ${totalPages} pages: ${[...repeatingTexts].map(t => `"${t}"`).join(', ')}`);
+    }
+    console.log(`[OCR PostProc] Global: bodySize=${globalBodySize} (from ${maxFreq} lines)`);
+
+    return { globalBodySize, repeatingTexts };
+  }
+
+  /**
+   * Normalize text for cross-page repeat detection.
+   * Strips page numbers, collapses whitespace, lowercases.
+   * "RICHARD J. EVANS  123" and "RICHARD J. EVANS  124" → "richard j. evans"
+   */
+  private normalizeForRepeatDetection(text: string): string {
+    return text
+      .replace(/\d+/g, '')             // Strip all numbers (page numbers, footnote refs)
+      .replace(/[^\w\s]/g, '')         // Strip punctuation
+      .replace(/\s+/g, ' ')           // Collapse whitespace
+      .trim()
+      .toLowerCase();
+  }
+
+  /**
+   * Process blocks on a single page (Pass 2).
+   * Uses global context from Pass 1 for body font size and cross-page repeat detection.
    */
   private processPage(
     blocks: TextBlock[],
     dims: PageDimension,
     pageNum: number,
-    layoutBlocks?: LayoutBlock[]
+    layoutBlocks?: LayoutBlock[],
+    global?: GlobalContext
   ): TextBlock[] {
     if (blocks.length === 0) return [];
 
@@ -239,11 +351,8 @@ export class OcrPostProcessorService {
     const pageHeight = dims.height;
     const pageCenterX = pageWidth / 2;
 
-    // Calculate average font size for body text detection
-    const fontSizes = lines.map(l => l.fontSize).filter(s => s > 0);
-    const avgFontSize = fontSizes.length > 0
-      ? fontSizes.reduce((a, b) => a + b, 0) / fontSizes.length
-      : 12;
+    // Use global body font size when available; fall back to per-page mode
+    const avgFontSize = global?.globalBodySize ?? this.computePageBodySize(lines);
 
     // Calculate median line-to-line distance (more robust than average)
     const lineDistances: number[] = [];
@@ -258,26 +367,26 @@ export class OcrPostProcessorService {
       ? lineDistances[Math.floor(lineDistances.length / 2)]
       : avgFontSize * 1.5;
 
-    console.log(`[OCR PostProc] Page ${pageNum}: ${lines.length} lines, avgFontSize=${avgFontSize.toFixed(1)}, medianLineHeight=${medianLineHeight.toFixed(1)}`);
+    // Detect the footnote zone dynamically per page by finding the first
+    // significant gap in the lower portion. Returns null if no footnotes detected.
+    const footnoteY = this.detectFootnoteZone(lines, dims, medianLineHeight);
 
-    // First pass: merge lines into paragraphs (content-aware)
-    const mergedLines = this.mergeLines(lines, medianLineHeight, pageWidth);
+    console.log(`[OCR PostProc] Page ${pageNum}: ${lines.length} lines, bodySize=${avgFontSize.toFixed(1)}${global ? ' (global)' : ' (page)'}, medianLineHeight=${medianLineHeight.toFixed(1)}, footnoteY=${footnoteY !== null ? (footnoteY / pageHeight * 100).toFixed(0) + '%' : 'none'}`);
 
-    // Second pass: categorize merged blocks
-    // If we have layout data from Surya, use it; otherwise fall back to heuristics
-    const categorizedBlocks = mergedLines.map(merged => {
-      let category: string;
+    // Merge lines into paragraphs and categorize
+    let categorizedBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; fontSize: number; lineCount: number; category: string }>;
 
-      if (layoutBlocks && layoutBlocks.length > 0) {
-        // Use layout detection to find the category
-        category = this.categorizeBlockWithLayout(merged, layoutBlocks);
-      } else {
-        // Fall back to heuristic-based categorization
-        category = this.categorizeBlock(merged, dims, pageCenterX, avgFontSize);
-      }
-
-      return { ...merged, category };
-    });
+    if (layoutBlocks && layoutBlocks.length > 0) {
+      // Layout-aware: group lines by Surya layout block, merge within each group
+      categorizedBlocks = this.mergeWithLayout(lines, layoutBlocks, medianLineHeight, pageWidth, dims, pageCenterX, avgFontSize, footnoteY, global?.repeatingTexts);
+    } else {
+      // Heuristic: merge lines into paragraphs, then categorize by position/size
+      const merged = this.mergeLines(lines, medianLineHeight, pageWidth);
+      categorizedBlocks = merged.map(m => ({
+        ...m,
+        category: this.categorizeBlock(m, dims, pageCenterX, avgFontSize, footnoteY, global?.repeatingTexts)
+      }));
+    }
 
     // Convert back to TextBlock format
     // Use page number + random suffix + index to ensure unique IDs across all pages
@@ -300,195 +409,243 @@ export class OcrPostProcessorService {
     }));
   }
 
+  /** Compute body font size for a single page (mode of line font sizes). */
+  private computePageBodySize(lines: LineBlock[]): number {
+    const sizeFreq = new Map<number, number>();
+    for (const l of lines) {
+      if (l.fontSize > 0) {
+        const rounded = Math.round(l.fontSize);
+        sizeFreq.set(rounded, (sizeFreq.get(rounded) || 0) + 1);
+      }
+    }
+    let bodySize = 12;
+    let maxFreq = 0;
+    for (const [size, freq] of sizeFreq) {
+      if (freq > maxFreq) { maxFreq = freq; bodySize = size; }
+    }
+    return bodySize;
+  }
+
   /**
-   * Categorize a merged block based on position, size, and content
+   * Detect the Y coordinate where footnotes begin on this page.
+   * Finds the FIRST significant vertical gap in the lower portion of the page —
+   * this is the body→footnote separator (horizontal rule + whitespace).
+   * Returns null if no footnote zone is detected (page has no footnotes).
+   */
+  private detectFootnoteZone(
+    lines: LineBlock[],
+    dims: PageDimension,
+    medianLineHeight: number
+  ): number | null {
+    if (lines.length < 3) return null;
+
+    const sorted = [...lines].sort((a, b) => a.y - b.y);
+
+    for (let i = 1; i < sorted.length; i++) {
+      const gapTop = sorted[i - 1].y + sorted[i - 1].height;
+      const gapBottom = sorted[i].y;
+      const gapSize = gapBottom - gapTop;
+
+      // First gap in the lower portion that's larger than normal line spacing
+      // (> 2× median). medianLineHeight is baseline-to-baseline (~1.3× font
+      // height), so 2× ≈ 2.5 blank lines of space — enough to catch most
+      // footnote separators (horizontal rule + whitespace).
+      if (gapTop > dims.height * 0.40 && gapSize > medianLineHeight * 2) {
+        return gapBottom;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Categorize a merged block using a two-stage approach:
+   *   Stage 1: Region detection (header / footer / lower / body)
+   *   Stage 2: Semantic classification within the region
+   *
+   * Cross-page repeating text (from Pass 1) is the highest-priority signal
+   * for headers and footers — it fires before any position/font heuristic.
    */
   private categorizeBlock(
     block: { x: number; y: number; width: number; height: number; text: string; fontSize: number; lineCount: number },
     dims: PageDimension,
     pageCenterX: number,
-    avgFontSize: number
+    bodySize: number,
+    footnoteY: number | null,
+    repeatingTexts?: Set<string>
   ): string {
     const text = block.text.trim();
-    const yPercent = block.y / dims.height;
-    const blockCenterX = block.x + block.width / 2;
-    const widthPercent = block.width / dims.width;
+    const yPct = block.y / dims.height;
+    const bottomPct = (block.y + block.height) / dims.height;
+    const fontRatio = block.fontSize / bodySize;
 
-    // Calculate centering - block center is within 15% of page center
-    const isCentered = Math.abs(blockCenterX - pageCenterX) < dims.width * 0.15;
-
-    // Check for ALL CAPS
-    const letters = text.replace(/[^a-zA-Z]/g, '');
-    const isAllCaps = letters.length > 3 && letters === letters.toUpperCase();
-
-    // Check for Title Case (most words start with capital)
-    const words = text.split(/\s+/).filter(w => w.length > 0);
-    const capitalizedWords = words.filter(w => /^[A-Z]/.test(w)).length;
-    const isTitleCase = words.length > 0 && words.length <= 10 && capitalizedWords / words.length >= 0.6;
-
-    // Check font size relative to average
-    const isLargeFontSize = block.fontSize > avgFontSize * 1.1;  // Lowered from 1.15
-    const isSmallFontSize = block.fontSize < avgFontSize * 0.85;
-
-    // Check if it starts with an attribution marker
-    const startsWithEmDash = /^[\u2014\u2013\u2012-]/.test(text);
-
-    // Line/character counts
-    const isShort = text.length < 100;  // Increased from 80
-    const isMedium = text.length < 150;
-    const isVeryShort = text.length < 40;  // Increased from 30
-    const isSingleLine = block.lineCount === 1;
-    const isFewLines = block.lineCount <= 3;
-
-    // Check if block spans less than full page width (often titles/headings)
-    const isNarrow = widthPercent < 0.7;
-
-    // Common title/heading patterns
-    const looksLikeChapterTitle = /^(chapter|part|book|section|introduction|preface|foreword|epilogue|prologue|acknowledgments?|afterword|appendix)\s*([\dIVXLCDM]+)?\.?:?\s*/i.test(text);
-    const looksLikeAuthorName = /^(by\s+)?[A-Z][a-z]+(\s+[A-Z]\.?\s*)?[A-Z][a-z]+$/i.test(text) && text.length < 50;
-    const isSubtitle = /^[A-Z].*[A-Za-z]$/.test(text) && !text.includes('.') && isSingleLine && text.length < 80;
-
-    // Header: top 8% of page, single short line (like page numbers or running headers)
-    if (yPercent < 0.08 && isSingleLine && isVeryShort) {
-      return 'header';
+    // ── Highest priority: cross-page repeat detection ────────────────────
+    // Text that repeats across 3+ pages at margin positions is a running
+    // header or footer with near-100% certainty. No position/font heuristic
+    // comes close to this signal strength.
+    if (repeatingTexts && repeatingTexts.size > 0) {
+      const normalized = this.normalizeForRepeatDetection(text);
+      if (normalized.length > 0 && repeatingTexts.has(normalized)) {
+        // Determine header vs footer by position
+        return bottomPct < 0.50 ? 'header' : 'footer';
+      }
     }
 
-    // Footer: bottom 8% of page, single short line (like page numbers)
-    const looksLikePageNumber = /^[\d\u2014\u2013\-\s—]+$/.test(text) ||
-                                /^page\s*\d+$/i.test(text) ||
-                                /^\d{1,4}$/.test(text) ||
-                                text.length < 20;
-    if (yPercent > 0.92 && isSingleLine && looksLikePageNumber) {
-      return 'footer';
+    // --- Stage 1: Region detection ---
+
+    // Body text guard: prevents headers from swallowing real paragraph content
+    const looksLikeBodyText = text.length > 100 ||
+      /[.!?]["']?\s+[A-Z]/.test(text) ||  // Multiple sentences
+      (text.endsWith('.') && text.length > 40) ||  // Sentence (headers don't end with periods)
+      /^[a-z]/.test(text);  // Starts lowercase = continuation, never a header
+
+    let region = 'body';
+
+    if (block.lineCount <= 2 && bottomPct < 0.10 && !looksLikeBodyText) {
+      region = 'header';
+    } else if (yPct > 0.92 || (yPct > 0.88 && text.length < 50)) {
+      region = 'footer';
+    } else if (footnoteY !== null && block.y >= footnoteY) {
+      region = 'lower';
     }
 
-    // Pure attribution line: starts with em-dash (like "— Author Name")
-    if (startsWithEmDash && isShort && isSingleLine) {
-      return 'footnote';
-    }
+    // --- Stage 2: Classification (mirrors classifyBlock, adapted for OCR) ---
 
-    // Chapter number: very short, near top, just a number or Roman numeral
-    if (isVeryShort && yPercent < 0.25 && /^[\dIVXLCDM]+\.?$/.test(text) && isSingleLine) {
-      return 'title';
-    }
+    if (region === 'header') return 'header';
 
-    // Title: explicit chapter/section markers
-    if (looksLikeChapterTitle && isShort) {
-      return 'title';
-    }
+    // Content-based footnote pattern: "18 Russell...", "31° See...", "* Note..."
+    const looksLikeFootnote = /^(\d{1,3}[.\s°]|[*†‡§¶]\s)\s*[A-Z]/.test(text);
 
-    // Title: ALL CAPS, upper portion of page, relatively short
-    if (isAllCaps && yPercent < 0.4 && isShort) {
-      return 'title';
-    }
+    // Footnote checks BEFORE footer — footnotes can sit near the very bottom
+    // and get misassigned to the footer zone. Content overrides position.
+    // OCR font sizes are noisier than native PDF, so use < 1.05 instead of < 0.95.
+    if (region === 'lower' && fontRatio < 1.05) return 'footnote';
+    if ((region === 'lower' || region === 'footer') && looksLikeFootnote) return 'footnote';
 
-    // Title: Title Case, centered, upper portion, short, few lines
-    if (isTitleCase && isCentered && yPercent < 0.35 && isShort && isFewLines && isNarrow) {
-      return 'title';
-    }
+    // Footer: only after ruling out footnotes
+    if (region === 'footer') return 'footer';
 
-    // Title: Large font, short text, near top (more lenient position)
-    if (isLargeFontSize && isShort && yPercent < 0.5 && isFewLines) {
-      return 'title';
-    }
+    // Captions: small text (< 0.85× body), NOT in lower region, and NOT in bottom half
+    // (small text in the bottom half is more likely footnote than caption)
+    if (fontRatio < 0.85 && region !== 'lower' && yPct < 0.50) return 'caption';
 
-    // Author name on title page
-    if (looksLikeAuthorName && yPercent < 0.6 && isCentered) {
-      return 'title';
-    }
+    // Titles: large text (> 1.4× body)
+    if (fontRatio > 1.4) return 'title';
 
-    // Heading: ALL CAPS, short, single line (anywhere on page)
-    if (isAllCaps && isVeryShort && isSingleLine) {
-      return 'heading';
-    }
+    // Headings: clearly larger text (> 1.25× body), short block, not body-like text.
+    // Threshold raised from native's 1.1× because OCR font sizes have ~10-15% noise
+    // from bounding box estimation — body text regularly hits 1.1-1.2× by accident.
+    // Also guarded by looksLikeBodyText to exclude continuation fragments and sentences.
+    if (fontRatio > 1.25 && block.lineCount <= 3 && !looksLikeBodyText) return 'heading';
 
-    // Heading: Title Case, short, single line, not full width, not at very bottom
-    if (isTitleCase && isVeryShort && isSingleLine && isNarrow && yPercent < 0.85) {
-      return 'heading';
-    }
-
-    // Heading: Large font, short, single line (anywhere on page)
-    if (isLargeFontSize && isVeryShort && isSingleLine) {
-      return 'heading';
-    }
-
-    // Subtitle-like text (single line, no period, in upper half)
-    if (isSubtitle && isCentered && yPercent < 0.5) {
-      return 'heading';
-    }
-
-    // Epigraph: indented text (not starting at left margin), shorter than body
-    // Often appears at chapter starts, usually in italics (but OCR can't detect that)
-    const isIndented = block.x > dims.width * 0.15;
-    const looksLikeQuote = text.startsWith('"') || text.startsWith('"') || text.startsWith("'") || text.startsWith("'");
-    if (isIndented && isMedium && yPercent < 0.4 && (isSingleLine || isFewLines)) {
-      return 'quote';
-    }
-    if (looksLikeQuote && isMedium && isFewLines && isNarrow) {
-      return 'quote';
-    }
-
-    // Caption: small font, short text (figure/table captions)
-    // Usually appears below images or at bottom of page region
-    if (isSmallFontSize && isShort && isFewLines) {
+    // Content-based caption
+    if (/^(fig(ure|\.)?|table|plate|illustration|map|photo|image)\s*\.?\s*\d/i.test(text) && block.lineCount <= 3) {
       return 'caption';
     }
 
-    // Caption: Text that looks like a figure/table reference
-    const looksLikeCaption = /^(fig(ure)?|table|plate|chart|diagram|illustration|photo|image)\s*[\d.:]/i.test(text);
-    if (looksLikeCaption && isShort) {
-      return 'caption';
-    }
+    // Font-based footnote with graduated thresholds: the deeper into the page,
+    // the less font-size evidence we need. This is the universal footnote signal —
+    // smaller font in the lower portion — independent of gap detection.
+    // Three tiers compensate for OCR font noise (~10-15%):
+    //   Bottom 30%: even slightly smaller (< 0.98×) is enough
+    //   Bottom 40%: noticeably smaller (< 0.93×)
+    //   Bottom 50%: clearly smaller (< 0.88×)
+    if (yPct > 0.70 && fontRatio < 0.98) return 'footnote';
+    if (yPct > 0.60 && fontRatio < 0.93) return 'footnote';
+    if (yPct > 0.50 && fontRatio < 0.88) return 'footnote';
 
-    // Default: body text (this is the safest category)
     return 'body';
   }
 
   /**
-   * Categorize a block using Surya layout detection results
-   * Finds the layout block that best overlaps with the merged text block
+   * Group OCR lines by their best-overlapping Surya layout block.
+   * Lines with <30% overlap go to fallback group (index -1).
    */
-  private categorizeBlockWithLayout(
-    block: { x: number; y: number; width: number; height: number },
+  private groupLinesByLayout(
+    lines: LineBlock[],
     layoutBlocks: LayoutBlock[]
-  ): string {
-    if (layoutBlocks.length === 0) {
-      return 'body';
+  ): Map<number, LineBlock[]> {
+    const groups = new Map<number, LineBlock[]>();
+    groups.set(-1, []);
+
+    for (const line of lines) {
+      const lineBox: [number, number, number, number] = [line.x, line.y, line.x + line.width, line.y + line.height];
+      const lineArea = line.width * line.height;
+
+      let bestIdx = -1;
+      let bestOverlap = 0;
+
+      for (let i = 0; i < layoutBlocks.length; i++) {
+        const overlap = this.calculateOverlap(lineBox, layoutBlocks[i].bbox);
+        const overlapPercent = lineArea > 0 ? overlap / lineArea : 0;
+
+        if (overlapPercent > bestOverlap) {
+          bestOverlap = overlapPercent;
+          bestIdx = i;
+        }
+      }
+
+      // Require at least 30% overlap
+      if (bestOverlap < 0.3) bestIdx = -1;
+
+      if (!groups.has(bestIdx)) groups.set(bestIdx, []);
+      groups.get(bestIdx)!.push(line);
     }
 
-    // Find the layout block with the best overlap
-    let bestMatch: LayoutBlock | null = null;
-    let bestOverlap = 0;
+    return groups;
+  }
 
-    const blockArea = block.width * block.height;
-    const blockBox: [number, number, number, number] = [block.x, block.y, block.x + block.width, block.y + block.height];
+  /**
+   * Merge lines using layout-aware grouping: group by Surya layout block,
+   * merge within each group using heuristics, assign category from layout label.
+   */
+  private mergeWithLayout(
+    lines: LineBlock[],
+    layoutBlocks: LayoutBlock[],
+    medianLineHeight: number,
+    pageWidth: number,
+    dims: PageDimension,
+    pageCenterX: number,
+    avgFontSize: number,
+    footnoteY: number | null,
+    repeatingTexts?: Set<string>
+  ): Array<{ x: number; y: number; width: number; height: number; text: string; fontSize: number; lineCount: number; category: string }> {
+    const groups = this.groupLinesByLayout(lines, layoutBlocks);
+    const result: Array<{ x: number; y: number; width: number; height: number; text: string; fontSize: number; lineCount: number; category: string }> = [];
 
-    for (const layout of layoutBlocks) {
-      const overlap = this.calculateOverlap(blockBox, layout.bbox);
+    for (const [layoutIdx, groupLines] of groups) {
+      if (groupLines.length === 0) continue;
 
-      // Calculate overlap percentage relative to the text block
-      const overlapPercent = blockArea > 0 ? overlap / blockArea : 0;
+      // Sort by Y within group
+      groupLines.sort((a, b) => a.y - b.y);
 
-      if (overlapPercent > bestOverlap) {
-        bestOverlap = overlapPercent;
-        bestMatch = layout;
+      // Merge lines within this layout group
+      const merged = this.mergeLines(groupLines, medianLineHeight, pageWidth);
+
+      if (layoutIdx >= 0) {
+        // Known layout block — use its label for category
+        const label = layoutBlocks[layoutIdx].label;
+        const category = SURYA_LABEL_TO_CATEGORY[label] || 'body';
+        for (const m of merged) {
+          result.push({ ...m, category });
+        }
+      } else {
+        // Fallback group — use heuristic categorization
+        for (const m of merged) {
+          result.push({
+            ...m,
+            category: this.categorizeBlock(m, dims, pageCenterX, avgFontSize, footnoteY, repeatingTexts)
+          });
+        }
       }
     }
 
-    // Debug: log the matching attempt
-    console.log(`[OCR Layout] Block at (${block.x.toFixed(1)}, ${block.y.toFixed(1)}) ${block.width.toFixed(1)}x${block.height.toFixed(1)} - ` +
-      `Best match: ${bestMatch?.label || 'none'} (${(bestOverlap * 100).toFixed(1)}% overlap)`);
+    // Sort by Y to maintain reading order
+    result.sort((a, b) => a.y - b.y);
 
-    // Require at least 30% overlap to use the layout category
-    if (bestMatch && bestOverlap > 0.3) {
-      const category = SURYA_LABEL_TO_CATEGORY[bestMatch.label];
-      if (category) {
-        return category;
-      }
-    }
+    console.log(`[OCR PostProc] Layout-aware merge: ${lines.length} lines → ${result.length} blocks (${groups.size} layout groups)`);
 
-    // No good match found - default to body
-    return 'body';
+    return result;
   }
 
   /**
@@ -568,10 +725,33 @@ export class OcrPostProcessorService {
     pageWidth: number,
     currentGroup: LineBlock[]
   ): boolean {
+    // === HARD LIMITS (checked first — nothing overrides these) ===
+
+    const lineToLineDistance = curr.y - prev.y;
+
+    if (lineToLineDistance <= 0) {
+      return false;  // Overlapping or same line
+    }
+
+    // Hard cutoff: lines more than 2.5x median apart are never merged,
+    // even if content signals suggest continuation (prevents header→body merging)
+    const maxLineDistance = medianLineHeight * 2.5;
+    if (lineToLineDistance > maxLineDistance) {
+      return false;
+    }
+
+    // Font size mismatch: different-sized lines are different structural elements
+    // (e.g., author name vs. title, body vs. footnote). Use the smaller as denominator
+    // so ratio is always >= 1.
+    const fontRatio = Math.max(prev.fontSize, curr.fontSize) / Math.min(prev.fontSize, curr.fontSize);
+    if (fontRatio > 1.2) {
+      return false;
+    }
+
+    // === CONTENT-BASED CHECKS ===
+
     const prevText = prev.text.trim();
     const currText = curr.text.trim();
-
-    // === CONTENT-BASED CHECKS (most reliable) ===
 
     // Check if previous line ends with sentence-ending punctuation
     const endsWithSentencePunct = /[.!?:;][\s"'\u201d\u2019]*$/.test(prevText);
@@ -594,22 +774,6 @@ export class OcrPostProcessorService {
     // Strong signal: prev doesn't end sentence AND curr starts lowercase = merge
     if (!endsWithSentencePunct && startsWithLowercase) {
       return true;  // This is almost certainly a continuation
-    }
-
-    // === SPATIAL CHECKS ===
-
-    // Calculate vertical distance
-    const lineToLineDistance = curr.y - prev.y;
-
-    // Be very permissive with distance - allow up to 2.5x median line height
-    const maxLineDistance = medianLineHeight * 2.5;
-
-    if (lineToLineDistance > maxLineDistance) {
-      return false;  // Too far apart - definitely separate paragraphs
-    }
-
-    if (lineToLineDistance <= 0) {
-      return false;  // Overlapping or same line - don't merge
     }
 
     // Check for significant indent (new paragraph indicator)

@@ -1020,8 +1020,14 @@ function setupIpcHandlers(): void {
     const results: Record<string, boolean> = {};
     await Promise.all(filePaths.map(async (p) => {
       try {
-        await fs.access(p);
-        results[p] = true;
+        const stat = await fs.stat(p);
+        if (stat.isDirectory()) {
+          // Empty directories don't count as "existing" for stage detection
+          const entries = await fs.readdir(p);
+          results[p] = entries.length > 0;
+        } else {
+          results[p] = true;
+        }
       } catch {
         results[p] = false;
       }
@@ -4688,7 +4694,12 @@ function setupIpcHandlers(): void {
           await fs.mkdir(sourceDir, { recursive: true });
           epubPath = path.join(sourceDir, 'exported.epub');
         }
-        await fs.writeFile(epubPath, Buffer.from(epubData));
+        const epubBuffer = Buffer.from(epubData);
+        await fs.writeFile(epubPath, epubBuffer);
+
+        // Verify the file was written
+        const stat = await fs.stat(epubPath);
+        console.log(`[audiobook:export-from-project] Wrote EPUB: ${stat.size} bytes to ${epubPath}`);
 
         // Save deleted block examples if provided (next to the saved EPUB)
         if (deletedBlockExamples && deletedBlockExamples.length > 0) {
@@ -4699,8 +4710,6 @@ function setupIpcHandlers(): void {
         // Update manifest
         manifest.modifiedAt = new Date().toISOString();
         await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
-
-        console.log(`[audiobook:export-from-project] Exported EPUB to ${epubPath}`);
 
         // Notify main window that project files changed
         mainWindow?.webContents.send('project:files-changed', bfpPath);
@@ -8090,6 +8099,56 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Reset editor state (chapters, deletions, OCR blocks, etc.) in the manifest
+  ipcMain.handle('pipeline:reset-editor-state', async (_event, projectPath: string) => {
+    try {
+      const manifestPath = path.join(projectPath, 'manifest.json');
+      if (!fsSync.existsSync(manifestPath)) {
+        return { success: false, error: 'No manifest.json found' };
+      }
+
+      const content = await fs.readFile(manifestPath, 'utf-8');
+      const manifest = JSON.parse(content);
+
+      // Clear editor state fields
+      delete manifest.source?.deletedBlockIds;
+      delete manifest.source?.deletedHighlightIds;
+      delete manifest.source?.pageOrder;
+      delete manifest.source?.deletedPages;
+      delete manifest.source?.removeBackgrounds;
+      if (manifest.source && Object.keys(manifest.source).length === 0) {
+        delete manifest.source;
+      }
+
+      delete manifest.editor;
+      delete manifest.chapters;
+      delete manifest.chaptersSource;
+
+      manifest.modifiedAt = new Date().toISOString();
+
+      await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      // Delete derived files from source/ directory
+      const sourceDir = path.join(projectPath, 'source');
+      const filesToDelete = [
+        'exported.epub', '._exported.epub',
+        'load-trace.log', 'save-diagnostics.json',
+        'export-diagnostics.json', 'deleted-examples.json'
+      ];
+      for (const file of filesToDelete) {
+        const fp = path.join(sourceDir, file);
+        try { await fs.unlink(fp); } catch { /* doesn't exist */ }
+      }
+
+      console.log(`[PIPELINE] Reset editor state for ${projectPath}`);
+
+      return { success: true, message: 'Editor state reset' };
+    } catch (err) {
+      console.error('[PIPELINE] Failed to reset editor state:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Migration IPC Handlers
   // ─────────────────────────────────────────────────────────────────────────────
@@ -8192,6 +8251,18 @@ function setupIpcHandlers(): void {
     // Use BFP path as the window key so we track by project, not by source file
     const existingWindow = editorWindows.get(bfpPath);
     if (existingWindow && !existingWindow.isDestroyed()) {
+      // Navigate the existing window to the new source file
+      const encodedBfp = encodeURIComponent(bfpPath);
+      const encodedSource = encodeURIComponent(sourcePath);
+      if (isDev) {
+        existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
+      } else {
+        const appPath = app.getAppPath();
+        const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
+        existingWindow.loadFile(indexPath, {
+          hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
+        });
+      }
       existingWindow.focus();
       return { success: true, alreadyOpen: true };
     }

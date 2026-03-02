@@ -1969,6 +1969,11 @@ export interface ElectronAPI {
       message?: string;
       error?: string;
     }>;
+    resetEditorState: (projectPath: string) => Promise<{
+      success: boolean;
+      message?: string;
+      error?: string;
+    }>;
   };
   ebookLibrary: {
     init: () => Promise<{ success: boolean; data?: { ebookMetaAvailable: boolean }; error?: string }>;
@@ -3323,6 +3328,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pipeline:delete-output', projectPath),
     deleteAll: (projectPath: string) =>
       ipcRenderer.invoke('pipeline:delete-all', projectPath),
+    resetEditorState: (projectPath: string) =>
+      ipcRenderer.invoke('pipeline:reset-editor-state', projectPath),
   },
 
   ebookLibrary: {

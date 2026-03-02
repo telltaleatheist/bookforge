@@ -513,6 +513,12 @@ import { SettingsService } from '../../core/services/settings.service';
             </button>
           }
         }
+        @if (contextMenuSelectedIds.length <= 1) {
+          <div class="context-menu-separator"></div>
+          <button class="context-menu-item warning" (click)="resetEditorState()">
+            Reset Editor State
+          </button>
+        }
         <div class="context-menu-separator"></div>
         <button class="context-menu-item" (click)="archiveContextMenuItem()">
           {{ contextMenuItem?.archived ? 'Unarchive' : 'Archive' }}{{ contextMenuSelectedIds.length > 1 ? ' (' + contextMenuSelectedIds.length + ' items)' : '' }}
@@ -1607,6 +1613,27 @@ export class StudioComponent implements OnInit, OnDestroy {
     } catch (err) {
       console.error(`[STUDIO] Delete ${stage} failed:`, err);
       this.exportStatus.set(`Failed to delete ${labels[stage]}`);
+    }
+    setTimeout(() => this.exportStatus.set(null), 3000);
+  }
+
+  async resetEditorState(): Promise<void> {
+    const item = this.contextMenuItem;
+    if (!item?.bfpPath) return;
+    this.hideContextMenu();
+
+    try {
+      const electron = (window as any).electron;
+      const result = await electron.pipeline.resetEditorState(item.bfpPath);
+
+      if (result.success) {
+        this.exportStatus.set('Editor state reset');
+      } else {
+        this.exportStatus.set(`Failed to reset: ${result.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error('[STUDIO] Reset editor state failed:', err);
+      this.exportStatus.set('Failed to reset editor state');
     }
     setTimeout(() => this.exportStatus.set(null), 3000);
   }
