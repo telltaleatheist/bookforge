@@ -26,7 +26,7 @@ export interface HeadlessOcrPageResult {
 }
 
 export interface HeadlessOcrOptions {
-  engine: 'tesseract' | 'surya';
+  engine: string;
   language?: string;
   pages?: number[];  // Specific pages to OCR, or all if not specified
   onProgress?: (current: number, total: number) => void;
@@ -171,28 +171,62 @@ export class HeadlessOcrService {
   private async ocrPage(
     imagePath: string,
     pageNum: number,
-    engine: 'tesseract' | 'surya',
+    engine: string,
     language?: string
   ): Promise<HeadlessOcrPageResult> {
-    // For now, headless OCR only supports Tesseract
-    // Surya requires plugin IPC which is more complex to invoke directly
-    const ocrService = getOcrService();
+    if (engine === 'tesseract') {
+      // Use built-in Tesseract
+      const ocrService = getOcrService();
 
-    // Configure language if provided
-    if (language) {
-      (ocrService as any).config = {
-        ...(ocrService as any).config,
-        lang: language
+      // Configure language if provided
+      if (language) {
+        (ocrService as any).config = {
+          ...(ocrService as any).config,
+          lang: language
+        };
+      }
+
+      const result = await ocrService.recognizeFileWithBounds(imagePath);
+
+      return {
+        page: pageNum,
+        text: result.text,
+        confidence: result.confidence,
+        textLines: result.textLines
       };
     }
 
-    const result = await ocrService.recognizeFileWithBounds(imagePath);
+    // For plugin-based engines, invoke the plugin's recognize handler directly
+    const { getPluginRegistry } = require('./plugins/plugin-registry');
+    const registry = getPluginRegistry();
+    const plugin = registry.getPlugin(engine);
+
+    if (!plugin) {
+      throw new Error(`OCR engine "${engine}" not found`);
+    }
+
+    // Find the recognize handler
+    const handlers = plugin.getIpcHandlers();
+    const recognizeHandler = handlers.find((h: any) => h.channel === 'recognize');
+
+    if (!recognizeHandler) {
+      throw new Error(`OCR engine "${engine}" does not support recognize`);
+    }
+
+    // Invoke the handler directly with the file path
+    const result = await recognizeHandler.handler({} as any, imagePath);
+    const typedResult = result as { success: boolean; data?: any; error?: string };
+
+    if (!typedResult.success) {
+      throw new Error(typedResult.error || `OCR engine "${engine}" failed`);
+    }
 
     return {
       page: pageNum,
-      text: result.text,
-      confidence: result.confidence,
-      textLines: result.textLines
+      text: typedResult.data?.text || '',
+      confidence: typedResult.data?.confidence || 0,
+      textLines: typedResult.data?.textLines,
+      layoutBlocks: typedResult.data?.layoutBlocks
     };
   }
 

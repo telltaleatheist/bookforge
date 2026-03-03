@@ -6,11 +6,11 @@ import { ElectronService } from '../../../../core/services/electron.service';
 import { PluginService } from '../../../../core/services/plugin.service';
 import { OcrJobService, OcrTextLine } from '../../services/ocr-job.service';
 
-export type OcrEngine = 'tesseract' | 'surya';
+export type OcrEngine = string;
 export type OcrScope = 'all' | 'current' | 'selected' | 'range';
 
 export interface OcrSettings {
-  engine: OcrEngine;
+  engine: string;
   language: string;
   tesseractPsm: number;
 }
@@ -62,7 +62,7 @@ export interface OcrPageResult {
 
 export interface OcrCompletionEvent {
   results: OcrPageResult[];
-  useSuryaCategories: boolean;  // Whether to use Surya layout detection for categorization
+  useLayoutCategories: boolean;  // Whether layout detection was used for categorization
 }
 
 @Component({
@@ -92,10 +92,7 @@ export interface OcrCompletionEvent {
                   (click)="!checkingEngines() && engine.available && selectEngine(engine.id)"
                 >
                   <div class="engine-header">
-                    <span class="engine-icon">
-                      @if (engine.id === 'tesseract') { 🔤 }
-                      @else if (engine.id === 'surya') { 🌅 }
-                    </span>
+                    <span class="engine-icon">{{ getEngineIcon(engine.id) }}</span>
                     <span class="engine-name">{{ engine.name }}</span>
                   </div>
                   <div class="engine-status">
@@ -112,18 +109,18 @@ export interface OcrCompletionEvent {
             </div>
           </div>
 
-          <!-- Surya Layout Detection (when Tesseract selected and Surya available) -->
-          @if (settings().engine === 'tesseract' && suryaLayoutAvailable()) {
+          <!-- Layout Detection (when selected engine lacks layout but a layout-capable plugin is available) -->
+          @if (!selectedEngineHasLayout() && layoutPluginAvailable()) {
             <div class="section">
               <label class="checkbox-option">
                 <input
                   type="checkbox"
-                  [checked]="useSuryaLayout()"
-                  (change)="useSuryaLayout.set($any($event.target).checked)"
+                  [checked]="useExternalLayout()"
+                  (change)="useExternalLayout.set($any($event.target).checked)"
                 />
                 <span class="checkbox-label">
-                  <strong>Use Surya for categorization</strong>
-                  <span class="checkbox-hint">Runs Surya layout detection to classify headers, footnotes, captions, etc. Adds processing time per page.</span>
+                  <strong>Use layout detection</strong>
+                  <span class="checkbox-hint">Runs layout detection to classify headers, footnotes, captions, etc. Adds processing time per page.</span>
                 </span>
               </label>
             </div>
@@ -229,7 +226,7 @@ export interface OcrCompletionEvent {
                 @if (processingPage()) {
                   <div class="processing-hint">
                     <span class="spinner"></span>
-                    <span>{{ settings().engine === 'surya' ? 'Running Surya OCR (this may take a moment)...' : useSuryaLayout() ? 'Processing with Tesseract + Surya layout...' : 'Processing with Tesseract...' }}</span>
+                    <span>{{ getProcessingHint() }}</span>
                   </div>
                 }
               </div>
@@ -404,7 +401,7 @@ export interface OcrCompletionEvent {
 
     .engine-cards {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
       gap: var(--ui-spacing-sm);
     }
 
@@ -794,19 +791,17 @@ export class OcrSettingsModalComponent implements OnDestroy {
   readonly checkingEngines = signal(true);  // Loading state while checking availability
 
   readonly engines = signal<Array<{
-    id: OcrEngine;
+    id: string;
     name: string;
     available: boolean;
     version: string | null;
+    hasLayout: boolean;
   }>>([
-    { id: 'tesseract', name: 'Tesseract', available: false, version: null },
-    { id: 'surya', name: 'Surya', available: false, version: null }
+    { id: 'tesseract', name: 'Tesseract', available: false, version: null, hasLayout: false },
   ]);
 
-  // Surya layout detection availability (separate from OCR)
-  readonly suryaLayoutAvailable = signal(false);
-  // When true, run Surya layout detection alongside Tesseract for categorization
-  readonly useSuryaLayout = signal(true);
+  // When true, run external layout detection alongside engines that lack it
+  readonly useExternalLayout = signal(true);
 
   readonly availableLanguages = signal<string[]>(['eng']);
   readonly scope = signal<OcrScope>('all');
@@ -863,30 +858,40 @@ export class OcrSettingsModalComponent implements OnDestroy {
     this.checkingEngines.set(true);
 
     try {
-      // Check Tesseract
+      // Check Tesseract (built-in)
       const status = await this.electronService.ocrIsAvailable();
       const languages = await this.electronService.ocrGetLanguages();
 
-      // Check Surya via plugin service
-      const suryaAvailability = await this.pluginService.checkAvailability('surya-ocr');
+      // Engines that support layout detection
+      const layoutEngines = new Set(['surya-ocr', 'paddle-ocr']);
 
-      this.engines.update(engines => engines.map(e => {
-        if (e.id === 'tesseract') {
-          return { ...e, available: status.available, version: status.version };
-        }
-        if (e.id === 'surya') {
-          return {
-            ...e,
-            available: suryaAvailability.available,
-            version: suryaAvailability.version || null
-          };
-        }
-        return e;
-      }));
+      // Start with Tesseract as the built-in engine
+      const engineList: Array<{
+        id: string;
+        name: string;
+        available: boolean;
+        version: string | null;
+        hasLayout: boolean;
+      }> = [
+        { id: 'tesseract', name: 'Tesseract', available: status.available, version: status.version, hasLayout: false },
+      ];
 
-      // Surya layout detection is available if Surya is installed
-      this.suryaLayoutAvailable.set(suryaAvailability.available);
+      // Discover OCR plugins dynamically
+      await this.pluginService.loadPlugins();
+      const ocrPlugins = this.pluginService.getOcrPlugins();
 
+      for (const plugin of ocrPlugins) {
+        const availability = await this.pluginService.checkAvailability(plugin.id);
+        engineList.push({
+          id: plugin.id,
+          name: plugin.name,
+          available: availability.available,
+          version: availability.version || null,
+          hasLayout: layoutEngines.has(plugin.id),
+        });
+      }
+
+      this.engines.set(engineList);
       this.availableLanguages.set(languages);
     } finally {
       this.checkingEngines.set(false);
@@ -902,7 +907,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
     return !this.checkingEngines() && this.engineAvailable() && !this.running() && this.totalPages() > 0;
   }
 
-  selectEngine(engineId: OcrEngine): void {
+  selectEngine(engineId: string): void {
     this.settings.update(s => ({ ...s, engine: engineId }));
   }
 
@@ -912,6 +917,50 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
   getLanguageName(code: string): string {
     return this.languageNames[code] || code;
+  }
+
+  getEngineIcon(engineId: string): string {
+    const icons: Record<string, string> = {
+      'tesseract': '🔤',
+      'surya-ocr': '🌅',
+      'apple-vision-ocr': '',
+      'paddle-ocr': '🏓',
+    };
+    return icons[engineId] || '🔌';
+  }
+
+  getProcessingHint(): string {
+    const engine = this.settings().engine;
+    const engineInfo = this.engines().find(e => e.id === engine);
+    const name = engineInfo?.name || engine;
+
+    if (engine === 'tesseract' && this.useExternalLayout()) {
+      return `Processing with Tesseract + layout detection...`;
+    }
+    return `Running ${name} OCR (this may take a moment)...`;
+  }
+
+  selectedEngineHasLayout(): boolean {
+    const engine = this.engines().find(e => e.id === this.settings().engine);
+    return engine?.hasLayout ?? false;
+  }
+
+  layoutPluginAvailable(): boolean {
+    return this.engines().some(e => e.hasLayout && e.available);
+  }
+
+  private findLayoutPlugin(): string | null {
+    // Prefer the selected engine if it has layout
+    const engine = this.engines().find(e => e.id === this.settings().engine);
+    if (engine?.hasLayout && engine.available) return engine.id;
+    // Otherwise find any available layout plugin
+    const layoutEngine = this.engines().find(e => e.hasLayout && e.available);
+    return layoutEngine?.id || null;
+  }
+
+  private shouldUseLayoutCategories(): boolean {
+    const engineInfo = this.engines().find(e => e.id === this.settings().engine);
+    return (engineInfo?.hasLayout ?? false) || this.useExternalLayout();
   }
 
   progressPercent(): number {
@@ -1044,37 +1093,43 @@ export class OcrSettingsModalComponent implements OnDestroy {
         let layoutBlocks: LayoutBlock[] | undefined;
 
         // Step 1: Run OCR with selected engine
-        if (engine === 'surya') {
-          // Use Surya OCR
-          const suryaResult = await this.pluginService.runOcr('surya-ocr', imageData);
-          if (suryaResult.success && suryaResult.text) {
-            result = { text: suryaResult.text, confidence: suryaResult.confidence || 0.9 };
-            textLines = suryaResult.textLines;
-          } else if (suryaResult.error) {
-            throw new Error(suryaResult.error);
-          }
-        } else {
-          // Use Tesseract
+        if (engine === 'tesseract') {
+          // Use built-in Tesseract
           const tesseractResult = await this.electronService.ocrRecognize(imageData);
           if (tesseractResult) {
             result = tesseractResult;
             textLines = tesseractResult.textLines;
           }
+        } else {
+          // Use plugin-based engine
+          const pluginResult = await this.pluginService.runOcr(engine, imageData);
+          if (pluginResult.success && pluginResult.text) {
+            result = { text: pluginResult.text, confidence: pluginResult.confidence || 0.9 };
+            textLines = pluginResult.textLines;
+          } else if (pluginResult.error) {
+            throw new Error(pluginResult.error);
+          }
         }
 
-        // Step 2: Run Surya layout detection if Surya is the engine, or if
-        // Tesseract is the engine and the user opted into Surya categorization
-        const runLayout = engine === 'surya' || (engine === 'tesseract' && this.useSuryaLayout());
-        if (result && runLayout && this.suryaLayoutAvailable()) {
-          try {
-            console.log(`[OCR] Running Surya layout detection for page ${pageNum}`);
-            const layoutResult = await this.pluginService.detectLayout('surya-ocr', imageData);
-            if (layoutResult.success && layoutResult.layoutBlocks) {
-              layoutBlocks = layoutResult.layoutBlocks as LayoutBlock[] | undefined;
-              console.log(`[OCR] Layout detection returned ${layoutBlocks?.length || 0} blocks for page ${pageNum}`);
+        // Step 2: Run layout detection
+        const engineInfo = this.engines().find(e => e.id === engine);
+        const engineHasLayout = engineInfo?.hasLayout ?? false;
+        const shouldRunLayout = engineHasLayout || this.useExternalLayout();
+
+        if (result && shouldRunLayout) {
+          // Determine which plugin to use for layout
+          const layoutPluginId = engineHasLayout ? engine : this.findLayoutPlugin();
+          if (layoutPluginId) {
+            try {
+              console.log(`[OCR] Running layout detection via ${layoutPluginId} for page ${pageNum}`);
+              const layoutResult = await this.pluginService.detectLayout(layoutPluginId, imageData);
+              if (layoutResult.success && layoutResult.layoutBlocks) {
+                layoutBlocks = layoutResult.layoutBlocks as LayoutBlock[] | undefined;
+                console.log(`[OCR] Layout detection returned ${layoutBlocks?.length || 0} blocks for page ${pageNum}`);
+              }
+            } catch (layoutErr) {
+              console.warn('Layout detection failed:', layoutErr);
             }
-          } catch (layoutErr) {
-            console.warn('Layout detection failed:', layoutErr);
           }
         }
 
@@ -1111,7 +1166,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
     // Auto-apply results to document
     if (this.results().length > 0) {
-      this.ocrCompleted.emit({ results: this.results(), useSuryaCategories: this.settings().engine === 'surya' || this.useSuryaLayout() });
+      this.ocrCompleted.emit({ results: this.results(), useLayoutCategories: this.shouldUseLayoutCategories() });
     }
   }
 
@@ -1139,8 +1194,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
     // Normal mode: start regular background OCR job
     const getImage = this.getPageImage();
-    // Auto-set category detection based on engine: Surya uses its own, Tesseract uses heuristics
-    const useSuryaCategoriesForEngine = engine === 'surya' || this.useSuryaLayout();
+    const useLayoutCategoriesForEngine = this.shouldUseLayoutCategories();
 
     // Start background job
     const jobId = await this.ocrJobService.startJob(
@@ -1160,7 +1214,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
           layoutBlocks: r.layoutBlocks as OcrPageResult['layoutBlocks']
         }));
         if (results.length > 0) {
-          this.ocrCompleted.emit({ results, useSuryaCategories: useSuryaCategoriesForEngine });
+          this.ocrCompleted.emit({ results, useLayoutCategories: useLayoutCategoriesForEngine });
         }
       }
     );
@@ -1185,7 +1239,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
     // Emit already processed results immediately (before modal closes)
     const alreadyProcessedResults = this.results();
     if (alreadyProcessedResults.length > 0) {
-      this.ocrCompleted.emit({ results: alreadyProcessedResults, useSuryaCategories: this.settings().engine === 'surya' || this.useSuryaLayout() });
+      this.ocrCompleted.emit({ results: alreadyProcessedResults, useLayoutCategories: this.shouldUseLayoutCategories() });
     }
 
     if (remainingPages.length === 0) {
@@ -1236,7 +1290,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
   }
 
   applyResults(): void {
-    this.ocrCompleted.emit({ results: this.results(), useSuryaCategories: this.settings().engine === 'surya' || this.useSuryaLayout() });
+    this.ocrCompleted.emit({ results: this.results(), useLayoutCategories: this.shouldUseLayoutCategories() });
     this.close.emit();
   }
 }

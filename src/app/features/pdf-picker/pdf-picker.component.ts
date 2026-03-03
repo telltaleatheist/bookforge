@@ -7931,7 +7931,7 @@ export class PdfPickerComponent implements OnInit {
   onOcrCompleted(event: OcrCompletionEvent | OcrPageResult[]): void {
     // Handle both old format (array) and new format (event object)
     const results = Array.isArray(event) ? event : event.results;
-    const useSuryaCategories = Array.isArray(event) ? false : event.useSuryaCategories;
+    const useSuryaCategories = Array.isArray(event) ? false : (event as any).useSuryaCategories ?? (event as any).useLayoutCategories ?? false;
 
 
     // Count total text lines with bboxes
@@ -8107,27 +8107,6 @@ export class PdfPickerComponent implements OnInit {
     // Only replace blocks on pages that have OCR results
     // Pages with no OCR results keep their existing blocks
     if (pagesWithOcrResults.length > 0) {
-      // Collect fill regions from OCR text lines (where text was actually detected)
-      // These will fill the text areas with background color, becoming part of the background
-      const ocrFillRegionsByPage = new Map<number, Array<{ x: number; y: number; width: number; height: number }>>();
-
-      for (const result of results) {
-        if (!result.textLines || result.textLines.length === 0) continue;
-
-        const regions: Array<{ x: number; y: number; width: number; height: number }> = [];
-        for (const line of result.textLines) {
-          const [x1, y1, x2, y2] = line.bbox;
-          // Convert from image pixels to PDF coordinates
-          regions.push({
-            x: x1 / renderScale,
-            y: y1 / renderScale,
-            width: (x2 - x1) / renderScale,
-            height: (y2 - y1) / renderScale
-          });
-        }
-        ocrFillRegionsByPage.set(result.page, regions);
-      }
-
       // Replace blocks with processed OCR blocks
       this.editorState.replaceTextBlocksOnPages(pagesWithOcrResults, processedBlocks);
 
@@ -8149,14 +8128,9 @@ export class PdfPickerComponent implements OnInit {
       // Clear selection since old block IDs no longer exist
       this.selectedBlockIds.set([]);
 
-      // Re-render each page with OCR text areas filled with background color
-      // This integrates the fills into the background image
-      for (const pageNum of pagesWithOcrResults) {
-        const fillRegions = ocrFillRegionsByPage.get(pageNum);
-        if (fillRegions && fillRegions.length > 0) {
-          this.pageRenderService.rerenderPageWithRedactions(pageNum, undefined, fillRegions);
-        }
-      }
+      // Note: OCR fill regions (white backgrounds behind OCR text) are rendered as
+      // SVG overlays in the pdf-viewer, not baked into the page image. This allows
+      // toggling OCR text off to reveal the original scanned page underneath.
     }
 
     // Update category stats
@@ -8182,7 +8156,7 @@ export class PdfPickerComponent implements OnInit {
       // Parse parameters from the special job ID
       // Format: headless_timestamp_engine_language_page1,page2,page3
       const parts = jobId.split('_');
-      const engine = parts[2] as 'tesseract' | 'surya';
+      const engine = parts[2];
       const language = parts[3];
       const pagesStr = parts[4] || '';
       const pages = pagesStr ? pagesStr.split(',').map(p => parseInt(p, 10)) : [];
@@ -8234,7 +8208,7 @@ export class PdfPickerComponent implements OnInit {
           // Process the OCR results - this will apply them to the document
           this.onOcrCompleted({
             results: ocrPageResults,
-            useSuryaCategories: engine === 'surya'
+            useLayoutCategories: engine !== 'tesseract'
           });
 
           // Show success message

@@ -2369,7 +2369,7 @@ function setupIpcHandlers(): void {
 
   // Headless OCR - processes PDF directly without rendering to UI
   ipcMain.handle('ocr:process-pdf-headless', async (_event, pdfPath: string, options: {
-    engine: 'tesseract' | 'surya';
+    engine: string;
     language?: string;
     pages?: number[];
   }) => {

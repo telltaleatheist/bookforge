@@ -29,7 +29,7 @@ export interface OcrJob {
   id: string;
   documentId: string;
   documentName: string;
-  engine: 'tesseract' | 'surya';
+  engine: string;
   language: string;
   pages: number[];
   status: 'queued' | 'pending' | 'running' | 'completed' | 'cancelled' | 'error';
@@ -78,7 +78,7 @@ export class OcrJobService {
   async startJob(
     documentId: string,
     documentName: string,
-    engine: 'tesseract' | 'surya',
+    engine: string,
     language: string,
     pages: number[],
     getPageImage: (pageNum: number) => string | null,
@@ -259,19 +259,8 @@ export class OcrJobService {
 
         let result: OcrJobResult | null = null;
 
-        if (job.engine === 'surya') {
-          const suryaResult = await this.pluginService.runOcr('surya-ocr', imageData);
-          if (suryaResult.success && suryaResult.text) {
-            result = {
-              page: pageNum,
-              text: suryaResult.text,
-              confidence: suryaResult.confidence || 0.9,
-              textLines: suryaResult.textLines
-            };
-          } else if (suryaResult.error) {
-            throw new Error(suryaResult.error);
-          }
-        } else {
+        if (job.engine === 'tesseract') {
+          // Built-in Tesseract
           const tesseractResult = await this.electronService.ocrRecognize(imageData);
           if (tesseractResult) {
             result = {
@@ -281,16 +270,29 @@ export class OcrJobService {
               textLines: tesseractResult.textLines
             };
           }
+        } else {
+          // Plugin-based engine
+          const pluginResult = await this.pluginService.runOcr(job.engine, imageData);
+          if (pluginResult.success && pluginResult.text) {
+            result = {
+              page: pageNum,
+              text: pluginResult.text,
+              confidence: pluginResult.confidence || 0.9,
+              textLines: pluginResult.textLines
+            };
+          } else if (pluginResult.error) {
+            throw new Error(pluginResult.error);
+          }
         }
 
-        // Run Surya layout detection ONLY if Surya is the selected engine
-        // (Don't run Surya when Tesseract is selected - it causes unnecessary memory pressure)
-        if (result && job.engine === 'surya') {
+        // Run layout detection for engines that support it (surya-ocr, paddle-ocr)
+        const layoutEngines = ['surya-ocr', 'paddle-ocr'];
+        if (result && layoutEngines.includes(job.engine)) {
           try {
-            const suryaPlugin = this.pluginService.getPlugin('surya-ocr');
-            if (suryaPlugin?.available) {
+            const plugin = this.pluginService.getPlugin(job.engine);
+            if (plugin?.available) {
               console.log(`[OCR Job] Running layout detection for page ${pageNum}`);
-              const layoutResult = await this.pluginService.detectLayout('surya-ocr', imageData);
+              const layoutResult = await this.pluginService.detectLayout(job.engine, imageData);
               if (layoutResult.success && layoutResult.layoutBlocks) {
                 result.layoutBlocks = layoutResult.layoutBlocks;
                 console.log(`[OCR Job] Layout detection returned ${layoutResult.layoutBlocks.length} blocks for page ${pageNum}`);

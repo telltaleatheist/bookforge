@@ -1187,7 +1187,7 @@ export interface ElectronAPI {
     recognize: (imageData: string) => Promise<{ success: boolean; data?: OcrResult; error?: string }>;
     detectSkew: (imageData: string) => Promise<{ success: boolean; data?: DeskewResult; error?: string }>;
     processPdfHeadless: (pdfPath: string, options: {
-      engine: 'tesseract' | 'surya';
+      engine: string;
       language?: string;
       pages?: number[];
     }) => Promise<{ success: boolean; results?: Array<{
@@ -2405,7 +2405,7 @@ const electronAPI: ElectronAPI = {
     detectSkew: (imageData: string) =>
       ipcRenderer.invoke('ocr:detect-skew', imageData),
     processPdfHeadless: (pdfPath: string, options: {
-      engine: 'tesseract' | 'surya';
+      engine: string;
       language?: string;
       pages?: number[];
     }) =>

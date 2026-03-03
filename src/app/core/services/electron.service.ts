@@ -1447,7 +1447,7 @@ export class ElectronService {
   async ocrProcessPdfHeadless(
     pdfPath: string,
     options: {
-      engine: 'tesseract' | 'surya';
+      engine: string;
       language?: string;
       pages?: number[];
     }
