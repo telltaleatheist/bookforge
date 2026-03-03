@@ -11,7 +11,7 @@
  * Install: pip install ocrmac Pillow
  */
 
-import { spawn, execSync, ChildProcess } from 'child_process';
+import { spawn, exec, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -107,7 +107,7 @@ export class AppleVisionOcrPlugin extends BasePlugin {
     // Check if ocrmac is installed
     try {
       const pipCmd = 'pip show ocrmac 2>/dev/null || pip3 show ocrmac 2>/dev/null';
-      const pipOutput = execSync(pipCmd, { encoding: 'utf-8', timeout: 10000 });
+      const pipOutput = await this.execAsync(pipCmd, 10000);
       const versionMatch = pipOutput.match(/Version:\s*(\S+)/);
       const version = versionMatch ? versionMatch[1] : 'installed';
 
@@ -423,12 +423,18 @@ export class AppleVisionOcrPlugin extends BasePlugin {
   private resolveInputPath(imageData: string, tempDir: string): string {
     if (imageData.startsWith('bookforge-page://')) {
       let filePath = imageData.replace('bookforge-page://', '');
-      if (!filePath.startsWith('/')) {
+      // Only prepend '/' for Unix paths — Windows paths already start with a drive letter
+      if (!filePath.startsWith('/') && !filePath.match(/^[A-Za-z]:/)) {
         filePath = '/' + filePath;
       }
       return filePath;
     } else if (imageData.startsWith('file://')) {
-      return imageData.replace('file://', '');
+      let filePath = imageData.replace('file://', '');
+      // Strip leading slash before Windows drive letter (file:///C:/... → C:/...)
+      if (filePath.match(/^\/[A-Za-z]:/)) {
+        filePath = filePath.slice(1);
+      }
+      return filePath;
     } else if (imageData.startsWith('/') || imageData.match(/^[A-Za-z]:\\/)) {
       return imageData;
     } else if (imageData.startsWith('data:')) {
@@ -451,5 +457,14 @@ export class AppleVisionOcrPlugin extends BasePlugin {
     } catch {
       // Ignore cleanup errors
     }
+  }
+
+  private execAsync(cmd: string, timeout: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      exec(cmd, { encoding: 'utf-8', timeout }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout);
+      });
+    });
   }
 }

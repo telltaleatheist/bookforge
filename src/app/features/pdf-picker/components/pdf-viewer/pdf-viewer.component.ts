@@ -2095,6 +2095,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   readonly isMarqueeSelecting = signal(false);
   readonly marqueeStartPoint = signal<{ x: number; y: number; pageNum: number } | null>(null);
   readonly currentMarqueeRect = signal<CropRect | null>(null);
+  private marqueeEndTime = 0; // Timestamp when marquee ended — suppresses click events right after
 
   // Auto-scroll during marquee selection
   private autoScrollInterval: ReturnType<typeof setInterval> | null = null;
@@ -2776,6 +2777,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   onBlockClick(event: MouseEvent, block: TextBlock): void {
     event.preventDefault();
     event.stopPropagation();
+
+    // Suppress click if a marquee selection just finished (click fires after mouseup)
+    if (Date.now() - this.marqueeEndTime < 100) return;
 
     // In chapters mode, emit chapter click instead
     if (this.chaptersMode()) {
@@ -3685,10 +3689,13 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Unified overlay mouse handlers (for crop, marquee selection, and sample mode)
   onOverlayMouseDown(event: MouseEvent, pageNum: number): void {
-    // Check if clicking on a block (block rects have their own handlers)
-    const target = event.target as Element;
-    if (target.classList.contains('block-rect')) {
-      return; // Let block handler take over
+    // In edit mode, block rects handle their own mousedown (for block dragging)
+    // In all other modes, let mousedown through for marquee selection
+    if (this.editorMode() === 'edit') {
+      const target = event.target as Element;
+      if (target.classList.contains('block-rect')) {
+        return; // Let block drag handler take over
+      }
     }
 
     // In chapters mode, clicking on empty space places a chapter marker
@@ -3839,6 +3846,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
       this.isMarqueeSelecting.set(false);
       this.currentMarqueeRect.set(null);
+      this.marqueeEndTime = Date.now();
     }
   }
 
@@ -4333,7 +4341,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Start dragging a block
   onBlockMouseDown(event: MouseEvent, block: TextBlock): void {
-    // Only allow dragging in edit mode
+    // Only allow block dragging in edit mode
     if (this.editorMode() !== 'edit') return;
 
     event.preventDefault();

@@ -12,7 +12,7 @@
  * Install: pip install paddleocr paddlepaddle
  */
 
-import { spawn, execSync } from 'child_process';
+import { spawn, exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -97,6 +97,7 @@ export class PaddleOcrPlugin extends BasePlugin {
 
   private cachedAvailability: ToolAvailability | null = null;
   private scriptPath: string;
+  private venvPython: string | null = null;
 
   constructor() {
     super();
@@ -112,11 +113,21 @@ export class PaddleOcrPlugin extends BasePlugin {
       return this.cachedAvailability;
     }
 
+    // Find the venv Python first
+    this.venvPython = this.findVenvPython();
+
     try {
-      const pipCmd = process.platform === 'win32'
-        ? 'pip show paddleocr'
-        : 'pip show paddleocr 2>/dev/null || pip3 show paddleocr 2>/dev/null';
-      const pipOutput = execSync(pipCmd, { encoding: 'utf-8', timeout: 10000 });
+      let pipOutput: string;
+      if (this.venvPython) {
+        // Use venv's pip to check for paddleocr
+        pipOutput = await this.execAsync(`"${this.venvPython}" -m pip show paddleocr`, 10000);
+      } else {
+        // Fall back to system pip
+        const pipCmd = process.platform === 'win32'
+          ? 'pip show paddleocr'
+          : 'pip show paddleocr 2>/dev/null || pip3 show paddleocr 2>/dev/null';
+        pipOutput = await this.execAsync(pipCmd, 10000);
+      }
       const versionMatch = pipOutput.match(/Version:\s*(\S+)/);
       const version = versionMatch ? versionMatch[1] : 'installed';
 
@@ -129,7 +140,7 @@ export class PaddleOcrPlugin extends BasePlugin {
       this.cachedAvailability = {
         available: false,
         error: 'paddleocr package not found',
-        installInstructions: 'Install with: pip install paddleocr paddlepaddle',
+        installInstructions: 'Install with: pip install paddleocr paddlepaddle (in a dedicated venv at ~/.paddleocr-venv)',
       };
     }
 
@@ -229,7 +240,8 @@ export class PaddleOcrPlugin extends BasePlugin {
         args.push('--layout');
       }
 
-      const proc = spawn('python3', args, {
+      const pythonCmd = this.venvPython || 'python3';
+      const proc = spawn(pythonCmd, args, {
         env: { ...process.env },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -360,12 +372,18 @@ export class PaddleOcrPlugin extends BasePlugin {
   private resolveInputPath(imageData: string, tempDir: string): string {
     if (imageData.startsWith('bookforge-page://')) {
       let filePath = imageData.replace('bookforge-page://', '');
-      if (!filePath.startsWith('/')) {
+      // Only prepend '/' for Unix paths — Windows paths already start with a drive letter
+      if (!filePath.startsWith('/') && !filePath.match(/^[A-Za-z]:/)) {
         filePath = '/' + filePath;
       }
       return filePath;
     } else if (imageData.startsWith('file://')) {
-      return imageData.replace('file://', '');
+      let filePath = imageData.replace('file://', '');
+      // Strip leading slash before Windows drive letter (file:///C:/... → C:/...)
+      if (filePath.match(/^\/[A-Za-z]:/)) {
+        filePath = filePath.slice(1);
+      }
+      return filePath;
     } else if (imageData.startsWith('/') || imageData.match(/^[A-Za-z]:\\/)) {
       return imageData;
     } else if (imageData.startsWith('data:')) {
@@ -387,5 +405,42 @@ export class PaddleOcrPlugin extends BasePlugin {
     } catch {
       // Ignore cleanup errors
     }
+  }
+
+  /**
+   * Find the dedicated PaddleOCR venv Python.
+   * PaddlePaddle cannot coexist with PyTorch in the same Python environment
+   * on Windows (conflicting CUDA DLLs and pybind11 types), so we use a
+   * dedicated venv at ~/.paddleocr-venv.
+   */
+  private findVenvPython(): string | null {
+    const homeDir = os.homedir();
+    const venvName = '.paddleocr-venv';
+
+    const candidates = process.platform === 'win32'
+      ? [
+          path.join(homeDir, venvName, 'Scripts', 'python.exe'),
+        ]
+      : [
+          path.join(homeDir, venvName, 'bin', 'python'),
+          path.join(homeDir, venvName, 'bin', 'python3'),
+        ];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  private execAsync(cmd: string, timeout: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      exec(cmd, { encoding: 'utf-8', timeout }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout);
+      });
+    });
   }
 }

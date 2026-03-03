@@ -945,7 +945,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
     if (engine === 'tesseract' && this.selectedLayoutPlugin()) {
       return `Processing with Tesseract + layout detection...`;
     }
-    return `Running ${name} OCR (this may take a moment)...`;
+    return `Running ${name} (this may take a moment)...`;
   }
 
   selectedEngineHasLayout(): boolean {

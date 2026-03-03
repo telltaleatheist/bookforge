@@ -147,11 +147,35 @@ def recognize(image_path: str, with_layout: bool = False) -> dict:
     if not os.path.exists(image_path):
         return {"error": f"Image file not found: {image_path}", "text": "", "confidence": 0, "textLines": []}
 
-    result = _ocr_engine.predict(image_path)
+    # PaddleOCR 3.x uses .predict(), 2.x uses .ocr()
+    if hasattr(_ocr_engine, 'predict'):
+        result = _ocr_engine.predict(image_path)
+        text_lines = _parse_result_v3(result)
+    else:
+        result = _ocr_engine.ocr(image_path, cls=True)
+        text_lines = _parse_result_v2(result)
 
+    all_text_parts = [line["text"] for line in text_lines]
+    total_confidence = sum(line["confidence"] for line in text_lines)
+    avg_confidence = total_confidence / len(text_lines) if text_lines else 1.0
+
+    output = {
+        "text": "\n".join(all_text_parts),
+        "confidence": round(avg_confidence, 4),
+        "textLines": text_lines
+    }
+
+    if with_layout and _layout_engine is not None:
+        layout_blocks = detect_layout(image_path)
+        if layout_blocks:
+            output["layoutBlocks"] = layout_blocks
+
+    return output
+
+
+def _parse_result_v3(result) -> list:
+    """Parse PaddleOCR 3.x predict() output."""
     text_lines = []
-    all_text_parts = []
-    total_confidence = 0.0
 
     for page_result in result:
         if page_result is None:
@@ -180,23 +204,51 @@ def recognize(image_path: str, with_layout: bool = False) -> dict:
                 "bbox": bbox
             })
 
-            all_text_parts.append(text)
-            total_confidence += score
+    return text_lines
 
-    avg_confidence = total_confidence / len(text_lines) if text_lines else 1.0
 
-    output = {
-        "text": "\n".join(all_text_parts),
-        "confidence": round(avg_confidence, 4),
-        "textLines": text_lines
-    }
+def _parse_result_v2(result) -> list:
+    """Parse PaddleOCR 2.x ocr() output.
 
-    if with_layout and _layout_engine is not None:
-        layout_blocks = detect_layout(image_path)
-        if layout_blocks:
-            output["layoutBlocks"] = layout_blocks
+    2.x returns: [[line1, line2, ...]] where each line is [box, (text, score)]
+    box is [[x1,y1], [x2,y2], [x3,y3], [x4,y4]] (4 corner points)
+    """
+    text_lines = []
 
-    return output
+    if not result:
+        return text_lines
+
+    for page_result in result:
+        if not page_result:
+            continue
+
+        for line in page_result:
+            if not line or len(line) < 2:
+                continue
+
+            box = line[0]
+            text_info = line[1]
+
+            text = text_info[0] if isinstance(text_info, (list, tuple)) else str(text_info)
+            score = float(text_info[1]) if isinstance(text_info, (list, tuple)) and len(text_info) > 1 else 0.0
+
+            if not text.strip():
+                continue
+
+            # Convert 4-point polygon to [x1, y1, x2, y2] bounding box
+            bbox = [0, 0, 0, 0]
+            if box and len(box) >= 4:
+                xs = [p[0] for p in box]
+                ys = [p[1] for p in box]
+                bbox = [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
+
+            text_lines.append({
+                "text": text,
+                "confidence": round(score, 4),
+                "bbox": bbox
+            })
+
+    return text_lines
 
 
 def detect_layout(image_path: str) -> list:
