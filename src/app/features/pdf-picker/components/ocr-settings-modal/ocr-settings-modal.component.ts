@@ -109,20 +109,21 @@ export interface OcrCompletionEvent {
             </div>
           </div>
 
-          <!-- Layout Detection (when selected engine lacks layout but a layout-capable plugin is available) -->
+          <!-- Layout Detection picker (when selected engine lacks its own layout detection) -->
           @if (!selectedEngineHasLayout() && layoutPluginAvailable()) {
             <div class="section">
-              <label class="checkbox-option">
-                <input
-                  type="checkbox"
-                  [checked]="useExternalLayout()"
-                  (change)="useExternalLayout.set($any($event.target).checked)"
-                />
-                <span class="checkbox-label">
-                  <strong>Use layout detection</strong>
-                  <span class="checkbox-hint">Runs layout detection to classify headers, footnotes, captions, etc. Adds processing time per page.</span>
-                </span>
-              </label>
+              <h3 class="section-title">Layout Detection</h3>
+              <select
+                class="select-field"
+                [value]="selectedLayoutPlugin()"
+                (change)="selectedLayoutPlugin.set($any($event.target).value)"
+              >
+                <option value="">None</option>
+                @for (engine of availableLayoutEngines(); track engine.id) {
+                  <option [value]="engine.id">{{ engine.name }}</option>
+                }
+              </select>
+              <span class="checkbox-hint" style="display: block; margin-top: 4px;">Classify headers, footnotes, captions, etc. Adds processing time per page.</span>
             </div>
           }
 
@@ -800,8 +801,13 @@ export class OcrSettingsModalComponent implements OnDestroy {
     { id: 'tesseract', name: 'Tesseract', available: false, version: null, hasLayout: false },
   ]);
 
-  // When true, run external layout detection alongside engines that lack it
-  readonly useExternalLayout = signal(true);
+  // Which external layout plugin to use (empty string = none)
+  readonly selectedLayoutPlugin = signal<string>('');
+
+  // Computed: available layout engines for the dropdown
+  availableLayoutEngines(): Array<{ id: string; name: string }> {
+    return this.engines().filter(e => e.hasLayout && e.available).map(e => ({ id: e.id, name: e.name }));
+  }
 
   readonly availableLanguages = signal<string[]>(['eng']);
   readonly scope = signal<OcrScope>('all');
@@ -893,6 +899,8 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
       this.engines.set(engineList);
       this.availableLanguages.set(languages);
+
+      // Layout plugin defaults to none - user opts in via dropdown
     } finally {
       this.checkingEngines.set(false);
     }
@@ -934,7 +942,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
     const engineInfo = this.engines().find(e => e.id === engine);
     const name = engineInfo?.name || engine;
 
-    if (engine === 'tesseract' && this.useExternalLayout()) {
+    if (engine === 'tesseract' && this.selectedLayoutPlugin()) {
       return `Processing with Tesseract + layout detection...`;
     }
     return `Running ${name} OCR (this may take a moment)...`;
@@ -950,17 +958,22 @@ export class OcrSettingsModalComponent implements OnDestroy {
   }
 
   private findLayoutPlugin(): string | null {
-    // Prefer the selected engine if it has layout
+    // If the selected OCR engine has layout, use it
     const engine = this.engines().find(e => e.id === this.settings().engine);
     if (engine?.hasLayout && engine.available) return engine.id;
-    // Otherwise find any available layout plugin
-    const layoutEngine = this.engines().find(e => e.hasLayout && e.available);
-    return layoutEngine?.id || null;
+    // Otherwise use the user's selected layout plugin from the dropdown
+    const selected = this.selectedLayoutPlugin();
+    if (selected) {
+      const layoutEngine = this.engines().find(e => e.id === selected && e.hasLayout && e.available);
+      if (layoutEngine) return layoutEngine.id;
+    }
+    return null;
   }
 
   private shouldUseLayoutCategories(): boolean {
     const engineInfo = this.engines().find(e => e.id === this.settings().engine);
-    return (engineInfo?.hasLayout ?? false) || this.useExternalLayout();
+    if (engineInfo?.hasLayout) return true;
+    return !!this.selectedLayoutPlugin();
   }
 
   progressPercent(): number {
@@ -1114,7 +1127,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
         // Step 2: Run layout detection
         const engineInfo = this.engines().find(e => e.id === engine);
         const engineHasLayout = engineInfo?.hasLayout ?? false;
-        const shouldRunLayout = engineHasLayout || this.useExternalLayout();
+        const shouldRunLayout = engineHasLayout || !!this.selectedLayoutPlugin();
 
         if (result && shouldRunLayout) {
           // Determine which plugin to use for layout

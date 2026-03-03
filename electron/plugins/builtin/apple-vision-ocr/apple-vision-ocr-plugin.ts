@@ -17,6 +17,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
 import { IpcMainInvokeEvent } from 'electron';
+
 import {
   BasePlugin,
   PluginManifest,
@@ -183,6 +184,8 @@ export class AppleVisionOcrPlugin extends BasePlugin {
     }
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+
       const proc = spawn('python3', [
         this.scriptPath,
         '--batch',
@@ -211,6 +214,7 @@ export class AppleVisionOcrPlugin extends BasePlugin {
           const msg = JSON.parse(line);
           if (msg.ready) {
             this.workerReady = true;
+            settled = true;
             // Switch to normal line handler
             rl.removeListener('line', onFirstLine);
             rl.on('line', (resultLine) => this.onWorkerLine(resultLine));
@@ -220,6 +224,7 @@ export class AppleVisionOcrPlugin extends BasePlugin {
           }
         } catch { /* ignore parse errors */ }
         // If first line isn't ready signal, treat as error
+        settled = true;
         this.killWorker();
         reject(new Error(`Apple Vision worker failed to start: ${stderr || line}`));
       };
@@ -228,14 +233,17 @@ export class AppleVisionOcrPlugin extends BasePlugin {
 
       proc.on('error', (err) => {
         this.workerReady = false;
-        reject(new Error(`Failed to start Apple Vision worker: ${err.message}`));
+        if (!settled) { settled = true; reject(new Error(`Failed to start Apple Vision worker: ${err.message}`)); }
       });
 
       proc.on('close', (code) => {
+        console.log(`[Apple Vision] Worker exited (code ${code})`);
         this.workerReady = false;
         this.worker = null;
         this.workerReader = null;
-        // Reject pending request if worker dies unexpectedly
+        // Reject startup promise if still pending
+        if (!settled) { settled = true; reject(new Error(`Apple Vision worker exited during startup (code ${code}): ${stderr}`)); }
+        // Reject in-flight sendToWorker request
         if (this.pendingReject) {
           this.pendingReject(new Error(`Apple Vision worker exited (code ${code}): ${stderr}`));
           this.pendingResolve = null;
@@ -345,7 +353,6 @@ export class AppleVisionOcrPlugin extends BasePlugin {
 
       const level = this.getSetting<string>('recognitionLevel') || 'accurate';
 
-      // Use persistent worker
       await this.ensureWorker(level);
       return await this.sendToWorker(inputPath);
     } finally {

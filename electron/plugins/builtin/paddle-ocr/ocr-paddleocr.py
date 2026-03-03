@@ -29,6 +29,10 @@ import warnings
 
 # Suppress verbose logging from PaddlePaddle
 os.environ["GLOG_minloglevel"] = "2"
+os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+# Limit internal thread count to reduce segfault risk on macOS
+os.environ.setdefault("OMP_NUM_THREADS", "4")
+os.environ.setdefault("FLAGS_num_threads", "4")
 warnings.filterwarnings("ignore")
 
 # Map PaddleOCR layout labels to Surya-compatible labels
@@ -59,28 +63,83 @@ def _init_ocr(ocr_version: str, language: str):
     """Initialize the PaddleOCR engine once."""
     global _ocr_engine
     from paddleocr import PaddleOCR
-    _ocr_engine = PaddleOCR(
-        ocr_version=ocr_version,
-        lang=language,
-        show_log=False,
-        use_angle_cls=True,
-    )
+    import inspect
+
+    kwargs = dict(ocr_version=ocr_version, lang=language)
+    sig_params = inspect.signature(PaddleOCR.__init__).parameters
+
+    # PaddleOCR 3.x: disable expensive preprocessing (saves ~15s/page)
+    for param, value in [
+        ("use_doc_orientation_classify", False),
+        ("use_doc_unwarping", False),
+        ("use_textline_orientation", False),
+    ]:
+        if param in sig_params:
+            kwargs[param] = value
+
+    # PaddleOCR 2.x params (removed in 3.x)
+    if "show_log" in sig_params:
+        kwargs["show_log"] = False
+    if "use_angle_cls" in sig_params:
+        kwargs["use_angle_cls"] = True
+
+    _ocr_engine = PaddleOCR(**kwargs)
 
 
 def _init_layout(language: str):
     """Initialize the layout engine once."""
     global _layout_engine
     try:
-        from paddleocr import PPStructure
-        _layout_engine = PPStructure(
-            lang=language,
-            show_log=False,
-            table=False,
-            ocr=False,
-        )
+        # PaddleOCR 3.x uses LayoutDetection (PPStructure was removed)
+        from paddleocr import LayoutDetection
+        _layout_engine = LayoutDetection(model_name='PP-DocLayout-L')
+    except ImportError:
+        try:
+            # PaddleOCR 2.x fallback
+            from paddleocr import PPStructure
+            import inspect
+            kwargs = dict(lang=language, table=False, ocr=False)
+            sig_params = inspect.signature(PPStructure.__init__).parameters
+            if "show_log" in sig_params:
+                kwargs["show_log"] = False
+            _layout_engine = PPStructure(**kwargs)
+        except Exception as e:
+            print(f"Warning: Layout engine init failed: {e}", file=sys.stderr)
+            _layout_engine = None
     except Exception as e:
         print(f"Warning: Layout engine init failed: {e}", file=sys.stderr)
         _layout_engine = None
+
+
+def _extract_from_result(page_result) -> tuple:
+    """Extract rec_texts, rec_scores, rec_boxes from a Result object.
+
+    PaddleOCR 3.x returns Result objects with a .json property:
+      r.json = { "res": { "rec_texts": [...], "rec_scores": [...], "rec_boxes": [...] } }
+    PaddleOCR 2.x returned objects with direct attributes.
+    """
+    # PaddleOCR 3.x: Result objects have a .json property (dict)
+    if hasattr(page_result, 'json'):
+        data = page_result.json
+        if isinstance(data, dict):
+            # In 3.x, results are nested under 'res'
+            res = data.get('res', data)
+            if isinstance(res, dict) and 'rec_texts' in res:
+                return (
+                    res.get('rec_texts', []),
+                    res.get('rec_scores', []),
+                    res.get('rec_boxes', []),
+                )
+
+    # PaddleOCR 2.x fallback: direct attributes
+    if hasattr(page_result, 'rec_texts'):
+        return (
+            getattr(page_result, 'rec_texts', []),
+            getattr(page_result, 'rec_scores', []),
+            getattr(page_result, 'rec_boxes', []),
+        )
+
+    return ([], [], [])
 
 
 def recognize(image_path: str, with_layout: bool = False) -> dict:
@@ -95,12 +154,13 @@ def recognize(image_path: str, with_layout: bool = False) -> dict:
     total_confidence = 0.0
 
     for page_result in result:
-        if not page_result or not hasattr(page_result, 'rec_texts'):
+        if page_result is None:
             continue
 
-        rec_texts = page_result.rec_texts if hasattr(page_result, 'rec_texts') else []
-        rec_scores = page_result.rec_scores if hasattr(page_result, 'rec_scores') else []
-        rec_boxes = page_result.rec_boxes if hasattr(page_result, 'rec_boxes') else []
+        rec_texts, rec_scores, rec_boxes = _extract_from_result(page_result)
+
+        if not rec_texts:
+            continue
 
         for i in range(len(rec_texts)):
             text = rec_texts[i] if i < len(rec_texts) else ""
@@ -145,33 +205,75 @@ def detect_layout(image_path: str) -> list:
         return []
 
     try:
-        result = _layout_engine(image_path)
-        if not result:
-            return []
+        # Detect API version by checking for predict() method (3.x)
+        if hasattr(_layout_engine, 'predict'):
+            return _detect_layout_v3(image_path)
+        else:
+            return _detect_layout_v2(image_path)
+    except Exception as e:
+        print(f"Warning: Layout detection failed: {e}", file=sys.stderr)
+        return []
 
-        blocks = []
-        for i, region in enumerate(result):
-            label_raw = region.get("type", "text").lower()
+
+def _detect_layout_v3(image_path: str) -> list:
+    """Layout detection using PaddleOCR 3.x LayoutDetection.predict()."""
+    result = _layout_engine.predict(image_path)
+    if not result:
+        return []
+
+    blocks = []
+    for r in result:
+        data = r.json
+        res = data.get('res', data)
+        box_list = res.get('boxes', [])
+
+        for i, box_info in enumerate(box_list):
+            label_raw = box_info.get("label", "text").lower()
             label = LAYOUT_LABEL_MAP.get(label_raw, "Text")
-            bbox = region.get("bbox", [0, 0, 0, 0])
-            confidence = region.get("score", 0.9)
+            coord = box_info.get("coordinate", [0, 0, 0, 0])
+            confidence = box_info.get("score", 0.9)
 
             blocks.append({
-                "bbox": [int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])],
+                "bbox": [int(coord[0]), int(coord[1]), int(coord[2]), int(coord[3])],
                 "polygon": [],
                 "label": label,
                 "confidence": round(float(confidence), 4),
                 "position": i
             })
 
-        blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
-        for i, block in enumerate(blocks):
-            block["position"] = i
+    blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    for i, block in enumerate(blocks):
+        block["position"] = i
 
-        return blocks
-    except Exception as e:
-        print(f"Warning: Layout detection failed: {e}", file=sys.stderr)
+    return blocks
+
+
+def _detect_layout_v2(image_path: str) -> list:
+    """Layout detection using PaddleOCR 2.x PPStructure."""
+    result = _layout_engine(image_path)
+    if not result:
         return []
+
+    blocks = []
+    for i, region in enumerate(result):
+        label_raw = region.get("type", "text").lower()
+        label = LAYOUT_LABEL_MAP.get(label_raw, "Text")
+        bbox = region.get("bbox", [0, 0, 0, 0])
+        confidence = region.get("score", 0.9)
+
+        blocks.append({
+            "bbox": [int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])],
+            "polygon": [],
+            "label": label,
+            "confidence": round(float(confidence), 4),
+            "position": i
+        })
+
+    blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    for i, block in enumerate(blocks):
+        block["position"] = i
+
+    return blocks
 
 
 def run_batch(with_layout: bool) -> None:
