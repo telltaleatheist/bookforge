@@ -6,7 +6,14 @@ Uses PaddlePaddle's PaddleOCR for text recognition and optional layout detection
 Install: pip install paddleocr paddlepaddle
 
 Usage:
-  python ocr-paddleocr.py --image <path> [--version PP-OCRv5] [--language en] [--layout]
+  Single image:
+    python ocr-paddleocr.py --image <path> [--version PP-OCRv5] [--language en] [--layout]
+
+  Batch mode (persistent process, reads paths from stdin):
+    python ocr-paddleocr.py --batch [--version PP-OCRv4] [--language en] [--layout]
+    Then send one image path per line on stdin.
+    Outputs one JSON object per line on stdout (newline-delimited JSON).
+    Send empty line or EOF to exit.
 
 Output: JSON to stdout with { text, confidence, textLines, layoutBlocks? }
 Errors: stderr
@@ -23,7 +30,6 @@ import warnings
 # Suppress verbose logging from PaddlePaddle
 os.environ["GLOG_minloglevel"] = "2"
 warnings.filterwarnings("ignore")
-
 
 # Map PaddleOCR layout labels to Surya-compatible labels
 LAYOUT_LABEL_MAP = {
@@ -44,38 +50,50 @@ LAYOUT_LABEL_MAP = {
     "logo": "Picture",
 }
 
+# Module-level references initialized once
+_ocr_engine = None
+_layout_engine = None
 
-def recognize(image_path: str, ocr_version: str = "PP-OCRv4",
-              language: str = "en", with_layout: bool = False) -> dict:
-    """Run PaddleOCR on an image and return structured results."""
-    try:
-        from paddleocr import PaddleOCR
-    except ImportError:
-        print("Error: paddleocr package not installed. Install with: pip install paddleocr paddlepaddle",
-              file=sys.stderr)
-        sys.exit(1)
 
-    if not os.path.exists(image_path):
-        print(f"Error: Image file not found: {image_path}", file=sys.stderr)
-        sys.exit(1)
-
-    # Initialize PaddleOCR
-    # show_log=False suppresses model download progress in production
-    ocr = PaddleOCR(
+def _init_ocr(ocr_version: str, language: str):
+    """Initialize the PaddleOCR engine once."""
+    global _ocr_engine
+    from paddleocr import PaddleOCR
+    _ocr_engine = PaddleOCR(
         ocr_version=ocr_version,
         lang=language,
         show_log=False,
         use_angle_cls=True,
     )
 
-    # Run OCR prediction
-    result = ocr.predict(image_path)
+
+def _init_layout(language: str):
+    """Initialize the layout engine once."""
+    global _layout_engine
+    try:
+        from paddleocr import PPStructure
+        _layout_engine = PPStructure(
+            lang=language,
+            show_log=False,
+            table=False,
+            ocr=False,
+        )
+    except Exception as e:
+        print(f"Warning: Layout engine init failed: {e}", file=sys.stderr)
+        _layout_engine = None
+
+
+def recognize(image_path: str, with_layout: bool = False) -> dict:
+    """Run PaddleOCR on an image using the pre-initialized engine."""
+    if not os.path.exists(image_path):
+        return {"error": f"Image file not found: {image_path}", "text": "", "confidence": 0, "textLines": []}
+
+    result = _ocr_engine.predict(image_path)
 
     text_lines = []
     all_text_parts = []
     total_confidence = 0.0
 
-    # PaddleOCR predict() returns a generator of page results
     for page_result in result:
         if not page_result or not hasattr(page_result, 'rec_texts'):
             continue
@@ -92,7 +110,6 @@ def recognize(image_path: str, ocr_version: str = "PP-OCRv4",
             if not text.strip():
                 continue
 
-            # rec_boxes are already absolute pixel coords [x_min, y_min, x_max, y_max]
             bbox = [0, 0, 0, 0]
             if box is not None:
                 bbox = [int(box[0]), int(box[1]), int(box[2]), int(box[3])]
@@ -114,32 +131,21 @@ def recognize(image_path: str, ocr_version: str = "PP-OCRv4",
         "textLines": text_lines
     }
 
-    # Layout detection if requested
-    if with_layout:
-        layout_blocks = detect_layout(image_path, language)
+    if with_layout and _layout_engine is not None:
+        layout_blocks = detect_layout(image_path)
         if layout_blocks:
             output["layoutBlocks"] = layout_blocks
 
     return output
 
 
-def detect_layout(image_path: str, language: str = "en") -> list:
-    """Run PaddleOCR layout detection and return Surya-compatible blocks."""
-    try:
-        from paddleocr import PPStructure
-    except ImportError:
-        print("Warning: PPStructure not available for layout detection", file=sys.stderr)
+def detect_layout(image_path: str) -> list:
+    """Run layout detection using the pre-initialized engine."""
+    if _layout_engine is None:
         return []
 
     try:
-        engine = PPStructure(
-            lang=language,
-            show_log=False,
-            table=False,       # Skip table structure recognition for speed
-            ocr=False,         # We only want layout, OCR is done separately
-        )
-
-        result = engine(image_path)
+        result = _layout_engine(image_path)
         if not result:
             return []
 
@@ -158,7 +164,6 @@ def detect_layout(image_path: str, language: str = "en") -> list:
                 "position": i
             })
 
-        # Sort by reading order (top-to-bottom, left-to-right)
         blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
         for i, block in enumerate(blocks):
             block["position"] = i
@@ -169,9 +174,28 @@ def detect_layout(image_path: str, language: str = "en") -> list:
         return []
 
 
+def run_batch(with_layout: bool) -> None:
+    """Batch mode: read image paths from stdin, output JSON per line."""
+    print(json.dumps({"ready": True}), flush=True)
+
+    for line in sys.stdin:
+        image_path = line.strip()
+        if not image_path:
+            break
+
+        try:
+            result = recognize(image_path, with_layout)
+        except Exception as e:
+            result = {"error": str(e), "text": "", "confidence": 0, "textLines": []}
+
+        print(json.dumps(result), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="PaddleOCR for BookForge")
-    parser.add_argument("--image", required=True, help="Path to image file")
+    parser.add_argument("--image", help="Path to image file (single mode)")
+    parser.add_argument("--batch", action="store_true",
+                        help="Batch mode: read image paths from stdin, one per line")
     parser.add_argument("--version", default="PP-OCRv4",
                         choices=["PP-OCRv5", "PP-OCRv4", "PP-OCRv3"],
                         help="OCR version (default: PP-OCRv4)")
@@ -181,8 +205,23 @@ def main():
                         help="Enable layout detection")
     args = parser.parse_args()
 
-    result = recognize(args.image, args.version, args.language, args.layout)
-    print(json.dumps(result))
+    # Initialize engines once (heavy imports + model loading)
+    try:
+        _init_ocr(args.version, args.language)
+    except ImportError as e:
+        print(f"Error: {e}. Install with: pip install paddleocr paddlepaddle", file=sys.stderr)
+        sys.exit(1)
+
+    if args.layout:
+        _init_layout(args.language)
+
+    if args.batch:
+        run_batch(args.layout)
+    elif args.image:
+        result = recognize(args.image, args.layout)
+        print(json.dumps(result))
+    else:
+        parser.error("Either --image or --batch is required")
 
 
 if __name__ == "__main__":

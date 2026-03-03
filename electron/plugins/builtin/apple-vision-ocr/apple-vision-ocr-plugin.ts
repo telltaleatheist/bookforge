@@ -4,13 +4,18 @@
  * Uses Apple's VNRecognizeTextRequest via the ocrmac Python package.
  * macOS only - returns unavailable on other platforms.
  *
+ * Performance: Uses a persistent Python subprocess in batch mode so that
+ * heavy imports (ocrmac, PyObjC, Pillow) only happen once. Each OCR call
+ * sends an image path via stdin and reads a JSON result from stdout.
+ *
  * Install: pip install ocrmac Pillow
  */
 
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as readline from 'readline';
 import { IpcMainInvokeEvent } from 'electron';
 import {
   BasePlugin,
@@ -20,13 +25,6 @@ import {
   PluginProgress,
 } from '../../plugin-types';
 import { getPluginRegistry } from '../../plugin-registry';
-
-const MAX_STDERR_BYTES = 10 * 1024;
-function appendCapped(buf: string, chunk: string): string {
-  buf += chunk;
-  if (buf.length > MAX_STDERR_BYTES) buf = buf.slice(-MAX_STDERR_BYTES);
-  return buf;
-}
 
 interface AppleVisionTextLine {
   text: string;
@@ -38,6 +36,7 @@ interface AppleVisionOcrResult {
   text: string;
   confidence: number;
   textLines?: AppleVisionTextLine[];
+  error?: string;
 }
 
 interface AppleVisionPageResult {
@@ -71,9 +70,23 @@ export class AppleVisionOcrPlugin extends BasePlugin {
   private cachedAvailability: ToolAvailability | null = null;
   private scriptPath: string;
 
+  // Persistent batch worker
+  private worker: ChildProcess | null = null;
+  private workerReader: readline.Interface | null = null;
+  private workerReady = false;
+  private workerLevel: string | null = null;
+  private pendingResolve: ((result: AppleVisionOcrResult) => void) | null = null;
+  private pendingReject: ((err: Error) => void) | null = null;
+  private workerIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly IDLE_TIMEOUT_MS = 30_000; // Kill worker after 30s idle
+
   constructor() {
     super();
     this.scriptPath = path.join(__dirname, 'ocr-apple-vision.py');
+  }
+
+  async dispose(): Promise<void> {
+    this.killWorker();
   }
 
   async checkAvailability(): Promise<ToolAvailability> {
@@ -151,6 +164,167 @@ export class AppleVisionOcrPlugin extends BasePlugin {
     }
   }
 
+  // ─── Worker Management ─────────────────────────────────────────────────────
+
+  /**
+   * Ensure the persistent batch worker is running and ready.
+   * Spawns python3 in --batch mode; waits for the {"ready": true} signal.
+   */
+  private ensureWorker(level: string): Promise<void> {
+    // If worker exists with the same level, just reset idle timer
+    if (this.worker && !this.worker.killed && this.workerReady && this.workerLevel === level) {
+      this.resetIdleTimer();
+      return Promise.resolve();
+    }
+
+    // Kill existing worker if level changed
+    if (this.worker) {
+      this.killWorker();
+    }
+
+    return new Promise((resolve, reject) => {
+      const proc = spawn('python3', [
+        this.scriptPath,
+        '--batch',
+        '--level', level,
+      ], {
+        env: { ...process.env },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      this.worker = proc;
+      this.workerLevel = level;
+      this.workerReady = false;
+
+      let stderr = '';
+      proc.stderr!.on('data', (data) => {
+        stderr += data.toString();
+        if (stderr.length > 10 * 1024) stderr = stderr.slice(-10 * 1024);
+      });
+
+      const rl = readline.createInterface({ input: proc.stdout!, terminal: false });
+      this.workerReader = rl;
+
+      // First line should be {"ready": true}
+      const onFirstLine = (line: string) => {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.ready) {
+            this.workerReady = true;
+            // Switch to normal line handler
+            rl.removeListener('line', onFirstLine);
+            rl.on('line', (resultLine) => this.onWorkerLine(resultLine));
+            this.resetIdleTimer();
+            resolve();
+            return;
+          }
+        } catch { /* ignore parse errors */ }
+        // If first line isn't ready signal, treat as error
+        this.killWorker();
+        reject(new Error(`Apple Vision worker failed to start: ${stderr || line}`));
+      };
+
+      rl.on('line', onFirstLine);
+
+      proc.on('error', (err) => {
+        this.workerReady = false;
+        reject(new Error(`Failed to start Apple Vision worker: ${err.message}`));
+      });
+
+      proc.on('close', (code) => {
+        this.workerReady = false;
+        this.worker = null;
+        this.workerReader = null;
+        // Reject pending request if worker dies unexpectedly
+        if (this.pendingReject) {
+          this.pendingReject(new Error(`Apple Vision worker exited (code ${code}): ${stderr}`));
+          this.pendingResolve = null;
+          this.pendingReject = null;
+        }
+      });
+    });
+  }
+
+  /**
+   * Send an image path to the worker and wait for the JSON result.
+   */
+  private sendToWorker(imagePath: string): Promise<AppleVisionOcrResult> {
+    return new Promise((resolve, reject) => {
+      if (!this.worker || !this.workerReady) {
+        reject(new Error('Apple Vision worker not ready'));
+        return;
+      }
+
+      // Only one request at a time (sequential processing)
+      if (this.pendingResolve) {
+        reject(new Error('Apple Vision worker is busy'));
+        return;
+      }
+
+      this.pendingResolve = resolve;
+      this.pendingReject = reject;
+
+      this.worker.stdin!.write(imagePath + '\n');
+    });
+  }
+
+  /**
+   * Handle a line of JSON output from the worker.
+   */
+  private onWorkerLine(line: string): void {
+    if (!this.pendingResolve) return;
+
+    const resolve = this.pendingResolve;
+    const reject = this.pendingReject;
+    this.pendingResolve = null;
+    this.pendingReject = null;
+
+    try {
+      const result = JSON.parse(line) as AppleVisionOcrResult;
+      if (result.error) {
+        reject?.(new Error(result.error));
+      } else {
+        resolve(result);
+      }
+    } catch (err) {
+      reject?.(new Error(`Failed to parse worker output: ${line}`));
+    }
+
+    this.resetIdleTimer();
+  }
+
+  private resetIdleTimer(): void {
+    if (this.workerIdleTimer) {
+      clearTimeout(this.workerIdleTimer);
+    }
+    this.workerIdleTimer = setTimeout(() => {
+      console.log('[Apple Vision] Killing idle worker');
+      this.killWorker();
+    }, AppleVisionOcrPlugin.IDLE_TIMEOUT_MS);
+  }
+
+  private killWorker(): void {
+    if (this.workerIdleTimer) {
+      clearTimeout(this.workerIdleTimer);
+      this.workerIdleTimer = null;
+    }
+    if (this.workerReader) {
+      this.workerReader.close();
+      this.workerReader = null;
+    }
+    if (this.worker && !this.worker.killed) {
+      this.worker.stdin!.end();
+      this.worker.kill();
+    }
+    this.worker = null;
+    this.workerReady = false;
+    this.workerLevel = null;
+    this.pendingResolve = null;
+    this.pendingReject = null;
+  }
+
+  // ─── OCR Methods ───────────────────────────────────────────────────────────
+
   private async recognizeImage(imageData: string): Promise<AppleVisionOcrResult> {
     const availability = await this.checkAvailability();
     if (!availability.available) {
@@ -170,7 +344,10 @@ export class AppleVisionOcrPlugin extends BasePlugin {
       }
 
       const level = this.getSetting<string>('recognitionLevel') || 'accurate';
-      return await this.runAppleVisionOcr(inputPath, level);
+
+      // Use persistent worker
+      await this.ensureWorker(level);
+      return await this.sendToWorker(inputPath);
     } finally {
       if (needsCleanupInput) {
         this.cleanupTempDir(tempDir);
@@ -192,6 +369,9 @@ export class AppleVisionOcrPlugin extends BasePlugin {
     const results: AppleVisionPageResult[] = [];
     const level = this.getSetting<string>('recognitionLevel') || 'accurate';
 
+    // Ensure worker is up before loop
+    await this.ensureWorker(level);
+
     for (let i = 0; i < images.length; i++) {
       const imageData = images[i];
       const pageNum = pageNumbers[i];
@@ -205,7 +385,7 @@ export class AppleVisionOcrPlugin extends BasePlugin {
           continue;
         }
 
-        const ocrResult = await this.runAppleVisionOcr(inputPath, level);
+        const ocrResult = await this.sendToWorker(inputPath);
 
         results.push({
           page: pageNum,
@@ -231,48 +411,7 @@ export class AppleVisionOcrPlugin extends BasePlugin {
     return results;
   }
 
-  private async runAppleVisionOcr(inputPath: string, level: string): Promise<AppleVisionOcrResult> {
-    return new Promise((resolve, reject) => {
-      const args = [
-        this.scriptPath,
-        '--image', inputPath,
-        '--level', level,
-      ];
-
-      const proc = spawn('python3', args, {
-        env: { ...process.env },
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      proc.stderr.on('data', (data) => {
-        stderr = appendCapped(stderr, data.toString());
-      });
-
-      proc.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`Apple Vision OCR failed (exit ${code}): ${stderr}`));
-          return;
-        }
-
-        try {
-          const result = JSON.parse(stdout.trim()) as AppleVisionOcrResult;
-          resolve(result);
-        } catch (err) {
-          reject(new Error(`Failed to parse Apple Vision output: ${(err as Error).message}`));
-        }
-      });
-
-      proc.on('error', (err) => {
-        reject(new Error(`Failed to start Apple Vision OCR: ${err.message}`));
-      });
-    });
-  }
+  // ─── Helpers ───────────────────────────────────────────────────────────────
 
   private resolveInputPath(imageData: string, tempDir: string): string {
     if (imageData.startsWith('bookforge-page://')) {

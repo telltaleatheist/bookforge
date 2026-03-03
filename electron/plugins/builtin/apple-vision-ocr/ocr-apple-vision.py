@@ -6,7 +6,14 @@ Uses the `ocrmac` package which wraps Apple's VNRecognizeTextRequest via PyObjC.
 Install: pip install ocrmac Pillow
 
 Usage:
-  python ocr-apple-vision.py --image <path> [--level fast|accurate]
+  Single image:
+    python ocr-apple-vision.py --image <path> [--level fast|accurate]
+
+  Batch mode (persistent process, reads paths from stdin):
+    python ocr-apple-vision.py --batch [--level fast|accurate]
+    Then send one image path per line on stdin.
+    Outputs one JSON object per line on stdout (newline-delimited JSON).
+    Send empty line or EOF to exit.
 
 Output: JSON to stdout with { text, confidence, textLines }
 Errors: stderr
@@ -18,38 +25,30 @@ import sys
 import os
 
 
+def _init():
+    """Import heavy dependencies once."""
+    global ocrmac_mod, Image
+    from ocrmac import ocrmac as _ocrmac
+    from PIL import Image as _Image
+    ocrmac_mod = _ocrmac
+    Image = _Image
+
+
 def recognize(image_path: str, level: str = "accurate") -> dict:
     """Run Apple Vision OCR on an image and return structured results."""
-    try:
-        from ocrmac import ocrmac
-    except ImportError:
-        print("Error: ocrmac package not installed. Install with: pip install ocrmac", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        from PIL import Image
-    except ImportError:
-        print("Error: Pillow package not installed. Install with: pip install Pillow", file=sys.stderr)
-        sys.exit(1)
-
     if not os.path.exists(image_path):
-        print(f"Error: Image file not found: {image_path}", file=sys.stderr)
-        sys.exit(1)
+        return {"error": f"Image file not found: {image_path}", "text": "", "confidence": 0, "textLines": []}
 
     # Get image dimensions for converting normalized coords to absolute pixels
     with Image.open(image_path) as img:
         img_width, img_height = img.size
 
-    # Map level names to Apple Vision recognition levels
-    # ocrmac uses recognition_level parameter
-    recognition_level = "accurate"
-    if level == "fast":
-        recognition_level = "fast"
+    recognition_level = "accurate" if level != "fast" else "fast"
 
     # Run OCR
     # ocrmac.OCR returns list of (text, confidence, (x, y, w, h))
     # where coordinates are normalized 0-1, origin at bottom-left
-    annotations = ocrmac.OCR(
+    annotations = ocrmac_mod.OCR(
         image_path,
         recognition_level=recognition_level
     ).recognize()
@@ -87,15 +86,47 @@ def recognize(image_path: str, level: str = "accurate") -> dict:
     }
 
 
+def run_batch(level: str) -> None:
+    """Batch mode: read image paths from stdin, output JSON per line."""
+    # Signal ready after imports are done
+    print(json.dumps({"ready": True}), flush=True)
+
+    for line in sys.stdin:
+        image_path = line.strip()
+        if not image_path:
+            break
+
+        try:
+            result = recognize(image_path, level)
+        except Exception as e:
+            result = {"error": str(e), "text": "", "confidence": 0, "textLines": []}
+
+        print(json.dumps(result), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Apple Vision OCR for BookForge")
-    parser.add_argument("--image", required=True, help="Path to image file")
+    parser.add_argument("--image", help="Path to image file (single mode)")
+    parser.add_argument("--batch", action="store_true",
+                        help="Batch mode: read image paths from stdin, one per line")
     parser.add_argument("--level", choices=["fast", "accurate"], default="accurate",
                         help="Recognition level (default: accurate)")
     args = parser.parse_args()
 
-    result = recognize(args.image, args.level)
-    print(json.dumps(result))
+    # Import heavy deps once
+    try:
+        _init()
+    except ImportError as e:
+        print(f"Error: {e}. Install with: pip install ocrmac Pillow", file=sys.stderr)
+        sys.exit(1)
+
+    if args.batch:
+        run_batch(args.level)
+    elif args.image:
+        result = recognize(args.image, args.level)
+        print(json.dumps(result))
+    else:
+        parser.error("Either --image or --batch is required")
 
 
 if __name__ == "__main__":

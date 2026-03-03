@@ -4,13 +4,17 @@
  * Cross-platform OCR using PaddlePaddle's PaddleOCR.
  * Supports text recognition and layout detection via PP-DocLayout.
  *
+ * Performance: Uses a persistent Python subprocess in batch mode so that
+ * heavy imports (paddleocr, paddlepaddle, model loading) only happen once.
+ *
  * Install: pip install paddleocr paddlepaddle
  */
 
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as readline from 'readline';
 import { IpcMainInvokeEvent } from 'electron';
 import {
   BasePlugin,
@@ -20,13 +24,6 @@ import {
   PluginProgress,
 } from '../../plugin-types';
 import { getPluginRegistry } from '../../plugin-registry';
-
-const MAX_STDERR_BYTES = 10 * 1024;
-function appendCapped(buf: string, chunk: string): string {
-  buf += chunk;
-  if (buf.length > MAX_STDERR_BYTES) buf = buf.slice(-MAX_STDERR_BYTES);
-  return buf;
-}
 
 interface PaddleTextLine {
   text: string;
@@ -48,6 +45,7 @@ interface PaddleOcrResult {
   confidence: number;
   textLines?: PaddleTextLine[];
   layoutBlocks?: PaddleLayoutBlock[];
+  error?: string;
 }
 
 interface PaddlePageResult {
@@ -55,6 +53,16 @@ interface PaddlePageResult {
   text: string;
   textLines: PaddleTextLine[];
   layoutBlocks?: PaddleLayoutBlock[];
+}
+
+/**
+ * Key for a worker: version + language + layout flag.
+ * If settings change, we kill the old worker and spawn a new one.
+ */
+interface WorkerKey {
+  ocrVersion: string;
+  language: string;
+  withLayout: boolean;
 }
 
 export class PaddleOcrPlugin extends BasePlugin {
@@ -98,9 +106,23 @@ export class PaddleOcrPlugin extends BasePlugin {
   private cachedAvailability: ToolAvailability | null = null;
   private scriptPath: string;
 
+  // Persistent batch worker
+  private worker: ChildProcess | null = null;
+  private workerReader: readline.Interface | null = null;
+  private workerReady = false;
+  private workerKey: WorkerKey | null = null;
+  private pendingResolve: ((result: PaddleOcrResult) => void) | null = null;
+  private pendingReject: ((err: Error) => void) | null = null;
+  private workerIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly IDLE_TIMEOUT_MS = 60_000; // Kill worker after 60s idle (PaddleOCR is heavier)
+
   constructor() {
     super();
     this.scriptPath = path.join(__dirname, 'ocr-paddleocr.py');
+  }
+
+  async dispose(): Promise<void> {
+    this.killWorker();
   }
 
   async checkAvailability(): Promise<ToolAvailability> {
@@ -108,7 +130,6 @@ export class PaddleOcrPlugin extends BasePlugin {
       return this.cachedAvailability;
     }
 
-    // Check if paddleocr is installed
     try {
       const pipCmd = process.platform === 'win32'
         ? 'pip show paddleocr'
@@ -196,13 +217,173 @@ export class PaddleOcrPlugin extends BasePlugin {
     imageData: string
   ): Promise<{ success: boolean; data?: PaddleLayoutBlock[]; error?: string }> {
     try {
-      // Run with layout only - we'll extract just the layout blocks
       const result = await this.recognizeImage(imageData, true);
       return { success: true, data: result.layoutBlocks || [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   }
+
+  // ─── Worker Management ─────────────────────────────────────────────────────
+
+  private ensureWorker(key: WorkerKey): Promise<void> {
+    // Reuse existing worker if key matches
+    if (this.worker && !this.worker.killed && this.workerReady && this.workerKeyMatches(key)) {
+      this.resetIdleTimer();
+      return Promise.resolve();
+    }
+
+    // Kill existing worker if settings changed
+    if (this.worker) {
+      this.killWorker();
+    }
+
+    return new Promise((resolve, reject) => {
+      const args = [
+        this.scriptPath,
+        '--batch',
+        '--version', key.ocrVersion,
+        '--language', key.language,
+      ];
+      if (key.withLayout) {
+        args.push('--layout');
+      }
+
+      const proc = spawn('python3', args, {
+        env: { ...process.env },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      this.worker = proc;
+      this.workerKey = { ...key };
+      this.workerReady = false;
+
+      let stderr = '';
+      proc.stderr!.on('data', (data) => {
+        stderr += data.toString();
+        if (stderr.length > 10 * 1024) stderr = stderr.slice(-10 * 1024);
+      });
+
+      const rl = readline.createInterface({ input: proc.stdout!, terminal: false });
+      this.workerReader = rl;
+
+      const onFirstLine = (line: string) => {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.ready) {
+            this.workerReady = true;
+            rl.removeListener('line', onFirstLine);
+            rl.on('line', (resultLine) => this.onWorkerLine(resultLine));
+            this.resetIdleTimer();
+            resolve();
+            return;
+          }
+        } catch { /* ignore */ }
+        this.killWorker();
+        reject(new Error(`PaddleOCR worker failed to start: ${stderr || line}`));
+      };
+
+      rl.on('line', onFirstLine);
+
+      proc.on('error', (err) => {
+        this.workerReady = false;
+        reject(new Error(`Failed to start PaddleOCR worker: ${err.message}`));
+      });
+
+      proc.on('close', (code) => {
+        this.workerReady = false;
+        this.worker = null;
+        this.workerReader = null;
+        if (this.pendingReject) {
+          this.pendingReject(new Error(`PaddleOCR worker exited (code ${code}): ${stderr}`));
+          this.pendingResolve = null;
+          this.pendingReject = null;
+        }
+      });
+    });
+  }
+
+  private workerKeyMatches(key: WorkerKey): boolean {
+    if (!this.workerKey) return false;
+    return (
+      this.workerKey.ocrVersion === key.ocrVersion &&
+      this.workerKey.language === key.language &&
+      this.workerKey.withLayout === key.withLayout
+    );
+  }
+
+  private sendToWorker(imagePath: string): Promise<PaddleOcrResult> {
+    return new Promise((resolve, reject) => {
+      if (!this.worker || !this.workerReady) {
+        reject(new Error('PaddleOCR worker not ready'));
+        return;
+      }
+
+      if (this.pendingResolve) {
+        reject(new Error('PaddleOCR worker is busy'));
+        return;
+      }
+
+      this.pendingResolve = resolve;
+      this.pendingReject = reject;
+
+      this.worker.stdin!.write(imagePath + '\n');
+    });
+  }
+
+  private onWorkerLine(line: string): void {
+    if (!this.pendingResolve) return;
+
+    const resolve = this.pendingResolve;
+    const reject = this.pendingReject;
+    this.pendingResolve = null;
+    this.pendingReject = null;
+
+    try {
+      const result = JSON.parse(line) as PaddleOcrResult;
+      if (result.error) {
+        reject?.(new Error(result.error));
+      } else {
+        resolve(result);
+      }
+    } catch (err) {
+      reject?.(new Error(`Failed to parse worker output: ${line}`));
+    }
+
+    this.resetIdleTimer();
+  }
+
+  private resetIdleTimer(): void {
+    if (this.workerIdleTimer) {
+      clearTimeout(this.workerIdleTimer);
+    }
+    this.workerIdleTimer = setTimeout(() => {
+      console.log('[PaddleOCR] Killing idle worker');
+      this.killWorker();
+    }, PaddleOcrPlugin.IDLE_TIMEOUT_MS);
+  }
+
+  private killWorker(): void {
+    if (this.workerIdleTimer) {
+      clearTimeout(this.workerIdleTimer);
+      this.workerIdleTimer = null;
+    }
+    if (this.workerReader) {
+      this.workerReader.close();
+      this.workerReader = null;
+    }
+    if (this.worker && !this.worker.killed) {
+      this.worker.stdin!.end();
+      this.worker.kill();
+    }
+    this.worker = null;
+    this.workerReady = false;
+    this.workerKey = null;
+    this.pendingResolve = null;
+    this.pendingReject = null;
+  }
+
+  // ─── OCR Methods ───────────────────────────────────────────────────────────
 
   private async recognizeImage(imageData: string, withLayout: boolean): Promise<PaddleOcrResult> {
     const availability = await this.checkAvailability();
@@ -225,7 +406,8 @@ export class PaddleOcrPlugin extends BasePlugin {
       const ocrVersion = this.getSetting<string>('ocrVersion') || 'PP-OCRv4';
       const language = this.getSetting<string>('language') || 'en';
 
-      return await this.runPaddleOcr(inputPath, ocrVersion, language, withLayout);
+      await this.ensureWorker({ ocrVersion, language, withLayout });
+      return await this.sendToWorker(inputPath);
     } finally {
       if (needsCleanupInput) {
         this.cleanupTempDir(tempDir);
@@ -248,6 +430,8 @@ export class PaddleOcrPlugin extends BasePlugin {
     const ocrVersion = this.getSetting<string>('ocrVersion') || 'PP-OCRv4';
     const language = this.getSetting<string>('language') || 'en';
 
+    await this.ensureWorker({ ocrVersion, language, withLayout: false });
+
     for (let i = 0; i < images.length; i++) {
       const imageData = images[i];
       const pageNum = pageNumbers[i];
@@ -261,7 +445,7 @@ export class PaddleOcrPlugin extends BasePlugin {
           continue;
         }
 
-        const ocrResult = await this.runPaddleOcr(inputPath, ocrVersion, language, false);
+        const ocrResult = await this.sendToWorker(inputPath);
 
         results.push({
           page: pageNum,
@@ -270,7 +454,6 @@ export class PaddleOcrPlugin extends BasePlugin {
           layoutBlocks: ocrResult.layoutBlocks,
         });
 
-        // Report progress
         const progress: PluginProgress = {
           pluginId: this.manifest.id,
           operation: 'recognize-batch',
@@ -288,58 +471,7 @@ export class PaddleOcrPlugin extends BasePlugin {
     return results;
   }
 
-  private async runPaddleOcr(
-    inputPath: string,
-    ocrVersion: string,
-    language: string,
-    withLayout: boolean
-  ): Promise<PaddleOcrResult> {
-    return new Promise((resolve, reject) => {
-      const args = [
-        this.scriptPath,
-        '--image', inputPath,
-        '--version', ocrVersion,
-        '--language', language,
-      ];
-
-      if (withLayout) {
-        args.push('--layout');
-      }
-
-      const proc = spawn('python3', args, {
-        env: { ...process.env },
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      proc.stderr.on('data', (data) => {
-        stderr = appendCapped(stderr, data.toString());
-      });
-
-      proc.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`PaddleOCR failed (exit ${code}): ${stderr}`));
-          return;
-        }
-
-        try {
-          const result = JSON.parse(stdout.trim()) as PaddleOcrResult;
-          resolve(result);
-        } catch (err) {
-          reject(new Error(`Failed to parse PaddleOCR output: ${(err as Error).message}`));
-        }
-      });
-
-      proc.on('error', (err) => {
-        reject(new Error(`Failed to start PaddleOCR: ${err.message}`));
-      });
-    });
-  }
+  // ─── Helpers ───────────────────────────────────────────────────────────────
 
   private resolveInputPath(imageData: string, tempDir: string): string {
     if (imageData.startsWith('bookforge-page://')) {
@@ -358,7 +490,6 @@ export class PaddleOcrPlugin extends BasePlugin {
       fs.writeFileSync(inputPath, imageBuffer);
       return inputPath;
     } else {
-      // Assume raw base64
       const inputPath = path.join(tempDir, 'input.png');
       const imageBuffer = Buffer.from(imageData, 'base64');
       fs.writeFileSync(inputPath, imageBuffer);
