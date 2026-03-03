@@ -876,9 +876,9 @@ export class OcrSettingsModalComponent implements OnDestroy {
         { id: 'tesseract', name: 'Tesseract', available: status.available, version: status.version, hasLayout: false },
       ];
 
-      // Discover OCR plugins dynamically
+      // Discover OCR plugins dynamically (include unavailable ones so they show as "Not installed")
       await this.pluginService.loadPlugins();
-      const ocrPlugins = this.pluginService.getOcrPlugins();
+      const ocrPlugins = this.pluginService.plugins().filter(p => p.capabilities.includes('ocr'));
 
       for (const plugin of ocrPlugins) {
         const availability = await this.pluginService.checkAvailability(plugin.id);
