@@ -235,6 +235,8 @@ export class SuryaOcrPlugin extends BasePlugin {
     }
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+
       const pythonCmd = this.venvPython || (process.platform === 'win32' ? 'python' : 'python3');
       const args = [
         this.scriptPath,
@@ -267,6 +269,7 @@ export class SuryaOcrPlugin extends BasePlugin {
           if (msg.ready) {
             this.workerReady = true;
             this.workerStarted = true;
+            settled = true;
             rl.removeListener('line', onFirstLine);
             rl.on('line', (resultLine) => this.onWorkerLine(resultLine));
             this.resetIdleTimer();
@@ -274,6 +277,7 @@ export class SuryaOcrPlugin extends BasePlugin {
             return;
           }
         } catch { /* ignore */ }
+        settled = true;
         this.killWorker();
         reject(new Error(`Surya worker failed to start: ${stderr || line}`));
       };
@@ -282,13 +286,17 @@ export class SuryaOcrPlugin extends BasePlugin {
 
       proc.on('error', (err) => {
         this.workerReady = false;
-        reject(new Error(`Failed to start Surya worker: ${err.message}`));
+        if (!settled) { settled = true; reject(new Error(`Failed to start Surya worker: ${err.message}`)); }
       });
 
       proc.on('close', (code) => {
+        console.log(`[Surya] Worker exited (code ${code})`);
         this.workerReady = false;
         this.worker = null;
         this.workerReader = null;
+        // Reject startup promise if still pending
+        if (!settled) { settled = true; reject(new Error(`Surya worker exited during startup (code ${code}): ${stderr}`)); }
+        // Reject in-flight sendToWorker request
         if (this.pendingReject) {
           this.pendingReject(new Error(`Surya worker exited (code ${code}): ${stderr}`));
           this.pendingResolve = null;
