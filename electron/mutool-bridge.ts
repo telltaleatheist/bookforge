@@ -274,26 +274,70 @@ export class MutoolBridge {
       }
     }
 
-    // Get raw structured text once
-    const rawData = await this.extractRawStext(binPath, pdfPath);
+    try {
+      // Try single-pass extraction first (fastest for normal-sized PDFs)
+      const rawData = await this.extractRawStext(binPath, pdfPath);
+      const blocks = this.parseBlocksFromStext(rawData, pageDimensions);
+      const spans = this.parseSpansFromStext(rawData, pageDimensions);
+      console.log(`[MuTool] Extracted ${blocks.length} blocks, ${spans.length} spans`);
+      return { blocks, spans };
+    } catch (err) {
+      const msg = (err as Error).message || '';
+      if (msg.includes('out of memory') || msg.includes('FT_New_Memory_Face') || msg.includes('ENOMEM')) {
+        console.warn(`[MuTool] Single-pass extraction failed (OOM), falling back to batched extraction...`);
+        return this.extractAllBatched(binPath, pdfPath, pageCount, pageDimensions);
+      }
+      throw err;
+    }
+  }
 
-    // Parse both
-    const blocks = this.parseBlocksFromStext(rawData, pageDimensions);
-    const spans = this.parseSpansFromStext(rawData, pageDimensions);
+  /**
+   * Batched extraction: process pages in chunks to avoid OOM on large/complex PDFs.
+   * mutool supports page ranges as a positional arg (e.g. "1-50").
+   */
+  private async extractAllBatched(
+    binPath: string,
+    pdfPath: string,
+    pageCount: number,
+    pageDimensions: PageDimension[]
+  ): Promise<{ blocks: MutoolTextBlock[]; spans: MutoolTextSpan[] }> {
+    const BATCH_SIZE = 50;
+    const batchCount = Math.ceil(pageCount / BATCH_SIZE);
+    console.log(`[MuTool] Batched extraction: ${pageCount} pages in ${batchCount} batches of ${BATCH_SIZE}`);
 
-    console.log(`[MuTool] Extracted ${blocks.length} blocks, ${spans.length} spans`);
-    return { blocks, spans };
+    let allBlocks: MutoolTextBlock[] = [];
+    let allSpans: MutoolTextSpan[] = [];
+
+    for (let i = 0; i < batchCount; i++) {
+      const startPage = i * BATCH_SIZE + 1; // mutool uses 1-based pages
+      const endPage = Math.min((i + 1) * BATCH_SIZE, pageCount);
+      const pageRange = `${startPage}-${endPage}`;
+
+      console.log(`[MuTool] Batch ${i + 1}/${batchCount}: pages ${pageRange}`);
+
+      const rawData = await this.extractRawStext(binPath, pdfPath, pageRange);
+      const blocks = this.parseBlocksFromStext(rawData, pageDimensions);
+      const spans = this.parseSpansFromStext(rawData, pageDimensions);
+
+      allBlocks = allBlocks.concat(blocks);
+      allSpans = allSpans.concat(spans);
+    }
+
+    console.log(`[MuTool] Batched extraction complete: ${allBlocks.length} blocks, ${allSpans.length} spans`);
+    return { blocks: allBlocks, spans: allSpans };
   }
 
   /**
    * Run mutool and get raw stext XML output
+   * @param pageRange Optional mutool page range (e.g. "1-50", "51-100")
    */
-  private async extractRawStext(binPath: string, pdfPath: string): Promise<string> {
+  private async extractRawStext(binPath: string, pdfPath: string, pageRange?: string): Promise<string> {
     const tmpFile = path.join(os.tmpdir(), `bookforge-stext-${Date.now()}.xml`);
 
     try {
+      const pageArg = pageRange ? ` ${pageRange}` : '';
       // 10 minute timeout for large documents (648 pages can take 5+ minutes)
-      await execAsync(`"${binPath}" draw -F stext -o "${tmpFile}" "${pdfPath}"`, {
+      await execAsync(`"${binPath}" draw -F stext -o "${tmpFile}" "${pdfPath}"${pageArg}`, {
         maxBuffer: 200 * 1024 * 1024, // 200MB buffer for large docs
         timeout: 600000 // 10 minute timeout
       });

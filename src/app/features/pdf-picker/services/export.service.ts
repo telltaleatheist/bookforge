@@ -905,9 +905,11 @@ export class ExportService {
       const sanitizedText = this.sanitizeText(blockText);
       if (sanitizedText) {
         blocksInChapter++;
-        // Skip blocks that match the chapter title near the start of a chapter
+        // Skip blocks that match (or mostly match) the chapter title near the start of a chapter.
+        // Handles: exact matches, edited titles, and multi-line title blocks.
         const normalizedBlock = sanitizedText.toLowerCase().replace(/\s+/g, ' ').trim();
-        if (blocksInChapter <= SKIP_TITLE_WITHIN_FIRST_N_BLOCKS && normalizedBlock === normalizedTitle) {
+        if (blocksInChapter <= SKIP_TITLE_WITHIN_FIRST_N_BLOCKS && normalizedTitle &&
+            this.isTitleDuplicate(normalizedBlock, normalizedTitle)) {
           continue; // Skip this title block
         }
         currentContent.push(`<p>${this.escapeHtml(sanitizedText)}</p>`);
@@ -1060,6 +1062,37 @@ export class ExportService {
     result = result.replace(/  +/g, ' ');
 
     return result;
+  }
+
+  /**
+   * Check if a body text block is a duplicate of the chapter title.
+   * Handles exact matches, edited titles, and multi-line title fragments.
+   * A block is considered a title duplicate if:
+   *  - It's an exact match, OR
+   *  - The block text is wholly contained in the title, OR
+   *  - The title is wholly contained in the block text, OR
+   *  - They share 80%+ of their words (handles minor edits)
+   */
+  private isTitleDuplicate(normalizedBlock: string, normalizedTitle: string): boolean {
+    if (normalizedBlock === normalizedTitle) return true;
+
+    // Block text is a substring of the title (multi-line title fragment)
+    if (normalizedBlock.length >= 3 && normalizedTitle.includes(normalizedBlock)) return true;
+
+    // Title is a substring of the block (block has extra decorators like "Chapter 1: Title")
+    if (normalizedTitle.length >= 3 && normalizedBlock.includes(normalizedTitle)) return true;
+
+    // Fuzzy: share 80%+ of words (handles minor user edits to chapter title)
+    const blockWords = normalizedBlock.split(' ').filter(w => w.length > 0);
+    const titleWords = normalizedTitle.split(' ').filter(w => w.length > 0);
+    if (blockWords.length >= 2 && titleWords.length >= 2) {
+      const titleSet = new Set(titleWords);
+      const shared = blockWords.filter(w => titleSet.has(w)).length;
+      const ratio = shared / Math.max(blockWords.length, titleWords.length);
+      if (ratio >= 0.8) return true;
+    }
+
+    return false;
   }
 
   /**

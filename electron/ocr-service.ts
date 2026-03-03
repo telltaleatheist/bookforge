@@ -1,6 +1,7 @@
 import tesseract from 'node-tesseract-ocr';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execSync } from 'child_process';
 import { app } from 'electron';
 
 export interface OcrTextLine {
@@ -69,6 +70,74 @@ export class OcrService {
     }
   }
 
+  private preprocessScriptPath: string | null = null;
+  private preprocessAvailable: boolean | null = null;
+
+  /**
+   * Find the ocr-preprocess.py script (same pattern as pdf-pymupdf-bridge.ts)
+   */
+  private findPreprocessScript(): string {
+    const possiblePaths = [
+      path.join(__dirname, 'ocr-preprocess.py'),
+      path.join(__dirname, '..', '..', 'electron', 'ocr-preprocess.py'),
+      path.join(process.resourcesPath || '', 'ocr-preprocess.py'),
+    ];
+
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        return p;
+      }
+    }
+
+    return path.join(__dirname, 'ocr-preprocess.py');
+  }
+
+  /**
+   * Preprocess an image for better OCR results.
+   * Removes highlights, denoises, enhances contrast, and binarizes.
+   * Returns the path to the preprocessed temp file, or the original path on failure.
+   */
+  private preprocessImage(imagePath: string): string {
+    if (this.preprocessAvailable === false) {
+      return imagePath;
+    }
+
+    if (!this.preprocessScriptPath) {
+      this.preprocessScriptPath = this.findPreprocessScript();
+    }
+
+    if (!fs.existsSync(this.preprocessScriptPath)) {
+      console.warn('[OCR] Preprocess script not found:', this.preprocessScriptPath);
+      this.preprocessAvailable = false;
+      return imagePath;
+    }
+
+    const tempDir = app.getPath('temp');
+    const ext = path.extname(imagePath) || '.png';
+    const outputPath = path.join(tempDir, `ocr_preproc_${Date.now()}${ext}`);
+
+    try {
+      execSync(
+        `python3 "${this.preprocessScriptPath}" "${imagePath}" "${outputPath}"`,
+        { encoding: 'utf-8', timeout: 30000 }
+      );
+
+      if (fs.existsSync(outputPath)) {
+        this.preprocessAvailable = true;
+        return outputPath;
+      }
+    } catch (err) {
+      if (this.preprocessAvailable === null) {
+        console.warn('[OCR] Image preprocessing unavailable (python3/OpenCV missing), using raw images');
+        this.preprocessAvailable = false;
+      } else {
+        console.warn('[OCR] Preprocessing failed for', imagePath, (err as Error).message);
+      }
+    }
+
+    return imagePath;
+  }
+
   /**
    * Perform OCR on an image file (plain text only)
    */
@@ -90,15 +159,17 @@ export class OcrService {
    * Uses Tesseract's TSV output format to get line-level positions
    */
   async recognizeFileWithBounds(imagePath: string): Promise<OcrResult> {
-    const { execSync } = require('child_process');
     const binary = this.config.binary || 'tesseract';
     const lang = this.config.lang || 'eng';
+
+    const preprocessedPath = this.preprocessImage(imagePath);
+    const didPreprocess = preprocessedPath !== imagePath;
 
     try {
       // Run tesseract with TSV output to get bounding boxes
       // TSV columns: level, page_num, block_num, par_num, line_num, word_num, left, top, width, height, conf, text
-      const cmd = `"${binary}" "${imagePath}" stdout -l ${lang} --oem 1 --psm 3 tsv`;
-      console.log('[OCR] Running:', cmd);
+      const cmd = `"${binary}" "${preprocessedPath}" stdout -l ${lang} --oem 1 --psm 3 tsv`;
+      console.log('[OCR] Running:', cmd, didPreprocess ? '(preprocessed)' : '(raw)');
 
       const output = execSync(cmd, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
 
@@ -112,6 +183,10 @@ export class OcrService {
     } catch (err) {
       console.error('OCR with bounds failed:', err);
       throw new Error(`OCR failed: ${(err as Error).message}`);
+    } finally {
+      if (didPreprocess) {
+        try { fs.unlinkSync(preprocessedPath); } catch { /* ignore */ }
+      }
     }
   }
 

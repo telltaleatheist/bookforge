@@ -150,6 +150,11 @@ class LibraryManager {
       ? `bilingual ${book.langPair || ''}`
       : 'audiobook';
 
+    const durationStr = book.duration ? this.formatDuration(book.duration) : '';
+    const sizeAndDuration = durationStr
+      ? `${this.formatSize(book.size)} &middot; ${durationStr}`
+      : this.formatSize(book.size);
+
     card.innerHTML = `
       <div class="book-cover">
         <span class="placeholder">🎧</span>
@@ -158,7 +163,7 @@ class LibraryManager {
       <div class="book-info">
         <div class="book-title" title="${this.escapeHtml(book.title)}">${this.escapeHtml(book.title)}</div>
         ${book.author ? `<div class="book-author">${this.escapeHtml(book.author)}</div>` : ''}
-        <div class="book-size">${this.formatSize(book.size)}</div>
+        <div class="book-size">${sizeAndDuration}</div>
       </div>
     `;
 
@@ -402,6 +407,16 @@ class LibraryManager {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  }
+
+  formatDuration(seconds) {
+    if (!seconds || seconds <= 0) return '';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    if (h > 0) {
+      return `${h}h ${m}m`;
+    }
+    return `${m}m`;
   }
 
   escapeHtml(text) {

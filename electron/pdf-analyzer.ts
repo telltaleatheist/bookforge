@@ -453,9 +453,13 @@ export class PDFAnalyzer {
           usedMutool = true;
 
           // Also extract images using mupdf.js (mutool stext doesn't include images)
-          const imageBlocks = await this.extractImageBlocks(pageCount);
-          if (imageBlocks.length > 0) {
-            this.blocks.push(...imageBlocks);
+          try {
+            const imageBlocks = await this.extractImageBlocks(pageCount);
+            if (imageBlocks.length > 0) {
+              this.blocks.push(...imageBlocks);
+            }
+          } catch (imgErr) {
+            console.warn('[PDF Analyzer] Image extraction failed (continuing without images):', (imgErr as Error).message);
           }
         } else {
           throw new Error('mutool binary not found - run "npm run download:mupdf"');

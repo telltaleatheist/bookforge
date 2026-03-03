@@ -77,6 +77,19 @@ export interface CropRect {
                   (mouseleave)="onOverlayMouseLeave()"
                 >
                   @if (!cropMode() && !sampleMode()) {
+                    <!-- OCR fill backgrounds — white rects behind OCR text, toggled with OCR layer -->
+                    @if (shouldShowOcrFills(pageNum)) {
+                      @for (ocrBlock of getOcrFillRectsForPage(pageNum); track ocrBlock.id) {
+                        <rect
+                          class="ocr-fill-rect"
+                          [attr.x]="ocrBlock.x"
+                          [attr.y]="ocrBlock.y"
+                          [attr.width]="ocrBlock.width"
+                          [attr.height]="ocrBlock.height"
+                          fill="white"
+                        />
+                      }
+                    }
                     @for (block of getPageBlocks(pageNum); track trackBlock(block)) {
                       <!-- Text overlay for blanked pages and corrected blocks - rendered FIRST so selection rect appears on top -->
                       @if (shouldShowTextOverlay(block)) {
@@ -540,6 +553,19 @@ export interface CropRect {
                     (mouseleave)="onOverlayMouseLeave()"
                   >
                     @if (!cropMode() && !sampleMode()) {
+                      <!-- OCR fill backgrounds — white rects behind OCR text, toggled with OCR layer -->
+                      @if (shouldShowOcrFills(pageNum)) {
+                        @for (ocrBlock of getOcrFillRectsForPage(pageNum); track ocrBlock.id) {
+                          <rect
+                            class="ocr-fill-rect"
+                            [attr.x]="ocrBlock.x"
+                            [attr.y]="ocrBlock.y"
+                            [attr.width]="ocrBlock.width"
+                            [attr.height]="ocrBlock.height"
+                            fill="white"
+                          />
+                        }
+                      }
                       @for (block of getPageBlocks(pageNum); track trackBlock(block)) {
                         <!-- Text overlay for blanked pages and corrected blocks - rendered FIRST so selection rect appears on top -->
                         @if (shouldShowTextOverlay(block)) {
@@ -2123,6 +2149,8 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       this.blankedPages();
       this.pageImages();
       this.selectedBlockIds(); // Track selection changes for visual updates
+      this.showTextLayer(); // Track text layer toggle for OCR fill visibility
+      this.showOcrTextBlocks(); // Track OCR layer toggle for fill visibility
 
       // Force Angular to re-render the component
       setTimeout(() => {
@@ -2235,6 +2263,34 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     return this.blankedPages().has(pageNum) || this.removeBackgrounds();
   }
 
+  /**
+   * Get OCR fill rects for a page — white backgrounds behind OCR text overlays.
+   * These cover the original scanned text so the OCR text overlay is readable.
+   * Rendered as SVG rects that show/hide with the OCR text layer.
+   */
+  getOcrFillRectsForPage(pageNum: number): TextBlock[] {
+    const blocks = this.getPageBlocks(pageNum);
+    return blocks.filter(b => b.is_ocr && !b.is_image);
+  }
+
+  /**
+   * Check if OCR fill backgrounds should be visible for a page.
+   * Follows the same logic as OCR text overlay visibility.
+   */
+  shouldShowOcrFills(pageNum: number): boolean {
+    // Not needed when page image is already hidden
+    if (this.shouldHidePageImage(pageNum)) return false;
+    // Check if any OCR blocks exist on this page
+    const hasOcr = this.getPageBlocks(pageNum).some(b => b.is_ocr && !b.is_image);
+    if (!hasOcr) return false;
+    // In text layer mode, respect the OCR toggle
+    if (this.showTextLayer()) {
+      return this.showOcrTextBlocks();
+    }
+    // In normal mode, OCR blocks always show
+    return true;
+  }
+
   getPageWidth(pageNum: number): number {
     const dims = this.pageDimensions()[pageNum];
     if (!dims) return 600;
@@ -2285,16 +2341,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   getPageBlocks(pageNum: number): TextBlock[] {
-    const blocks = this.blocksByPage().get(pageNum) || [];
-    // Debug: log OCR blocks
-    const ocrBlocks = blocks.filter(b => b.is_ocr);
-    if (ocrBlocks.length > 0 && pageNum < 3) {
-      console.log(`[PDFViewer] Page ${pageNum}: ${blocks.length} blocks (${ocrBlocks.length} OCR)`);
-      ocrBlocks.forEach(b => {
-        console.log(`  OCR block ${b.id}: (${b.x.toFixed(1)}, ${b.y.toFixed(1)}) ${b.width.toFixed(1)}x${b.height.toFixed(1)}, text: "${b.text.substring(0, 50)}..."`);
-      });
-    }
-    return blocks;
+    return this.blocksByPage().get(pageNum) || [];
   }
 
   /**
@@ -2458,10 +2505,6 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       return true;
     }
     if (block.is_ocr) {
-      // Debug: log OCR overlay decision
-      if (block.page < 3) {
-        console.log(`[PDFViewer] OCR block ${block.id} on page ${block.page} - showing text overlay`);
-      }
       return true;  // OCR blocks always show text overlay
     }
     if (this.shouldHidePageImage(block.page)) {
@@ -2539,31 +2582,75 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   /**
-   * Get the font size for a text overlay.
-   *
-   * For OCR blocks, calculate font size to fit the bounding box height,
-   * since OCR font size estimation is often inaccurate.
-   *
-   * For native PDF text with corrections/overlays, we may need to adjust to fit.
+   * Get the typical body text font size for OCR blocks on a page.
+   * Uses a weighted median (by character count) so longer paragraphs
+   * have more influence than short headings or garbled fragments.
    */
+  private getPageBodyFontSize(pageNum: number): number {
+    const blocks = this.getPageBlocks(pageNum);
+    const ocrBlocks = blocks.filter(b => b.is_ocr && !b.is_image && b.text && b.text.length > 20);
+
+    if (ocrBlocks.length === 0) return 12;
+
+    const sizes: { size: number; weight: number }[] = [];
+    for (const block of ocrBlocks) {
+      const w = this.getBlockWidth(block);
+      const h = this.getBlockHeight(block);
+      const charCount = block.text!.length;
+      if (charCount > 0 && w > 0 && h > 0) {
+        let fitted = Math.sqrt((w * h) / (charCount * 0.48 * 1.2));
+        // Also constrain by line count if available
+        if (block.line_count && block.line_count > 0) {
+          fitted = Math.min(fitted, h / (block.line_count * 1.2));
+        }
+        sizes.push({ size: fitted, weight: charCount });
+      }
+    }
+
+    if (sizes.length === 0) return 12;
+
+    // Weighted median by character count
+    sizes.sort((a, b) => a.size - b.size);
+    const totalWeight = sizes.reduce((sum, s) => sum + s.weight, 0);
+    let cumWeight = 0;
+    for (const s of sizes) {
+      cumWeight += s.weight;
+      if (cumWeight >= totalWeight / 2) return s.size;
+    }
+    return sizes[sizes.length - 1].size;
+  }
+
   getOverlayFontSize(block: TextBlock): number {
     const baseFontSize = block.font_size || 12;
 
-    // For OCR blocks, calculate font size from block height to ensure text fits
-    // The block height represents the visual space the text should occupy
+    // For OCR blocks, use geometric fitting constrained by line count and page median.
     if (block.is_ocr) {
-      const blockHeight = this.getBlockHeight(block);
-      const lineCount = block.line_count || 1;
+      const w = this.getBlockWidth(block);
+      const h = this.getBlockHeight(block);
+      const text = block.text || '';
+      const charCount = text.length;
 
-      // Calculate font size so text fills the height
-      // For line-height 1.15, font_size = height / (lineCount * 1.15)
-      // Add small buffer to prevent overflow
-      const lineHeightRatio = 1.2;  // Slightly more than CSS line-height for safety
-      const calculatedSize = blockHeight / (lineCount * lineHeightRatio);
+      if (charCount > 0 && w > 0 && h > 0) {
+        const avgCharWidthRatio = 0.48;
+        const lineHeightRatio = 1.2;
 
-      // Clamp to sensible range
-      const fontSize = Math.max(8, Math.min(48, calculatedSize));
-      return Math.round(fontSize);
+        // Method 1: Geometric fit — size text to fill bounding box area
+        let fitted = Math.sqrt((w * h) / (charCount * avgCharWidthRatio * lineHeightRatio));
+
+        // Method 2: Line-count constraint — if we know lines, font must fit them vertically
+        if (block.line_count && block.line_count > 0) {
+          const lineBasedSize = h / (block.line_count * lineHeightRatio);
+          fitted = Math.min(fitted, lineBasedSize);
+        }
+
+        // Method 3: Page median cap — prevent outliers (garbled text, short fragments)
+        // from getting huge fonts. Cap at 1.4x the typical body text size.
+        const median = this.getPageBodyFontSize(block.page);
+        fitted = Math.min(fitted, median * 1.4);
+
+        return Math.max(6, Math.min(48, Math.round(fitted)));
+      }
+      return Math.max(6, Math.min(48, baseFontSize));
     }
 
     // For non-OCR blocks with text corrections, we may need to fit text in the box

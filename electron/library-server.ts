@@ -37,6 +37,7 @@ interface AudiobookEntry {
   type: 'audiobook' | 'bilingual';
   langPair?: string;         // e.g. "en-de" for bilingual
   size: number;
+  duration?: number;         // duration in seconds
   downloadPath: string;      // absolute path to M4B
   outputFilename?: string;   // metadata-defined display filename (e.g. "Title. Author. (Year).m4b")
   coverPath?: string;        // absolute path to cover image (from manifest)
@@ -191,12 +192,14 @@ export class LibraryServer {
         if (fsSync.existsSync(absPath)) {
           try {
             const stats = fsSync.statSync(absPath);
+            const duration = await this.getAudioDuration(absPath);
             entries.push({
               projectId: manifest.projectId,
               title: manifest.metadata.title || manifest.projectId,
               author: manifest.metadata.author || '',
               type: 'audiobook',
               size: stats.size,
+              duration,
               downloadPath: absPath,
               outputFilename: manifest.metadata.outputFilename,
               coverPath: coverAbsPath,
@@ -213,6 +216,7 @@ export class LibraryServer {
           if (!fsSync.existsSync(absPath)) continue;
           try {
             const stats = fsSync.statSync(absPath);
+            const duration = await this.getAudioDuration(absPath);
             entries.push({
               projectId: manifest.projectId,
               title: manifest.metadata.title || manifest.projectId,
@@ -220,6 +224,7 @@ export class LibraryServer {
               type: 'bilingual',
               langPair,
               size: stats.size,
+              duration,
               downloadPath: absPath,
               coverPath: coverAbsPath,
             });
@@ -231,6 +236,19 @@ export class LibraryServer {
     // Sort by title
     entries.sort((a, b) => a.title.localeCompare(b.title));
     return entries;
+  }
+
+  /**
+   * Get audio file duration in seconds using music-metadata (header-only read)
+   */
+  private async getAudioDuration(filePath: string): Promise<number | undefined> {
+    try {
+      const mm = await import('music-metadata');
+      const metadata = await mm.parseFile(filePath, { skipCovers: true });
+      return metadata.format.duration;
+    } catch {
+      return undefined;
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
