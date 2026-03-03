@@ -625,8 +625,19 @@ export class OcrPostProcessorService {
       if (layoutIdx >= 0) {
         // Known layout block — use its label for category
         const label = layoutBlocks[layoutIdx].label;
-        const category = SURYA_LABEL_TO_CATEGORY[label] || 'body';
+        const layoutCategory = SURYA_LABEL_TO_CATEGORY[label] || 'body';
+
+        // Surya's 'Text' label is generic — it doesn't distinguish between
+        // body text, footnotes, headers, or footers. Apply heuristic refinement
+        // so position/font/content signals can override when appropriate.
+        const needsRefinement = layoutCategory === 'body' && (
+          label === 'Text' || label === 'Handwriting' || label === 'TextInlineMath'
+        );
+
         for (const m of merged) {
+          const category = needsRefinement
+            ? this.categorizeBlock(m, dims, pageCenterX, avgFontSize, footnoteY, repeatingTexts)
+            : layoutCategory;
           result.push({ ...m, category });
         }
       } else {
