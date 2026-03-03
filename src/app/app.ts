@@ -120,16 +120,16 @@ export class App implements OnInit {
   // Navigation items for the nav rail
   readonly navItems: NavRailItem[] = [
     {
-      id: 'studio',
-      icon: '\u{1F3A7}', // Headphones emoji
-      label: 'Studio',
-      route: '/studio'
-    },
-    {
       id: 'library',
       icon: '\u{1F4DA}', // Books emoji
       label: 'Library',
       route: '/library'
+    },
+    {
+      id: 'studio',
+      icon: '\u{1F3A7}', // Headphones emoji
+      label: 'Studio',
+      route: '/studio'
     },
     {
       id: 'queue',
