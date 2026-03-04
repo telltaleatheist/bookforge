@@ -162,7 +162,7 @@ function getProviderModel(config: AIProviderConfig): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const OLLAMA_BASE_URL = 'http://localhost:11434';
-const DEFAULT_MODEL = 'llama3.2';
+const DEFAULT_MODEL = 'cogito:14b';
 const CHUNK_SIZE = 8000; // characters per chunk
 
 // Skipped chunk tracking (reset at start of each cleanup job)

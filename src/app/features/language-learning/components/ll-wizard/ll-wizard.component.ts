@@ -2443,21 +2443,20 @@ export class LLWizardComponent implements OnInit {
       if (response?.ok) {
         this.ollamaConnected.set(true);
         const data = await response.json();
-        const models = (data.models || []).map((m: { name: string }) => ({
+        const models: { value: string; label: string }[] = (data.models || []).map((m: { name: string }) => ({
           value: m.name,
           label: m.name
         }));
         this.ollamaModels.set(models);
 
-        // Only default to first model when no model is set at all.
-        // If the user's saved model isn't in the list (e.g., not pulled yet),
-        // keep it — don't silently override with a different model.
+        // If the current model isn't in the fetched list, reset to preferred default
         if (models.length > 0) {
-          if (!this.cleanupModel()) {
-            this.cleanupModel.set(models[0].value);
+          const preferred = models.find(m => m.value === 'cogito:14b')?.value ?? models[0].value;
+          if (!this.cleanupModel() || !models.some(m => m.value === this.cleanupModel())) {
+            this.cleanupModel.set(preferred);
           }
-          if (!this.translateModel()) {
-            this.translateModel.set(models[0].value);
+          if (!this.translateModel() || !models.some(m => m.value === this.translateModel())) {
+            this.translateModel.set(preferred);
           }
         }
       } else {
@@ -2716,7 +2715,10 @@ export class LLWizardComponent implements OnInit {
     const models = this.getModelsForProvider(provider);
     const saved = (config as any)[provider]?.model;
     const match = saved && models.some(m => m.value === saved);
-    this.cleanupModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
+    const preferred = provider === 'ollama'
+      ? (models.find(m => m.value === 'cogito:14b')?.value ?? models[0]?.value ?? saved)
+      : (models[0]?.value ?? saved);
+    this.cleanupModel.set(match ? saved : preferred);
   }
 
   selectTranslateProvider(provider: AIProvider): void {
@@ -2729,7 +2731,10 @@ export class LLWizardComponent implements OnInit {
     const models = this.getModelsForProvider(provider);
     const saved = (config as any)[provider]?.model;
     const match = saved && models.some(m => m.value === saved);
-    this.translateModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
+    const preferred = provider === 'ollama'
+      ? (models.find(m => m.value === 'cogito:14b')?.value ?? models[0]?.value ?? saved)
+      : (models[0]?.value ?? saved);
+    this.translateModel.set(match ? saved : preferred);
   }
 
   private getModelsForProvider(provider: AIProvider): { value: string; label: string }[] {

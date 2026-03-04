@@ -18,7 +18,7 @@ import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { QueueService } from '../../../queue/services/queue.service';
 import { OcrCleanupConfig, TtsConversionConfig, BilingualCleanupJobConfig, BilingualTranslationJobConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
-import { AIProvider } from '../../../../core/models/ai-config.types';
+import { AIConfig, AIProvider } from '../../../../core/models/ai-config.types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -2637,22 +2637,21 @@ export class ProcessWizardComponent implements OnInit {
       if (response?.ok) {
         this.ollamaConnected.set(true);
         const data = await response.json();
-        const models = (data.models || []).map((m: { name: string }) => ({
+        const models: { value: string; label: string }[] = (data.models || []).map((m: { name: string }) => ({
           value: m.name,
           label: m.name
         }));
         this.ollamaModels.set(models);
 
-        // Only default to first model when no model is set at all.
-        // If the user's saved model isn't in the list (e.g., not pulled yet),
-        // keep it — don't silently override with a different model.
-        const currentModel = this.cleanupModel();
-        if (!currentModel && models.length > 0) {
-          this.cleanupModel.set(models[0].value);
-        }
-        const currentTranslateModel = this.translateModel();
-        if (!currentTranslateModel && models.length > 0) {
-          this.translateModel.set(models[0].value);
+        // If the current model isn't in the fetched list, reset to preferred default
+        if (models.length > 0) {
+          const preferred = models.find(m => m.value === 'cogito:14b')?.value ?? models[0].value;
+          if (!this.cleanupModel() || !models.some(m => m.value === this.cleanupModel())) {
+            this.cleanupModel.set(preferred);
+          }
+          if (!this.translateModel() || !models.some(m => m.value === this.translateModel())) {
+            this.translateModel.set(preferred);
+          }
         }
       } else {
         this.ollamaConnected.set(false);
@@ -2720,29 +2719,26 @@ export class ProcessWizardComponent implements OnInit {
     this.cleanupProvider.set(provider);
     const config = this.settingsService.getAIConfig();
 
-    if (provider === 'ollama') {
-      const models = this.ollamaModels();
-      // Prefer settings-saved model, fall back to first available
-      const saved = config.ollama.model;
-      const match = saved && models.some(m => m.value === saved);
-      this.cleanupModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
-    } else if (provider === 'claude') {
-      if (this.claudeModels().length === 0) {
-        this.fetchClaudeModels(config.claude.apiKey);
-      }
-      const models = this.claudeModels();
-      const saved = config.claude.model;
-      const match = saved && models.some(m => m.value === saved);
-      this.cleanupModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
-    } else if (provider === 'openai') {
-      if (this.openaiModels().length === 0) {
-        this.fetchOpenAIModels(config.openai.apiKey);
-      }
-      const models = this.openaiModels();
-      const saved = config.openai.model;
-      const match = saved && models.some(m => m.value === saved);
-      this.cleanupModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
+    const models = this.getModelsForCleanupProvider(provider, config);
+    const saved = (config as any)[provider]?.model;
+    const match = saved && models.some(m => m.value === saved);
+    const preferred = provider === 'ollama'
+      ? (models.find(m => m.value === 'cogito:14b')?.value ?? models[0]?.value ?? saved)
+      : (models[0]?.value ?? saved);
+    this.cleanupModel.set(match ? saved : preferred);
+  }
+
+  private getModelsForCleanupProvider(provider: AIProvider, config: AIConfig): { value: string; label: string }[] {
+    if (provider === 'ollama') return this.ollamaModels();
+    if (provider === 'claude') {
+      if (this.claudeModels().length === 0) this.fetchClaudeModels(config.claude.apiKey);
+      return this.claudeModels();
     }
+    if (provider === 'openai') {
+      if (this.openaiModels().length === 0) this.fetchOpenAIModels(config.openai.apiKey);
+      return this.openaiModels();
+    }
+    return [];
   }
 
   selectTranslateProvider(provider: AIProvider): void {
@@ -2753,28 +2749,13 @@ export class ProcessWizardComponent implements OnInit {
     this.translateProvider.set(provider);
     const config = this.settingsService.getAIConfig();
 
-    if (provider === 'ollama') {
-      const models = this.ollamaModels();
-      const saved = config.ollama.model;
-      const match = saved && models.some(m => m.value === saved);
-      this.translateModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
-    } else if (provider === 'claude') {
-      if (this.claudeModels().length === 0) {
-        this.fetchClaudeModels(config.claude.apiKey);
-      }
-      const models = this.claudeModels();
-      const saved = config.claude.model;
-      const match = saved && models.some(m => m.value === saved);
-      this.translateModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
-    } else if (provider === 'openai') {
-      if (this.openaiModels().length === 0) {
-        this.fetchOpenAIModels(config.openai.apiKey);
-      }
-      const models = this.openaiModels();
-      const saved = config.openai.model;
-      const match = saved && models.some(m => m.value === saved);
-      this.translateModel.set(match ? saved : (models.length > 0 ? models[0].value : saved));
-    }
+    const models = this.getModelsForCleanupProvider(provider, config);
+    const saved = (config as any)[provider]?.model;
+    const match = saved && models.some(m => m.value === saved);
+    const preferred = provider === 'ollama'
+      ? (models.find(m => m.value === 'cogito:14b')?.value ?? models[0]?.value ?? saved)
+      : (models[0]?.value ?? saved);
+    this.translateModel.set(match ? saved : preferred);
   }
 
   // Prompt methods

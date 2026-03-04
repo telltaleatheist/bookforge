@@ -2413,12 +2413,13 @@ Start your response with the first word of the text. No introduction.`);
           label: m.name
         }));
         this.availableModels.set(models);
-        // Set first model if none selected or current not in list
+        // Set preferred model if none selected or current not in list
         const currentModel = this.selectedModel();
         const modelExists = models.some((m: { value: string }) => m.value === currentModel);
         if (!currentModel || !modelExists) {
           if (models.length > 0) {
-            this.selectedModel.set(models[0].value);
+            const preferred = models.find((m: { value: string }) => m.value === 'cogito:14b')?.value ?? models[0].value;
+            this.selectedModel.set(preferred);
           }
         }
       } else {

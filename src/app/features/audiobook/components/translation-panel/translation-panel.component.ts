@@ -454,7 +454,8 @@ export class TranslationPanelComponent implements OnInit {
         const currentModel = this.selectedModel();
         const modelExists = models.some((m: { value: string }) => m.value === currentModel);
         if ((!currentModel || !modelExists) && models.length > 0) {
-          this.selectedModel.set(models[0].value);
+          const preferred = models.find((m: { value: string }) => m.value === 'cogito:14b')?.value ?? models[0].value;
+          this.selectedModel.set(preferred);
         }
       } else {
         this.ollamaConnected.set(false);
@@ -475,7 +476,8 @@ export class TranslationPanelComponent implements OnInit {
     const config = this.settingsService.getAIConfig();
     if (provider === 'ollama') {
       const models = this.ollamaModels();
-      this.selectedModel.set(models.length > 0 ? models[0].value : config.ollama.model);
+      const preferred = models.find(m => m.value === 'cogito:14b')?.value ?? models[0]?.value ?? config.ollama.model;
+      this.selectedModel.set(preferred);
     } else if (provider === 'claude') {
       this.fetchClaudeModels(config.claude.apiKey);
       const currentModels = this.claudeModels();
