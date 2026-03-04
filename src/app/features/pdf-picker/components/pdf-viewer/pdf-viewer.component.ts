@@ -3698,8 +3698,16 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       }
     }
 
-    // In chapters mode, clicking on empty space places a chapter marker
+    // In chapters mode, clicking on empty space places a chapter marker.
+    // If the click landed on a block-rect, let its own click handler emit
+    // chapterClick — otherwise we'd fire twice (mousedown + click) and the
+    // toggle logic in the parent would immediately deselect.
     if (this.chaptersMode()) {
+      const target = event.target as Element;
+      if (target.classList.contains('block-rect')) {
+        return; // Let block's onBlockClick handle it
+      }
+
       event.preventDefault();
       event.stopPropagation();
 
