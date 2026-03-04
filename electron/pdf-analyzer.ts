@@ -1920,10 +1920,17 @@ export class PDFAnalyzer {
       const matrix = mupdfLib.Matrix.scale(scale, scale);
       const pixmap = renderPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
 
-      // Now paint over deleted images AND fill regions with background color
-      // This preserves exact text positioning while removing unwanted images
-      const hasImageOrFillRegions = imageRegions.length > 0 || (fillRegions && fillRegions.length > 0);
-      if (hasImageOrFillRegions) {
+      // For non-PDFs (EPUBs, XPS, etc.), text regions couldn't use applyRedactions
+      // — paint them over at the pixel level instead (same approach as image regions).
+      const pixelPaintTextRegions = isNativePdf ? [] : textRegions;
+
+      // Paint over regions with background color at the pixel level:
+      //   - Image regions (always — applyRedactions doesn't handle images well)
+      //   - Text regions for non-PDFs (EPUB fallback)
+      //   - Fill regions for moved blocks
+      const allPixelRegions = [...imageRegions, ...pixelPaintTextRegions];
+      const hasPixelWork = allPixelRegions.length > 0 || (fillRegions && fillRegions.length > 0);
+      if (hasPixelWork) {
         const width = pixmap.getWidth();
         const height = pixmap.getHeight();
         const n = pixmap.getNumberOfComponents();
@@ -1932,8 +1939,8 @@ export class PDFAnalyzer {
         // Sample background color from page margins (works for yellowed/scanned pages)
         const bgColor = this.sampleBackgroundColor(samples, width, height, n);
 
-        // Paint over deleted images with background color
-        for (const region of imageRegions) {
+        // Paint over image regions and (for non-PDFs) text regions
+        for (const region of allPixelRegions) {
           this.fillRectInPixels(samples, width, height, n, {
             x: region.x * scale,
             y: region.y * scale,
