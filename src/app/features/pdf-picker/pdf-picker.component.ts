@@ -429,6 +429,7 @@ interface AlertModal {
               [chapters]="chapters()"
               [chaptersMode]="chaptersMode()"
               [tocSelectedBlockIds]="tocSelectedBlockIdSet()"
+              [isEpub]="isCurrentDocumentEpub()"
               [deletedPages]="deletedPages()"
               [selectedPages]="selectedPageNumbers()"
               [organizeMode]="organizeMode()"
@@ -4114,9 +4115,9 @@ export class PdfPickerComponent implements OnInit {
    * Re-render a page with all edited blocks' original positions redacted.
    *
    * For PDFs, uses MuPDF's applyRedactions() to cleanly remove text at the
-   * document level. For EPUBs (and other non-PDF formats), pdf-analyzer.ts
-   * falls back to pixel-painting (filling rectangles with background color)
-   * since applyRedactions corrupts EPUB's internal layout engine.
+   * document level. For EPUBs, skips re-rendering entirely — white SVG fill
+   * rects in the viewer occlude original text under edited/deleted blocks,
+   * and actual content removal happens at export time.
    */
   private rerenderPageWithEdits(pageNum: number): void {
     // Always remove from blankedPages - we no longer use blank page rendering
@@ -4129,6 +4130,12 @@ export class PdfPickerComponent implements OnInit {
       }
       return pages;
     });
+
+    // EPUBs: skip re-rendering. MuPDF's applyRedactions corrupts EPUB layout.
+    // The viewer renders white SVG rects over edited/deleted blocks instead.
+    if (this.isCurrentDocumentEpub()) {
+      return;
+    }
 
     const redactRegions = this.getRedactRegionsForPage(pageNum);
     const fillRegions = this.getFillRegionsForPage(pageNum);

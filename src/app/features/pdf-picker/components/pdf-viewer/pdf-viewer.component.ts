@@ -91,6 +91,18 @@ export interface CropRect {
                       }
                     }
                     @for (block of getPageBlocks(pageNum); track trackBlock(block)) {
+                      <!-- EPUB fill rect: white rect to occlude original text for edited/deleted blocks.
+                           EPUBs can't use MuPDF's redaction API, so we cover the original with SVG instead. -->
+                      @if (needsEpubFillRect(block)) {
+                        <rect
+                          class="epub-fill-rect"
+                          [attr.x]="getBlockX(block)"
+                          [attr.y]="getBlockY(block)"
+                          [attr.width]="getBlockWidth(block)"
+                          [attr.height]="getBlockHeight(block)"
+                          fill="white"
+                        />
+                      }
                       <!-- Text overlay for blanked pages and corrected blocks - rendered FIRST so selection rect appears on top -->
                       @if (shouldShowTextOverlay(block)) {
                         <foreignObject
@@ -567,6 +579,16 @@ export interface CropRect {
                         }
                       }
                       @for (block of getPageBlocks(pageNum); track trackBlock(block)) {
+                        @if (needsEpubFillRect(block)) {
+                          <rect
+                            class="epub-fill-rect"
+                            [attr.x]="getBlockX(block)"
+                            [attr.y]="getBlockY(block)"
+                            [attr.width]="getBlockWidth(block)"
+                            [attr.height]="getBlockHeight(block)"
+                            fill="white"
+                          />
+                        }
                         <!-- Text overlay for blanked pages and corrected blocks - rendered FIRST so selection rect appears on top -->
                         @if (shouldShowTextOverlay(block)) {
                           <foreignObject
@@ -1490,6 +1512,10 @@ export interface CropRect {
     }
 
     /* Text overlay for corrected/moved blocks */
+    .epub-fill-rect {
+      pointer-events: none;
+    }
+
     .text-overlay {
       pointer-events: none;
       overflow: visible;
@@ -1707,6 +1733,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // Explicitly blanked pages - pages that have been rendered as blank (due to image deletion)
   // This is controlled by the parent and used to show text overlays
   blankedPages = input<Set<number>>(new Set());
+
+  // Whether the current document is an EPUB (vs PDF). EPUBs can't use MuPDF's
+  // redaction API, so edited/deleted blocks get white SVG fill rects instead.
+  isEpub = input<boolean>(false);
 
   // Custom category highlights - lightweight match rects grouped by category and page
   categoryHighlights = input<Map<string, Record<number, Array<{ page: number; x: number; y: number; w: number; h: number; text: string }>>>>(new Map());
@@ -2453,6 +2483,16 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   hasOffset(blockId: string): boolean {
     return this.blockOffsets().has(blockId);
+  }
+
+  /**
+   * Whether this block needs a white SVG fill rect to occlude the original text.
+   * Used for EPUBs where we can't use MuPDF's redaction API to modify the page image.
+   * Returns true when a block has been edited (text correction) or deleted on an EPUB.
+   */
+  needsEpubFillRect(block: TextBlock): boolean {
+    if (!this.isEpub()) return false;
+    return this.isDeleted(block.id) || this.hasCorrectedText(block.id);
   }
 
   getBlockX(block: TextBlock): number {
