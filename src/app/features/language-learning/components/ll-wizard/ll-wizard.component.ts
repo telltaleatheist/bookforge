@@ -189,9 +189,9 @@ interface SourceStage {
                         Checking connection...
                       } @else if (!ollamaConnected()) {
                         <span class="error-text">Ollama not running.</span>
-                        <a href="https://ollama.ai" target="_blank">Install Ollama</a> and run <code>ollama pull llama3.2</code>
+                        <a href="https://ollama.ai" target="_blank">Install Ollama</a> and run <code>ollama pull cogito:14b</code>
                       } @else {
-                        No models found. Run <code>ollama pull llama3.2</code>
+                        No models found. Run <code>ollama pull cogito:14b</code>
                       }
                     } @else if (loadingModels()) {
                       Fetching available models...
@@ -2353,9 +2353,9 @@ export class LLWizardComponent implements OnInit {
 
     // Default to Ollama
     this.cleanupProvider.set('ollama');
-    this.cleanupModel.set(config.ollama.model || 'llama3.2');
+    this.cleanupModel.set(config.ollama.model || 'cogito:14b');
     this.translateProvider.set('ollama');
-    this.translateModel.set(config.ollama.model || 'llama3.2');
+    this.translateModel.set(config.ollama.model || 'cogito:14b');
 
     // Pre-fetch other providers' models
     if (config.claude.apiKey) {

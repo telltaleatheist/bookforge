@@ -2425,13 +2425,13 @@ Start your response with the first word of the text. No introduction.`);
         this.ollamaConnected.set(false);
         // Fallback models if Ollama not running
         this.availableModels.set([
-          { value: 'llama3.2', label: 'Ollama not connected' }
+          { value: 'cogito:14b', label: 'Ollama not connected' }
         ]);
       }
     } catch {
       this.ollamaConnected.set(false);
       this.availableModels.set([
-        { value: 'llama3.2', label: 'Ollama not connected' }
+        { value: 'cogito:14b', label: 'Ollama not connected' }
       ]);
     } finally {
       this.loadingModels.set(false);

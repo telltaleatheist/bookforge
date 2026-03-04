@@ -3835,7 +3835,8 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       this.stopMarqueeAutoScroll();
 
       const marqueeRect = this.currentMarqueeRect();
-      if (marqueeRect && marqueeRect.width > 5 && marqueeRect.height > 5) {
+      const wasRealMarquee = marqueeRect && marqueeRect.width > 5 && marqueeRect.height > 5;
+      if (wasRealMarquee) {
         // Find all blocks that intersect with the marquee
         const selectedIds = this.findBlocksInRect(marqueeRect);
         if (selectedIds.length > 0) {
@@ -3846,7 +3847,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
       this.isMarqueeSelecting.set(false);
       this.currentMarqueeRect.set(null);
-      this.marqueeEndTime = Date.now();
+      // Only suppress subsequent click if a real marquee drag happened.
+      // Plain clicks produce no rect — don't set marqueeEndTime or
+      // the 100ms guard in onBlockClick will eat the click event.
+      if (wasRealMarquee) {
+        this.marqueeEndTime = Date.now();
+      }
     }
   }
 

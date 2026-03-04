@@ -35,7 +35,7 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
   provider: 'ollama',
   ollama: {
     baseUrl: 'http://localhost:11434',
-    model: 'llama3.2'
+    model: 'cogito:14b'
   },
   claude: {
     apiKey: '',
@@ -49,6 +49,7 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
 
 // Available models per provider
 export const OLLAMA_MODELS = [
+  { value: 'cogito:14b', label: 'Cogito 14B' },
   { value: 'llama3.2', label: 'Llama 3.2' },
   { value: 'llama3.1', label: 'Llama 3.1' },
   { value: 'llama3', label: 'Llama 3' },

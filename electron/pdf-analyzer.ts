@@ -1890,10 +1890,12 @@ export class PDFAnalyzer {
       const imageRegions = redactRegions ? redactRegions.filter(r => r.isImage) : [];
       const textRegions = redactRegions ? redactRegions.filter(r => !r.isImage) : [];
 
-      // Only use mupdf redaction for TEXT regions (not images)
-      // For images, we'll paint over them with background color after rendering
-      // This preserves the exact original text positioning
-      if (textRegions.length > 0) {
+      // MuPDF's PDF redaction API only works on native PDFs. For EPUBs (and other
+      // non-PDF formats), applyRedactions corrupts the internal layout engine,
+      // causing distorted rendering (wrong font sizes, page dimensions, etc.).
+      // Non-PDF deletion is handled visually via SVG overlays in the viewer.
+      const isNativePdf = mimeType === 'application/pdf';
+      if (isNativePdf && textRegions.length > 0) {
         const pdfDoc = tempDoc.asPDF();
         if (pdfDoc) {
           const pdfPage = pdfDoc.loadPage(pageNum) as any;

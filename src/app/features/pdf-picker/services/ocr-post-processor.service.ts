@@ -100,7 +100,7 @@ export class OcrPostProcessorService {
       id: 'footnote',
       name: 'Footnotes',
       description: 'Footnotes and citations',
-      color: '#607d8b',  // Blue grey
+      color: '#1976d2',  // Blue (Material Blue 700)
       font_size: 12,
       region: 'body',
       sample_text: '',
@@ -369,7 +369,7 @@ export class OcrPostProcessorService {
 
     // Detect the footnote zone dynamically per page by finding the first
     // significant gap in the lower portion. Returns null if no footnotes detected.
-    const footnoteY = this.detectFootnoteZone(lines, dims, medianLineHeight);
+    const footnoteY = this.detectFootnoteZone(lines, dims, medianLineHeight, avgFontSize);
 
     console.log(`[OCR PostProc] Page ${pageNum}: ${lines.length} lines, bodySize=${avgFontSize.toFixed(1)}${global ? ' (global)' : ' (page)'}, medianLineHeight=${medianLineHeight.toFixed(1)}, footnoteY=${footnoteY !== null ? (footnoteY / pageHeight * 100).toFixed(0) + '%' : 'none'}`);
 
@@ -387,6 +387,9 @@ export class OcrPostProcessorService {
         category: this.categorizeBlock(m, dims, pageCenterX, avgFontSize, footnoteY, global?.repeatingTexts)
       }));
     }
+
+    // ── Pass 3: Cross-block footnote reclassification ───────────────────
+    this.reclassifyFootnotes(categorizedBlocks, dims, avgFontSize, pageNum);
 
     // Convert back to TextBlock format
     // Use page number + random suffix + index to ensure unique IDs across all pages
@@ -435,27 +438,136 @@ export class OcrPostProcessorService {
   private detectFootnoteZone(
     lines: LineBlock[],
     dims: PageDimension,
-    medianLineHeight: number
+    medianLineHeight: number,
+    bodySize?: number
   ): number | null {
     if (lines.length < 3) return null;
 
     const sorted = [...lines].sort((a, b) => a.y - b.y);
 
+    // Primary: find first significant gap in the lower portion (> 1.5× median).
+    // Lowered from 2× to catch pages with thinner separators or minimal whitespace.
     for (let i = 1; i < sorted.length; i++) {
       const gapTop = sorted[i - 1].y + sorted[i - 1].height;
       const gapBottom = sorted[i].y;
       const gapSize = gapBottom - gapTop;
 
-      // First gap in the lower portion that's larger than normal line spacing
-      // (> 2× median). medianLineHeight is baseline-to-baseline (~1.3× font
-      // height), so 2× ≈ 2.5 blank lines of space — enough to catch most
-      // footnote separators (horizontal rule + whitespace).
-      if (gapTop > dims.height * 0.40 && gapSize > medianLineHeight * 2) {
+      if (gapTop > dims.height * 0.40 && gapSize > medianLineHeight * 1.5) {
         return gapBottom;
       }
     }
 
+    // Fallback: no gap found — check if bottom lines have noticeably smaller font.
+    // Catches pages with thin separator rules or no separator at all.
+    if (bodySize && bodySize > 0) {
+      // Scan from bottom up: find the first line with small font in the bottom 40%
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        const line = sorted[i];
+        const yPct = line.y / dims.height;
+        if (yPct < 0.60) break;  // Stop once we leave bottom 40%
+
+        const fontRatio = line.fontSize / bodySize;
+        if (fontRatio >= 0.90) {
+          // Hit a normal-sized line — footnotes must start below this
+          if (i < sorted.length - 1) {
+            // Check if lines below this one were small
+            const nextLine = sorted[i + 1];
+            const nextRatio = nextLine.fontSize / bodySize;
+            if (nextRatio < 0.90) {
+              return nextLine.y;
+            }
+          }
+          break;
+        }
+      }
+    }
+
     return null;
+  }
+
+  /**
+   * Pass 3: Cross-block footnote reclassification.
+   *
+   * Runs after all blocks are categorized (by layout or heuristic). Uses
+   * cross-block context that individual block classification can't see:
+   *
+   * 1. If footnotes already exist on this page, flood-fill downward: everything
+   *    below the first footnote with small font is also a footnote.
+   * 2. If NO footnotes exist, try content-based bootstrap: scan from the bottom
+   *    for blocks matching the footnote text pattern in the bottom 40% with
+   *    smaller font. Once one is found, flood-fill the rest.
+   *
+   * Mutates `blocks` in place.
+   */
+  private reclassifyFootnotes(
+    blocks: Array<{ x: number; y: number; width: number; height: number; text: string; fontSize: number; lineCount: number; category: string }>,
+    dims: PageDimension,
+    bodySize: number,
+    pageNum: number
+  ): void {
+    if (blocks.length < 2) return;
+
+    // Broadened footnote text pattern (same as in categorizeBlock)
+    const footnotePattern = /^(\d{1,3}[.\s°)\]:]\s*|[*†‡§¶•]\s?|[¹²³⁴⁵⁶⁷⁸⁹⁰]+\s?)\S/;
+
+    // Separate body and existing footnote blocks, sorted by Y
+    const bodyBlocks = blocks
+      .filter(b => b.category === 'body')
+      .sort((a, b) => a.y - b.y);
+    const existingFootnotes = blocks.filter(b => b.category === 'footnote');
+
+    let footnoteZoneY: number | null = null;
+    let reclassified = 0;
+
+    // ── Strategy 1: Flood-fill below existing footnotes ───────────────
+    if (existingFootnotes.length > 0) {
+      footnoteZoneY = Math.min(...existingFootnotes.map(f => f.y));
+
+      for (const block of bodyBlocks) {
+        if (block.y < footnoteZoneY) continue;
+
+        const fontRatio = block.fontSize / bodySize;
+        if (fontRatio < 1.05 || footnotePattern.test(block.text.trim())) {
+          block.category = 'footnote';
+          reclassified++;
+        }
+      }
+    }
+
+    // ── Strategy 2: Content-based bootstrap (no footnotes found yet) ──
+    if (existingFootnotes.length === 0 && reclassified === 0) {
+      // Scan body blocks from bottom up looking for footnote-like content
+      for (let i = bodyBlocks.length - 1; i >= 0; i--) {
+        const block = bodyBlocks[i];
+        const yPct = block.y / dims.height;
+        if (yPct < 0.60) break;  // Only check bottom 40%
+
+        const fontRatio = block.fontSize / bodySize;
+        const matchesPattern = footnotePattern.test(block.text.trim());
+
+        if (matchesPattern && fontRatio < 1.0) {
+          // Found a likely footnote — establish zone and flood-fill
+          footnoteZoneY = block.y;
+          block.category = 'footnote';
+          reclassified++;
+
+          // Reclassify all body blocks at or below this Y
+          for (let j = i + 1; j < bodyBlocks.length; j++) {
+            const below = bodyBlocks[j];
+            const belowRatio = below.fontSize / bodySize;
+            if (belowRatio < 1.05 || footnotePattern.test(below.text.trim())) {
+              below.category = 'footnote';
+              reclassified++;
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    if (reclassified > 0) {
+      console.log(`[OCR PostProc] Page ${pageNum}: reclassifyFootnotes() upgraded ${reclassified} body block(s) to footnote (zone Y=${footnoteZoneY !== null ? (footnoteZoneY / dims.height * 100).toFixed(0) + '%' : 'n/a'})`);
+    }
   }
 
   /**
@@ -513,8 +625,10 @@ export class OcrPostProcessorService {
 
     if (region === 'header') return 'header';
 
-    // Content-based footnote pattern: "18 Russell...", "31° See...", "* Note..."
-    const looksLikeFootnote = /^(\d{1,3}[.\s°]|[*†‡§¶]\s)\s*[A-Z]/.test(text);
+    // Content-based footnote pattern — broadened to catch academic variants:
+    //   "18 Russell...", "31° See...", "* Note...", "18see also...", "18) Russell...",
+    //   "¹⁸ Russell...", "• See...", "18] Russell..."
+    const looksLikeFootnote = /^(\d{1,3}[.\s°)\]:]\s*|[*†‡§¶•]\s?|[¹²³⁴⁵⁶⁷⁸⁹⁰]+\s?)\S/.test(text);
 
     // Footnote checks BEFORE footer — footnotes can sit near the very bottom
     // and get misassigned to the footer zone. Content overrides position.

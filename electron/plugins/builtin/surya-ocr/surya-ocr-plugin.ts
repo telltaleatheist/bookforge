@@ -87,6 +87,19 @@ export class SuryaOcrPlugin extends BasePlugin {
         description: 'Comma-separated language codes (e.g., en,fr,de)',
         default: 'en',
       },
+      {
+        key: 'device',
+        type: 'select',
+        label: 'Device',
+        description: 'Hardware to run inference on. MPS uses Apple Silicon GPU for faster OCR.',
+        default: process.platform === 'darwin' ? 'mps' : 'auto',
+        options: [
+          { value: 'auto', label: 'Auto' },
+          ...(process.platform === 'darwin' ? [{ value: 'mps', label: 'MPS (Apple GPU)' }] : []),
+          { value: 'cpu', label: 'CPU' },
+          ...(process.platform !== 'darwin' ? [{ value: 'cuda', label: 'CUDA (NVIDIA GPU)' }] : []),
+        ],
+      },
     ],
   };
 
@@ -99,6 +112,7 @@ export class SuryaOcrPlugin extends BasePlugin {
   private workerReader: readline.Interface | null = null;
   private workerReady = false;
   private workerStarted = false;
+  private workerDevice: string | null = null;
   private pendingResolve: ((result: SuryaOcrResult) => void) | null = null;
   private pendingReject: ((err: Error) => void) | null = null;
   private workerIdleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -213,23 +227,66 @@ export class SuryaOcrPlugin extends BasePlugin {
     imageData: string
   ): Promise<{ success: boolean; data?: SuryaLayoutBlock[]; error?: string }> {
     try {
-      const result = await this.recognizeImage(imageData, true);
-      return { success: true, data: result.layoutBlocks || [] };
+      const availability = await this.checkAvailability();
+      if (!availability.available) {
+        throw new Error(availability.error || 'Surya OCR not available');
+      }
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'surya-'));
+      try {
+        const inputPath = this.resolveInputPath(imageData, tempDir);
+        if (!fs.existsSync(inputPath)) {
+          throw new Error(`Input image file not found: ${inputPath}`);
+        }
+
+        await this.ensureWorker();
+        const result = await this.sendLayoutOnlyToWorker(inputPath);
+        return { success: true, data: result };
+      } finally {
+        this.cleanupTempDir(tempDir);
+      }
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   }
 
+  /**
+   * Send a layout-only command to the worker. Skips OCR recognition entirely,
+   * running only Surya's layout model (~3-5s instead of ~40s per page).
+   */
+  private sendLayoutOnlyToWorker(imagePath: string): Promise<SuryaLayoutBlock[]> {
+    return new Promise((resolve, reject) => {
+      if (!this.worker || !this.workerReady) {
+        reject(new Error('Surya worker not ready'));
+        return;
+      }
+
+      if (this.pendingResolve) {
+        reject(new Error('Surya worker is busy'));
+        return;
+      }
+
+      // Wrap resolve/reject to extract layoutBlocks from the result
+      this.pendingResolve = (result: SuryaOcrResult) => resolve(result.layoutBlocks || []);
+      this.pendingReject = reject;
+
+      const cmd = JSON.stringify({ path: imagePath, layoutOnly: true });
+      this.worker.stdin!.write(cmd + '\n');
+    });
+  }
+
   // ─── Worker Management ─────────────────────────────────────────────────────
 
   private ensureWorker(): Promise<void> {
-    // Reuse existing worker if alive
-    if (this.worker && !this.worker.killed && this.workerReady && this.workerStarted) {
+    const device = this.getSetting<string>('device') || (process.platform === 'darwin' ? 'mps' : 'auto');
+
+    // Reuse existing worker if alive and same device
+    if (this.worker && !this.worker.killed && this.workerReady && this.workerStarted && this.workerDevice === device) {
       this.resetIdleTimer();
       return Promise.resolve();
     }
 
-    // Kill existing worker if dead/broken
+    // Kill existing worker if dead/broken or device changed
     if (this.worker) {
       this.killWorker();
     }
@@ -244,14 +301,20 @@ export class SuryaOcrPlugin extends BasePlugin {
         '--layout',  // Always load layout model — avoids worker restarts
       ];
 
+      const workerEnv = { ...process.env };
+      if (device && device !== 'auto') {
+        workerEnv['TORCH_DEVICE'] = device;
+      }
+
       const proc = spawn(pythonCmd, args, {
-        env: { ...process.env },
+        env: workerEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
       this.worker = proc;
       this.workerStarted = false;
       this.workerReady = false;
+      this.workerDevice = device;
 
       let stderr = '';
       proc.stderr!.on('data', (data) => {
@@ -373,6 +436,7 @@ export class SuryaOcrPlugin extends BasePlugin {
     this.worker = null;
     this.workerReady = false;
     this.workerStarted = false;
+    this.workerDevice = null;
     this.pendingResolve = null;
     this.pendingReject = null;
   }

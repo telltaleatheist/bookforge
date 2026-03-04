@@ -45,7 +45,7 @@ export class AICleanupService {
   // State signals
   private readonly _connectionStatus = signal<ConnectionStatus>('unknown');
   private readonly _models = signal<OllamaModel[]>([]);
-  private readonly _selectedModel = signal<string>('llama3.2');
+  private readonly _selectedModel = signal<string>('cogito:14b');
   private readonly _progress = signal<CleanupProgress | null>(null);
   private readonly _processing = signal(false);
   private readonly _error = signal<string | null>(null);

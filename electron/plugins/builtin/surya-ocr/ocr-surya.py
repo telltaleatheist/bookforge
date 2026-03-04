@@ -162,6 +162,21 @@ def recognize(image_path: str, with_layout: bool = False, math_mode: bool = Fals
     return output
 
 
+def layout_only(image_path: str) -> dict:
+    """Run ONLY layout detection on an image, skipping OCR recognition."""
+    if not os.path.exists(image_path):
+        return {"error": f"Image file not found: {image_path}", "layoutBlocks": []}
+
+    try:
+        from PIL import Image
+        img = Image.open(image_path).convert("RGB")
+    except Exception as e:
+        return {"error": f"Failed to open image: {e}", "layoutBlocks": []}
+
+    blocks = detect_layout(img)
+    return {"layoutBlocks": blocks}
+
+
 def detect_layout(img) -> list:
     """Run layout detection on a PIL Image."""
     if _layout_predictor is None:
@@ -221,16 +236,30 @@ def _is_valid_line(line: dict) -> bool:
 
 
 def run_batch(with_layout: bool, math_mode: bool) -> None:
-    """Batch mode: read image paths from stdin, output JSON per line."""
+    """Batch mode: read commands from stdin, output JSON per line.
+
+    Input can be:
+      - A plain image path (runs full OCR + optional layout)
+      - A JSON object with {"path": "...", "layoutOnly": true} (runs ONLY layout detection, ~10× faster)
+    """
     print(json.dumps({"ready": True}), flush=True)
 
     for line in sys.stdin:
-        image_path = line.strip()
-        if not image_path:
+        raw = line.strip()
+        if not raw:
             break
 
         try:
-            result = recognize(image_path, with_layout, math_mode)
+            # Detect JSON command vs plain image path
+            if raw.startswith('{'):
+                cmd = json.loads(raw)
+                image_path = cmd.get('path', '')
+                if cmd.get('layoutOnly'):
+                    result = layout_only(image_path)
+                else:
+                    result = recognize(image_path, with_layout, math_mode)
+            else:
+                result = recognize(raw, with_layout, math_mode)
         except Exception as e:
             result = {"error": str(e), "text": "", "confidence": 0, "textLines": []}
 
@@ -246,7 +275,14 @@ def main():
                         help="Enable layout detection")
     parser.add_argument("--math", action="store_true",
                         help="Enable math recognition mode")
+    parser.add_argument("--device", default=None,
+                        help="Device to use: mps, cuda, cpu (default: auto-detect)")
     args = parser.parse_args()
+
+    # Set device before importing surya (surya.settings reads TORCH_DEVICE from env)
+    if args.device:
+        os.environ['TORCH_DEVICE'] = args.device
+        print(f"Device override: {args.device}", file=sys.stderr)
 
     # Load models once (heavy imports + model loading)
     try:
