@@ -1,6 +1,7 @@
-import { Component, inject, signal, OnInit } from '@angular/core';
+import { Component, inject, signal, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { EbookLibraryService } from './services/ebook-library.service';
+import { ElectronService } from '../../core/services/electron.service';
 import { CategorySidebarComponent } from './components/category-sidebar/category-sidebar.component';
 import { BookGridComponent } from './components/book-grid/book-grid.component';
 import { BookMetadataComponent } from './components/book-metadata/book-metadata.component';
@@ -28,11 +29,15 @@ import type { LibraryBook } from './models/library.types';
       <div class="main-area">
         <app-book-grid
           (bookDoubleClicked)="onBookDoubleClick($event)"
+          (bookEditRequested)="onEditBook($event)"
           (importCompleted)="onImportCompleted($event)"
         />
       </div>
 
-      <app-book-metadata (importCompleted)="onImportCompleted($event)" />
+      <app-book-metadata
+        (importCompleted)="onImportCompleted($event)"
+        (editRequested)="onEditBook($event)"
+      />
 
       <!-- Full-screen drop overlay -->
       @if (isDragOver) {
@@ -140,8 +145,9 @@ import type { LibraryBook } from './models/library.types';
     }
   `]
 })
-export class LibraryComponent implements OnInit {
+export class LibraryComponent implements OnInit, OnDestroy {
   private readonly libraryService = inject(EbookLibraryService);
+  private readonly electronService = inject(ElectronService);
 
   isDragOver = false;
   private dragCounter = 0;
@@ -150,8 +156,19 @@ export class LibraryComponent implements OnInit {
   readonly importMessage = signal<string | null>(null);
   private importToastTimer: ReturnType<typeof setTimeout> | null = null;
 
+  private static readonly EDITABLE_FORMATS = new Set(['epub', 'pdf']);
+
   async ngOnInit(): Promise<void> {
     await this.libraryService.init();
+
+    // Rescan when editor window closes (may have modified/added ebooks)
+    this.electronService.onEditorWindowClosed(() => {
+      this.libraryService.loadBooks();
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.electronService.offEditorWindowClosed();
   }
 
   async addBooks(paths: string[]): Promise<void> {
@@ -189,9 +206,22 @@ export class LibraryComponent implements OnInit {
   }
 
   onBookDoubleClick(book: LibraryBook): void {
-    // Double-click could open in system viewer or import to studio
-    // For now, just select it
-    this.libraryService.selectBook(book.relativePath);
+    if (LibraryComponent.EDITABLE_FORMATS.has(book.format)) {
+      this.openInEditor(book);
+    } else {
+      this.libraryService.selectBook(book.relativePath);
+    }
+  }
+
+  onEditBook(book: LibraryBook): void {
+    this.openInEditor(book);
+  }
+
+  private async openInEditor(book: LibraryBook): Promise<void> {
+    const absolutePath = await this.electronService.ebookLibraryGetAbsolutePath(book.relativePath);
+    if (absolutePath) {
+      await this.electronService.editorOpenWindow(absolutePath, { mode: 'library' });
+    }
   }
 
   onImportCompleted(result: { success: boolean; title: string }): void {

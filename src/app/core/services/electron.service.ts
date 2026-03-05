@@ -918,13 +918,13 @@ export class ElectronService {
   /**
    * Open the editor window for a project
    */
-  async editorOpenWindow(projectPath: string): Promise<{
+  async editorOpenWindow(projectPath: string, options?: { mode?: string }): Promise<{
     success: boolean;
     alreadyOpen?: boolean;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.editor.openWindow(projectPath);
+      return (window as any).electron.editor.openWindow(projectPath, options);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -2256,6 +2256,22 @@ export class ElectronService {
       return (window as any).electron.ebookLibrary.openCategoryFolder(categoryName);
     }
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ebookLibraryGetAbsolutePath(relativePath: string): Promise<string | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.ebookLibrary.getAbsolutePath(relativePath);
+      return result.success ? result.data.absolutePath : null;
+    }
+    return null;
+  }
+
+  async generateUniqueFilename(originalPath: string, suffix: string): Promise<string | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.fs.generateUniqueFilename(originalPath, suffix);
+      return result.success ? result.data.path : null;
+    }
+    return null;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

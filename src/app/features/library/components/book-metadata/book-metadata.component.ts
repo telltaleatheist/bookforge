@@ -2,6 +2,7 @@ import { Component, inject, signal, computed, effect, output } from '@angular/co
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { EbookLibraryService } from '../../services/ebook-library.service';
+import type { LibraryBook } from '../../models/library.types';
 
 @Component({
   selector: 'app-book-metadata',
@@ -98,6 +99,12 @@ import { EbookLibraryService } from '../../services/ebook-library.service';
           >
             {{ saving() ? 'Saving...' : 'Save' }}
           </button>
+
+          @if (book.format === 'epub' || book.format === 'pdf') {
+            <button class="btn btn-default" (click)="editInViewer()">
+              Edit in Viewer
+            </button>
+          }
 
           <button class="btn btn-default" (click)="importToStudio()">
             Import to Studio
@@ -312,6 +319,7 @@ import { EbookLibraryService } from '../../services/ebook-library.service';
 export class BookMetadataComponent {
   readonly libraryService = inject(EbookLibraryService);
   readonly importCompleted = output<{ success: boolean; title: string }>();
+  readonly editRequested = output<LibraryBook>();
 
   editTitle = '';
   editSubtitle = '';
@@ -419,6 +427,12 @@ export class BookMetadataComponent {
     } finally {
       this.saving.set(false);
     }
+  }
+
+  editInViewer(): void {
+    const book = this.libraryService.selectedBook();
+    if (!book) return;
+    this.editRequested.emit(book);
   }
 
   async importToStudio(): Promise<void> {

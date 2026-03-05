@@ -771,6 +771,49 @@ interface AlertModal {
       </div>
     }
 
+    <!-- Library Save Modal -->
+    @if (showLibrarySaveModal()) {
+      <div class="modal-overlay" (click)="showLibrarySaveModal.set(false)">
+        <div class="library-save-modal" (click)="$event.stopPropagation()">
+          <div class="lsm-header">
+            <h3>Save Changes</h3>
+            <p>Choose how to save your edits</p>
+          </div>
+          <div class="lsm-options">
+            <button class="lsm-option" (click)="librarySaveReplace()">
+              <div class="lsm-option-icon">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                  <path d="M3 5a2 2 0 012-2h6l4 4v8a2 2 0 01-2 2H5a2 2 0 01-2-2V5z" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                  <path d="M7 13l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div class="lsm-option-text">
+                <span class="lsm-option-title">Replace Existing</span>
+                <span class="lsm-option-desc">Overwrite the original file with your changes</span>
+              </div>
+            </button>
+            <button class="lsm-option" (click)="librarySaveAsNew()">
+              <div class="lsm-option-icon">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                  <path d="M3 5a2 2 0 012-2h6l4 4v8a2 2 0 01-2 2H5a2 2 0 01-2-2V5z" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                  <path d="M10 9v4M8 11h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <div class="lsm-option-text">
+                <span class="lsm-option-title">Save as New File</span>
+                <span class="lsm-option-desc">Keep the original and create an edited copy</span>
+              </div>
+            </button>
+          </div>
+          <div class="lsm-footer">
+            <desktop-button variant="ghost" (click)="showLibrarySaveModal.set(false)">
+              Cancel
+            </desktop-button>
+          </div>
+        </div>
+      </div>
+    }
+
     <!-- OCR Modal -->
     @if (showOcrSettings()) {
       <app-ocr-settings-modal
@@ -1726,6 +1769,105 @@ interface AlertModal {
       }
     }
 
+    .library-save-modal {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: $radius-lg;
+      width: 380px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+      animation: modalSlideIn $duration-normal $ease-out forwards;
+      overflow: hidden;
+
+      .lsm-header {
+        padding: $spacing-6 $spacing-6 $spacing-4;
+        text-align: center;
+
+        h3 {
+          margin: 0 0 $spacing-1;
+          font-size: $font-size-lg;
+          font-weight: $font-weight-semibold;
+          color: var(--text-primary);
+        }
+
+        p {
+          margin: 0;
+          font-size: $font-size-sm;
+          color: var(--text-muted);
+        }
+      }
+
+      .lsm-options {
+        display: flex;
+        flex-direction: column;
+        gap: $spacing-2;
+        padding: 0 $spacing-4 $spacing-4;
+      }
+
+      .lsm-option {
+        display: flex;
+        align-items: center;
+        gap: $spacing-3;
+        padding: $spacing-3 $spacing-4;
+        background: var(--bg-surface);
+        border: 1px solid var(--border-subtle);
+        border-radius: $radius-md;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        text-align: left;
+        color: var(--text-primary);
+
+        &:hover {
+          border-color: var(--accent);
+          background: color-mix(in srgb, var(--accent) 6%, var(--bg-surface));
+        }
+
+        &:active {
+          transform: scale(0.99);
+        }
+      }
+
+      .lsm-option-icon {
+        width: 36px;
+        height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: $radius-md;
+        background: var(--bg-elevated);
+        color: var(--accent);
+        flex-shrink: 0;
+      }
+
+      .lsm-option-text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+
+      .lsm-option-title {
+        font-size: $font-size-sm;
+        font-weight: $font-weight-medium;
+        color: var(--text-primary);
+      }
+
+      .lsm-option-desc {
+        font-size: $font-size-xs;
+        color: var(--text-muted);
+        line-height: 1.3;
+      }
+
+      .lsm-footer {
+        display: flex;
+        justify-content: center;
+        padding: $spacing-3 $spacing-4;
+        border-top: 1px solid var(--border-subtle);
+        background: var(--bg-surface);
+      }
+    }
+
     // Sample Mode Floating Toolbar
     .sample-mode-toolbar {
       position: fixed;
@@ -2035,6 +2177,12 @@ export class PdfPickerComponent implements OnInit {
    * When set, the BFP's source_path is ignored in favor of this path.
    */
   readonly overrideSourcePath = input<string | null>(null);
+
+  /**
+   * Optional: When set, the editor is in "library mode" — editing a standalone
+   * ebook file (not a manifest project). Save shows a modal to replace or save as new.
+   */
+  readonly librarySourcePath = input<string | null>(null);
 
   /** Emitted when Finalize is clicked in embedded mode */
   readonly finalized = output<{ success: boolean; epubPath?: string; error?: string }>();
@@ -2627,6 +2775,7 @@ export class PdfPickerComponent implements OnInit {
 
   // Alert modal state
   readonly alertModal = signal<AlertModal | null>(null);
+  readonly showLibrarySaveModal = signal(false);
 
   // OCR settings state
   readonly showOcrSettings = signal(false);
@@ -3052,7 +3201,11 @@ export class PdfPickerComponent implements OnInit {
         this.showExportSettings.set(true);
         break;
       case 'finalize':
-        this.finalizeProject();
+        if (this.librarySourcePath()) {
+          this.showLibrarySaveModal.set(true);
+        } else {
+          this.finalizeProject();
+        }
         break;
       case 'search':
         this.toggleSearch();
@@ -5155,6 +5308,32 @@ export class PdfPickerComponent implements OnInit {
       this.showAlert({
         title: 'Save Failed',
         message: errorMessage,
+        type: 'error'
+      });
+    }
+  }
+
+  /**
+   * Library mode: Replace the existing ebook file with saved changes.
+   */
+  async librarySaveReplace(): Promise<void> {
+    this.showLibrarySaveModal.set(false);
+    await this.saveToSourceEpub(this.librarySourcePath()!);
+  }
+
+  /**
+   * Library mode: Save changes as a new file alongside the original.
+   */
+  async librarySaveAsNew(): Promise<void> {
+    this.showLibrarySaveModal.set(false);
+    const originalPath = this.librarySourcePath()!;
+    const newPath = await this.electronService.generateUniqueFilename(originalPath, 'edited');
+    if (newPath) {
+      await this.saveToSourceEpub(newPath);
+    } else {
+      this.showAlert({
+        title: 'Save Failed',
+        message: 'Could not generate a unique filename',
         type: 'error'
       });
     }

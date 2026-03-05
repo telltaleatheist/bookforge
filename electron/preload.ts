@@ -879,6 +879,7 @@ export interface ElectronAPI {
     readText: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
     readAudio: (audioPath: string) => Promise<{ success: boolean; dataUrl?: string; size?: number; error?: string }>;
     listDirectory: (dirPath: string) => Promise<string[]>;
+    generateUniqueFilename: (originalPath: string, suffix: string) => Promise<{ success: boolean; data?: { path: string }; error?: string }>;
   };
   project: {
     save: (projectData: unknown, suggestedName?: string) => Promise<ProjectSaveResult>;
@@ -1908,7 +1909,7 @@ export interface ElectronAPI {
     offMigrationProgress: () => void;
   };
   editor: {
-    openWindow: (projectPath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
+    openWindow: (projectPath: string, options?: { mode?: string }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
     openWindowWithBfp: (bfpPath: string, sourcePath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
     closeWindow: (projectPath: string) => Promise<{ success: boolean }>;
     getVersions: (bfpPath: string) => Promise<{
@@ -1991,6 +1992,7 @@ export interface ElectronAPI {
     importToStudio: (relativePath: string) => Promise<{ success: boolean; data?: { absolutePath: string; metadata: any; coverData?: string | null }; error?: string }>;
     revealBook: (relativePath: string) => Promise<{ success: boolean; error?: string }>;
     openCategoryFolder: (categoryName: string) => Promise<{ success: boolean; error?: string }>;
+    getAbsolutePath: (relativePath: string) => Promise<{ success: boolean; data?: { absolutePath: string }; error?: string }>;
   };
   platform: string;
 }
@@ -2120,6 +2122,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('fs:write-temp-file', filename, data),
     listDirectory: (dirPath: string) =>
       ipcRenderer.invoke('fs:list-directory', dirPath),
+    generateUniqueFilename: (originalPath: string, suffix: string) =>
+      ipcRenderer.invoke('fs:generate-unique-filename', originalPath, suffix),
   },
   project: {
     save: (projectData: unknown, suggestedName?: string) =>
@@ -3294,8 +3298,8 @@ const electronAPI: ElectronAPI = {
   },
 
   editor: {
-    openWindow: (projectPath: string) =>
-      ipcRenderer.invoke('editor:open-window', projectPath),
+    openWindow: (projectPath: string, options?: { mode?: string }) =>
+      ipcRenderer.invoke('editor:open-window', projectPath, options),
     openWindowWithBfp: (bfpPath: string, sourcePath: string) =>
       ipcRenderer.invoke('editor:open-window-with-bfp', bfpPath, sourcePath),
     closeWindow: (projectPath: string) =>
@@ -3363,6 +3367,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('ebookLibrary:reveal-book', relativePath),
     openCategoryFolder: (categoryName: string) =>
       ipcRenderer.invoke('ebookLibrary:open-category-folder', categoryName),
+    getAbsolutePath: (relativePath: string) =>
+      ipcRenderer.invoke('ebookLibrary:get-absolute-path', relativePath),
   },
 
   platform: process.platform,

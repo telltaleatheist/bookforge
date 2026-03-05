@@ -1161,6 +1161,23 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('fs:generate-unique-filename', async (_event, originalPath: string, suffix: string) => {
+    try {
+      const dir = path.dirname(originalPath);
+      const ext = path.extname(originalPath);
+      const base = path.basename(originalPath, ext);
+      let candidate = path.join(dir, `${base} (${suffix})${ext}`);
+      let counter = 2;
+      while (fsSync.existsSync(candidate)) {
+        candidate = path.join(dir, `${base} (${suffix} ${counter})${ext}`);
+        counter++;
+      }
+      return { success: true, data: { path: candidate } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Project file handlers
   ipcMain.handle('project:save', async (_event, projectData: unknown, suggestedName?: string) => {
     if (!mainWindow) return { success: false, error: 'No window' };
@@ -3356,6 +3373,15 @@ function setupIpcHandlers(): void {
     try {
       await ebookLibrary.renameCategory(oldName, newName);
       return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:get-absolute-path', async (_event, relativePath: string) => {
+    try {
+      const absolutePath = ebookLibrary.getAbsolutePath(relativePath);
+      return { success: true, data: { absolutePath } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -8186,7 +8212,7 @@ function setupIpcHandlers(): void {
   // Track open editor windows by project path
   const editorWindows = new Map<string, BrowserWindow>();
 
-  ipcMain.handle('editor:open-window', async (_event, projectPath: string) => {
+  ipcMain.handle('editor:open-window', async (_event, projectPath: string, options?: { mode?: string }) => {
     // Check if window already open for this project
     const existingWindow = editorWindows.get(projectPath);
     if (existingWindow && !existingWindow.isDestroyed()) {
@@ -8232,13 +8258,14 @@ function setupIpcHandlers(): void {
 
     // Load the editor route with project path as query param
     const encodedPath = encodeURIComponent(projectPath);
+    const modeParam = options?.mode ? `&mode=${options.mode}` : '';
     if (isDev) {
-      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedPath}`);
+      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedPath}${modeParam}`);
     } else {
       const appPath = app.getAppPath();
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       editorWindow.loadFile(indexPath, {
-        hash: `/editor?project=${encodedPath}`
+        hash: `/editor?project=${encodedPath}${modeParam}`
       });
     }
 

@@ -109,7 +109,10 @@ import type { LibraryBook } from '../../models/library.types';
           (mousedown)="$event.stopPropagation()"
           (click)="$event.stopPropagation()"
         >
-          <button class="ctx-item" (click)="revealBook()">Open</button>
+          @if (isContextBookEditable()) {
+            <button class="ctx-item" (click)="editBook()">Edit in Viewer</button>
+          }
+          <button class="ctx-item" (click)="revealBook()">Reveal in Finder</button>
           <button class="ctx-item" (click)="importToStudio()">Import to Studio</button>
           @if (libraryService.categories().length > 0) {
             <div class="ctx-separator"></div>
@@ -344,6 +347,7 @@ export class BookGridComponent implements OnDestroy {
   private readonly electronService = inject(ElectronService);
   private readonly cdr = inject(ChangeDetectorRef);
   readonly bookDoubleClicked = output<LibraryBook>();
+  readonly bookEditRequested = output<LibraryBook>();
   readonly importCompleted = output<{ success: boolean; title: string }>();
   readonly gridContainerRef = viewChild<ElementRef<HTMLElement>>('gridContainer');
   readonly bookGridRef = viewChild<ElementRef<HTMLElement>>('bookGrid');
@@ -450,6 +454,21 @@ export class BookGridComponent implements OnDestroy {
       await this.libraryService.moveBooks([...selected], category);
     } else if (this.contextMenuBookPath) {
       await this.libraryService.moveBooks([this.contextMenuBookPath], category);
+    }
+  }
+
+  isContextBookEditable(): boolean {
+    if (!this.contextMenuBookPath) return false;
+    const book = this.libraryService.filteredBooks().find(b => b.relativePath === this.contextMenuBookPath);
+    return !!book && ['epub', 'pdf'].includes(book.format);
+  }
+
+  editBook(): void {
+    this.bookContextMenuVisible.set(false);
+    if (!this.contextMenuBookPath) return;
+    const book = this.libraryService.filteredBooks().find(b => b.relativePath === this.contextMenuBookPath);
+    if (book) {
+      this.bookEditRequested.emit(book);
     }
   }
 

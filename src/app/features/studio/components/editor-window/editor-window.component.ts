@@ -23,6 +23,7 @@ import { PdfPickerComponent } from '../../../pdf-picker/pdf-picker.component';
           [embedded]="true"
           [bfpPath]="projectPath()!"
           [overrideSourcePath]="sourcePath()"
+          [librarySourcePath]="libraryMode() ? projectPath() : null"
           (finalized)="onFinalized($event)"
           (exitRequested)="onExitRequested()"
         />
@@ -124,6 +125,7 @@ export class EditorWindowComponent implements OnInit {
 
   readonly projectPath = signal<string | null>(null);
   readonly sourcePath = signal<string | null>(null);  // Optional: specific version to load
+  readonly libraryMode = signal(false);
   readonly error = signal<string | null>(null);
   readonly toastMessage = signal<string | null>(null);
   readonly toastType = signal<'success' | 'error'>('success');
@@ -143,6 +145,10 @@ export class EditorWindowComponent implements OnInit {
         if (source) {
           const decodedSource = decodeURIComponent(source);
           this.sourcePath.set(decodedSource);
+        }
+
+        if (params['mode'] === 'library') {
+          this.libraryMode.set(true);
         }
       } else {
         this.error.set('No project path provided');
