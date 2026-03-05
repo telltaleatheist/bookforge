@@ -504,9 +504,10 @@ class LibraryManager {
     const displayName = book.outputFilename || book.downloadPath.split(/[/\\]/).pop() || 'audiobook.m4b';
     const url = `/api/download?path=${encodeURIComponent(book.downloadPath)}&filename=${encodeURIComponent(displayName)}`;
 
+    // Let Content-Disposition handle the filename — setting a.download to a filename
+    // causes iOS Safari to append a duplicate extension based on MIME type.
     const a = document.createElement('a');
     a.href = url;
-    a.download = displayName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

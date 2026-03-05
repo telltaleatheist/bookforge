@@ -337,15 +337,10 @@ export class LibraryServer {
       // Use the display filename from query params if provided, otherwise fall back to on-disk name
       const displayName = req.query.filename as string | undefined;
       const filename = displayName || path.basename(filePath);
-      const ext = path.extname(filePath).toLowerCase();
 
-      const contentTypes: Record<string, string> = {
-        '.m4b': 'audio/mp4',
-        '.m4a': 'audio/mp4',
-        '.mp3': 'audio/mpeg',
-      };
-
-      const contentType = contentTypes[ext] || 'application/octet-stream';
+      // Always use octet-stream for downloads — Content-Disposition: attachment handles
+      // the filename. Using audio/mp4 causes iOS Safari to append a duplicate .m4b extension.
+      const contentType = 'application/octet-stream';
 
       const stats = await fs.stat(filePath);
 
