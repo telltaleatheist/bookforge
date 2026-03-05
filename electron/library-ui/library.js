@@ -11,6 +11,8 @@ class LibraryManager {
     this.coverLoadQueue = [];
     this.isLoadingCovers = false;
     this.currentTab = 'audiobooks';
+    this.currentSort = localStorage.getItem('library-sort') || 'title';
+    this.currentCategory = 'all';
 
     // DOM elements
     this.booksContainer = document.getElementById('books-container');
@@ -24,11 +26,15 @@ class LibraryManager {
     this.themeToggle = document.getElementById('theme-toggle');
     this.tabAudiobooks = document.getElementById('tab-audiobooks');
     this.tabEbooks = document.getElementById('tab-ebooks');
+    this.sortTitle = document.getElementById('sort-title');
+    this.sortDate = document.getElementById('sort-date');
+    this.categoryBar = document.getElementById('category-bar');
   }
 
   async init() {
     this.setupTheme();
     this.setupEventListeners();
+    this.applySortToggleState();
     await this.loadBooks();
   }
 
@@ -57,6 +63,99 @@ class LibraryManager {
     // Tab toggle
     this.tabAudiobooks.addEventListener('click', () => this.switchTab('audiobooks'));
     this.tabEbooks.addEventListener('click', () => this.switchTab('ebooks'));
+
+    // Sort toggle
+    this.sortTitle.addEventListener('click', () => this.setSort('title'));
+    this.sortDate.addEventListener('click', () => this.setSort('date'));
+  }
+
+  applySortToggleState() {
+    this.sortTitle.classList.toggle('active', this.currentSort === 'title');
+    this.sortDate.classList.toggle('active', this.currentSort === 'date');
+  }
+
+  setSort(sort) {
+    this.currentSort = sort;
+    localStorage.setItem('library-sort', sort);
+    this.applySortToggleState();
+
+    if (this.currentTab === 'audiobooks') {
+      this.sortBooks();
+      this.renderAudiobooks();
+      this.loadCoversProgressively();
+    } else {
+      this.sortEbooks();
+      this.renderEbooks();
+      this.loadEbookCoversProgressively();
+    }
+  }
+
+  sortBooks() {
+    if (this.currentSort === 'date') {
+      this.allBooks.sort((a, b) => {
+        const da = a.dateAdded || '';
+        const db = b.dateAdded || '';
+        return db.localeCompare(da); // newest first
+      });
+    } else {
+      this.allBooks.sort((a, b) => a.title.localeCompare(b.title));
+    }
+  }
+
+  sortEbooks() {
+    if (this.currentSort === 'date') {
+      this.allEbooks.sort((a, b) => (b.dateAdded || 0) - (a.dateAdded || 0));
+    } else {
+      this.allEbooks.sort((a, b) => a.title.localeCompare(b.title));
+    }
+  }
+
+  buildCategoryBar() {
+    const categories = new Map();
+    for (const book of this.allEbooks) {
+      const cat = book.category || 'Uncategorized';
+      categories.set(cat, (categories.get(cat) || 0) + 1);
+    }
+
+    this.categoryBar.innerHTML = '';
+
+    // "All" pill
+    const allBtn = document.createElement('button');
+    allBtn.className = 'category-pill' + (this.currentCategory === 'all' ? ' active' : '');
+    allBtn.dataset.category = 'all';
+    allBtn.textContent = `All (${this.allEbooks.length})`;
+    allBtn.addEventListener('click', () => this.setCategory('all'));
+    this.categoryBar.appendChild(allBtn);
+
+    // Sort categories: Uncategorized last, rest alphabetical
+    const sorted = [...categories.entries()].sort((a, b) => {
+      if (a[0] === 'Uncategorized') return 1;
+      if (b[0] === 'Uncategorized') return -1;
+      return a[0].localeCompare(b[0]);
+    });
+
+    for (const [name, count] of sorted) {
+      const btn = document.createElement('button');
+      btn.className = 'category-pill' + (this.currentCategory === name ? ' active' : '');
+      btn.dataset.category = name;
+      btn.textContent = `${name} (${count})`;
+      btn.addEventListener('click', () => this.setCategory(name));
+      this.categoryBar.appendChild(btn);
+    }
+
+    this.categoryBar.style.display = 'flex';
+  }
+
+  setCategory(category) {
+    this.currentCategory = category;
+
+    // Update active state on pills
+    this.categoryBar.querySelectorAll('.category-pill').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.category === category);
+    });
+
+    this.renderEbooks();
+    this.loadEbookCoversProgressively();
   }
 
   async switchTab(tab) {
@@ -71,6 +170,9 @@ class LibraryManager {
     this.searchBox.value = '';
     this.clearSearch.style.display = 'none';
 
+    // Show/hide category bar
+    this.categoryBar.style.display = tab === 'ebooks' ? 'flex' : 'none';
+
     if (tab === 'ebooks') {
       if (this.allEbooks.length === 0) {
         await this.loadEbooks();
@@ -78,6 +180,7 @@ class LibraryManager {
         this.renderEbooks();
       }
     } else {
+      this.currentCategory = 'all';
       if (this.allBooks.length === 0) {
         await this.loadBooks();
       } else {
@@ -108,6 +211,7 @@ class LibraryManager {
         return;
       }
 
+      this.sortBooks();
       this.renderAudiobooks();
       this.loadingIndicator.style.display = 'none';
 
@@ -187,15 +291,17 @@ class LibraryManager {
       const data = await response.json();
 
       this.allEbooks = data.ebooks || [];
-      this.totalBooks.textContent = this.allEbooks.length;
-      this.statLabel.textContent = 'Ebooks';
 
       if (this.allEbooks.length === 0) {
+        this.totalBooks.textContent = '0';
+        this.statLabel.textContent = 'Ebooks';
         this.loadingIndicator.style.display = 'none';
         this.emptyState.style.display = 'flex';
         return;
       }
 
+      this.sortEbooks();
+      this.buildCategoryBar();
       this.renderEbooks();
       this.loadingIndicator.style.display = 'none';
 
@@ -209,15 +315,20 @@ class LibraryManager {
 
   renderEbooks() {
     this.booksContainer.innerHTML = '';
-    this.totalBooks.textContent = this.allEbooks.length;
     this.statLabel.textContent = 'Ebooks';
 
-    this.allEbooks.forEach((book, index) => {
+    const filtered = this.currentCategory === 'all'
+      ? this.allEbooks
+      : this.allEbooks.filter(b => b.category === this.currentCategory);
+
+    this.totalBooks.textContent = filtered.length;
+
+    filtered.forEach((book, index) => {
       const card = this.createEbookCard(book, index);
       this.booksContainer.appendChild(card);
     });
 
-    if (this.allEbooks.length === 0) {
+    if (filtered.length === 0) {
       this.emptyState.style.display = 'flex';
     } else {
       this.emptyState.style.display = 'none';

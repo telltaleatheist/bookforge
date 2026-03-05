@@ -41,6 +41,7 @@ interface AudiobookEntry {
   downloadPath: string;      // absolute path to M4B
   outputFilename?: string;   // metadata-defined display filename (e.g. "Title. Author. (Year).m4b")
   coverPath?: string;        // absolute path to cover image (from manifest)
+  dateAdded?: string;        // ISO timestamp from manifest.createdAt
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -203,6 +204,7 @@ export class LibraryServer {
               downloadPath: absPath,
               outputFilename: manifest.metadata.outputFilename,
               coverPath: coverAbsPath,
+              dateAdded: manifest.createdAt,
             });
           } catch { /* skip if stat fails */ }
         }
@@ -227,14 +229,13 @@ export class LibraryServer {
               duration,
               downloadPath: absPath,
               coverPath: coverAbsPath,
+              dateAdded: manifest.createdAt,
             });
           } catch { /* skip */ }
         }
       }
     }
 
-    // Sort by title
-    entries.sort((a, b) => a.title.localeCompare(b.title));
     return entries;
   }
 
