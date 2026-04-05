@@ -6412,8 +6412,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('reassembly:scan-sessions', async (_event, customTmpPath?: string) => {
     try {
       const { scanE2aTmpFolder } = await import('./reassembly-bridge.js');
-      const libraryPath = getLibraryRoot();
-      const result = await scanE2aTmpFolder(customTmpPath, libraryPath);
+      const result = await scanE2aTmpFolder(customTmpPath);
       return { success: true, data: result };
     } catch (err) {
       console.error('[MAIN] reassembly:scan-sessions error:', err);
@@ -6458,7 +6457,7 @@ function setupIpcHandlers(): void {
     try {
       const { deleteSession } = await import('./reassembly-bridge.js');
       const deleted = await deleteSession(sessionId, customTmpPath);
-      return { success: deleted };
+      return { success: deleted, error: deleted ? undefined : 'Failed to delete session folder' };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

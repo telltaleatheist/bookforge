@@ -305,7 +305,7 @@ function cleanupStagingDir(jobId: string): void {
  * BFP metadata is extracted from each session's source_epub_path
  * @param customTmpPath - Optional custom path to the e2a tmp folder
  */
-export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: string): Promise<{ sessions: E2aSession[]; tmpPath: string }> {
+export async function scanE2aTmpFolder(customTmpPath?: string): Promise<{ sessions: E2aSession[]; tmpPath: string }> {
   const sessions: E2aSession[] = [];
   const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
 
@@ -328,44 +328,6 @@ export async function scanE2aTmpFolder(customTmpPath?: string, libraryPath?: str
     }
   } catch {
     // tmp folder doesn't exist — that's fine
-  }
-
-  // Scan project folders for cached sessions in stages/03-tts/sessions/{lang}/
-  if (libraryPath) {
-    const projectsDir = path.join(libraryPath, 'projects');
-    try {
-      const projectDirs = await fs.promises.readdir(projectsDir, { withFileTypes: true });
-      for (const projectEntry of projectDirs) {
-        if (!projectEntry.isDirectory()) continue;
-        const stagesSessionDir = path.join(projectsDir, projectEntry.name, 'stages', '03-tts', 'sessions');
-        let langDirs;
-        try {
-          langDirs = await fs.promises.readdir(stagesSessionDir, { withFileTypes: true });
-        } catch { continue; }
-        for (const langEntry of langDirs) {
-          if (!langEntry.isDirectory()) continue;
-          const langDir = path.join(stagesSessionDir, langEntry.name);
-          const langEntries = await fs.promises.readdir(langDir, { withFileTypes: true });
-          for (const entry of langEntries) {
-            if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
-            const sessionDir = path.join(langDir, entry.name);
-            const sessionId = entry.name.replace('ebook-', '');
-            if (sessions.some(s => s.sessionId === sessionId)) continue;
-            try {
-              const session = await parseSession(sessionId, sessionDir);
-              if (session) {
-                session.source = 'bfp-cache';
-                sessions.push(session);
-              }
-            } catch (err) {
-              console.error(`[REASSEMBLY] Error parsing cached session ${sessionId}:`, err);
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.error('[REASSEMBLY] Error scanning project session folders:', err);
-    }
   }
 
   // Sort by modification date, newest first
@@ -566,25 +528,24 @@ export async function getSession(sessionId: string, customTmpPath?: string): Pro
 }
 
 /**
- * Delete a session's tmp folder
- * @param sessionId - The session ID (UUID part after ebook-)
- * @param customTmpPath - Optional custom path to the e2a tmp folder
+ * Delete a session's tmp folder.
+ * If the directory doesn't exist, returns true (already gone = success).
  */
 export async function deleteSession(sessionId: string, customTmpPath?: string): Promise<boolean> {
-  const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
-  const sessionDir = path.join(tmpPath, `ebook-${sessionId}`);
+  const targetDir = path.join(customTmpPath || DEFAULT_E2A_TMP_PATH, `ebook-${sessionId}`);
 
   try {
-    await fs.promises.access(sessionDir);
+    await fs.promises.access(targetDir);
   } catch {
-    // Directory doesn't exist
-    return false;
+    // Directory doesn't exist — already gone, treat as success
+    console.log(`[REASSEMBLY] Session folder already removed: ${targetDir}`);
+    return true;
   }
 
   try {
-    console.log(`[REASSEMBLY] Deleting session folder (async): ${sessionDir}`);
-    await fs.promises.rm(sessionDir, { recursive: true, force: true });
-    console.log(`[REASSEMBLY] Deleted session folder: ${sessionDir}`);
+    console.log(`[REASSEMBLY] Deleting session folder (async): ${targetDir}`);
+    await fs.promises.rm(targetDir, { recursive: true, force: true });
+    console.log(`[REASSEMBLY] Deleted session folder: ${targetDir}`);
     return true;
   } catch (err) {
     console.error(`[REASSEMBLY] Error deleting session folder:`, err);

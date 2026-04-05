@@ -282,7 +282,7 @@ export class ReassemblyService {
 
         return { success: true };
       }
-      return { success: false, error: result.error };
+      return { success: false, error: result.error || 'Failed to delete session' };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
     }
