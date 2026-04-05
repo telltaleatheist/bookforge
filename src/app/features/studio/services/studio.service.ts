@@ -320,6 +320,10 @@ export class StudioService {
           wordCount: manifest.metadata?.wordCount,
           epubPath: articleEpubPath,
           bfpPath: projectDir,
+          htmlPath: `${projectDir}/source/article.html`,
+          deletedSelectors: manifest.editor?.deletedSelectors || [],
+          undoStack: (manifest.editor?.undoStack as EditAction[] | undefined) || [],
+          redoStack: (manifest.editor?.redoStack as EditAction[] | undefined) || [],
           hasCleaned,
           archived: manifest.archived,
           sortOrder: manifest.sortOrder,
@@ -422,17 +426,44 @@ export class StudioService {
     }
 
     try {
-      // Generate projectId BEFORE fetching so files are saved in the correct directory
-      const projectId = crypto.randomUUID();
-
-      // Fetch URL content using ElectronService, passing our projectId
-      const result = await this.electronService.languageLearningFetchUrl(url, projectId);
+      // Fetch URL content
+      const result = await this.electronService.languageLearningFetchUrl(url);
 
       if (!result.success) {
         return { success: false, error: result.error || 'Failed to fetch URL' };
       }
 
-      // Create project using the same projectId
+      // Create a proper manifest project so the article survives loadArticles() reloads
+      const createResult = await this.electronService.manifestCreate('article', {
+        type: 'url',
+        url,
+        fetchedAt: new Date().toISOString(),
+        originalFilename: 'article.html',
+      }, {
+        title: result.title || 'Untitled',
+        author: result.byline,
+        byline: result.byline,
+        excerpt: result.excerpt,
+        wordCount: result.wordCount,
+        language: 'en',
+      });
+
+      if (!createResult.success || !createResult.projectPath) {
+        return { success: false, error: createResult.error || 'Failed to create project' };
+      }
+
+      // Copy the fetched HTML into the manifest project's source directory
+      if (result.htmlPath) {
+        const htmlContent = await this.electronService.readTextFile(result.htmlPath);
+        if (htmlContent) {
+          await this.electronService.writeTextFile(
+            `${createResult.projectPath}/source/article.html`,
+            htmlContent
+          );
+        }
+      }
+
+      const projectId = createResult.projectId!;
       const article: StudioItem = {
         id: projectId,
         type: 'article',
@@ -442,39 +473,15 @@ export class StudioService {
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
         sourceUrl: url,
-        htmlPath: result.htmlPath,  // Now points to correct directory
+        htmlPath: `${createResult.projectPath}/source/article.html`,
         deletedSelectors: [],
         sourceLang: 'en',
         targetLang: 'de',
         byline: result.byline,
         excerpt: result.excerpt,
         wordCount: result.wordCount,
-        content: result.content,
-        textContent: result.textContent
+        bfpPath: createResult.projectPath,
       };
-
-      // Save project using ElectronService
-      const saveResult = await this.electronService.languageLearningSaveProject({
-        id: article.id,
-        sourceUrl: article.sourceUrl,
-        title: article.title,
-        byline: article.byline,
-        excerpt: article.excerpt,
-        wordCount: article.wordCount,
-        sourceLang: article.sourceLang,
-        targetLang: article.targetLang,
-        status: 'fetched',
-        htmlPath: article.htmlPath,
-        content: article.content,
-        textContent: article.textContent,
-        deletedSelectors: [],
-        createdAt: article.createdAt,
-        modifiedAt: article.modifiedAt
-      });
-
-      if (!saveResult.success) {
-        return { success: false, error: saveResult.error || 'Failed to save project' };
-      }
 
       // Add to local state
       this._articles.update(articles => [...articles, article]);
@@ -514,25 +521,14 @@ export class StudioService {
         articles.map(a => a.id === id ? updated : a)
       );
 
-      // Save to disk using ElectronService
-      const saveResult = await this.electronService.languageLearningSaveProject({
-        id: updated.id,
-        sourceUrl: updated.sourceUrl,
-        title: updated.title,
-        byline: updated.byline,
-        excerpt: updated.excerpt,
-        wordCount: updated.wordCount,
-        sourceLang: updated.sourceLang,
-        targetLang: updated.targetLang,
-        status: 'fetched',
-        htmlPath: updated.htmlPath,
-        content: updated.content,
-        textContent: updated.textContent,
-        deletedSelectors: updated.deletedSelectors || [],
-        undoStack: updated.undoStack || [],
-        redoStack: updated.redoStack || [],
-        createdAt: updated.createdAt,
-        modifiedAt: updated.modifiedAt
+      // Persist editor state to the unified manifest so it survives reloads
+      const saveResult = await this.electronService.manifestUpdate({
+        projectId: id,
+        editor: {
+          deletedSelectors: updated.deletedSelectors || [],
+          undoStack: updated.undoStack || [],
+          redoStack: updated.redoStack || [],
+        },
       });
 
       return { success: saveResult.success, error: saveResult.error };
