@@ -2189,6 +2189,24 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       return;
     }
 
+    // Cache TTS session to project BEFORE assembly, because e2a's headless mode
+    // deletes the process dir (sentence files) after successful assembly.
+    if (session.config.bfpPath && session.prepInfo?.sessionDir) {
+      const language = session.config.settings.language || 'en';
+      try {
+        const cacheResult = await cacheSessionToProject(
+          session.prepInfo.sessionDir, session.config.bfpPath, language
+        );
+        if (cacheResult.success) {
+          console.log(`[PARALLEL-TTS] Session cached before assembly: ${cacheResult.cachedSentencesDir}`);
+        } else {
+          console.error(`[PARALLEL-TTS] Pre-assembly cache failed: ${cacheResult.error}`);
+        }
+      } catch (err) {
+        console.error('[PARALLEL-TTS] Pre-assembly cache error:', err);
+      }
+    }
+
     try {
       const outputPath = await runAssembly(session);
       // Mark as success even with partial worker failures if assembly succeeded
