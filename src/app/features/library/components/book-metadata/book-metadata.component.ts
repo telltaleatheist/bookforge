@@ -11,76 +11,77 @@ import type { LibraryBook } from '../../models/library.types';
   template: `
     @if (libraryService.selectedBook(); as book) {
       <div class="metadata-panel" (paste)="onPaste($event)" tabindex="0">
-        <div class="panel-header">Metadata</div>
+        <!-- Scrollable content -->
+        <div class="panel-scroll">
+          <!-- Cover -->
+          <div class="cover-section">
+            @if (coverPreview() || book.coverData) {
+              <img [src]="coverPreview() || book.coverData" class="panel-cover" alt="Cover" />
+            } @else {
+              <div class="cover-empty">
+                <div>No cover</div>
+                <div class="cover-hint">Cmd+V to paste</div>
+              </div>
+            }
+          </div>
 
-        <!-- Cover -->
-        <div class="cover-section">
-          @if (coverPreview() || book.coverData) {
-            <img [src]="coverPreview() || book.coverData" class="panel-cover" alt="Cover" />
-          } @else {
-            <div class="cover-empty">
-              <div>No cover</div>
-              <div class="cover-hint">Cmd+V to paste</div>
+          <!-- Form -->
+          <div class="form-fields">
+            <label class="field">
+              <span class="field-label">Title</span>
+              <input class="field-input" [(ngModel)]="editTitle" />
+            </label>
+
+            <label class="field">
+              <span class="field-label">Subtitle</span>
+              <input class="field-input" [(ngModel)]="editSubtitle" placeholder="Optional" />
+            </label>
+
+            <label class="field">
+              <span class="field-label">Author Last</span>
+              <input class="field-input" [(ngModel)]="editAuthorLast" />
+            </label>
+            <label class="field">
+              <span class="field-label">Author First</span>
+              <input class="field-input" [(ngModel)]="editAuthorFirst" />
+            </label>
+
+            <label class="field">
+              <span class="field-label">Year</span>
+              <input class="field-input" type="number" [(ngModel)]="editYear" />
+            </label>
+            <label class="field">
+              <span class="field-label">Language</span>
+              <input class="field-input" [(ngModel)]="editLanguage" placeholder="eng" />
+            </label>
+
+            <label class="field">
+              <span class="field-label">Category</span>
+              <select class="field-input" [(ngModel)]="editCategory">
+                @for (cat of libraryService.categories(); track cat.name) {
+                  <option [value]="cat.name">{{ cat.name }}</option>
+                }
+              </select>
+            </label>
+
+            <div class="field">
+              <span class="field-label">File</span>
+              <div class="field-static">{{ book.filename }}</div>
             </div>
-          }
-        </div>
 
-        <!-- Form -->
-        <div class="form-fields">
-          <label class="field">
-            <span class="field-label">Title</span>
-            <input class="field-input" [(ngModel)]="editTitle" />
-          </label>
+            <div class="field">
+              <span class="field-label">Format</span>
+              <div class="field-static format-badge">{{ book.format.toUpperCase() }}</div>
+            </div>
 
-          <label class="field">
-            <span class="field-label">Subtitle</span>
-            <input class="field-input" [(ngModel)]="editSubtitle" placeholder="Optional" />
-          </label>
-
-          <label class="field">
-            <span class="field-label">Author Last</span>
-            <input class="field-input" [(ngModel)]="editAuthorLast" />
-          </label>
-          <label class="field">
-            <span class="field-label">Author First</span>
-            <input class="field-input" [(ngModel)]="editAuthorFirst" />
-          </label>
-
-          <label class="field">
-            <span class="field-label">Year</span>
-            <input class="field-input" type="number" [(ngModel)]="editYear" />
-          </label>
-          <label class="field">
-            <span class="field-label">Language</span>
-            <input class="field-input" [(ngModel)]="editLanguage" placeholder="eng" />
-          </label>
-
-          <label class="field">
-            <span class="field-label">Category</span>
-            <select class="field-input" [(ngModel)]="editCategory">
-              @for (cat of libraryService.categories(); track cat.name) {
-                <option [value]="cat.name">{{ cat.name }}</option>
-              }
-            </select>
-          </label>
-
-          <div class="field">
-            <span class="field-label">File</span>
-            <div class="field-static">{{ book.filename }}</div>
-          </div>
-
-          <div class="field">
-            <span class="field-label">Format</span>
-            <div class="field-static format-badge">{{ book.format.toUpperCase() }}</div>
-          </div>
-
-          <div class="field">
-            <span class="field-label">Size</span>
-            <div class="field-static">{{ formatSize(book.fileSize) }}</div>
+            <div class="field">
+              <span class="field-label">Size</span>
+              <div class="field-static">{{ formatSize(book.fileSize) }}</div>
+            </div>
           </div>
         </div>
 
-        <!-- Actions -->
+        <!-- Pinned Actions -->
         <div class="actions">
           @if (!libraryService.ebookMetaAvailable()) {
             <div class="calibre-warning">
@@ -122,15 +123,20 @@ import type { LibraryBook } from '../../models/library.types';
     }
   `,
   styles: [`
+    :host {
+      display: flex;
+      overflow: hidden;
+      min-height: 0;
+    }
+
     .metadata-panel {
       width: 260px;
       min-width: 260px;
+      height: 100%;
       border-left: 1px solid color-mix(in srgb, var(--border-default) 50%, transparent);
-      padding: 12px;
-      overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      overflow: hidden;
       outline: none;
 
       &.empty {
@@ -140,12 +146,13 @@ import type { LibraryBook } from '../../models/library.types';
       }
     }
 
-    .panel-header {
-      font-size: 0.75rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--text-muted);
+    .panel-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
     }
 
     .cover-section {
@@ -155,12 +162,13 @@ import type { LibraryBook } from '../../models/library.types';
       border-radius: 6px;
       overflow: hidden;
       background: var(--bg-elevated);
+      flex-shrink: 0;
     }
 
     .panel-cover {
       width: 100%;
       height: 100%;
-      object-fit: cover;
+      object-fit: contain;
     }
 
     .cover-empty {
@@ -248,8 +256,9 @@ import type { LibraryBook } from '../../models/library.types';
       display: flex;
       flex-direction: column;
       gap: 6px;
-      margin-top: auto;
-      padding-top: 12px;
+      flex-shrink: 0;
+      padding: 12px;
+      border-top: 1px solid color-mix(in srgb, var(--border-default) 50%, transparent);
     }
 
     .calibre-warning {
