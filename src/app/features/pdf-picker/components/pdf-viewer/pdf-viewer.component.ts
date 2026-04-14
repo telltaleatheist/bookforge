@@ -124,7 +124,7 @@ export interface CropRect {
                         </foreignObject>
                       }
                       <!-- Selection/interaction rect - rendered AFTER text overlay so it appears on top -->
-                      @if (!shouldHideDeletedBlock(block)) {
+                      @if (!shouldHideDeletedBlock(block) && !isBackgroundImage(block)) {
                         <rect
                           class="block-rect"
                           [attr.x]="getBlockX(block)"
@@ -609,7 +609,7 @@ export interface CropRect {
                           </foreignObject>
                         }
                         <!-- Selection/interaction rect - rendered AFTER text overlay so it appears on top -->
-                        @if (!shouldHideDeletedBlock(block)) {
+                        @if (!shouldHideDeletedBlock(block) && !isBackgroundImage(block)) {
                           <rect
                             class="block-rect"
                             [attr.x]="getBlockX(block)"
@@ -2477,6 +2477,19 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     return false;
   }
 
+  /**
+   * Check if a block is a full-page background image (scanned paper, etc.).
+   * These should not be selectable — use "Remove Backgrounds" to manage them.
+   */
+  isBackgroundImage(block: TextBlock): boolean {
+    if (!block.is_image) return false;
+    const pageDims = this.pageDimensions()[block.page];
+    if (!pageDims) return false;
+    const pageArea = pageDims.width * pageDims.height;
+    const blockArea = block.width * block.height;
+    return blockArea > pageArea * 0.7;
+  }
+
   hasCorrectedText(blockId: string): boolean {
     return this.correctedBlockIds().has(blockId);
   }
@@ -2942,8 +2955,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     const allBlocks = this.blocks();
     const pageBlocks = allBlocks.filter(b => b.page === pageNum);
 
-    // Find blocks that contain the click point
+    // Find blocks that contain the click point (exclude background images)
     const containingBlocks = pageBlocks.filter(block => {
+      if (this.isBackgroundImage(block)) return false;
+
       const bx = this.getBlockX(block);
       const by = this.getBlockY(block);
       const bw = this.getBlockWidth(block);
