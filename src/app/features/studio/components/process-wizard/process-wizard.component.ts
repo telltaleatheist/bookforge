@@ -242,8 +242,8 @@ interface AvailableEpub {
                     (click)="toggleSimplify()"
                   >
                     <span class="toggle-icon">📖</span>
-                    <span class="toggle-label">Simplify for learning</span>
-                    <span class="toggle-sublabel">Natural storytelling</span>
+                    <span class="toggle-label">Simplify</span>
+                    <span class="toggle-sublabel">Plain language</span>
                   </button>
                 </div>
 
@@ -798,7 +798,7 @@ interface AvailableEpub {
                       <div class="review-row">
                         <span class="review-label">Mode:</span>
                         <span class="review-value">
-                          {{ enableAiCleanup() && simplifyForLearning() ? 'AI Cleanup + Simplify' : enableAiCleanup() ? 'AI Cleanup' : 'Simplify for Learning' }}
+                          {{ enableAiCleanup() && simplifyForLearning() ? 'AI Cleanup + Simplify' : enableAiCleanup() ? 'AI Cleanup' : 'Simplify' }}
                         </span>
                       </div>
                     </div>
@@ -2256,15 +2256,18 @@ export class ProcessWizardComponent implements OnInit {
     return path.replace(/\\/g, '/').split('/').pop() || path;
   });
 
-  /** Stages relevant for cleanup source: Original, Exported, AI Cleaned, AI Simplified */
+  /** Stages relevant for cleanup source: Original, Exported, AI Cleaned, AI Simplified, Translated */
   readonly cleanupSourceStages = computed<SourceStage[]>(() => {
     const epubs = this.availableEpubs();
     const find = (name: string) => epubs.find(e => e.filename === name);
+    const projectDir = this.bfpPath();
+    const translateDir = `${projectDir}/stages/02-translate`;
     return [
       { id: 'original', label: 'Original', completed: !!find('original.epub'), path: find('original.epub')?.path ?? '' },
       { id: 'exported', label: 'Exported', completed: !!find('exported.epub'), path: find('exported.epub')?.path ?? '' },
       { id: 'cleaned', label: 'AI Cleaned', completed: !!find('cleaned.epub'), path: find('cleaned.epub')?.path ?? '' },
       { id: 'simplified', label: 'AI Simplified', completed: !!find('simplified.epub'), path: find('simplified.epub')?.path ?? '' },
+      { id: 'translated', label: 'Translated', completed: !!find('translated.epub'), path: find('translated.epub')?.path || `${translateDir}/translated.epub` },
     ];
   });
 
@@ -3108,6 +3111,7 @@ export class ProcessWizardComponent implements OnInit {
             openaiApiKey: aiConfig.openai?.apiKey,
             enableAiCleanup: this.enableAiCleanup(),
             simplifyForLearning: this.simplifyForLearning(),
+            simplifyMode: 'plain' as const,
             testMode: this.testMode(),
             testModeChunks: this.testMode() ? this.testModeChunks() : undefined,
             cleanupPrompt: this.promptModified() ? this.promptText() : undefined,  // Only override when user customized

@@ -126,6 +126,8 @@ export interface OcrCleanupConfig {
   enableAiCleanup?: boolean;
   // Simplify for language learners
   simplifyForLearning?: boolean;
+  // Simplify mode: 'learning' (A1-B1 language learners) or 'plain' (plain language for audiobooks)
+  simplifyMode?: 'learning' | 'plain';
   // Custom cleanup prompt (overrides default)
   cleanupPrompt?: string;
   // Additional instructions appended to the AI prompt

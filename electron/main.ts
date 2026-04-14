@@ -5892,6 +5892,8 @@ function setupIpcHandlers(): void {
       // Simplify for language learners (backwards compat: also accepts simplifyForChildren)
       simplifyForLearning?: boolean;
       simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
+      // Simplify mode: 'learning' (A1-B1 language learners) or 'plain' (plain language for audiobooks)
+      simplifyMode?: 'learning' | 'plain';
       // Custom cleanup prompt (overrides default)
       cleanupPrompt?: string;
       // Additional instructions appended to the AI prompt
@@ -5956,6 +5958,7 @@ function setupIpcHandlers(): void {
         testModeChunks?: number;
         enableAiCleanup?: boolean;
         simplifyForChildren?: boolean;
+        simplifyMode?: 'learning' | 'plain';
         cleanupPrompt?: string;
         customInstructions?: string;
         outputDir?: string;
@@ -5988,10 +5991,11 @@ function setupIpcHandlers(): void {
 
       // Set simplify mode (support both names for backwards compatibility)
       cleanupOptions.simplifyForChildren = aiConfig.simplifyForLearning || aiConfig.simplifyForChildren || false;
+      cleanupOptions.simplifyMode = aiConfig.simplifyMode || 'learning';
       if (cleanupOptions.simplifyForChildren) {
-        console.log('[IPC] Simplify for language learners mode: ENABLED');
+        console.log(`[IPC] Simplify mode: ENABLED (${cleanupOptions.simplifyMode})`);
       }
-      console.log('[IPC] enableAiCleanup:', cleanupOptions.enableAiCleanup, 'simplifyForChildren:', cleanupOptions.simplifyForChildren);
+      console.log('[IPC] enableAiCleanup:', cleanupOptions.enableAiCleanup, 'simplifyForChildren:', cleanupOptions.simplifyForChildren, 'simplifyMode:', cleanupOptions.simplifyMode);
 
       // Set custom prompt if provided
       if (aiConfig.cleanupPrompt) {

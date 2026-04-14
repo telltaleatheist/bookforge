@@ -687,6 +687,67 @@ function getSimplifyOnlySystemPrompt(): string {
   return lines.join('\n');
 }
 
+/**
+ * Build a standalone "Simplify Plain Language" system prompt.
+ * Used in the standard audiobook pipeline to convert academic/flowery prose
+ * into clear, listenable language — without dumbing it down to A1-B1.
+ */
+function getSimplifyPlainLanguagePrompt(): string {
+  const lines: string[] = [
+    'You are a skilled narrator-editor who rewrites stiff, academic, or poorly translated prose into vivid, conversational nonfiction — the kind you\'d hear in a top-rated history podcast or a book by Erik Larson or Mary Roach.',
+    '',
+    'The source text may be machine-translated from another language, so expect awkward phrasing, overly formal constructions, and unnatural word order. Your job is to make it sound like it was originally written in natural, confident English.',
+    '',
+    '═══════════════════════════════════════════════════════════════════════════════',
+    'VOICE & TONE',
+    '═══════════════════════════════════════════════════════════════════════════════',
+    '',
+    '- Write like you\'re TELLING someone this story, not presenting a thesis',
+    '- Use the natural rhythms of spoken English — contractions, varied sentence length, occasional rhetorical questions',
+    '- Be direct and confident. "Hitler hated the church" not "It can be observed that Hitler maintained a negative stance toward ecclesiastical institutions"',
+    '- When the original uses five words where one will do, use one',
+    '- It\'s okay to start sentences with And, But, So, or Now when it sounds natural',
+    '',
+    '═══════════════════════════════════════════════════════════════════════════════',
+    'REWRITING RULES',
+    '═══════════════════════════════════════════════════════════════════════════════',
+    '',
+    '1. KILL ACADEMIC BLOAT:',
+    '   - "One of the most enduring impressions conveyed by the study of" → "What stands out from"',
+    '   - "It therefore seems methodologically the correct approach" → "So the best place to start is"',
+    '   - "with respect to the relationship of X to Y" → "how X dealt with Y"',
+    '   - "In this article, I will try to show" → cut entirely, just show it',
+    '   - Delete meta-commentary: "as we shall see", "it is worth noting", "one must consider"',
+    '',
+    '2. FIX TRANSLATION ARTIFACTS:',
+    '   - Unnatural word order → rearrange to English Subject-Verb-Object',
+    '   - Overly literal phrases → idiomatic English equivalents',
+    '   - Unnecessarily long compound constructions → break apart',
+    '   - Wooden connectors ("In a very similar way") → natural flow ("Along the same lines" or just cut it)',
+    '',
+    '3. VARY THE RHYTHM:',
+    '   - Mix short punchy sentences with longer flowing ones',
+    '   - Use a short sentence for emphasis after a complex idea: "That changed everything."',
+    '   - Don\'t let every sentence follow the same Subject-Verb-Object pattern — that gets monotonous',
+    '',
+    '4. KEEP ALL THE SUBSTANCE:',
+    '   - Every fact, name, date, quote, and argument must survive',
+    '   - Direct quotes must be preserved word-for-word',
+    '   - Keep the logical structure of the argument intact',
+    '   - Don\'t add your own opinions, analogies, or modern commentary',
+    '',
+    '5. PRESERVE FORMATTING: Keep paragraph breaks, chapters, and structure intact.',
+    '   Only change the words themselves, not the layout.',
+    '',
+    'The listener should feel like a sharp, engaging writer originally wrote this in English —',
+    'not like they\'re listening to a cleaned-up translation of a German PhD thesis.',
+    '',
+    'Return ONLY the rewritten text, no explanations or commentary.'
+  ];
+
+  return lines.join('\n');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // API Functions
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1861,6 +1922,7 @@ export async function cleanupEpub(
     testModeChunks?: number;  // Number of chunks to process in test mode
     enableAiCleanup?: boolean;  // Standard OCR/formatting cleanup (default: true)
     simplifyForChildren?: boolean;  // Simplify for language learners
+    simplifyMode?: 'learning' | 'plain';  // 'learning' = A1-B1 learners, 'plain' = plain language audiobook
     cleanupPrompt?: string;  // Custom cleanup prompt (overrides default)
     customInstructions?: string;  // Additional instructions appended to the AI prompt
     outputDir?: string;  // Override output directory (default: same dir as input EPUB)
@@ -2015,6 +2077,7 @@ export async function cleanupEpub(
     // Default: enableAiCleanup is true for backwards compatibility
     const enableAiCleanup = options?.enableAiCleanup !== false;
     const simplifyForChildren = options?.simplifyForChildren === true;
+    const simplifyMode = options?.simplifyMode || 'learning';
 
     let systemPrompt: string;
 
@@ -2035,9 +2098,14 @@ export async function cleanupEpub(
       systemPrompt = systemPrompt + simplifySection;
       console.log('[AI-BRIDGE] Mode: AI Cleanup + Simplify for A1-B1 language learners');
     } else if (simplifyForChildren && !enableAiCleanup) {
-      // SIMPLIFY ONLY: Use dedicated simplify-only prompt (no OCR/formatting instructions)
-      systemPrompt = getSimplifyOnlySystemPrompt();
-      console.log('[AI-BRIDGE] Mode: Simplify for A1-B1 learners ONLY (no AI cleanup)');
+      // SIMPLIFY ONLY: Use dedicated simplify prompt (no OCR/formatting instructions)
+      if (simplifyMode === 'plain') {
+        systemPrompt = getSimplifyPlainLanguagePrompt();
+        console.log('[AI-BRIDGE] Mode: Simplify to plain language (audiobook)');
+      } else {
+        systemPrompt = getSimplifyOnlySystemPrompt();
+        console.log('[AI-BRIDGE] Mode: Simplify for A1-B1 learners ONLY (no AI cleanup)');
+      }
     } else {
       // CLEANUP ONLY: Standard cleanup without simplification
       // Use language-specific prompt to prevent unwanted translation
