@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { normalizeFsPath } from './path-utils';
 import type {
   ProjectManifest,
   ProjectType,
@@ -362,11 +363,14 @@ export async function getManifest(projectId: string): Promise<ManifestGetResult>
 
     const content = await fs.promises.readFile(manifestPath, 'utf-8');
     const manifest = JSON.parse(content) as ProjectManifest;
+    // Normalize to NFC so downstream path construction matches on-disk folder names
+    // (older manifests written on macOS may store projectId in NFD form).
+    if (manifest.projectId) manifest.projectId = normalizeFsPath(manifest.projectId);
 
     return {
       success: true,
       manifest,
-      projectPath: getProjectPath(projectId),
+      projectPath: getProjectPath(manifest.projectId || projectId),
     };
   } catch (error: any) {
     return {
@@ -480,6 +484,12 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
       try {
         const content = await fs.promises.readFile(manifestPath, 'utf-8');
         const manifest = JSON.parse(content) as ProjectManifest;
+
+        // The folder name on disk is authoritative — use it as projectId so all
+        // downstream fs.* calls resolve correctly on Windows (NTFS is normalization-
+        // sensitive, and manifests written on macOS may store projectId in NFD form
+        // while the folder on disk is NFC, or vice versa).
+        manifest.projectId = normalizeFsPath(entry.name);
 
         // Apply filter
         if (filter?.type && manifest.projectType !== filter.type) {

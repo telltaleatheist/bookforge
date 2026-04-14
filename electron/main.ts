@@ -17,6 +17,7 @@ import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
 import { findEbookConvert } from './ebook-convert-bridge';
 import { applyMetadata } from './metadata-tools';
+import { normalizeFsPath, toAsciiSlug } from './path-utils';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -967,6 +968,7 @@ function setupIpcHandlers(): void {
   // File system handlers
   ipcMain.handle('fs:browse', async (_event, dirPath: string) => {
     const fs = await import('fs/promises');
+    dirPath = normalizeFsPath(dirPath);
     const entries = await fs.readdir(dirPath, { withFileTypes: true });
 
     const items = [];
@@ -1008,7 +1010,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('fs:exists', async (_event, filePath: string) => {
     const fs = await import('fs/promises');
     try {
-      await fs.access(filePath);
+      await fs.access(normalizeFsPath(filePath));
       return true;
     } catch {
       return false;
@@ -1018,18 +1020,19 @@ function setupIpcHandlers(): void {
   ipcMain.handle('fs:batch-exists', async (_event, filePaths: string[]) => {
     const fs = await import('fs/promises');
     const results: Record<string, boolean> = {};
-    await Promise.all(filePaths.map(async (p) => {
+    await Promise.all(filePaths.map(async (original) => {
+      const p = normalizeFsPath(original);
       try {
         const stat = await fs.stat(p);
         if (stat.isDirectory()) {
           // Empty directories don't count as "existing" for stage detection
           const entries = await fs.readdir(p);
-          results[p] = entries.length > 0;
+          results[original] = entries.length > 0;
         } else {
-          results[p] = true;
+          results[original] = true;
         }
       } catch {
-        results[p] = false;
+        results[original] = false;
       }
     }));
     return results;
@@ -3205,7 +3208,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('shell:show-item-in-folder', async (_event, filePath: string) => {
     try {
       const { shell } = await import('electron');
-      shell.showItemInFolder(filePath);
+      shell.showItemInFolder(normalizeFsPath(filePath));
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -3389,8 +3392,13 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('ebookLibrary:reveal-book', async (_event, relativePath: string) => {
     try {
-      const absolutePath = ebookLibrary.getAbsolutePath(relativePath);
+      const absolutePath = normalizeFsPath(ebookLibrary.getAbsolutePath(relativePath));
       const { shell } = await import('electron');
+      // showItemInFolder is fire-and-forget and silently no-ops on bad paths on Windows,
+      // so verify the file exists and surface a real error if it doesn't.
+      if (!fsSync.existsSync(absolutePath)) {
+        return { success: false, error: `File not found: ${absolutePath}` };
+      }
       shell.showItemInFolder(absolutePath);
       return { success: true };
     } catch (err) {
@@ -3918,7 +3926,7 @@ function setupIpcHandlers(): void {
 
   // Helper to generate a unique project folder name (with timestamp for uniqueness)
   const generateProjectId = (filename: string): string => {
-    const baseName = filename.replace(/\.epub$/i, '').replace(/['"''""/\\()]/g, '').replace(/[^a-zA-Z0-9_\-.,]/g, '_').replace(/_+/g, '_');
+    const baseName = toAsciiSlug(filename.replace(/\.epub$/i, ''));
     const timestamp = Date.now().toString(36);
     return `${baseName}_${timestamp}`;
   };
@@ -3942,7 +3950,7 @@ function setupIpcHandlers(): void {
 
   // Helper to generate a stable project ID (without timestamp, for deduplication)
   const generateStableProjectId = (filename: string): string => {
-    return filename.replace(/\.epub$/i, '').replace(/['"''""/\\()]/g, '').replace(/[^a-zA-Z0-9_\-.,]/g, '_').replace(/_+/g, '_');
+    return toAsciiSlug(filename.replace(/\.epub$/i, ''));
   };
 
   // Helper to find existing project folder by stable ID prefix
@@ -4924,15 +4932,14 @@ function setupIpcHandlers(): void {
         }
       }
 
-      // Generate human-readable slug for folder name
-      // Strip quotes and slashes (shell-unsafe), keep periods/commas/parens
-      const cleanTitle = title.replace(/['"''""/\\]/g, '').trim();
-      const cleanAuthor = author.replace(/['"''""/\\]/g, '').trim();
+      // Generate human-readable, ASCII-only slug for folder name.
+      // Non-ASCII chars (e.g. á, é, ñ) are transliterated to their base letter. This
+      // sidesteps macOS/Windows Unicode normalization differences that cause fs.access
+      // to fail on Windows when the stored path and on-disk folder use different forms.
+      const cleanTitle = toAsciiSlug(title.replace(/\s+/g, '_'));
+      const cleanAuthor = toAsciiSlug(author.replace(/\s+/g, '_'));
       const yearStr = year ? `_(${year})` : '';
-      let slug = `${cleanTitle.replace(/\s+/g, '_')}_-_${cleanAuthor.replace(/\s+/g, '_')}${yearStr}`;
-
-      // Ensure slug is valid as a folder name — strip OS-invalid and shell-unsafe chars
-      slug = slug.replace(/[<>:"|?*'"''""/\\]/g, '_').replace(/_+/g, '_').substring(0, 150);
+      let slug = toAsciiSlug(`${cleanTitle}_-_${cleanAuthor}${yearStr}`).substring(0, 150);
 
       // Create project directory with human-readable name
       const projectsFolder = getProjectsFolder();
