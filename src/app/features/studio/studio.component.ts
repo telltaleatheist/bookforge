@@ -108,6 +108,28 @@ import { SettingsService } from '../../core/services/settings.service';
         <!-- Right Panel: Workflow -->
         <div pane-secondary class="workflow-panel">
           @if (selectedItem()) {
+            <!-- Quick Actions -->
+            <div class="quick-actions">
+              <button class="quick-action-btn edit" (click)="openEditor()" title="Open PDF/EPUB editor">
+                Edit
+              </button>
+              @if (selectedItem()!.hasCleaned || diffPaths()) {
+                <button class="quick-action-btn review" (click)="goToReview()" title="Review AI cleanup changes">
+                  Review Changes
+                </button>
+              }
+              @if (currentEpubPath()) {
+                <button class="quick-action-btn stream" (click)="goToStream()" title="Stream TTS audio">
+                  Stream
+                </button>
+              }
+              @if (hasMonoAudio() || hasBilingualAudio()) {
+                <button class="quick-action-btn play" (click)="goToPlay()" title="Play audiobook">
+                  Play
+                </button>
+              }
+            </div>
+
             <!-- Main Tabs -->
             <div class="main-tabs-container">
               <div class="main-tabs">
@@ -709,6 +731,41 @@ import { SettingsService } from '../../core/services/settings.service';
     }
 
     /* Main Tabs */
+    .quick-actions {
+      display: flex;
+      gap: 8px;
+      padding: 12px 16px;
+      background: var(--bg-surface);
+    }
+
+    .quick-action-btn {
+      padding: 8px 18px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      color: white;
+
+      &.edit {
+        background: var(--accent);
+      }
+      &.review {
+        background: #8b5cf6;
+      }
+      &.stream {
+        background: #06b6d4;
+      }
+      &.play {
+        background: #22c55e;
+      }
+
+      &:hover {
+        filter: brightness(1.15);
+      }
+    }
+
     .main-tabs-container {
       flex-shrink: 0;
       background: var(--bg-surface);
@@ -1363,6 +1420,26 @@ export class StudioComponent implements OnInit, OnDestroy {
   setLLSubTab(tab: LanguageLearningSubTab): void {
     this.llSubTab.set(tab);
     this.disabledTabMessage.set(null);
+  }
+
+  goToReview(): void {
+    this.setMainTab('audiobook');
+    this.setAudiobookSubTab('review');
+  }
+
+  goToStream(): void {
+    this.setMainTab('audiobook');
+    this.setAudiobookSubTab('stream');
+  }
+
+  goToPlay(): void {
+    if (this.hasMonoAudio()) {
+      this.setMainTab('audiobook');
+      this.setAudiobookSubTab('play');
+    } else if (this.hasBilingualAudio()) {
+      this.setMainTab('language-learning');
+      this.setLLSubTab('play');
+    }
   }
 
   handleSubTabClick(

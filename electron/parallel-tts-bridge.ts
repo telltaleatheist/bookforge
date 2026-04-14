@@ -63,6 +63,7 @@ function writeWorkerLog(line: string): void {
   }
 }
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
+import * as manifestService from './manifest-service';
 import { checkResembleAvailable, enhanceFile, initResembleBridge } from './resemble-bridge';
 
 /**
@@ -2750,6 +2751,26 @@ async function applyMetadataWithM4bTool(
   if (!outputDir) {
     console.error('[PARALLEL-TTS] outputDir is empty - cannot rename file to destination folder');
     // Still try to apply metadata in place
+  }
+
+  // Resolve cover from manifest if not provided (defense in depth)
+  if (!metadata.coverPath && outputDir) {
+    try {
+      // outputDir is typically {projectDir}/output — go up one level to get project dir
+      const projectDir = path.dirname(outputDir);
+      const projectId = path.basename(projectDir);
+      const mResult = await manifestService.getManifest(projectId);
+      if (mResult.success && mResult.manifest?.metadata?.coverPath) {
+        const libRoot = manifestService.getLibraryBasePath();
+        const absCover = path.join(libRoot, mResult.manifest.metadata.coverPath);
+        if (fsSync.existsSync(absCover)) {
+          metadata.coverPath = absCover;
+          console.log(`[PARALLEL-TTS] Resolved cover from manifest: ${absCover}`);
+        }
+      }
+    } catch (err) {
+      console.warn('[PARALLEL-TTS] Failed to resolve cover from manifest:', err);
+    }
   }
 
   console.log('[PARALLEL-TTS] Applying metadata:', metadata);

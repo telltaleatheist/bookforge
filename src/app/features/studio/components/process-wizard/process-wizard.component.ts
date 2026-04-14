@@ -3199,6 +3199,8 @@ export class ProcessWizardComponent implements OnInit {
               title: 'TTS (Continue)',
               bookTitle: this.title(),
               author: this.author(),
+              year: this.year() || undefined,
+              coverPath: this.coverPath() || undefined,
               outputFilename: `${this.title() || 'audiobook'}.m4b`,
             },
             config: {
@@ -3258,6 +3260,8 @@ export class ProcessWizardComponent implements OnInit {
               title: 'TTS',
               bookTitle: this.title(),
               author: this.author(),
+              year: this.year() || undefined,
+              coverPath: this.coverPath() || undefined,
               outputFilename: `${this.title() || 'audiobook'}.m4b`,
             },
             config: ttsConfig,
