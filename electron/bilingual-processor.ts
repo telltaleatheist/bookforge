@@ -13,6 +13,7 @@ import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
 import * as zlib from 'zlib';
 import { promisify } from 'util';
+import { estimateNumCtx } from './ai-bridge';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -121,6 +122,7 @@ async function callOllama(
     stream: false,
     options: {
       temperature: 0.3,
+      num_ctx: estimateNumCtx(systemPrompt || '', prompt, 3),
     }
   };
 

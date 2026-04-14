@@ -13,6 +13,7 @@ import { promises as fsPromises } from 'fs';
 
 // Import types and helpers from ai-bridge
 import type { AIProviderConfig } from './ai-bridge';
+import { estimateNumCtx } from './ai-bridge';
 import {
   startDiffCache,
   addChapterDiff,
@@ -208,7 +209,8 @@ async function translateWithOllama(
         stream: false,
         options: {
           temperature: 0.3, // Slightly higher than cleanup for natural translation
-          num_predict: Math.max(4096, text.length * 3) // Allow expansion for translation
+          num_predict: Math.max(4096, text.length * 3), // Allow expansion for translation
+          num_ctx: estimateNumCtx(systemPrompt, text, 3)
         },
         keep_alive: '10m'
       }),

@@ -27,6 +27,43 @@ async function getMupdf() {
   return mupdf;
 }
 
+function resetMupdf() {
+  mupdf = null;
+}
+
+function isWasmTrap(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('null function or function signature mismatch') ||
+    msg.includes('unreachable') ||
+    msg.includes('table index is out of bounds');
+}
+
+/**
+ * Open a document with mupdf, retrying once after resetting the WASM module on trap errors.
+ */
+async function openDocumentWithRetry(
+  mupdfLib: typeof import('mupdf'),
+  data: Buffer | Uint8Array,
+  mimeType: string
+) {
+  try {
+    return mupdfLib.Document.openDocument(data, mimeType);
+  } catch (err) {
+    if (isWasmTrap(err)) {
+      console.warn('[pdf-analyzer] WASM trap on openDocument, resetting mupdf module and retrying...');
+      resetMupdf();
+      const freshLib = await getMupdf();
+      try {
+        return freshLib.Document.openDocument(data, mimeType);
+      } catch (retryErr) {
+        const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        throw new Error(`Failed to open document (WebAssembly error after retry): ${msg}. The file may be corrupted or use unsupported features.`);
+      }
+    }
+    throw err;
+  }
+}
+
 // Types
 export interface TextSpan {
   id: string;
@@ -308,7 +345,7 @@ export class PDFAnalyzer {
         // Still need to open the document for rendering
         const data = await fsPromises.readFile(pdfPath);
         const mimeType = getMimeType(pdfPath);
-        this.doc = mupdfLib.Document.openDocument(data, mimeType);
+        this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
 
         // Layout reflowable documents (EPUBs) so page numbers are meaningful
         if (mimeType === 'application/epub+zip') {
@@ -330,9 +367,9 @@ export class PDFAnalyzer {
     const data = await fsPromises.readFile(pdfPath);
     const mimeType = getMimeType(pdfPath);
 
-    // Open document with error handling for WebAssembly memory issues
+    // Open document with error handling for WebAssembly issues
     try {
-      this.doc = mupdfLib.Document.openDocument(data, mimeType);
+      this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {

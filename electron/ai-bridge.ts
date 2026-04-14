@@ -49,6 +49,25 @@ import {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Ollama Context Sizing
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Estimate the num_ctx needed for an Ollama request.
+ * Without this, Ollama allocates the model's full context window (e.g. 131K for cogito)
+ * which wastes tens of GB of KV cache memory. Even generous estimates here are a fraction
+ * of that. Uses 3 chars/token ratio with 1.5x headroom on top.
+ */
+export function estimateNumCtx(systemPrompt: string, inputText: string, outputMultiplier: number = 2): number {
+  const CHARS_PER_TOKEN = 3;
+  const systemTokens = Math.ceil(systemPrompt.length / CHARS_PER_TOKEN);
+  const inputTokens = Math.ceil(inputText.length / CHARS_PER_TOKEN);
+  const outputTokens = inputTokens * outputMultiplier;
+  const raw = Math.ceil((systemTokens + inputTokens + outputTokens + 512) * 1.5);
+  return Math.max(2048, Math.ceil(raw / 1024) * 1024);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1517,7 +1536,8 @@ async function cleanChunk(
       stream: false,
       options: {
         temperature: 0.1, // Low temperature for consistent output
-        num_predict: text.length * 2 // Allow enough tokens
+        num_predict: text.length * 2, // Allow enough tokens
+        num_ctx: estimateNumCtx(systemPrompt, text, 2)
       },
       keep_alive: '5m' // Keep model loaded for 5 minutes
     })
@@ -1710,7 +1730,8 @@ export async function cleanupChapterStreaming(
         stream: true,
         options: {
           temperature: 0.1,
-          num_predict: text.length * 2
+          num_predict: text.length * 2,
+          num_ctx: estimateNumCtx(systemPrompt, text, 2)
         }
       })
     });
