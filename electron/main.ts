@@ -1038,6 +1038,21 @@ function setupIpcHandlers(): void {
     return results;
   });
 
+  ipcMain.handle('fs:batch-stat', async (_event, filePaths: string[]) => {
+    const fs = await import('fs/promises');
+    const results: Record<string, { mtimeMs: number } | null> = {};
+    await Promise.all(filePaths.map(async (original) => {
+      const p = normalizeFsPath(original);
+      try {
+        const stat = await fs.stat(p);
+        results[original] = { mtimeMs: stat.mtimeMs };
+      } catch {
+        results[original] = null;
+      }
+    }));
+    return results;
+  });
+
   ipcMain.handle('fs:write-text', async (_event, filePath: string, content: string) => {
     const fs = await import('fs/promises');
     try {
@@ -5965,16 +5980,22 @@ function setupIpcHandlers(): void {
       } = {};
 
       // For manifest-based projects, write output to stages/01-cleanup/ instead of alongside source
-      const epubParent = path.dirname(epubPath);
-      const epubGrandparent = path.dirname(epubParent);
-      const manifestCandidate = path.join(epubGrandparent, 'manifest.json');
-      try {
-        await fs.access(manifestCandidate);
-        // This is a manifest project - output to stages/01-cleanup/
-        cleanupOptions.outputDir = path.join(epubGrandparent, 'stages', '01-cleanup');
+      // Walk up the directory tree (max 5 levels) to find manifest.json — handles inputs
+      // from any stage depth (e.g., stages/02-translate/translated.epub is 3 levels deep)
+      let projectRoot: string | null = null;
+      let searchDir = path.dirname(epubPath);
+      for (let i = 0; i < 5 && searchDir !== path.dirname(searchDir); i++) {
+        try {
+          await fs.access(path.join(searchDir, 'manifest.json'));
+          projectRoot = searchDir;
+          break;
+        } catch {
+          searchDir = path.dirname(searchDir);
+        }
+      }
+      if (projectRoot) {
+        cleanupOptions.outputDir = path.join(projectRoot, 'stages', '01-cleanup');
         console.log('[IPC] Manifest project detected, output dir:', cleanupOptions.outputDir);
-      } catch {
-        // Not a manifest project, use default behavior (write alongside source)
       }
 
       // Set test mode and test chunks

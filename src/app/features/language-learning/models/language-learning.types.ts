@@ -151,6 +151,7 @@ export interface AvailableEpub {
   isTranslated: boolean;
   isCleaned: boolean;
   modifiedAt?: string;
+  mtimeMs?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -2502,15 +2502,15 @@ export class QueueService {
             // Don't override with cleaned.epub which would have wrong format and too many chunks
             console.log(`[QUEUE] Language Learning TTS job, using resolved epubPath: ${epubPathForTts}`);
           } else if (electron.fs?.exists && job.epubPath) {
-            // Standard audiobook workflow: Check for processed EPUBs in priority order
+            // Standard audiobook workflow: pick the most recently modified processed EPUB
             // This is for regular audiobooks, not Language Learning
             const epubPathNorm = job.epubPath.replace(/\\/g, '/');
             const epubDir = epubPathNorm.substring(0, epubPathNorm.lastIndexOf('/'));
 
-            // Derive project dir from epub path (epub is in source/ or stages/01-cleanup/)
+            // Derive project dir from epub path (epub is in source/, stages/01-cleanup/, or stages/02-translate/)
             let projectDirForTts = '';
-            if (epubDir.includes('/stages/01-cleanup')) {
-              projectDirForTts = epubDir.substring(0, epubDir.indexOf('/stages/01-cleanup'));
+            if (epubDir.includes('/stages/')) {
+              projectDirForTts = epubDir.substring(0, epubDir.indexOf('/stages/'));
             } else if (epubDir.endsWith('/source')) {
               projectDirForTts = epubDir.substring(0, epubDir.lastIndexOf('/source'));
             }
@@ -2527,15 +2527,36 @@ export class QueueService {
                 `${epubDir}/cleaned.epub`,
               ]),
             ];
+
+            // Use mtime-based resolution: pick the most recently modified candidate
             let foundPath: string | null = null;
-            for (const candidatePath of candidates) {
+            const fsAny = electron.fs as any;
+            if (fsAny.batchStat) {
               try {
-                if (await electron.fs.exists(candidatePath)) {
-                  foundPath = candidatePath;
-                  break;
+                const statResults = await fsAny.batchStat(candidates);
+                let bestMtime = -1;
+                for (const c of candidates) {
+                  const stat = statResults[c];
+                  if (stat && stat.mtimeMs > bestMtime) {
+                    bestMtime = stat.mtimeMs;
+                    foundPath = c;
+                  }
                 }
               } catch {
-                // Continue checking
+                // Fall through to sequential exists check
+              }
+            }
+            // Fallback: sequential exists (first match wins, preserves old behavior)
+            if (!foundPath) {
+              for (const candidatePath of candidates) {
+                try {
+                  if (await electron.fs.exists(candidatePath)) {
+                    foundPath = candidatePath;
+                    break;
+                  }
+                } catch {
+                  // Continue checking
+                }
               }
             }
             if (foundPath) {
