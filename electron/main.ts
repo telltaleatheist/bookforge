@@ -6077,7 +6077,7 @@ function setupIpcHandlers(): void {
 
         // Notify file list so cleaned EPUB appears without manual refresh
         if (cleanupOptions.outputDir) {
-          mainWindow.webContents.send('project:files-changed', epubGrandparent);
+          mainWindow.webContents.send('project:files-changed', projectRoot);
         }
       }
 
