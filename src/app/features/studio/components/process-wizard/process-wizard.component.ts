@@ -36,6 +36,7 @@ interface SourceStage {
 interface AvailableEpub {
   path: string;
   filename: string;
+  mtimeMs?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2424,6 +2425,15 @@ export class ProcessWizardComponent implements OnInit {
         // No translate stage
       }
 
+      // Enrich with mtime for "Latest" resolution
+      if (epubs.length > 0) {
+        const statResults = await this.electronService.fsBatchStat(epubs.map(e => e.path));
+        for (const epub of epubs) {
+          const stat = statResults[epub.path];
+          if (stat) epub.mtimeMs = stat.mtimeMs;
+        }
+      }
+
       this.availableEpubs.set(epubs);
 
       // Detect which stages have existing data
@@ -2465,29 +2475,65 @@ export class ProcessWizardComponent implements OnInit {
     }
   }
 
+  /** Stage order tiebreak for mtime-based resolution (higher = preferred when mtimes are equal) */
+  private static readonly STAGE_ORDER: Record<string, number> = {
+    'original.epub': 0,
+    'exported.epub': 1,
+    'cleaned.epub': 2,
+    'simplified.epub': 3,
+    'translated.epub': 4,
+  };
+
+  /**
+   * Pick the most recently modified EPUB from candidates.
+   * Tiebreak by stage order (later stage wins).
+   */
+  private getMostRecentEpub(candidates: AvailableEpub[], exclude?: Set<string>): AvailableEpub | null {
+    const filtered = candidates.filter(e => e.mtimeMs != null && (!exclude || !exclude.has(e.filename)));
+    if (filtered.length === 0) return null;
+    filtered.sort((a, b) => {
+      const diff = (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0);
+      if (diff !== 0) return diff;
+      return (ProcessWizardComponent.STAGE_ORDER[b.filename] ?? 0) - (ProcessWizardComponent.STAGE_ORDER[a.filename] ?? 0);
+    });
+    return filtered[0];
+  }
+
   /** Resolve which stage ID "latest" maps to for a given pipeline step */
   private resolveLatestStageId(step: 'cleanup' | 'translate' | 'tts'): string {
     const epubs = this.availableEpubs();
     const has = (name: string) => epubs.some(e => e.filename === name);
     if (step === 'cleanup') {
-      // Cleanup input: prefer exported > original (not cleaned — we're producing that)
+      // Cleanup input: prefer exported > original (we're producing cleaned/simplified, not consuming them)
       if (has('exported.epub')) return 'exported';
       if (has('original.epub')) return 'original';
     } else if (step === 'translate') {
-      // Translate input: consider pipeline intent (cleanup will produce this file)
+      // Pipeline intent first: cleanup will produce a file that doesn't exist yet
       const willProduce = this.cleanupWillProduce();
-      if (willProduce === 'simplified.epub' || has('simplified.epub')) return 'simplified';
-      if (willProduce === 'cleaned.epub' || has('cleaned.epub')) return 'cleaned';
+      if (willProduce === 'simplified.epub') return 'simplified';
+      if (willProduce === 'cleaned.epub') return 'cleaned';
+
+      // On-disk: most recently modified wins
+      const exclude = new Set(['translated.epub']); // Don't use translated as translate input
+      const best = this.getMostRecentEpub(epubs, exclude);
+      if (best) return best.filename.replace('.epub', '');
+
+      // Fallback if no mtime data
       if (has('exported.epub')) return 'exported';
       if (has('original.epub')) return 'original';
     } else {
-      // TTS input: prefer translated > simplified > cleaned > exported > original
-      // Consider pipeline intent: earlier steps will produce files that don't exist yet
+      // Pipeline intent: earlier steps will produce files that don't exist yet
       const willProduce = this.cleanupWillProduce();
       const translationEnabled = this.enableTranslation() && !this.skippedSteps.has('translate');
-      if (has('translated.epub') || translationEnabled) return 'translated';
-      if (has('simplified.epub') || willProduce === 'simplified.epub') return 'simplified';
-      if (has('cleaned.epub') || willProduce === 'cleaned.epub') return 'cleaned';
+      if (translationEnabled) return 'translated';
+      if (willProduce === 'simplified.epub' && !has('simplified.epub')) return 'simplified';
+      if (willProduce === 'cleaned.epub' && !has('cleaned.epub')) return 'cleaned';
+
+      // On-disk: most recently modified wins
+      const best = this.getMostRecentEpub(epubs);
+      if (best) return best.filename.replace('.epub', '');
+
+      // Fallback if no mtime data
       if (has('exported.epub')) return 'exported';
       if (has('original.epub')) return 'original';
     }
@@ -2550,50 +2596,44 @@ export class ProcessWizardComponent implements OnInit {
     const projectDir = this.bfpPath();
 
     if (stage === 'cleanup') {
-      // Cleanup: exported > original (no legacy fallbacks)
+      // Cleanup: exported > original (we're producing cleaned/simplified, not consuming them)
       const exported = epubs.find(e => e.filename === 'exported.epub');
       if (exported) return exported.path;
       const original = epubs.find(e => e.filename === 'original.epub');
       if (original) return original.path;
     } else if (stage === 'translate') {
-      // Translation: consider pipeline intent from cleanup, then on-disk files
+      // Pipeline intent: cleanup will produce a file that doesn't exist yet
       const willProduce = this.cleanupWillProduce();
       const cleanupDir = `${projectDir}/stages/01-cleanup`;
-
       if (willProduce === 'simplified.epub') return epubs.find(e => e.filename === 'simplified.epub')?.path || `${cleanupDir}/simplified.epub`;
       if (willProduce === 'cleaned.epub') return epubs.find(e => e.filename === 'cleaned.epub')?.path || `${cleanupDir}/cleaned.epub`;
 
-      // No cleanup intent — fall back to on-disk files
-      const simplified = epubs.find(e => e.filename === 'simplified.epub');
-      if (simplified) return simplified.path;
-      const cleaned = epubs.find(e => e.filename === 'cleaned.epub');
-      if (cleaned) return cleaned.path;
+      // On-disk: most recently modified wins (exclude translated — we're producing that)
+      const exclude = new Set(['translated.epub']);
+      const best = this.getMostRecentEpub(epubs, exclude);
+      if (best) return best.path;
+
+      // Fallback
       const exported = epubs.find(e => e.filename === 'exported.epub');
       if (exported) return exported.path;
       const original = epubs.find(e => e.filename === 'original.epub');
       if (original) return original.path;
     } else if (stage === 'tts') {
-      // TTS: prefer translated > simplified > cleaned > exported > original
-      // Consider pipeline intent from cleanup and translation steps
+      // Pipeline intent: earlier steps will produce files that don't exist yet
       const willProduce = this.cleanupWillProduce();
       const cleanupDir = `${projectDir}/stages/01-cleanup`;
       const translateDir = `${projectDir}/stages/02-translate`;
       const translationEnabled = this.enableTranslation() && !this.skippedSteps.has('translate');
 
-      // If translation step is active, TTS should use translated output
       if (translationEnabled) return epubs.find(e => e.filename === 'translated.epub')?.path || `${translateDir}/translated.epub`;
-      const translated = epubs.find(e => e.filename === 'translated.epub');
-      if (translated) return translated.path;
+      if (willProduce === 'simplified.epub' && !epubs.some(e => e.filename === 'simplified.epub')) return `${cleanupDir}/simplified.epub`;
+      if (willProduce === 'cleaned.epub' && !epubs.some(e => e.filename === 'cleaned.epub')) return `${cleanupDir}/cleaned.epub`;
 
-      // Consider cleanup intent
-      if (willProduce === 'simplified.epub') return epubs.find(e => e.filename === 'simplified.epub')?.path || `${cleanupDir}/simplified.epub`;
-      if (willProduce === 'cleaned.epub') return epubs.find(e => e.filename === 'cleaned.epub')?.path || `${cleanupDir}/cleaned.epub`;
+      // On-disk: most recently modified wins
+      const best = this.getMostRecentEpub(epubs);
+      if (best) return best.path;
 
-      // No pipeline intent — fall back to on-disk files
-      const simplified = epubs.find(e => e.filename === 'simplified.epub');
-      if (simplified) return simplified.path;
-      const cleaned = epubs.find(e => e.filename === 'cleaned.epub');
-      if (cleaned) return cleaned.path;
+      // Fallback
       const exported = epubs.find(e => e.filename === 'exported.epub');
       if (exported) return exported.path;
       const original = epubs.find(e => e.filename === 'original.epub');

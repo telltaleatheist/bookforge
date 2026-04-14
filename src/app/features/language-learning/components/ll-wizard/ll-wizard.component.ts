@@ -2063,18 +2063,50 @@ export class LLWizardComponent implements OnInit {
     ];
   });
 
+  /** Stage order tiebreak for mtime-based resolution (higher = preferred when mtimes are equal) */
+  private static readonly STAGE_ORDER: Record<string, number> = {
+    'original.epub': 0,
+    'exported.epub': 1,
+    'cleaned.epub': 2,
+    'simplified.epub': 3,
+    'translated.epub': 4,
+  };
+
+  /**
+   * Pick the most recently modified EPUB from candidates.
+   * Tiebreak by stage order (later stage wins).
+   */
+  private getMostRecentEpub(candidates: AvailableEpub[], exclude?: Set<string>): AvailableEpub | null {
+    const filtered = candidates.filter(e => e.mtimeMs != null && (!exclude || !exclude.has(e.filename)));
+    if (filtered.length === 0) return null;
+    filtered.sort((a, b) => {
+      const diff = (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0);
+      if (diff !== 0) return diff;
+      return (LLWizardComponent.STAGE_ORDER[b.filename] ?? 0) - (LLWizardComponent.STAGE_ORDER[a.filename] ?? 0);
+    });
+    return filtered[0];
+  }
+
   /** Resolve which stage ID "latest" maps to for a given pipeline step */
   private resolveLatestStageId(step: 'cleanup' | 'translate'): string {
     const epubs = this.availableEpubs();
     const has = (name: string) => epubs.some(e => e.filename === name);
     if (step === 'cleanup') {
-      // Cleanup: simplified > cleaned > exported > original
-      if (has('simplified.epub')) return 'simplified';
-      if (has('cleaned.epub')) return 'cleaned';
+      // Cleanup input: most recently modified source file (not cleaned/simplified — we produce those)
+      const sourceOnly = new Set(['cleaned.epub', 'simplified.epub', 'translated.epub']);
+      const best = this.getMostRecentEpub(epubs, sourceOnly);
+      if (best) return best.filename.replace('.epub', '');
       if (has('exported.epub')) return 'exported';
       if (has('original.epub')) return 'original';
     } else {
-      // Translate: simplified > cleaned > exported > original
+      // Translate input: most recently modified wins (exclude translated — we produce that)
+      // Also exclude per-language EPUBs (xx.epub) since those are translation outputs
+      const exclude = new Set<string>();
+      for (const e of epubs) {
+        if (e.isTranslated || e.filename === 'translated.epub') exclude.add(e.filename);
+      }
+      const best = this.getMostRecentEpub(epubs, exclude);
+      if (best) return best.filename.replace('.epub', '');
       if (has('simplified.epub')) return 'simplified';
       if (has('cleaned.epub')) return 'cleaned';
       if (has('exported.epub')) return 'exported';
@@ -2582,11 +2614,24 @@ export class LLWizardComponent implements OnInit {
         console.log('[LL-WIZARD] No source folder found');
       }
 
+      // Enrich with mtime for "Latest" resolution
+      if (epubs.length > 0) {
+        const statResults = await this.electronService.fsBatchStat(epubs.map(e => e.path));
+        for (const epub of epubs) {
+          const stat = statResults[epub.path];
+          if (stat) {
+            epub.mtimeMs = stat.mtimeMs;
+            epub.modifiedAt = new Date(stat.mtimeMs).toISOString();
+          }
+        }
+      }
+
       console.log('[LL-WIZARD] Scanned EPUBs:', epubs.map(e => ({
         filename: e.filename,
         lang: e.lang,
         isTranslated: e.isTranslated,
-        isSource: e.isSource
+        isSource: e.isSource,
+        mtimeMs: e.mtimeMs
       })));
       this.availableEpubs.set(epubs);
 
@@ -3616,17 +3661,24 @@ export class LLWizardComponent implements OnInit {
     const projectDir = this.effectiveProjectDir();
 
     if (stage === 'cleanup') {
-      // Cleanup: simplified > cleaned > exported > original
-      const simplified = epubs.find(e => e.filename === 'simplified.epub');
-      if (simplified) return simplified.path;
-      const cleaned = epubs.find(e => e.filename === 'cleaned.epub');
-      if (cleaned) return cleaned.path;
+      // Cleanup input: most recently modified source file
+      // Exclude cleanup/translation outputs — we're producing those, not consuming them
+      const sourceOnly = new Set(['cleaned.epub', 'simplified.epub', 'translated.epub']);
+      for (const e of epubs) { if (e.isTranslated) sourceOnly.add(e.filename); }
+      const best = this.getMostRecentEpub(epubs, sourceOnly);
+      if (best) return best.path;
       const exported = epubs.find(e => e.filename === 'exported.epub');
       if (exported) return exported.path;
       const original = epubs.find(e => e.filename === 'original.epub');
       if (original) return original.path;
     } else if (stage === 'translate') {
-      // Translation: simplified > cleaned > exported > original
+      // Translate input: most recently modified wins (exclude translation outputs)
+      const exclude = new Set<string>();
+      for (const e of epubs) {
+        if (e.isTranslated || e.filename === 'translated.epub') exclude.add(e.filename);
+      }
+      const best = this.getMostRecentEpub(epubs, exclude);
+      if (best) return best.path;
       const simplified = epubs.find(e => e.filename === 'simplified.epub');
       if (simplified) return simplified.path;
       const cleaned = epubs.find(e => e.filename === 'cleaned.epub');

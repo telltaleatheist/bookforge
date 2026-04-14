@@ -1380,6 +1380,20 @@ export class ElectronService {
   }
 
   /**
+   * Get file stats (mtime) for multiple paths in a single IPC call
+   */
+  async fsBatchStat(filePaths: string[]): Promise<Record<string, { mtimeMs: number } | null>> {
+    if (this.isElectron) {
+      try {
+        return await (window as any).electron.fs.batchStat(filePaths);
+      } catch {
+        return {};
+      }
+    }
+    return {};
+  }
+
+  /**
    * Read a text file and return its contents
    */
   async readTextFile(filePath: string): Promise<string | null> {
