@@ -1345,6 +1345,100 @@ export async function runLLTranslation(
 // Preserves original EPUB structure (CSS, images, fonts, headings).
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Checkpoint / Resume ─────────────────────────────────────────────────────
+
+interface MonoTranslationCheckpoint {
+  version: 1;
+  sourceEpubPath: string;
+  sourceLang: string;
+  targetLang: string;
+  aiProvider: string;
+  aiModel: string;
+  totalChapters: number;
+  totalParagraphs: number;
+  completedChapters: string[];       // zipPath identifiers
+  completedParagraphCount: number;
+  updatedAt: string;
+}
+
+function getTranslationCheckpointPath(translateDir: string): string {
+  return path.join(translateDir, 'translation-progress.json');
+}
+
+async function loadTranslationCheckpoint(translateDir: string): Promise<MonoTranslationCheckpoint | null> {
+  try {
+    const data = await fs.readFile(getTranslationCheckpointPath(translateDir), 'utf-8');
+    const checkpoint = JSON.parse(data) as MonoTranslationCheckpoint;
+    if (checkpoint.version !== 1) return null;
+    return checkpoint;
+  } catch {
+    return null;
+  }
+}
+
+async function saveTranslationCheckpoint(translateDir: string, checkpoint: MonoTranslationCheckpoint): Promise<void> {
+  const checkpointPath = getTranslationCheckpointPath(translateDir);
+  const tmpPath = checkpointPath + '.tmp';
+  await fs.writeFile(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf-8');
+  await fs.rename(tmpPath, checkpointPath);
+}
+
+async function deleteTranslationCheckpoint(translateDir: string): Promise<void> {
+  try {
+    await fs.unlink(getTranslationCheckpointPath(translateDir));
+  } catch {
+    // File doesn't exist, that's fine
+  }
+}
+
+// ── Chapter Cache ───────────────────────────────────────────────────────────
+
+function getChapterCacheDir(translateDir: string): string {
+  return path.join(translateDir, 'chapter-cache');
+}
+
+function getChapterCachePath(translateDir: string, zipPath: string): string {
+  // Encode zipPath to safe filename: replace / with __
+  const safeName = zipPath.replace(/\//g, '__');
+  return path.join(getChapterCacheDir(translateDir), safeName);
+}
+
+async function saveChapterCache(translateDir: string, zipPath: string, xhtml: string): Promise<void> {
+  const cacheDir = getChapterCacheDir(translateDir);
+  await fs.mkdir(cacheDir, { recursive: true });
+  const cachePath = getChapterCachePath(translateDir, zipPath);
+  const tmpPath = cachePath + '.tmp';
+  await fs.writeFile(tmpPath, xhtml, 'utf-8');
+  await fs.rename(tmpPath, cachePath);
+}
+
+async function loadChapterCache(translateDir: string, zipPath: string): Promise<string> {
+  return fs.readFile(getChapterCachePath(translateDir, zipPath), 'utf-8');
+}
+
+async function deleteChapterCacheDir(translateDir: string): Promise<void> {
+  try {
+    await fs.rm(getChapterCacheDir(translateDir), { recursive: true, force: true });
+  } catch {
+    // Directory doesn't exist, that's fine
+  }
+}
+
+/**
+ * Validate that all cached chapter files exist for a checkpoint.
+ * Returns false if any are missing (cache is corrupt/incomplete).
+ */
+async function validateChapterCache(translateDir: string, completedChapters: string[]): Promise<boolean> {
+  for (const zipPath of completedChapters) {
+    try {
+      await fs.access(getChapterCachePath(translateDir, zipPath));
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 export interface MonoTranslationConfig {
   cleanedEpubPath?: string;  // Input EPUB path (from job.epubPath if not provided)
   sourceLang: string;        // Source language of the book
@@ -1465,6 +1559,58 @@ ${originalText}`;
       // Last resort: use original text
       console.warn(`[MONO-TRANSLATION] Paragraph ${idx} still missing after retry, keeping original`);
       results.push(paragraphs[i]);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Translate a list of chapter titles in a single AI call.
+ * Used for nav.xhtml and toc.ncx entries.
+ */
+async function translateChapterTitles(
+  titles: string[],
+  config: MonoTranslationConfig
+): Promise<string[]> {
+  const sourceLanguage = LANGUAGE_NAMES[config.sourceLang] || config.sourceLang;
+  const targetLanguage = LANGUAGE_NAMES[config.targetLang] || config.targetLang;
+
+  const bilingualConfig: BilingualProcessingConfig = {
+    projectId: '',
+    sourceText: '',
+    sourceLang: config.sourceLang,
+    targetLang: config.targetLang,
+    aiProvider: config.aiProvider,
+    aiModel: config.aiModel,
+    ollamaBaseUrl: config.ollamaBaseUrl,
+    claudeApiKey: config.claudeApiKey,
+    openaiApiKey: config.openaiApiKey,
+  };
+
+  const formatted = formatNumberedParagraphs(titles, 1);
+
+  const prompt = `Translate the following chapter titles from ${sourceLanguage} to ${targetLanguage}.
+Each title is marked with <<<N>>>. Preserve these markers exactly.
+Return ONLY the translated titles with the same <<<N>>> markers. Do not add explanations.
+Keep translations concise — these are chapter headings, not full sentences.
+
+${formatted}`;
+
+  const response = await callAI(prompt, bilingualConfig);
+
+  const { paragraphs: parsed } = parseNumberedParagraphs(response);
+
+  // Assemble results in order, falling back to original if missing
+  const results: string[] = [];
+  for (let i = 0; i < titles.length; i++) {
+    const idx = i + 1;
+    const translated = parsed.get(idx);
+    if (translated && translated.length > 0) {
+      results.push(translated);
+    } else {
+      console.warn(`[MONO-TRANSLATION] Title ${idx} missing from translation, keeping original: "${titles[i]}"`);
+      results.push(titles[i]);
     }
   }
 
@@ -1612,19 +1758,70 @@ export async function runMonoTranslation(
 
     console.log(`[MONO-TRANSLATION] ${totalParagraphs} paragraphs across ${chapterDataList.length} chapters`);
 
-    sendProgress(mainWindow, jobId, {
-      phase: 'translating',
-      currentSentence: 0,
-      totalSentences: totalParagraphs,
-      percentage: 10,
-      message: `Translating ${totalParagraphs} paragraphs...`
-    });
+    // ── Step 2.5: Load checkpoint & validate ────────────────────────────
+    let completedZipPaths = new Set<string>();
+    let paragraphsDone = 0;
+    let resuming = false;
+
+    const existingCheckpoint = await loadTranslationCheckpoint(translateDir);
+    if (existingCheckpoint) {
+      // Validate config matches
+      const configMatch =
+        existingCheckpoint.sourceEpubPath === inputEpubPath &&
+        existingCheckpoint.sourceLang === config.sourceLang &&
+        existingCheckpoint.targetLang === config.targetLang &&
+        existingCheckpoint.aiProvider === config.aiProvider &&
+        existingCheckpoint.aiModel === config.aiModel;
+
+      if (!configMatch) {
+        console.log(`[MONO-TRANSLATION] Checkpoint config mismatch — starting fresh`);
+        console.log(`[MONO-TRANSLATION]   checkpoint: ${existingCheckpoint.sourceLang}→${existingCheckpoint.targetLang} ${existingCheckpoint.aiProvider}/${existingCheckpoint.aiModel}`);
+        console.log(`[MONO-TRANSLATION]   current:    ${config.sourceLang}→${config.targetLang} ${config.aiProvider}/${config.aiModel}`);
+        await deleteTranslationCheckpoint(translateDir);
+        await deleteChapterCacheDir(translateDir);
+      } else {
+        // Validate that cached chapter files actually exist
+        const cacheValid = await validateChapterCache(translateDir, existingCheckpoint.completedChapters);
+        if (!cacheValid) {
+          console.log(`[MONO-TRANSLATION] Checkpoint exists but cache files missing — starting fresh`);
+          await deleteTranslationCheckpoint(translateDir);
+          await deleteChapterCacheDir(translateDir);
+        } else {
+          // Resume from checkpoint
+          completedZipPaths = new Set(existingCheckpoint.completedChapters);
+          paragraphsDone = existingCheckpoint.completedParagraphCount;
+          resuming = true;
+          console.log(`[MONO-TRANSLATION] Resuming: ${completedZipPaths.size}/${chapterDataList.length} chapters done, ${paragraphsDone}/${totalParagraphs} paragraphs`);
+        }
+      }
+    }
 
     // ── Step 3: Translate paragraphs chapter by chapter ─────────────────
-    const translatedChapterXhtml = new Map<string, string>();
-    let paragraphsDone = 0;
+    if (resuming) {
+      const pct = 10 + Math.round((paragraphsDone / totalParagraphs) * 80);
+      sendProgress(mainWindow, jobId, {
+        phase: 'translating',
+        currentSentence: paragraphsDone,
+        totalSentences: totalParagraphs,
+        percentage: Math.min(pct, 90),
+        message: `Resuming translation: ${paragraphsDone}/${totalParagraphs} paragraphs already done`
+      });
+    } else {
+      sendProgress(mainWindow, jobId, {
+        phase: 'translating',
+        currentSentence: 0,
+        totalSentences: totalParagraphs,
+        percentage: 10,
+        message: `Translating ${totalParagraphs} paragraphs...`
+      });
+    }
 
     for (const chData of chapterDataList) {
+      // Skip chapters already completed in a previous run
+      if (completedZipPaths.has(chData.zipPath)) {
+        continue;
+      }
+
       const chapterInfo = chapterPaths.get(chData.zipPath);
       const chapterTitle = chapterInfo?.title || chData.zipPath;
       console.log(`[MONO-TRANSLATION] Translating chapter: ${chapterTitle} (${chData.paragraphs.length} paragraphs)`);
@@ -1659,10 +1856,107 @@ export async function runMonoTranslation(
       $('html').attr('lang', config.targetLang);
       modifiedXhtml = $.xml();
 
-      translatedChapterXhtml.set(chData.zipPath, modifiedXhtml);
+      // Cache translated chapter to disk and update checkpoint
+      await saveChapterCache(translateDir, chData.zipPath, modifiedXhtml);
+      completedZipPaths.add(chData.zipPath);
+
+      await saveTranslationCheckpoint(translateDir, {
+        version: 1,
+        sourceEpubPath: inputEpubPath,
+        sourceLang: config.sourceLang,
+        targetLang: config.targetLang,
+        aiProvider: config.aiProvider,
+        aiModel: config.aiModel,
+        totalChapters: chapterDataList.length,
+        totalParagraphs,
+        completedChapters: Array.from(completedZipPaths),
+        completedParagraphCount: paragraphsDone,
+        updatedAt: new Date().toISOString(),
+      });
     }
 
-    // ── Step 4: Write new EPUB ──────────────────────────────────────────
+    // ── Step 3.5: Translate navigation document titles ──────────────────
+    sendProgress(mainWindow, jobId, {
+      phase: 'translating',
+      currentSentence: totalParagraphs,
+      totalSentences: totalParagraphs,
+      percentage: 92,
+      message: 'Translating chapter titles...'
+    });
+
+    // Map of ZIP entry path → translated content for nav/toc files
+    const translatedNavFiles = new Map<string, Buffer>();
+
+    // Translate nav.xhtml (EPUB 3 table of contents)
+    if (structure.navPath) {
+      try {
+        const navBuffer = await zipReader.readEntry(structure.navPath);
+        const navXml = navBuffer.toString('utf8');
+        const $nav = cheerio.load(navXml, { xmlMode: true });
+
+        // Collect all anchor texts from navigation
+        const navTexts: string[] = [];
+        const navAnchors: any[] = [];
+        $nav('nav a, a').each((_, el) => {
+          const text = $nav(el).text().trim();
+          if (text.length > 0) {
+            navTexts.push(text);
+            navAnchors.push($nav(el));
+          }
+        });
+
+        if (navTexts.length > 0) {
+          console.log(`[MONO-TRANSLATION] Translating ${navTexts.length} navigation titles`);
+          const translatedTitles = await translateChapterTitles(navTexts, config);
+          for (let i = 0; i < navAnchors.length; i++) {
+            if (i < translatedTitles.length && translatedTitles[i].length > 0) {
+              navAnchors[i].text(translatedTitles[i]);
+            }
+          }
+          // Update xml:lang
+          $nav('html').attr('xml:lang', config.targetLang);
+          $nav('html').attr('lang', config.targetLang);
+          translatedNavFiles.set(structure.navPath, Buffer.from($nav.xml(), 'utf8'));
+        }
+      } catch (err) {
+        console.warn(`[MONO-TRANSLATION] Could not translate nav.xhtml:`, err);
+      }
+    }
+
+    // Translate toc.ncx (EPUB 2 table of contents)
+    if (structure.ncxPath) {
+      try {
+        const ncxBuffer = await zipReader.readEntry(structure.ncxPath);
+        const ncxXml = ncxBuffer.toString('utf8');
+        const $ncx = cheerio.load(ncxXml, { xmlMode: true });
+
+        // Collect all navLabel text elements
+        const ncxTexts: string[] = [];
+        const ncxTextEls: any[] = [];
+        $ncx('navLabel text, navlabel text').each((_, el) => {
+          const text = $ncx(el).text().trim();
+          if (text.length > 0) {
+            ncxTexts.push(text);
+            ncxTextEls.push($ncx(el));
+          }
+        });
+
+        if (ncxTexts.length > 0) {
+          console.log(`[MONO-TRANSLATION] Translating ${ncxTexts.length} NCX titles`);
+          const translatedTitles = await translateChapterTitles(ncxTexts, config);
+          for (let i = 0; i < ncxTextEls.length; i++) {
+            if (i < translatedTitles.length && translatedTitles[i].length > 0) {
+              ncxTextEls[i].text(translatedTitles[i]);
+            }
+          }
+          translatedNavFiles.set(structure.ncxPath, Buffer.from($ncx.xml(), 'utf8'));
+        }
+      } catch (err) {
+        console.warn(`[MONO-TRANSLATION] Could not translate toc.ncx:`, err);
+      }
+    }
+
+    // ── Step 4: Write new EPUB from cache ────────────────────────────────
     sendProgress(mainWindow, jobId, {
       phase: 'epub',
       currentSentence: totalParagraphs,
@@ -1675,8 +1969,13 @@ export async function runMonoTranslation(
     const allEntries = zipReader.getEntries();
 
     for (const file of allEntries) {
-      if (translatedChapterXhtml.has(file)) {
-        zipWriter.addFile(file, Buffer.from(translatedChapterXhtml.get(file)!, 'utf8'));
+      if (completedZipPaths.has(file)) {
+        // Read translated XHTML from chapter cache
+        const cachedXhtml = await loadChapterCache(translateDir, file);
+        zipWriter.addFile(file, Buffer.from(cachedXhtml, 'utf8'));
+      } else if (translatedNavFiles.has(file)) {
+        // Use translated navigation document
+        zipWriter.addFile(file, translatedNavFiles.get(file)!);
       } else {
         const content = await zipReader.readEntry(file);
         zipWriter.addFile(file, content);
@@ -1690,6 +1989,10 @@ export async function runMonoTranslation(
     const tempPath = outputEpubPath + '.tmp';
     await zipWriter.write(tempPath);
     await fs.rename(tempPath, outputEpubPath);
+
+    // Clean up checkpoint and cache after successful write
+    await deleteTranslationCheckpoint(translateDir);
+    await deleteChapterCacheDir(translateDir);
 
     console.log(`[MONO-TRANSLATION] Generated translated EPUB: ${outputEpubPath}`);
 

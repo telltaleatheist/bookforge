@@ -1184,7 +1184,9 @@ function updateOpfMetadata(opf: string, metadata: Partial<EpubMetadata>): string
 
     if (match) {
       // Replace existing element, preserving attributes
-      result = result.replace(regex, `<dc:${tagName}${match[0].match(/[^>]*>/)![0].slice(0, -1)}>${escapeXml(value)}</dc:${tagName}>`);
+      const openTagMatch = match[0].match(new RegExp(`<dc:${tagName}([^>]*)>`, 'i'));
+      const attributes = openTagMatch ? openTagMatch[1] : '';
+      result = result.replace(regex, `<dc:${tagName}${attributes}>${escapeXml(value)}</dc:${tagName}>`);
     } else {
       // Add new element inside <metadata> tag
       const metadataMatch = result.match(/<metadata[^>]*>/i);
@@ -1303,6 +1305,66 @@ function escapeXml(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Export EPUB as Book (standalone — does not use module-level singleton)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Export an EPUB file with updated metadata and optional cover replacement.
+ * Uses its own EpubProcessor instance to avoid interfering with the PDF editor.
+ */
+export async function exportEpubAsBook(
+  sourcePath: string,
+  outputPath: string,
+  metadata: Partial<EpubMetadata>,
+  coverPath?: string
+): Promise<void> {
+  const processor = new EpubProcessor();
+  try {
+    const structure = await processor.open(sourcePath);
+    const zipWriter = new ZipWriter();
+
+    // Resolve cover file path within the EPUB ZIP
+    let coverEntryPath: string | null = null;
+    let coverData: Buffer | null = null;
+    if (coverPath) {
+      coverData = await fs.readFile(coverPath);
+      if (structure.metadata.coverPath) {
+        coverEntryPath = structure.rootPath
+          ? `${structure.rootPath}/${structure.metadata.coverPath}`
+          : structure.metadata.coverPath;
+      }
+    }
+
+    const entries = (processor as any).zipReader?.getEntries() || [];
+
+    for (const entryName of entries) {
+      // Replace cover image if provided
+      if (coverData && coverEntryPath && entryName === coverEntryPath) {
+        zipWriter.addFile(entryName, coverData, true);
+        continue;
+      }
+
+      // Apply metadata to OPF
+      if (entryName === structure.opfPath) {
+        const originalOpf = await processor.readFile(entryName);
+        const newOpf = updateOpfMetadata(originalOpf, metadata);
+        zipWriter.addFile(entryName, Buffer.from(newOpf, 'utf8'));
+        continue;
+      }
+
+      // Copy everything else as-is
+      const data = await processor.readBinaryFile(entryName);
+      const compress = entryName !== 'mimetype';
+      zipWriter.addFile(entryName, data, compress);
+    }
+
+    await zipWriter.write(outputPath);
+  } finally {
+    processor.close();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

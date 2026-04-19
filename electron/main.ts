@@ -2732,6 +2732,35 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Export EPUB as a book with metadata + cover via save dialog
+  ipcMain.handle('epub:export-book', async (_event, sourcePath: string, metadata: any, coverPath?: string) => {
+    try {
+      if (!mainWindow) return { success: false, error: 'No window' };
+
+      // Build default filename from metadata
+      const title = (metadata?.title || 'book').replace(/[/\\:*?"<>|]/g, '');
+      const author = (metadata?.author || '').replace(/[/\\:*?"<>|]/g, '');
+      const defaultName = author ? `${title} - ${author}.epub` : `${title}.epub`;
+
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: 'Export EPUB',
+        defaultPath: defaultName,
+        filters: [{ name: 'EPUB', extensions: ['epub'] }]
+      });
+
+      if (result.canceled || !result.filePath) {
+        return { success: false, canceled: true };
+      }
+
+      const { exportEpubAsBook } = await import('./epub-processor.js');
+      await exportEpubAsBook(sourcePath, result.filePath, metadata, coverPath);
+      return { success: true, filePath: result.filePath };
+    } catch (err) {
+      console.error('[IPC] epub:export-book ERROR:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Ebook Convert handlers (Calibre CLI integration for format conversion)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -5374,16 +5403,13 @@ function setupIpcHandlers(): void {
         }
       }
 
-      // Update manifest with vttPath
+      // Atomic read-modify-write with per-project lock
       const projectId = path.basename(bfpPath);
-      const mResult = await manifestService.getManifest(projectId);
-      if (mResult.success && mResult.manifest) {
-        const manifest = mResult.manifest;
+      await manifestService.modifyManifest(projectId, (manifest) => {
         if (!manifest.outputs) manifest.outputs = {};
         if (!manifest.outputs.audiobook) manifest.outputs.audiobook = { path: '' };
         manifest.outputs.audiobook.vttPath = path.relative(bfpPath, vttDestPath).replace(/\\/g, '/');
-        await manifestService.saveManifest(manifest);
-      }
+      });
 
       return { success: true, vttPath: vttDestPath };
     } catch (err) {
@@ -5553,21 +5579,11 @@ function setupIpcHandlers(): void {
       const relativePath = path.relative(bfpPath, audioPath).replace(/\\/g, '/');
       console.log('[audiobook:link-audio] projectId:', projectId, 'relativePath:', relativePath);
 
-      // Update manifest.json with the audiobook output path
-      const result = await manifestService.getManifest(projectId);
-      if (!result.success || !result.manifest) {
-        return { success: false, error: `Manifest not found for project: ${projectId}` };
-      }
-
-      const manifest = result.manifest;
-      if (!manifest.outputs) manifest.outputs = {};
-
       // Detect VTT alongside the M4B so Play button works immediately
       const audioDir = path.dirname(audioPath);
       let vttRelPath: string | undefined;
       try {
         const dirFiles = await fs.readdir(audioDir);
-        // Prefer subtitles.vtt, then any .vtt file
         const vttFile = dirFiles.find(f => f === 'subtitles.vtt')
           || dirFiles.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
         if (vttFile) {
@@ -5575,14 +5591,16 @@ function setupIpcHandlers(): void {
         }
       } catch { /* dir read failed, skip vtt detection */ }
 
-      manifest.outputs.audiobook = {
-        ...manifest.outputs.audiobook,
-        path: relativePath,
-        completedAt: new Date().toISOString(),
-        ...(vttRelPath && { vttPath: vttRelPath }),
-      };
-
-      const saveResult = await manifestService.saveManifest(manifest);
+      // Atomic read-modify-write with per-project lock
+      const saveResult = await manifestService.modifyManifest(projectId, (manifest) => {
+        if (!manifest.outputs) manifest.outputs = {};
+        manifest.outputs.audiobook = {
+          ...manifest.outputs.audiobook,
+          path: relativePath,
+          completedAt: new Date().toISOString(),
+          ...(vttRelPath && { vttPath: vttRelPath }),
+        };
+      });
       console.log('[audiobook:link-audio] Manifest saved:', saveResult.success);
       return { success: saveResult.success, error: saveResult.error };
     } catch (err) {
@@ -7889,14 +7907,19 @@ function setupIpcHandlers(): void {
         return { success: true, message: 'No cleanup stage found' };
       }
 
-      // List files that will be deleted
+      // Only delete cleanup-specific files (cleaned.*), not simplified.*
+      const cleanupFiles = ['cleaned.epub', 'cleaned.diff.json', 'skipped-chunks.json', 'cleanup-progress.json'];
       const files = await fs.readdir(cleanupDir);
       const deletedFiles: string[] = [];
 
       for (const file of files) {
-        const filePath = path.join(cleanupDir, file);
-        if (file.endsWith('.epub') || file.endsWith('.diff.json') || file === 'skipped-chunks.json' || file === 'cleanup-progress.json') {
-          await fs.unlink(filePath);
+        // Delete cleanup-progress.json only if no simplified.epub exists (shared checkpoint)
+        if (file === 'cleanup-progress.json') {
+          const hasSimplified = files.includes('simplified.epub');
+          if (hasSimplified) continue; // Checkpoint might belong to simplify, leave it
+        }
+        if (cleanupFiles.includes(file)) {
+          await fs.unlink(path.join(cleanupDir, file));
           deletedFiles.push(file);
         }
       }
@@ -7913,6 +7936,43 @@ function setupIpcHandlers(): void {
       return { success: true, deletedFiles, message: `Deleted ${deletedFiles.length} files from cleanup stage` };
     } catch (err) {
       console.error('[PIPELINE] Failed to delete cleanup stage:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Delete AI Simplify outputs from stages/01-cleanup/ (simplified.* only, preserves cleaned.*)
+  ipcMain.handle('pipeline:delete-simplify', async (_event, projectPath: string) => {
+    try {
+      const cleanupDir = path.join(projectPath, 'stages', '01-cleanup');
+
+      if (!fsSync.existsSync(cleanupDir)) {
+        return { success: true, message: 'No simplify stage found' };
+      }
+
+      // Only delete simplify-specific files
+      const simplifyFiles = ['simplified.epub', 'simplified.diff.json', 'cleanup-progress.json'];
+      const files = await fs.readdir(cleanupDir);
+      const deletedFiles: string[] = [];
+
+      for (const file of files) {
+        if (simplifyFiles.includes(file)) {
+          await fs.unlink(path.join(cleanupDir, file));
+          deletedFiles.push(file);
+        }
+      }
+
+      // Try to remove the directory if empty
+      try {
+        await fs.rmdir(cleanupDir);
+        console.log('[PIPELINE] Removed empty cleanup directory');
+      } catch {
+        // Directory not empty, that's fine
+      }
+
+      console.log('[PIPELINE] Deleted simplify stage:', deletedFiles);
+      return { success: true, deletedFiles, message: `Deleted ${deletedFiles.length} files from simplify stage` };
+    } catch (err) {
+      console.error('[PIPELINE] Failed to delete simplify stage:', err);
       return { success: false, error: (err as Error).message };
     }
   });

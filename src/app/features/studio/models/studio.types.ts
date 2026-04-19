@@ -56,9 +56,12 @@ export interface StudioItem {
   contentFinalized?: boolean;  // True when user finalizes content edits
 
   // Processing state
-  hasCleaned?: boolean;
+  hasCleaned?: boolean;       // Has cleaned.epub (AI cleanup output)
+  hasSimplified?: boolean;    // Has simplified.epub (AI simplify output)
+  hasCleanupCheckpoint?: boolean;  // Has cleanup-progress.json (in-progress or interrupted job)
   cleanedEpubPath?: string;
   hasTranslated?: boolean;
+  translatedEpubPath?: string;
   hasTtsCache?: boolean;
   audiobookPath?: string;
   vttPath?: string;

@@ -35,7 +35,7 @@ export interface CropRect {
           [itemSize]="getAveragePageHeight()"
           (wheel)="onWheel($event)"
         >
-          <div class="pdf-container">
+          <div class="pdf-container" [class.chapters-mode]="chaptersMode()">
             <div
               *cdkVirtualFor="let pageNum of pageNumbers(); trackBy: trackByPageNum"
               class="page-wrapper"
@@ -516,6 +516,7 @@ export interface CropRect {
             class="pdf-container"
             [class.grid]="layout() === 'grid'"
             [class.organize-mode]="editorMode() === 'select' || editorMode() === 'edit'"
+            [class.chapters-mode]="chaptersMode()"
           >
             @for (pageNum of pageNumbers(); track pageNum; let idx = $index) {
               <div
@@ -1170,6 +1171,14 @@ export interface CropRect {
       .page-label {
         background: rgba(255, 68, 68, 0.1);
         color: #ff4444;
+      }
+    }
+
+    /* In chapters mode, keep deleted pages fully visible so text is readable */
+    .pdf-container.chapters-mode .page-wrapper.page-deleted {
+      .page-content {
+        opacity: 1;
+        filter: none;
       }
     }
 

@@ -610,6 +610,11 @@ function buildSimplifyForChildrenSection(): string {
     '   - Avoid garden path sentences or ambiguous phrasing',
     '   - Use natural speech patterns and rhythm',
     '',
+    '7. NUMBERS:',
+    '   - If numbers are already written as words, keep them as words',
+    '   - "eighteen ninety-three" must NOT become "1893"',
+    '   - This text is prepared for audiobook narration — numbers must stay in spoken form',
+    '',
     'Target level: A1-B1 CEFR (Common European Framework of Reference)',
     'The text should challenge learners appropriately while remaining comprehensible.',
     'Every sentence must be clear for language learners to understand when listening.',
@@ -677,6 +682,11 @@ function getSimplifyOnlySystemPrompt(): string {
     '6. PRESERVE FORMATTING: Keep paragraph breaks, chapters, and structure intact.',
     '   Only change the words themselves, not the layout.',
     '',
+    '7. NUMBERS:',
+    '   - If numbers are already written as words, keep them as words',
+    '   - "eighteen ninety-three" must NOT become "1893"',
+    '   - This text is prepared for audiobook narration — numbers must stay in spoken form',
+    '',
     'Target: A1-B1 CEFR level (beginner to lower-intermediate)',
     'The goal is comprehensible input that helps learners improve their English.',
     'Every sentence must be clear when heard, not just when read.',
@@ -738,6 +748,11 @@ function getSimplifyPlainLanguagePrompt(): string {
     '',
     '5. PRESERVE FORMATTING: Keep paragraph breaks, chapters, and structure intact.',
     '   Only change the words themselves, not the layout.',
+    '',
+    '6. NUMBERS:',
+    '   - If numbers are already written as words, keep them as words',
+    '   - "eighteen ninety-three" must NOT become "1893"',
+    '   - This text is prepared for audiobook narration — numbers must stay in spoken form',
     '',
     'The listener should feel like a sharp, engaging writer originally wrote this in English —',
     'not like they\'re listening to a cleaned-up translation of a German PhD thesis.',
@@ -1156,8 +1171,12 @@ async function cleanChunkWithClaude(
   chunkMeta?: ChunkMeta,
   isRetry: boolean = false
 ): Promise<string> {
-  // Detect simplification mode from prompt - expect shorter output
-  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING');
+  // Detect simplification mode from prompt - expect shorter output.
+  // Must match all three simplify prompts: combined (buildSimplifyForChildrenSection),
+  // standalone learning (getSimplifyOnlySystemPrompt), and plain language (getSimplifyPlainLanguagePrompt).
+  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING')
+    || systemPrompt.includes('SIMPLIFICATION RULES')
+    || systemPrompt.includes('narrator-editor who rewrites');
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -1198,6 +1217,19 @@ async function cleanChunkWithClaude(
 
     const data = await response.json();
     const cleaned = data.content?.[0]?.text || text;
+
+    // Check if the API hit the token limit (hard truncation)
+    if (data.stop_reason === 'max_tokens') {
+      console.warn(`[Claude] Response hit max_tokens limit (${cleaned.length} chars output for ${text.length} chars input) - splitting chunk`);
+      if (text.length >= 2000) {
+        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
+        const firstHalf = text.substring(0, midpoint);
+        const secondHalf = text.substring(midpoint);
+        const cleanedFirst = await cleanChunkWithClaude(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
+        const cleanedSecond = await cleanChunkWithClaude(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
+        return cleanedFirst + cleanedSecond;
+      }
+    }
 
     // Safeguard 1: Check for skip markers or AI assistant responses
     const outputCheck = checkAIOutput(cleaned, text);
@@ -1327,8 +1359,12 @@ async function cleanChunkWithOpenAI(
   chunkMeta?: ChunkMeta,
   isRetry: boolean = false
 ): Promise<string> {
-  // Detect simplification mode from prompt - expect shorter output
-  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING');
+  // Detect simplification mode from prompt - expect shorter output.
+  // Must match all three simplify prompts: combined (buildSimplifyForChildrenSection),
+  // standalone learning (getSimplifyOnlySystemPrompt), and plain language (getSimplifyPlainLanguagePrompt).
+  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING')
+    || systemPrompt.includes('SIMPLIFICATION RULES')
+    || systemPrompt.includes('narrator-editor who rewrites');
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -1575,8 +1611,12 @@ async function cleanChunk(
 ): Promise<string> {
   console.log('[AI-BRIDGE] cleanChunk using model:', model);
 
-  // Detect simplification mode from prompt - expect shorter output
-  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING');
+  // Detect simplification mode from prompt - expect shorter output.
+  // Must match all three simplify prompts: combined (buildSimplifyForChildrenSection),
+  // standalone learning (getSimplifyOnlySystemPrompt), and plain language (getSimplifyPlainLanguagePrompt).
+  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING')
+    || systemPrompt.includes('SIMPLIFICATION RULES')
+    || systemPrompt.includes('narrator-editor who rewrites');
 
   // Use AbortController for cancellation support
   const controller = new AbortController();

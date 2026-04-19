@@ -480,6 +480,9 @@ interface AlertModal {
                   @if (selectedBlockIds().length > 0) {
                     · {{ selectedBlockIds().length }} selected on {{ pagesWithSelections().size }} pages
                   }
+                  @if (selectedPageNumbers().size > 0) {
+                    · {{ selectedPageNumbers().size }} pages selected
+                  }
                 </span>
               </div>
               <div class="timeline-scroll">
@@ -3958,14 +3961,17 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
+  private setSelectionWithHistory(newIds: string[]): void {
+    const before = [...this.selectedBlockIds()];
+    const after = [...newIds];
+    if (before.length === after.length && before.every(id => after.includes(id))) return;
+    this.editorState.pushSelectionHistory(before, after);
+    this.selectedBlockIds.set(newIds);
+  }
+
   onBlockClick(event: { block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }): void {
     const { block, shiftKey, metaKey, ctrlKey } = event;
     const isCmdOrCtrl = metaKey || ctrlKey;
-
-    // Clear page selection when selecting blocks (mutually exclusive)
-    if (this.selectedPageNumbers().size > 0) {
-      this.selectedPageNumbers.set(new Set());
-    }
 
     if (isCmdOrCtrl && !shiftKey) {
       // Cmd/Ctrl+click (without shift): deselect if selected, otherwise add to selection
@@ -3974,11 +3980,11 @@ export class PdfPickerComponent implements OnInit {
       if (idx >= 0) {
         // Already selected - deselect it
         selected.splice(idx, 1);
-        this.selectedBlockIds.set(selected);
+        this.setSelectionWithHistory(selected);
       } else {
         // Not selected - add to selection (additive)
         selected.push(block.id);
-        this.selectedBlockIds.set(selected);
+        this.setSelectionWithHistory(selected);
       }
     } else if (shiftKey) {
       // Shift+click: add to selection (always additive, never removes)
@@ -3986,11 +3992,11 @@ export class PdfPickerComponent implements OnInit {
       if (!selected.includes(block.id)) {
         selected.push(block.id);
       }
-      this.selectedBlockIds.set(selected);
+      this.setSelectionWithHistory(selected);
     } else {
       // Single click (no modifiers): select just this block
       // This is the cycling behavior - each click highlights the next overlapping block
-      this.selectedBlockIds.set([block.id]);
+      this.setSelectionWithHistory([block.id]);
     }
   }
 
@@ -4380,10 +4386,10 @@ export class PdfPickerComponent implements OnInit {
       // Add to existing selection (deduplicated)
       const current = new Set(this.selectedBlockIds());
       matching.forEach(id => current.add(id));
-      this.selectedBlockIds.set([...current]);
+      this.setSelectionWithHistory([...current]);
     } else {
       // Replace selection
-      this.selectedBlockIds.set(matching);
+      this.setSelectionWithHistory(matching);
     }
   }
 
@@ -4404,10 +4410,10 @@ export class PdfPickerComponent implements OnInit {
         // Add new blocks to selection
         blockIds.forEach(id => existing.add(id));
       }
-      this.selectedBlockIds.set([...existing]);
+      this.setSelectionWithHistory([...existing]);
     } else {
       // Replace selection
-      this.selectedBlockIds.set(blockIds);
+      this.setSelectionWithHistory(blockIds);
     }
   }
 
@@ -4616,7 +4622,7 @@ export class PdfPickerComponent implements OnInit {
       blockIds.forEach(id => existing.add(id));
     }
 
-    this.selectedBlockIds.set([...existing]);
+    this.setSelectionWithHistory([...existing]);
   }
 
   // Select inverse: toggle selection of all blocks in a category
@@ -4640,12 +4646,12 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
-    this.selectedBlockIds.set([...newSelection]);
+    this.setSelectionWithHistory([...newSelection]);
   }
 
   // Clear all selections
   clearSelection(): void {
-    this.selectedBlockIds.set([]);
+    this.setSelectionWithHistory([]);
   }
 
   // Select all blocks (non-deleted)
@@ -4654,7 +4660,7 @@ export class PdfPickerComponent implements OnInit {
     const allBlockIds = this.blocks()
       .filter(b => !deleted.has(b.id))
       .map(b => b.id);
-    this.selectedBlockIds.set(allBlockIds);
+    this.setSelectionWithHistory(allBlockIds);
   }
 
   // Select all blocks on a specific page
@@ -4667,7 +4673,7 @@ export class PdfPickerComponent implements OnInit {
     // Add to existing selection
     const existing = new Set(this.selectedBlockIds());
     pageBlockIds.forEach(id => existing.add(id));
-    this.selectedBlockIds.set([...existing]);
+    this.setSelectionWithHistory([...existing]);
   }
 
   // Deselect all blocks on a specific page
@@ -4680,7 +4686,7 @@ export class PdfPickerComponent implements OnInit {
 
     // Remove page blocks from selection
     const newSelection = this.selectedBlockIds().filter(id => !pageBlockIds.has(id));
-    this.selectedBlockIds.set(newSelection);
+    this.setSelectionWithHistory(newSelection);
   }
 
   // Scroll to a specific page (used by timeline)
@@ -5496,7 +5502,7 @@ export class PdfPickerComponent implements OnInit {
 
     // Select all matching blocks
     const blockIds = matchingBlocks.map(b => b.id);
-    this.selectedBlockIds.set(blockIds);
+    this.setSelectionWithHistory(blockIds);
 
     // Show summary
     this.showAlert({
@@ -7822,11 +7828,6 @@ export class PdfPickerComponent implements OnInit {
   // Page selection methods (for edit/organize/chapters mode)
   onPageSelect(event: { pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }): void {
     const { pageNum, shiftKey, metaKey, ctrlKey } = event;
-
-    // Clear block selection when selecting pages (mutually exclusive)
-    if (this.selectedBlockIds().length > 0) {
-      this.selectedBlockIds.set([]);
-    }
 
     this.selectedPageNumbers.update(selected => {
       const newSelected = new Set(selected);

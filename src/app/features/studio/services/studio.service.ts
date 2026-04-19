@@ -100,9 +100,11 @@ export class StudioService {
         paths['simplified'] = `${projectDir}/stages/01-cleanup/simplified.epub`;
         paths['cleaned'] = `${projectDir}/stages/01-cleanup/cleaned.epub`;
         paths['skipped'] = `${projectDir}/stages/01-cleanup/skipped-chunks.json`;
+        paths['cleanup-checkpoint'] = `${projectDir}/stages/01-cleanup/cleanup-progress.json`;
 
-        // Translation & TTS cache (directory existence)
+        // Translation & TTS cache (directory existence + specific file)
         paths['translate-dir'] = `${projectDir}/stages/02-translate`;
+        paths['translated-epub'] = `${projectDir}/stages/02-translate/translated.epub`;
         paths['tts-sessions-dir'] = `${projectDir}/stages/03-tts/sessions`;
 
         // Source files
@@ -167,7 +169,9 @@ export class StudioService {
         // Cleanup state
         let cleanedEpubPath: string | undefined;
         let hasCleaned = false;
-        if (exists('simplified')) {
+        const hasSimplified = exists('simplified');
+        const hasCleanupCheckpoint = exists('cleanup-checkpoint');
+        if (hasSimplified) {
           cleanedEpubPath = paths['simplified'];
           hasCleaned = true;
         } else if (exists('cleaned')) {
@@ -182,6 +186,7 @@ export class StudioService {
 
         // Translation & TTS cache state
         const hasTranslated = exists('translate-dir');
+        const translatedEpubPath = exists('translated-epub') ? paths['translated-epub'] : undefined;
         const hasTtsCache = exists('tts-sessions-dir');
 
         // Source file (priority order)
@@ -205,8 +210,11 @@ export class StudioService {
           bfpPath: projectDir,
           coverPath: manifest.metadata?.coverPath ? `${this.libraryService.libraryPath()}/${manifest.metadata.coverPath}` : undefined,
           hasCleaned,
+          hasSimplified,
+          hasCleanupCheckpoint,
           cleanedEpubPath,
           hasTranslated,
+          translatedEpubPath,
           hasTtsCache,
           audiobookPath,
           vttPath,

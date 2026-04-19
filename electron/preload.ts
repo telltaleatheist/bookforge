@@ -1943,6 +1943,12 @@ export interface ElectronAPI {
       message?: string;
       error?: string;
     }>;
+    deleteSimplify: (projectPath: string) => Promise<{
+      success: boolean;
+      deletedFiles?: string[];
+      message?: string;
+      error?: string;
+    }>;
     deleteTranslation: (projectPath: string) => Promise<{
       success: boolean;
       deletedItems?: string[];
@@ -1974,6 +1980,12 @@ export interface ElectronAPI {
     resetEditorState: (projectPath: string) => Promise<{
       success: boolean;
       message?: string;
+      error?: string;
+    }>;
+    exportEpub: (sourcePath: string, metadata: any, coverPath?: string) => Promise<{
+      success: boolean;
+      canceled?: boolean;
+      filePath?: string;
       error?: string;
     }>;
   };
@@ -3327,6 +3339,8 @@ const electronAPI: ElectronAPI = {
   pipeline: {
     deleteCleanup: (projectPath: string) =>
       ipcRenderer.invoke('pipeline:delete-cleanup', projectPath),
+    deleteSimplify: (projectPath: string) =>
+      ipcRenderer.invoke('pipeline:delete-simplify', projectPath),
     deleteTranslation: (projectPath: string) =>
       ipcRenderer.invoke('pipeline:delete-translation', projectPath),
     deleteTtsCache: (projectPath: string, language?: string) =>
@@ -3337,6 +3351,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pipeline:delete-all', projectPath),
     resetEditorState: (projectPath: string) =>
       ipcRenderer.invoke('pipeline:reset-editor-state', projectPath),
+    exportEpub: (sourcePath: string, metadata: any, coverPath?: string) =>
+      ipcRenderer.invoke('epub:export-book', sourcePath, metadata, coverPath),
   },
 
   ebookLibrary: {

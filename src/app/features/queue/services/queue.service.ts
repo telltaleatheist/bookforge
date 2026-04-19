@@ -2345,6 +2345,7 @@ export class QueueService {
           testModeChunks?: number;
           enableAiCleanup?: boolean;
           simplifyForLearning?: boolean;
+          simplifyMode?: 'learning' | 'plain';
           cleanupPrompt?: string;
           customInstructions?: string;
         } = {
@@ -2373,6 +2374,7 @@ export class QueueService {
           // Processing options
           enableAiCleanup: config.enableAiCleanup,
           simplifyForLearning: config.simplifyForLearning,
+          simplifyMode: config.simplifyMode,
           cleanupPrompt: config.cleanupPrompt,
           customInstructions: config.customInstructions
         };
@@ -3007,6 +3009,36 @@ export class QueueService {
           throw new Error('Bilingual Translation not available');
         }
 
+        // If this job was interrupted, check if the output file already exists before
+        // re-running. This prevents wasting API calls when the translation completed but
+        // the app was killed before the completion status was persisted to queue.json.
+        if (job.wasInterrupted && config.monoTranslation) {
+          const expectedOutput = job.outputPath
+            || (job.bfpPath ? `${job.bfpPath}/stages/02-translate/translated.epub` : null);
+          const fsAny = electron.fs as any;
+          if (expectedOutput && fsAny?.batchStat) {
+            try {
+              const statResult = await fsAny.batchStat([expectedOutput]);
+              if (statResult[expectedOutput]) {
+                console.log(`[QUEUE] Interrupted translation already has output: ${expectedOutput} — marking complete`);
+                this._jobs.update(jobs =>
+                  jobs.map(j => {
+                    if (j.id !== job.id) return j;
+                    return { ...j, status: 'complete' as JobStatus, progress: 100, outputPath: expectedOutput };
+                  })
+                );
+                if (job.parentJobId && job.workflowId) {
+                  this.updateMasterJobProgress(job.workflowId, job.parentJobId);
+                }
+                await this.finishJob(job.id);
+                return;
+              }
+            } catch {
+              // batchStat failed — proceed with re-running the job
+            }
+          }
+        }
+
         const result = await electron.bilingualTranslation.run(job.id, {
           projectId: config.projectId,
           projectDir: config.projectDir,
@@ -3562,7 +3594,9 @@ export class QueueService {
         // Processing options
         enableAiCleanup: config.enableAiCleanup,
         simplifyForLearning: config.simplifyForLearning,
-        cleanupPrompt: config.cleanupPrompt
+        simplifyMode: config.simplifyMode,
+        cleanupPrompt: config.cleanupPrompt,
+        customInstructions: config.customInstructions
       };
     } else if (request.type === 'translation') {
       const config = request.config as Partial<TranslationJobConfig>;

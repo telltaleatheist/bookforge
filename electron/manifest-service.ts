@@ -4,7 +4,8 @@
  * Handles:
  * - Creating new projects with proper folder structure
  * - Reading/writing manifest.json files
- * - Atomic writes via temp folder (for Syncthing compatibility)
+ * - Atomic writes via same-dir temp + rename (Syncthing-safe)
+ * - Per-project write locks to prevent concurrent read-modify-write races
  * - Cross-platform path resolution
  */
 
@@ -41,6 +42,24 @@ const MANIFEST_VERSION = 2;
 
 // Folder structure within each project
 const PROJECT_FOLDERS = ['source', 'stages', 'stages/01-cleanup', 'stages/02-translate', 'stages/03-tts', 'output'];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-project write lock (prevents concurrent read-modify-write races)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const manifestLocks = new Map<string, Promise<any>>();
+
+/**
+ * Serialize async operations on the same project's manifest.
+ * Concurrent calls for the same projectId are queued; different projects run in parallel.
+ */
+function acquireLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = manifestLocks.get(projectId) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  // Keep the chain alive but swallow errors so a failed write doesn't block future writes
+  manifestLocks.set(projectId, next.then(() => {}, () => {}));
+  return next;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Library Path Management
@@ -118,45 +137,25 @@ export function getManifestPath(projectId: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Ensure the staging directory exists
- */
-function ensureStagingDir(): void {
-  if (!fs.existsSync(STAGING_DIR)) {
-    fs.mkdirSync(STAGING_DIR, { recursive: true });
-  }
-}
-
-/**
  * Write a file atomically:
- * 1. Write to temp location
- * 2. Ensure parent directory exists
- * 3. Rename (atomic on same filesystem) or copy+delete (cross-filesystem)
+ * 1. Write to a temp file in the same directory as the target (guarantees same filesystem)
+ * 2. Rename to final path (atomic on same filesystem)
+ *
+ * Previous implementation staged in /tmp/ which is a different filesystem from
+ * /Volumes/Callisto. The rename() would fail with EXDEV and fall back to copyFile(),
+ * which is NOT atomic — concurrent writes could interleave and corrupt the file.
  */
 export async function atomicWriteFile(targetPath: string, content: string): Promise<void> {
-  ensureStagingDir();
+  // Ensure target directory exists
+  const targetDir = path.dirname(targetPath);
+  await fs.promises.mkdir(targetDir, { recursive: true });
 
-  const tempPath = path.join(STAGING_DIR, `${uuidv4()}.tmp`);
+  // Stage in the same directory so rename() is always atomic (same filesystem)
+  const tempPath = path.join(targetDir, `.${path.basename(targetPath)}.${uuidv4()}.tmp`);
 
   try {
-    // Write to temp file
     await fs.promises.writeFile(tempPath, content, 'utf-8');
-
-    // Ensure target directory exists
-    const targetDir = path.dirname(targetPath);
-    await fs.promises.mkdir(targetDir, { recursive: true });
-
-    // Try atomic rename first (works on same filesystem)
-    try {
-      await fs.promises.rename(tempPath, targetPath);
-    } catch (renameError: any) {
-      // Cross-filesystem: copy then delete
-      if (renameError.code === 'EXDEV') {
-        await fs.promises.copyFile(tempPath, targetPath);
-        await fs.promises.unlink(tempPath);
-      } else {
-        throw renameError;
-      }
-    }
+    await fs.promises.rename(tempPath, targetPath);
   } catch (error) {
     // Clean up temp file on error
     try {
@@ -169,32 +168,18 @@ export async function atomicWriteFile(targetPath: string, content: string): Prom
 }
 
 /**
- * Copy a file atomically to a target location
+ * Copy a file atomically to a target location.
+ * Stages temp file adjacent to target to guarantee same-filesystem rename.
  */
 export async function atomicCopyFile(sourcePath: string, targetPath: string): Promise<void> {
-  ensureStagingDir();
+  const targetDir = path.dirname(targetPath);
+  await fs.promises.mkdir(targetDir, { recursive: true });
 
-  const tempPath = path.join(STAGING_DIR, `${uuidv4()}.tmp`);
+  const tempPath = path.join(targetDir, `.${path.basename(targetPath)}.${uuidv4()}.tmp`);
 
   try {
-    // Copy to temp first
     await fs.promises.copyFile(sourcePath, tempPath);
-
-    // Ensure target directory exists
-    const targetDir = path.dirname(targetPath);
-    await fs.promises.mkdir(targetDir, { recursive: true });
-
-    // Move from temp to target
-    try {
-      await fs.promises.rename(tempPath, targetPath);
-    } catch (renameError: any) {
-      if (renameError.code === 'EXDEV') {
-        await fs.promises.copyFile(tempPath, targetPath);
-        await fs.promises.unlink(tempPath);
-      } else {
-        throw renameError;
-      }
-    }
+    await fs.promises.rename(tempPath, targetPath);
   } catch (error) {
     try {
       await fs.promises.unlink(tempPath);
@@ -381,43 +366,50 @@ export async function getManifest(projectId: string): Promise<ManifestGetResult>
 }
 
 /**
- * Save (update) a project manifest
+ * Internal save — no lock. Called from within locked contexts.
  */
-export async function saveManifest(manifest: ProjectManifest): Promise<ManifestSaveResult> {
+async function saveManifestImpl(manifest: ProjectManifest): Promise<ManifestSaveResult> {
   try {
-    // Update modified timestamp
     manifest.modifiedAt = new Date().toISOString();
-
     const manifestPath = getManifestPath(manifest.projectId);
-
-    // Atomic write
     await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
-
-    return {
-      success: true,
-      manifestPath,
-    };
+    return { success: true, manifestPath };
   } catch (error: any) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    return { success: false, error: error.message };
   }
 }
 
 /**
- * Update specific fields in a manifest
+ * Save (overwrite) a project manifest. Acquires the per-project lock.
  */
-export async function updateManifest(update: ManifestUpdate): Promise<ManifestSaveResult> {
-  try {
-    const result = await getManifest(update.projectId);
+export async function saveManifest(manifest: ProjectManifest): Promise<ManifestSaveResult> {
+  return acquireLock(manifest.projectId, () => saveManifestImpl(manifest));
+}
+
+/**
+ * Read-modify-write a manifest atomically. The callback receives the current
+ * manifest and can mutate it in place; the modified version is saved while
+ * the per-project lock is held, preventing concurrent writes from interleaving.
+ */
+export async function modifyManifest(
+  projectId: string,
+  fn: (manifest: ProjectManifest) => Promise<void> | void,
+): Promise<ManifestSaveResult> {
+  return acquireLock(projectId, async () => {
+    const result = await getManifest(projectId);
     if (!result.success || !result.manifest) {
       return { success: false, error: result.error || 'Project not found' };
     }
+    await fn(result.manifest);
+    return saveManifestImpl(result.manifest);
+  });
+}
 
-    const manifest = result.manifest;
-
-    // Merge updates (shallow merge at top level, deep merge for nested objects)
+/**
+ * Update specific fields in a manifest (locked read-modify-write)
+ */
+export async function updateManifest(update: ManifestUpdate): Promise<ManifestSaveResult> {
+  return modifyManifest(update.projectId, (manifest) => {
     if (update.source) {
       manifest.source = { ...manifest.source, ...update.source };
     }
@@ -449,14 +441,7 @@ export async function updateManifest(update: ManifestUpdate): Promise<ManifestSa
     if (update.sortOrder !== undefined) {
       manifest.sortOrder = update.sortOrder;
     }
-
-    return saveManifest(manifest);
-  } catch (error: any) {
-    return {
-      success: false,
-      error: error.message,
-    };
-  }
+  });
 }
 
 /**

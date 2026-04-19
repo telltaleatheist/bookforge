@@ -15,7 +15,7 @@ import { MutoolBridge } from './mutool-bridge';
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 7;  // v7: improved header detection for single-line top blocks
+const ANALYSIS_CACHE_VERSION = 9;  // v9: enforce one header per page (topmost only)
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -1014,9 +1014,34 @@ export class PDFAnalyzer {
     }
 
     // Classify blocks and group by type
+    const blockCategories = new Map<string, string>(); // block id → catType
+    for (const block of this.blocks) {
+      blockCategories.set(block.id, this.classifyBlock(block, bodySize));
+    }
+
+    // Enforce one header per page — keep only the topmost, reclassify rest as body
+    const headersByPage = new Map<number, TextBlock[]>();
+    for (const block of this.blocks) {
+      if (blockCategories.get(block.id) === 'header') {
+        if (!headersByPage.has(block.page)) {
+          headersByPage.set(block.page, []);
+        }
+        headersByPage.get(block.page)!.push(block);
+      }
+    }
+    for (const [, headers] of headersByPage) {
+      if (headers.length > 1) {
+        headers.sort((a, b) => a.y - b.y);
+        // Keep the topmost (index 0) as header, reclassify the rest as body
+        for (let i = 1; i < headers.length; i++) {
+          blockCategories.set(headers[i].id, 'body');
+        }
+      }
+    }
+
     const groups = new Map<string, TextBlock[]>();
     for (const block of this.blocks) {
-      const catType = this.classifyBlock(block, bodySize);
+      const catType = blockCategories.get(block.id)!;
       if (!groups.has(catType)) {
         groups.set(catType, []);
       }
@@ -1162,8 +1187,13 @@ export class PDFAnalyzer {
       return 'footnote_ref';
     }
 
-    // Header region blocks are headers
-    if (block.region === 'header') return 'header';
+    // Header region blocks are headers — unless font matches body text (likely continuation)
+    if (block.region === 'header') {
+      if (Math.round(block.font_size) === Math.round(bodySize)) {
+        return 'body';
+      }
+      return 'header';
+    }
     if (block.region === 'footer') return 'footer';
 
     // Additional header detection for blocks that slipped through region detection
@@ -1177,10 +1207,12 @@ export class PDFAnalyzer {
                               /[.!?]["']?\s+[A-Z]/.test(text) ||  // Multiple sentences
                               (text.endsWith('.') && block.char_count > 60);
 
-    // Text blocks entirely within top 15% with 1-2 lines = header
+    // Text blocks entirely within top 15% with 1-2 lines = header (unless body font size)
     const bottomPct = (block.y + block.height) / pageHeight;
     if (block.line_count <= 2 && bottomPct < 0.15 && !looksLikeBodyText) {
-      return 'header';
+      if (Math.round(block.font_size) !== Math.round(bodySize)) {
+        return 'header';
+      }
     }
 
     // Footnotes: lower region with smaller font

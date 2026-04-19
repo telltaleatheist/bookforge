@@ -512,11 +512,21 @@ import { SettingsService } from '../../core/services/settings.service';
             Export M4B...
           </button>
         }
+        @if (contextMenuSelectedIds.length <= 1 && contextMenuItem?.epubPath) {
+          <button class="context-menu-item" (click)="openExportEpubPicker()">
+            Export EPUB...
+          </button>
+        }
         @if (contextMenuSelectedIds.length <= 1 && hasAnyStage()) {
           <div class="context-menu-separator"></div>
-          @if (contextMenuItem?.hasCleaned) {
+          @if (contextMenuItem?.hasCleaned && !contextMenuItem?.hasSimplified) {
             <button class="context-menu-item warning" (click)="deleteStage('cleanup')">
               Delete AI Cleanup
+            </button>
+          }
+          @if (contextMenuItem?.hasSimplified || (contextMenuItem?.hasCleanupCheckpoint && !contextMenuItem?.hasCleaned)) {
+            <button class="context-menu-item warning" (click)="deleteStage('simplify')">
+              Delete AI Simplify
             </button>
           }
           @if (contextMenuItem?.hasTranslated) {
@@ -554,6 +564,22 @@ import { SettingsService } from '../../core/services/settings.service';
     <!-- Export Status Toast -->
     @if (exportStatus()) {
       <div class="export-toast">{{ exportStatus() }}</div>
+    }
+
+    <!-- Export EPUB Picker -->
+    @if (epubPickerVisible()) {
+      <div class="epub-picker-backdrop" (click)="epubPickerVisible.set(false)">
+        <div class="epub-picker" (click)="$event.stopPropagation()">
+          <div class="epub-picker-title">Export EPUB</div>
+          @for (opt of epubPickerOptions(); track opt.path) {
+            <button class="epub-picker-item" (click)="exportEpub(opt.path)">
+              <span class="epub-picker-label">{{ opt.label }}</span>
+              <span class="epub-picker-desc">{{ opt.description }}</span>
+            </button>
+          }
+          <button class="epub-picker-cancel" (click)="epubPickerVisible.set(false)">Cancel</button>
+        </div>
+      </div>
     }
 
     <!-- Version Picker Dialog -->
@@ -1090,6 +1116,83 @@ import { SettingsService } from '../../core/services/settings.service';
       animation: fadeIn 0.2s ease;
     }
 
+    .epub-picker-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1100;
+      animation: fadeIn 0.15s ease;
+    }
+
+    .epub-picker {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.3);
+      width: 340px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .epub-picker-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+      padding: 0 4px 8px;
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 4px;
+    }
+
+    .epub-picker-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 10px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      cursor: pointer;
+      text-align: left;
+      transition: all 0.15s ease;
+
+      &:hover {
+        background: var(--bg-hover);
+        border-color: var(--accent);
+      }
+    }
+
+    .epub-picker-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .epub-picker-desc {
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .epub-picker-cancel {
+      margin-top: 4px;
+      padding: 8px;
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 13px;
+      cursor: pointer;
+      border-radius: 6px;
+
+      &:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+    }
+
   `]
 })
 export class StudioComponent implements OnInit, OnDestroy {
@@ -1162,6 +1265,11 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly contextMenuY = signal<number>(0);
   contextMenuItem: StudioItem | null = null;
   @ViewChild('contextMenuEl') contextMenuEl?: ElementRef<HTMLElement>;
+
+  // Export EPUB picker
+  readonly epubPickerVisible = signal<boolean>(false);
+  readonly epubPickerOptions = signal<Array<{ label: string; description: string; path: string }>>([]);
+  private epubExportItem: StudioItem | null = null;
 
   // Export status toast
   readonly exportStatus = signal<string | null>(null);
@@ -1644,13 +1752,74 @@ export class StudioComponent implements OnInit, OnDestroy {
     }
   }
 
+  openExportEpubPicker(): void {
+    const item = this.contextMenuItem;
+    if (!item) return;
+    this.hideContextMenu();
+
+    // Build available versions
+    const options: Array<{ label: string; description: string; path: string }> = [];
+    if (item.epubPath) {
+      options.push({ label: 'Source', description: 'Original imported EPUB', path: item.epubPath });
+    }
+    if (item.cleanedEpubPath) {
+      const label = item.hasSimplified ? 'Simplified' : 'Cleaned';
+      const desc = item.hasSimplified ? 'AI-simplified for language learning' : 'AI-cleaned text';
+      options.push({ label, description: desc, path: item.cleanedEpubPath });
+    }
+    if (item.translatedEpubPath) {
+      options.push({ label: 'Translated', description: 'Full-book translation', path: item.translatedEpubPath });
+    }
+
+    if (options.length === 0) return;
+
+    // If only one version, skip the picker and go straight to save
+    if (options.length === 1) {
+      this.epubExportItem = item;
+      this.exportEpub(options[0].path);
+      return;
+    }
+
+    this.epubExportItem = item;
+    this.epubPickerOptions.set(options);
+    this.epubPickerVisible.set(true);
+  }
+
+  async exportEpub(selectedPath: string): Promise<void> {
+    this.epubPickerVisible.set(false);
+    const item = this.epubExportItem;
+    if (!item || !selectedPath) return;
+
+    const metadata: any = {};
+    if (item.title) metadata.title = item.title;
+    if (item.author) metadata.author = item.author;
+    if (item.year) metadata.year = item.year;
+    if (item.language) metadata.language = item.language;
+    if (item.contributors) metadata.contributors = item.contributors;
+
+    const electron = (window as any).electron;
+    try {
+      const result = await electron.pipeline.exportEpub(selectedPath, metadata, item.coverPath || undefined);
+      if (result?.canceled) return;
+      if (result?.success) {
+        this.exportStatus.set('Exported EPUB successfully');
+      } else {
+        this.exportStatus.set(`Export failed: ${result?.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error('[STUDIO] Export EPUB failed:', err);
+      this.exportStatus.set('Export failed');
+    }
+    setTimeout(() => this.exportStatus.set(null), 3000);
+  }
+
   hasAnyStage(): boolean {
     const item = this.contextMenuItem;
     if (!item) return false;
-    return !!(item.hasCleaned || item.hasTranslated || item.hasTtsCache || item.audiobookPath || item.bilingualAudioPath);
+    return !!(item.hasCleaned || item.hasSimplified || item.hasCleanupCheckpoint || item.hasTranslated || item.hasTtsCache || item.audiobookPath || item.bilingualAudioPath);
   }
 
-  async deleteStage(stage: 'cleanup' | 'translation' | 'tts' | 'output'): Promise<void> {
+  async deleteStage(stage: 'cleanup' | 'simplify' | 'translation' | 'tts' | 'output'): Promise<void> {
     const item = this.contextMenuItem;
     if (!item?.bfpPath) return;
     this.hideContextMenu();
@@ -1658,6 +1827,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     const electron = (window as any).electron;
     const labels: Record<string, string> = {
       cleanup: 'AI Cleanup',
+      simplify: 'AI Simplify',
       translation: 'Translation',
       tts: 'TTS Cache',
       output: 'Output',
@@ -1668,6 +1838,9 @@ export class StudioComponent implements OnInit, OnDestroy {
       switch (stage) {
         case 'cleanup':
           result = await electron.pipeline.deleteCleanup(item.bfpPath);
+          break;
+        case 'simplify':
+          result = await electron.pipeline.deleteSimplify(item.bfpPath);
           break;
         case 'translation':
           result = await electron.pipeline.deleteTranslation(item.bfpPath);

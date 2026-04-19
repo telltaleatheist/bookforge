@@ -2,7 +2,7 @@ import { Injectable, signal, computed } from '@angular/core';
 import { TextBlock, Category, PageDimension } from './pdf.service';
 
 export interface HistoryAction {
-  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages';
+  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages' | 'selection';
   blockIds: string[];
   selectionBefore: string[];
   selectionAfter: string[];
@@ -713,6 +713,8 @@ export class PdfEditorStateService {
     } else if (action.type === 'reorderPages') {
       // Reverse page reorder
       this.pageOrder.set(action.pageOrderBefore ?? []);
+    } else if (action.type === 'selection') {
+      // Selection-only action: restore handled below
     } else if (action.type === 'delete' || action.type === 'restore') {
       // Reverse block delete/restore action
       const deleted = new Set(this.deletedBlockIds());
@@ -730,7 +732,7 @@ export class PdfEditorStateService {
     // Push to redo stack
     this.redoStack.push(action);
     this.updateHistorySignals();
-    this.markChanged();
+    if (action.type !== 'selection') this.markChanged();
 
     return action;
   }
@@ -777,6 +779,8 @@ export class PdfEditorStateService {
     } else if (action.type === 'reorderPages') {
       // Re-apply page reorder
       this.pageOrder.set(action.pageOrderAfter ?? []);
+    } else if (action.type === 'selection') {
+      // Selection-only action: restore handled below
     } else if (action.type === 'delete' || action.type === 'restore') {
       // Re-apply block delete/restore action
       const deleted = new Set(this.deletedBlockIds());
@@ -794,7 +798,7 @@ export class PdfEditorStateService {
     // Push back to undo stack
     this.undoStack.push(action);
     this.updateHistorySignals();
-    this.markChanged();
+    if (action.type !== 'selection') this.markChanged();
 
     return action;
   }
@@ -821,6 +825,15 @@ export class PdfEditorStateService {
     this.markChanged();
 
     return after;
+  }
+
+  pushSelectionHistory(selectionBefore: string[], selectionAfter: string[]): void {
+    this.pushHistory({
+      type: 'selection',
+      blockIds: [],
+      selectionBefore,
+      selectionAfter
+    });
   }
 
   private pushHistory(action: HistoryAction): void {
