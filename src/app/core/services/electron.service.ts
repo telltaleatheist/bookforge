@@ -425,6 +425,35 @@ export class ElectronService {
   }
 
   /**
+   * On-demand page rendering: render specific pages by number.
+   * Returns a map of pageNum → filePath for the requested pages.
+   */
+  async renderPages(
+    pdfPath: string,
+    pageNumbers: number[],
+    quality: 'preview' | 'full' = 'preview'
+  ): Promise<Record<number, string>> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.renderPages(pdfPath, pageNumbers, quality);
+      if (result.success && result.data) {
+        return result.data;
+      }
+      console.error('Failed to render pages on demand:', result.error);
+      return {};
+    }
+    return {};
+  }
+
+  /**
+   * Close cached render document to free memory.
+   */
+  async closeRenderDoc(): Promise<void> {
+    if (this.isElectron) {
+      await (window as any).electron.pdf.closeRenderDoc();
+    }
+  }
+
+  /**
    * Clean up temp files from previous render session (legacy, now no-op).
    */
   async cleanupTempFiles(): Promise<void> {
@@ -1149,6 +1178,25 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.editor.saveEpubToPath(epubPath, epubData);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Save EPUB data to a user-chosen location via Save As dialog.
+   * No library restriction — for exporting EPUBs for external use.
+   */
+  async saveEpubAs(
+    epubData: ArrayBuffer,
+    defaultName?: string
+  ): Promise<{
+    success: boolean;
+    canceled?: boolean;
+    filePath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.epub.saveAsDialog(epubData, defaultName);
     }
     return { success: false, error: 'Not running in Electron' };
   }

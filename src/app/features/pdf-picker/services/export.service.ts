@@ -617,6 +617,63 @@ export class ExportService {
   }
 
   /**
+   * Save EPUB to a user-chosen location via Save As dialog.
+   * Generates an EPUB from the current editor state (with deletions/corrections applied)
+   * and lets the user pick where to save it. Does not affect exported.epub.
+   */
+  async saveEpubAs(
+    blocks: ExportableBlock[],
+    deletedIds: Set<string>,
+    chapters: Chapter[],
+    pdfName: string,
+    textCorrections?: Map<string, string>,
+    deletedPages?: Set<number>,
+    deletedHighlights?: DeletedHighlight[],
+    metadata?: BookMetadata,
+  ): Promise<ExportResult> {
+    if (!this.electron) {
+      return { success: false, message: 'Save As is only available in Electron' };
+    }
+
+    const epubResult = this.generateEpubBlobInternal(
+      blocks, deletedIds, chapters, pdfName,
+      textCorrections, deletedPages, deletedHighlights, metadata,
+    );
+
+    if (!epubResult.success || !epubResult.blob) {
+      return { success: false, message: epubResult.message || 'Failed to generate EPUB' };
+    }
+
+    const arrayBuffer = await epubResult.blob.arrayBuffer();
+    const baseName = (metadata?.title || pdfName).replace(/\.[^.]+$/, '');
+    const defaultName = `${baseName}.epub`;
+
+    try {
+      const result = await this.electronService.saveEpubAs(arrayBuffer, defaultName);
+
+      if (result.canceled) {
+        return { success: false, message: 'Canceled' };
+      }
+
+      if (!result.success) {
+        return { success: false, message: result.error || 'Failed to save EPUB' };
+      }
+
+      return {
+        success: true,
+        message: `Saved EPUB with ${epubResult.chapterCount} chapters to ${result.filePath}`,
+        filename: result.filePath?.split('/').pop() || defaultName,
+        chapterCount: epubResult.chapterCount,
+        blockCount: epubResult.blockCount,
+        warning: epubResult.warning,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      return { success: false, message: `Failed to save EPUB: ${message}` };
+    }
+  }
+
+  /**
    * Export content to EPUB and save to audiobook folder within the BFP project.
    * Uses generateEpubBlobInternal to create the EPUB, then saves to project's audiobook folder.
    * Optionally collects deleted block examples for detailed AI cleanup.
@@ -877,7 +934,11 @@ export class ExportService {
          (block.page === sortedChapters[currentChapterIndex].page &&
           block.y >= (sortedChapters[currentChapterIndex].y || 0)))
       ) {
-        if (currentContent.length > 0) {
+        // Push the previous chapter section. Always push user-defined chapters
+        // even if they have no body content (e.g., a title-only section where the
+        // title block was deduped) — the heading alone is meaningful in the EPUB.
+        // Only skip empty "Introduction" sections (the default pre-chapter bucket).
+        if (currentContent.length > 0 || (userDefinedChapters && currentChapterIndex > 0)) {
           chapterSections.push({
             title: currentTitle,
             level: currentChapterIndex === 0 ? 1 : (sortedChapters[currentChapterIndex - 1]?.level || 1),

@@ -2622,6 +2622,8 @@ export class QueueService {
           let shouldResume = false;
           let resumeCheckResult: ResumeCheckResult | null = null;
 
+          console.log(`[QUEUE] Resume decision: isResumeJob=${job.isResumeJob}, hasResumeInfo=${!!config.resumeInfo}, wasInterrupted=${job.wasInterrupted}`);
+
           if (job.isResumeJob && config.resumeInfo) {
             // Mode 1: Explicit resume from wizard "Continue" button
             resumeCheckResult = {
@@ -2638,8 +2640,9 @@ export class QueueService {
             };
             shouldResume = true;
             console.log(`[QUEUE] Explicit resume job from ${job.resumeCompletedSentences} sentences`);
-          } else if (job.wasInterrupted) {
+          } else if (job.wasInterrupted || job.isResumeJob) {
             // Mode 2: Job was interrupted by app close/crash/user stop — try to resume
+            // Also fires for stale isResumeJob=true (from a prior resume) with no config.resumeInfo
             console.log(`[QUEUE] Checking for resumable session: epubPath=${epubPathForTts}, bfpPath=${job.bfpPath || 'none'}, projectDir=${job.projectDir || 'none'}`);
             resumeCheckResult = await this.checkBfpForResumableSession(job.bfpPath || job.projectDir || '', epubPathForTts);
             if (resumeCheckResult?.success && !resumeCheckResult.complete) {
@@ -2700,8 +2703,15 @@ export class QueueService {
           }
 
           // Mode 3: Fresh start — clean old sessions
+          // SAFETY: Never clean sessions for interrupted jobs. If resume failed, the old
+          // session with completed sentences may still be recoverable on a future attempt.
+          // Deleting it would permanently destroy hours of TTS work.
           if (!shouldResume) {
-            (parallelConfig as any).cleanSession = true;
+            if (job.wasInterrupted) {
+              console.warn(`[QUEUE] Resume failed for interrupted job, starting fresh WITHOUT cleaning old sessions (preserving partial work)`);
+            } else {
+              (parallelConfig as any).cleanSession = true;
+            }
           }
 
           // Create a promise that resolves when TTS completes (inline completion handling)

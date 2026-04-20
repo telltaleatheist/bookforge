@@ -830,6 +830,8 @@ export interface ElectronAPI {
     renderBlankPage: (pageNum: number, scale?: number) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderAllPages: (pdfPath: string, scale?: number, concurrency?: number) => Promise<{ success: boolean; data?: { paths: string[] }; error?: string }>;
     renderWithPreviews: (pdfPath: string, concurrency?: number) => Promise<{ success: boolean; data?: RenderWithPreviewsResult; error?: string }>;
+    renderPages: (pdfPath: string, pageNumbers: number[], quality?: 'preview' | 'full') => Promise<{ success: boolean; data?: Record<number, string>; error?: string }>;
+    closeRenderDoc: () => Promise<{ success: boolean; error?: string }>;
     onRenderProgress: (callback: RenderProgressCallback) => () => void;
     onAnalyzeProgress: (callback: (progress: { phase: string; message: string }) => void) => () => void;
     onPageUpgraded: (callback: (data: { pageNum: number; path: string }) => void) => () => void;
@@ -1118,6 +1120,7 @@ export interface ElectronAPI {
     exportWithRemovals: (inputPath: string, removals: Record<string, Array<{ chapterId: string; text: string; cfi: string }>>, outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
     copyFile: (inputPath: string, outputPath: string) => Promise<{ success: boolean; error?: string }>;
     exportWithDeletedBlocks: (inputPath: string, deletedBlockIds: string[], outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
+    saveAsDialog: (epubData: ArrayBuffer, defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
   };
   ai: {
     checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: OllamaModel[]; error?: string }; error?: string }>;
@@ -2022,6 +2025,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:render-all-pages', pdfPath, scale, concurrency),
     renderWithPreviews: (pdfPath: string, concurrency: number = 4) =>
       ipcRenderer.invoke('pdf:render-with-previews', pdfPath, concurrency),
+    renderPages: (pdfPath: string, pageNumbers: number[], quality: 'preview' | 'full' = 'preview') =>
+      ipcRenderer.invoke('pdf:render-pages', pdfPath, pageNumbers, quality),
+    closeRenderDoc: () =>
+      ipcRenderer.invoke('pdf:close-render-doc'),
     onRenderProgress: (callback: RenderProgressCallback) => {
       const listener = (_event: Electron.IpcRendererEvent, progress: { current: number; total: number; phase?: string }) => {
         callback(progress);
@@ -2309,6 +2316,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:copy-file', inputPath, outputPath),
     exportWithDeletedBlocks: (inputPath: string, deletedBlockIds: string[], outputPath?: string) =>
       ipcRenderer.invoke('epub:export-with-deleted-blocks', inputPath, deletedBlockIds, outputPath),
+    saveAsDialog: (epubData: ArrayBuffer, defaultName?: string) =>
+      ipcRenderer.invoke('epub:save-as-dialog', epubData, defaultName),
   },
   ai: {
     checkConnection: () =>

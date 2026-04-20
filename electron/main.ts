@@ -235,8 +235,10 @@ function registerPageProtocol(): void {
     }
 
     try {
-      // Read file directly from disk
-      const data = fsSync.readFileSync(filePath);
+      // Use async readFile — libuv retries on EINTR automatically,
+      // unlike readFileSync which throws on interrupted system calls
+      // during heavy I/O (e.g. rendering 300+ page PDFs)
+      const data = await fs.readFile(filePath);
       return new Response(data, {
         headers: {
           'Content-Type': 'image/png',
@@ -244,6 +246,21 @@ function registerPageProtocol(): void {
         }
       });
     } catch (err) {
+      // Retry once on EINTR (belt-and-suspenders — libuv should handle this)
+      if ((err as NodeJS.ErrnoException).code === 'EINTR') {
+        try {
+          const data = await fs.readFile(filePath);
+          return new Response(data, {
+            headers: {
+              'Content-Type': 'image/png',
+              'Cache-Control': 'max-age=31536000'
+            }
+          });
+        } catch (retryErr) {
+          console.error('[Protocol] Failed to load page image (retry):', filePath, retryErr);
+          return new Response('File not found', { status: 404 });
+        }
+      }
       console.error('[Protocol] Failed to load page image:', filePath, err);
       return new Response('File not found', { status: 404 });
     }
@@ -596,6 +613,31 @@ function setupIpcHandlers(): void {
         }
       );
       return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // On-demand page rendering: render specific pages by number (for virtual scroll)
+  ipcMain.handle('pdf:render-pages', async (
+    _event,
+    pdfPath: string,
+    pageNumbers: number[],
+    quality: 'preview' | 'full' = 'preview'
+  ) => {
+    try {
+      const result = await pdfAnalyzer.renderPages(pdfPath, pageNumbers, quality);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Close cached render document (free memory when PDF is closed)
+  ipcMain.handle('pdf:close-render-doc', async () => {
+    try {
+      pdfAnalyzer.closeRenderDoc();
+      return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -4903,30 +4945,17 @@ function setupIpcHandlers(): void {
       };
     } catch (err) {
       console.error('[audiobook:extract-epub-metadata] Error:', err);
-      // Fall back to filename parsing
-      const filename = path.basename(epubSourcePath);
-      let title = filename.replace(/\.[^.]+$/i, '');
-      let author = 'Unknown';
-      let year = '';
-
-      const titleAuthorMatch = title.match(/^(.+?)_-_(.+?)_\((\d{4})\)$/);
-      if (titleAuthorMatch) {
-        title = titleAuthorMatch[1].replace(/_/g, ' ');
-        author = titleAuthorMatch[2].replace(/_/g, ' ');
-        year = titleAuthorMatch[3];
-      } else {
-        const simpleMatch = title.match(/^(.+?)_-_(.+)$/);
-        if (simpleMatch) {
-          title = simpleMatch[1].replace(/_/g, ' ');
-          author = simpleMatch[2].replace(/_/g, ' ');
-        } else {
-          title = title.replace(/[._]/g, ' ');
-        }
-      }
-
+      // Fall back to filename parsing using the shared library convention parser
+      const parsed = ebookLibrary.parseFilename(path.basename(epubSourcePath));
       return {
         success: true,
-        metadata: { title, author, year, language: 'en', coverData: null }
+        metadata: {
+          title: parsed.title || '',
+          author: parsed.authorFull || parsed.authorLast || '',
+          year: parsed.year?.toString() || '',
+          language: parsed.language || 'en',
+          coverData: null,
+        }
       };
     }
   });
@@ -4956,24 +4985,13 @@ function setupIpcHandlers(): void {
         language = confirmedMetadata.language || 'en';
         subtitle = confirmedMetadata.subtitle;
       } else {
-        // Fall back to filename parsing
-        title = filename.replace(/\.[^.]+$/i, '');
-        author = 'Unknown';
-
-        const titleAuthorMatch = title.match(/^(.+?)_-_(.+?)_\((\d{4})\)$/);
-        if (titleAuthorMatch) {
-          title = titleAuthorMatch[1].replace(/_/g, ' ');
-          author = titleAuthorMatch[2].replace(/_/g, ' ');
-          year = parseInt(titleAuthorMatch[3]);
-        } else {
-          const simpleMatch = title.match(/^(.+?)_-_(.+)$/);
-          if (simpleMatch) {
-            title = simpleMatch[1].replace(/_/g, ' ');
-            author = simpleMatch[2].replace(/_/g, ' ');
-          } else {
-            title = title.replace(/[._]/g, ' ');
-          }
-        }
+        // Fall back to filename parsing using the shared library convention parser
+        const parsed = ebookLibrary.parseFilename(filename);
+        title = parsed.title || filename.replace(/\.[^.]+$/i, '');
+        author = parsed.authorFull || parsed.authorLast || 'Unknown';
+        year = parsed.year;
+        language = parsed.language || 'en';
+        subtitle = parsed.subtitle;
       }
 
       // Generate human-readable, ASCII-only slug for folder name.
@@ -5066,6 +5084,24 @@ function setupIpcHandlers(): void {
 
       console.log(`[audiobook:import] Created manifest project: ${projectDir}`);
       console.log(`[audiobook:import] Copied ${sourceType} to: ${sourcePath}`);
+
+      // Auto-copy original source to ebook library (skip if already there)
+      const ebooksRoot = path.resolve(ebookLibrary.getEbooksRoot());
+      const resolvedSource = path.resolve(epubSourcePath);
+      if (resolvedSource.startsWith(ebooksRoot + path.sep)) {
+        console.log(`[audiobook:import] Source is already in ebook library, skipping auto-copy`);
+      } else {
+        try {
+          const libResult = await ebookLibrary.addBooks([epubSourcePath]);
+          if (libResult.added.length > 0) {
+            console.log(`[audiobook:import] Also added to ebook library: ${libResult.added[0].relativePath}`);
+          } else if (libResult.duplicates.length > 0) {
+            console.log(`[audiobook:import] Already in ebook library (skipped)`);
+          }
+        } catch (libErr) {
+          console.warn('[audiobook:import] Failed to add to ebook library (non-fatal):', libErr);
+        }
+      }
 
       return {
         success: true,
@@ -8695,6 +8731,33 @@ function setupIpcHandlers(): void {
       return { success: true };
     } catch (err) {
       console.error('[EDITOR:SAVE-EPUB] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Save EPUB to a user-chosen location via Save As dialog
+  // No library restriction — intended for exporting EPUBs for external use
+  ipcMain.handle('epub:save-as-dialog', async (_event, epubData: ArrayBuffer, defaultName?: string) => {
+    try {
+      if (!mainWindow) return { success: false, error: 'No window' };
+
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: 'Save EPUB As',
+        defaultPath: defaultName || 'book.epub',
+        filters: [{ name: 'EPUB', extensions: ['epub'] }],
+      });
+
+      if (result.canceled || !result.filePath) {
+        return { success: false, canceled: true };
+      }
+
+      const buffer = Buffer.from(epubData);
+      await fs.writeFile(result.filePath, buffer);
+      console.log(`[EPUB:SAVE-AS] Saved EPUB to ${result.filePath} (${buffer.length} bytes)`);
+
+      return { success: true, filePath: result.filePath };
+    } catch (err) {
+      console.error('[EPUB:SAVE-AS] Error:', err);
       return { success: false, error: (err as Error).message };
     }
   });

@@ -246,7 +246,9 @@ function parseEbookMetaOutput(output: string): BookMetadata {
       case 'author(s)':
         meta.authorFull = value;
         // Parse "Last, First" or "First Last" or "Last, First & Last2, First2"
-        const primaryAuthor = value.split('&')[0].trim().split(';')[0].trim();
+        // Strip Calibre's [file-as] bracket notation (e.g. "John Smith [Smith, John]")
+        let primaryAuthor = value.split('&')[0].trim().split(';')[0].trim();
+        primaryAuthor = primaryAuthor.replace(/\s*\[.*?\]\s*$/, '').trim();
         if (primaryAuthor.includes(',')) {
           const parts = primaryAuthor.split(',').map(s => s.trim());
           meta.authorLast = parts[0];
@@ -622,8 +624,8 @@ export async function addBooks(
     // Read metadata from source file
     const meta = await readMetadata(sourcePath);
 
-    // Check for duplicates (same title+author)
-    const existingDuplicate = findDuplicateInCache(cache, meta);
+    // Check for duplicates (same title+author+subtitle, also compare filenames)
+    const existingDuplicate = findDuplicateInCache(cache, meta, path.basename(sourcePath));
     if (existingDuplicate) {
       duplicates.push({
         sourcePath,
@@ -1091,22 +1093,33 @@ export function getCachedMetadata(relativePath: string): BookMetadata | null {
 // Duplicate Detection
 // ─────────────────────────────────────────────────────────────────────────────
 
-function findDuplicateInCache(cache: MetadataCache, meta: BookMetadata): LibraryBookEntry | null {
+function findDuplicateInCache(cache: MetadataCache, meta: BookMetadata, sourceFilename?: string): LibraryBookEntry | null {
   if (!meta.title) return null;
 
-  const normalizeTitle = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const normalizeAuthor = (a: string) => a.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
-  const targetTitle = normalizeTitle(meta.title);
-  const targetAuthor = meta.authorLast ? normalizeAuthor(meta.authorLast) : '';
+  const targetTitle = normalize(meta.title);
+  const targetSubtitle = meta.subtitle ? normalize(meta.subtitle) : '';
+  const targetAuthor = meta.authorLast ? normalize(meta.authorLast) : '';
 
   for (const [relativePath, cached] of Object.entries(cache)) {
-    const cachedTitle = normalizeTitle(cached.title);
+    const cachedTitle = normalize(cached.title);
     if (cachedTitle !== targetTitle) continue;
 
+    // Subtitle must also match (differentiates multi-volume works)
+    const cachedSubtitle = cached.subtitle ? normalize(cached.subtitle) : '';
+    if (cachedSubtitle !== targetSubtitle) continue;
+
     if (targetAuthor && cached.authorLast) {
-      const cachedAuthor = normalizeAuthor(cached.authorLast);
+      const cachedAuthor = normalize(cached.authorLast);
       if (cachedAuthor === targetAuthor) {
+        // If the source filename differs from the cached filename, allow the import —
+        // same title+author but different files (e.g., Volume 1 vs Volume 2)
+        if (sourceFilename) {
+          const cachedFilename = path.basename(relativePath);
+          if (normalize(sourceFilename) !== normalize(cachedFilename)) continue;
+        }
+
         const category = path.dirname(relativePath);
         return {
           relativePath,
@@ -1136,7 +1149,7 @@ export async function findDuplicates(filePaths: string[]): Promise<DuplicateEntr
 
   for (const filePath of filePaths) {
     const meta = await readMetadata(filePath);
-    const existing = findDuplicateInCache(cache, meta);
+    const existing = findDuplicateInCache(cache, meta, path.basename(filePath));
     if (existing) {
       results.push({
         sourcePath: filePath,
