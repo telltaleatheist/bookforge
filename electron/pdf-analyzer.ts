@@ -811,7 +811,7 @@ export class PDFAnalyzer {
           region = 'header';
         }
         // Footer detection
-        else if (yPct > 0.92 || (yPct > 0.88 && textLen < 50)) {
+        else if (yPct > 0.90 || (yPct > 0.88 && textLen < 50) || (yPct > 0.85 && hasPageNumPattern)) {
           region = 'footer';
         } else if (yPct > 0.70) {
           region = 'lower';
@@ -1013,10 +1013,37 @@ export class PDFAnalyzer {
       }
     }
 
+    // Compute dominant body font name and italic status
+    const fontChars = new Map<string, number>();
+    let bodyItalicChars = 0;
+    let bodyTotalChars = 0;
+    for (const block of this.blocks) {
+      if (block.region === 'body' && !block.is_bold && !block.is_image) {
+        fontChars.set(block.font_name, (fontChars.get(block.font_name) || 0) + block.char_count);
+        bodyTotalChars += block.char_count;
+        if (block.is_italic) bodyItalicChars += block.char_count;
+      }
+    }
+    let bodyFont = 'unknown';
+    let maxFontChars = 0;
+    for (const [font, chars] of fontChars) {
+      if (chars > maxFontChars) { maxFontChars = chars; bodyFont = font; }
+    }
+    const bodyIsItalic = bodyTotalChars > 0 && bodyItalicChars > bodyTotalChars * 0.5;
+
+    // Build per-page index of image block positions for adjacency checks
+    const imagesByPage = new Map<number, TextBlock[]>();
+    for (const block of this.blocks) {
+      if (block.is_image) {
+        if (!imagesByPage.has(block.page)) imagesByPage.set(block.page, []);
+        imagesByPage.get(block.page)!.push(block);
+      }
+    }
+
     // Classify blocks and group by type
     const blockCategories = new Map<string, string>(); // block id → catType
     for (const block of this.blocks) {
-      blockCategories.set(block.id, this.classifyBlock(block, bodySize));
+      blockCategories.set(block.id, this.classifyBlock(block, bodySize, bodyFont, bodyIsItalic, imagesByPage));
     }
 
     // Enforce one header per page — keep only the topmost, reclassify rest as body
@@ -1168,9 +1195,38 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Check if a text block is adjacent to an image on the same page (within threshold points)
+   */
+  private isAdjacentToImage(
+    block: TextBlock,
+    imagesByPage: Map<number, TextBlock[]>,
+    threshold = 30
+  ): boolean {
+    const pageImages = imagesByPage.get(block.page);
+    if (!pageImages) return false;
+    return pageImages.some(img => {
+      const imgBottom = img.y + img.height;
+      const blockBottom = block.y + block.height;
+      // Text below image (most common caption position)
+      const belowImage = block.y >= imgBottom - 5 && block.y <= imgBottom + threshold;
+      // Text above image (less common)
+      const aboveImage = blockBottom >= img.y - threshold && blockBottom <= img.y + 5;
+      // Must overlap horizontally
+      const hOverlap = block.x < img.x + img.width && block.x + block.width > img.x;
+      return (belowImage || aboveImage) && hOverlap;
+    });
+  }
+
+  /**
    * Classify a block into a semantic category
    */
-  private classifyBlock(block: TextBlock, bodySize: number): string {
+  private classifyBlock(
+    block: TextBlock,
+    bodySize: number,
+    bodyFont: string,
+    bodyIsItalic: boolean,
+    imagesByPage: Map<number, TextBlock[]>
+  ): string {
     if (block.is_image) return 'image';
 
     // Check if the block text is PRIMARILY a footnote marker
@@ -1220,8 +1276,25 @@ export class PDFAnalyzer {
       return 'footnote';
     }
 
-    // Small text in body might be captions
+    // --- Caption detection ---
+    const nearImage = this.isAdjacentToImage(block, imagesByPage);
+    const differentFont = block.font_name !== bodyFont;
+    const isItalicCaption = block.is_italic && !bodyIsItalic;
+
+    // Rule 1: Small font in non-lower region → caption
     if (block.font_size < bodySize * 0.85 && block.region !== 'lower') {
+      return 'caption';
+    }
+    // Rule 2: Italic text near an image (when body text isn't italic) → caption
+    if (nearImage && isItalicCaption) {
+      return 'caption';
+    }
+    // Rule 3: Different font near an image → caption
+    if (nearImage && differentFont && block.line_count <= 8) {
+      return 'caption';
+    }
+    // Rule 4: Slightly smaller font near image → caption
+    if (nearImage && block.font_size < bodySize * 0.95) {
       return 'caption';
     }
 
@@ -1234,8 +1307,8 @@ export class PDFAnalyzer {
       if (block.line_count <= 2 && block.char_count < 200) return 'subheading';
     }
 
-    // Italic multi-line = quotes
-    if (block.is_italic && block.line_count > 2) return 'quote';
+    // Italic multi-line = quotes (but NOT if adjacent to an image — those are captions)
+    if (block.is_italic && block.line_count > 2 && !nearImage) return 'quote';
 
     return 'body';
   }
@@ -1248,6 +1321,16 @@ export class PDFAnalyzer {
   // Scale constants for two-tier rendering
   private readonly PREVIEW_SCALE = 0.5;  // Fast, low quality
   private readonly FULL_SCALE = 2.5;     // Slower, high quality
+
+  // On-demand rendering: cached document handle to avoid re-opening on every scroll
+  private renderDoc: {
+    pdfPath: string;
+    doc: any;
+    mupdfLib: typeof import('mupdf');
+    fileHash: string;
+    closeTimer: ReturnType<typeof setTimeout>;
+  } | null = null;
+  private readonly RENDER_DOC_TIMEOUT = 60_000; // 60s inactivity timeout
 
   /**
    * Get the base cache directory for BookForge
@@ -1463,10 +1546,11 @@ export class PDFAnalyzer {
       throw new Error('No document loaded');
     }
 
+    let page, pixmap;
     try {
-      const page = doc.loadPage(pageNum);
+      page = doc.loadPage(pageNum);
       const matrix = mupdfLib.Matrix.scale(scale, scale);
-      const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+      pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
       const pngData = pixmap.asPNG();
 
       // Write to cache
@@ -1477,6 +1561,8 @@ export class PDFAnalyzer {
       this.renderedPagePaths.set(pageNum, filePath);
       return filePath;
     } finally {
+      try { pixmap?.destroy(); } catch { /* ignore */ }
+      try { page?.destroy(); } catch { /* ignore */ }
       // Clean up temp document if we created one
       if (tempDoc) {
         tempDoc.destroy();
@@ -1540,16 +1626,20 @@ export class PDFAnalyzer {
       const filePath = path.join(previewDir, `page-${pageNum}.png`);
 
       if (!fs.existsSync(filePath)) {
+        let page, pixmap;
         try {
-          const page = doc.loadPage(pageNum);
+          page = doc.loadPage(pageNum);
           const matrix = mupdfLib.Matrix.scale(this.PREVIEW_SCALE, this.PREVIEW_SCALE);
-          const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+          pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
           const pngData = pixmap.asPNG();
           fs.writeFileSync(filePath, Buffer.from(pngData));
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           console.error(`[PDF Render] Error rendering preview for page ${pageNum}:`, errorMsg);
           // Continue with other pages even if one fails
+        } finally {
+          try { pixmap?.destroy(); } catch { /* ignore */ }
+          try { page?.destroy(); } catch { /* ignore */ }
         }
       }
 
@@ -1592,32 +1682,41 @@ export class PDFAnalyzer {
     }
 
     let fullCompleted = 0;
-    let memoryErrorLogged = false;
+    let memoryErrorOccurred = false;
     const renderFull = async (pageNum: number): Promise<void> => {
       const filePath = path.join(fullDir, `page-${pageNum}.png`);
 
       if (!fs.existsSync(filePath)) {
-        try {
-          const page = doc.loadPage(pageNum);
-          const matrix = mupdfLib.Matrix.scale(effectiveScale, effectiveScale);
-          const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-          const pngData = pixmap.asPNG();
-          fs.writeFileSync(filePath, Buffer.from(pngData));
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          // Handle memory allocation errors gracefully - use preview instead
-          if (errorMsg.includes('malloc') || errorMsg.includes('memory')) {
-            if (!memoryErrorLogged) {
-              console.warn(`[PDF Render] Memory allocation failed for page ${pageNum}, using preview quality for remaining pages`);
-              memoryErrorLogged = true;
+        // If memory already failed, just copy preview for remaining pages
+        if (memoryErrorOccurred) {
+          const previewPath = path.join(previewDir, `page-${pageNum}.png`);
+          if (fs.existsSync(previewPath)) {
+            fs.copyFileSync(previewPath, filePath);
+          }
+        } else {
+          let page, pixmap;
+          try {
+            page = doc.loadPage(pageNum);
+            const matrix = mupdfLib.Matrix.scale(effectiveScale, effectiveScale);
+            pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+            const pngData = pixmap.asPNG();
+            fs.writeFileSync(filePath, Buffer.from(pngData));
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            if (errorMsg.includes('malloc') || errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
+              console.warn(`[PDF Render] Memory error at page ${pageNum}, falling back to preview for remaining ${totalPages - pageNum} pages`);
+              memoryErrorOccurred = true;
+              // Copy preview for this page
+              const previewPath = path.join(previewDir, `page-${pageNum}.png`);
+              if (fs.existsSync(previewPath)) {
+                fs.copyFileSync(previewPath, filePath);
+              }
+            } else {
+              console.error(`[PDF Render] Error rendering page ${pageNum}:`, errorMsg);
             }
-            // Copy preview to full if it exists, otherwise skip
-            const previewPath = path.join(previewDir, `page-${pageNum}.png`);
-            if (fs.existsSync(previewPath)) {
-              fs.copyFileSync(previewPath, filePath);
-            }
-          } else {
-            console.error(`[PDF Render] Error rendering page ${pageNum}:`, errorMsg);
+          } finally {
+            try { pixmap?.destroy(); } catch { /* ignore */ }
+            try { page?.destroy(); } catch { /* ignore */ }
           }
         }
       }
@@ -1651,11 +1750,16 @@ export class PDFAnalyzer {
         }
       } finally {
         // Destroy document after all rendering is complete to free WebAssembly memory
-        try {
-          doc.destroy();
-          console.log('[PDF Render] Background render complete, document destroyed');
-        } catch (err) {
-          console.warn('[PDF Render] Error destroying document after render:', err);
+        // Skip if memory was corrupted — the WASM context is already broken
+        if (!memoryErrorOccurred) {
+          try {
+            doc.destroy();
+            console.log('[PDF Render] Background render complete, document destroyed');
+          } catch (err) {
+            console.warn('[PDF Render] Error destroying document after render:', err);
+          }
+        } else {
+          console.log('[PDF Render] Background render complete (memory error occurred, skipping document destroy)');
         }
       }
     })();
@@ -1696,11 +1800,17 @@ export class PDFAnalyzer {
 
       // Check if already cached
       if (!fs.existsSync(filePath)) {
-        const page = doc.loadPage(pageNum);
-        const matrix = mupdfLib.Matrix.scale(scale, scale);
-        const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-        const pngData = pixmap.asPNG();
-        fs.writeFileSync(filePath, Buffer.from(pngData));
+        let page, pixmap;
+        try {
+          page = doc.loadPage(pageNum);
+          const matrix = mupdfLib.Matrix.scale(scale, scale);
+          pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+          const pngData = pixmap.asPNG();
+          fs.writeFileSync(filePath, Buffer.from(pngData));
+        } finally {
+          try { pixmap?.destroy(); } catch { /* ignore */ }
+          try { page?.destroy(); } catch { /* ignore */ }
+        }
       }
 
       paths[pageNum] = filePath;
@@ -1745,6 +1855,121 @@ export class PDFAnalyzer {
    */
   getAllRenderedPagePaths(): Map<number, string> {
     return new Map(this.renderedPagePaths);
+  }
+
+  /**
+   * Get or open a cached document for on-demand page rendering.
+   * Reuses the document handle if already open for the same path.
+   * Auto-closes after 60s of inactivity.
+   */
+  private async getOrOpenRenderDoc(pdfPath: string): Promise<{
+    doc: any;
+    mupdfLib: typeof import('mupdf');
+    fileHash: string;
+  }> {
+    // If we already have the right doc open, reset the timeout and return it
+    if (this.renderDoc && this.renderDoc.pdfPath === pdfPath) {
+      clearTimeout(this.renderDoc.closeTimer);
+      this.renderDoc.closeTimer = setTimeout(() => this.closeRenderDoc(), this.RENDER_DOC_TIMEOUT);
+      return {
+        doc: this.renderDoc.doc,
+        mupdfLib: this.renderDoc.mupdfLib,
+        fileHash: this.renderDoc.fileHash,
+      };
+    }
+
+    // Different PDF or no doc — close old one and open new
+    this.closeRenderDoc();
+
+    const mupdfLib = await getMupdf();
+    const fileHash = await this.computeFileHash(pdfPath);
+    const data = fs.readFileSync(pdfPath);
+    const mimeType = getMimeType(pdfPath);
+    const doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
+
+    if (mimeType === 'application/epub+zip') {
+      doc.layout(600, 900, 18);
+    }
+
+    this.renderDoc = {
+      pdfPath,
+      doc,
+      mupdfLib,
+      fileHash,
+      closeTimer: setTimeout(() => this.closeRenderDoc(), this.RENDER_DOC_TIMEOUT),
+    };
+
+    return { doc, mupdfLib, fileHash };
+  }
+
+  /**
+   * Close the cached render document to free memory.
+   * Called on timeout, when switching PDFs, or when the user closes the document.
+   */
+  closeRenderDoc(): void {
+    if (this.renderDoc) {
+      clearTimeout(this.renderDoc.closeTimer);
+      try {
+        this.renderDoc.doc.destroy();
+        console.log('[pdf-analyzer] Closed cached render document');
+      } catch (err) {
+        console.warn('[pdf-analyzer] Error destroying cached render doc:', err);
+      }
+      this.renderDoc = null;
+    }
+  }
+
+  /**
+   * On-demand page rendering: render specific pages by number.
+   * Uses document caching (opened once, reused across calls).
+   * Checks disk cache first — only renders pages that aren't already cached.
+   * Returns a map of pageNum → filePath for the requested pages.
+   */
+  async renderPages(
+    pdfPath: string,
+    pageNumbers: number[],
+    quality: 'preview' | 'full' = 'preview'
+  ): Promise<Record<number, string>> {
+    const { doc, mupdfLib, fileHash } = await this.getOrOpenRenderDoc(pdfPath);
+
+    const totalPages = doc.countPages();
+    const scale = quality === 'preview'
+      ? this.PREVIEW_SCALE
+      : (totalPages > 200 ? 1.5 : totalPages > 100 ? 2.0 : this.FULL_SCALE);
+
+    const qualityDir = this.getQualityCacheDir(fileHash, quality);
+    const result: Record<number, string> = {};
+
+    for (const pageNum of pageNumbers) {
+      if (pageNum < 0 || pageNum >= totalPages) continue;
+
+      const filePath = path.join(qualityDir, `page-${pageNum}.png`);
+
+      // Check disk cache first
+      if (fs.existsSync(filePath)) {
+        result[pageNum] = filePath;
+        continue;
+      }
+
+      // Render the page
+      let page, pixmap;
+      try {
+        page = doc.loadPage(pageNum);
+        const matrix = mupdfLib.Matrix.scale(scale, scale);
+        pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+        const pngData = pixmap.asPNG();
+        fs.writeFileSync(filePath, Buffer.from(pngData));
+        result[pageNum] = filePath;
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[pdf-analyzer] Error rendering page ${pageNum} on demand:`, errorMsg);
+      } finally {
+        try { pixmap?.destroy(); } catch { /* ignore */ }
+        try { page?.destroy(); } catch { /* ignore */ }
+      }
+    }
+
+    return result;
   }
 
   /**

@@ -2599,6 +2599,12 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
+    // Ctrl/Cmd + Shift + S for Save EPUB As
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === 'S') {
+      event.preventDefault();
+      this.saveEpubAs();
+    }
+
     // Ctrl/Cmd + F for search
     if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
       event.preventDefault();
@@ -3062,26 +3068,19 @@ export class PdfPickerComponent implements OnInit {
 
     // Items only shown when PDF is open
     if (pdfIsOpen) {
-      // In embedded mode, show Finalize instead of Export
-      const exportOrFinalize: ToolbarItem = isEmbedded
-        ? {
-            id: 'finalize',
-            type: 'button',
-            icon: '✓',
-            label: 'Save',
-            tooltip: 'Save changes to EPUB'
-          }
-        : {
-            id: 'export',
-            type: 'button',
-            icon: '📤',
-            label: 'Export',
-            tooltip: 'Export document (Ctrl+E)'
-          };
+      // In embedded mode, show both Save and Export; standalone shows only Export
+      const actionItems: ToolbarItem[] = isEmbedded
+        ? [
+            { id: 'finalize', type: 'button', icon: '✓', label: 'Save', tooltip: 'Save changes to EPUB' },
+            { id: 'export', type: 'button', icon: '📤', label: 'Export', tooltip: 'Export document (Cmd+E)' },
+          ]
+        : [
+            { id: 'export', type: 'button', icon: '📤', label: 'Export', tooltip: 'Export document (Cmd+E)' },
+          ];
 
       return [
         ...baseItems,
-        exportOrFinalize,
+        ...actionItems,
         {
           id: 'search',
           type: 'button',
@@ -3767,7 +3766,7 @@ export class PdfPickerComponent implements OnInit {
     this.blocks.set([]);
     // Reset editor state via service
     this.editorState.reset();
-    this.pageRenderService.clear();
+    this.pageRenderService.closeDocument(); // Also frees the backend cached render doc
     this.projectService.reset();
 
     // Clear blanked pages tracking
@@ -3944,10 +3943,10 @@ export class PdfPickerComponent implements OnInit {
         this.tryLoadOutline();
       }
 
-      // Start page rendering in background (non-blocking)
-      // Pages will appear as they complete via the pageRenderService signals
+      // Start on-demand page rendering (non-blocking, only renders visible pages)
+      // Additional pages render as the user scrolls via the pdf-viewer effect
       if (!lightweight) {
-        this.pageRenderService.loadAllPageImages(result.page_count);
+        this.pageRenderService.startOnDemandRendering(result.page_count);
       }
     } catch (err) {
       console.error('Failed to load PDF:', err);
@@ -5142,6 +5141,43 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
+   * Save EPUB to a user-chosen location via Save As dialog.
+   * Generates an EPUB from the current editor state (with all current deletions/corrections)
+   * and lets the user pick where to save it. Does not affect the project's exported.epub.
+   */
+  async saveEpubAs(): Promise<void> {
+    if (!this.pdfLoaded()) return;
+
+    this.loading.set(true);
+    this.loadingText.set('Preparing EPUB...');
+
+    try {
+      const result = await this.exportService.saveEpubAs(
+        this.getExportableBlocks(),
+        this.deletedBlockIds(),
+        this.chapters(),
+        this.pdfName(),
+        this.editorState.textCorrections(),
+        this.deletedPages(),
+        this.getDeletedHighlights(),
+        this.metadata(),
+      );
+
+      if (result.message === 'Canceled') {
+        // User canceled the dialog — no alert needed
+      } else if (!result.success) {
+        this.showAlert({ title: 'Save Failed', message: result.message, type: 'error' });
+      } else {
+        this.showAlert({ title: 'EPUB Saved', message: result.message, type: 'success' });
+      }
+    } catch (err) {
+      this.showAlert({ title: 'Save Failed', message: (err as Error).message, type: 'error' });
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  /**
    * Finalize the project for audiobook processing (embedded mode).
    *
    * Finalize the project by exporting an EPUB to the audiobook folder.
@@ -6138,8 +6174,8 @@ export class PdfPickerComponent implements OnInit {
       // Initialize page rendering - starts in background, doesn't block
       this.pageRenderService.initialize(this.effectivePath(), pdfResult.page_count);
 
-      // Start page rendering in background (non-blocking)
-      this.pageRenderService.loadAllPageImages(pdfResult.page_count);
+      // Start on-demand page rendering (only visible pages)
+      this.pageRenderService.startOnDemandRendering(pdfResult.page_count);
 
       // Suppress auto-save triggered during restore — loading state is not a user change
       if (this.autoSaveTimeout) {
@@ -6445,15 +6481,15 @@ export class PdfPickerComponent implements OnInit {
       // Show document immediately
       this.pdfLoaded.set(true);
 
-      // Start page rendering in background (skip if lightweight mode)
+      // Start on-demand page rendering (skip if lightweight mode)
       if (!lightweight) {
-        // If background removal is enabled, apply it after pages load
+        // If background removal is enabled, apply it after initial pages load
         if (project.remove_backgrounds) {
-          this.pageRenderService.loadAllPageImages(pdfResult.page_count).then(() => {
+          this.pageRenderService.startOnDemandRendering(pdfResult.page_count).then(() => {
             this.applyRemoveBackgrounds(true);
           });
         } else {
-          this.pageRenderService.loadAllPageImages(pdfResult.page_count);
+          this.pageRenderService.startOnDemandRendering(pdfResult.page_count);
         }
       }
 
@@ -8589,7 +8625,7 @@ export class PdfPickerComponent implements OnInit {
   private clearDocumentState(): void {
     this.activeDocumentId.set(null);
     this.editorState.reset();
-    this.pageRenderService.clear();
+    this.pageRenderService.closeDocument(); // Also frees the backend cached render doc
     this.projectService.reset();
   }
 

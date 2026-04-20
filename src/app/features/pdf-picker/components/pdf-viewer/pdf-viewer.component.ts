@@ -4,6 +4,7 @@ import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrollin
 import { TextBlock, Category, PageDimension } from '../../services/pdf.service';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { Chapter } from '../../../../core/services/electron.service';
+import { PageRenderService } from '../../services/page-render.service';
 
 export interface CropRect {
   x: number;
@@ -507,6 +508,7 @@ export interface CropRect {
           class="pdf-viewport"
           [class.marquee-selecting]="pageMarqueeActive()"
           (wheel)="onWheel($event)"
+          (scroll)="onGridScroll($event)"
           (mousedown)="onPageMarqueeStart($event)"
           (mousemove)="onPageMarqueeMove($event)"
           (mouseup)="onPageMarqueeEnd()"
@@ -1892,8 +1894,40 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     const allPages = this.pageNumbers();
     if (allPages.length === 0) return { start: 0, end: 0, pages: [] as number[] };
 
-    // In grid mode or edit/select mode, show all pages (they're small)
-    if (this.layout() === 'grid' || this.editorMode() === 'select' || this.editorMode() === 'edit') {
+    // In grid mode, calculate visible pages from scroll position and grid layout
+    if (this.layout() === 'grid') {
+      const zoom = this.zoom() / 100;
+      const pageWidth = 200 * zoom;  // matches getPageWidth() grid base
+
+      const vpWidth = this.gridViewportWidth();
+      const vpHeight = this.gridViewportHeight();
+      const scroll = this.gridScrollTop();
+
+      // Use generous estimate: assume smallest gap (12px) to get max possible columns.
+      // Over-estimating columns means we request more pages than visible — that's fine,
+      // the batch renderer handles it efficiently.
+      const minGap = 12;
+      const cols = Math.max(1, Math.floor((vpWidth + minGap) / (pageWidth + minGap)));
+
+      // Estimate row height from first page's aspect ratio
+      const dims = this.pageDimensions();
+      const firstDim = dims[allPages[0]];
+      const aspect = firstDim ? firstDim.height / firstDim.width : 1.414;
+      const pageHeight = pageWidth * aspect;
+      const labelHeight = 36; // page label + badge below thumbnail
+      const rowHeight = pageHeight + labelHeight + minGap;
+
+      const startRow = Math.max(0, Math.floor(scroll / rowHeight) - 2);
+      const endRow = Math.ceil((scroll + vpHeight) / rowHeight) + 2;
+
+      const startIdx = Math.max(0, startRow * cols);
+      const endIdx = Math.min(allPages.length, (endRow + 1) * cols);
+
+      return { start: startIdx, end: endIdx, pages: allPages.slice(startIdx, endIdx) };
+    }
+
+    // In edit/select mode, show all pages
+    if (this.editorMode() === 'select' || this.editorMode() === 'edit') {
       return { start: 0, end: allPages.length, pages: allPages };
     }
 
@@ -2155,8 +2189,22 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   private previousZoom = 100;
   private readonly cdr = inject(ChangeDetectorRef);
   private readonly elementRef = inject(ElementRef);
+  private readonly pageRenderService = inject(PageRenderService);
 
   constructor() {
+    // Effect to request on-demand page rendering when visible range changes
+    effect(() => {
+      const range = this.visiblePageRange();
+      if (range.pages.length > 0 && this.pageRenderService.isOnDemandMode()) {
+        // Add a buffer of 5 pages in each direction for smoother scrolling
+        const allPages = this.pageNumbers();
+        const startIdx = Math.max(0, range.start - 5);
+        const endIdx = Math.min(allPages.length, range.end + 5);
+        const bufferedPages = allPages.slice(startIdx, endIdx);
+        this.pageRenderService.requestPages(bufferedPages);
+      }
+    });
+
     // Effect to adjust scroll position after zoom changes
     effect(() => {
       const currentZoom = this.zoom();
@@ -3350,6 +3398,25 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     }
   }
 
+  // Grid scroll/viewport state for on-demand rendering
+  private readonly gridScrollTop = signal(0);
+  private readonly gridViewportHeight = signal(800);
+  private readonly gridViewportWidth = signal(1200);
+
+  // Grid scroll handler — updates signals to trigger on-demand rendering
+  onGridScroll(event: Event): void {
+    const el = event.target as HTMLElement;
+    if (!el) return;
+
+    this.gridScrollTop.set(el.scrollTop);
+    if (el.clientHeight !== this.gridViewportHeight()) {
+      this.gridViewportHeight.set(el.clientHeight);
+    }
+    if (el.clientWidth !== this.gridViewportWidth()) {
+      this.gridViewportWidth.set(el.clientWidth);
+    }
+  }
+
   // Zoom sensitivity - higher = faster zoom per scroll
   private readonly ZOOM_SENSITIVITY = 0.15; // 15% of deltaY converted to zoom change
 
@@ -3704,6 +3771,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       const vp = this.viewport.nativeElement;
       this.viewportHeight.set(vp.clientHeight);
       this.scrollTop.set(vp.scrollTop);
+      // Also initialize grid viewport dimensions (same element in grid mode)
+      this.gridViewportHeight.set(vp.clientHeight);
+      this.gridViewportWidth.set(vp.clientWidth);
     }
   }
 

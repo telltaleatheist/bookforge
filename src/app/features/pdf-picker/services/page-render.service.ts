@@ -38,6 +38,14 @@ export class PageRenderService {
   private progressUnsubscribe: (() => void) | null = null;
   private upgradeUnsubscribe: (() => void) | null = null;
 
+  // On-demand rendering state
+  private inFlightPages = new Set<number>();
+  private demandDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingDemandPages = new Set<number>();
+  private fullResIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastVisiblePages: number[] = [];
+  private readonly onDemandMode = signal(false);
+
   /**
    * Initialize for a new document
    */
@@ -58,6 +66,19 @@ export class PageRenderService {
     this.isLoading.set(false);
     this.isUpgradingToFull.set(false);
     this.unsubscribe();
+    // Clear on-demand state
+    this.inFlightPages.clear();
+    this.pendingDemandPages.clear();
+    this.onDemandMode.set(false);
+    if (this.demandDebounceTimer) {
+      clearTimeout(this.demandDebounceTimer);
+      this.demandDebounceTimer = null;
+    }
+    if (this.fullResIdleTimer) {
+      clearTimeout(this.fullResIdleTimer);
+      this.fullResIdleTimer = null;
+    }
+    this.lastVisiblePages = [];
   }
 
   private unsubscribe(): void {
@@ -171,6 +192,172 @@ export class PageRenderService {
         this.progressUnsubscribe = null;
       }
     }
+  }
+
+  /**
+   * Start on-demand rendering for a new document.
+   * Renders only the first viewport of pages immediately, then renders
+   * additional pages as the user scrolls (via requestPages).
+   */
+  async startOnDemandRendering(pageCount?: number): Promise<void> {
+    const count = pageCount ?? this.currentTotalPages;
+    if (!this.currentPdfPath || count === 0) return;
+
+    this.onDemandMode.set(true);
+    this.isLoading.set(true);
+
+    try {
+      // Render the first viewport (~15 pages)
+      const initialPages = Array.from({ length: Math.min(15, count) }, (_, i) => i);
+      await this.requestPagesImmediate(initialPages, 'preview');
+    } finally {
+      this.isLoading.set(false);
+    }
+  }
+
+  /**
+   * Request pages to be rendered on demand (debounced).
+   * Called when the visible page range changes (scroll).
+   * Filters out already-rendered and in-flight pages.
+   */
+  requestPages(pageNumbers: number[]): void {
+    if (!this.currentPdfPath || !this.onDemandMode()) return;
+
+    // Add to pending set
+    for (const p of pageNumbers) {
+      if (p >= 0 && p < this.currentTotalPages && !this.previewPaths[p] && !this.inFlightPages.has(p)) {
+        this.pendingDemandPages.add(p);
+      }
+    }
+
+    // Track visible pages for full-res upgrade
+    this.lastVisiblePages = pageNumbers;
+
+    if (this.pendingDemandPages.size === 0 && this.inFlightPages.size === 0) {
+      // All visible pages have previews and nothing is in-flight — upgrade to full-res
+      this.scheduleFullResUpgrade(pageNumbers);
+      return;
+    }
+
+    // Debounce: flush pending pages after 50ms
+    if (this.demandDebounceTimer) {
+      clearTimeout(this.demandDebounceTimer);
+    }
+    this.demandDebounceTimer = setTimeout(() => {
+      this.demandDebounceTimer = null;
+      const pages = Array.from(this.pendingDemandPages);
+      this.pendingDemandPages.clear();
+      if (pages.length > 0) {
+        this.requestPagesImmediate(pages, 'preview');
+      }
+    }, 50);
+  }
+
+  // Max pages per IPC call to avoid blocking the main process
+  private readonly RENDER_BATCH_SIZE = 20;
+
+  /**
+   * Immediately request rendering of specific pages (no debounce).
+   * Batches large requests to avoid blocking the Electron main process.
+   */
+  private async requestPagesImmediate(pageNumbers: number[], quality: 'preview' | 'full'): Promise<void> {
+    if (!this.currentPdfPath) return;
+
+    // Filter out already-rendered and in-flight pages
+    const toRender = pageNumbers.filter(p => {
+      if (p < 0 || p >= this.currentTotalPages) return false;
+      if (this.inFlightPages.has(p)) return false;
+      if (quality === 'preview' && this.previewPaths[p]) return false;
+      if (quality === 'full' && this.fullPaths[p]) return false;
+      return true;
+    });
+
+    if (toRender.length === 0) return;
+
+    // Mark as in-flight
+    for (const p of toRender) {
+      this.inFlightPages.add(p);
+    }
+
+    try {
+      // Batch into chunks to avoid long-blocking IPC calls
+      for (let i = 0; i < toRender.length; i += this.RENDER_BATCH_SIZE) {
+        // Full-res batches yield to pending preview requests (previews take priority)
+        if (quality === 'full' && this.pendingDemandPages.size > 0) {
+          break;
+        }
+
+        const batch = toRender.slice(i, i + this.RENDER_BATCH_SIZE);
+
+        const result = await this.electronService.renderPages(
+          this.currentPdfPath,
+          batch,
+          quality
+        );
+
+        // Update paths with results from this batch
+        for (const [pageNumStr, filePath] of Object.entries(result)) {
+          const pageNum = Number(pageNumStr);
+          if (quality === 'preview') {
+            this.previewPaths[pageNum] = filePath;
+          } else {
+            this.fullPaths[pageNum] = filePath;
+          }
+        }
+
+        // Update UI after each batch so pages appear progressively
+        this.updatePageImagesSignal();
+      }
+    } finally {
+      for (const p of toRender) {
+        this.inFlightPages.delete(p);
+      }
+    }
+
+    // After preview batches complete, schedule full-res upgrade for visible pages.
+    // The 300ms idle timer in scheduleFullResUpgrade resets on each scroll,
+    // so upgrades only start when the user stops scrolling.
+    if (quality === 'preview') {
+      this.scheduleFullResUpgrade(this.lastVisiblePages);
+    }
+  }
+
+  /**
+   * Schedule full-res upgrade for visible pages after scroll stops (300ms idle).
+   */
+  private scheduleFullResUpgrade(pageNumbers: number[]): void {
+    if (this.fullResIdleTimer) {
+      clearTimeout(this.fullResIdleTimer);
+    }
+
+    this.fullResIdleTimer = setTimeout(() => {
+      this.fullResIdleTimer = null;
+      // Only upgrade pages that have preview but not full-res
+      const toUpgrade = pageNumbers.filter(p =>
+        p >= 0 && p < this.currentTotalPages &&
+        this.previewPaths[p] && !this.fullPaths[p] &&
+        !this.inFlightPages.has(p)
+      );
+      if (toUpgrade.length > 0) {
+        this.requestPagesImmediate(toUpgrade, 'full');
+      }
+    }, 300);
+  }
+
+  /**
+   * Close the document and free backend resources.
+   * Call when navigating away from the PDF viewer.
+   */
+  async closeDocument(): Promise<void> {
+    this.clear();
+    await this.electronService.closeRenderDoc();
+  }
+
+  /**
+   * Check if we're in on-demand rendering mode
+   */
+  isOnDemandMode(): boolean {
+    return this.onDemandMode();
   }
 
   /**
