@@ -75,6 +75,9 @@ export class PdfEditorStateService {
   readonly effectivePath = computed(() => this.libraryPath() || this.pdfPath());
   readonly pdfLoaded = signal(false);
 
+  /** True while background text extraction is in progress (analyzeText running) */
+  readonly textLoading = signal(false);
+
   // Selection and deletion state
   readonly deletedBlockIds = signal<Set<string>>(new Set());
   readonly selectedBlockIds = signal<string[]>([]);
@@ -206,6 +209,17 @@ export class PdfEditorStateService {
     // Clear history on new document load
     this.clearHistory();
     this.hasUnsavedChanges.set(false);
+    this.textLoading.set(false);
+  }
+
+  /**
+   * Update blocks and categories after background text extraction completes.
+   * Called when analyzeText() finishes for a document that was opened with analyzeQuick().
+   */
+  updateTextData(data: { blocks: TextBlock[]; categories: Record<string, Category> }): void {
+    this.blocks.set(data.blocks);
+    this.categories.set(data.categories);
+    this.textLoading.set(false);
   }
 
   // Clear all state

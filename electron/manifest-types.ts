@@ -62,6 +62,7 @@ export interface ManifestMetadata {
   seriesPosition?: number;
   outputFilename?: string;
   contributors?: Array<{ first: string; last: string }>;
+  tags?: string[];
 }
 
 export interface ManifestChapter {

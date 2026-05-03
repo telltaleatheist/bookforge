@@ -1,4 +1,4 @@
-import { Component, input, output, signal, computed, effect, HostListener } from '@angular/core';
+import { Component, input, output, signal, computed, effect, HostListener, ViewChild, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
@@ -15,6 +15,7 @@ export interface EpubMetadata {
   coverData?: string;
   outputFilename?: string;
   contributors?: Array<{ first: string; last: string }>;
+  tags?: string[];
 }
 
 @Component({
@@ -116,6 +117,37 @@ export interface EpubMetadata {
               <option value="zh">Chinese</option>
             </select>
           </div>
+        </div>
+
+        <!-- Tags -->
+        <div class="form-group tags-group">
+          <label>Tags</label>
+          <div class="tags-container" (click)="focusTagInput()">
+            @for (tag of formData().tags || []; track tag) {
+              <span class="tag-pill">
+                {{ tag }}
+                <button class="tag-remove" (click)="removeTag(tag); $event.stopPropagation()">&times;</button>
+              </span>
+            }
+            <input
+              #tagInputEl
+              class="tag-input"
+              type="text"
+              [ngModel]="tagInput()"
+              (ngModelChange)="onTagInputChange($event)"
+              (keydown.enter)="addTag($event)"
+              (keydown.Comma)="addTag($event)"
+              (keydown.backspace)="onTagBackspace()"
+              placeholder="Add tag..."
+            />
+          </div>
+          @if (tagSuggestions().length > 0) {
+            <div class="tag-suggestions">
+              @for (s of tagSuggestions(); track s) {
+                <button class="tag-suggestion" (click)="selectSuggestion(s)">{{ s }}</button>
+              }
+            </div>
+          }
         </div>
 
         <div class="form-group filename-group">
@@ -329,6 +361,79 @@ export interface EpubMetadata {
       width: 80px;
     }
 
+    .tags-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 4px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      min-height: 34px;
+      align-items: center;
+      cursor: text;
+    }
+
+    .tag-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px 8px;
+      background: var(--accent-primary, #6366f1);
+      color: #fff;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      white-space: nowrap;
+    }
+
+    .tag-remove {
+      background: none;
+      border: none;
+      color: rgba(255, 255, 255, 0.7);
+      cursor: pointer;
+      font-size: 0.875rem;
+      padding: 0 2px;
+      line-height: 1;
+
+      &:hover {
+        color: #fff;
+      }
+    }
+
+    .tag-input {
+      border: none;
+      background: transparent;
+      outline: none;
+      flex: 1;
+      min-width: 80px;
+      color: var(--text-primary);
+      font-size: 0.875rem;
+      padding: 4px;
+    }
+
+    .tag-suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 4px;
+    }
+
+    .tag-suggestion {
+      padding: 2px 8px;
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      background: var(--bg-elevated, #1a1a1a);
+      color: var(--text-secondary);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.15s;
+
+      &:hover {
+        border-color: var(--accent-primary, #6366f1);
+        color: var(--accent-primary, #6366f1);
+      }
+    }
+
     .filename-group {
       .filename-input {
         font-family: monospace;
@@ -378,6 +483,20 @@ export class MetadataEditorComponent {
     coverPath: '',
     coverData: '',
     outputFilename: ''
+  });
+
+  // Tag input state
+  readonly tagInput = signal('');
+  readonly allTags = signal<string[]>([]);
+  @ViewChild('tagInputEl') tagInputEl?: ElementRef<HTMLInputElement>;
+
+  readonly tagSuggestions = computed(() => {
+    const input = this.tagInput().toLowerCase().trim();
+    if (!input) return [];
+    const currentTags = new Set(this.formData().tags || []);
+    return this.allTags()
+      .filter(t => t.toLowerCase().includes(input) && !currentTags.has(t))
+      .slice(0, 8);
   });
 
   // Track if user has manually edited the filename
@@ -464,6 +583,9 @@ export class MetadataEditorComponent {
       }
       this.wasSaving = isSaving;
     }, { allowSignalWrites: true });
+
+    // Load all existing tags for autocomplete suggestions
+    this.loadAllTags();
   }
 
   updateField(field: keyof EpubMetadata, value: string): void {
@@ -561,7 +683,66 @@ export class MetadataEditorComponent {
     return {
       ...data,
       contributors: authors.filter(a => a.first || a.last),
+      tags: data.tags || [],
     };
+  }
+
+  // ─── Tag Methods ───
+
+  onTagInputChange(value: string): void {
+    this.tagInput.set(value);
+  }
+
+  addTag(event: Event): void {
+    event.preventDefault();
+    const raw = this.tagInput().trim().replace(/,$/,'').trim().toLowerCase();
+    if (!raw) return;
+    const current = this.formData().tags || [];
+    if (!current.includes(raw)) {
+      this.formData.update(d => ({ ...d, tags: [...current, raw] }));
+      this.metadataChange.emit(this.buildEmitData());
+    }
+    this.tagInput.set('');
+  }
+
+  removeTag(tag: string): void {
+    const current = this.formData().tags || [];
+    this.formData.update(d => ({ ...d, tags: current.filter(t => t !== tag) }));
+    this.metadataChange.emit(this.buildEmitData());
+  }
+
+  selectSuggestion(tag: string): void {
+    const current = this.formData().tags || [];
+    if (!current.includes(tag)) {
+      this.formData.update(d => ({ ...d, tags: [...current, tag] }));
+      this.metadataChange.emit(this.buildEmitData());
+    }
+    this.tagInput.set('');
+  }
+
+  onTagBackspace(): void {
+    if (this.tagInput()) return; // only delete last tag when input is empty
+    const current = this.formData().tags || [];
+    if (current.length > 0) {
+      this.formData.update(d => ({ ...d, tags: current.slice(0, -1) }));
+      this.metadataChange.emit(this.buildEmitData());
+    }
+  }
+
+  focusTagInput(): void {
+    this.tagInputEl?.nativeElement.focus();
+  }
+
+  async loadAllTags(): Promise<void> {
+    const electron = this.electron;
+    if (electron?.manifest?.getAllTags) {
+      try {
+        const tags = await electron.manifest.getAllTags();
+        this.allTags.set(tags || []);
+      } catch {
+        // Silently fail if IPC not available
+      }
+    }
   }
 
   onFilenameFocus(): void {

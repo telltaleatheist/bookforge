@@ -85,6 +85,7 @@ declare global {
         loadState: () => Promise<{ success: boolean; data?: any; error?: string }>;
         onProgress: (callback: (progress: QueueProgress) => void) => () => void;
         onComplete: (callback: (result: JobResult) => void) => () => void;
+        onRemoteControl: (callback: (action: 'start' | 'pause') => void) => () => void;
       };
       parallelTts?: {
         detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: { count: number; reason: string }; error?: string }>;
@@ -249,6 +250,7 @@ export class QueueService {
   private unsubscribeReassemblyProgress: (() => void) | null = null;
   private unsubscribeLanguageLearningProgress: (() => void) | null = null;
   private unsubscribeLLJobProgress: (() => void) | null = null;
+  private unsubscribeRemoteControl: (() => void) | null = null;
 
   // State signals
   private readonly _jobs = signal<QueueJob[]>([]);
@@ -343,6 +345,9 @@ export class QueueService {
       if (this.unsubscribeLLJobProgress) {
         this.unsubscribeLLJobProgress();
       }
+      if (this.unsubscribeRemoteControl) {
+        this.unsubscribeRemoteControl();
+      }
       this.stopMasterEtaTimer();
     });
   }
@@ -362,6 +367,17 @@ export class QueueService {
     this.unsubscribeComplete = electron.queue.onComplete((result: JobResult) => {
       this.ngZone.run(async () => {
         await this.handleJobComplete(result);
+      });
+    });
+
+    // Listen for remote control commands from library web UI
+    this.unsubscribeRemoteControl = electron.queue.onRemoteControl((action: 'start' | 'pause') => {
+      this.ngZone.run(() => {
+        if (action === 'start') {
+          this.startQueue();
+        } else if (action === 'pause') {
+          this.pauseQueue();
+        }
       });
     });
 
@@ -819,9 +835,16 @@ export class QueueService {
     const completedJob = this._jobs().find(j => j.id === result.jobId);
     console.log('[QUEUE] Found completed job:', completedJob ? `type=${completedJob.type}, id=${completedJob.id}, status=${completedJob.status}` : 'NOT FOUND');
 
-    // Guard against double-processing (status-based, for non-race cases like retries)
+    // Guard against double-processing (status-based, for non-race cases like retries).
+    // Still try to advance the queue — the first caller may not have reached processNext()
+    // yet (e.g., if it's awaiting a slow IPC call like updatePipeline).
     if (completedJob && (completedJob.status === 'complete' || completedJob.status === 'error')) {
-      console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping`);
+      console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping processing`);
+      // Safety net: ensure the queue advances even if the first caller hasn't reached processNext yet
+      if (this._isRunning() && !this._currentJobId()) {
+        console.log(`[QUEUE] handleJobComplete: safety-net processNext for already-completed job`);
+        this.processNext();
+      }
       return;
     }
 
@@ -935,28 +958,27 @@ export class QueueService {
       }
     }
 
-    // Write pipeline.cleanup status to manifest after AI cleanup completes
+    // Write pipeline.cleanup status to manifest after AI cleanup completes.
+    // Fire-and-forget: don't await, so this can't block queue advancement.
     if (result.success && completedJob?.type === 'ocr-cleanup' && completedJob.bfpPath) {
-      try {
-        const electron = (window as any).electron;
-        if (electron?.audiobook?.updatePipeline) {
-          const projectId = completedJob.bfpPath.replace(/\\/g, '/').split('/').pop();
-          if (projectId) {
-            const outputRelPath = result.outputPath
-              ? 'stages/01-cleanup/' + result.outputPath.replace(/\\/g, '/').split('/').pop()
-              : undefined;
-            console.log(`[QUEUE] Writing pipeline.cleanup to manifest for project: ${projectId}`);
-            await electron.audiobook.updatePipeline(projectId, {
-              cleanup: {
-                status: 'complete',
-                outputPath: outputRelPath,
-                completedAt: new Date().toISOString(),
-              }
-            });
-          }
+      const electron = (window as any).electron;
+      if (electron?.audiobook?.updatePipeline) {
+        const projectId = completedJob.bfpPath.replace(/\\/g, '/').split('/').pop();
+        if (projectId) {
+          const outputRelPath = result.outputPath
+            ? 'stages/01-cleanup/' + result.outputPath.replace(/\\/g, '/').split('/').pop()
+            : undefined;
+          console.log(`[QUEUE] Writing pipeline.cleanup to manifest for project: ${projectId}`);
+          electron.audiobook.updatePipeline(projectId, {
+            cleanup: {
+              status: 'complete',
+              outputPath: outputRelPath,
+              completedAt: new Date().toISOString(),
+            }
+          }).catch((err: Error) => {
+            console.error('[QUEUE] Failed to write pipeline.cleanup to manifest:', err);
+          });
         }
-      } catch (err) {
-        console.error('[QUEUE] Failed to write pipeline.cleanup to manifest:', err);
       }
     }
 

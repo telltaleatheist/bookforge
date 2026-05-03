@@ -1,4 +1,4 @@
-import { Component, inject, signal, output, HostListener } from '@angular/core';
+import { Component, inject, signal, input, output, effect, HostListener } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { StudioService } from '../../services/studio.service';
@@ -391,9 +391,23 @@ export class AddModalComponent {
   private readonly studioService = inject(StudioService);
   private readonly electronService = inject(ElectronService);
 
+  // Inputs
+  readonly initialFiles = input<string[]>([]);
+
   // Outputs
   readonly close = output<void>();
   readonly added = output<StudioItem>();
+
+  // Auto-process files passed via initialFiles input
+  private readonly initialFilesEffect = effect(() => {
+    const files = this.initialFiles();
+    if (files.length === 0) return;
+    if (files.length === 1) {
+      this.handleFile(files[0]);
+    } else {
+      this.handleMultipleFiles(files);
+    }
+  });
 
   // State
   readonly isDragOver = signal<boolean>(false);

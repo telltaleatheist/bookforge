@@ -50,6 +50,22 @@ export interface PdfAnalysisResult {
   pdf_name: string;
 }
 
+export interface PdfQuickResult {
+  page_count: number;
+  page_dimensions: PageDimension[];
+  pdf_name: string;
+  textReady: boolean;
+  blocks?: TextBlock[];
+  categories?: Record<string, Category>;
+  spans?: any[];
+}
+
+export interface PdfTextResult {
+  blocks: TextBlock[];
+  categories: Record<string, Category>;
+  spans?: any[];
+}
+
 /**
  * PdfService - Handles PDF analysis and manipulation
  *
@@ -85,6 +101,32 @@ export class PdfService {
     }
 
     return response.json();
+  }
+
+  async analyzePdfQuick(pdfPath: string, maxPages?: number): Promise<PdfQuickResult> {
+    if (this.electron.isRunningInElectron) {
+      const result = await this.electron.analyzePdfQuick(pdfPath, maxPages);
+      if (result.success && result.data) {
+        return result.data as PdfQuickResult;
+      }
+      throw new Error(result.error || 'Failed to quick-analyze PDF');
+    }
+    // Fallback: use full analyze for browser mode
+    const full = await this.analyzePdf(pdfPath, maxPages);
+    return { ...full, textReady: true };
+  }
+
+  async analyzePdfText(pdfPath: string, maxPages?: number): Promise<PdfTextResult> {
+    if (this.electron.isRunningInElectron) {
+      const result = await this.electron.analyzePdfText(pdfPath, maxPages);
+      if (result.success && result.data) {
+        return result.data as PdfTextResult;
+      }
+      throw new Error(result.error || 'Failed to extract text');
+    }
+    // Fallback: use full analyze for browser mode
+    const full = await this.analyzePdf(pdfPath, maxPages);
+    return { blocks: full.blocks, categories: full.categories };
   }
 
   getPageImageUrl(pageNum: number, scale = 2.0): string {

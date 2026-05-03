@@ -120,6 +120,16 @@ import { StudioItem } from '../../models/studio.types';
                     @if (item.author) {
                       <span class="author">{{ item.author }}</span>
                     }
+                    @if (item.tags?.length) {
+                      <span class="item-tags">
+                        @for (tag of item.tags!.slice(0, 2); track tag) {
+                          <span class="tag-mini">{{ tag }}</span>
+                        }
+                        @if (item.tags!.length > 2) {
+                          <span class="tag-mini tag-more">+{{ item.tags!.length - 2 }}</span>
+                        }
+                      </span>
+                    }
                   </div>
                 </div>
                 @if (item.audiobookPath) {
@@ -184,6 +194,16 @@ import { StudioItem } from '../../models/studio.types';
                     <span class="type-badge">{{ item.type }}</span>
                     @if (item.author) {
                       <span class="author">{{ item.author }}</span>
+                    }
+                    @if (item.tags?.length) {
+                      <span class="item-tags">
+                        @for (tag of item.tags!.slice(0, 2); track tag) {
+                          <span class="tag-mini">{{ tag }}</span>
+                        }
+                        @if (item.tags!.length > 2) {
+                          <span class="tag-mini tag-more">+{{ item.tags!.length - 2 }}</span>
+                        }
+                      </span>
                     }
                   </div>
                 </div>
@@ -430,6 +450,25 @@ import { StudioItem } from '../../models/studio.types';
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    .item-tags {
+      display: inline-flex;
+      gap: 3px;
+      margin-left: 4px;
+    }
+
+    .tag-mini {
+      padding: 1px 5px;
+      border-radius: 8px;
+      font-size: 9px;
+      background: color-mix(in srgb, var(--accent, #6366f1) 20%, transparent);
+      color: var(--accent, #6366f1);
+      white-space: nowrap;
+    }
+
+    .tag-more {
+      opacity: 0.7;
     }
 
     .btn-play-item {

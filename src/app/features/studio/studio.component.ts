@@ -64,7 +64,20 @@ import { SettingsService } from '../../core/services/settings.service';
     ProjectFilesComponent
   ],
   template: `
-    <div class="studio-container">
+    <div class="studio-container"
+      (dragenter)="onStudioDragEnter($event)"
+      (dragover)="onStudioDragOver($event)"
+      (dragleave)="onStudioDragLeave($event)"
+      (drop)="onStudioDrop($event)"
+    >
+      @if (showDropOverlay()) {
+        <div class="drop-overlay">
+          <div class="drop-overlay-content">
+            <div class="drop-overlay-icon">+</div>
+            <div class="drop-overlay-text">Drop files to import</div>
+          </div>
+        </div>
+      }
       <desktop-split-pane [primarySize]="280" [minSize]="200" [maxSize]="500">
         <!-- Left Panel: List -->
         <div pane-primary class="list-panel">
@@ -91,6 +104,14 @@ import { SettingsService } from '../../core/services/settings.service';
               <button class="search-clear" (click)="searchQuery.set('')">&times;</button>
             }
           </div>
+          @if (allTags().length > 0) {
+            <div class="tag-filter-bar">
+              <button class="tag-filter-pill" [class.active]="!activeTag()" (click)="activeTag.set(null)">All</button>
+              @for (tag of allTags(); track tag) {
+                <button class="tag-filter-pill" [class.active]="activeTag() === tag" (click)="toggleTag(tag)">{{ tag }}</button>
+              }
+            </div>
+          }
           <app-studio-list
             [articles]="filteredArticles()"
             [books]="filteredBooks()"
@@ -488,7 +509,8 @@ import { SettingsService } from '../../core/services/settings.service';
     <!-- Add Modal -->
     @if (showAddModal()) {
       <app-add-modal
-        (close)="showAddModal.set(false)"
+        [initialFiles]="dragDropFiles()"
+        (close)="onAddModalClose()"
         (added)="onItemAdded($event)"
       />
     }
@@ -606,6 +628,47 @@ import { SettingsService } from '../../core/services/settings.service';
     .studio-container {
       flex: 1;
       overflow: hidden;
+      position: relative;
+    }
+
+    .drop-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 100;
+      background: rgba(6, 182, 212, 0.08);
+      border: 2px dashed var(--color-primary, #06b6d4);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      animation: fadeIn 0.15s ease-out;
+    }
+
+    .drop-overlay-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .drop-overlay-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: var(--color-primary, #06b6d4);
+      color: white;
+      font-size: 28px;
+      font-weight: 300;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .drop-overlay-text {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--color-primary, #06b6d4);
     }
 
     .fullscreen-overlay {
@@ -632,6 +695,45 @@ import { SettingsService } from '../../core/services/settings.service';
         flex: 1;
         overflow-y: auto;
         min-height: 0;
+      }
+    }
+
+    .tag-filter-bar {
+      display: flex;
+      gap: 4px;
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-surface);
+      overflow-x: auto;
+      scrollbar-width: none;
+
+      &::-webkit-scrollbar {
+        display: none;
+      }
+    }
+
+    .tag-filter-pill {
+      flex-shrink: 0;
+      padding: 3px 10px;
+      border: 1px solid var(--border-default);
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 500;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+
+      &:hover {
+        border-color: var(--accent);
+        color: var(--text-primary);
+      }
+
+      &.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: white;
       }
     }
 
@@ -1213,35 +1315,56 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly selectedItemId = signal<string | null>(null);
   readonly fullscreenPlayer = signal<boolean>(false);
 
-  // Search
+  // Drag-and-drop file import
+  readonly showDropOverlay = signal<boolean>(false);
+  readonly dragDropFiles = signal<string[]>([]);
+  private dragCounter = 0;
+
+  // Search & Tag Filtering
   readonly searchQuery = signal<string>('');
+  readonly allTags = signal<string[]>([]);
+  readonly activeTag = signal<string | null>(null);
 
   private matchesSearch(item: StudioItem, query: string): boolean {
     const q = query.toLowerCase();
     if (item.title?.toLowerCase().includes(q)) return true;
     if (item.author?.toLowerCase().includes(q)) return true;
+    if (item.tags?.some(t => t.toLowerCase().includes(q))) return true;
     return false;
+  }
+
+  private matchesTagFilter(item: StudioItem): boolean {
+    const tag = this.activeTag();
+    if (!tag) return true;
+    return !!item.tags?.includes(tag);
+  }
+
+  toggleTag(tag: string): void {
+    this.activeTag.set(this.activeTag() === tag ? null : tag);
   }
 
   readonly filteredBooks = computed(() => {
     const q = this.searchQuery().trim();
-    const books = this.studioService.books();
-    if (!q) return books;
-    return books.filter(b => this.matchesSearch(b, q));
+    let books = this.studioService.books();
+    if (this.activeTag()) books = books.filter(b => this.matchesTagFilter(b));
+    if (q) books = books.filter(b => this.matchesSearch(b, q));
+    return books;
   });
 
   readonly filteredArticles = computed(() => {
     const q = this.searchQuery().trim();
-    const articles = this.studioService.articles();
-    if (!q) return articles;
-    return articles.filter(a => this.matchesSearch(a, q));
+    let articles = this.studioService.articles();
+    if (this.activeTag()) articles = articles.filter(a => this.matchesTagFilter(a));
+    if (q) articles = articles.filter(a => this.matchesSearch(a, q));
+    return articles;
   });
 
   readonly filteredArchived = computed(() => {
     const q = this.searchQuery().trim();
-    const archived = this.studioService.archived();
-    if (!q) return archived;
-    return archived.filter(a => this.matchesSearch(a, q));
+    let archived = this.studioService.archived();
+    if (this.activeTag()) archived = archived.filter(a => this.matchesTagFilter(a));
+    if (q) archived = archived.filter(a => this.matchesSearch(a, q));
+    return archived;
   });
 
   // Tab navigation
@@ -1312,6 +1435,7 @@ export class StudioComponent implements OnInit, OnDestroy {
       coverData: item.coverData,
       outputFilename: item.outputFilename,
       contributors: item.contributors,
+      tags: item.tags,
     };
   });
 
@@ -1475,6 +1599,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   async ngOnInit(): Promise<void> {
     await this.libraryService.whenReady();
     await this.studioService.loadAll();
+    this.loadAllTags();
     document.addEventListener('click', () => this.hideContextMenu());
 
     // Listen for editor window close events to refresh the item
@@ -1497,6 +1622,11 @@ export class StudioComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.electronService.offEditorWindowClosed();
     this.electronService.offProjectFilesChanged();
+  }
+
+  private async loadAllTags(): Promise<void> {
+    const tags = await this.electronService.manifestGetAllTags();
+    this.allTags.set(tags);
   }
 
   private refreshProjectFiles(): void {
@@ -1889,6 +2019,55 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Drag/Drop File Import
+  // ─────────────────────────────────────────────────────────────────────────
+
+  onStudioDragEnter(e: DragEvent): void {
+    e.preventDefault();
+    this.dragCounter++;
+    if (e.dataTransfer?.types.includes('Files')) {
+      this.showDropOverlay.set(true);
+    }
+  }
+
+  onStudioDragOver(e: DragEvent): void {
+    e.preventDefault();
+  }
+
+  onStudioDragLeave(e: DragEvent): void {
+    e.preventDefault();
+    this.dragCounter--;
+    if (this.dragCounter <= 0) {
+      this.dragCounter = 0;
+      this.showDropOverlay.set(false);
+    }
+  }
+
+  onStudioDrop(e: DragEvent): void {
+    e.preventDefault();
+    this.showDropOverlay.set(false);
+    this.dragCounter = 0;
+
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+
+    const paths: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const filePath = (files[i] as any).path;
+      if (filePath) paths.push(filePath);
+    }
+    if (paths.length === 0) return;
+
+    this.dragDropFiles.set(paths);
+    this.showAddModal.set(true);
+  }
+
+  onAddModalClose(): void {
+    this.showAddModal.set(false);
+    this.dragDropFiles.set([]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Drag/Drop Reorder & Archive
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -1932,12 +2111,16 @@ export class StudioComponent implements OnInit, OnDestroy {
           coverData: metadata.coverData,
           outputFilename: metadata.outputFilename,
           contributors: metadata.contributors,
+          tags: metadata.tags,
         });
 
         if (!result.success) {
           console.error('[Studio] Failed to save metadata:', result.error);
         }
       }
+
+      // Refresh tags for the filter bar
+      this.loadAllTags();
 
       // Also update the EPUB file if it exists
       if (item.epubPath) {

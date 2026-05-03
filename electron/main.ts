@@ -4,7 +4,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as crypto from 'crypto';
 import * as os from 'os';
-import { pdfAnalyzer } from './pdf-analyzer';
+import * as pdfWorkerProxy from './pdf-worker-proxy.js';
 import { getOcrService } from './ocr-service';
 import { getPluginRegistry } from './plugins/plugin-registry';
 import { loadBuiltinPlugins } from './plugins/plugin-loader';
@@ -178,7 +178,7 @@ async function autoStartLibraryServer(): Promise<void> {
   if (config && config.enabled) {
     try {
       console.log('[LibraryServer] Auto-starting with config:', config);
-      await libraryServer.start({ port: config.port });
+      await libraryServer.start({ port: config.port, userDataPath: app.getPath('userData') });
     } catch (err) {
       console.error('[LibraryServer] Auto-start failed:', err);
     }
@@ -203,6 +203,12 @@ function registerPageProtocol(): void {
       filePath = urlStr.substring('bookforge-page://'.length);
     } else {
       filePath = urlStr.replace('bookforge-page:', '');
+    }
+
+    // Strip query string (cache-buster) before resolving file path
+    const qIdx = filePath.indexOf('?');
+    if (qIdx !== -1) {
+      filePath = filePath.substring(0, qIdx);
     }
 
     filePath = decodeURIComponent(filePath);
@@ -491,201 +497,146 @@ function createWindow(): void {
 }
 
 function setupIpcHandlers(): void {
-  // PDF Analyzer handlers (pure TypeScript - no Python!)
-  ipcMain.handle('pdf:analyze', async (_event, pdfPath: string, maxPages?: number) => {
+  // PDF Analyzer handlers — delegated to worker thread via pdf-worker-proxy.
+  // Progress events are forwarded to event.sender automatically by the proxy.
+  ipcMain.handle('pdf:analyze', async (event, pdfPath: string, maxPages?: number) => {
     try {
-      // Send progress updates during analysis
-      const sendProgress = (phase: string, message: string) => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('pdf:analyze-progress', { phase, message });
-        }
-      };
-
-      const result = await pdfAnalyzer.analyze(pdfPath, maxPages, sendProgress);
-      console.log('[pdf:analyze] Returning result with', result.blocks.length, 'blocks');
+      const result = await pdfWorkerProxy.call('analyze', [pdfPath, maxPages], event.sender);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:render-page', async (
-    _event,
-    pageNum: number,
-    scale: number = 2.0,
-    pdfPath?: string,
-    redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>,
-    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>,
-    removeBackground?: boolean
-  ) => {
+  ipcMain.handle('pdf:analyze-quick', async (event, pdfPath: string, maxPages?: number) => {
     try {
-      const image = await pdfAnalyzer.renderPage(pageNum, scale, pdfPath, redactRegions, fillRegions, removeBackground);
+      const result = await pdfWorkerProxy.call('analyzeQuick', [pdfPath, maxPages], event.sender);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:analyze-text', async (event, pdfPath: string, maxPages?: number) => {
+    try {
+      const result = await pdfWorkerProxy.call('analyzeText', [pdfPath, maxPages], event.sender);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pdf:render-page', async (event, pageNum: number, scale: number = 2.0, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>, removeBackground?: boolean) => {
+    try {
+      const image = await pdfWorkerProxy.call('renderPage', [pageNum, scale, pdfPath, redactRegions, fillRegions, removeBackground], event.sender);
       return { success: true, data: { image } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Render a blank white page (for removing background images)
-  ipcMain.handle('pdf:render-blank-page', async (
-    _event,
-    pageNum: number,
-    scale: number = 2.0
-  ) => {
+  ipcMain.handle('pdf:render-blank-page', async (event, pageNum: number, scale: number = 2.0) => {
     try {
-      const image = await pdfAnalyzer.renderBlankPage(pageNum, scale);
+      const image = await pdfWorkerProxy.call('renderBlankPage', [pageNum, scale], event.sender);
       return { success: true, data: { image } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Render all pages to temp files upfront (for fast grid display)
-  ipcMain.handle('pdf:render-all-pages', async (
-    event,
-    pdfPath: string,
-    scale: number = 2.0,
-    concurrency: number = 4
-  ) => {
+  ipcMain.handle('pdf:render-all-pages', async (event, pdfPath: string, scale: number = 2.0, concurrency: number = 4) => {
     try {
-      const paths = await pdfAnalyzer.renderAllPagesToFiles(
-        pdfPath,
-        scale,
-        concurrency,
-        (current, total) => {
-          // Send progress updates to renderer
-          event.sender.send('pdf:render-progress', { current, total });
-        }
-      );
+      const paths = await pdfWorkerProxy.call('renderAllPagesToFiles', [pdfPath, scale, concurrency], event.sender);
       return { success: true, data: { paths } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Get path for a single pre-rendered page
-  ipcMain.handle('pdf:get-rendered-page-path', async (_event, pageNum: number) => {
+  ipcMain.handle('pdf:get-rendered-page-path', async (event, pageNum: number) => {
     try {
-      const path = pdfAnalyzer.getRenderedPagePath(pageNum);
-      return { success: true, data: { path } };
+      const filePath = await pdfWorkerProxy.call('getRenderedPagePath', [pageNum], event.sender);
+      return { success: true, data: { path: filePath } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Cleanup temp files (legacy - now a no-op since cache is persistent)
   ipcMain.handle('pdf:cleanup-temp-files', async () => {
     try {
-      pdfAnalyzer.cleanupTempFiles();
+      await pdfWorkerProxy.call('cleanupTempFiles', []);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Two-tier rendering: fast previews first, then high-res in background
-  ipcMain.handle('pdf:render-with-previews', async (
-    event,
-    pdfPath: string,
-    concurrency: number = 4
-  ) => {
+  ipcMain.handle('pdf:render-with-previews', async (event, pdfPath: string, concurrency: number = 4) => {
     try {
-      const sender = event.sender;
-      const safeSend = (channel: string, data: any) => {
-        try {
-          if (!sender.isDestroyed()) sender.send(channel, data);
-        } catch { /* window closed during render */ }
-      };
-      const result = await pdfAnalyzer.renderAllPagesWithPreviews(
-        pdfPath,
-        concurrency,
-        // Preview progress callback
-        (current, total) => {
-          safeSend('pdf:render-progress', { current, total, phase: 'preview' });
-        },
-        // Full render callback (per-page as they complete)
-        (pageNum, pagePath) => {
-          safeSend('pdf:page-upgraded', { pageNum, path: pagePath });
-        },
-        // Combined progress callback
-        (current, total, phase) => {
-          safeSend('pdf:render-progress', { current, total, phase });
-        }
-      );
+      const result = await pdfWorkerProxy.call('renderAllPagesWithPreviews', [pdfPath, concurrency], event.sender);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // On-demand page rendering: render specific pages by number (for virtual scroll)
-  ipcMain.handle('pdf:render-pages', async (
-    _event,
-    pdfPath: string,
-    pageNumbers: number[],
-    quality: 'preview' | 'full' = 'preview'
-  ) => {
+  ipcMain.handle('pdf:render-pages', async (event, pdfPath: string, pageNumbers: number[], quality: 'preview' | 'full' = 'preview') => {
     try {
-      const result = await pdfAnalyzer.renderPages(pdfPath, pageNumbers, quality);
+      const result = await pdfWorkerProxy.call('renderPages', [pdfPath, pageNumbers, quality], event.sender);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Close cached render document (free memory when PDF is closed)
   ipcMain.handle('pdf:close-render-doc', async () => {
     try {
-      pdfAnalyzer.closeRenderDoc();
+      await pdfWorkerProxy.call('closeRenderDoc', []);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Clear cache for a specific file hash
   ipcMain.handle('pdf:clear-cache', async (_event, fileHash: string) => {
     try {
-      pdfAnalyzer.clearCache(fileHash);
+      await pdfWorkerProxy.call('clearCache', [fileHash]);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Clear all cache
   ipcMain.handle('pdf:clear-all-cache', async () => {
     try {
-      const result = pdfAnalyzer.clearAllCache();
+      const result = await pdfWorkerProxy.call('clearAllCache', []);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Get cache size for a specific file
   ipcMain.handle('pdf:get-cache-size', async (_event, fileHash: string) => {
     try {
-      const size = pdfAnalyzer.getCacheSize(fileHash);
+      const size = await pdfWorkerProxy.call('getCacheSize', [fileHash]);
       return { success: true, data: { size } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Get total cache size
   ipcMain.handle('pdf:get-total-cache-size', async () => {
     try {
-      const size = pdfAnalyzer.getTotalCacheSize();
+      const size = await pdfWorkerProxy.call('getTotalCacheSize', []);
       return { success: true, data: { size } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:export-text', async (_event, enabledCategories: string[]) => {
+  ipcMain.handle('pdf:export-text', async (event, enabledCategories: string[]) => {
     try {
-      const result = pdfAnalyzer.exportText(enabledCategories);
+      const result = await pdfWorkerProxy.call('exportText', [enabledCategories], event.sender);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -778,228 +729,171 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Simplified chapter type for export (only fields needed for bookmarks)
-  type ExportChapter = {title: string; page: number; level: number};
-
-  ipcMain.handle('pdf:export-pdf', async (
-    _event,
-    pdfPath: string,
-    deletedRegions: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>,
-    ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>,
-    deletedPages?: number[],
-    chapters?: ExportChapter[]
-  ) => {
+  ipcMain.handle('pdf:export-pdf', async (event, pdfPath: string, deletedRegions: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>, ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>, deletedPages?: number[], chapters?: Array<{title: string; page: number; level: number}>) => {
     try {
-      const deletedPagesSet = deletedPages ? new Set(deletedPages) : undefined;
-      const pdfBase64 = await pdfAnalyzer.exportPdf(pdfPath, deletedRegions, ocrBlocks, deletedPagesSet, chapters);
+      const pdfBase64 = await pdfWorkerProxy.call('exportPdf', [pdfPath, deletedRegions, ocrBlocks, deletedPages, chapters], event.sender);
       return { success: true, data: { pdf_base64: pdfBase64 } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:export-pdf-no-backgrounds', async (
-    event,
-    scale: number = 2.0,
-    deletedRegions?: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>,
-    ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>,
-    deletedPages?: number[]
-  ) => {
+  ipcMain.handle('pdf:export-pdf-no-backgrounds', async (event, scale: number = 2.0, deletedRegions?: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>, ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>, deletedPages?: number[]) => {
     try {
-      const deletedPagesSet = deletedPages ? new Set(deletedPages) : undefined;
-      const pdfBase64 = await pdfAnalyzer.exportPdfWithBackgroundsRemoved(
-        scale,
-        (current, total) => {
-          event.sender.send('pdf:export-progress', { current, total });
-        },
-        deletedRegions,
-        ocrBlocks,
-        deletedPagesSet
-      );
+      const pdfBase64 = await pdfWorkerProxy.call('exportPdfWithBackgroundsRemoved', [scale, deletedRegions, ocrBlocks, deletedPages], event.sender);
       return { success: true, data: { pdf_base64: pdfBase64 } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // WYSIWYG PDF export - renders pages exactly as the viewer shows them
-  // For pages with deleted background images, renders OCR text on white background
-  ipcMain.handle('pdf:export-pdf-wysiwyg', async (
-    event,
-    deletedRegions?: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>,
-    deletedPages?: number[],
-    scale: number = 2.0,
-    ocrPages?: Array<{page: number; blocks: Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>}>
-  ) => {
+  ipcMain.handle('pdf:export-pdf-wysiwyg', async (event, deletedRegions?: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>, deletedPages?: number[], scale: number = 2.0, ocrPages?: Array<{page: number; blocks: Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>}>) => {
     try {
-      const deletedPagesSet = deletedPages ? new Set(deletedPages) : undefined;
-      const pdfBase64 = await pdfAnalyzer.exportPdfWysiwyg(
-        deletedRegions,
-        deletedPagesSet,
-        scale,
-        (current, total) => {
-          event.sender.send('pdf:export-progress', { current, total });
-        },
-        ocrPages
-      );
+      const pdfBase64 = await pdfWorkerProxy.call('exportPdfWysiwyg', [deletedRegions, deletedPages, scale, ocrPages], event.sender);
       return { success: true, data: { pdf_base64: pdfBase64 } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:find-similar', async (_event, blockId: string) => {
+  ipcMain.handle('pdf:find-similar', async (event, blockId: string) => {
     try {
-      const result = pdfAnalyzer.findSimilar(blockId);
+      const result = await pdfWorkerProxy.call('findSimilar', [blockId], event.sender);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Sample picker handlers for custom category creation
-  ipcMain.handle('pdf:find-spans-in-rect', async (_event, page: number, x: number, y: number, width: number, height: number) => {
+  ipcMain.handle('pdf:find-spans-in-rect', async (event, page: number, x: number, y: number, width: number, height: number) => {
     try {
-      const spans = pdfAnalyzer.findSpansInRect(page, x, y, width, height);
+      const spans = await pdfWorkerProxy.call('findSpansInRect', [page, x, y, width, height], event.sender);
       return { success: true, data: spans };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:analyze-samples', async (_event, sampleSpans: any[]) => {
+  ipcMain.handle('pdf:analyze-samples', async (event, sampleSpans: any[]) => {
     try {
-      const pattern = pdfAnalyzer.analyzesamples(sampleSpans);
+      const pattern = await pdfWorkerProxy.call('analyzesamples', [sampleSpans], event.sender);
       return { success: true, data: pattern };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:find-matching-spans', async (_event, pattern: any) => {
+  ipcMain.handle('pdf:find-matching-spans', async (event, pattern: any) => {
     try {
-      const matches = pdfAnalyzer.findMatchingSpans(pattern);
+      const matches = await pdfWorkerProxy.call('findMatchingSpans', [pattern], event.sender);
       return { success: true, data: matches };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:find-spans-by-regex', async (_event, pattern: string, minFontSize: number, maxFontSize: number, minBaseline?: number | null, maxBaseline?: number | null, caseSensitive?: boolean) => {
+  ipcMain.handle('pdf:find-spans-by-regex', async (event, pattern: string, minFontSize: number, maxFontSize: number, minBaseline?: number | null, maxBaseline?: number | null, caseSensitive?: boolean) => {
     try {
-      const matches = pdfAnalyzer.findSpansByRegex(pattern, minFontSize, maxFontSize, minBaseline ?? null, maxBaseline ?? null, caseSensitive ?? false);
+      const matches = await pdfWorkerProxy.call('findSpansByRegex', [pattern, minFontSize, maxFontSize, minBaseline, maxBaseline, caseSensitive], event.sender);
       return { success: true, data: matches };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:get-spans', async () => {
+  ipcMain.handle('pdf:get-spans', async (event) => {
     try {
-      const spans = pdfAnalyzer.getSpans();
+      const spans = await pdfWorkerProxy.call('getSpans', [], event.sender);
       return { success: true, data: spans };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Update spans for OCR pages (so custom categories can match OCR text)
-  ipcMain.handle('pdf:update-spans-for-ocr', async (_event, pageNum: number, ocrBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; id?: string }>) => {
+  ipcMain.handle('pdf:update-spans-for-ocr', async (event, pageNum: number, ocrBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; id?: string }>) => {
     try {
-      pdfAnalyzer.updateSpansForOcrPage(pageNum, ocrBlocks);
+      await pdfWorkerProxy.call('updateSpansForOcrPage', [pageNum, ocrBlocks], event.sender);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Chapter detection handlers
-  ipcMain.handle('pdf:extract-outline', async () => {
+  ipcMain.handle('pdf:extract-outline', async (event) => {
     try {
-      const outline = await pdfAnalyzer.extractOutline();
+      const outline = await pdfWorkerProxy.call('extractOutline', [], event.sender);
       return { success: true, data: outline };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:outline-to-chapters', async (_event, outline: any[], deletedPages?: number[]) => {
+  ipcMain.handle('pdf:outline-to-chapters', async (event, outline: any[], deletedPages?: number[]) => {
     try {
-      const deletedSet = deletedPages?.length ? new Set(deletedPages) : undefined;
-      const chapters = pdfAnalyzer.outlineToChapters(outline, deletedSet);
+      const chapters = await pdfWorkerProxy.call('outlineToChapters', [outline, deletedPages], event.sender);
       return { success: true, data: chapters };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:detect-chapters', async (_event, deletedPages?: number[]) => {
+  ipcMain.handle('pdf:detect-chapters', async (event, deletedPages?: number[]) => {
     try {
-      const deletedSet = deletedPages?.length ? new Set(deletedPages) : undefined;
-      const chapters = pdfAnalyzer.detectChaptersHeuristic(deletedSet);
+      const chapters = await pdfWorkerProxy.call('detectChaptersHeuristic', [deletedPages], event.sender);
       return { success: true, data: chapters };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:detect-chapters-from-examples', async (_event, exampleBlockIds: string[], deletedPages?: number[]) => {
+  ipcMain.handle('pdf:detect-chapters-from-examples', async (event, exampleBlockIds: string[], deletedPages?: number[]) => {
     try {
-      const deletedSet = deletedPages?.length ? new Set(deletedPages) : undefined;
-      const chapters = pdfAnalyzer.detectChaptersFromExamples(exampleBlockIds, deletedSet);
+      const chapters = await pdfWorkerProxy.call('detectChaptersFromExamples', [exampleBlockIds, deletedPages], event.sender);
       return { success: true, data: chapters };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:map-toc-entries', async (_event, tocBlockIds: string[], deletedPages?: number[]) => {
+  ipcMain.handle('pdf:map-toc-entries', async (event, tocBlockIds: string[], deletedPages?: number[]) => {
     try {
-      const deletedSet = deletedPages?.length ? new Set(deletedPages) : undefined;
-      const result = pdfAnalyzer.mapTocEntriesToChapters(tocBlockIds, deletedSet);
+      const result = await pdfWorkerProxy.call('mapTocEntriesToChapters', [tocBlockIds, deletedPages], event.sender);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:split-toc-blocks', async (_event, tocBlockIds: string[]) => {
+  ipcMain.handle('pdf:split-toc-blocks', async (event, tocBlockIds: string[]) => {
     try {
-      const lines = pdfAnalyzer.splitTocBlocks(tocBlockIds);
+      const lines = await pdfWorkerProxy.call('splitTocBlocks', [tocBlockIds], event.sender);
       return { success: true, data: lines };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:map-titles-to-chapters', async (_event, titles: string[], tocPages: number[], deletedPages?: number[]) => {
+  ipcMain.handle('pdf:map-titles-to-chapters', async (event, titles: string[], tocPages: number[], deletedPages?: number[]) => {
     try {
-      const deletedSet = deletedPages?.length ? new Set(deletedPages) : undefined;
-      const result = pdfAnalyzer.mapTitlesToChapters(titles, tocPages, deletedSet);
+      const result = await pdfWorkerProxy.call('mapTitlesToChapters', [titles, tocPages, deletedPages], event.sender);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('pdf:add-bookmarks', async (_event, pdfBase64: string, chapters: any[]) => {
+  ipcMain.handle('pdf:add-bookmarks', async (event, pdfBase64: string, chapters: any[]) => {
     try {
-      // Convert base64 to Uint8Array
-      const pdfData = Buffer.from(pdfBase64, 'base64');
-      const result = await pdfAnalyzer.addBookmarksToPdf(pdfData, chapters);
-      // Convert back to base64
-      const base64Result = Buffer.from(result).toString('base64');
+      const base64Result = await pdfWorkerProxy.call('addBookmarksToPdf', [pdfBase64, chapters], event.sender);
       return { success: true, data: base64Result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // WYSIWYG export: Assemble PDF from canvas-rendered images
-  ipcMain.handle('pdf:assemble-from-images', async (_event, pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: any[]) => {
+  ipcMain.handle('pdf:assemble-from-images', async (event, pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: any[]) => {
     try {
-      console.log(`[pdf:assemble-from-images] Assembling PDF from ${pages.length} canvas images`);
-      const result = await pdfAnalyzer.assembleFromImages(pages, chapters);
+      const result = await pdfWorkerProxy.call('assembleFromImages', [pages, chapters], event.sender);
       return result;
     } catch (err) {
       console.error('[pdf:assemble-from-images] Error:', err);
@@ -1417,6 +1311,7 @@ function setupIpcHandlers(): void {
         if (meta.description !== undefined) manifest.metadata.description = meta.description;
         if (meta.outputFilename !== undefined) manifest.metadata.outputFilename = meta.outputFilename;
         if (meta.contributors !== undefined) manifest.metadata.contributors = meta.contributors;
+        if (meta.tags !== undefined) manifest.metadata.tags = meta.tags;
         if (meta.coverImagePath !== undefined) manifest.metadata.coverPath = meta.coverImagePath;
 
         manifest.modifiedAt = new Date().toISOString();
@@ -2195,7 +2090,7 @@ function setupIpcHandlers(): void {
           // Clear cache for this project
           if (fileHash) {
             try {
-              pdfAnalyzer.clearCache(fileHash);
+              await pdfWorkerProxy.call('clearCache', [fileHash]);
               console.log(`[projects:delete] Cache cleared for hash: ${fileHash}`);
             } catch (e) {
               console.log(`[projects:delete] Could not clear cache: ${(e as Error).message}`);
@@ -3321,7 +3216,7 @@ function setupIpcHandlers(): void {
       if (libraryServer.isRunning()) {
         await libraryServer.stop();
       }
-      await libraryServer.start(config);
+      await libraryServer.start({ ...config, userDataPath: app.getPath('userData') });
       // Save config with enabled=true for auto-start on next launch
       await saveLibraryServerConfig({ ...config, enabled: true });
       return { success: true, data: libraryServer.getStatus() };
@@ -4726,7 +4621,7 @@ function setupIpcHandlers(): void {
             }
 
             // Analyze document to get blocks
-            const analysisResult = await pdfAnalyzer.analyze(sourcePath, undefined, () => {});
+            const analysisResult = await pdfWorkerProxy.call('analyze', [sourcePath, undefined]);
             if (!analysisResult?.blocks) continue;
 
             // Collect deleted block examples
@@ -7930,6 +7825,18 @@ function setupIpcHandlers(): void {
     return { exists: manifestService.projectExists(projectId) };
   });
 
+  ipcMain.handle('manifest:get-all-tags', async () => {
+    const result = await manifestService.listProjects();
+    if (!result.success || !result.projects) return [];
+    const tagSet = new Set<string>();
+    for (const p of result.projects) {
+      if (p.metadata?.tags) {
+        for (const t of p.metadata.tags) tagSet.add(t);
+      }
+    }
+    return [...tagSet].sort();
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Pipeline Stage Deletion Handlers
   // ─────────────────────────────────────────────────────────────────────────────
@@ -8813,9 +8720,13 @@ app.whenReady().then(async () => {
   registerPageProtocol();
   registerAudioProtocol();
 
+  pdfWorkerProxy.start();
   setupIpcHandlers();
   setupAlignmentIpc();
   createWindow();
+  if (mainWindow) {
+    pdfWorkerProxy.setDefaultSender(mainWindow.webContents);
+  }
 
   // Initialize plugin system
   const registry = getPluginRegistry();
@@ -8836,6 +8747,11 @@ app.whenReady().then(async () => {
 
   // Auto-start library server if configured
   await autoStartLibraryServer();
+
+  // Bridge library server queue control to renderer process
+  libraryServer.setQueueControlHandler((action) => {
+    mainWindow?.webContents.send('queue:remote-control', action);
+  });
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Window management: Cmd+W hides, Cmd+Q double-press to quit
@@ -9047,6 +8963,13 @@ app.on('before-quit', async (event) => {
   // Stop library server if running
   if (libraryServer.isRunning()) {
     await libraryServer.stop();
+  }
+
+  // Terminate PDF worker thread
+  try {
+    await pdfWorkerProxy.terminate();
+  } catch (err) {
+    console.error('[MAIN] Failed to terminate PDF worker:', err);
   }
 
   // Dispose all plugins

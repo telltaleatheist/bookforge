@@ -225,6 +225,7 @@ export class StudioService {
           bilingualOutputs: Object.keys(bilingualOutputs).length > 0 ? bilingualOutputs : undefined,
           outputFilename: manifest.metadata?.outputFilename,
           contributors: manifest.metadata?.contributors,
+          tags: manifest.metadata?.tags,
           archived: manifest.archived,
           sortOrder: manifest.sortOrder,
         };
@@ -600,6 +601,7 @@ export class StudioService {
       coverData?: string;
       outputFilename?: string;
       contributors?: Array<{ first: string; last: string }>;
+      tags?: string[];
     }
   ): Promise<{ success: boolean; error?: string }> {
     const book = this._books().find(b => b.id === id);
@@ -626,6 +628,7 @@ export class StudioService {
           coverData: metadata.coverData ?? b.coverData,
           outputFilename: metadata.outputFilename ?? b.outputFilename,
           contributors: metadata.contributors ?? b.contributors,
+          tags: metadata.tags ?? b.tags,
           modifiedAt: new Date().toISOString()
         } : b)
       );

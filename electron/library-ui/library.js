@@ -13,6 +13,18 @@ class LibraryManager {
     this.currentTab = 'audiobooks';
     this.currentSort = localStorage.getItem('library-sort') || 'title';
     this.currentCategory = 'all';
+    this.audiobookTags = [];
+    this.currentAudiobookTag = 'all';
+
+    // Queue state
+    this.queuePollTimer = null;
+    this.showCompleted = false;
+    this.expandedWorkflows = new Set();
+
+    // Audio player state
+    this.audioEl = document.getElementById('audio-element');
+    this.currentTrack = null; // { book, coverDataUrl }
+    this.isSeeking = false;
 
     // DOM elements
     this.booksContainer = document.getElementById('books-container');
@@ -26,14 +38,32 @@ class LibraryManager {
     this.themeToggle = document.getElementById('theme-toggle');
     this.tabAudiobooks = document.getElementById('tab-audiobooks');
     this.tabEbooks = document.getElementById('tab-ebooks');
+    this.tabQueue = document.getElementById('tab-queue');
     this.sortTitle = document.getElementById('sort-title');
     this.sortDate = document.getElementById('sort-date');
     this.categoryBar = document.getElementById('category-bar');
+
+    // Section containers
+    this.libraryBar = document.getElementById('library-bar');
+    this.searchContainer = document.getElementById('search-container');
+    this.libraryContent = document.getElementById('library-content');
+    this.queueContent = document.getElementById('queue-content');
+
+    // Player elements
+    this.playerBar = document.getElementById('player-bar');
+    this.playerCover = document.getElementById('player-cover');
+    this.playerTitle = document.getElementById('player-title');
+    this.playerAuthor = document.getElementById('player-author');
+    this.playerPlayBtn = document.getElementById('player-play-btn');
+    this.playerSeek = document.getElementById('player-seek');
+    this.playerCurrentTime = document.getElementById('player-current-time');
+    this.playerDuration = document.getElementById('player-duration');
   }
 
   async init() {
     this.setupTheme();
     this.setupEventListeners();
+    this.setupPlayerListeners();
     this.applySortToggleState();
     await this.loadBooks();
   }
@@ -63,10 +93,70 @@ class LibraryManager {
     // Tab toggle
     this.tabAudiobooks.addEventListener('click', () => this.switchTab('audiobooks'));
     this.tabEbooks.addEventListener('click', () => this.switchTab('ebooks'));
+    this.tabQueue.addEventListener('click', () => this.switchTab('queue'));
 
     // Sort toggle
     this.sortTitle.addEventListener('click', () => this.setSort('title'));
     this.sortDate.addEventListener('click', () => this.setSort('date'));
+
+    // Queue show-completed toggle
+    document.getElementById('queue-show-completed').addEventListener('change', (e) => {
+      this.showCompleted = e.target.checked;
+      this.renderQueue(this._lastQueueData);
+    });
+
+    // Queue start/pause controls
+    document.getElementById('queue-start-btn').addEventListener('click', () => this.sendQueueControl('start'));
+    document.getElementById('queue-pause-btn').addEventListener('click', () => this.sendQueueControl('pause'));
+  }
+
+  setupPlayerListeners() {
+    // Play/pause button
+    this.playerPlayBtn.addEventListener('click', () => this.togglePlayPause());
+
+    // Seek bar interaction
+    this.playerSeek.addEventListener('input', () => {
+      this.isSeeking = true;
+      const t = (this.playerSeek.value / 100) * (this.audioEl.duration || 0);
+      this.playerCurrentTime.textContent = this.formatTime(t);
+    });
+    this.playerSeek.addEventListener('change', () => {
+      const t = (this.playerSeek.value / 100) * (this.audioEl.duration || 0);
+      this.audioEl.currentTime = t;
+      this.isSeeking = false;
+    });
+
+    // Audio element events
+    this.audioEl.addEventListener('timeupdate', () => {
+      if (this.isSeeking) return;
+      const dur = this.audioEl.duration || 0;
+      const cur = this.audioEl.currentTime || 0;
+      this.playerCurrentTime.textContent = this.formatTime(cur);
+      if (dur > 0) {
+        this.playerSeek.value = (cur / dur) * 100;
+      }
+      // Save position for resume
+      if (this.currentTrack) {
+        localStorage.setItem('player-position', JSON.stringify({
+          downloadPath: this.currentTrack.book.downloadPath,
+          time: cur,
+        }));
+      }
+    });
+
+    this.audioEl.addEventListener('loadedmetadata', () => {
+      this.playerDuration.textContent = this.formatTime(this.audioEl.duration);
+      this.playerSeek.max = 100;
+      // Restore saved position if same track
+      const saved = this.getSavedPosition();
+      if (saved && this.currentTrack && saved.downloadPath === this.currentTrack.book.downloadPath) {
+        this.audioEl.currentTime = saved.time;
+      }
+    });
+
+    this.audioEl.addEventListener('play', () => this.updatePlayPauseUI(true));
+    this.audioEl.addEventListener('pause', () => this.updatePlayPauseUI(false));
+    this.audioEl.addEventListener('ended', () => this.updatePlayPauseUI(false));
   }
 
   applySortToggleState() {
@@ -83,7 +173,7 @@ class LibraryManager {
       this.sortBooks();
       this.renderAudiobooks();
       this.loadCoversProgressively();
-    } else {
+    } else if (this.currentTab === 'ebooks') {
       this.sortEbooks();
       this.renderEbooks();
       this.loadEbookCoversProgressively();
@@ -146,6 +236,53 @@ class LibraryManager {
     this.categoryBar.style.display = 'flex';
   }
 
+  buildAudiobookTagBar() {
+    const tagSet = new Set();
+    for (const book of this.allBooks) {
+      if (book.tags) {
+        for (const t of book.tags) tagSet.add(t);
+      }
+    }
+    this.audiobookTags = [...tagSet].sort();
+
+    if (this.audiobookTags.length === 0) {
+      this.categoryBar.style.display = 'none';
+      return;
+    }
+
+    this.categoryBar.innerHTML = '';
+
+    const allBtn = document.createElement('button');
+    allBtn.className = 'category-pill' + (this.currentAudiobookTag === 'all' ? ' active' : '');
+    allBtn.dataset.tag = 'all';
+    allBtn.textContent = `All (${this.allBooks.length})`;
+    allBtn.addEventListener('click', () => this.setAudiobookTag('all'));
+    this.categoryBar.appendChild(allBtn);
+
+    for (const tag of this.audiobookTags) {
+      const count = this.allBooks.filter(b => b.tags && b.tags.includes(tag)).length;
+      const btn = document.createElement('button');
+      btn.className = 'category-pill' + (this.currentAudiobookTag === tag ? ' active' : '');
+      btn.dataset.tag = tag;
+      btn.textContent = `${tag} (${count})`;
+      btn.addEventListener('click', () => this.setAudiobookTag(tag));
+      this.categoryBar.appendChild(btn);
+    }
+
+    this.categoryBar.style.display = 'flex';
+  }
+
+  setAudiobookTag(tag) {
+    this.currentAudiobookTag = tag;
+
+    this.categoryBar.querySelectorAll('.category-pill').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tag === tag);
+    });
+
+    this.renderAudiobooks();
+    this.loadCoversProgressively();
+  }
+
   setCategory(category) {
     this.currentCategory = category;
 
@@ -164,27 +301,48 @@ class LibraryManager {
     // Update tab buttons
     this.tabAudiobooks.classList.toggle('active', tab === 'audiobooks');
     this.tabEbooks.classList.toggle('active', tab === 'ebooks');
+    this.tabQueue.classList.toggle('active', tab === 'queue');
 
-    // Update search placeholder
-    this.searchBox.placeholder = tab === 'audiobooks' ? 'Search audiobooks...' : 'Search ebooks...';
-    this.searchBox.value = '';
-    this.clearSearch.style.display = 'none';
+    // Stop queue polling if leaving queue tab
+    if (tab !== 'queue') {
+      this.stopQueuePolling();
+    }
 
-    // Show/hide category bar
-    this.categoryBar.style.display = tab === 'ebooks' ? 'flex' : 'none';
-
-    if (tab === 'ebooks') {
-      if (this.allEbooks.length === 0) {
-        await this.loadEbooks();
-      } else {
-        this.renderEbooks();
-      }
+    if (tab === 'queue') {
+      // Hide library UI, show queue
+      this.libraryBar.style.display = 'none';
+      this.searchContainer.style.display = 'none';
+      this.categoryBar.style.display = 'none';
+      this.libraryContent.style.display = 'none';
+      this.queueContent.style.display = 'block';
+      this.startQueuePolling();
     } else {
-      this.currentCategory = 'all';
-      if (this.allBooks.length === 0) {
-        await this.loadBooks();
+      // Show library UI, hide queue
+      this.libraryBar.style.display = 'flex';
+      this.searchContainer.style.display = 'block';
+      this.libraryContent.style.display = 'block';
+      this.queueContent.style.display = 'none';
+
+      // Update search placeholder
+      this.searchBox.placeholder = tab === 'audiobooks' ? 'Search audiobooks...' : 'Search ebooks...';
+      this.searchBox.value = '';
+      this.clearSearch.style.display = 'none';
+
+      if (tab === 'ebooks') {
+        this.buildCategoryBar();
+        if (this.allEbooks.length === 0) {
+          await this.loadEbooks();
+        } else {
+          this.renderEbooks();
+        }
       } else {
-        this.renderAudiobooks();
+        this.currentCategory = 'all';
+        this.buildAudiobookTagBar();
+        if (this.allBooks.length === 0) {
+          await this.loadBooks();
+        } else {
+          this.renderAudiobooks();
+        }
       }
     }
   }
@@ -212,6 +370,7 @@ class LibraryManager {
       }
 
       this.sortBooks();
+      this.buildAudiobookTagBar();
       this.renderAudiobooks();
       this.loadingIndicator.style.display = 'none';
 
@@ -226,15 +385,20 @@ class LibraryManager {
   renderAudiobooks() {
     this.booksContainer.innerHTML = '';
     this.coverLoadQueue = [];
-    this.totalBooks.textContent = this.allBooks.length;
     this.statLabel.textContent = 'Audiobooks';
 
-    this.allBooks.forEach((book, index) => {
+    const filtered = this.currentAudiobookTag === 'all'
+      ? this.allBooks
+      : this.allBooks.filter(b => b.tags && b.tags.includes(this.currentAudiobookTag));
+
+    this.totalBooks.textContent = filtered.length;
+
+    filtered.forEach((book, index) => {
       const card = this.createAudiobookCard(book, index);
       this.booksContainer.appendChild(card);
     });
 
-    if (this.allBooks.length === 0) {
+    if (filtered.length === 0) {
       this.emptyState.style.display = 'flex';
     } else {
       this.emptyState.style.display = 'none';
@@ -249,6 +413,7 @@ class LibraryManager {
     card.dataset.downloadPath = book.downloadPath;
     card.dataset.title = (book.title || '').toLowerCase();
     card.dataset.author = (book.author || '').toLowerCase();
+    card.dataset.tags = (book.tags || []).join(',').toLowerCase();
 
     const typeLabel = book.type === 'bilingual'
       ? `bilingual ${book.langPair || ''}`
@@ -259,17 +424,37 @@ class LibraryManager {
       ? `${this.formatSize(book.size)} &middot; ${durationStr}`
       : this.formatSize(book.size);
 
+    // Check if this book is currently playing
+    const isPlaying = this.currentTrack &&
+      this.currentTrack.book.downloadPath === book.downloadPath &&
+      !this.audioEl.paused;
+
+    const tagsHtml = (book.tags && book.tags.length > 0)
+      ? `<div class="book-tags">${book.tags.slice(0, 3).map(t => `<span class="book-tag">${this.escapeHtml(t)}</span>`).join('')}${book.tags.length > 3 ? `<span class="book-tag book-tag-more">+${book.tags.length - 3}</span>` : ''}</div>`
+      : '';
+
     card.innerHTML = `
       <div class="book-cover">
         <span class="placeholder">🎧</span>
         <span class="book-type-badge m4b">${this.escapeHtml(typeLabel)}</span>
+        <button class="card-play-btn${isPlaying ? ' is-playing' : ''}" data-download-path="${this.escapeHtml(book.downloadPath)}" title="Play">
+          <svg viewBox="0 0 24 24" width="16" height="16"><polygon points="6,3 20,12 6,21" fill="currentColor"/></svg>
+        </button>
       </div>
       <div class="book-info">
         <div class="book-title" title="${this.escapeHtml(book.title)}">${this.escapeHtml(book.title)}</div>
         ${book.author ? `<div class="book-author">${this.escapeHtml(book.author)}</div>` : ''}
+        ${tagsHtml}
         <div class="book-size">${sizeAndDuration}</div>
       </div>
     `;
+
+    // Play button click — stop propagation so card click (download) doesn't fire
+    const playBtn = card.querySelector('.card-play-btn');
+    playBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.playBook(book, card);
+    });
 
     card.addEventListener('click', () => this.downloadAudiobook(book));
 
@@ -417,6 +602,450 @@ class LibraryManager {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // Queue Tab
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  startQueuePolling() {
+    this.fetchQueue(); // immediate first load
+    this.queuePollTimer = setInterval(() => this.fetchQueue(), 3000);
+  }
+
+  stopQueuePolling() {
+    if (this.queuePollTimer) {
+      clearInterval(this.queuePollTimer);
+      this.queuePollTimer = null;
+    }
+  }
+
+  async fetchQueue() {
+    try {
+      const response = await fetch('/api/queue');
+      const data = await response.json();
+      this._lastQueueData = data;
+      this.renderQueue(data);
+    } catch (err) {
+      console.error('Failed to fetch queue:', err);
+    }
+  }
+
+  async sendQueueControl(action) {
+    try {
+      const response = await fetch(`/api/queue/${action}`, { method: 'POST' });
+      const result = await response.json();
+      if (!result.success) {
+        console.error(`Queue ${action} failed:`, result.error);
+      }
+      // Re-fetch queue immediately to update UI
+      this.fetchQueue();
+    } catch (err) {
+      console.error(`Queue ${action} error:`, err);
+    }
+  }
+
+  updateQueueControls(data) {
+    const startBtn = document.getElementById('queue-start-btn');
+    const pauseBtn = document.getElementById('queue-pause-btn');
+    const isRunning = data?.isRunning ?? false;
+    const hasPending = (data?.jobs || []).some(j => j.status === 'pending');
+
+    if (isRunning) {
+      startBtn.style.display = 'none';
+      pauseBtn.style.display = 'flex';
+    } else {
+      startBtn.style.display = 'flex';
+      startBtn.disabled = !hasPending;
+      pauseBtn.style.display = 'none';
+    }
+  }
+
+  renderQueue(data) {
+    if (!data) return;
+
+    this.updateQueueControls(data);
+
+    const jobsContainer = document.getElementById('queue-jobs');
+    const emptyEl = document.getElementById('queue-empty');
+    const countEl = document.getElementById('queue-count');
+
+    let jobs = data.jobs || [];
+
+    // Separate master (workflow) jobs from standalone jobs
+    // Master: has workflowId, no parentJobId, type === 'audiobook'
+    // Child: has parentJobId
+    // Standalone: no workflowId and no parentJobId
+    const masterJobs = [];
+    const childByParent = new Map(); // parentJobId -> child[]
+    const standaloneJobs = [];
+
+    for (const job of jobs) {
+      if (job.parentJobId) {
+        if (!childByParent.has(job.parentJobId)) {
+          childByParent.set(job.parentJobId, []);
+        }
+        childByParent.get(job.parentJobId).push(job);
+      } else if (job.workflowId && job.type === 'audiobook') {
+        masterJobs.push(job);
+      } else {
+        standaloneJobs.push(job);
+      }
+    }
+
+    // Build display items: workflows (master + children) and standalone jobs
+    const displayItems = [];
+
+    for (const master of masterJobs) {
+      const children = childByParent.get(master.id) || [];
+      // Workflow-level status: derive from children
+      const workflowStatus = this.getWorkflowStatus(master, children);
+      displayItems.push({ type: 'workflow', master, children, workflowStatus });
+    }
+
+    for (const job of standaloneJobs) {
+      displayItems.push({ type: 'job', job });
+    }
+
+    // Filter by show-completed
+    const filtered = this.showCompleted
+      ? displayItems
+      : displayItems.filter(item => {
+          if (item.type === 'workflow') {
+            return item.workflowStatus !== 'complete' && item.workflowStatus !== 'error';
+          }
+          return item.job.status === 'pending' || item.job.status === 'processing';
+        });
+
+    // Sort: processing first
+    const statusOrder = { processing: 0, pending: 1, complete: 2, error: 3 };
+    filtered.sort((a, b) => {
+      const sa = a.type === 'workflow' ? a.workflowStatus : a.job.status;
+      const sb = b.type === 'workflow' ? b.workflowStatus : b.job.status;
+      return (statusOrder[sa] ?? 9) - (statusOrder[sb] ?? 9);
+    });
+
+    // Count all visible top-level items
+    countEl.textContent = filtered.length;
+
+    if (filtered.length === 0) {
+      jobsContainer.innerHTML = '';
+      emptyEl.style.display = 'flex';
+      return;
+    }
+
+    emptyEl.style.display = 'none';
+
+    const html = filtered.map(item => {
+      if (item.type === 'workflow') {
+        return this.renderWorkflow(item.master, item.children, item.workflowStatus);
+      }
+      return this.renderJobCard(item.job);
+    }).join('');
+
+    jobsContainer.innerHTML = html;
+
+    // Attach expand/collapse listeners
+    jobsContainer.querySelectorAll('.queue-workflow-header').forEach(header => {
+      header.addEventListener('click', () => {
+        const workflow = header.closest('.queue-workflow');
+        const workflowId = workflow.dataset.workflowId;
+        workflow.classList.toggle('expanded');
+        if (workflow.classList.contains('expanded')) {
+          this.expandedWorkflows.add(workflowId);
+        } else {
+          this.expandedWorkflows.delete(workflowId);
+        }
+      });
+    });
+  }
+
+  getWorkflowStatus(master, children) {
+    // If master itself has a status, use it for overall display
+    if (master.status === 'processing') return 'processing';
+    if (children.length === 0) return master.status;
+
+    const hasProcessing = children.some(c => c.status === 'processing');
+    const hasError = children.some(c => c.status === 'error');
+    const allComplete = children.every(c => c.status === 'complete');
+    const allPending = children.every(c => c.status === 'pending');
+
+    if (hasProcessing) return 'processing';
+    if (hasError) return 'error';
+    if (allComplete && master.status === 'complete') return 'complete';
+    if (allPending && master.status === 'pending') return 'pending';
+    // Mixed (some complete, some pending) — still in progress
+    if (children.some(c => c.status === 'complete') && children.some(c => c.status === 'pending')) return 'processing';
+    return master.status;
+  }
+
+  getWorkflowProgress(master, children) {
+    if (children.length === 0) return Math.round(master.progress || 0);
+    const total = children.length;
+    let sum = 0;
+    for (const child of children) {
+      if (child.status === 'complete') {
+        sum += 1;
+      } else if (child.status === 'processing') {
+        sum += (child.progress || 0) / 100;
+      }
+    }
+    return Math.round((sum / total) * 100);
+  }
+
+  renderWorkflow(master, children, workflowStatus) {
+    const title = master.title || master.epubFilename || master.id;
+    const pct = this.getWorkflowProgress(master, children);
+    const statusClass = `status-${workflowStatus}`;
+    const completedSteps = children.filter(c => c.status === 'complete').length;
+    const totalSteps = children.length;
+    const isExpanded = workflowStatus === 'processing' || workflowStatus === 'error'
+      || this.expandedWorkflows.has(master.id);
+
+    // Step icon for child status
+    const stepIcon = (status) => {
+      switch (status) {
+        case 'complete': return '&#10003;';  // ✓
+        case 'processing': return '&#8635;'; // ⟳
+        case 'error': return '&#10007;';     // ✗
+        default: return '&#9679;';           // ●
+      }
+    };
+
+    const childrenHtml = children.map(child => {
+      const childPct = Math.round(child.progress || 0);
+      const childStatusClass = `status-${child.status}`;
+      let progressMsg = child.progressMessage || '';
+      if (child.ttsPhase === 'converting' && child.ttsConversionProgress != null) {
+        progressMsg = `Converting: ${Math.round(child.ttsConversionProgress)}%`;
+      } else if (child.ttsPhase === 'assembling' && child.assemblyProgress != null) {
+        progressMsg = `Assembling: ${Math.round(child.assemblyProgress)}%` +
+          (child.assemblySubPhase ? ` (${child.assemblySubPhase})` : '');
+      }
+      let etaStr = '';
+      if (child.estimatedSecondsRemaining != null && child.estimatedSecondsRemaining > 0 && child.status === 'processing') {
+        etaStr = `~${this.formatEta(child.estimatedSecondsRemaining)} remaining`;
+      }
+      const errorMsg = child.status === 'error' && child.error
+        ? `<div class="queue-job-message" style="color: var(--error);">${this.escapeHtml(child.error)}</div>` : '';
+
+      return `
+        <div class="queue-job ${childStatusClass}">
+          <div class="queue-job-header">
+            <span class="workflow-step-icon ${childStatusClass}">${stepIcon(child.status)}</span>
+            <span class="queue-job-title">${this.formatJobType(child.type)}</span>
+            <span class="queue-job-type type-${child.type}">${this.formatJobType(child.type)}</span>
+            <span class="queue-job-status ${childStatusClass}">${child.status}</span>
+          </div>
+          ${child.status === 'processing' || child.status === 'complete' || child.status === 'error' ? `
+            <div class="queue-job-progress">
+              <div class="queue-progress-bar">
+                <div class="queue-progress-fill" style="width: ${childPct}%"></div>
+              </div>
+              <span class="queue-progress-pct">${childPct}%</span>
+            </div>
+          ` : ''}
+          ${progressMsg ? `<div class="queue-job-message">${this.escapeHtml(progressMsg)}</div>` : ''}
+          ${etaStr ? `<div class="queue-job-eta">${etaStr}</div>` : ''}
+          ${errorMsg}
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="queue-workflow ${isExpanded ? 'expanded' : ''} ${statusClass}" data-workflow-id="${master.id}">
+        <div class="queue-workflow-header">
+          <span class="queue-workflow-expand">&#9654;</span>
+          <span class="queue-workflow-title" title="${this.escapeHtml(title)}">${this.escapeHtml(title)}</span>
+          <div class="queue-workflow-meta">
+            <span class="queue-workflow-steps-label">${completedSteps}/${totalSteps} steps</span>
+            <span class="queue-job-status ${statusClass}">${workflowStatus}</span>
+          </div>
+        </div>
+        <div class="queue-workflow-progress">
+          <div class="queue-progress-bar">
+            <div class="queue-progress-fill" style="width: ${pct}%"></div>
+          </div>
+          <span class="queue-progress-pct">${pct}%</span>
+        </div>
+        <div class="queue-workflow-children">
+          ${childrenHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  renderJobCard(job) {
+    const title = job.title || job.epubFilename || job.id;
+    const typeClass = `type-${job.type}`;
+    const statusClass = `status-${job.status}`;
+    const pct = Math.round(job.progress || 0);
+
+    let progressMsg = job.progressMessage || '';
+    if (job.ttsPhase === 'converting' && job.ttsConversionProgress != null) {
+      progressMsg = `Converting: ${Math.round(job.ttsConversionProgress)}%`;
+    } else if (job.ttsPhase === 'assembling' && job.assemblyProgress != null) {
+      progressMsg = `Assembling: ${Math.round(job.assemblyProgress)}%` +
+        (job.assemblySubPhase ? ` (${job.assemblySubPhase})` : '');
+    }
+
+    let etaStr = '';
+    if (job.estimatedSecondsRemaining != null && job.estimatedSecondsRemaining > 0 && job.status === 'processing') {
+      etaStr = `~${this.formatEta(job.estimatedSecondsRemaining)} remaining`;
+    }
+
+    const errorMsg = job.status === 'error' && job.error
+      ? `<div class="queue-job-message" style="color: var(--error);">${this.escapeHtml(job.error)}</div>` : '';
+
+    return `
+      <div class="queue-job ${statusClass}">
+        <div class="queue-job-header">
+          <span class="queue-job-title" title="${this.escapeHtml(title)}">${this.escapeHtml(title)}</span>
+          <span class="queue-job-type ${typeClass}">${this.formatJobType(job.type)}</span>
+          <span class="queue-job-status ${statusClass}">${job.status}</span>
+        </div>
+        <div class="queue-job-progress">
+          <div class="queue-progress-bar">
+            <div class="queue-progress-fill" style="width: ${pct}%"></div>
+          </div>
+          <span class="queue-progress-pct">${pct}%</span>
+        </div>
+        ${progressMsg ? `<div class="queue-job-message">${this.escapeHtml(progressMsg)}</div>` : ''}
+        ${etaStr ? `<div class="queue-job-eta">${etaStr}</div>` : ''}
+        ${errorMsg}
+      </div>
+    `;
+  }
+
+  formatJobType(type) {
+    const labels = {
+      'tts-conversion': 'TTS',
+      'ocr-cleanup': 'Cleanup',
+      'bilingual-cleanup': 'Cleanup',
+      'bilingual-translation': 'Translation',
+      'translation': 'Translation',
+      'bilingual-assembly': 'Assembly',
+      'reassembly': 'Reassembly',
+      'resemble-enhance': 'Enhance',
+      'video-assembly': 'Video',
+      'audiobook': 'Audiobook',
+    };
+    return labels[type] || type;
+  }
+
+  formatEta(seconds) {
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+    const h = Math.floor(seconds / 3600);
+    const m = Math.round((seconds % 3600) / 60);
+    return `${h}h ${m}m`;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Audio Player
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async playBook(book, cardEl) {
+    // If same track, toggle play/pause
+    if (this.currentTrack && this.currentTrack.book.downloadPath === book.downloadPath) {
+      this.togglePlayPause();
+      return;
+    }
+
+    // Load new track
+    const audioUrl = `/api/audio?path=${encodeURIComponent(book.downloadPath)}`;
+    this.audioEl.src = audioUrl;
+    this.currentTrack = { book, coverDataUrl: null };
+
+    // Show player bar
+    this.playerBar.style.display = 'flex';
+    document.body.classList.add('player-visible');
+
+    // Set info
+    this.playerTitle.textContent = book.title || 'Unknown';
+    this.playerAuthor.textContent = book.author || '';
+
+    // Set cover: check if card already has a cover image loaded
+    const cardImg = cardEl ? cardEl.querySelector('.book-cover img') : null;
+    if (cardImg) {
+      this.playerCover.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = cardImg.src;
+      img.alt = 'Cover';
+      this.playerCover.appendChild(img);
+      this.currentTrack.coverDataUrl = cardImg.src;
+    } else {
+      this.playerCover.innerHTML = '🎧';
+    }
+
+    // Reset seek
+    this.playerSeek.value = 0;
+    this.playerCurrentTime.textContent = '0:00';
+    this.playerDuration.textContent = '0:00';
+
+    // Play
+    try {
+      await this.audioEl.play();
+    } catch (err) {
+      console.error('Failed to play audio:', err);
+    }
+
+    // Update all card play buttons
+    this.updateCardPlayButtons();
+  }
+
+  togglePlayPause() {
+    if (!this.currentTrack) return;
+    if (this.audioEl.paused) {
+      this.audioEl.play().catch(() => {});
+    } else {
+      this.audioEl.pause();
+    }
+  }
+
+  updatePlayPauseUI(isPlaying) {
+    const playIcon = this.playerPlayBtn.querySelector('.play-icon');
+    const pauseIcon = this.playerPlayBtn.querySelector('.pause-icon');
+    playIcon.style.display = isPlaying ? 'none' : 'block';
+    pauseIcon.style.display = isPlaying ? 'block' : 'none';
+
+    this.updateCardPlayButtons();
+  }
+
+  updateCardPlayButtons() {
+    // Reset all
+    document.querySelectorAll('.card-play-btn').forEach(btn => {
+      btn.classList.remove('is-playing');
+    });
+
+    // Mark current
+    if (this.currentTrack && !this.audioEl.paused) {
+      const selector = `.card-play-btn[data-download-path="${CSS.escape(this.currentTrack.book.downloadPath)}"]`;
+      const activeBtn = document.querySelector(selector);
+      if (activeBtn) {
+        activeBtn.classList.add('is-playing');
+      }
+    }
+  }
+
+  getSavedPosition() {
+    try {
+      const raw = localStorage.getItem('player-position');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  formatTime(seconds) {
+    if (!seconds || isNaN(seconds)) return '0:00';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) {
+      return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // Shared
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -492,7 +1121,8 @@ class LibraryManager {
     cards.forEach(card => {
       const title = card.dataset.title;
       const author = card.dataset.author;
-      const matches = !query || title.includes(query) || author.includes(query);
+      const tags = card.dataset.tags || '';
+      const matches = !query || title.includes(query) || author.includes(query) || tags.includes(query);
       card.style.display = matches ? '' : 'none';
       if (matches) totalVisible++;
     });

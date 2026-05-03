@@ -87,6 +87,7 @@ export interface StudioItem {
   contributors?: Array<{ first: string; last: string }>;
 
   // Organization
+  tags?: string[];
   archived?: boolean;
   sortOrder?: number;
 

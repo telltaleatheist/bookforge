@@ -1235,6 +1235,25 @@ async function cleanChunkWithClaude(
     const outputCheck = checkAIOutput(cleaned, text);
     if (outputCheck.skip) {
       console.warn(`[Claude] ${outputCheck.reason} - using original text`);
+      // For large chunks, [SKIP] is likely a content refusal, not a legitimate skip.
+      // Try splitting the chunk in half and processing each part separately —
+      // smaller chunks are less likely to trigger content refusal.
+      if (text.length >= 2000 && !isRetry) {
+        console.warn(`[Claude] [SKIP] on large chunk (${text.length} chars) — splitting in half and retrying`);
+        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
+        const firstHalf = text.substring(0, midpoint);
+        const secondHalf = text.substring(midpoint);
+        try {
+          const cleanedFirst = await cleanChunkWithClaude(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
+          const cleanedSecond = await cleanChunkWithClaude(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
+          // If both halves were successfully processed (not returned as-is from [SKIP]),
+          // return the combined result without counting as a fallback
+          return cleanedFirst + cleanedSecond;
+        } catch (splitErr) {
+          console.warn(`[Claude] Split retry failed: ${(splitErr as Error).message}`);
+          // Fall through to the fallback tracking below
+        }
+      }
       // Track if AI returned [SKIP] for non-trivial content (likely content refusal)
       if (text.length > 1000) {
         skipFallbackCount++;
@@ -1406,6 +1425,20 @@ async function cleanChunkWithOpenAI(
     const outputCheck = checkAIOutput(cleaned, text);
     if (outputCheck.skip) {
       console.warn(`[OpenAI] ${outputCheck.reason} - using original text`);
+      // For large chunks, [SKIP] is likely a content refusal — split and retry
+      if (text.length >= 2000 && !isRetry) {
+        console.warn(`[OpenAI] [SKIP] on large chunk (${text.length} chars) — splitting in half and retrying`);
+        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
+        const firstHalf = text.substring(0, midpoint);
+        const secondHalf = text.substring(midpoint);
+        try {
+          const cleanedFirst = await cleanChunkWithOpenAI(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
+          const cleanedSecond = await cleanChunkWithOpenAI(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
+          return cleanedFirst + cleanedSecond;
+        } catch (splitErr) {
+          console.warn(`[OpenAI] Split retry failed: ${(splitErr as Error).message}`);
+        }
+      }
       // Track if AI returned [SKIP] for non-trivial content (likely content refusal)
       if (text.length > 1000) {
         skipFallbackCount++;

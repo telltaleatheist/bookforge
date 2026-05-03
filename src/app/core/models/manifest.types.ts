@@ -84,6 +84,7 @@ export interface ManifestMetadata {
   seriesPosition?: number;
   outputFilename?: string;    // Custom output filename
   contributors?: Array<{ first: string; last: string }>;
+  tags?: string[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

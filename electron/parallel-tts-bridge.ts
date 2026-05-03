@@ -2628,7 +2628,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         if (config.metadata && finalPath && config.outputDir) {
           try {
             console.log('[PARALLEL-TTS] Calling applyMetadataWithM4bTool...');
-            let processedPath = await applyMetadataWithM4bTool(finalPath, config.metadata, config.outputDir);
+            let processedPath = await applyMetadataWithM4bTool(finalPath, config.metadata, config.outputDir, config.bfpPath);
             console.log('[PARALLEL-TTS] After metadata, path:', processedPath);
 
             // Run Resemble Enhance for Orpheus TTS output (removes reverb)
@@ -2679,7 +2679,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
             if (config.metadata && config.outputDir) {
               try {
                 console.log('[PARALLEL-TTS] Attempting post-processing despite assembly error...');
-                let processedPath = await applyMetadataWithM4bTool(foundPath, config.metadata, config.outputDir);
+                let processedPath = await applyMetadataWithM4bTool(foundPath, config.metadata, config.outputDir, config.bfpPath);
 
                 // Run Resemble Enhance for Orpheus
                 processedPath = await runResembleEnhance(processedPath, settings.ttsEngine, session.jobId);
@@ -2731,7 +2731,8 @@ interface MetadataConfig {
 async function applyMetadataWithM4bTool(
   inputPath: string,
   metadata: MetadataConfig,
-  outputDir: string
+  outputDir: string,
+  bfpPath?: string
 ): Promise<string> {
   const hasMetadataChanges = metadata.title || metadata.author || metadata.year || metadata.coverPath;
   const hasRename = metadata.outputFilename;
@@ -2739,6 +2740,7 @@ async function applyMetadataWithM4bTool(
   console.log('[PARALLEL-TTS] applyMetadataWithM4bTool called with:');
   console.log('[PARALLEL-TTS]   inputPath:', inputPath);
   console.log('[PARALLEL-TTS]   outputDir:', outputDir);
+  console.log('[PARALLEL-TTS]   bfpPath:', bfpPath);
   console.log('[PARALLEL-TTS]   metadata:', JSON.stringify(metadata, null, 2));
   console.log('[PARALLEL-TTS]   hasMetadataChanges:', hasMetadataChanges);
   console.log('[PARALLEL-TTS]   hasRename:', hasRename);
@@ -2754,22 +2756,24 @@ async function applyMetadataWithM4bTool(
   }
 
   // Resolve cover from manifest if not provided (defense in depth)
-  if (!metadata.coverPath && outputDir) {
-    try {
-      // outputDir is typically {projectDir}/output — go up one level to get project dir
-      const projectDir = path.dirname(outputDir);
-      const projectId = path.basename(projectDir);
-      const mResult = await manifestService.getManifest(projectId);
-      if (mResult.success && mResult.manifest?.metadata?.coverPath) {
-        const libRoot = manifestService.getLibraryBasePath();
-        const absCover = path.join(libRoot, mResult.manifest.metadata.coverPath);
-        if (fsSync.existsSync(absCover)) {
-          metadata.coverPath = absCover;
-          console.log(`[PARALLEL-TTS] Resolved cover from manifest: ${absCover}`);
+  // Use bfpPath (project dir) first since it's always correct;
+  // the outputDir-based fallback is unreliable (outputDir may be the global projects path, not {projectDir}/output)
+  if (!metadata.coverPath) {
+    const projectId = bfpPath ? path.basename(bfpPath) : (outputDir ? path.basename(path.dirname(outputDir)) : null);
+    if (projectId) {
+      try {
+        const mResult = await manifestService.getManifest(projectId);
+        if (mResult.success && mResult.manifest?.metadata?.coverPath) {
+          const libRoot = manifestService.getLibraryBasePath();
+          const absCover = path.join(libRoot, mResult.manifest.metadata.coverPath);
+          if (fsSync.existsSync(absCover)) {
+            metadata.coverPath = absCover;
+            console.log(`[PARALLEL-TTS] Resolved cover from manifest (projectId=${projectId}): ${absCover}`);
+          }
         }
+      } catch (err) {
+        console.warn('[PARALLEL-TTS] Failed to resolve cover from manifest:', err);
       }
-    } catch (err) {
-      console.warn('[PARALLEL-TTS] Failed to resolve cover from manifest:', err);
     }
   }
 

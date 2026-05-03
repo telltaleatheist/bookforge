@@ -22,6 +22,7 @@ import { scanLibrary, getCoverData, getEbooksRoot } from './ebook-library';
 
 export interface LibraryServerConfig {
   port: number;
+  userDataPath?: string;
 }
 
 export interface LibraryServerStatus {
@@ -42,6 +43,7 @@ interface AudiobookEntry {
   outputFilename?: string;   // metadata-defined display filename (e.g. "Title. Author. (Year).m4b")
   coverPath?: string;        // absolute path to cover image (from manifest)
   dateAdded?: string;        // ISO timestamp from manifest.createdAt
+  tags?: string[];           // user-defined tags
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -52,10 +54,19 @@ export class LibraryServer {
   private app: Application;
   private server: http.Server | null = null;
   private port: number = 8765;
+  private userDataPath: string | null = null;
 
   // Cover cache to avoid repeated extraction
   private coverCache: Map<string, { data: string; timestamp: number }> = new Map();
   private readonly COVER_CACHE_TTL = 1000 * 60 * 60; // 1 hour
+
+  // Books/ebooks response cache to avoid re-scanning on every request
+  private booksCache: { data: AudiobookEntry[]; timestamp: number } | null = null;
+  private ebooksCache: { data: any[]; timestamp: number } | null = null;
+  private readonly DATA_CACHE_TTL = 1000 * 60 * 5; // 5 minutes
+
+  // Queue control callback (set by main process to bridge to renderer)
+  private queueControlHandler: ((action: 'start' | 'pause') => void) | null = null;
 
   constructor() {
     this.app = express();
@@ -81,10 +92,17 @@ export class LibraryServer {
     this.app.get('/api/download', this.downloadFile.bind(this));
     this.app.get('/api/audio', this.streamAudio.bind(this));
 
+    this.app.get('/api/tags', this.getTags.bind(this));
+
     // Ebook Library Routes
     this.app.get('/api/ebooks', this.getEbooks.bind(this));
     this.app.get('/api/ebook-cover', this.getEbookCover.bind(this));
     this.app.get('/api/ebook-download', this.downloadEbook.bind(this));
+
+    // Queue status & control
+    this.app.get('/api/queue', this.getQueue.bind(this));
+    this.app.post('/api/queue/start', this.startQueue.bind(this));
+    this.app.post('/api/queue/pause', this.pauseQueue.bind(this));
 
     // Health check
     this.app.get('/api/health', (_req: Request, res: Response) => {
@@ -102,6 +120,9 @@ export class LibraryServer {
 
   async start(config: LibraryServerConfig): Promise<void> {
     this.port = config.port;
+    if (config.userDataPath) {
+      this.userDataPath = config.userDataPath;
+    }
 
     return new Promise((resolve, reject) => {
       this.server = this.app.listen(this.port, '0.0.0.0', () => {
@@ -143,6 +164,14 @@ export class LibraryServer {
       port: this.port,
       addresses: this.getNetworkAddresses(),
     };
+  }
+
+  /**
+   * Set a handler for queue control actions (start/pause).
+   * Called by main.ts to bridge web UI requests to the renderer process.
+   */
+  setQueueControlHandler(handler: (action: 'start' | 'pause') => void): void {
+    this.queueControlHandler = handler;
   }
 
   private getNetworkAddresses(): string[] {
@@ -205,6 +234,7 @@ export class LibraryServer {
               outputFilename: manifest.metadata.outputFilename,
               coverPath: coverAbsPath,
               dateAdded: manifest.createdAt,
+              tags: manifest.metadata.tags || [],
             });
           } catch { /* skip if stat fails */ }
         }
@@ -230,6 +260,7 @@ export class LibraryServer {
               downloadPath: absPath,
               coverPath: coverAbsPath,
               dateAdded: manifest.createdAt,
+              tags: manifest.metadata.tags || [],
             });
           } catch { /* skip */ }
         }
@@ -256,13 +287,43 @@ export class LibraryServer {
   // API Handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  private async getBooks(_req: Request, res: Response): Promise<void> {
+  private async getBooks(req: Request, res: Response): Promise<void> {
     try {
+      const forceRefresh = req.query.refresh === 'true';
+
+      if (!forceRefresh && this.booksCache && Date.now() - this.booksCache.timestamp < this.DATA_CACHE_TTL) {
+        res.json({ books: this.booksCache.data, cached: true });
+        return;
+      }
+
       const entries = await this.getAudiobookProjects();
+      this.booksCache = { data: entries, timestamp: Date.now() };
       res.json({ books: entries });
     } catch (err) {
       console.error('[LibraryServer] Error getting books:', err);
       res.status(500).json({ error: 'Failed to get books' });
+    }
+  }
+
+  private async getTags(_req: Request, res: Response): Promise<void> {
+    try {
+      // Use cached books data if available, otherwise fetch fresh
+      let entries: AudiobookEntry[];
+      if (this.booksCache && Date.now() - this.booksCache.timestamp < this.DATA_CACHE_TTL) {
+        entries = this.booksCache.data;
+      } else {
+        entries = await this.getAudiobookProjects();
+      }
+      const tagSet = new Set<string>();
+      for (const entry of entries) {
+        if (entry.tags) {
+          for (const t of entry.tags) tagSet.add(t);
+        }
+      }
+      res.json({ tags: [...tagSet].sort() });
+    } catch (err) {
+      console.error('[LibraryServer] Error getting tags:', err);
+      res.status(500).json({ error: 'Failed to get tags' });
     }
   }
 
@@ -448,9 +509,17 @@ export class LibraryServer {
   // Ebook Library Handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  private async getEbooks(_req: Request, res: Response): Promise<void> {
+  private async getEbooks(req: Request, res: Response): Promise<void> {
     try {
+      const forceRefresh = req.query.refresh === 'true';
+
+      if (!forceRefresh && this.ebooksCache && Date.now() - this.ebooksCache.timestamp < this.DATA_CACHE_TTL) {
+        res.json({ ebooks: this.ebooksCache.data, cached: true });
+        return;
+      }
+
       const books = await scanLibrary();
+      this.ebooksCache = { data: books, timestamp: Date.now() };
       res.json({ ebooks: books });
     } catch (err) {
       console.error('[LibraryServer] Error getting ebooks:', err);
@@ -525,6 +594,87 @@ export class LibraryServer {
     } catch (err) {
       console.error('[LibraryServer] Error downloading ebook:', err);
       res.status(500).json({ error: 'Failed to download ebook' });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Queue Status
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private async getQueue(_req: Request, res: Response): Promise<void> {
+    try {
+      if (!this.userDataPath) {
+        res.json({ jobs: [] });
+        return;
+      }
+
+      const queueFile = path.join(this.userDataPath, 'queue.json');
+      if (!fsSync.existsSync(queueFile)) {
+        res.json({ jobs: [] });
+        return;
+      }
+
+      const content = await fs.readFile(queueFile, 'utf-8');
+      const state = JSON.parse(content);
+      const jobs: any[] = state.jobs || [];
+
+      // Sanitize: strip absolute paths, keep useful display fields
+      const sanitized = jobs.map(job => ({
+        id: job.id,
+        type: job.type,
+        status: job.status,
+        progress: job.progress ?? 0,
+        progressMessage: job.progressMessage || null,
+        title: job.metadata?.title || job.metadata?.bookTitle || null,
+        author: job.metadata?.author || null,
+        epubFilename: job.epubFilename || null,
+        addedAt: job.addedAt,
+        startedAt: job.startedAt || null,
+        completedAt: job.completedAt || null,
+        error: job.error || null,
+        ttsPhase: job.ttsPhase || null,
+        ttsConversionProgress: job.ttsConversionProgress ?? null,
+        assemblyProgress: job.assemblyProgress ?? null,
+        assemblySubPhase: job.assemblySubPhase || null,
+        estimatedSecondsRemaining: job.estimatedSecondsRemaining ?? null,
+        parallelWorkers: job.parallelWorkers
+          ? job.parallelWorkers.map((w: any) => ({
+              id: w.id,
+              completedSentences: w.completedSentences,
+              status: w.status,
+              totalAssigned: w.totalAssigned,
+            }))
+          : null,
+        parentJobId: job.parentJobId || null,
+        workflowId: job.workflowId || null,
+        currentChunk: job.currentChunk ?? null,
+        totalChunks: job.totalChunks ?? null,
+        currentChapter: job.currentChapter ?? null,
+        totalChapters: job.totalChapters ?? null,
+      }));
+
+      res.json({ jobs: sanitized, isRunning: state.isRunning ?? false, currentJobId: state.currentJobId ?? null });
+    } catch (err) {
+      console.error('[LibraryServer] Error reading queue:', err);
+      res.status(500).json({ error: 'Failed to read queue' });
+    }
+  }
+
+  private async startQueue(_req: Request, res: Response): Promise<void> {
+    if (this.queueControlHandler) {
+      this.queueControlHandler('start');
+      res.json({ success: true });
+    } else {
+      res.status(503).json({ error: 'Queue control not available' });
+    }
+  }
+
+  private async pauseQueue(_req: Request, res: Response): Promise<void> {
+    if (this.queueControlHandler) {
+      this.queueControlHandler('pause');
+      res.json({ success: true });
+    } else {
+      res.status(503).json({ error: 'Queue control not available' });
     }
   }
 

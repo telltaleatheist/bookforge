@@ -91,6 +91,30 @@ interface PdfAnalyzeResult {
   error?: string;
 }
 
+interface PdfAnalyzeQuickResult {
+  success: boolean;
+  data?: {
+    page_count: number;
+    page_dimensions: Array<{ width: number; height: number }>;
+    pdf_name: string;
+    textReady: boolean;
+    blocks?: any[];
+    categories?: Record<string, any>;
+    spans?: any[];
+  };
+  error?: string;
+}
+
+interface PdfAnalyzeTextResult {
+  success: boolean;
+  data?: {
+    blocks: any[];
+    categories: Record<string, any>;
+    spans?: any[];
+  };
+  error?: string;
+}
+
 interface PdfRenderResult {
   success: boolean;
   data?: { image: string };
@@ -302,6 +326,27 @@ export class ElectronService {
     // HTTP fallback for browser mode
     console.warn('PDF analyze not available in browser mode');
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  async analyzePdfQuick(pdfPath: string, maxPages?: number): Promise<PdfAnalyzeQuickResult> {
+    if (this.isElectron) {
+      return (window as any).electron.pdf.analyzeQuick(pdfPath, maxPages);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async analyzePdfText(pdfPath: string, maxPages?: number): Promise<PdfAnalyzeTextResult> {
+    if (this.isElectron) {
+      return (window as any).electron.pdf.analyzeText(pdfPath, maxPages);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  onTextReady(callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[] }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.pdf.onTextReady(callback);
+    }
+    return () => {};
   }
 
   async renderPage(
@@ -1298,6 +1343,7 @@ export class ElectronService {
     coverData?: string;
     outputFilename?: string;
     contributors?: Array<{ first: string; last: string }>;
+    tags?: string[];
   }): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.project.updateMetadata(bfpPath, metadata);
@@ -3142,6 +3188,16 @@ export class ElectronService {
       return (window as any).electron.manifest.list(filter);
     }
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Get all unique tags across all projects
+   */
+  async manifestGetAllTags(): Promise<string[]> {
+    if (this.isElectron && (window as any).electron.manifest?.getAllTags) {
+      return (window as any).electron.manifest.getAllTags();
+    }
+    return [];
   }
 
   /**

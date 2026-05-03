@@ -826,6 +826,9 @@ export interface CompletedAudiobook {
 export interface ElectronAPI {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
+    analyzeQuick: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
+    analyzeText: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
+    onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[] }) => void) => () => void;
     renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>, removeBackground?: boolean) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderBlankPage: (pageNum: number, scale?: number) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderAllPages: (pdfPath: string, scale?: number, concurrency?: number) => Promise<{ success: boolean; data?: { paths: string[] }; error?: string }>;
@@ -1239,6 +1242,7 @@ export interface ElectronAPI {
     loadState: () => Promise<{ success: boolean; data?: any; error?: string }>;
     onProgress: (callback: (progress: QueueProgress) => void) => () => void;
     onComplete: (callback: (result: QueueJobResult) => void) => () => void;
+    onRemoteControl: (callback: (action: 'start' | 'pause') => void) => () => void;
   };
   diff: {
     loadComparison: (originalPath: string, cleanedPath: string) => Promise<{
@@ -1896,6 +1900,7 @@ export interface ElectronAPI {
     resolvePath: (projectId: string, relativePath: string) => Promise<{ path: string }>;
     getProjectPath: (projectId: string) => Promise<{ path: string }>;
     exists: (projectId: string) => Promise<{ exists: boolean }>;
+    getAllTags: () => Promise<string[]>;
     scanLegacy: () => Promise<{
       success: boolean;
       bfpCount: number;
@@ -2017,6 +2022,19 @@ const electronAPI: ElectronAPI = {
   pdf: {
     analyze: (pdfPath: string, maxPages?: number) =>
       ipcRenderer.invoke('pdf:analyze', pdfPath, maxPages),
+    analyzeQuick: (pdfPath: string, maxPages?: number) =>
+      ipcRenderer.invoke('pdf:analyze-quick', pdfPath, maxPages),
+    analyzeText: (pdfPath: string, maxPages?: number) =>
+      ipcRenderer.invoke('pdf:analyze-text', pdfPath, maxPages),
+    onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[] }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: any) => {
+        callback(data);
+      };
+      ipcRenderer.on('pdf:text-ready', listener);
+      return () => {
+        ipcRenderer.removeListener('pdf:text-ready', listener);
+      };
+    },
     renderPage: (pageNum: number, scale: number = 2.0, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>, removeBackground?: boolean) =>
       ipcRenderer.invoke('pdf:render-page', pageNum, scale, pdfPath, redactRegions, fillRegions, removeBackground),
     renderBlankPage: (pageNum: number, scale: number = 2.0) =>
@@ -2519,6 +2537,15 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('queue:job-complete', listener);
       return () => {
         ipcRenderer.removeListener('queue:job-complete', listener);
+      };
+    },
+    onRemoteControl: (callback: (action: 'start' | 'pause') => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, action: 'start' | 'pause') => {
+        callback(action);
+      };
+      ipcRenderer.on('queue:remote-control', listener);
+      return () => {
+        ipcRenderer.removeListener('queue:remote-control', listener);
       };
     },
   },
@@ -3284,6 +3311,9 @@ const electronAPI: ElectronAPI = {
     exists: (projectId: string): Promise<{
       exists: boolean;
     }> => ipcRenderer.invoke('manifest:exists', projectId),
+
+    // Get all unique tags across all projects
+    getAllTags: (): Promise<string[]> => ipcRenderer.invoke('manifest:get-all-tags'),
 
     // Migration methods
     scanLegacy: (): Promise<{

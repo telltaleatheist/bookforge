@@ -546,6 +546,7 @@ export interface CropRect {
                   @if (imgUrl && imgUrl !== 'loading') {
                     <img
                       class="pdf-image"
+                      loading="lazy"
                       [class.hidden-for-export]="shouldHidePageImage(pageNum)"
                       [src]="imgUrl"
                       [attr.data-page]="pageNum"

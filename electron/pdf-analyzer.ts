@@ -134,6 +134,23 @@ export interface AnalyzeResult {
   spans: TextSpan[];  // All extracted spans for sample picking
 }
 
+export interface AnalyzeQuickResult {
+  page_count: number;
+  page_dimensions: PageDimension[];
+  pdf_name: string;
+  textReady: boolean;
+  // Present only when textReady is true (cache hit)
+  blocks?: TextBlock[];
+  categories?: Record<string, Category>;
+  spans?: TextSpan[];
+}
+
+export interface AnalyzeTextResult {
+  blocks: TextBlock[];
+  categories: Record<string, Category>;
+  spans: TextSpan[];
+}
+
 export interface ExportTextResult {
   text: string;
   char_count: number;
@@ -253,6 +270,24 @@ export class PDFAnalyzer {
   private pdfPath: string | null = null;
   private mutoolBridge: MutoolBridge = new MutoolBridge();
 
+  // WASM mutex — serializes access to the mupdf WASM module which is NOT
+  // safe for concurrent use (shared heap/function table).  Without this,
+  // overlapping renderPages() + analyzeText() calls corrupt the WASM state
+  // and produce "null function or function signature mismatch" traps.
+  private wasmLockTail: Promise<void> = Promise.resolve();
+
+  private async withWasmLock<T>(fn: () => T | Promise<T>): Promise<T> {
+    let release!: () => void;
+    const gate = this.wasmLockTail;
+    this.wasmLockTail = new Promise<void>(r => { release = r; });
+    await gate;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
   /**
    * Get the base cache directory for BookForge
    */
@@ -262,11 +297,16 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Compute file hash for cache keying
+   * Compute file hash for cache keying (streaming, no full-file buffer)
    */
-  private async computeAnalysisHash(filePath: string): Promise<string> {
-    const data = await fsPromises.readFile(filePath);
-    return crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
+  private computeAnalysisHash(filePath: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const hash = crypto.createHash('sha256');
+      const stream = fs.createReadStream(filePath);
+      stream.on('data', (chunk) => hash.update(chunk));
+      stream.on('end', () => resolve(hash.digest('hex').substring(0, 16)));
+      stream.on('error', reject);
+    });
   }
 
   /**
@@ -323,9 +363,12 @@ export class PDFAnalyzer {
     sendProgress('loading', 'Loading document...');
 
     // Clean up previous document to avoid WASM memory issues
+    // Must use WASM lock — destroy() touches the WASM heap
     if (this.doc) {
-      try { this.doc.destroy(); } catch { /* ignore */ }
-      this.doc = null;
+      await this.withWasmLock(() => {
+        try { this.doc?.destroy(); } catch { /* ignore */ }
+        this.doc = null;
+      });
     }
 
     const mupdfLib = await getMupdf();
@@ -538,19 +581,274 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Quick analysis — opens document, gets page count/dimensions, checks cache.
+   * Returns instantly with textReady: true on cache hit, or textReady: false on miss.
+   * Leaves this.doc open so analyzeText() can reuse it.
+   */
+  async analyzeQuick(
+    pdfPath: string,
+    maxPages?: number,
+    onProgress?: (phase: string, message: string) => void
+  ): Promise<AnalyzeQuickResult> {
+    const sendProgress = onProgress || (() => {});
+    sendProgress('loading', 'Loading document...');
+
+    // Clean up previous document to avoid WASM memory issues
+    // Must use WASM lock — destroy() touches the WASM heap
+    if (this.doc) {
+      await this.withWasmLock(() => {
+        try { this.doc?.destroy(); } catch { /* ignore */ }
+        this.doc = null;
+      });
+    }
+
+    const mupdfLib = await getMupdf();
+    const fileHash = await this.computeAnalysisHash(pdfPath);
+
+    // Check for cached analysis (full data available immediately)
+    if (!maxPages) {
+      const cached = await this.loadCachedAnalysis(fileHash);
+      if (cached) {
+        this.pdfPath = pdfPath;
+        this.blocks = cached.blocks;
+        this.spans = cached.spans || [];
+        this.categories = cached.categories;
+        this.pageDimensions = cached.page_dimensions;
+
+        // Open document for rendering (under WASM lock)
+        const data = await fsPromises.readFile(pdfPath);
+        const mimeType = getMimeType(pdfPath);
+        this.doc = await this.withWasmLock(async () => {
+          const d = await openDocumentWithRetry(mupdfLib, data, mimeType);
+          if (mimeType === 'application/epub+zip') {
+            d.layout(600, 900, 18);
+          }
+          return d;
+        });
+
+        return {
+          page_count: cached.page_count,
+          page_dimensions: cached.page_dimensions,
+          pdf_name: cached.pdf_name,
+          textReady: true,
+          blocks: cached.blocks,
+          categories: cached.categories,
+          spans: cached.spans,
+        };
+      }
+    }
+
+    // Cache miss — open doc, get dimensions only
+    this.pdfPath = pdfPath;
+    this.blocks = [];
+    this.spans = [];
+    this.categories = {};
+    this.pageDimensions = [];
+
+    sendProgress('loading', 'Reading document file...');
+    const data = await fsPromises.readFile(pdfPath);
+    const mimeType = getMimeType(pdfPath);
+
+    // All WASM operations under a single lock: open doc, count pages, get dimensions
+    const pageCount = await this.withWasmLock(async () => {
+      try {
+        this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {
+          throw new Error(`Document is too large to load. Try closing other documents first, or restart the app to free memory.`);
+        }
+        throw err;
+      }
+
+      if (mimeType === 'application/epub+zip') {
+        this.doc.layout(600, 900, 18);
+      }
+
+      let totalPages: number;
+      try {
+        totalPages = this.doc.countPages();
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
+          throw new Error(`Document is too large to process. The file may be corrupted or exceed memory limits.`);
+        }
+        throw err;
+      }
+
+      const pc = maxPages ? Math.min(totalPages, maxPages) : totalPages;
+      sendProgress('loading', `Document has ${pc} pages, getting dimensions...`);
+
+      for (let pageNum = 0; pageNum < pc; pageNum++) {
+        try {
+          const page = this.doc.loadPage(pageNum);
+          const bounds = page.getBounds();
+          this.pageDimensions.push({
+            width: bounds[2] - bounds[0],
+            height: bounds[3] - bounds[1],
+            originX: bounds[0],
+            originY: bounds[1],
+          });
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
+            console.error(`[PDF Analyzer] Memory error loading page ${pageNum}, using default dimensions`);
+            this.pageDimensions.push({ width: 612, height: 792, originX: 0, originY: 0 });
+          } else {
+            throw err;
+          }
+        }
+      }
+
+      return pc;
+    });
+
+    return {
+      page_count: pageCount,
+      page_dimensions: this.pageDimensions,
+      pdf_name: path.basename(pdfPath),
+      textReady: false,
+    };
+  }
+
+  /**
+   * Background text extraction — uses already-open this.doc from analyzeQuick().
+   * Extracts text blocks, spans, images, generates categories, and caches the result.
+   */
+  async analyzeText(
+    pdfPath: string,
+    maxPages?: number,
+    onProgress?: (phase: string, message: string) => void
+  ): Promise<AnalyzeTextResult> {
+    const sendProgress = onProgress || (() => {});
+
+    if (!this.doc) {
+      throw new Error('analyzeText() requires analyzeQuick() to be called first (no open document)');
+    }
+
+    const pageCount = maxPages
+      ? Math.min(this.pageDimensions.length, maxPages)
+      : this.pageDimensions.length;
+
+    const mimeType = getMimeType(pdfPath);
+    const isPdf = mimeType === 'application/pdf' || pdfPath.toLowerCase().endsWith('.pdf');
+
+    let usedMutool = false;
+    if (isPdf) {
+      try {
+        const mutoolAvailable = await this.mutoolBridge.isAvailable();
+        if (mutoolAvailable) {
+          sendProgress('extracting', `Extracting text from ${pageCount} pages (this may take a few minutes for large documents)...`);
+
+          const { blocks: mutoolBlocks, spans: mutoolSpans } = await this.mutoolBridge.extractAll(
+            pdfPath,
+            pageCount,
+            this.pageDimensions
+          );
+
+          sendProgress('processing', `Processing ${mutoolBlocks.length} text blocks...`);
+
+          this.blocks = mutoolBlocks.map(mb => ({
+            id: mb.id,
+            page: mb.page,
+            x: mb.x,
+            y: mb.y,
+            width: mb.width,
+            height: mb.height,
+            text: mb.text,
+            font_size: mb.font_size,
+            font_name: mb.font_name,
+            char_count: mb.char_count,
+            region: mb.region,
+            category_id: mb.category_id,
+            is_bold: mb.is_bold,
+            is_italic: mb.is_italic,
+            is_superscript: mb.is_superscript,
+            is_image: mb.is_image,
+            is_footnote_marker: mb.is_footnote_marker,
+            line_count: mb.line_count
+          }));
+
+          this.spans = mutoolSpans.map(ms => ({
+            id: ms.id,
+            page: ms.page,
+            x: ms.x,
+            y: ms.y,
+            width: ms.width,
+            height: ms.height,
+            text: ms.text,
+            font_size: ms.font_size,
+            font_name: ms.font_name,
+            is_bold: ms.is_bold,
+            is_italic: ms.is_italic,
+            baseline_offset: ms.baseline_offset,
+            block_id: ms.block_id
+          }));
+
+          usedMutool = true;
+
+          try {
+            const imageBlocks = await this.extractImageBlocks(pageCount);
+            if (imageBlocks.length > 0) {
+              this.blocks.push(...imageBlocks);
+            }
+          } catch (imgErr) {
+            console.warn('[PDF Analyzer] Image extraction failed (continuing without images):', (imgErr as Error).message);
+          }
+        } else {
+          throw new Error('mutool binary not found - run "npm run download:mupdf"');
+        }
+      } catch (err) {
+        console.error('mutool extraction failed:', (err as Error).message);
+        throw err;
+      }
+    }
+
+    if (!usedMutool) {
+      for (let pageNum = 0; pageNum < pageCount; pageNum++) {
+        await this.extractPageBlocks(pageNum);
+      }
+    }
+
+    this.generateCategories();
+
+    // Cache as full AnalyzeResult
+    if (!maxPages) {
+      const fileHash = await this.computeAnalysisHash(pdfPath);
+      const fullResult: AnalyzeResult = {
+        blocks: this.blocks,
+        categories: this.categories,
+        page_count: pageCount,
+        page_dimensions: this.pageDimensions,
+        pdf_name: path.basename(pdfPath),
+        spans: this.spans,
+      };
+      await this.saveAnalysisToCache(fileHash, fullResult);
+    }
+
+    return {
+      blocks: this.blocks,
+      categories: this.categories,
+      spans: this.spans,
+    };
+  }
+
+  /**
    * Extract text and image blocks from a single page
    */
   private async extractPageBlocks(pageNum: number): Promise<void> {
     if (!this.doc) return;
 
-    const page = this.doc.loadPage(pageNum);
+    // WASM calls — hold the lock only while touching mupdf objects
+    const stextData = await this.withWasmLock(() => {
+      const page = this.doc!.loadPage(pageNum);
+      const stext = page.toStructuredText('preserve-whitespace,preserve-images,preserve-spans');
+      const jsonStr = stext.asJSON(1); // scale=1 for original coordinates
+      return JSON.parse(jsonStr);
+    });
+
     const pageDims = this.pageDimensions[pageNum];
     const pageHeight = pageDims.height;
-
-    // Get structured text with detailed info including spans for superscript detection
-    const stext = page.toStructuredText('preserve-whitespace,preserve-images,preserve-spans');
-    const jsonStr = stext.asJSON(1); // scale=1 for original coordinates
-    const stextData = JSON.parse(jsonStr);
 
 
 
@@ -804,10 +1102,11 @@ export class PDFAnalyzer {
                                    /[.!?]["']?\s+[A-Z]/.test(trimmedText) ||  // Multiple sentences
                                    (trimmedText.endsWith('.') && textLen > 60);  // Ends with period and substantial
 
-        // Text blocks entirely within top 15% with 1-2 lines = header
-        // (headers often have title + page number on separate lines)
+        // Text blocks near top of page with 1-2 lines = header
+        // Use both top position (yPct) and bottom position (bottomPct) — mupdf
+        // can give header blocks extra vertical padding that pushes bottomPct past 15%
         const bottomPct = (y + height) / pageHeight;
-        if (lineCount <= 2 && bottomPct < 0.15 && !looksLikeBodyText) {
+        if (lineCount <= 2 && (yPct < 0.10 || bottomPct < 0.15) && !looksLikeBodyText) {
           region = 'header';
         }
         // Footer detection
@@ -913,10 +1212,13 @@ export class PDFAnalyzer {
     let imageBlocksFound = 0;
 
     for (let pageNum = 0; pageNum < pageCount; pageNum++) {
-      const page = this.doc.loadPage(pageNum);
-      const stext = page.toStructuredText('preserve-whitespace,preserve-images');
-      const jsonStr = stext.asJSON(1);
-      const stextData = JSON.parse(jsonStr);
+      // WASM calls — hold the lock only while touching mupdf objects
+      const stextData = await this.withWasmLock(() => {
+        const page = this.doc!.loadPage(pageNum);
+        const stext = page.toStructuredText('preserve-whitespace,preserve-images');
+        const jsonStr = stext.asJSON(1);
+        return JSON.parse(jsonStr);
+      });
 
       for (const block of stextData.blocks || []) {
         totalBlocks++;
@@ -1040,10 +1342,56 @@ export class PDFAnalyzer {
       }
     }
 
+    // Compute dominant body text left margin (most common X position)
+    const marginCounts = new Map<number, number>();
+    for (const block of this.blocks) {
+      if (block.region === 'body' && !block.is_image) {
+        const roundedX = Math.round(block.x);
+        marginCounts.set(roundedX, (marginCounts.get(roundedX) || 0) + block.char_count);
+      }
+    }
+    let bodyMarginX = 0;
+    let maxMarginChars = 0;
+    for (const [x, chars] of marginCounts) {
+      if (chars > maxMarginChars) { maxMarginChars = chars; bodyMarginX = x; }
+    }
+
+    // Build per-page index of all text blocks sorted by Y (for gap detection)
+    const blocksByPage = new Map<number, TextBlock[]>();
+    for (const block of this.blocks) {
+      if (!block.is_image) {
+        if (!blocksByPage.has(block.page)) blocksByPage.set(block.page, []);
+        blocksByPage.get(block.page)!.push(block);
+      }
+    }
+    for (const [, blocks] of blocksByPage) {
+      blocks.sort((a, b) => a.y - b.y);
+    }
+
+    // Detect repeated top-of-page text across pages (running header signal)
+    // Normalize by stripping digits, punctuation, and whitespace to match
+    // "10 Childhood, 1886-1904" with "Childhood, 1886-1904 12"
+    const topTextPages = new Map<string, Set<number>>(); // normalized text → set of page numbers
+    for (const block of this.blocks) {
+      if (block.is_image || block.line_count > 2) continue;
+      const ph = this.pageDimensions[block.page]?.height || 800;
+      if (block.y / ph < 0.10) {
+        const norm = block.text.trim().replace(/[\d\-–—.,;:!?]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (norm.length > 3) {
+          if (!topTextPages.has(norm)) topTextPages.set(norm, new Set());
+          topTextPages.get(norm)!.add(block.page);
+        }
+      }
+    }
+    const repeatedTopTexts = new Set<string>();
+    for (const [text, pages] of topTextPages) {
+      if (pages.size >= 3) repeatedTopTexts.add(text);
+    }
+
     // Classify blocks and group by type
     const blockCategories = new Map<string, string>(); // block id → catType
     for (const block of this.blocks) {
-      blockCategories.set(block.id, this.classifyBlock(block, bodySize, bodyFont, bodyIsItalic, imagesByPage));
+      blockCategories.set(block.id, this.classifyBlock(block, bodySize, bodyFont, bodyIsItalic, imagesByPage, bodyMarginX, blocksByPage, repeatedTopTexts));
     }
 
     // Enforce one header per page — keep only the topmost, reclassify rest as body
@@ -1218,6 +1566,57 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Score how likely a block is to be a running header.
+   * Uses multiple weak signals that together form a strong consensus.
+   */
+  private computeHeaderScore(
+    block: TextBlock,
+    bodySize: number,
+    bodyFont: string,
+    bodyIsItalic: boolean,
+    bodyMarginX: number,
+    blocksByPage: Map<number, TextBlock[]>,
+    repeatedTopTexts: Set<string>
+  ): number {
+    let score = 0;
+    const trimmed = block.text.trim();
+
+    // Strong signal: different font size from body (+2)
+    if (Math.round(block.font_size) !== Math.round(bodySize)) score += 2;
+
+    // Strong signal: same text appears at top of 3+ pages (+3)
+    const norm = trimmed.replace(/[\d\-–—.,;:!?]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (norm.length > 3 && repeatedTopTexts.has(norm)) score += 3;
+
+    // Page number pattern (+1)
+    const hasPageNum = /^\d{1,4}\s+\S/.test(trimmed) || /\S\s+\d{1,4}$/.test(trimmed) ||
+                       (block.char_count <= 5 && /^\d+$/.test(trimmed));
+    if (hasPageNum) score += 1;
+
+    // Italic when body text isn't (+1)
+    if (block.is_italic && !bodyIsItalic) score += 1;
+
+    // Different font name from body (+1)
+    if (block.font_name !== bodyFont) score += 1;
+
+    // Gap to next block on same page larger than normal line spacing (+1)
+    const pageBlocks = blocksByPage.get(block.page);
+    if (pageBlocks) {
+      const blockBottom = block.y + block.height;
+      const nextBlock = pageBlocks.find(b => b.y >= blockBottom && b.id !== block.id);
+      if (nextBlock && (nextBlock.y - blockBottom) > bodySize * 1.5) score += 1;
+    }
+
+    // Not aligned with body text left margin (+1)
+    if (Math.abs(block.x - bodyMarginX) > bodySize * 0.5) score += 1;
+
+    // Short text — headers are brief (+1)
+    if (block.char_count < 60) score += 1;
+
+    return score;
+  }
+
+  /**
    * Classify a block into a semantic category
    */
   private classifyBlock(
@@ -1225,7 +1624,10 @@ export class PDFAnalyzer {
     bodySize: number,
     bodyFont: string,
     bodyIsItalic: boolean,
-    imagesByPage: Map<number, TextBlock[]>
+    imagesByPage: Map<number, TextBlock[]>,
+    bodyMarginX: number,
+    blocksByPage: Map<number, TextBlock[]>,
+    repeatedTopTexts: Set<string>
   ): string {
     if (block.is_image) return 'image';
 
@@ -1243,17 +1645,17 @@ export class PDFAnalyzer {
       return 'footnote_ref';
     }
 
-    // Header region blocks are headers — unless font matches body text (likely continuation)
+    // Header detection — scoring-based consensus approach
+    // Blocks in the 'header' region or positioned near the top get scored
     if (block.region === 'header') {
-      if (Math.round(block.font_size) === Math.round(bodySize)) {
-        return 'body';
-      }
-      return 'header';
+      const score = this.computeHeaderScore(block, bodySize, bodyFont, bodyIsItalic, bodyMarginX, blocksByPage, repeatedTopTexts);
+      // Already in header region (top of page, ≤2 lines, no body-text indicators),
+      // so the positional evidence is strong — threshold of 2
+      return score >= 2 ? 'header' : 'body';
     }
     if (block.region === 'footer') return 'footer';
 
     // Additional header detection for blocks that slipped through region detection
-    // Be conservative - body text near top of page should NOT be caught
     const pageHeight = this.pageDimensions[block.page]?.height || 800;
     const yPct = block.y / pageHeight;
     const text = block.text.trim();
@@ -1263,17 +1665,25 @@ export class PDFAnalyzer {
                               /[.!?]["']?\s+[A-Z]/.test(text) ||  // Multiple sentences
                               (text.endsWith('.') && block.char_count > 60);
 
-    // Text blocks entirely within top 15% with 1-2 lines = header (unless body font size)
     const bottomPct = (block.y + block.height) / pageHeight;
-    if (block.line_count <= 2 && bottomPct < 0.15 && !looksLikeBodyText) {
-      if (Math.round(block.font_size) !== Math.round(bodySize)) {
-        return 'header';
-      }
+    if (block.line_count <= 2 && (yPct < 0.10 || bottomPct < 0.15) && !looksLikeBodyText) {
+      const score = this.computeHeaderScore(block, bodySize, bodyFont, bodyIsItalic, bodyMarginX, blocksByPage, repeatedTopTexts);
+      // Not initially assigned header region — require stronger evidence (threshold 3)
+      if (score >= 3) return 'header';
     }
 
-    // Footnotes: lower region with smaller font
+    // Footnotes: lower region with smaller font — but only if no body-sized text follows
     if (block.region === 'lower' && block.font_size < bodySize * 0.95) {
-      return 'footnote';
+      const pageBlocks = blocksByPage.get(block.page);
+      const blockBottom = block.y + block.height;
+      const hasBodyTextBelow = pageBlocks?.some(b =>
+        b.y > blockBottom &&
+        b.id !== block.id &&
+        !b.is_image &&
+        b.char_count > 20 &&
+        b.font_size >= bodySize * 0.95
+      );
+      if (!hasBodyTextBelow) return 'footnote';
     }
 
     // --- Caption detection ---
@@ -1885,11 +2295,15 @@ export class PDFAnalyzer {
     const fileHash = await this.computeFileHash(pdfPath);
     const data = fs.readFileSync(pdfPath);
     const mimeType = getMimeType(pdfPath);
-    const doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
 
-    if (mimeType === 'application/epub+zip') {
-      doc.layout(600, 900, 18);
-    }
+    // Acquire WASM lock for document open (shares WASM heap with other operations)
+    const doc = await this.withWasmLock(async () => {
+      const d = await openDocumentWithRetry(mupdfLib, data, mimeType);
+      if (mimeType === 'application/epub+zip') {
+        d.layout(600, 900, 18);
+      }
+      return d;
+    });
 
     this.renderDoc = {
       pdfPath,
@@ -1945,27 +2359,37 @@ export class PDFAnalyzer {
 
       const filePath = path.join(qualityDir, `page-${pageNum}.png`);
 
-      // Check disk cache first
+      // Check disk cache first — validate file is a non-trivial PNG (>200 bytes)
+      // to avoid serving corrupt/empty files from previous WASM failures
       if (fs.existsSync(filePath)) {
-        result[pageNum] = filePath;
-        continue;
+        const stat = fs.statSync(filePath);
+        if (stat.size > 200) {
+          result[pageNum] = filePath;
+          continue;
+        }
+        // Corrupt file — delete and re-render
+        try { fs.unlinkSync(filePath); } catch { /* ignore */ }
       }
 
-      // Render the page
-      let page, pixmap;
+      // Render the page — acquire WASM lock to prevent concurrent mupdf access
       try {
-        page = doc.loadPage(pageNum);
-        const matrix = mupdfLib.Matrix.scale(scale, scale);
-        pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-        const pngData = pixmap.asPNG();
+        const pngData = await this.withWasmLock(() => {
+          let page, pixmap;
+          try {
+            page = doc.loadPage(pageNum);
+            const matrix = mupdfLib.Matrix.scale(scale, scale);
+            pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+            return pixmap.asPNG();
+          } finally {
+            try { pixmap?.destroy(); } catch { /* ignore */ }
+            try { page?.destroy(); } catch { /* ignore */ }
+          }
+        });
         fs.writeFileSync(filePath, Buffer.from(pngData));
         result[pageNum] = filePath;
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error(`[pdf-analyzer] Error rendering page ${pageNum} on demand:`, errorMsg);
-      } finally {
-        try { pixmap?.destroy(); } catch { /* ignore */ }
-        try { page?.destroy(); } catch { /* ignore */ }
       }
     }
 
@@ -3296,6 +3720,8 @@ export class PDFAnalyzer {
       }
     }
     this.doc = null;
+    // Also close the render document to prevent stale WASM handles
+    this.closeRenderDoc();
     this.blocks = [];
     this.spans = [];
     this.categories = {};

@@ -33,6 +33,8 @@ export class PageRenderService {
   // Current document context
   private currentPdfPath: string = '';
   private currentTotalPages: number = 0;
+  // Cache-buster: changes on each document open to invalidate stale browser cache
+  private cacheBuster: string = '';
 
   // Callbacks
   private progressUnsubscribe: (() => void) | null = null;
@@ -45,6 +47,8 @@ export class PageRenderService {
   private fullResIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private lastVisiblePages: number[] = [];
   private readonly onDemandMode = signal(false);
+  private backgroundUpgradeRunning = false;
+  private backgroundUpgradeCancelled = false;
 
   /**
    * Initialize for a new document
@@ -52,6 +56,8 @@ export class PageRenderService {
   initialize(pdfPath: string, totalPages: number): void {
     this.currentPdfPath = pdfPath;
     this.currentTotalPages = totalPages;
+    // New cache buster per document open — invalidates any stale browser-cached images
+    this.cacheBuster = Date.now().toString(36);
     this.clear();
   }
 
@@ -70,6 +76,8 @@ export class PageRenderService {
     this.inFlightPages.clear();
     this.pendingDemandPages.clear();
     this.onDemandMode.set(false);
+    this.backgroundUpgradeCancelled = true;
+    this.backgroundUpgradeRunning = false;
     if (this.demandDebounceTimer) {
       clearTimeout(this.demandDebounceTimer);
       this.demandDebounceTimer = null;
@@ -104,14 +112,14 @@ export class PageRenderService {
         return fullPath.substring(8);
       }
       // Normalize path separators to forward slashes for URL
-      return `bookforge-page://${fullPath.replace(/\\/g, '/')}`;
+      // Append cache buster to bypass stale browser cache entries
+      return `bookforge-page://${fullPath.replace(/\\/g, '/')}?v=${this.cacheBuster}`;
     }
 
     // Fall back to preview
     const previewPath = this.previewPaths[pageNum];
     if (previewPath) {
-      // Normalize path separators to forward slashes for URL
-      return `bookforge-page://${previewPath.replace(/\\/g, '/')}`;
+      return `bookforge-page://${previewPath.replace(/\\/g, '/')}?v=${this.cacheBuster}`;
     }
 
     return '';
@@ -196,8 +204,8 @@ export class PageRenderService {
 
   /**
    * Start on-demand rendering for a new document.
-   * Renders only the first viewport of pages immediately, then renders
-   * additional pages as the user scrolls (via requestPages).
+   * Renders previews for ALL pages (cached pages resolve instantly via disk lookup).
+   * Then starts a background pass to upgrade everything to full-res.
    */
   async startOnDemandRendering(pageCount?: number): Promise<void> {
     const count = pageCount ?? this.currentTotalPages;
@@ -205,13 +213,55 @@ export class PageRenderService {
 
     this.onDemandMode.set(true);
     this.isLoading.set(true);
+    this.backgroundUpgradeCancelled = false;
 
     try {
-      // Render the first viewport (~15 pages)
-      const initialPages = Array.from({ length: Math.min(15, count) }, (_, i) => i);
-      await this.requestPagesImmediate(initialPages, 'preview');
+      // Render ALL pages as previews in batches.
+      // For cached documents this is nearly instant (disk cache lookups).
+      const allPages = Array.from({ length: count }, (_, i) => i);
+      await this.requestPagesImmediate(allPages, 'preview');
     } finally {
       this.isLoading.set(false);
+    }
+
+    // Start background full-res upgrade for ALL pages
+    this.startBackgroundFullResUpgrade();
+  }
+
+  /**
+   * Background full-res upgrade: systematically upgrades ALL pages to full-res
+   * in small batches, yielding between batches to keep the UI responsive.
+   */
+  private async startBackgroundFullResUpgrade(): Promise<void> {
+    if (this.backgroundUpgradeRunning) return;
+    this.backgroundUpgradeRunning = true;
+
+    const BATCH_SIZE = 10;
+    const BATCH_DELAY_MS = 200; // Pause between batches to yield to UI
+
+    try {
+      for (let i = 0; i < this.currentTotalPages; i += BATCH_SIZE) {
+        if (this.backgroundUpgradeCancelled || !this.currentPdfPath) break;
+
+        // Collect pages in this batch that need full-res
+        const batch: number[] = [];
+        for (let j = i; j < Math.min(i + BATCH_SIZE, this.currentTotalPages); j++) {
+          if (!this.fullPaths[j] && this.previewPaths[j] && !this.inFlightPages.has(j)) {
+            batch.push(j);
+          }
+        }
+
+        if (batch.length > 0) {
+          await this.requestPagesImmediate(batch, 'full');
+        }
+
+        // Yield to event loop between batches
+        if (i + BATCH_SIZE < this.currentTotalPages) {
+          await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+        }
+      }
+    } finally {
+      this.backgroundUpgradeRunning = false;
     }
   }
 
@@ -253,12 +303,15 @@ export class PageRenderService {
     }, 50);
   }
 
-  // Max pages per IPC call to avoid blocking the main process
-  private readonly RENDER_BATCH_SIZE = 20;
+  // Max pages per IPC call
+  private readonly RENDER_BATCH_SIZE = 50;
+  // How often to update the UI signal (every N pages rendered)
+  private readonly SIGNAL_UPDATE_INTERVAL = 100;
 
   /**
    * Immediately request rendering of specific pages (no debounce).
    * Batches large requests to avoid blocking the Electron main process.
+   * Retries failed pages once after a short delay.
    */
   private async requestPagesImmediate(pageNumbers: number[], quality: 'preview' | 'full'): Promise<void> {
     if (!this.currentPdfPath) return;
@@ -278,6 +331,9 @@ export class PageRenderService {
     for (const p of toRender) {
       this.inFlightPages.add(p);
     }
+
+    const failedPages: number[] = [];
+    let pagesSinceLastSignal = 0;
 
     try {
       // Batch into chunks to avoid long-blocking IPC calls
@@ -305,13 +361,35 @@ export class PageRenderService {
           }
         }
 
-        // Update UI after each batch so pages appear progressively
-        this.updatePageImagesSignal();
+        // Track pages that the backend failed to render
+        for (const p of batch) {
+          if (!(String(p) in result)) {
+            failedPages.push(p);
+          }
+        }
+
+        // Throttle signal updates: update every ~100 pages or on last batch
+        pagesSinceLastSignal += batch.length;
+        const isLastBatch = i + this.RENDER_BATCH_SIZE >= toRender.length;
+        if (pagesSinceLastSignal >= this.SIGNAL_UPDATE_INTERVAL || isLastBatch) {
+          this.updatePageImagesSignal();
+          pagesSinceLastSignal = 0;
+        }
       }
     } finally {
       for (const p of toRender) {
         this.inFlightPages.delete(p);
       }
+    }
+
+    // Retry failed pages once after a short delay
+    if (failedPages.length > 0) {
+      console.warn(`[page-render] ${failedPages.length} pages failed to render, retrying in 500ms:`, failedPages);
+      setTimeout(() => {
+        if (this.currentPdfPath) {
+          this.requestPagesImmediate(failedPages, quality);
+        }
+      }, 500);
     }
 
     // After preview batches complete, schedule full-res upgrade for visible pages.
@@ -324,22 +402,27 @@ export class PageRenderService {
 
   /**
    * Schedule full-res upgrade for visible pages after scroll stops (300ms idle).
+   * Prioritizes visible pages, then restarts background upgrade for the rest.
    */
   private scheduleFullResUpgrade(pageNumbers: number[]): void {
     if (this.fullResIdleTimer) {
       clearTimeout(this.fullResIdleTimer);
     }
 
-    this.fullResIdleTimer = setTimeout(() => {
+    this.fullResIdleTimer = setTimeout(async () => {
       this.fullResIdleTimer = null;
-      // Only upgrade pages that have preview but not full-res
+      // Prioritize visible pages for immediate upgrade
       const toUpgrade = pageNumbers.filter(p =>
         p >= 0 && p < this.currentTotalPages &&
         this.previewPaths[p] && !this.fullPaths[p] &&
         !this.inFlightPages.has(p)
       );
       if (toUpgrade.length > 0) {
-        this.requestPagesImmediate(toUpgrade, 'full');
+        await this.requestPagesImmediate(toUpgrade, 'full');
+      }
+      // Restart background upgrade if it stopped
+      if (!this.backgroundUpgradeRunning && !this.backgroundUpgradeCancelled) {
+        this.startBackgroundFullResUpgrade();
       }
     }, 300);
   }
@@ -403,8 +486,12 @@ export class PageRenderService {
 
     images.forEach((url, pageNum) => {
       if (url.startsWith('bookforge-page://')) {
+        // Strip protocol and any cache-buster query string
+        let filePath = url.substring(17);
+        const qIdx = filePath.indexOf('?');
+        if (qIdx !== -1) filePath = filePath.substring(0, qIdx);
         // Assume full-res for restored images
-        this.fullPaths[pageNum] = url.substring(17);
+        this.fullPaths[pageNum] = filePath;
       } else if (url.startsWith('file://')) {
         this.fullPaths[pageNum] = url.substring(7);
       } else if (url.startsWith('data:')) {

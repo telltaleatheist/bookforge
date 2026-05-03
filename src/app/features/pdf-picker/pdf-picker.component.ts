@@ -662,6 +662,7 @@ interface AlertModal {
       <div class="loading-overlay">
         <div class="loading-spinner"></div>
         <p>{{ loadingText() }}</p>
+        <p class="loading-hint">Large documents may take a minute</p>
       </div>
     }
 
@@ -1341,6 +1342,12 @@ interface AlertModal {
       border-radius: 50%;
       animation: spin 1s linear infinite;
       margin-bottom: $spacing-4;
+    }
+
+    .loading-hint {
+      margin-top: $spacing-2;
+      font-size: 12px;
+      color: var(--text-muted);
     }
 
     .progress-container {
@@ -2217,6 +2224,9 @@ export class PdfPickerComponent implements OnInit {
   // Injected services for state management
   readonly editorState = inject(PdfEditorStateService);
   readonly projectService = inject(ProjectService);
+
+  /** Unsubscribe functions for pdf:text-ready events, keyed by document ID */
+  private textReadyUnsubs = new Map<string, () => void>();
 
   // Auto-save effect - watches for unsaved changes and triggers save (auto-creates project if needed)
   private readonly autoSaveEffect = effect(() => {
@@ -3760,6 +3770,50 @@ export class PdfPickerComponent implements OnInit {
     await this.loadProjectFromPath(project.path, true);
   }
 
+  /**
+   * Start background text extraction for a document opened with analyzeQuick().
+   * Subscribes to the text-ready event and fires analyzePdfText (fire-and-forget).
+   * Returns immediately — text arrives asynchronously via the event.
+   */
+  private startBackgroundTextExtraction(libraryPath: string, docId: string): void {
+    // Clean up any existing subscription for this doc
+    this.textReadyUnsubs.get(docId)?.();
+
+    this.editorState.textLoading.set(true);
+
+    const unsub = this.electronService.onTextReady((data) => {
+      // Clean up subscription — we only expect one text-ready per analyzeText call
+      this.textReadyUnsubs.get(docId)?.();
+      this.textReadyUnsubs.delete(docId);
+
+      // Update editor state if this doc is still the active one
+      if (this.activeDocumentId() === docId) {
+        this.editorState.updateTextData({
+          blocks: data.blocks as TextBlock[],
+          categories: data.categories as Record<string, Category>,
+        });
+      }
+
+      // Also update the OpenDocument in tabs so tab switching preserves text
+      this.openDocuments.update(docs => docs.map(d => {
+        if (d.id === docId) {
+          return { ...d, blocks: data.blocks as TextBlock[], categories: data.categories as Record<string, Category> };
+        }
+        return d;
+      }));
+    });
+
+    this.textReadyUnsubs.set(docId, unsub);
+
+    // Fire-and-forget — result also comes via text-ready event
+    this.pdfService.analyzePdfText(libraryPath).catch(err => {
+      console.error('[PdfPicker] Background text extraction failed:', err);
+      this.editorState.textLoading.set(false);
+      this.textReadyUnsubs.get(docId)?.();
+      this.textReadyUnsubs.delete(docId);
+    });
+  }
+
   private closePdf(): void {
     // Reset all state to show library view
     this.pdfLoaded.set(false);
@@ -3861,20 +3915,30 @@ export class PdfPickerComponent implements OnInit {
         this.loadingText.set('Analyzing document...');
       }
 
-      const result = await this.pdfService.analyzePdf(libraryPath);
+      // Subscribe to real-time progress from the worker thread
+      const unsubProgress = this.electronService.onAnalyzeProgress((progress) => {
+        this.loadingText.set(progress.message);
+      });
 
-      // Create new document
+      let quickResult;
+      try {
+        quickResult = await this.pdfService.analyzePdfQuick(libraryPath);
+      } finally {
+        unsubProgress();
+      }
+
+      // Create new document — use full data if cache hit, empty if cache miss
       const docId = this.generateDocumentId();
       const newDoc: OpenDocument = {
         id: docId,
         path: path,           // Original path for display
         libraryPath: libraryPath,  // Library path for operations
         fileHash: fileHash,
-        name: result.pdf_name,
-        blocks: result.blocks,
-        categories: result.categories,
-        pageDimensions: result.page_dimensions,
-        totalPages: result.page_count,
+        name: quickResult.pdf_name,
+        blocks: quickResult.blocks || [],
+        categories: quickResult.categories || {},
+        pageDimensions: quickResult.page_dimensions,
+        totalPages: quickResult.page_count,
         deletedBlockIds: new Set(),
         deletedPages: new Set(),
         selectedBlockIds: [],
@@ -3893,11 +3957,11 @@ export class PdfPickerComponent implements OnInit {
 
       // Set current state via service
       this.editorState.loadDocument({
-        blocks: result.blocks,
-        categories: result.categories,
-        pageDimensions: result.page_dimensions,
-        totalPages: result.page_count,
-        pdfName: result.pdf_name,
+        blocks: quickResult.blocks || [],
+        categories: quickResult.categories || {},
+        pageDimensions: quickResult.page_dimensions,
+        totalPages: quickResult.page_count,
+        pdfName: quickResult.pdf_name,
         pdfPath: path,
         libraryPath: libraryPath,
         fileHash: fileHash
@@ -3907,14 +3971,14 @@ export class PdfPickerComponent implements OnInit {
       this.blankedPages.set(new Set());  // Clear blanked pages for new document
       this.metadata.set({});  // Clear metadata for new document
 
-      this.saveRecentFile(path, result.pdf_name);
+      this.saveRecentFile(path, quickResult.pdf_name);
 
       // Set lightweight mode
       this.lightweightMode.set(lightweight);
 
       // Always initialize page rendering (so OCR can work)
       // But only load pages if NOT in lightweight mode
-      this.pageRenderService.initialize(this.effectivePath(), result.page_count);
+      this.pageRenderService.initialize(this.effectivePath(), quickResult.page_count);
 
       // Show document immediately - pages will load progressively
       this.pdfLoaded.set(true);
@@ -3934,7 +3998,7 @@ export class PdfPickerComponent implements OnInit {
       // Only auto-create project in non-embedded mode
       // In embedded mode, the project already exists (we're editing a version of it)
       if (!this.embedded()) {
-        await this.autoCreateProject(path, result.pdf_name);
+        await this.autoCreateProject(path, quickResult.pdf_name);
       }
 
       // Auto-extract chapters from EPUBs (they have nav.xhtml with TOC)
@@ -3946,7 +4010,12 @@ export class PdfPickerComponent implements OnInit {
       // Start on-demand page rendering (non-blocking, only renders visible pages)
       // Additional pages render as the user scrolls via the pdf-viewer effect
       if (!lightweight) {
-        this.pageRenderService.startOnDemandRendering(result.page_count);
+        this.pageRenderService.startOnDemandRendering(quickResult.page_count);
+      }
+
+      // If text not ready (cache miss), start background extraction
+      if (!quickResult.textReady) {
+        this.startBackgroundTextExtraction(libraryPath, docId);
       }
     } catch (err) {
       console.error('Failed to load PDF:', err);
@@ -6106,7 +6175,15 @@ export class PdfPickerComponent implements OnInit {
     }
 
     try {
-      const pdfResult = await this.pdfService.analyzePdf(pdfPathToLoad);
+      const unsubProgress = this.electronService.onAnalyzeProgress((progress) => {
+        this.loadingText.set(progress.message);
+      });
+      let quickResult;
+      try {
+        quickResult = await this.pdfService.analyzePdfQuick(pdfPathToLoad);
+      } finally {
+        unsubProgress();
+      }
 
       // Convert block edits Record to Map if present, fall back to text_corrections for legacy
       let blockEditsMap: Map<string, BlockEdit> | undefined;
@@ -6120,20 +6197,20 @@ export class PdfPickerComponent implements OnInit {
         });
       }
 
-      // Load document state via service
+      // Load document state via service — use full data on cache hit, empty on miss
       this.editorState.loadDocument({
-        blocks: pdfResult.blocks,
-        categories: pdfResult.categories,
-        pageDimensions: pdfResult.page_dimensions,
-        totalPages: pdfResult.page_count,
-        pdfName: pdfResult.pdf_name,
+        blocks: quickResult.blocks || [],
+        categories: quickResult.categories || {},
+        pageDimensions: quickResult.page_dimensions,
+        totalPages: quickResult.page_count,
+        pdfName: quickResult.pdf_name,
         pdfPath: sourcePath || pdfPathToLoad,
         libraryPath: pdfPathToLoad,
         fileHash: fileHash || '',
         deletedBlockIds: new Set(project.deleted_block_ids || []),
         deletedPages: new Set<number>(project.deleted_pages || []),
         pageOrder: project.page_order || [],
-        blockEdits: blockEditsMap
+        blockEdits: quickResult.textReady ? blockEditsMap : undefined
       });
 
       // Restore undo/redo history from project (loadDocument clears it)
@@ -6172,10 +6249,44 @@ export class PdfPickerComponent implements OnInit {
       this.projectService.projectPath.set(result.filePath || null);
 
       // Initialize page rendering - starts in background, doesn't block
-      this.pageRenderService.initialize(this.effectivePath(), pdfResult.page_count);
+      this.pageRenderService.initialize(this.effectivePath(), quickResult.page_count);
 
       // Start on-demand page rendering (only visible pages)
-      this.pageRenderService.startOnDemandRendering(pdfResult.page_count);
+      this.pageRenderService.startOnDemandRendering(quickResult.page_count);
+
+      // If text not ready (cache miss), start background extraction
+      // Store project config so text-ready handler can apply block edits later
+      if (!quickResult.textReady) {
+        // Generate a docId to track — openProject doesn't use the tab system the same way,
+        // so we use a synthetic ID based on the project path
+        const syntheticDocId = 'project_' + Date.now().toString(36);
+        // Store block edits to apply when text arrives
+        const pendingEdits = blockEditsMap;
+        const pendingDeletedBlockIds = new Set(project.deleted_block_ids || []);
+
+        this.editorState.textLoading.set(true);
+        const unsub = this.electronService.onTextReady((data) => {
+          unsub();
+          this.editorState.updateTextData({
+            blocks: data.blocks as TextBlock[],
+            categories: data.categories as Record<string, Category>,
+          });
+          // Apply deferred block edits and deleted block IDs now that blocks exist
+          if (pendingEdits) {
+            this.editorState.blockEdits.set(pendingEdits);
+          }
+          if (pendingDeletedBlockIds.size > 0) {
+            this.editorState.deletedBlockIds.set(pendingDeletedBlockIds);
+          }
+        });
+
+        // Fire-and-forget text extraction
+        this.pdfService.analyzePdfText(pdfPathToLoad).catch(err => {
+          console.error('[openProject] Background text extraction failed:', err);
+          this.editorState.textLoading.set(false);
+          unsub();
+        });
+      }
 
       // Suppress auto-save triggered during restore — loading state is not a user change
       if (this.autoSaveTimeout) {
@@ -6320,7 +6431,15 @@ export class PdfPickerComponent implements OnInit {
     }
 
     try {
-      const pdfResult = await this.pdfService.analyzePdf(pdfPathToLoad);
+      const unsubProgress = this.electronService.onAnalyzeProgress((progress) => {
+        this.loadingText.set(progress.message);
+      });
+      let quickResult;
+      try {
+        quickResult = await this.pdfService.analyzePdfQuick(pdfPathToLoad);
+      } finally {
+        unsubProgress();
+      }
 
       // Create new document for tabs
       const docId = this.generateDocumentId();
@@ -6346,11 +6465,11 @@ export class PdfPickerComponent implements OnInit {
         path: project.source_path || pdfPathToLoad,
         libraryPath: pdfPathToLoad,
         fileHash: project.file_hash || '',
-        name: project.source_name || pdfResult.pdf_name,
-        blocks: pdfResult.blocks,
-        categories: pdfResult.categories,
-        pageDimensions: pdfResult.page_dimensions,
-        totalPages: pdfResult.page_count,
+        name: project.source_name || quickResult.pdf_name,
+        blocks: quickResult.blocks || [],
+        categories: quickResult.categories || {},
+        pageDimensions: quickResult.page_dimensions,
+        totalPages: quickResult.page_count,
         deletedBlockIds: deletedBlockIds,
         deletedPages: deletedPages,
         selectedBlockIds: [],
@@ -6382,20 +6501,20 @@ export class PdfPickerComponent implements OnInit {
         }
       }
 
-      // Load document state via service
+      // Load document state via service — defer block edits if text not ready
       this.editorState.loadDocument({
-        blocks: pdfResult.blocks,
-        categories: pdfResult.categories,
-        pageDimensions: pdfResult.page_dimensions,
-        totalPages: pdfResult.page_count,
-        pdfName: project.source_name || pdfResult.pdf_name,
+        blocks: quickResult.blocks || [],
+        categories: quickResult.categories || {},
+        pageDimensions: quickResult.page_dimensions,
+        totalPages: quickResult.page_count,
+        pdfName: project.source_name || quickResult.pdf_name,
         pdfPath: project.source_path || pdfPathToLoad,
         libraryPath: pdfPathToLoad,
         fileHash: project.file_hash || '',
-        deletedBlockIds: deletedBlockIds,
+        deletedBlockIds: quickResult.textReady ? deletedBlockIds : new Set(),
         deletedPages: deletedPages,
         pageOrder: pageOrder,
-        blockEdits: blockEditsMap
+        blockEdits: quickResult.textReady ? blockEditsMap : undefined
       });
 
       // Restore undo/redo history from project (loadDocument clears it)
@@ -6435,7 +6554,8 @@ export class PdfPickerComponent implements OnInit {
 
       // Restore OCR blocks and categories - only for original source file
       // OCR blocks are from the original PDF and don't match derived files (EPUB pages differ)
-      if (isLoadingOriginal && project.ocr_blocks && project.ocr_blocks.length > 0) {
+      // Only apply immediately when text is ready; defer if text is loading
+      if (quickResult.textReady && isLoadingOriginal && project.ocr_blocks && project.ocr_blocks.length > 0) {
         // Get the pages that have OCR blocks
         const ocrPages = [...new Set(project.ocr_blocks.map(b => b.page))];
         // Replace PDF blocks with OCR blocks on those pages
@@ -6476,7 +6596,7 @@ export class PdfPickerComponent implements OnInit {
       // Always initialize page rendering (so OCR can work)
       // But only load pages if NOT in lightweight mode
       const renderPath = this.effectivePath();
-      this.pageRenderService.initialize(renderPath, pdfResult.page_count);
+      this.pageRenderService.initialize(renderPath, quickResult.page_count);
 
       // Show document immediately
       this.pdfLoaded.set(true);
@@ -6485,12 +6605,78 @@ export class PdfPickerComponent implements OnInit {
       if (!lightweight) {
         // If background removal is enabled, apply it after initial pages load
         if (project.remove_backgrounds) {
-          this.pageRenderService.startOnDemandRendering(pdfResult.page_count).then(() => {
+          this.pageRenderService.startOnDemandRendering(quickResult.page_count).then(() => {
             this.applyRemoveBackgrounds(true);
           });
         } else {
-          this.pageRenderService.startOnDemandRendering(pdfResult.page_count);
+          this.pageRenderService.startOnDemandRendering(quickResult.page_count);
         }
+      }
+
+      // If text not ready (cache miss), start background extraction
+      if (!quickResult.textReady) {
+        // Store project config so text-ready handler can apply deferred state
+        const pendingBlockEdits = blockEditsMap;
+        const pendingDeletedBlockIds = deletedBlockIds;
+        const pendingOcrBlocks = isLoadingOriginal ? project.ocr_blocks : undefined;
+        const pendingOcrCategories = isLoadingOriginal ? project.ocr_categories : undefined;
+
+        this.editorState.textLoading.set(true);
+        const unsub = this.electronService.onTextReady((data) => {
+          unsub();
+          this.textReadyUnsubs.delete(docId);
+
+          // Update blocks/categories from extraction
+          if (this.activeDocumentId() === docId) {
+            this.editorState.updateTextData({
+              blocks: data.blocks as TextBlock[],
+              categories: data.categories as Record<string, Category>,
+            });
+
+            // Now apply deferred project state
+            if (pendingBlockEdits) {
+              this.editorState.blockEdits.set(pendingBlockEdits);
+            }
+            if (pendingDeletedBlockIds.size > 0) {
+              this.editorState.deletedBlockIds.set(pendingDeletedBlockIds);
+            }
+
+            // Apply OCR blocks now that text blocks exist
+            if (pendingOcrBlocks && pendingOcrBlocks.length > 0) {
+              const ocrPages = [...new Set(pendingOcrBlocks.map((b: any) => b.page))];
+              this.editorState.replaceTextBlocksOnPages(ocrPages, pendingOcrBlocks);
+              for (const pageNum of ocrPages) {
+                const pageBlocks = pendingOcrBlocks.filter((b: any) => b.page === pageNum);
+                const ocrBlocksForSpans = pageBlocks.map((b: any) => ({
+                  x: b.x, y: b.y, width: b.width, height: b.height,
+                  text: b.text, font_size: b.font_size, id: b.id
+                }));
+                this.electronService.updateSpansForOcr(pageNum, ocrBlocksForSpans);
+              }
+              if (pendingOcrCategories) {
+                this.editorState.categories.set(pendingOcrCategories);
+              }
+            }
+          }
+
+          // Also update the OpenDocument in tabs
+          this.openDocuments.update(docs => docs.map(d => {
+            if (d.id === docId) {
+              return { ...d, blocks: data.blocks as TextBlock[], categories: data.categories as Record<string, Category> };
+            }
+            return d;
+          }));
+        });
+
+        this.textReadyUnsubs.set(docId, unsub);
+
+        // Fire-and-forget text extraction
+        this.pdfService.analyzePdfText(pdfPathToLoad).catch(err => {
+          console.error('[loadProjectFromPath] Background text extraction failed:', err);
+          this.editorState.textLoading.set(false);
+          this.textReadyUnsubs.get(docId)?.();
+          this.textReadyUnsubs.delete(docId);
+        });
       }
 
       // Suppress auto-save triggered by replaceTextBlocksOnPages() during restore.
@@ -8510,6 +8696,10 @@ export class PdfPickerComponent implements OnInit {
     if (docIndex === -1) return;
 
     const doc = docs[docIndex];
+
+    // Clean up background text extraction subscription
+    this.textReadyUnsubs.get(tab.id)?.();
+    this.textReadyUnsubs.delete(tab.id);
 
     // Auto-save if there are unsaved changes
     if (doc.hasUnsavedChanges && this.projectService.projectPath()) {
