@@ -5,7 +5,7 @@
 import { AIProvider } from '../../../core/models/ai-config.types';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'resemble-enhance' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook';
+export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'resemble-enhance' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis';
 
 // Job status
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
@@ -94,7 +94,7 @@ export interface QueueJob {
 }
 
 // Job configuration union type
-export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig;
+export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -340,6 +340,30 @@ export interface AudiobookJobConfig {
   type: 'audiobook';
 }
 
+// Book Analysis job configuration
+export interface BookAnalysisConfig {
+  type: 'book-analysis';
+  projectDir: string;
+  // AI Provider settings (per-job)
+  aiProvider: AIProvider;
+  aiModel: string;
+  // Provider-specific settings (only the relevant one is used)
+  ollamaBaseUrl?: string;
+  claudeApiKey?: string;
+  openaiApiKey?: string;
+  // Analysis categories
+  categories: Array<{
+    id: string;
+    name: string;
+    description: string;
+    color: string;
+    enabled: boolean;
+  }>;
+  // Test mode
+  testMode?: boolean;
+  testModeChunks?: number;
+}
+
 // Resume info for TTS jobs - allows resuming interrupted conversions
 export interface TtsResumeInfo {
   sessionId: string;           // e2a session UUID
@@ -497,7 +521,7 @@ export interface AudiobookMetadata {
 export interface CreateJobRequest {
   type: JobType;
   epubPath?: string;  // Optional for bilingual-assembly and audiobook jobs
-  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig>;
+  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;

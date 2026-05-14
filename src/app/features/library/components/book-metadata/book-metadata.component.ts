@@ -668,6 +668,11 @@ export class BookMetadataComponent {
 
     this.saving.set(true);
     this.saveWarning.set(null);
+
+    // Capture cover data before updateMetadata() — a file rename triggers the
+    // constructor effect which clears pendingCoverData and coverPreview.
+    const coverToSave = this.pendingCoverData;
+
     try {
       // Save metadata to file (may rename the file, changing relativePath)
       const result = await this.libraryService.updateMetadata(book.relativePath, {
@@ -692,11 +697,11 @@ export class BookMetadataComponent {
       }
 
       // Save cover if pasted
-      if (this.pendingCoverData) {
-        // Re-read path in case moveBooks changed it
+      if (coverToSave) {
         const latestPath = this.libraryService.selectedBook()?.relativePath || currentPath;
-        await this.libraryService.setCover(latestPath, this.pendingCoverData);
+        await this.libraryService.setCover(latestPath, coverToSave);
         this.pendingCoverData = null;
+        this.coverPreview.set(null);
       }
     } finally {
       this.saving.set(false);

@@ -1238,6 +1238,11 @@ export interface ElectronAPI {
     runTranslation: (jobId: string, epubPath: string, translationConfig: {
       chunkSize?: number;
     }, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
+    runBookAnalysis: (jobId: string, epubPath: string, aiConfig: AIProviderConfig & {
+      categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
+      testMode?: boolean;
+      testModeChunks?: number;
+    }) => Promise<{ success: boolean; data?: any; error?: string }>;
     cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     saveState: (queueState: string) => Promise<{ success: boolean; error?: string }>;
     loadState: () => Promise<{ success: boolean; data?: any; error?: string }>;
@@ -1345,6 +1350,14 @@ export interface ElectronAPI {
     isConvertible: (filePath: string) => Promise<{ success: boolean; data?: { convertible: boolean; native: boolean }; error?: string }>;
     convert: (inputPath: string, outputDir?: string) => Promise<{ success: boolean; data?: { outputPath: string }; error?: string }>;
     convertToLibrary: (inputPath: string) => Promise<{ success: boolean; data?: { outputPath: string }; error?: string }>;
+  };
+  jwpub: {
+    convert: (jwpubPath: string) => Promise<{
+      success: boolean;
+      outputPath?: string;
+      metadata?: { title: string; author: string; year: string; language: string };
+      error?: string;
+    }>;
   };
   play: {
     startSession: () => Promise<{ success: boolean; data?: { voices: string[] }; error?: string }>;
@@ -2520,6 +2533,12 @@ const electronAPI: ElectronAPI = {
       chunkSize?: number;
     }, aiConfig?: AIProviderConfig) =>
       ipcRenderer.invoke('queue:run-translation', jobId, epubPath, translationConfig, aiConfig),
+    runBookAnalysis: (jobId: string, epubPath: string, aiConfig: AIProviderConfig & {
+      categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
+      testMode?: boolean;
+      testModeChunks?: number;
+    }) =>
+      ipcRenderer.invoke('queue:run-book-analysis', jobId, epubPath, aiConfig),
     cancelJob: (jobId: string) =>
       ipcRenderer.invoke('queue:cancel-job', jobId),
     saveState: (queueState: string) =>
@@ -2565,6 +2584,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('ebook-convert:convert', inputPath, outputDir),
     convertToLibrary: (inputPath: string) =>
       ipcRenderer.invoke('ebook-convert:convert-to-library', inputPath),
+  },
+  jwpub: {
+    convert: (jwpubPath: string) =>
+      ipcRenderer.invoke('jwpub:convert', jwpubPath),
   },
   diff: {
     // Legacy: loads all chapters at once (can cause OOM on large EPUBs)

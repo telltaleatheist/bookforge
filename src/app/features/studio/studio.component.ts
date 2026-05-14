@@ -2166,8 +2166,8 @@ export class StudioComponent implements OnInit, OnDestroy {
     const item = this.selectedItem();
     if (!item) return;
 
-    // If no exported file yet, open the source directly — no version picker needed
-    if (this.needsExport() && item.bfpPath && item.epubPath) {
+    // If no exported file yet and no analysis, open the source directly — no version picker needed
+    if (this.needsExport() && !item.hasAnalysis && item.bfpPath && item.epubPath) {
       await this.openEditorWithBfp(item.bfpPath, item.epubPath);
       return;
     }

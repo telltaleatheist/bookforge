@@ -163,7 +163,7 @@ interface MatchRect {
 type CategoryHighlights = Map<string, Record<number, MatchRect[]>>;
 
 // Editor modes
-type EditorMode = 'select' | 'edit' | 'crop' | 'organize' | 'split' | 'ocr' | 'chapters';
+type EditorMode = 'select' | 'edit' | 'crop' | 'organize' | 'split' | 'ocr' | 'chapters' | 'analysis';
 
 interface ModeInfo {
   id: EditorMode;
@@ -287,7 +287,7 @@ interface AlertModal {
           >
             <div class="tools-section">
               <div class="tools-label">Tools</div>
-              @for (mode of modes; track mode.id) {
+              @for (mode of visibleModes(); track mode.id) {
                 <button
                   class="menu-item"
                   [class.active]="currentMode() === mode.id"
@@ -565,6 +565,19 @@ interface AlertModal {
             (changeLevelChapter)="changeChapterLevel($event)"
             (finalizeChapters)="finalizeChapters()"
           />
+        } @else if (analysisMode()) {
+          <app-categories-panel
+            pane-secondary
+            [categories]="categoriesArray()"
+            [blocks]="[]"
+            [selectedBlockIds]="[]"
+            [includedChars]="0"
+            [excludedChars]="0"
+            [analysisFlags]="analysisFlags()"
+            [analysisCategories]="analysisCategories()"
+            [analysisOnly]="true"
+            (navigateToFlag)="scrollToPage($event.page)"
+          />
         } @else {
           <app-categories-panel
             pane-secondary
@@ -590,6 +603,8 @@ interface AlertModal {
             [regexMatches]="regexMatches()"
             [regexMatchCount]="regexMatchCount()"
             [isEditing]="!!editingCategoryId()"
+            [analysisFlags]="analysisFlags()"
+            [analysisCategories]="analysisCategories()"
             (selectCategory)="selectAllOfCategory($event)"
             (selectInverse)="selectInverseOfCategory($event)"
             (selectAll)="selectAllBlocks()"
@@ -2664,6 +2679,14 @@ export class PdfPickerComponent implements OnInit {
             this.setMode('chapters');
           }
           break;
+        case 'a': // A for analysis
+          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
+            if (this.analysisFlags().length > 0) {
+              event.preventDefault();
+              this.setMode('analysis');
+            }
+          }
+          break;
       }
     }
   }
@@ -2852,6 +2875,31 @@ export class PdfPickerComponent implements OnInit {
   // Signal to pass to pdf-viewer for drawing rect visualization
   readonly sampleDrawingRect = signal<{ page: number; x: number; y: number; width: number; height: number } | null>(null);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Analysis Results
+  // ─────────────────────────────────────────────────────────────────────────
+  readonly analysisFlags = signal<Array<{
+    categoryId: string;
+    categoryName: string;
+    categoryColor: string;
+    quote: string;
+    description: string;
+    severity: 'low' | 'medium' | 'high';
+    chapterId: string;
+    chapterTitle: string;
+    page?: number;  // Matched PDF page (if found)
+  }>>([]);
+  readonly analysisCategories = signal<Array<{
+    id: string;
+    name: string;
+    color: string;
+    enabled: boolean;
+    flagCount: number;
+  }>>([]);
+  readonly pendingAnalysisMatch = signal(false);
+  // Separate category records for analysis highlights (not shown in categories list)
+  readonly analysisHighlightCategories = signal<Record<string, any>>({});
+
   // Custom category highlights - stored by category ID, then by page for O(1) lookup
   // This avoids creating heavy TextBlock objects for pattern matches
   readonly categoryHighlights = signal<CategoryHighlights>(new Map());
@@ -2942,9 +2990,11 @@ export class PdfPickerComponent implements OnInit {
     }
 
     // Filter out highlights for disabled categories
+    const analysisHighlightCats = this.analysisHighlightCategories();
     const filtered = new Map<string, Record<number, MatchRect[]>>();
     for (const [categoryId, pageHighlights] of base) {
-      const cat = categories[categoryId];
+      // Check both regular categories and analysis highlight categories
+      const cat = categories[categoryId] || analysisHighlightCats[categoryId];
       // Only include if category exists and is enabled
       if (cat && cat.enabled !== false) {
         filtered.set(categoryId, pageHighlights);
@@ -2957,15 +3007,21 @@ export class PdfPickerComponent implements OnInit {
   // Categories extended with preview category (for pdf-viewer when regex modal is open)
   readonly categoriesWithPreview = computed<Record<string, Category>>(() => {
     const base = this.categories();
+    const analysisHighlightCats = this.analysisHighlightCategories();
 
-    // If regex modal isn't open, just return base categories
+    // Merge analysis highlight categories (needed for viewer to resolve colors)
+    const merged = Object.keys(analysisHighlightCats).length > 0
+      ? { ...base, ...analysisHighlightCats }
+      : base;
+
+    // If regex modal isn't open, just return merged categories
     if (!this.regexPanelExpanded() || this.regexMatches().length === 0) {
-      return base;
+      return merged;
     }
 
     // Add the preview category
     return {
-      ...base,
+      ...merged,
       '__regex_preview__': {
         id: '__regex_preview__',
         name: 'Regex Preview',
@@ -2981,6 +3037,322 @@ export class PdfPickerComponent implements OnInit {
     };
   });
 
+  /**
+   * Load analysis results from stages/04-analysis/analysis.json
+   * Called after a project is loaded to display content flags in the sidebar.
+   * Also matches flagged quotes to PDF text positions for highlighting.
+   */
+  async loadAnalysisResults(projectDir: string): Promise<void> {
+    console.log('[Analysis] Loading analysis results for:', projectDir);
+    const analysisPath = `${projectDir}/stages/04-analysis/analysis.json`;
+    const checkpointPath = `${projectDir}/stages/04-analysis/analysis-progress.json`;
+
+    // Try completed report first, fall back to in-progress checkpoint
+    let activePath = analysisPath;
+    let exists = await this.electronService.fsExists(analysisPath);
+    if (!exists) {
+      exists = await this.electronService.fsExists(checkpointPath);
+      activePath = checkpointPath;
+    }
+    if (!exists) {
+      console.log('[Analysis] No analysis file found at', analysisPath, 'or', checkpointPath);
+      this.analysisFlags.set([]);
+      this.analysisCategories.set([]);
+      return;
+    }
+    console.log('[Analysis] Found analysis file:', activePath);
+
+    try {
+      const content = await this.electronService.readTextFile(activePath);
+      if (!content) return;
+      const report = JSON.parse(content);
+
+      if (!report.flags || !Array.isArray(report.flags)) {
+        return;
+      }
+
+      // Build category summary with flag counts
+      const categoryCounts = new Map<string, number>();
+      for (const flag of report.flags) {
+        categoryCounts.set(flag.categoryId, (categoryCounts.get(flag.categoryId) || 0) + 1);
+      }
+
+      // For checkpoint files, categories aren't stored — build from the default set
+      // by inferring from flags. For completed reports, use the stored categories.
+      let rawCategories: Array<{ id: string; name: string; color: string }>;
+      if (report.categories && Array.isArray(report.categories)) {
+        rawCategories = report.categories;
+      } else {
+        // Build from flags — use categoryId as both id and name
+        const categoryIds = new Set<string>(report.flags.map((f: any) => f.categoryId as string));
+        const defaultColors: Record<string, { name: string; color: string }> = {
+          thought_control: { name: 'Thought Control', color: '#E53935' },
+          information_control: { name: 'Information Control', color: '#1565C0' },
+          us_vs_them: { name: 'Us vs. Them', color: '#FB8C00' },
+          fear_manipulation: { name: 'Fear & Doom', color: '#7B1FA2' },
+          loaded_language: { name: 'Loaded Language', color: '#00838F' },
+          emotional_manipulation: { name: 'Emotional Manipulation', color: '#C62828' },
+          authority_claims: { name: 'Authority Claims', color: '#4527A0' },
+          historical_revisionism: { name: 'Historical Revisionism', color: '#2E7D32' },
+          scapegoating: { name: 'Scapegoating', color: '#D84315' },
+          violence_glorification: { name: 'Violence & Extremism', color: '#B71C1C' },
+          false_prophecy: { name: 'False Prophecy', color: '#8E24AA' },
+          shunning: { name: 'Shunning & Isolation', color: '#6D4C41' },
+        };
+        rawCategories = Array.from(categoryIds).map((id: string) => ({
+          id,
+          name: defaultColors[id]?.name || id,
+          color: defaultColors[id]?.color || '#888',
+        }));
+      }
+
+      const categories = rawCategories.map((cat: any) => ({
+        id: cat.id,
+        name: cat.name,
+        color: cat.color,
+        enabled: true,
+        flagCount: categoryCounts.get(cat.id) || 0,
+      }));
+      this.analysisCategories.set(categories);
+
+      // Build flag list with category metadata
+      const categoryMap = new Map(categories.map((c: any) => [c.id, c]));
+      const flags = report.flags.map((flag: any) => {
+        const cat = categoryMap.get(flag.categoryId) as any;
+        return {
+          categoryId: flag.categoryId,
+          categoryName: cat?.name || flag.categoryId,
+          categoryColor: cat?.color || '#888',
+          quote: flag.quote,
+          description: flag.description,
+          severity: flag.severity,
+          chapterId: flag.chapterId,
+          chapterTitle: flag.chapterTitle,
+        };
+      });
+      this.analysisFlags.set(flags);
+      console.log(`[Analysis] Loaded ${flags.length} flags across ${categories.length} categories`);
+
+      // Auto-enter analysis mode when flags are loaded
+      if (flags.length > 0) {
+        this.setMode('analysis');
+      }
+
+      // Match flagged quotes to PDF text positions (defer if text not ready)
+      const isTextLoading = this.editorState.textLoading();
+      console.log(`[Analysis] textLoading=${isTextLoading}, will ${isTextLoading ? 'DEFER' : 'RUN NOW'} matchAnalysisFlagsToPdf`);
+      if (isTextLoading) {
+        this.pendingAnalysisMatch.set(true);
+      } else {
+        await this.matchAnalysisFlagsToPdf(flags, categories);
+      }
+
+    } catch (err) {
+      console.error('[Analysis] Failed to load analysis results:', err);
+    }
+  }
+
+  /**
+   * Match analysis flag quotes to PDF text for highlighting and page navigation.
+   * Strategy: try span-level matching first (precise highlights), fall back to block-level
+   * matching (block-rect highlights) for quotes that don't match spans exactly.
+   */
+  private async matchAnalysisFlagsToPdf(
+    flags: Array<{ categoryId: string; quote: string; categoryColor: string; categoryName: string }>,
+    categories: Array<{ id: string; name: string; color: string }>
+  ): Promise<void> {
+    console.log('[Analysis] matchAnalysisFlagsToPdf called with', flags.length, 'flags and', categories.length, 'categories');
+
+    // Add analysis categories to a separate record for highlight rendering only
+    const analysisHighlightCategories: Record<string, any> = {};
+    for (const cat of categories) {
+      const catId = `analysis_${cat.id}`;
+      analysisHighlightCategories[catId] = {
+        id: catId,
+        name: `[Analysis] ${cat.name}`,
+        description: `Content analysis: ${cat.name}`,
+        color: cat.color,
+        block_count: 0,
+        char_count: 0,
+        font_size: 0,
+        region: 'analysis',
+        sample_text: '',
+        enabled: true,
+      };
+    }
+
+    // Build two search indices:
+    // 1. Span-based (precise character-level rects for highlighting)
+    // 2. Block-based (paragraph-level fallback for page navigation + block highlighting)
+
+    // --- Span index ---
+    const rawSpans = await this.electronService.getSpans();
+    const pageSpanTexts = new Map<number, { text: string; offsets: Array<{ start: number; end: number; span: { x: number; y: number; width: number; height: number; text: string; page: number } }> }>();
+
+    if (rawSpans && rawSpans.length > 0) {
+      console.log('[Analysis] Got', rawSpans.length, 'raw spans');
+      // Group spans by page, sorted by reading order
+      const spansByPage = new Map<number, typeof rawSpans>();
+      for (const span of rawSpans) {
+        if (!spansByPage.has(span.page)) spansByPage.set(span.page, []);
+        spansByPage.get(span.page)!.push(span);
+      }
+      for (const [, pageSpans] of spansByPage) {
+        pageSpans.sort((a, b) => {
+          const yDiff = Math.abs(a.y - b.y);
+          if (yDiff > 5) return a.y - b.y;
+          return a.x - b.x;
+        });
+      }
+      // Concatenate spans per page
+      for (const [pageNum, pageSpans] of spansByPage) {
+        let text = '';
+        const offsets: Array<{ start: number; end: number; span: { x: number; y: number; width: number; height: number; text: string; page: number } }> = [];
+        for (const span of pageSpans) {
+          if (!span.text || span.text.length === 0) continue;
+          const start = text.length;
+          text += span.text + ' ';
+          offsets.push({ start, end: start + span.text.length, span });
+        }
+        pageSpanTexts.set(pageNum, { text, offsets });
+      }
+    } else {
+      console.log('[Analysis] No spans available from getSpans()');
+    }
+
+    // --- Block index ---
+    const blocks = this.blocks();
+    const pageBlockTexts = new Map<number, { text: string; offsets: Array<{ start: number; end: number; block: TextBlock }> }>();
+    for (const block of blocks) {
+      if (!block.text || block.text.trim().length === 0) continue;
+      if (!pageBlockTexts.has(block.page)) {
+        pageBlockTexts.set(block.page, { text: '', offsets: [] });
+      }
+      const entry = pageBlockTexts.get(block.page)!;
+      const start = entry.text.length;
+      entry.text += block.text + ' ';
+      entry.offsets.push({ start, end: start + block.text.length, block });
+    }
+    console.log(`[Analysis] Block index: ${pageBlockTexts.size} pages, ${blocks.length} blocks`);
+
+    const updatedHighlights = new Map(this.categoryHighlights());
+    let spanMatches = 0;
+    let blockMatches = 0;
+    const flagPages = new Map<number, number>();
+
+    for (let flagIdx = 0; flagIdx < flags.length; flagIdx++) {
+      const flag = flags[flagIdx];
+      const catId = `analysis_${flag.categoryId}`;
+
+      // Truncate quote before escaping to avoid splitting mid-escape
+      const maxQuoteLen = 150;
+      const quoteToMatch = flag.quote.length > maxQuoteLen
+        ? flag.quote.substring(0, maxQuoteLen)
+        : flag.quote;
+
+      const escaped = quoteToMatch
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\s+/g, '\\s+');
+
+      let regex: RegExp;
+      try {
+        regex = new RegExp(escaped, 'gi');
+      } catch {
+        continue;
+      }
+
+      let matched = false;
+
+      // Try span-level matching first (precise highlighting)
+      if (pageSpanTexts.size > 0) {
+        for (const [pageNum, { text, offsets }] of pageSpanTexts) {
+          regex.lastIndex = 0;
+          const match = regex.exec(text);
+          if (!match) continue;
+
+          const matchStart = match.index;
+          const matchEnd = matchStart + match[0].length;
+          const matchingSpans = offsets.filter(o => o.start < matchEnd && o.end > matchStart);
+          if (matchingSpans.length === 0) continue;
+
+          if (!updatedHighlights.has(catId)) updatedHighlights.set(catId, {});
+          const pageMap = updatedHighlights.get(catId)!;
+          if (!pageMap[pageNum]) pageMap[pageNum] = [];
+
+          // Merge matching spans into line-level rects
+          let currentRect: { x: number; y: number; w: number; h: number; text: string } | null = null;
+          for (const { span } of matchingSpans) {
+            if (currentRect && Math.abs(span.y - currentRect.y) < 5) {
+              const right = Math.max(currentRect.x + currentRect.w, span.x + span.width);
+              currentRect.w = right - currentRect.x;
+              currentRect.h = Math.max(currentRect.h, span.height);
+              currentRect.text += span.text;
+            } else {
+              if (currentRect) pageMap[pageNum].push({ page: pageNum, ...currentRect });
+              currentRect = { x: span.x, y: span.y, w: span.width, h: span.height, text: span.text };
+            }
+          }
+          if (currentRect) pageMap[pageNum].push({ page: pageNum, ...currentRect });
+
+          flagPages.set(flagIdx, pageNum);
+          spanMatches++;
+          matched = true;
+          break;
+        }
+      }
+
+      // Fallback: block-level matching (use block bounding rect as highlight)
+      if (!matched) {
+        for (const [pageNum, { text, offsets }] of pageBlockTexts) {
+          regex.lastIndex = 0;
+          const match = regex.exec(text);
+          if (!match) continue;
+
+          const matchStart = match.index;
+          const matchEnd = matchStart + match[0].length;
+          const matchingBlocks = offsets.filter(o => o.start < matchEnd && o.end > matchStart);
+          if (matchingBlocks.length === 0) continue;
+
+          if (!updatedHighlights.has(catId)) updatedHighlights.set(catId, {});
+          const pageMap = updatedHighlights.get(catId)!;
+          if (!pageMap[pageNum]) pageMap[pageNum] = [];
+
+          for (const { block } of matchingBlocks) {
+            pageMap[pageNum].push({
+              page: pageNum,
+              x: block.x,
+              y: block.y,
+              w: block.width,
+              h: block.height,
+              text: block.text.substring(0, 100),
+            });
+          }
+
+          flagPages.set(flagIdx, pageNum);
+          blockMatches++;
+          matched = true;
+          break;
+        }
+      }
+    }
+
+    console.log(`[Analysis] Matched ${spanMatches + blockMatches}/${flags.length} flags (${spanMatches} span-level, ${blockMatches} block-level)`);
+
+    // Store analysis categories separately for highlight rendering
+    this.analysisHighlightCategories.set(analysisHighlightCategories);
+    this.categoryHighlights.set(updatedHighlights);
+
+    // Update analysisFlags with matched page numbers for navigation
+    if (flagPages.size > 0) {
+      const currentFlags = this.analysisFlags();
+      const updatedFlags = currentFlags.map((f, i) => {
+        const matchedPage = flagPages.get(i);
+        return matchedPage !== undefined ? { ...f, page: matchedPage } : f;
+      });
+      this.analysisFlags.set(updatedFlags);
+    }
+  }
+
   // Editor mode state
   readonly currentMode = signal<EditorMode>('select');
   readonly modes: ModeInfo[] = [
@@ -2989,8 +3361,15 @@ export class PdfPickerComponent implements OnInit {
     { id: 'crop', icon: '✂️', label: 'Crop', tooltip: 'Draw rectangle to crop (C)' },
     { id: 'split', icon: '📖', label: 'Split', tooltip: 'Split scanned pages (P)' },
     { id: 'ocr', icon: '👁️', label: 'OCR', tooltip: 'OCR scanned pages (O)' },
-    { id: 'chapters', icon: '📚', label: 'Chapters', tooltip: 'Manage chapters (H)' }
+    { id: 'chapters', icon: '📚', label: 'Chapters', tooltip: 'Manage chapters (H)' },
+    { id: 'analysis', icon: '🔬', label: 'Analysis', tooltip: 'View content analysis flags (A)' }
   ];
+
+  // Only show analysis mode when results are loaded
+  readonly visibleModes = computed(() => {
+    if (this.analysisFlags().length > 0) return this.modes;
+    return this.modes.filter(m => m.id !== 'analysis');
+  });
 
   // Crop mode state (derived from currentMode)
   readonly cropMode = computed(() => this.currentMode() === 'crop');
@@ -3012,6 +3391,9 @@ export class PdfPickerComponent implements OnInit {
   readonly isDraggingSplit = signal(false);
   readonly deskewing = signal(false);
   readonly lastDeskewAngle = signal<number | null>(null);
+
+  // Analysis mode state
+  readonly analysisMode = computed(() => this.currentMode() === 'analysis');
 
   // Chapters mode state
   readonly chaptersMode = computed(() => this.currentMode() === 'chapters');
@@ -3801,6 +4183,12 @@ export class PdfPickerComponent implements OnInit {
         }
         return d;
       }));
+
+      // Run deferred analysis matching now that text/spans are ready
+      if (this.pendingAnalysisMatch()) {
+        this.pendingAnalysisMatch.set(false);
+        this.matchAnalysisFlagsToPdf(this.analysisFlags(), this.analysisCategories());
+      }
     });
 
     this.textReadyUnsubs.set(docId, unsub);
@@ -6667,6 +7055,12 @@ export class PdfPickerComponent implements OnInit {
             }
             return d;
           }));
+
+          // Run deferred analysis matching now that text/spans are ready
+          if (this.pendingAnalysisMatch()) {
+            this.pendingAnalysisMatch.set(false);
+            this.matchAnalysisFlagsToPdf(this.analysisFlags(), this.analysisCategories());
+          }
         });
 
         this.textReadyUnsubs.set(docId, unsub);
@@ -6687,6 +7081,9 @@ export class PdfPickerComponent implements OnInit {
         this.autoSaveTimeout = null;
       }
       this.editorState.hasUnsavedChanges.set(false);
+
+      // Load analysis results (fire-and-forget — highlights appear when ready)
+      this.loadAnalysisResults(actualProjectPath);
     } catch (err) {
       console.error('Failed to load project source file:', err);
       const errorMsg = (err as Error).message || String(err);

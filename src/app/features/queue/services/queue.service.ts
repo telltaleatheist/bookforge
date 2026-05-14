@@ -24,6 +24,7 @@ import {
   BilingualAssemblyJobConfig,
   VideoAssemblyJobConfig,
   AudiobookJobConfig,
+  BookAnalysisConfig,
   ResumeCheckResult,
   TtsResumeInfo
 } from '../models/queue.types';
@@ -80,6 +81,11 @@ declare global {
         }) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTtsConversion: (jobId: string, epubPath: string, config: any) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTranslation: (jobId: string, epubPath: string, translationConfig: any, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
+        runBookAnalysis: (jobId: string, epubPath: string, aiConfig: AIProviderConfig & {
+          categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
+          testMode?: boolean;
+          testModeChunks?: number;
+        }) => Promise<{ success: boolean; data?: any; error?: string }>;
         cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
         saveState: (queueState: string) => Promise<{ success: boolean; error?: string }>;
         loadState: () => Promise<{ success: boolean; data?: any; error?: string }>;
@@ -3564,6 +3570,65 @@ export class QueueService {
 
         // Finish job (standalone-aware: won't advance queue for standalone jobs)
         await this.finishJob(job.id);
+
+      } else if (job.type === 'book-analysis') {
+        // Book Analysis job — sends EPUB text to AI for content flagging
+        const config = job.config as BookAnalysisConfig;
+        const electron = window.electron;
+
+        if (!electron?.queue?.runBookAnalysis) {
+          throw new Error('Book Analysis not available');
+        }
+
+        // Build AI config from per-job settings (same pattern as ocr-cleanup)
+        const aiConfig: AIProviderConfig & {
+          categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
+          testMode?: boolean;
+          testModeChunks?: number;
+        } = {
+          provider: config.aiProvider,
+          ollama: config.aiProvider === 'ollama' ? {
+            baseUrl: config.ollamaBaseUrl || 'http://localhost:11434',
+            model: config.aiModel
+          } : undefined,
+          claude: config.aiProvider === 'claude' ? {
+            apiKey: config.claudeApiKey || '',
+            model: config.aiModel
+          } : undefined,
+          openai: config.aiProvider === 'openai' ? {
+            apiKey: config.openaiApiKey || '',
+            model: config.aiModel
+          } : undefined,
+          categories: config.categories,
+          testMode: config.testMode,
+          testModeChunks: config.testModeChunks,
+        };
+
+        console.log('[QUEUE] Starting book analysis:', {
+          jobId: job.id,
+          provider: config.aiProvider,
+          model: config.aiModel,
+          categoryCount: config.categories?.length || 0,
+          testMode: config.testMode,
+        });
+
+        const analysisResult = await electron.queue.runBookAnalysis(job.id, job.epubPath!, aiConfig);
+
+        const analysisData = analysisResult?.data || {};
+        await this.handleJobComplete({
+          jobId: job.id,
+          success: analysisData.success ?? analysisResult?.success ?? false,
+          outputPath: analysisData.outputPath,
+          error: analysisData.error || analysisResult?.error,
+          analytics: analysisData.analytics,
+        });
+
+        // Update master job progress
+        if (job.parentJobId && job.workflowId) {
+          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
+        }
+
+        await this.finishJob(job.id);
       }
     } catch (err) {
       // Error starting job
@@ -3601,7 +3666,7 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | undefined {
+  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | undefined {
     if (request.type === 'ocr-cleanup') {
       const config = request.config as Partial<OcrCleanupConfig>;
       if (!config?.aiProvider || !config?.aiModel) {
@@ -3789,6 +3854,23 @@ export class QueueService {
     } else if (request.type === 'audiobook') {
       // Audiobook master jobs are containers - no config needed
       return { type: 'audiobook' };
+    } else if (request.type === 'book-analysis') {
+      const config = request.config as Partial<BookAnalysisConfig>;
+      if (!config?.aiProvider || !config?.aiModel || !config?.categories) {
+        return undefined;
+      }
+      return {
+        type: 'book-analysis',
+        projectDir: config.projectDir || '',
+        aiProvider: config.aiProvider,
+        aiModel: config.aiModel,
+        ollamaBaseUrl: config.ollamaBaseUrl,
+        claudeApiKey: config.claudeApiKey,
+        openaiApiKey: config.openaiApiKey,
+        categories: config.categories,
+        testMode: config.testMode,
+        testModeChunks: config.testModeChunks,
+      };
     }
     return undefined;
   }

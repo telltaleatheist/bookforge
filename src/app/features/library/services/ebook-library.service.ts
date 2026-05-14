@@ -284,14 +284,16 @@ export class EbookLibraryService {
     if (result.success && result.data) {
       const updated = result.data.book;
       // If relativePath changed (file was renamed), remap in local state
-      // so loadBooks() can preserve cover data under the new path
+      // so loadBooks() can preserve cover data under the new path.
+      // Spread all returned fields (not just path) so the metadata-panel effect
+      // picks up the new values when it re-syncs on path change.
       if (updated.relativePath !== relativePath) {
+        this._selectedBookPath.set(updated.relativePath);
         this._books.update(books =>
           books.map(b => b.relativePath === relativePath
-            ? { ...b, relativePath: updated.relativePath, filename: updated.filename }
+            ? { ...b, ...updated, coverData: b.coverData }
             : b)
         );
-        this._selectedBookPath.set(updated.relativePath);
       }
       await this.loadBooks();
       return { book: updated, warning: result.data.warning };

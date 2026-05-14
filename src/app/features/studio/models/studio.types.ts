@@ -60,6 +60,7 @@ export interface StudioItem {
   hasSimplified?: boolean;    // Has simplified.epub (AI simplify output)
   hasCleanupCheckpoint?: boolean;  // Has cleanup-progress.json (in-progress or interrupted job)
   cleanedEpubPath?: string;
+  hasAnalysis?: boolean;      // Has stages/04-analysis/analysis.json
   hasTranslated?: boolean;
   translatedEpubPath?: string;
   hasTtsCache?: boolean;

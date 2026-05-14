@@ -491,8 +491,8 @@ export class VersionPickerDialogComponent implements OnInit, OnChanges {
    * Original source files cannot be deleted
    */
   canDelete(version: ProjectVersion): boolean {
-    // Don't allow deleting original source files or exported versions
-    return version.type !== 'original' && version.type !== 'exported';
+    // Don't allow deleting original source files, exported versions, or analysis view
+    return version.type !== 'original' && version.type !== 'exported' && version.type !== 'analysis';
   }
 
   /**

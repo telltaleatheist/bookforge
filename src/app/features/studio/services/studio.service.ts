@@ -102,6 +102,10 @@ export class StudioService {
         paths['skipped'] = `${projectDir}/stages/01-cleanup/skipped-chunks.json`;
         paths['cleanup-checkpoint'] = `${projectDir}/stages/01-cleanup/cleanup-progress.json`;
 
+        // Analysis (completed report or in-progress checkpoint)
+        paths['analysis'] = `${projectDir}/stages/04-analysis/analysis.json`;
+        paths['analysis-checkpoint'] = `${projectDir}/stages/04-analysis/analysis-progress.json`;
+
         // Translation & TTS cache (directory existence + specific file)
         paths['translate-dir'] = `${projectDir}/stages/02-translate`;
         paths['translated-epub'] = `${projectDir}/stages/02-translate/translated.epub`;
@@ -213,6 +217,7 @@ export class StudioService {
           hasSimplified,
           hasCleanupCheckpoint,
           cleanedEpubPath,
+          hasAnalysis: exists('analysis') || exists('analysis-checkpoint'),
           hasTranslated,
           translatedEpubPath,
           hasTtsCache,

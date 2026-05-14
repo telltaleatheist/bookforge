@@ -709,6 +709,16 @@ export class ElectronService {
     return null;
   }
 
+  async getSpans(): Promise<Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number; font_name: string; baseline_offset: number }> | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.getSpans();
+      if (result.success) {
+        return result.data;
+      }
+    }
+    return null;
+  }
+
   /**
    * Update spans for a page that has been OCR'd.
    * This allows custom category matching to search OCR text with correct coordinates.
@@ -1968,6 +1978,18 @@ export class ElectronService {
         return { success: true, outputPath: result.data.outputPath };
       }
       return { success: false, error: result.error || 'Conversion failed' };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async convertJwpub(jwpubPath: string): Promise<{
+    success: boolean;
+    outputPath?: string;
+    metadata?: { title: string; author: string; year: string; language: string };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.jwpub.convert(jwpubPath);
     }
     return { success: false, error: 'Not running in Electron' };
   }

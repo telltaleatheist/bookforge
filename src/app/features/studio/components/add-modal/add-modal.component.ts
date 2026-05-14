@@ -485,7 +485,9 @@ export class AddModalComponent {
     this.importError.set(null);
     const name = filePath.toLowerCase();
 
-    if (name.endsWith('.epub') || name.endsWith('.pdf')) {
+    if (name.endsWith('.jwpub')) {
+      await this.convertJwpubAndImport(filePath);
+    } else if (name.endsWith('.epub') || name.endsWith('.pdf')) {
       await this.importFile(filePath);
     } else {
       await this.convertAndImport(filePath);
@@ -516,7 +518,18 @@ export class AddModalComponent {
         let importPath = filePath;
 
         // Convert non-native formats first
-        if (!name.endsWith('.epub') && !name.endsWith('.pdf')) {
+        if (name.endsWith('.jwpub')) {
+          progress.current = `Converting JWPUB ${filename}...`;
+          this.batchProgress.set({ ...progress });
+          const convertResult = await this.electronService.convertJwpub(filePath);
+          if (!convertResult.success || !convertResult.outputPath) {
+            progress.errors.push(`${filename}: ${convertResult.error || 'JWPUB conversion failed'}`);
+            progress.completed++;
+            this.batchProgress.set({ ...progress });
+            continue;
+          }
+          importPath = convertResult.outputPath;
+        } else if (!name.endsWith('.epub') && !name.endsWith('.pdf')) {
           progress.current = `Converting ${filename}...`;
           this.batchProgress.set({ ...progress });
           const convertResult = await this.electronService.convertEbook(filePath);
@@ -672,6 +685,28 @@ export class AddModalComponent {
       await this.importFile(convertResult.outputPath);
     } catch (err) {
       this.importError.set('Conversion failed: ' + (err as Error).message);
+    } finally {
+      this.isLoadingEpub.set(false);
+    }
+  }
+
+  private async convertJwpubAndImport(filePath: string): Promise<void> {
+    this.isLoadingEpub.set(true);
+    this.loadingMessage.set('Converting JWPUB to EPUB...');
+
+    try {
+      const convertResult = await this.electronService.convertJwpub(filePath);
+      if (!convertResult.success || !convertResult.outputPath) {
+        this.importError.set(convertResult.error || 'JWPUB conversion failed.');
+        return;
+      }
+
+      // The converted EPUB has proper OPF metadata, so importFile will
+      // extract title/author/year/language via the metadata modal as usual.
+      this.loadingMessage.set('Importing...');
+      await this.importFile(convertResult.outputPath);
+    } catch (err) {
+      this.importError.set('JWPUB conversion failed: ' + (err as Error).message);
     } finally {
       this.isLoadingEpub.set(false);
     }

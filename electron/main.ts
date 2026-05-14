@@ -1390,7 +1390,7 @@ function setupIpcHandlers(): void {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: 'Open Document',
       filters: [
-        { name: 'Ebooks', extensions: ['pdf', 'epub', 'azw3', 'azw', 'mobi', 'kfx', 'prc', 'fb2'] },
+        { name: 'Ebooks', extensions: ['pdf', 'epub', 'jwpub', 'azw3', 'azw', 'mobi', 'kfx', 'prc', 'fb2'] },
         { name: 'Documents', extensions: ['docx', 'odt', 'rtf', 'txt', 'html', 'htm'] },
         { name: 'All Files', extensions: ['*'] }
       ],
@@ -2796,6 +2796,19 @@ function setupIpcHandlers(): void {
       const { ebookConvertBridge } = await import('./ebook-convert-bridge.js');
       const result = await ebookConvertBridge.convertToLibrary(inputPath);
       return { success: result.success, data: { outputPath: result.outputPath }, error: result.error };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // JWPUB Conversion handler
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('jwpub:convert', async (_event, jwpubPath: string) => {
+    try {
+      const { convertJwpubToEpub } = await import('./jwpub-converter.js');
+      return await convertJwpubToEpub(jwpubPath);
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -6118,6 +6131,105 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Book Analysis handler
+  // ─────────────────────────────────────────────────────────────────────────
+  ipcMain.handle('queue:run-book-analysis', async (
+    _event,
+    jobId: string,
+    epubPath: string,
+    aiConfig: {
+      provider: 'ollama' | 'claude' | 'openai';
+      ollama?: { baseUrl: string; model: string };
+      claude?: { apiKey: string; model: string };
+      openai?: { apiKey: string; model: string };
+      categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
+      testMode?: boolean;
+      testModeChunks?: number;
+    }
+  ) => {
+    console.log('[IPC] queue:run-book-analysis received:', {
+      jobId,
+      provider: aiConfig?.provider,
+      categoryCount: aiConfig?.categories?.length || 0,
+      testMode: aiConfig?.testMode,
+    });
+
+    if (!aiConfig) {
+      const error = 'aiConfig is required for book analysis';
+      console.error('[IPC] queue:run-book-analysis ERROR:', error);
+      if (mainWindow) {
+        mainWindow.webContents.send('queue:job-complete', { jobId, success: false, error });
+      }
+      return { success: false, error };
+    }
+
+    try {
+      const { analyzeBook, cancelAnalysisJob } = await import('./book-analysis.js');
+
+      // Register cancellation
+      const cancelFn = () => { cancelAnalysisJob(jobId); };
+      runningJobs.set(jobId, { cancel: cancelFn, model: aiConfig.ollama?.model || aiConfig.claude?.model || aiConfig.openai?.model });
+
+      // Detect project root for output directory
+      let outputDir: string | undefined;
+      let projectRoot: string | null = null;
+      let searchDir = path.dirname(epubPath);
+      for (let i = 0; i < 5 && searchDir !== path.dirname(searchDir); i++) {
+        try {
+          await fs.access(path.join(searchDir, 'manifest.json'));
+          projectRoot = searchDir;
+          break;
+        } catch {
+          searchDir = path.dirname(searchDir);
+        }
+      }
+      if (projectRoot) {
+        outputDir = path.join(projectRoot, 'stages', '04-analysis');
+        console.log('[IPC] Manifest project detected, analysis output dir:', outputDir);
+      }
+
+      const result = await analyzeBook(
+        epubPath,
+        jobId,
+        mainWindow,
+        aiConfig,
+        {
+          categories: aiConfig.categories,
+          testMode: aiConfig.testMode || false,
+          testModeChunks: aiConfig.testModeChunks,
+          outputDir,
+        }
+      );
+
+      runningJobs.delete(jobId);
+
+      if (mainWindow) {
+        mainWindow.webContents.send('queue:job-complete', {
+          jobId,
+          success: result.success,
+          outputPath: result.outputPath,
+          error: result.error,
+          flagCount: result.flagCount,
+          analytics: result.analytics,
+        });
+
+        if (projectRoot) {
+          mainWindow.webContents.send('project:files-changed', projectRoot);
+        }
+      }
+
+      return { success: result.success, data: result };
+    } catch (err) {
+      runningJobs.delete(jobId);
+      const error = (err as Error).message;
+      if (mainWindow) {
+        mainWindow.webContents.send('queue:job-complete', { jobId, success: false, error });
+      }
+      return { success: false, error };
+    }
+  });
+
   // Translation handler
   ipcMain.handle('queue:run-translation', async (
     _event,
@@ -8605,6 +8717,60 @@ function setupIpcHandlers(): void {
                 path.join(translateDir, file), '🌍', true, lang
               );
             }
+          }
+        }
+
+        // 4. Content Analysis results from stages/04-analysis/
+        const analysisDir = path.join(projectDir, 'stages', '04-analysis');
+        const analysisPath = path.join(analysisDir, 'analysis.json');
+        const analysisCheckpointPath = path.join(analysisDir, 'analysis-progress.json');
+        // Check for completed report first, fall back to in-progress checkpoint
+        const activeAnalysisPath = fsSync.existsSync(analysisPath)
+          ? analysisPath
+          : fsSync.existsSync(analysisCheckpointPath) ? analysisCheckpointPath : null;
+
+        if (activeAnalysisPath) {
+          try {
+            const analysisRaw = await fs.readFile(activeAnalysisPath, 'utf-8');
+            const analysisData = JSON.parse(analysisRaw);
+            const isCheckpoint = activeAnalysisPath === analysisCheckpointPath;
+            const flagCount = isCheckpoint
+              ? analysisData.flags?.length ?? 0
+              : analysisData.statistics?.totalFlags ?? analysisData.flags?.length ?? 0;
+            const completedChapters = isCheckpoint ? analysisData.completedChapters?.length ?? 0 : null;
+            const totalChapters = isCheckpoint ? analysisData.totalChapters ?? 0 : null;
+
+            // Resolve which EPUB was analyzed
+            let analysisSourcePath = (isCheckpoint ? analysisData.sourceEpubPath : analysisData.epubPath) || '';
+            // If stored path doesn't exist, fall back to best available EPUB
+            if (!analysisSourcePath || !fsSync.existsSync(analysisSourcePath)) {
+              const cleanedPath = path.join(projectDir, 'stages', '01-cleanup', 'cleaned.epub');
+              const exportedPath = path.join(projectDir, 'source', 'exported.epub');
+              const originalPath = path.join(projectDir, 'source', 'original.epub');
+              if (fsSync.existsSync(cleanedPath)) analysisSourcePath = cleanedPath;
+              else if (fsSync.existsSync(exportedPath)) analysisSourcePath = exportedPath;
+              else if (fsSync.existsSync(originalPath)) analysisSourcePath = originalPath;
+            }
+            if (analysisSourcePath) {
+              const stats = await fs.stat(activeAnalysisPath);
+              const description = isCheckpoint
+                ? `Content analysis (partial ${completedChapters}/${totalChapters} chapters): ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`
+                : `Content analysis: ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`;
+              versions.push({
+                id: 'analysis',
+                type: 'analysis',
+                label: 'View Analysis',
+                description,
+                path: analysisSourcePath,
+                extension: path.extname(analysisSourcePath).toLowerCase().replace('.', ''),
+                modifiedAt: stats.mtime.toISOString(),
+                fileSize: stats.size,
+                editable: true,
+                icon: '🔍'
+              });
+            }
+          } catch (err) {
+            console.warn('[editor:get-versions] Failed to read analysis data:', err);
           }
         }
       } else {

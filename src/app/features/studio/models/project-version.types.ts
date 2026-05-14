@@ -16,7 +16,8 @@ export type ProjectVersionType =
   | 'original'      // Original PDF/EPUB source file
   | 'exported'      // Exported EPUB from editor (with all edits)
   | 'cleaned'       // After AI cleanup
-  | 'translated';   // After translation to another language
+  | 'translated'    // After translation to another language
+  | 'analysis';     // View content analysis results
 
 /**
  * A single version of a project's source document

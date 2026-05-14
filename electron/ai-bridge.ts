@@ -272,7 +272,7 @@ function checkAIOutput(output: string, originalText: string): { skip: boolean; r
  *
  * Handles cross-platform line endings (\r\n, \n, \r) and various paragraph markers.
  */
-function findBestBreakPoint(text: string, targetEnd: number, minStart: number): number {
+export function findBestBreakPoint(text: string, targetEnd: number, minStart: number): number {
   if (targetEnd >= text.length) return text.length;
 
   const searchStart = Math.max(targetEnd - CHUNK_SEARCH_WINDOW, minStart);
@@ -1152,7 +1152,7 @@ function isJobCancelled(jobId: string): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Metadata for tracking skipped chunks
-interface ChunkMeta {
+export interface ChunkMeta {
   chapterTitle: string;
   chunkIndex: number;
   overallChunkNumber: number;  // 1-based overall chunk number across all chapters
@@ -1554,7 +1554,7 @@ async function cleanChunkWithOpenAI(
 /**
  * Clean up a chunk of text using the configured provider with retry logic
  */
-async function cleanChunkWithProvider(
+export async function cleanChunkWithProvider(
   text: string,
   systemPrompt: string,
   config: AIProviderConfig,

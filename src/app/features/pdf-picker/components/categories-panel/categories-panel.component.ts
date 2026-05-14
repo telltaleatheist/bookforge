@@ -15,6 +15,7 @@ interface RegexMatch {
   imports: [CommonModule, FormsModule, DesktopButtonComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
+    @if (!analysisOnly()) {
     <div class="panel-header">
       <h3 class="panel-title">Categories</h3>
       <div class="panel-actions">
@@ -22,7 +23,9 @@ interface RegexMatch {
         <desktop-button variant="ghost" size="xs" (click)="deselectAll.emit()">None</desktop-button>
       </div>
     </div>
+    }
 
+    @if (!analysisOnly()) {
     <!-- Create Custom Category Section (Collapsible) -->
     <div class="create-category-section">
       <button class="section-header" (click)="toggleCreateSection()">
@@ -284,9 +287,51 @@ interface RegexMatch {
         }
       }
     </div>
+    }
 
     <div class="categories-list">
-      @if (categories().length === 0) {
+      @if (analysisOnly()) {
+        <!-- Analysis-only mode: show only analysis results -->
+        <div class="analysis-section">
+          <div class="analysis-header">
+            <span class="analysis-title">Content Analysis</span>
+            <span class="analysis-count">{{ analysisFlags().length }} flags</span>
+          </div>
+
+          @for (cat of analysisCategories(); track cat.id) {
+            @if (cat.flagCount > 0) {
+              <div class="analysis-category">
+                <div class="analysis-cat-header">
+                  <span class="category-color" [style.background]="cat.color"></span>
+                  <span class="analysis-cat-name">{{ cat.name }}</span>
+                  <span class="analysis-cat-count">{{ cat.flagCount }}</span>
+                </div>
+
+                @for (flag of getAnalysisFlagsForCategory(cat.id); track $index) {
+                  <div
+                    class="analysis-flag"
+                    [class.severity-high]="flag.severity === 'high'"
+                    [class.severity-medium]="flag.severity === 'medium'"
+                    [class.severity-low]="flag.severity === 'low'"
+                    [class.clickable]="flag.page !== undefined"
+                    (click)="onFlagClick(flag)"
+                  >
+                    <div class="flag-header">
+                      <span class="severity-dot" [class]="'dot-' + flag.severity"></span>
+                      <span class="flag-chapter">{{ flag.chapterTitle }}</span>
+                      @if (flag.page !== undefined) {
+                        <span class="flag-page">p.{{ flag.page + 1 }}</span>
+                      }
+                    </div>
+                    <div class="flag-quote">"{{ flag.quote.length > 100 ? flag.quote.substring(0, 100) + '...' : flag.quote }}"</div>
+                    <div class="flag-description">{{ flag.description }}</div>
+                  </div>
+                }
+              </div>
+            }
+          }
+        </div>
+      } @else if (categories().length === 0) {
         <div class="empty-state">
           <p>Load a PDF to see categories</p>
         </div>
@@ -321,8 +366,10 @@ interface RegexMatch {
           </div>
         }
       }
+
     </div>
 
+    @if (!analysisOnly()) {
     <!-- Context Menu -->
     @if (contextMenu()) {
       <div
@@ -358,6 +405,7 @@ interface RegexMatch {
         <span>Excluded: <strong>{{ excludedChars() | number }}</strong></span>
       </div>
     </div>
+    }
   `,
   styles: [`
     @use '../../../../creamsicle-desktop/styles/variables' as *;
@@ -996,6 +1044,120 @@ interface RegexMatch {
         color: var(--text-primary);
       }
     }
+
+    /* Analysis Results Section */
+    .analysis-section {
+      border-top: 1px solid var(--border-subtle);
+      margin-top: var(--ui-spacing-sm);
+      padding-top: var(--ui-spacing-sm);
+    }
+
+    .analysis-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+    }
+
+    .analysis-title {
+      font-size: var(--ui-font-sm);
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .analysis-count {
+      font-size: var(--ui-font-xs);
+      color: var(--text-secondary);
+      background: var(--bg-subtle);
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+
+    .analysis-category {
+      margin-bottom: var(--ui-spacing-sm);
+    }
+
+    .analysis-cat-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px var(--ui-spacing-md);
+      font-size: var(--ui-font-sm);
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .analysis-cat-count {
+      margin-left: auto;
+      font-size: var(--ui-font-xs);
+      color: var(--text-secondary);
+    }
+
+    .analysis-flag {
+      padding: 6px var(--ui-spacing-md) 6px calc(var(--ui-spacing-md) + 16px);
+      border-left: 2px solid transparent;
+      cursor: default;
+
+      &.severity-high { border-left-color: #B71C1C; }
+      &.severity-medium { border-left-color: #FB8C00; }
+      &.severity-low { border-left-color: #7B1FA2; }
+
+      &:hover {
+        background: var(--bg-hover);
+      }
+
+      &.clickable {
+        cursor: pointer;
+
+        &:hover {
+          background: var(--accent-subtle);
+        }
+      }
+    }
+
+    .flag-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 2px;
+    }
+
+    .severity-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+
+      &.dot-high { background: #B71C1C; }
+      &.dot-medium { background: #FB8C00; }
+      &.dot-low { background: #7B1FA2; }
+    }
+
+    .flag-chapter {
+      font-size: 10px;
+      color: var(--text-tertiary);
+    }
+
+    .flag-page {
+      margin-left: auto;
+      font-size: 9px;
+      color: #ff7b54;
+      font-weight: 600;
+    }
+
+    .flag-quote {
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-style: italic;
+      line-height: 1.4;
+      margin-bottom: 2px;
+    }
+
+    .flag-description {
+      font-size: 10px;
+      color: var(--text-tertiary);
+      line-height: 1.3;
+    }
   `],
 })
 export class CategoriesPanelComponent {
@@ -1018,6 +1180,27 @@ export class CategoriesPanelComponent {
   regexMatches = input<RegexMatch[]>([]);
   regexMatchCount = input<number>(0);
   isEditing = input<boolean>(false);  // True when editing existing category
+
+  // Analysis inputs
+  analysisOnly = input<boolean>(false);
+  analysisFlags = input<Array<{
+    categoryId: string;
+    categoryName: string;
+    categoryColor: string;
+    quote: string;
+    description: string;
+    severity: 'low' | 'medium' | 'high';
+    chapterId: string;
+    chapterTitle: string;
+    page?: number;
+  }>>([]);
+  analysisCategories = input<Array<{
+    id: string;
+    name: string;
+    color: string;
+    enabled: boolean;
+    flagCount: number;
+  }>>([]);
 
   // Filter inputs
   regexCategoryFilter = input<string[]>([]);  // Empty = all categories
@@ -1062,6 +1245,9 @@ export class CategoriesPanelComponent {
   regexPageRangeStartChange = output<number>();
   regexPageRangeEndChange = output<number>();
   regexSpecificPagesChange = output<string>();
+
+  // Analysis flag navigation
+  navigateToFlag = output<{ page: number }>();
 
   // Create section state (can be controlled by parent)
   createSectionExpandedChange = output<boolean>();
@@ -1207,6 +1393,22 @@ export class CategoriesPanelComponent {
 
   isCustomCategory(categoryId: string): boolean {
     return categoryId.startsWith('custom_sample_') || categoryId.startsWith('custom_regex_');
+  }
+
+  getAnalysisFlagsForCategory(categoryId: string): Array<{
+    quote: string;
+    description: string;
+    severity: string;
+    chapterTitle: string;
+    page?: number;
+  }> {
+    return this.analysisFlags().filter(f => f.categoryId === categoryId);
+  }
+
+  onFlagClick(flag: { page?: number }): void {
+    if (flag.page !== undefined) {
+      this.navigateToFlag.emit({ page: flag.page });
+    }
   }
 
   onCategoryRightClick(event: MouseEvent, categoryId: string): void {

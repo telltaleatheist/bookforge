@@ -126,6 +126,7 @@ export interface ManifestPipeline {
   translations?: Record<string, TranslationStage>;  // Keyed by language code
   tts?: Record<string, TTSStage>;                   // Keyed by language code
   bilingualAssembly?: Record<string, BilingualAssemblyStage>;  // Keyed by lang pair
+  analysis?: AnalysisStage;
 }
 
 export interface CleanupStage {
@@ -184,6 +185,15 @@ export interface BilingualAssemblyStage {
   targetLang: string;
   pauseDuration?: number;     // Pause between source/target in ms
   gapDuration?: number;       // Gap between sentence pairs in ms
+}
+
+export interface AnalysisStage {
+  status: PipelineStageStatus;
+  outputPath?: string;        // Relative: "stages/04-analysis/analysis.json"
+  completedAt?: string;
+  error?: string;
+  model?: string;             // AI model used
+  flagCount?: number;         // Total flags found
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
