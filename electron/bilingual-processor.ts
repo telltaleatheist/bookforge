@@ -875,7 +875,7 @@ export async function generateMonolingualEpub(
   title: string,
   lang: string,
   outputPath: string,
-  options?: { includeBookforgeMarker?: boolean }
+  options?: { includeBookforgeMarker?: boolean; coverPath?: string }
 ): Promise<string> {
   const allSentences = sentences;
 
@@ -949,6 +949,17 @@ export async function generateMonolingualEpub(
     );
 
     await createEpubZip(tempDir, outputPath);
+
+    // Embed cover if provided
+    if (options?.coverPath) {
+      try {
+        const { embedCoverInEpub } = await import('./epub-processor.js');
+        await embedCoverInEpub(outputPath, options.coverPath);
+      } catch (err) {
+        console.warn(`[BILINGUAL] Failed to embed cover in monolingual EPUB:`, err);
+      }
+    }
+
     console.log(`[BILINGUAL] Created monolingual EPUB with ${sentences.length} sentences: ${outputPath}`);
     return outputPath;
   } finally {
@@ -976,7 +987,7 @@ export async function generateChapteredEpub(
   bookTitle: string,
   lang: string,
   outputPath: string,
-  options?: { includeBookforgeMarker?: boolean; flattenHeadings?: boolean }
+  options?: { includeBookforgeMarker?: boolean; flattenHeadings?: boolean; coverPath?: string }
 ): Promise<string> {
   const epubDir = path.dirname(outputPath);
   const tempDir = path.join(epubDir, '.epub-temp-' + crypto.randomBytes(4).toString('hex'));
@@ -1083,6 +1094,17 @@ ${navPoints.join('\n')}
     );
 
     await createEpubZip(tempDir, outputPath);
+
+    // Embed cover if provided
+    if (options?.coverPath) {
+      try {
+        const { embedCoverInEpub } = await import('./epub-processor.js');
+        await embedCoverInEpub(outputPath, options.coverPath);
+      } catch (err) {
+        console.warn(`[BILINGUAL] Failed to embed cover in chaptered EPUB:`, err);
+      }
+    }
+
     const totalSentences = chapters.reduce((sum, ch) => sum + ch.sentences.length, 0);
     console.log(`[BILINGUAL] Created chaptered EPUB with ${chapters.length} chapters, ${totalSentences} sentences: ${outputPath}`);
     return outputPath;

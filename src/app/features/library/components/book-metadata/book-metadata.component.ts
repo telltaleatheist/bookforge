@@ -25,60 +25,154 @@ import type { LibraryBook } from '../../models/library.types';
             }
           </div>
 
-          <!-- Form -->
-          <div class="form-fields">
-            <label class="field">
-              <span class="field-label">Title</span>
-              <input class="field-input" [(ngModel)]="editTitle" />
-            </label>
-
-            <label class="field">
-              <span class="field-label">Subtitle</span>
-              <input class="field-input" [(ngModel)]="editSubtitle" placeholder="Optional" />
-            </label>
-
-            <label class="field">
-              <span class="field-label">Author Last</span>
-              <input class="field-input" [(ngModel)]="editAuthorLast" />
-            </label>
-            <label class="field">
-              <span class="field-label">Author First</span>
-              <input class="field-input" [(ngModel)]="editAuthorFirst" />
-            </label>
-
-            <label class="field">
-              <span class="field-label">Year</span>
-              <input class="field-input" type="number" [(ngModel)]="editYear" />
-            </label>
-            <label class="field">
-              <span class="field-label">Language</span>
-              <input class="field-input" [(ngModel)]="editLanguage" placeholder="eng" />
-            </label>
-
-            <label class="field">
-              <span class="field-label">Category</span>
-              <select class="field-input" [(ngModel)]="editCategory">
-                @for (cat of libraryService.categories(); track cat.name) {
-                  <option [value]="cat.name">{{ cat.name }}</option>
-                }
-              </select>
-            </label>
-
-            <div class="field">
-              <span class="field-label">File</span>
-              <div class="field-static">{{ book.filename }}</div>
-            </div>
-
-            <div class="field">
-              <span class="field-label">Format</span>
-              <div class="field-static format-badge">{{ book.format.toUpperCase() }}</div>
-            </div>
-
-            <div class="field">
-              <span class="field-label">Size</span>
-              <div class="field-static">{{ formatSize(book.fileSize) }}</div>
-            </div>
+          <!-- Tab bar -->
+          <div class="meta-tabs">
+            <button class="meta-tab" [class.active]="activeMetaTab() === 'details'" (click)="activeMetaTab.set('details')">Details</button>
+            <button class="meta-tab" [class.active]="activeMetaTab() === 'tags'" (click)="activeMetaTab.set('tags')">Tags</button>
           </div>
+
+          <!-- Details tab -->
+          @if (activeMetaTab() === 'details') {
+            <div class="form-fields">
+              <label class="field">
+                <span class="field-label">Title</span>
+                <input class="field-input" [(ngModel)]="editTitle" />
+              </label>
+
+              <label class="field">
+                <span class="field-label">Subtitle</span>
+                <input class="field-input" [(ngModel)]="editSubtitle" placeholder="Optional" />
+              </label>
+
+              <label class="field">
+                <span class="field-label">Author Last</span>
+                <input class="field-input" [(ngModel)]="editAuthorLast" />
+              </label>
+              <label class="field">
+                <span class="field-label">Author First</span>
+                <input class="field-input" [(ngModel)]="editAuthorFirst" />
+              </label>
+
+              <label class="field">
+                <span class="field-label">Year</span>
+                <input class="field-input" type="number" [(ngModel)]="editYear" />
+              </label>
+              <label class="field">
+                <span class="field-label">Language</span>
+                <input class="field-input" [(ngModel)]="editLanguage" placeholder="eng" />
+              </label>
+
+              <label class="field">
+                <span class="field-label">Category</span>
+                <select class="field-input" [(ngModel)]="editCategory">
+                  @for (cat of libraryService.categories(); track cat.name) {
+                    <option [value]="cat.name">{{ cat.name }}</option>
+                  }
+                </select>
+              </label>
+
+              <div class="field">
+                <span class="field-label">File</span>
+                <div class="field-static">{{ book.filename }}</div>
+              </div>
+
+              <div class="field">
+                <span class="field-label">Format</span>
+                <div class="field-static format-badge">{{ book.format.toUpperCase() }}</div>
+              </div>
+
+              <div class="field">
+                <span class="field-label">Size</span>
+                <div class="field-static">{{ formatSize(book.fileSize) }}</div>
+              </div>
+
+              <!-- Inline tags -->
+              <div class="field">
+                <span class="field-label">Tags</span>
+                <div class="tag-editor" (click)="focusTagInput($event)">
+                  @for (tag of book.tags || []; track tag) {
+                    <span class="tag-pill">
+                      {{ tag }}
+                      <button class="tag-remove" (click)="removeTag(tag)">&times;</button>
+                    </span>
+                  }
+                  <input
+                    class="tag-input"
+                    type="text"
+                    [ngModel]="tagInput()"
+                    (ngModelChange)="onTagInputChange($event)"
+                    (keydown.enter)="addTag($event)"
+                    (keydown.Comma)="addTag($event)"
+                    (keydown.backspace)="onTagBackspace()"
+                    placeholder="Add tag..."
+                  />
+                </div>
+                @if (tagSuggestions().length > 0) {
+                  <div class="tag-suggestions">
+                    @for (s of tagSuggestions(); track s) {
+                      <button class="tag-suggestion" (click)="selectSuggestion(s)">{{ s }}</button>
+                    }
+                  </div>
+                }
+              </div>
+            </div>
+          }
+
+          <!-- Tags tab -->
+          @if (activeMetaTab() === 'tags') {
+            <div class="form-fields">
+              <!-- Current book tags -->
+              <div class="field">
+                <span class="field-label">Book Tags</span>
+                <div class="tag-editor" (click)="focusTagInput($event)">
+                  @for (tag of book.tags || []; track tag) {
+                    <span class="tag-pill">
+                      {{ tag }}
+                      <button class="tag-remove" (click)="removeTag(tag)">&times;</button>
+                    </span>
+                  }
+                  <input
+                    class="tag-input"
+                    type="text"
+                    [ngModel]="tagInput()"
+                    (ngModelChange)="onTagInputChange($event)"
+                    (keydown.enter)="addTag($event)"
+                    (keydown.Comma)="addTag($event)"
+                    (keydown.backspace)="onTagBackspace()"
+                    placeholder="Add tag..."
+                  />
+                </div>
+                @if (tagSuggestions().length > 0) {
+                  <div class="tag-suggestions">
+                    @for (s of tagSuggestions(); track s) {
+                      <button class="tag-suggestion" (click)="selectSuggestion(s)">{{ s }}</button>
+                    }
+                  </div>
+                }
+              </div>
+
+              <!-- Previously used tags cloud -->
+              @if (recentTags().length > 0) {
+                <div class="field">
+                  <span class="field-label">Previously Used</span>
+                  <div class="tag-cloud">
+                    @for (tag of recentTags(); track tag) {
+                      <button
+                        class="tag-cloud-pill"
+                        [class.applied]="book.tags?.includes(tag)"
+                        (click)="toggleCloudTag(tag)"
+                      >
+                        @if (book.tags?.includes(tag)) {
+                          <span class="tag-check">&#10003;</span>
+                        }
+                        {{ tag }}
+                      </button>
+                    }
+                  </div>
+                </div>
+              }
+            </div>
+          }
         </div>
 
         <!-- Pinned Actions -->
@@ -188,6 +282,71 @@ import type { LibraryBook } from '../../models/library.types';
       opacity: 0.6;
     }
 
+    .meta-tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid color-mix(in srgb, var(--border-default) 50%, transparent);
+      flex-shrink: 0;
+    }
+
+    .meta-tab {
+      flex: 1;
+      padding: 6px 8px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      font-weight: 500;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s ease;
+    }
+
+    .meta-tab:hover {
+      color: var(--text-primary);
+    }
+
+    .meta-tab.active {
+      color: var(--accent-primary);
+      border-bottom-color: var(--accent-primary);
+    }
+
+    .tag-cloud {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .tag-cloud-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 3px 8px;
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 0.7rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .tag-cloud-pill:hover {
+      border-color: var(--accent-primary);
+      color: var(--accent-primary);
+    }
+
+    .tag-cloud-pill.applied {
+      background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+      border-color: var(--accent-primary);
+      color: var(--accent-primary);
+    }
+
+    .tag-check {
+      font-size: 0.6rem;
+      font-weight: 700;
+    }
+
     .form-fields {
       display: flex;
       flex-direction: column;
@@ -245,6 +404,87 @@ import type { LibraryBook } from '../../models/library.types';
       font-size: 0.65rem;
       font-weight: 700;
       letter-spacing: 0.05em;
+    }
+
+    .tag-editor {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: flex-start;
+      align-content: flex-start;
+      min-height: 64px;
+      padding: 6px;
+      background: var(--bg-default);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      cursor: text;
+      transition: border-color 0.15s ease;
+    }
+
+    .tag-editor:focus-within {
+      border-color: var(--accent-primary);
+    }
+
+    .tag-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 3px 8px;
+      background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
+      color: var(--accent-primary);
+      border-radius: 12px;
+      font-size: 0.7rem;
+      white-space: nowrap;
+      line-height: 1.3;
+    }
+
+    .tag-remove {
+      background: none;
+      border: none;
+      color: var(--accent-primary);
+      cursor: pointer;
+      font-size: 0.8rem;
+      padding: 0 2px;
+      opacity: 0.6;
+      line-height: 1;
+    }
+
+    .tag-remove:hover { opacity: 1; }
+
+    .tag-input {
+      border: none;
+      background: transparent;
+      outline: none;
+      flex: 1;
+      min-width: 60px;
+      color: var(--text-primary);
+      font-size: 0.75rem;
+      padding: 3px 4px;
+      line-height: 1.3;
+    }
+
+    .tag-input::placeholder { color: var(--text-tertiary); }
+
+    .tag-suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 2px;
+    }
+
+    .tag-suggestion {
+      padding: 2px 8px;
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      background: var(--bg-elevated);
+      color: var(--text-secondary);
+      font-size: 0.65rem;
+      cursor: pointer;
+    }
+
+    .tag-suggestion:hover {
+      border-color: var(--accent-primary);
+      color: var(--accent-primary);
     }
 
     .empty-hint {
@@ -342,27 +582,52 @@ export class BookMetadataComponent {
   saveWarning = signal<string | null>(null);
   coverPreview = signal<string | null>(null);
   private pendingCoverData: string | null = null;
+  private lastBookPath: string | null = null;
+
+  // Meta tab
+  readonly activeMetaTab = signal<'details' | 'tags'>('details');
+  readonly recentTags = computed(() => this.libraryService.allTags().slice(0, 25));
+
+  // Tag editor
+  readonly tagInput = signal('');
+  readonly tagSuggestions = computed(() => {
+    const input = this.tagInput().toLowerCase().trim();
+    if (!input) return [];
+    const currentTags = new Set(this.libraryService.selectedBook()?.tags || []);
+    return this.libraryService.allTags()
+      .filter(t => t.toLowerCase().includes(input) && !currentTags.has(t))
+      .slice(0, 8);
+  });
 
   constructor() {
-    // Sync form fields when selected book changes
+    // Sync form fields when a different book is selected
     effect(() => {
       const book = this.libraryService.selectedBook();
       if (book) {
-        this.editTitle = book.title || '';
-        this.editSubtitle = book.subtitle || '';
-        this.editAuthorFirst = book.authorFirst || '';
-        this.editAuthorLast = book.authorLast || '';
-        this.editYear = book.year || null;
-        this.editLanguage = book.language || '';
-        this.editCategory = book.category || 'Uncategorized';
-        this.coverPreview.set(null);
-        this.saveWarning.set(null);
-        this.pendingCoverData = null;
+        const pathChanged = book.relativePath !== this.lastBookPath;
+        this.lastBookPath = book.relativePath;
 
-        // Load cover if not already loaded
-        if (!book.coverData) {
-          this.loadCover(book.relativePath);
+        if (pathChanged) {
+          this.editTitle = book.title || '';
+          this.editSubtitle = book.subtitle || '';
+          this.editAuthorFirst = book.authorFirst || '';
+          this.editAuthorLast = book.authorLast || '';
+          this.editYear = book.year || null;
+          this.editLanguage = book.language || '';
+          this.editCategory = book.category || 'Uncategorized';
+          this.coverPreview.set(null);
+          this.saveWarning.set(null);
+          this.pendingCoverData = null;
+          this.tagInput.set('');
+          this.activeMetaTab.set('details');
+
+          // Load cover if not already loaded
+          if (!book.coverData) {
+            this.loadCover(book.relativePath);
+          }
         }
+      } else {
+        this.lastBookPath = null;
       }
     });
   }
@@ -461,5 +726,71 @@ export class BookMetadataComponent {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  // ─── Tag Editor ───
+
+  focusTagInput(event: MouseEvent): void {
+    const target = event.target as HTMLElement;
+    if (target.tagName === 'BUTTON') return;
+    const container = target.closest('.tag-editor') as HTMLElement;
+    const input = container?.querySelector('.tag-input') as HTMLInputElement;
+    input?.focus();
+  }
+
+  onTagInputChange(value: string): void {
+    this.tagInput.set(value);
+  }
+
+  async addTag(event: Event): Promise<void> {
+    event.preventDefault();
+    const raw = this.tagInput().trim().replace(/,$/, '').trim().toLowerCase();
+    if (!raw) return;
+    const book = this.libraryService.selectedBook();
+    if (!book) return;
+    const current = book.tags || [];
+    if (current.includes(raw)) {
+      this.tagInput.set('');
+      return;
+    }
+    await this.libraryService.updateTags(book.relativePath, [...current, raw]);
+    this.tagInput.set('');
+  }
+
+  async removeTag(tag: string): Promise<void> {
+    const book = this.libraryService.selectedBook();
+    if (!book) return;
+    const newTags = (book.tags || []).filter(t => t !== tag);
+    await this.libraryService.updateTags(book.relativePath, newTags);
+  }
+
+  async selectSuggestion(tag: string): Promise<void> {
+    const book = this.libraryService.selectedBook();
+    if (!book) return;
+    const current = book.tags || [];
+    if (current.includes(tag)) return;
+    await this.libraryService.updateTags(book.relativePath, [...current, tag]);
+    this.tagInput.set('');
+  }
+
+  async onTagBackspace(): Promise<void> {
+    if (this.tagInput()) return;
+    const book = this.libraryService.selectedBook();
+    if (!book) return;
+    const current = book.tags || [];
+    if (current.length > 0) {
+      await this.libraryService.updateTags(book.relativePath, current.slice(0, -1));
+    }
+  }
+
+  async toggleCloudTag(tag: string): Promise<void> {
+    const book = this.libraryService.selectedBook();
+    if (!book) return;
+    const current = book.tags || [];
+    if (current.includes(tag)) {
+      await this.libraryService.updateTags(book.relativePath, current.filter(t => t !== tag));
+    } else {
+      await this.libraryService.updateTags(book.relativePath, [...current, tag]);
+    }
   }
 }

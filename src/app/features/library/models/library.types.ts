@@ -13,6 +13,7 @@ export interface LibraryBook {
   fileSize: number;
   coverData?: string;        // base64 data URL (loaded on demand)
   dateAdded: number;
+  tags?: string[];
 }
 
 export interface Category {

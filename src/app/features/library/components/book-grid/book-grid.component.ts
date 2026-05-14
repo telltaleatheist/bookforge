@@ -64,6 +64,22 @@ import type { LibraryBook } from '../../models/library.types';
         </div>
       </div>
 
+      <!-- Tag filter bar -->
+      @if (tagBarTags().length > 0) {
+        <div class="tag-filter-bar">
+          <button class="tag-filter-pill"
+            [class.active]="!libraryService.activeTag()"
+            (click)="libraryService.setActiveTag(null)"
+          >All</button>
+          @for (entry of tagBarTags(); track entry.tag) {
+            <button class="tag-filter-pill"
+              [class.active]="libraryService.activeTag() === entry.tag"
+              (click)="libraryService.setActiveTag(entry.tag)"
+            >{{ entry.tag }} ({{ entry.count }})</button>
+          }
+        </div>
+      }
+
       <!-- Grid -->
       @if (libraryService.filteredBooks().length > 0) {
         <div
@@ -244,6 +260,43 @@ import type { LibraryBook } from '../../models/library.types';
       }
     }
 
+    .tag-filter-bar {
+      display: flex;
+      gap: 6px;
+      padding: 6px 12px;
+      border-bottom: 1px solid color-mix(in srgb, var(--border-default) 50%, transparent);
+      overflow-x: auto;
+      flex-shrink: 0;
+    }
+
+    .tag-filter-bar::-webkit-scrollbar { display: none; }
+
+    .tag-filter-pill {
+      flex-shrink: 0;
+      padding: 3px 10px;
+      border: 1px solid var(--border-default);
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 0.7rem;
+      font-weight: 500;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .tag-filter-pill:hover {
+      border-color: var(--accent-primary);
+      color: var(--text-primary);
+    }
+
+    .tag-filter-pill.active {
+      background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
+      border-color: var(--accent-primary);
+      color: var(--accent-primary);
+      font-weight: 600;
+    }
+
     .book-grid {
       display: flex;
       flex-wrap: wrap;
@@ -353,6 +406,13 @@ export class BookGridComponent implements OnDestroy {
   readonly bookGridRef = viewChild<ElementRef<HTMLElement>>('bookGrid');
 
   selectedFormat = '';
+
+  readonly tagBarTags = computed(() => {
+    const counts = this.libraryService.tagBookCounts();
+    return Object.entries(counts)
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => a.tag.localeCompare(b.tag));
+  });
 
   // Book context menu
   bookContextMenuVisible = signal(false);

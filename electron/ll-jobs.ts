@@ -996,6 +996,19 @@ export async function runLLTranslation(
       const { generateChapteredEpub: flushGenerateEpub } = await import('./bilingual-processor.js');
       const flushBookTitle = config.title || 'Book';
 
+      // Resolve cover path from manifest for EPUB embedding
+      let flushCoverPath: string | undefined;
+      try {
+        const manifestPath = path.join(config.projectDir, 'manifest.json');
+        const manifestRaw = await fs.readFile(manifestPath, 'utf-8');
+        const manifest = JSON.parse(manifestRaw);
+        if (manifest?.metadata?.coverPath) {
+          const libraryRoot = path.resolve(config.projectDir, '..', '..');
+          const absCover = path.join(libraryRoot, manifest.metadata.coverPath);
+          try { await fs.access(absCover); flushCoverPath = absCover; } catch { /* missing */ }
+        }
+      } catch { /* no manifest or parse error */ }
+
       // Test mode: track global sentence limit
       const totalSentenceLimit = (config.testMode && config.testModeChunks && config.testModeChunks > 0)
         ? config.testModeChunks : Infinity;
@@ -1068,8 +1081,8 @@ export async function runLLTranslation(
           // Flush source and target EPUBs
           const sourceChaptersForFlush = flushChapters.map(ch => ({ title: ch.title, sentences: ch.sourceSentences }));
           const targetChaptersForFlush = flushChapters.map(ch => ({ title: ch.title, sentences: ch.translatedSentences }));
-          await flushGenerateEpub(sourceChaptersForFlush, flushBookTitle, config.sourceLang, flushSourceEpubPath, { flattenHeadings: true });
-          await flushGenerateEpub(targetChaptersForFlush, `${flushBookTitle} (${config.targetLang.toUpperCase()})`, config.targetLang, flushTargetEpubPath, { flattenHeadings: true });
+          await flushGenerateEpub(sourceChaptersForFlush, flushBookTitle, config.sourceLang, flushSourceEpubPath, { flattenHeadings: true, coverPath: flushCoverPath });
+          await flushGenerateEpub(targetChaptersForFlush, `${flushBookTitle} (${config.targetLang.toUpperCase()})`, config.targetLang, flushTargetEpubPath, { flattenHeadings: true, coverPath: flushCoverPath });
 
           // Flush sentence caches
           const flushTotalSource = flushChapters.reduce((sum, ch) => sum + ch.sourceSentences.length, 0);
@@ -1205,6 +1218,21 @@ export async function runLLTranslation(
     const { generateChapteredEpub } = await import('./bilingual-processor.js');
     const bookTitle = config.title || 'Book';
 
+    // Resolve cover path from manifest for EPUB embedding
+    let resolvedCoverPath: string | undefined;
+    if (config.projectDir) {
+      try {
+        const manifestPath = path.join(config.projectDir, 'manifest.json');
+        const manifestRaw = await fs.readFile(manifestPath, 'utf-8');
+        const manifest = JSON.parse(manifestRaw);
+        if (manifest?.metadata?.coverPath) {
+          const libraryRoot = path.resolve(config.projectDir, '..', '..');
+          const absCover = path.join(libraryRoot, manifest.metadata.coverPath);
+          try { await fs.access(absCover); resolvedCoverPath = absCover; } catch { /* missing */ }
+        }
+      } catch { /* no manifest or parse error */ }
+    }
+
     // Source EPUB (e.g., en.epub)
     const sourceChapters = validChapters.map(ch => ({
       title: ch.title,
@@ -1215,7 +1243,7 @@ export async function runLLTranslation(
       bookTitle,
       config.sourceLang,
       sourceEpubPath,
-      { flattenHeadings: true }
+      { flattenHeadings: true, coverPath: resolvedCoverPath }
     );
 
     // Target EPUB (e.g., de.epub) — use translated first sentence as chapter title
@@ -1228,7 +1256,7 @@ export async function runLLTranslation(
       `${bookTitle} (${config.targetLang.toUpperCase()})`,
       config.targetLang,
       targetEpubPath,
-      { flattenHeadings: true }
+      { flattenHeadings: true, coverPath: resolvedCoverPath }
     );
 
     console.log(`[LL-TRANSLATION] Generated ${config.sourceLang}.epub and ${config.targetLang}.epub with ${validChapters.length} chapters, ${totalSourceSentences} sentences each`);

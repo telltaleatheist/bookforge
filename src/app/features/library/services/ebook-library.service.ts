@@ -18,6 +18,7 @@ export class EbookLibraryService {
   private readonly _sortBy = signal<'title' | 'author' | 'year' | 'dateAdded'>('dateAdded');
   private readonly _sortAsc = signal(false);
   private readonly _formatFilter = signal<string[]>([]);
+  private readonly _activeTag = signal<string | null>(null);
   private readonly _ebookMetaAvailable = signal(false);
   private readonly _selectedBooks = signal<Set<string>>(new Set());
 
@@ -30,6 +31,7 @@ export class EbookLibraryService {
   readonly sortBy = computed(() => this._sortBy());
   readonly sortAsc = computed(() => this._sortAsc());
   readonly formatFilter = computed(() => this._formatFilter());
+  readonly activeTag = computed(() => this._activeTag());
   readonly ebookMetaAvailable = computed(() => this._ebookMetaAvailable());
   readonly selectedBookPath = computed(() => this._selectedBookPath());
   readonly selectedBooks = computed(() => this._selectedBooks());
@@ -55,6 +57,12 @@ export class EbookLibraryService {
       result = result.filter(b => formats.includes(b.format));
     }
 
+    // Tag filter
+    const tag = this._activeTag();
+    if (tag) {
+      result = result.filter(b => b.tags?.includes(tag));
+    }
+
     // Search
     const query = this._searchQuery().toLowerCase();
     if (query) {
@@ -62,7 +70,8 @@ export class EbookLibraryService {
         b.title.toLowerCase().includes(query) ||
         (b.authorFull?.toLowerCase().includes(query)) ||
         (b.authorLast?.toLowerCase().includes(query)) ||
-        (b.authorFirst?.toLowerCase().includes(query))
+        (b.authorFirst?.toLowerCase().includes(query)) ||
+        (b.tags?.some(t => t.toLowerCase().includes(query)))
       );
     }
 
@@ -91,6 +100,9 @@ export class EbookLibraryService {
     return result;
   });
 
+  private readonly _allTags = signal<string[]>([]);
+  readonly allTags = computed(() => this._allTags());
+
   readonly bookCount = computed(() => this._books().length);
 
   readonly categoryBookCounts = computed(() => {
@@ -109,6 +121,23 @@ export class EbookLibraryService {
     return Array.from(formats).sort();
   });
 
+  readonly tagBookCounts = computed(() => {
+    const counts: Record<string, number> = {};
+    let books = this._books();
+    const category = this._activeCategory();
+    if (category !== 'All Books') {
+      books = books.filter(b => b.category === category);
+    }
+    for (const book of books) {
+      if (book.tags) {
+        for (const tag of book.tags) {
+          counts[tag] = (counts[tag] || 0) + 1;
+        }
+      }
+    }
+    return counts;
+  });
+
   async init(): Promise<void> {
     this._loading.set(true);
     try {
@@ -118,6 +147,7 @@ export class EbookLibraryService {
       }
       await this.loadBooks();
       await this.loadCategories();
+      await this.loadAllTags();
     } finally {
       this._loading.set(false);
     }
@@ -395,6 +425,11 @@ export class EbookLibraryService {
 
   setActiveCategory(category: string): void {
     this._activeCategory.set(category);
+    this._activeTag.set(null);
+  }
+
+  setActiveTag(tag: string | null): void {
+    this._activeTag.set(tag);
   }
 
   toggleSortDir(): void {
@@ -412,5 +447,23 @@ export class EbookLibraryService {
 
   setFormatFilter(formats: string[]): void {
     this._formatFilter.set(formats);
+  }
+
+  async loadAllTags(): Promise<void> {
+    const result = await this.electronService.ebookLibraryGetAllTags();
+    if (result.success && result.data) {
+      this._allTags.set(result.data.tags);
+    }
+  }
+
+  async updateTags(relativePath: string, tags: string[]): Promise<void> {
+    const result = await this.electronService.ebookLibraryUpdateTags(relativePath, tags);
+    if (result.success) {
+      // Update local state immediately
+      this._books.update(books =>
+        books.map(b => b.relativePath === relativePath ? { ...b, tags } : b)
+      );
+      await this.loadAllTags();
+    }
   }
 }

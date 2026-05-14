@@ -1308,6 +1308,99 @@ function escapeXml(text: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Embed Cover in Existing EPUB
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Add or replace a cover image in an existing EPUB file.
+ * - If the EPUB already has a cover entry in the OPF, replaces the image data
+ * - If the EPUB has no cover entry, adds the image file, OPF manifest item, and meta tag
+ * - Writes via temp file for atomicity
+ */
+export async function embedCoverInEpub(epubPath: string, coverImagePath: string): Promise<void> {
+  const coverData = await fs.readFile(coverImagePath);
+  const coverExt = path.extname(coverImagePath).toLowerCase().replace('.', '') || 'jpg';
+  const mediaType = coverExt === 'png' ? 'image/png'
+    : coverExt === 'gif' ? 'image/gif'
+    : coverExt === 'webp' ? 'image/webp'
+    : 'image/jpeg';
+
+  const processor = new EpubProcessor();
+  let structure: EpubStructure;
+  try {
+    structure = await processor.open(epubPath);
+  } catch (err) {
+    processor.close();
+    throw err;
+  }
+
+  const zipWriter = new ZipWriter();
+  const entries = (processor as any).zipReader?.getEntries() || [];
+  const rootPath = structure.rootPath; // e.g. 'OEBPS' or ''
+
+  // Determine if EPUB already has a cover
+  const existingCoverHref = structure.metadata.coverPath; // relative to rootPath
+  const existingCoverEntry = existingCoverHref
+    ? (rootPath ? `${rootPath}/${existingCoverHref}` : existingCoverHref)
+    : null;
+
+  // Determine new cover entry path (used when no existing cover)
+  const newCoverFilename = `cover.${coverExt === 'jpeg' ? 'jpg' : coverExt}`;
+  const newCoverHref = newCoverFilename; // relative to rootPath for OPF
+  const newCoverEntry = rootPath ? `${rootPath}/${newCoverFilename}` : newCoverFilename;
+
+  let coverWritten = false;
+
+  for (const entryName of entries) {
+    // Replace existing cover image data
+    if (existingCoverEntry && entryName === existingCoverEntry) {
+      zipWriter.addFile(entryName, coverData, true);
+      coverWritten = true;
+      continue;
+    }
+
+    // Modify OPF to add cover metadata if EPUB has no existing cover
+    if (!existingCoverEntry && entryName === structure.opfPath) {
+      let opfXml = await processor.readFile(entryName);
+
+      // Add <item> to manifest
+      const manifestCloseMatch = opfXml.match(/<\/manifest>/i);
+      if (manifestCloseMatch && manifestCloseMatch.index !== undefined) {
+        const itemLine = `    <item id="cover-image" href="${newCoverHref}" media-type="${mediaType}"/>\n  `;
+        opfXml = opfXml.slice(0, manifestCloseMatch.index) + itemLine + opfXml.slice(manifestCloseMatch.index);
+      }
+
+      // Add <meta name="cover" content="cover-image"/> to metadata
+      const hasCoverMeta = /<meta[^>]+name\s*=\s*["']cover["']/i.test(opfXml);
+      if (!hasCoverMeta) {
+        const metadataCloseMatch = opfXml.match(/<\/metadata>/i);
+        if (metadataCloseMatch && metadataCloseMatch.index !== undefined) {
+          const metaLine = `    <meta name="cover" content="cover-image"/>\n  `;
+          opfXml = opfXml.slice(0, metadataCloseMatch.index) + metaLine + opfXml.slice(metadataCloseMatch.index);
+        }
+      }
+
+      zipWriter.addFile(entryName, Buffer.from(opfXml, 'utf8'));
+      continue;
+    }
+
+    // Copy all other entries as-is
+    const data = await processor.readBinaryFile(entryName);
+    const compress = entryName !== 'mimetype';
+    zipWriter.addFile(entryName, data, compress);
+  }
+
+  // If no existing cover was found, add the new cover file as a new entry
+  if (!existingCoverEntry) {
+    zipWriter.addFile(newCoverEntry, coverData, true);
+  }
+
+  processor.close();
+
+  await zipWriter.write(epubPath);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Export EPUB as Book (standalone — does not use module-level singleton)
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -444,8 +444,9 @@ export class PDFAnalyzer {
 
     // Get page dimensions (including origin for coordinate transformation)
     for (let pageNum = 0; pageNum < pageCount; pageNum++) {
+      let page;
       try {
-        const page = this.doc.loadPage(pageNum);
+        page = this.doc.loadPage(pageNum);
         const bounds = page.getBounds();
         this.pageDimensions.push({
           width: bounds[2] - bounds[0],
@@ -467,6 +468,8 @@ export class PDFAnalyzer {
         } else {
           throw err;
         }
+      } finally {
+        try { page?.destroy(); } catch { /* ignore */ }
       }
     }
 
@@ -680,8 +683,9 @@ export class PDFAnalyzer {
       sendProgress('loading', `Document has ${pc} pages, getting dimensions...`);
 
       for (let pageNum = 0; pageNum < pc; pageNum++) {
+        let page;
         try {
-          const page = this.doc.loadPage(pageNum);
+          page = this.doc.loadPage(pageNum);
           const bounds = page.getBounds();
           this.pageDimensions.push({
             width: bounds[2] - bounds[0],
@@ -697,6 +701,8 @@ export class PDFAnalyzer {
           } else {
             throw err;
           }
+        } finally {
+          try { page?.destroy(); } catch { /* ignore */ }
         }
       }
 
@@ -841,10 +847,16 @@ export class PDFAnalyzer {
 
     // WASM calls — hold the lock only while touching mupdf objects
     const stextData = await this.withWasmLock(() => {
-      const page = this.doc!.loadPage(pageNum);
-      const stext = page.toStructuredText('preserve-whitespace,preserve-images,preserve-spans');
-      const jsonStr = stext.asJSON(1); // scale=1 for original coordinates
-      return JSON.parse(jsonStr);
+      let page, stext;
+      try {
+        page = this.doc!.loadPage(pageNum);
+        stext = page.toStructuredText('preserve-whitespace,preserve-images,preserve-spans');
+        const jsonStr = stext.asJSON(1); // scale=1 for original coordinates
+        return JSON.parse(jsonStr);
+      } finally {
+        try { stext?.destroy(); } catch { /* ignore */ }
+        try { page?.destroy(); } catch { /* ignore */ }
+      }
     });
 
     const pageDims = this.pageDimensions[pageNum];
@@ -1214,10 +1226,16 @@ export class PDFAnalyzer {
     for (let pageNum = 0; pageNum < pageCount; pageNum++) {
       // WASM calls — hold the lock only while touching mupdf objects
       const stextData = await this.withWasmLock(() => {
-        const page = this.doc!.loadPage(pageNum);
-        const stext = page.toStructuredText('preserve-whitespace,preserve-images');
-        const jsonStr = stext.asJSON(1);
-        return JSON.parse(jsonStr);
+        let page, stext;
+        try {
+          page = this.doc!.loadPage(pageNum);
+          stext = page.toStructuredText('preserve-whitespace,preserve-images');
+          const jsonStr = stext.asJSON(1);
+          return JSON.parse(jsonStr);
+        } finally {
+          try { stext?.destroy(); } catch { /* ignore */ }
+          try { page?.destroy(); } catch { /* ignore */ }
+        }
       });
 
       for (const block of stextData.blocks || []) {
@@ -2608,61 +2626,54 @@ export class PDFAnalyzer {
       const imageRegions = redactRegions ? redactRegions.filter(r => r.isImage) : [];
       const textRegions = redactRegions ? redactRegions.filter(r => !r.isImage) : [];
 
-      // MuPDF's PDF redaction API only works on native PDFs. For EPUBs (and other
-      // non-PDF formats), applyRedactions corrupts the internal layout engine,
-      // causing distorted rendering (wrong font sizes, page dimensions, etc.).
-      // Non-PDF deletion is handled visually via SVG overlays in the viewer.
-      const isNativePdf = mimeType === 'application/pdf';
-      if (isNativePdf && textRegions.length > 0) {
-        const pdfDoc = tempDoc.asPDF();
-        if (pdfDoc) {
-          const pdfPage = pdfDoc.loadPage(pageNum) as any;
+      let pdfPage: any = null;
+      let renderPageObj: any = null;
+      let pixmap: any = null;
+      try {
+        // MuPDF's PDF redaction API only works on native PDFs. For EPUBs (and other
+        // non-PDF formats), applyRedactions corrupts the internal layout engine,
+        // causing distorted rendering (wrong font sizes, page dimensions, etc.).
+        // Non-PDF deletion is handled visually via SVG overlays in the viewer.
+        const isNativePdf = mimeType === 'application/pdf';
+        if (isNativePdf && textRegions.length > 0) {
+          const pdfDoc = tempDoc.asPDF();
+          if (pdfDoc) {
+            pdfPage = pdfDoc.loadPage(pageNum) as any;
 
-          for (const region of textRegions) {
-            const rect: [number, number, number, number] = [
-              region.x,
-              region.y,
-              region.x + region.width,
-              region.y + region.height,
-            ];
-            const annot = pdfPage.createAnnotation('Redact');
-            annot.setRect(rect);
+            for (const region of textRegions) {
+              const rect: [number, number, number, number] = [
+                region.x,
+                region.y,
+                region.x + region.width,
+                region.y + region.height,
+              ];
+              const annot = pdfPage.createAnnotation('Redact');
+              annot.setRect(rect);
+            }
+            // Apply with: no black boxes, redact images, line art, AND text
+            pdfPage.applyRedactions(false, 2, 2, 0);
           }
-          // Apply with: no black boxes, redact images, line art, AND text
-          pdfPage.applyRedactions(false, 2, 2, 0);
-        }
-      }
-
-      // Render the page (with text redactions applied if any)
-      const renderPage = tempDoc.loadPage(pageNum);
-      const matrix = mupdfLib.Matrix.scale(scale, scale);
-      const pixmap = renderPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
-
-      // Now paint over deleted images AND fill regions with background color
-      // This preserves exact text positioning while removing unwanted images
-      const hasImageOrFillRegions = imageRegions.length > 0 || (fillRegions && fillRegions.length > 0);
-      if (hasImageOrFillRegions) {
-        const width = pixmap.getWidth();
-        const height = pixmap.getHeight();
-        const n = pixmap.getNumberOfComponents();
-        const samples = pixmap.getPixels();
-
-        // Sample background color from page margins (works for yellowed/scanned pages)
-        const bgColor = this.sampleBackgroundColor(samples, width, height, n);
-
-        // Paint over deleted images with background color
-        for (const region of imageRegions) {
-          this.fillRectInPixels(samples, width, height, n, {
-            x: region.x * scale,
-            y: region.y * scale,
-            w: region.width * scale,
-            h: region.height * scale
-          }, bgColor);
         }
 
-        // Fill regions for moved blocks
-        if (fillRegions) {
-          for (const region of fillRegions) {
+        // Render the page (with text redactions applied if any)
+        renderPageObj = tempDoc.loadPage(pageNum);
+        const matrix = mupdfLib.Matrix.scale(scale, scale);
+        pixmap = renderPageObj.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+
+        // Now paint over deleted images AND fill regions with background color
+        // This preserves exact text positioning while removing unwanted images
+        const hasImageOrFillRegions = imageRegions.length > 0 || (fillRegions && fillRegions.length > 0);
+        if (hasImageOrFillRegions) {
+          const width = pixmap.getWidth();
+          const height = pixmap.getHeight();
+          const n = pixmap.getNumberOfComponents();
+          const samples = pixmap.getPixels();
+
+          // Sample background color from page margins (works for yellowed/scanned pages)
+          const bgColor = this.sampleBackgroundColor(samples, width, height, n);
+
+          // Paint over deleted images with background color
+          for (const region of imageRegions) {
             this.fillRectInPixels(samples, width, height, n, {
               x: region.x * scale,
               y: region.y * scale,
@@ -2670,22 +2681,37 @@ export class PDFAnalyzer {
               h: region.height * scale
             }, bgColor);
           }
+
+          // Fill regions for moved blocks
+          if (fillRegions) {
+            for (const region of fillRegions) {
+              this.fillRectInPixels(samples, width, height, n, {
+                x: region.x * scale,
+                y: region.y * scale,
+                w: region.width * scale,
+                h: region.height * scale
+              }, bgColor);
+            }
+          }
         }
-      }
 
-      // Apply background removal if requested (turns yellowed paper to white)
-      if (removeBackground) {
-        const width = pixmap.getWidth();
-        const height = pixmap.getHeight();
-        const n = pixmap.getNumberOfComponents();
-        const samples = pixmap.getPixels();
-        this.applyBackgroundRemoval(samples, width, height, n);
-      }
+        // Apply background removal if requested (turns yellowed paper to white)
+        if (removeBackground) {
+          const width = pixmap.getWidth();
+          const height = pixmap.getHeight();
+          const n = pixmap.getNumberOfComponents();
+          const samples = pixmap.getPixels();
+          this.applyBackgroundRemoval(samples, width, height, n);
+        }
 
-      const pngData = pixmap.asPNG();
-      // Destroy temp document to free WebAssembly memory
-      try { tempDoc.destroy(); } catch { /* ignore */ }
-      return Buffer.from(pngData).toString('base64');
+        const pngData = pixmap.asPNG();
+        return Buffer.from(pngData).toString('base64');
+      } finally {
+        try { pixmap?.destroy(); } catch { /* ignore */ }
+        try { renderPageObj?.destroy(); } catch { /* ignore */ }
+        try { pdfPage?.destroy(); } catch { /* ignore */ }
+        try { tempDoc.destroy(); } catch { /* ignore */ }
+      }
     }
 
     // No redactions - check if we have fill regions or background removal
@@ -2701,37 +2727,43 @@ export class PDFAnalyzer {
       const data = fs.readFileSync(pathToUse);
       const mimeType = getMimeType(pathToUse);
       const tempDoc = mupdfLib.Document.openDocument(data, mimeType);
-      const renderPage = tempDoc.loadPage(pageNum);
-      const matrix = mupdfLib.Matrix.scale(scale, scale);
-      const pixmap = renderPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+      let renderPageObj: any = null;
+      let pixmap: any = null;
+      try {
+        renderPageObj = tempDoc.loadPage(pageNum);
+        const matrix = mupdfLib.Matrix.scale(scale, scale);
+        pixmap = renderPageObj.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
 
-      const width = pixmap.getWidth();
-      const height = pixmap.getHeight();
-      const n = pixmap.getNumberOfComponents();
-      const samples = pixmap.getPixels();
+        const width = pixmap.getWidth();
+        const height = pixmap.getHeight();
+        const n = pixmap.getNumberOfComponents();
+        const samples = pixmap.getPixels();
 
-      // Sample background color from page margins
-      const bgColor = this.sampleBackgroundColor(samples, width, height, n);
+        // Sample background color from page margins
+        const bgColor = this.sampleBackgroundColor(samples, width, height, n);
 
-      // Fill each region with background color (scaled to render coordinates)
-      for (const region of fillRegions) {
-        this.fillRectInPixels(samples, width, height, n, {
-          x: region.x * scale,
-          y: region.y * scale,
-          w: region.width * scale,
-          h: region.height * scale
-        }, bgColor);
+        // Fill each region with background color (scaled to render coordinates)
+        for (const region of fillRegions) {
+          this.fillRectInPixels(samples, width, height, n, {
+            x: region.x * scale,
+            y: region.y * scale,
+            w: region.width * scale,
+            h: region.height * scale
+          }, bgColor);
+        }
+
+        // Apply background removal if requested (turns yellowed paper to white)
+        if (removeBackground) {
+          this.applyBackgroundRemoval(samples, width, height, n);
+        }
+
+        const pngData = pixmap.asPNG();
+        return Buffer.from(pngData).toString('base64');
+      } finally {
+        try { pixmap?.destroy(); } catch { /* ignore */ }
+        try { renderPageObj?.destroy(); } catch { /* ignore */ }
+        try { tempDoc.destroy(); } catch { /* ignore */ }
       }
-
-      // Apply background removal if requested (turns yellowed paper to white)
-      if (removeBackground) {
-        this.applyBackgroundRemoval(samples, width, height, n);
-      }
-
-      const pngData = pixmap.asPNG();
-      // Destroy temp document to free WebAssembly memory
-      try { tempDoc.destroy(); } catch { /* ignore */ }
-      return Buffer.from(pngData).toString('base64');
     }
 
     // No redactions or fills - render from cached document
@@ -2739,22 +2771,27 @@ export class PDFAnalyzer {
       throw new Error('No document loaded');
     }
 
-    const page = this.doc.loadPage(pageNum);
-    const matrix = mupdfLib.Matrix.scale(scale, scale);
-    const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+    let page, pixmap;
+    try {
+      page = this.doc.loadPage(pageNum);
+      const matrix = mupdfLib.Matrix.scale(scale, scale);
+      pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
 
-    // Apply background removal if requested (turns yellowed paper to white)
-    if (removeBackground) {
-      const width = pixmap.getWidth();
-      const height = pixmap.getHeight();
-      const n = pixmap.getNumberOfComponents();
-      const samples = pixmap.getPixels();
-      this.applyBackgroundRemoval(samples, width, height, n);
+      // Apply background removal if requested (turns yellowed paper to white)
+      if (removeBackground) {
+        const width = pixmap.getWidth();
+        const height = pixmap.getHeight();
+        const n = pixmap.getNumberOfComponents();
+        const samples = pixmap.getPixels();
+        this.applyBackgroundRemoval(samples, width, height, n);
+      }
+
+      const pngData = pixmap.asPNG();
+      return Buffer.from(pngData).toString('base64');
+    } finally {
+      try { pixmap?.destroy(); } catch { /* ignore */ }
+      try { page?.destroy(); } catch { /* ignore */ }
     }
-
-    const pngData = pixmap.asPNG();
-
-    return Buffer.from(pngData).toString('base64');
   }
 
   /**
@@ -2778,94 +2815,100 @@ export class PDFAnalyzer {
     }
 
     // Render the page normally first
-    const page = this.doc.loadPage(pageNum);
-    const matrix = mupdfLib.Matrix.scale(scale, scale);
-    const pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+    let page, pixmap;
+    try {
+      page = this.doc.loadPage(pageNum);
+      const matrix = mupdfLib.Matrix.scale(scale, scale);
+      pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
 
-    // Get pixel data
-    const width = pixmap.getWidth();
-    const height = pixmap.getHeight();
-    const n = pixmap.getNumberOfComponents(); // Should be 3 for RGB or 4 for RGBA
-    const samples = pixmap.getPixels();
+      // Get pixel data
+      const width = pixmap.getWidth();
+      const height = pixmap.getHeight();
+      const n = pixmap.getNumberOfComponents(); // Should be 3 for RGB or 4 for RGBA
+      const samples = pixmap.getPixels();
 
-    // First pass: analyze image to find background color
-    // Sample pixels from corners and edges (likely to be background)
-    const bgSamples: { r: number; g: number; b: number }[] = [];
-    const samplePositions = [
-      // Corners
-      { x: 10, y: 10 },
-      { x: width - 10, y: 10 },
-      { x: 10, y: height - 10 },
-      { x: width - 10, y: height - 10 },
-      // Edge midpoints
-      { x: width / 2, y: 10 },
-      { x: width / 2, y: height - 10 },
-      { x: 10, y: height / 2 },
-      { x: width - 10, y: height / 2 },
-    ];
+      // First pass: analyze image to find background color
+      // Sample pixels from corners and edges (likely to be background)
+      const bgSamples: { r: number; g: number; b: number }[] = [];
+      const samplePositions = [
+        // Corners
+        { x: 10, y: 10 },
+        { x: width - 10, y: 10 },
+        { x: 10, y: height - 10 },
+        { x: width - 10, y: height - 10 },
+        // Edge midpoints
+        { x: width / 2, y: 10 },
+        { x: width / 2, y: height - 10 },
+        { x: 10, y: height / 2 },
+        { x: width - 10, y: height / 2 },
+      ];
 
-    for (const pos of samplePositions) {
-      const x = Math.floor(pos.x);
-      const y = Math.floor(pos.y);
-      if (x >= 0 && x < width && y >= 0 && y < height) {
-        const idx = (y * width + x) * n;
-        const r = samples[idx];
-        const g = samples[idx + 1];
-        const b = samples[idx + 2];
-        // Only consider light pixels as potential background
-        if (r > 180 && g > 180 && b > 150) {
-          bgSamples.push({ r, g, b });
+      for (const pos of samplePositions) {
+        const x = Math.floor(pos.x);
+        const y = Math.floor(pos.y);
+        if (x >= 0 && x < width && y >= 0 && y < height) {
+          const idx = (y * width + x) * n;
+          const r = samples[idx];
+          const g = samples[idx + 1];
+          const b = samples[idx + 2];
+          // Only consider light pixels as potential background
+          if (r > 180 && g > 180 && b > 150) {
+            bgSamples.push({ r, g, b });
+          }
         }
       }
-    }
 
-    // Calculate average background color (or default to light gray if no samples)
-    let bgR = 245, bgG = 240, bgB = 220; // Default yellowish paper
-    if (bgSamples.length > 0) {
-      bgR = Math.round(bgSamples.reduce((s, p) => s + p.r, 0) / bgSamples.length);
-      bgG = Math.round(bgSamples.reduce((s, p) => s + p.g, 0) / bgSamples.length);
-      bgB = Math.round(bgSamples.reduce((s, p) => s + p.b, 0) / bgSamples.length);
-    }
-
-    // Second pass: replace background-like pixels with white
-    // A pixel is considered "background" if it's close to the detected background color
-    // and has high luminance (is light colored)
-    const tolerance = 60; // Color distance tolerance
-    const luminanceThreshold = 180; // Minimum luminance to be considered background
-
-    for (let i = 0; i < samples.length; i += n) {
-      const r = samples[i];
-      const g = samples[i + 1];
-      const b = samples[i + 2];
-
-      // Calculate luminance (perceived brightness)
-      const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-
-      // Calculate color distance from detected background
-      const dr = r - bgR;
-      const dg = g - bgG;
-      const db = b - bgB;
-      const colorDist = Math.sqrt(dr * dr + dg * dg + db * db);
-
-      // If pixel is light AND close to background color, make it white
-      if (luminance > luminanceThreshold && colorDist < tolerance) {
-        samples[i] = 255;     // R
-        samples[i + 1] = 255; // G
-        samples[i + 2] = 255; // B
-        // Keep alpha if present (samples[i + 3])
+      // Calculate average background color (or default to light gray if no samples)
+      let bgR = 245, bgG = 240, bgB = 220; // Default yellowish paper
+      if (bgSamples.length > 0) {
+        bgR = Math.round(bgSamples.reduce((s, p) => s + p.r, 0) / bgSamples.length);
+        bgG = Math.round(bgSamples.reduce((s, p) => s + p.g, 0) / bgSamples.length);
+        bgB = Math.round(bgSamples.reduce((s, p) => s + p.b, 0) / bgSamples.length);
       }
-      // Also make very light pixels white (near-white areas)
-      else if (r > 240 && g > 235 && b > 220) {
-        samples[i] = 255;
-        samples[i + 1] = 255;
-        samples[i + 2] = 255;
-      }
-    }
 
-    // The samples array is a view into the pixmap's data, so changes are reflected
-    // Now convert to PNG
-    const pngData = pixmap.asPNG();
-    return Buffer.from(pngData).toString('base64');
+      // Second pass: replace background-like pixels with white
+      // A pixel is considered "background" if it's close to the detected background color
+      // and has high luminance (is light colored)
+      const tolerance = 60; // Color distance tolerance
+      const luminanceThreshold = 180; // Minimum luminance to be considered background
+
+      for (let i = 0; i < samples.length; i += n) {
+        const r = samples[i];
+        const g = samples[i + 1];
+        const b = samples[i + 2];
+
+        // Calculate luminance (perceived brightness)
+        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        // Calculate color distance from detected background
+        const dr = r - bgR;
+        const dg = g - bgG;
+        const db = b - bgB;
+        const colorDist = Math.sqrt(dr * dr + dg * dg + db * db);
+
+        // If pixel is light AND close to background color, make it white
+        if (luminance > luminanceThreshold && colorDist < tolerance) {
+          samples[i] = 255;     // R
+          samples[i + 1] = 255; // G
+          samples[i + 2] = 255; // B
+          // Keep alpha if present (samples[i + 3])
+        }
+        // Also make very light pixels white (near-white areas)
+        else if (r > 240 && g > 235 && b > 220) {
+          samples[i] = 255;
+          samples[i + 1] = 255;
+          samples[i + 2] = 255;
+        }
+      }
+
+      // The samples array is a view into the pixmap's data, so changes are reflected
+      // Now convert to PNG
+      const pngData = pixmap.asPNG();
+      return Buffer.from(pngData).toString('base64');
+    } finally {
+      try { pixmap?.destroy(); } catch { /* ignore */ }
+      try { page?.destroy(); } catch { /* ignore */ }
+    }
   }
 
   /**
@@ -3171,54 +3214,59 @@ export class PDFAnalyzer {
     for (const [pageNum, pageOcrBlocks] of ocrByPage) {
       if (pageOcrBlocks.length === 0) continue;
 
-      const page = pdfDoc.loadPage(pageNum) as any;
-      const bounds = page.getBounds();
-      const pageHeight = bounds[3] - bounds[1];
+      let page: any = null;
+      try {
+        page = pdfDoc.loadPage(pageNum) as any;
+        const bounds = page.getBounds();
+        const pageHeight = bounds[3] - bounds[1];
 
-      // Build text content stream
-      let textContent = 'BT\n';
+        // Build text content stream
+        let textContent = 'BT\n';
 
-      for (const block of pageOcrBlocks) {
-        const escapedText = block.text
-          .replace(/\\/g, '\\\\')
-          .replace(/\(/g, '\\(')
-          .replace(/\)/g, '\\)');
+        for (const block of pageOcrBlocks) {
+          const escapedText = block.text
+            .replace(/\\/g, '\\\\')
+            .replace(/\(/g, '\\(')
+            .replace(/\)/g, '\\)');
 
-        const fontSize = Math.max(6, Math.min(block.font_size || 12, 48));
-        const x = block.x;
-        const y = pageHeight - block.y - block.height;
+          const fontSize = Math.max(6, Math.min(block.font_size || 12, 48));
+          const x = block.x;
+          const y = pageHeight - block.y - block.height;
 
-        textContent += `/F1 ${fontSize} Tf\n`;
-        textContent += `1 0 0 1 ${x.toFixed(2)} ${y.toFixed(2)} Tm\n`;
-        textContent += `(${escapedText}) Tj\n`;
-      }
-
-      textContent += 'ET\n';
-
-      // Add font to page resources
-      const pageObj = pdfDoc.findPage(pageNum);
-      const resources = pageObj.get('Resources');
-
-      let fonts = resources.get('Font');
-      if (!fonts || fonts.isNull()) {
-        fonts = pdfDoc.addObject({});
-        resources.put('Font', fonts);
-      }
-      fonts.put('F1', fontDict);
-
-      // Create and append content stream
-      const textStream = pdfDoc.addStream(textContent, {});
-      const existingContents = pageObj.get('Contents');
-
-      if (existingContents && !existingContents.isNull()) {
-        if (existingContents.isArray()) {
-          existingContents.push(textStream);
-        } else {
-          const newContents = pdfDoc.addObject([existingContents, textStream]);
-          pageObj.put('Contents', newContents);
+          textContent += `/F1 ${fontSize} Tf\n`;
+          textContent += `1 0 0 1 ${x.toFixed(2)} ${y.toFixed(2)} Tm\n`;
+          textContent += `(${escapedText}) Tj\n`;
         }
-      } else {
-        pageObj.put('Contents', textStream);
+
+        textContent += 'ET\n';
+
+        // Add font to page resources
+        const pageObj = pdfDoc.findPage(pageNum);
+        const resources = pageObj.get('Resources');
+
+        let fonts = resources.get('Font');
+        if (!fonts || fonts.isNull()) {
+          fonts = pdfDoc.addObject({});
+          resources.put('Font', fonts);
+        }
+        fonts.put('F1', fontDict);
+
+        // Create and append content stream
+        const textStream = pdfDoc.addStream(textContent, {});
+        const existingContents = pageObj.get('Contents');
+
+        if (existingContents && !existingContents.isNull()) {
+          if (existingContents.isArray()) {
+            existingContents.push(textStream);
+          } else {
+            const newContents = pdfDoc.addObject([existingContents, textStream]);
+            pageObj.put('Contents', newContents);
+          }
+        } else {
+          pageObj.put('Contents', textStream);
+        }
+      } finally {
+        try { page?.destroy(); } catch { /* ignore */ }
       }
     }
 
@@ -3299,192 +3347,197 @@ export class PDFAnalyzer {
 
       // Check if this page has deleted regions
       const pageRegions = regionsByPage.get(pageNum) || [];
-      let pixmap;
+      let page: any = null;
+      let pixmap: any = null;
 
-      if (pageRegions.length > 0 && this.pdfPath) {
-        // Separate image and text regions
-        const imageRegions = pageRegions.filter(r => r.isImage);
-        const textRegions = pageRegions.filter(r => !r.isImage);
+      try {
+        if (pageRegions.length > 0 && this.pdfPath) {
+          // Separate image and text regions
+          const imageRegions = pageRegions.filter(r => r.isImage);
+          const textRegions = pageRegions.filter(r => !r.isImage);
 
-        // Render the page first
-        const page = this.doc.loadPage(pageNum);
-        const matrix = mupdfLib.Matrix.scale(scale, scale);
-        pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+          // Render the page first
+          page = this.doc.loadPage(pageNum);
+          const matrix = mupdfLib.Matrix.scale(scale, scale);
+          pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
 
-        // Manually paint white over ALL redaction regions (both image and text)
-        // This bypasses mupdf's unreliable redaction and works at the pixel level
-        const allRegions = [...imageRegions, ...textRegions];
-        if (allRegions.length > 0) {
-          const width = pixmap.getWidth();
-          const height = pixmap.getHeight();
-          const n = pixmap.getNumberOfComponents();
-          const samples = pixmap.getPixels();
+          // Manually paint white over ALL redaction regions (both image and text)
+          // This bypasses mupdf's unreliable redaction and works at the pixel level
+          const allRegions = [...imageRegions, ...textRegions];
+          if (allRegions.length > 0) {
+            const width = pixmap.getWidth();
+            const height = pixmap.getHeight();
+            const n = pixmap.getNumberOfComponents();
+            const samples = pixmap.getPixels();
 
-          for (const region of allRegions) {
-            // Scale coordinates to match rendered resolution
-            const x1 = Math.floor(region.x * scale);
-            const y1 = Math.floor(region.y * scale);
-            const x2 = Math.ceil((region.x + region.width) * scale);
-            const y2 = Math.ceil((region.y + region.height) * scale);
+            for (const region of allRegions) {
+              // Scale coordinates to match rendered resolution
+              const x1 = Math.floor(region.x * scale);
+              const y1 = Math.floor(region.y * scale);
+              const x2 = Math.ceil((region.x + region.width) * scale);
+              const y2 = Math.ceil((region.y + region.height) * scale);
 
-            // Paint white pixels in the region
-            for (let y = Math.max(0, y1); y < Math.min(height, y2); y++) {
-              for (let x = Math.max(0, x1); x < Math.min(width, x2); x++) {
-                const idx = (y * width + x) * n;
-                samples[idx] = 255;     // R
-                samples[idx + 1] = 255; // G
-                samples[idx + 2] = 255; // B
-                if (n > 3) samples[idx + 3] = 255; // A if present
+              // Paint white pixels in the region
+              for (let y = Math.max(0, y1); y < Math.min(height, y2); y++) {
+                for (let x = Math.max(0, x1); x < Math.min(width, x2); x++) {
+                  const idx = (y * width + x) * n;
+                  samples[idx] = 255;     // R
+                  samples[idx + 1] = 255; // G
+                  samples[idx + 2] = 255; // B
+                  if (n > 3) samples[idx + 3] = 255; // A if present
+                }
               }
             }
           }
+        } else {
+          // Render page normally (no redactions needed)
+          page = this.doc.loadPage(pageNum);
+          const matrix = mupdfLib.Matrix.scale(scale, scale);
+          pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
         }
-      } else {
-        // Render page normally (no redactions needed)
-        const page = this.doc.loadPage(pageNum);
-        const matrix = mupdfLib.Matrix.scale(scale, scale);
-        pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
-      }
 
-      // Get pixel data and process to remove background
-      const width = pixmap.getWidth();
-      const height = pixmap.getHeight();
-      const n = pixmap.getNumberOfComponents();
-      const samples = pixmap.getPixels();
+        // Get pixel data and process to remove background
+        const width = pixmap.getWidth();
+        const height = pixmap.getHeight();
+        const n = pixmap.getNumberOfComponents();
+        const samples = pixmap.getPixels();
 
-      // Sample corners/edges to detect background color
-      const bgSamples: { r: number; g: number; b: number }[] = [];
-      const samplePositions = [
-        { x: 10, y: 10 },
-        { x: width - 10, y: 10 },
-        { x: 10, y: height - 10 },
-        { x: width - 10, y: height - 10 },
-        { x: width / 2, y: 10 },
-        { x: width / 2, y: height - 10 },
-        { x: 10, y: height / 2 },
-        { x: width - 10, y: height / 2 },
-      ];
+        // Sample corners/edges to detect background color
+        const bgSamples: { r: number; g: number; b: number }[] = [];
+        const samplePositions = [
+          { x: 10, y: 10 },
+          { x: width - 10, y: 10 },
+          { x: 10, y: height - 10 },
+          { x: width - 10, y: height - 10 },
+          { x: width / 2, y: 10 },
+          { x: width / 2, y: height - 10 },
+          { x: 10, y: height / 2 },
+          { x: width - 10, y: height / 2 },
+        ];
 
-      for (const pos of samplePositions) {
-        const x = Math.floor(pos.x);
-        const y = Math.floor(pos.y);
-        if (x >= 0 && x < width && y >= 0 && y < height) {
-          const idx = (y * width + x) * n;
-          const r = samples[idx];
-          const g = samples[idx + 1];
-          const b = samples[idx + 2];
-          if (r > 180 && g > 180 && b > 150) {
-            bgSamples.push({ r, g, b });
+        for (const pos of samplePositions) {
+          const x = Math.floor(pos.x);
+          const y = Math.floor(pos.y);
+          if (x >= 0 && x < width && y >= 0 && y < height) {
+            const idx = (y * width + x) * n;
+            const r = samples[idx];
+            const g = samples[idx + 1];
+            const b = samples[idx + 2];
+            if (r > 180 && g > 180 && b > 150) {
+              bgSamples.push({ r, g, b });
+            }
           }
         }
-      }
 
-      let bgR = 245, bgG = 240, bgB = 220;
-      if (bgSamples.length > 0) {
-        bgR = Math.round(bgSamples.reduce((s, p) => s + p.r, 0) / bgSamples.length);
-        bgG = Math.round(bgSamples.reduce((s, p) => s + p.g, 0) / bgSamples.length);
-        bgB = Math.round(bgSamples.reduce((s, p) => s + p.b, 0) / bgSamples.length);
-      }
-
-      const tolerance = 60;
-      const luminanceThreshold = 180;
-
-      for (let i = 0; i < samples.length; i += n) {
-        const r = samples[i];
-        const g = samples[i + 1];
-        const b = samples[i + 2];
-
-        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-        const dr = r - bgR;
-        const dg = g - bgG;
-        const db = b - bgB;
-        const colorDist = Math.sqrt(dr * dr + dg * dg + db * db);
-
-        if (luminance > luminanceThreshold && colorDist < tolerance) {
-          samples[i] = 255;
-          samples[i + 1] = 255;
-          samples[i + 2] = 255;
-        } else if (r > 240 && g > 235 && b > 220) {
-          samples[i] = 255;
-          samples[i + 1] = 255;
-          samples[i + 2] = 255;
-        }
-      }
-
-      // Create image directly from the processed pixmap
-      const image = new mupdfLib.Image(pixmap, undefined);
-
-      // Get original page dimensions (in points)
-      const dims = this.pageDimensions[pageNum];
-      const pageWidth = dims?.width || 612;
-      const pageHeight = dims?.height || 792;
-
-      // Create page with mediabox
-      const mediaBox: [number, number, number, number] = [0, 0, pageWidth, pageHeight];
-
-      // Start with image content
-      let content = `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Img Do Q`;
-
-      // Check if page has deleted images and OCR text to overlay
-      // Note: pageRegions already declared above in this loop iteration
-      const hasDeletedImages = pageRegions.some(r => r.isImage);
-      const pageOcrBlocks = ocrByPage.get(pageNum) || [];
-
-      // Add OCR text overlay if we have OCR blocks on pages where images were deleted
-      // This ensures OCR'd text survives image deletion
-      let needsFont = false;
-      if (pageOcrBlocks.length > 0 && hasDeletedImages) {
-        needsFont = true;
-        let textContent = '\nBT\n';  // Begin text
-
-        for (const block of pageOcrBlocks) {
-          // Escape special characters in PDF string
-          const escapedText = block.text
-            .replace(/\\/g, '\\\\')
-            .replace(/\(/g, '\\(')
-            .replace(/\)/g, '\\)');
-
-          // Calculate position (PDF coordinates: origin at bottom-left, y increases upward)
-          // OCR coordinates: origin at top-left, y increases downward
-          const fontSize = Math.max(6, Math.min(block.font_size || 12, 48));
-          const x = block.x;
-          const y = pageHeight - block.y - block.height;  // Flip y-axis
-
-          // Add text positioning and drawing
-          textContent += `/F1 ${fontSize} Tf\n`;
-          textContent += `1 0 0 1 ${x.toFixed(2)} ${y.toFixed(2)} Tm\n`;
-          textContent += `(${escapedText}) Tj\n`;
+        let bgR = 245, bgG = 240, bgB = 220;
+        if (bgSamples.length > 0) {
+          bgR = Math.round(bgSamples.reduce((s, p) => s + p.r, 0) / bgSamples.length);
+          bgG = Math.round(bgSamples.reduce((s, p) => s + p.g, 0) / bgSamples.length);
+          bgB = Math.round(bgSamples.reduce((s, p) => s + p.b, 0) / bgSamples.length);
         }
 
-        textContent += 'ET\n';  // End text
-        content += textContent;
+        const tolerance = 60;
+        const luminanceThreshold = 180;
+
+        for (let i = 0; i < samples.length; i += n) {
+          const r = samples[i];
+          const g = samples[i + 1];
+          const b = samples[i + 2];
+
+          const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+          const dr = r - bgR;
+          const dg = g - bgG;
+          const db = b - bgB;
+          const colorDist = Math.sqrt(dr * dr + dg * dg + db * db);
+
+          if (luminance > luminanceThreshold && colorDist < tolerance) {
+            samples[i] = 255;
+            samples[i + 1] = 255;
+            samples[i + 2] = 255;
+          } else if (r > 240 && g > 235 && b > 220) {
+            samples[i] = 255;
+            samples[i + 1] = 255;
+            samples[i + 2] = 255;
+          }
+        }
+
+        // Create image directly from the processed pixmap
+        const image = new mupdfLib.Image(pixmap, undefined);
+
+        // Get original page dimensions (in points)
+        const dims = this.pageDimensions[pageNum];
+        const pageWidth = dims?.width || 612;
+        const pageHeight = dims?.height || 792;
+
+        // Create page with mediabox
+        const mediaBox: [number, number, number, number] = [0, 0, pageWidth, pageHeight];
+
+        // Start with image content
+        let content = `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Img Do Q`;
+
+        // Check if page has deleted images and OCR text to overlay
+        const hasDeletedImages = pageRegions.some(r => r.isImage);
+        const pageOcrBlocks = ocrByPage.get(pageNum) || [];
+
+        // Add OCR text overlay if we have OCR blocks on pages where images were deleted
+        // This ensures OCR'd text survives image deletion
+        let needsFont = false;
+        if (pageOcrBlocks.length > 0 && hasDeletedImages) {
+          needsFont = true;
+          let textContent = '\nBT\n';  // Begin text
+
+          for (const block of pageOcrBlocks) {
+            // Escape special characters in PDF string
+            const escapedText = block.text
+              .replace(/\\/g, '\\\\')
+              .replace(/\(/g, '\\(')
+              .replace(/\)/g, '\\)');
+
+            // Calculate position (PDF coordinates: origin at bottom-left, y increases upward)
+            // OCR coordinates: origin at top-left, y increases downward
+            const fontSize = Math.max(6, Math.min(block.font_size || 12, 48));
+            const x = block.x;
+            const y = pageHeight - block.y - block.height;  // Flip y-axis
+
+            // Add text positioning and drawing
+            textContent += `/F1 ${fontSize} Tf\n`;
+            textContent += `1 0 0 1 ${x.toFixed(2)} ${y.toFixed(2)} Tm\n`;
+            textContent += `(${escapedText}) Tj\n`;
+          }
+
+          textContent += 'ET\n';  // End text
+          content += textContent;
+        }
+
+        // Add image reference and resources
+        const imgRef = outputDoc.addImage(image);
+
+        // Build resources object
+        const resourcesObj: Record<string, unknown> = {
+          XObject: { Img: imgRef }
+        };
+
+        // Add font if needed for OCR text
+        if (needsFont) {
+          // Create a standard Helvetica font reference
+          const fontDict = outputDoc.addObject({
+            Type: 'Font',
+            Subtype: 'Type1',
+            BaseFont: 'Helvetica',
+            Encoding: 'WinAnsiEncoding'
+          });
+          resourcesObj.Font = { F1: fontDict };
+        }
+
+        const resources = outputDoc.addObject(resourcesObj);
+
+        // Create and insert page (addPage expects raw content buffer, not stream object)
+        const pageObj = outputDoc.addPage(mediaBox, 0, resources, content);
+        outputDoc.insertPage(-1, pageObj);
+      } finally {
+        try { pixmap?.destroy(); } catch { /* ignore */ }
+        try { page?.destroy(); } catch { /* ignore */ }
       }
-
-      // Add image reference and resources
-      const imgRef = outputDoc.addImage(image);
-
-      // Build resources object
-      const resourcesObj: Record<string, unknown> = {
-        XObject: { Img: imgRef }
-      };
-
-      // Add font if needed for OCR text
-      if (needsFont) {
-        // Create a standard Helvetica font reference
-        const fontDict = outputDoc.addObject({
-          Type: 'Font',
-          Subtype: 'Type1',
-          BaseFont: 'Helvetica',
-          Encoding: 'WinAnsiEncoding'
-        });
-        resourcesObj.Font = { F1: fontDict };
-      }
-
-      const resources = outputDoc.addObject(resourcesObj);
-
-      // Create and insert page (addPage expects raw content buffer, not stream object)
-      const pageObj = outputDoc.addPage(mediaBox, 0, resources, content);
-      outputDoc.insertPage(-1, pageObj);
     }
 
     // Final progress update
@@ -3569,129 +3622,139 @@ export class PDFAnalyzer {
       const pixelWidth = Math.round(pageWidth * scale);
       const pixelHeight = Math.round(pageHeight * scale);
 
-      let pixmap: any;
+      let pixmap: any = null;
+      let tempDoc: any = null;
+      let tempPage: any = null;
+      let page: any = null;
 
-      // ========================================
-      // UNIFIED PATH: Always render to pixmap
-      // ========================================
+      try {
+        // ========================================
+        // UNIFIED PATH: Always render to pixmap
+        // ========================================
 
-      if (ocrPageSet.has(pageNum)) {
-        // Page has deleted background - render white page with OCR text AS AN IMAGE
-        console.log(`[exportPdfWysiwyg] Page ${pageNum}: Rendering white + OCR text as image`);
+        if (ocrPageSet.has(pageNum)) {
+          // Page has deleted background - render white page with OCR text AS AN IMAGE
+          console.log(`[exportPdfWysiwyg] Page ${pageNum}: Rendering white + OCR text as image`);
 
-        const ocrBlocks = ocrPageBlocks.get(pageNum) || [];
+          const ocrBlocks = ocrPageBlocks.get(pageNum) || [];
 
-        // Create a temporary PDF with white background + text, then render it
-        const tempDoc = new mupdfLib.PDFDocument() as any;
-        const mediaBox: [number, number, number, number] = [0, 0, pageWidth, pageHeight];
+          // Create a temporary PDF with white background + text, then render it
+          tempDoc = new mupdfLib.PDFDocument() as any;
+          const mediaBox: [number, number, number, number] = [0, 0, pageWidth, pageHeight];
 
-        if (ocrBlocks.length > 0) {
-          // Build content stream with text
-          let content = 'BT\n';
+          if (ocrBlocks.length > 0) {
+            // Build content stream with text
+            let content = 'BT\n';
 
-          for (const block of ocrBlocks) {
-            // PDF y-coordinate (y=0 at bottom)
-            const pdfY = pageHeight - block.y - block.height;
-            const fontSize = Math.max(6, Math.min(72, block.font_size || 12));
+            for (const block of ocrBlocks) {
+              // PDF y-coordinate (y=0 at bottom)
+              const pdfY = pageHeight - block.y - block.height;
+              const fontSize = Math.max(6, Math.min(72, block.font_size || 12));
 
-            // Escape text for PDF
-            const escapedText = block.text
-              .replace(/\\/g, '\\\\')
-              .replace(/\(/g, '\\(')
-              .replace(/\)/g, '\\)')
-              .replace(/\n/g, ' ');
+              // Escape text for PDF
+              const escapedText = block.text
+                .replace(/\\/g, '\\\\')
+                .replace(/\(/g, '\\(')
+                .replace(/\)/g, '\\)')
+                .replace(/\n/g, ' ');
 
-            content += `/F1 ${fontSize} Tf\n`;
-            content += `1 0 0 1 ${block.x.toFixed(2)} ${pdfY.toFixed(2)} Tm\n`;
-            content += `(${escapedText}) Tj\n`;
-          }
-
-          content += 'ET\n';
-
-          // Add Helvetica font
-          const fontDict = tempDoc.addObject({
-            Type: 'Font',
-            Subtype: 'Type1',
-            BaseFont: 'Helvetica',
-            Encoding: 'WinAnsiEncoding'
-          });
-          const resources = tempDoc.addObject({ Font: { F1: fontDict } });
-          const pageObj = tempDoc.addPage(mediaBox, 0, resources, content);
-          tempDoc.insertPage(-1, pageObj);
-        } else {
-          // Blank white page
-          const pageObj = tempDoc.addPage(mediaBox, 0, null, '');
-          tempDoc.insertPage(-1, pageObj);
-        }
-
-        // RENDER the temp document to pixmap - this is the key!
-        const tempPage = tempDoc.loadPage(0);
-        const matrix = mupdfLib.Matrix.scale(scale, scale);
-        pixmap = tempPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
-
-        console.log(`[exportPdfWysiwyg] Page ${pageNum}: Rendered OCR page to ${pixmap.getWidth()}x${pixmap.getHeight()} pixmap`);
-
-      } else {
-        // Normal page - render from source document
-        const page = this.doc.loadPage(pageNum);
-        const matrix = mupdfLib.Matrix.scale(scale, scale);
-        pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
-
-        // Apply deletions by painting regions
-        const pageRegions = regionsByPage.get(pageNum) || [];
-        if (pageRegions.length > 0) {
-          const width = pixmap.getWidth();
-          const height = pixmap.getHeight();
-          const n = pixmap.getNumberOfComponents();
-          const samples = pixmap.getPixels();
-
-          console.log(`[exportPdfWysiwyg] Page ${pageNum}: Painting ${pageRegions.length} deleted regions`);
-
-          for (const region of pageRegions) {
-            // Flip Y-axis (PDF y=0 at bottom, pixmap y=0 at top)
-            const flippedY = pageHeight - region.y - region.height;
-
-            const x1 = Math.floor(region.x * scale);
-            const y1 = Math.floor(flippedY * scale);
-            const x2 = Math.ceil((region.x + region.width) * scale);
-            const y2 = Math.ceil((flippedY + region.height) * scale);
-
-            // Skip suspicious large regions
-            const regionArea = (x2 - x1) * (y2 - y1);
-            if (regionArea > width * height * 0.5) {
-              console.warn(`[exportPdfWysiwyg] Skipping suspicious large region on page ${pageNum}`);
-              continue;
+              content += `/F1 ${fontSize} Tf\n`;
+              content += `1 0 0 1 ${block.x.toFixed(2)} ${pdfY.toFixed(2)} Tm\n`;
+              content += `(${escapedText}) Tj\n`;
             }
 
-            // Sample background color
-            const bgColor = this.sampleBackgroundColorAroundRegion(samples, width, height, n, x1, y1, x2, y2);
+            content += 'ET\n';
 
-            // Paint the region
-            for (let y = Math.max(0, y1); y < Math.min(height, y2); y++) {
-              for (let x = Math.max(0, x1); x < Math.min(width, x2); x++) {
-                const idx = (y * width + x) * n;
-                samples[idx] = bgColor.r;
-                samples[idx + 1] = bgColor.g;
-                samples[idx + 2] = bgColor.b;
-                if (n > 3) samples[idx + 3] = 255;
+            // Add Helvetica font
+            const fontDict = tempDoc.addObject({
+              Type: 'Font',
+              Subtype: 'Type1',
+              BaseFont: 'Helvetica',
+              Encoding: 'WinAnsiEncoding'
+            });
+            const resources = tempDoc.addObject({ Font: { F1: fontDict } });
+            const pageObj = tempDoc.addPage(mediaBox, 0, resources, content);
+            tempDoc.insertPage(-1, pageObj);
+          } else {
+            // Blank white page
+            const pageObj = tempDoc.addPage(mediaBox, 0, null, '');
+            tempDoc.insertPage(-1, pageObj);
+          }
+
+          // RENDER the temp document to pixmap - this is the key!
+          tempPage = tempDoc.loadPage(0);
+          const matrix = mupdfLib.Matrix.scale(scale, scale);
+          pixmap = tempPage.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+
+          console.log(`[exportPdfWysiwyg] Page ${pageNum}: Rendered OCR page to ${pixmap.getWidth()}x${pixmap.getHeight()} pixmap`);
+
+        } else {
+          // Normal page - render from source document
+          page = this.doc.loadPage(pageNum);
+          const matrix = mupdfLib.Matrix.scale(scale, scale);
+          pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+
+          // Apply deletions by painting regions
+          const pageRegions = regionsByPage.get(pageNum) || [];
+          if (pageRegions.length > 0) {
+            const width = pixmap.getWidth();
+            const height = pixmap.getHeight();
+            const n = pixmap.getNumberOfComponents();
+            const samples = pixmap.getPixels();
+
+            console.log(`[exportPdfWysiwyg] Page ${pageNum}: Painting ${pageRegions.length} deleted regions`);
+
+            for (const region of pageRegions) {
+              // Flip Y-axis (PDF y=0 at bottom, pixmap y=0 at top)
+              const flippedY = pageHeight - region.y - region.height;
+
+              const x1 = Math.floor(region.x * scale);
+              const y1 = Math.floor(flippedY * scale);
+              const x2 = Math.ceil((region.x + region.width) * scale);
+              const y2 = Math.ceil((flippedY + region.height) * scale);
+
+              // Skip suspicious large regions
+              const regionArea = (x2 - x1) * (y2 - y1);
+              if (regionArea > width * height * 0.5) {
+                console.warn(`[exportPdfWysiwyg] Skipping suspicious large region on page ${pageNum}`);
+                continue;
+              }
+
+              // Sample background color
+              const bgColor = this.sampleBackgroundColorAroundRegion(samples, width, height, n, x1, y1, x2, y2);
+
+              // Paint the region
+              for (let y = Math.max(0, y1); y < Math.min(height, y2); y++) {
+                for (let x = Math.max(0, x1); x < Math.min(width, x2); x++) {
+                  const idx = (y * width + x) * n;
+                  samples[idx] = bgColor.r;
+                  samples[idx + 1] = bgColor.g;
+                  samples[idx + 2] = bgColor.b;
+                  if (n > 3) samples[idx + 3] = 255;
+                }
               }
             }
           }
         }
+
+        // ========================================
+        // UNIFIED OUTPUT: Always add as image
+        // ========================================
+
+        const image = new mupdfLib.Image(pixmap, undefined);
+        const outputMediaBox: [number, number, number, number] = [0, 0, pageWidth, pageHeight];
+        const content = `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Img Do Q`;
+
+        const imgRef = outputDoc.addImage(image);
+        const resources = outputDoc.addObject({ XObject: { Img: imgRef } });
+        const pageObj = outputDoc.addPage(outputMediaBox, 0, resources, content);
+        outputDoc.insertPage(-1, pageObj);
+      } finally {
+        try { pixmap?.destroy(); } catch { /* ignore */ }
+        try { tempPage?.destroy(); } catch { /* ignore */ }
+        try { tempDoc?.destroy(); } catch { /* ignore */ }
+        try { page?.destroy(); } catch { /* ignore */ }
       }
-
-      // ========================================
-      // UNIFIED OUTPUT: Always add as image
-      // ========================================
-
-      const image = new mupdfLib.Image(pixmap, undefined);
-      const outputMediaBox: [number, number, number, number] = [0, 0, pageWidth, pageHeight];
-      const content = `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Img Do Q`;
-
-      const imgRef = outputDoc.addImage(image);
-      const resources = outputDoc.addObject({ XObject: { Img: imgRef } });
-      const pageObj = outputDoc.addPage(outputMediaBox, 0, resources, content);
-      outputDoc.insertPage(-1, pageObj);
 
       processedPages++;
     }
@@ -3727,6 +3790,8 @@ export class PDFAnalyzer {
     this.categories = {};
     this.pageDimensions = [];
     this.pdfPath = '';
+    // Release the mupdf WASM module so its heap can be garbage collected
+    resetMupdf();
   }
 
   /**
@@ -4372,86 +4437,92 @@ export class PDFAnalyzer {
   extractSpansFromPageMupdf(pageNum: number): TextSpan[] {
     if (!this.doc) return [];
 
-    const page = this.doc.loadPage(pageNum);
-    const pageDim = this.pageDimensions[pageNum];
-    const originX = pageDim?.originX || 0;
-    const originY = pageDim?.originY || 0;
-    const pageHeight = pageDim?.height || 792;
+    let page, stext;
+    try {
+      page = this.doc.loadPage(pageNum);
+      const pageDim = this.pageDimensions[pageNum];
+      const originX = pageDim?.originX || 0;
+      const originY = pageDim?.originY || 0;
+      const pageHeight = pageDim?.height || 792;
 
-    console.log(`[extractSpansFromPageMupdf] Page ${pageNum}: dims=${pageDim?.width}x${pageDim?.height}, origin=(${originX}, ${originY})`);
+      console.log(`[extractSpansFromPageMupdf] Page ${pageNum}: dims=${pageDim?.width}x${pageDim?.height}, origin=(${originX}, ${originY})`);
 
-    // Get structured text with character-level detail
-    const stext = page.toStructuredText('preserve-whitespace,preserve-spans');
-    const jsonStr = stext.asJSON(1);
-    const stextData = JSON.parse(jsonStr);
+      // Get structured text with character-level detail
+      stext = page.toStructuredText('preserve-whitespace,preserve-spans');
+      const jsonStr = stext.asJSON(1);
+      const stextData = JSON.parse(jsonStr);
 
-    const spans: TextSpan[] = [];
-    let spanCount = 0;
-    let loggedSamples = 0;
+      const spans: TextSpan[] = [];
+      let spanCount = 0;
+      let loggedSamples = 0;
 
-    for (const block of stextData.blocks || []) {
-      if (block.type === 'image' || block.image) continue;
+      for (const block of stextData.blocks || []) {
+        if (block.type === 'image' || block.image) continue;
 
-      for (const line of block.lines || []) {
-        for (const span of line.spans || []) {
-          const text = span.text || '';
-          if (!text.trim()) continue;
+        for (const line of block.lines || []) {
+          for (const span of line.spans || []) {
+            const text = span.text || '';
+            if (!text.trim()) continue;
 
-          // Parse bbox - mupdf.js returns [x0, y0, x1, y1] in device coordinates
-          let x: number, y: number, width: number, height: number;
-          let rawY0 = 0, rawY1 = 0;
-          if (Array.isArray(span.bbox) && span.bbox.length >= 4) {
-            const [x0, y0, x1, y1] = span.bbox;
-            rawY0 = y0;
-            rawY1 = y1;
-            x = x0 - originX;
-            y = y0 - originY;
-            width = x1 - x0;
-            height = y1 - y0;
-          } else if (span.bbox && typeof span.bbox.x === 'number') {
-            x = span.bbox.x - originX;
-            rawY0 = span.bbox.y;
-            rawY1 = span.bbox.y + span.bbox.h;
-            y = span.bbox.y - originY;
-            width = span.bbox.w;
-            height = span.bbox.h;
-          } else {
-            continue;
+            // Parse bbox - mupdf.js returns [x0, y0, x1, y1] in device coordinates
+            let x: number, y: number, width: number, height: number;
+            let rawY0 = 0, rawY1 = 0;
+            if (Array.isArray(span.bbox) && span.bbox.length >= 4) {
+              const [x0, y0, x1, y1] = span.bbox;
+              rawY0 = y0;
+              rawY1 = y1;
+              x = x0 - originX;
+              y = y0 - originY;
+              width = x1 - x0;
+              height = y1 - y0;
+            } else if (span.bbox && typeof span.bbox.x === 'number') {
+              x = span.bbox.x - originX;
+              rawY0 = span.bbox.y;
+              rawY1 = span.bbox.y + span.bbox.h;
+              y = span.bbox.y - originY;
+              width = span.bbox.w;
+              height = span.bbox.h;
+            } else {
+              continue;
+            }
+
+            // Log first 10 spans and any that look like footnote numbers
+            const isFootnoteCandidate = /^\d{1,2}$/.test(text.trim());
+            if (loggedSamples < 10 || isFootnoteCandidate) {
+              const yRatio = y / pageHeight;
+              console.log(`  [mupdf span] "${text.trim().substring(0, 20)}" rawBbox=[${span.bbox?.join(',')}] -> y=${y.toFixed(1)} yRatio=${yRatio.toFixed(3)}${isFootnoteCandidate ? ' [FOOTNOTE?]' : ''}`);
+              if (!isFootnoteCandidate) loggedSamples++;
+            }
+
+            const fontName = span.font || 'unknown';
+            const fontSize = span.size || 10;
+            const fontLower = fontName.toLowerCase();
+
+            spans.push({
+              id: this.hashId(`mupdf:${pageNum}:${x.toFixed(0)},${y.toFixed(0)}:${spanCount++}`),
+              page: pageNum,
+              x,
+              y,
+              width,
+              height,
+              text,
+              font_size: fontSize,
+              font_name: fontName,
+              is_bold: fontLower.includes('bold'),
+              is_italic: fontLower.includes('italic') || fontLower.includes('oblique'),
+              baseline_offset: 0,
+              block_id: ''
+            });
           }
-
-          // Log first 10 spans and any that look like footnote numbers
-          const isFootnoteCandidate = /^\d{1,2}$/.test(text.trim());
-          if (loggedSamples < 10 || isFootnoteCandidate) {
-            const yRatio = y / pageHeight;
-            console.log(`  [mupdf span] "${text.trim().substring(0, 20)}" rawBbox=[${span.bbox?.join(',')}] -> y=${y.toFixed(1)} yRatio=${yRatio.toFixed(3)}${isFootnoteCandidate ? ' [FOOTNOTE?]' : ''}`);
-            if (!isFootnoteCandidate) loggedSamples++;
-          }
-
-          const fontName = span.font || 'unknown';
-          const fontSize = span.size || 10;
-          const fontLower = fontName.toLowerCase();
-
-          spans.push({
-            id: this.hashId(`mupdf:${pageNum}:${x.toFixed(0)},${y.toFixed(0)}:${spanCount++}`),
-            page: pageNum,
-            x,
-            y,
-            width,
-            height,
-            text,
-            font_size: fontSize,
-            font_name: fontName,
-            is_bold: fontLower.includes('bold'),
-            is_italic: fontLower.includes('italic') || fontLower.includes('oblique'),
-            baseline_offset: 0,
-            block_id: ''
-          });
         }
       }
-    }
 
-    console.log(`[extractSpansFromPageMupdf] Page ${pageNum}: extracted ${spans.length} spans`);
-    return spans;
+      console.log(`[extractSpansFromPageMupdf] Page ${pageNum}: extracted ${spans.length} spans`);
+      return spans;
+    } finally {
+      try { stext?.destroy(); } catch { /* ignore */ }
+      try { page?.destroy(); } catch { /* ignore */ }
+    }
   }
 
   /**

@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>BookForge Library</title>
+  <title>BookForge Bookshelf</title>
   <link rel="stylesheet" href="library.css">
 </head>
 <body>
   <nav class="navbar">
     <div class="nav-title">
       <span class="logo">📚</span>
-      <h1>BookForge Library</h1>
+      <h1>BookForge Bookshelf</h1>
     </div>
     <div class="nav-controls">
       <div class="tab-toggle">
@@ -43,6 +43,8 @@
     <button class="category-pill active" data-category="all">All</button>
   </div>
 
+  <div id="ebook-tag-bar" class="category-bar" style="display: none;"></div>
+
   <div id="search-container" class="search-container">
     <input type="text" class="search-box" id="search-box" placeholder="Search audiobooks...">
     <button class="clear-search" id="clear-search" style="display: none;">✕</button>
@@ -53,7 +55,7 @@
     <div id="library-content">
       <div id="loading-indicator" class="loading-indicator">
         <div class="spinner"></div>
-        <span>Loading library...</span>
+        <span>Loading bookshelf...</span>
       </div>
 
       <div id="books-container" class="books-grid"></div>

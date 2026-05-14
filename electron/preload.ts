@@ -835,6 +835,7 @@ export interface ElectronAPI {
     renderWithPreviews: (pdfPath: string, concurrency?: number) => Promise<{ success: boolean; data?: RenderWithPreviewsResult; error?: string }>;
     renderPages: (pdfPath: string, pageNumbers: number[], quality?: 'preview' | 'full') => Promise<{ success: boolean; data?: Record<number, string>; error?: string }>;
     closeRenderDoc: () => Promise<{ success: boolean; error?: string }>;
+    closePdf: () => Promise<{ success: boolean; error?: string }>;
     onRenderProgress: (callback: RenderProgressCallback) => () => void;
     onAnalyzeProgress: (callback: (progress: { phase: string; message: string }) => void) => () => void;
     onPageUpgraded: (callback: (data: { pageNum: number; path: string }) => void) => () => void;
@@ -2014,6 +2015,8 @@ export interface ElectronAPI {
     revealBook: (relativePath: string) => Promise<{ success: boolean; error?: string }>;
     openCategoryFolder: (categoryName: string) => Promise<{ success: boolean; error?: string }>;
     getAbsolutePath: (relativePath: string) => Promise<{ success: boolean; data?: { absolutePath: string }; error?: string }>;
+    updateTags: (relativePath: string, tags: string[]) => Promise<{ success: boolean; error?: string }>;
+    getAllTags: () => Promise<{ success: boolean; data?: { tags: string[] }; error?: string }>;
   };
   platform: string;
 }
@@ -2047,6 +2050,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:render-pages', pdfPath, pageNumbers, quality),
     closeRenderDoc: () =>
       ipcRenderer.invoke('pdf:close-render-doc'),
+    closePdf: () =>
+      ipcRenderer.invoke('pdf:close'),
     onRenderProgress: (callback: RenderProgressCallback) => {
       const listener = (_event: Electron.IpcRendererEvent, progress: { current: number; total: number; phase?: string }) => {
         callback(progress);
@@ -3427,6 +3432,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('ebookLibrary:open-category-folder', categoryName),
     getAbsolutePath: (relativePath: string) =>
       ipcRenderer.invoke('ebookLibrary:get-absolute-path', relativePath),
+    updateTags: (relativePath: string, tags: string[]) =>
+      ipcRenderer.invoke('ebookLibrary:update-tags', relativePath, tags),
+    getAllTags: () =>
+      ipcRenderer.invoke('ebookLibrary:get-all-tags'),
   },
 
   platform: process.platform,

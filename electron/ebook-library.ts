@@ -41,6 +41,7 @@ export interface LibraryBookEntry {
   category: string;
   fileSize: number;
   dateAdded: number;
+  tags?: string[];
 }
 
 export interface CategoryEntry {
@@ -67,6 +68,7 @@ interface CachedBookData {
   mtime: number;
   coverFile?: string;
   dateAdded: number;
+  tags?: string[];
 }
 
 type MetadataCache = Record<string, CachedBookData>;
@@ -538,6 +540,7 @@ export async function scanLibrary(): Promise<LibraryBookEntry[]> {
               category,
               fileSize: cached.fileSize,
               dateAdded: cached.dateAdded,
+              tags: cached.tags,
             });
             continue;
           }
@@ -554,6 +557,9 @@ export async function scanLibrary(): Promise<LibraryBookEntry[]> {
             coverFile = `${coverHash(relativePath)}.jpg`;
           }
 
+          // Preserve tags from old cache entry when refreshing stale metadata
+          const existingTags = cached?.tags;
+
           const cacheEntry: CachedBookData = {
             title: meta.title,
             subtitle: meta.subtitle,
@@ -567,6 +573,7 @@ export async function scanLibrary(): Promise<LibraryBookEntry[]> {
             mtime: stat.mtimeMs,
             coverFile,
             dateAdded,
+            tags: existingTags,
           };
 
           newCache[relativePath] = cacheEntry;
@@ -584,6 +591,7 @@ export async function scanLibrary(): Promise<LibraryBookEntry[]> {
             category,
             fileSize: stat.size,
             dateAdded,
+            tags: existingTags,
           });
         } catch (err) {
           console.warn('[EbookLibrary] Failed to process:', relativePath, err);
@@ -1087,6 +1095,39 @@ export function getCachedMetadata(relativePath: string): BookMetadata | null {
     year: cached.year,
     language: cached.language,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tag Operations
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Update tags for a book in the metadata cache
+ */
+export async function updateBookTags(relativePath: string, tags: string[]): Promise<void> {
+  const cache = loadCache();
+  const entry = cache[relativePath];
+  if (!entry) {
+    throw new Error(`Book not found in cache: ${relativePath}`);
+  }
+  entry.tags = tags.length > 0 ? tags : undefined;
+  await saveCache(cache);
+}
+
+/**
+ * Get all unique tags across all books in the library
+ */
+export function getAllTags(): string[] {
+  const cache = loadCache();
+  const tagSet = new Set<string>();
+  for (const entry of Object.values(cache)) {
+    if (entry.tags) {
+      for (const tag of entry.tags) {
+        tagSet.add(tag);
+      }
+    }
+  }
+  return Array.from(tagSet).sort();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

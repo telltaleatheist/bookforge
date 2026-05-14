@@ -3821,6 +3821,7 @@ export class PdfPickerComponent implements OnInit {
     // Reset editor state via service
     this.editorState.reset();
     this.pageRenderService.closeDocument(); // Also frees the backend cached render doc
+    this.electronService.closePdf(); // Free the main analysis document WASM memory
     this.projectService.reset();
 
     // Clear blanked pages tracking
@@ -8816,6 +8817,7 @@ export class PdfPickerComponent implements OnInit {
     this.activeDocumentId.set(null);
     this.editorState.reset();
     this.pageRenderService.closeDocument(); // Also frees the backend cached render doc
+    this.electronService.closePdf(); // Free the main analysis document WASM memory
     this.projectService.reset();
   }
 

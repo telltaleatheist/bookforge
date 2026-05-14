@@ -698,15 +698,9 @@ export async function startReassembly(
 
   // No symlink needed - we pass --session_dir to e2a to tell it where the session is
 
-  // Validate cover path exists on this machine — cross-platform synced projects may
-  // have paths from another OS (e.g., /Volumes/... from Mac when running on Windows)
-  if (config.metadata?.coverPath && !fs.existsSync(config.metadata.coverPath)) {
-    console.warn(`[REASSEMBLY] Cover path does not exist (cross-platform?): ${config.metadata.coverPath}`);
-    config.metadata.coverPath = undefined;
-  }
-
-  // Resolve cover from manifest if not provided or invalid
-  if (!config.metadata?.coverPath && config.outputDir) {
+  // Always resolve cover from manifest as authoritative source,
+  // then allow config.metadata.coverPath to override if valid on this machine
+  if (config.outputDir) {
     const projectDir = path.dirname(config.outputDir); // outputDir is {projectDir}/output
     const projectId = path.basename(projectDir);
     try {
@@ -716,13 +710,25 @@ export async function startReassembly(
         const absCover = path.join(libRoot, mResult.manifest.metadata.coverPath);
         if (fs.existsSync(absCover)) {
           if (!config.metadata) config.metadata = { title: '', author: '' };
-          config.metadata.coverPath = absCover;
-          console.log(`[REASSEMBLY] Resolved cover from manifest: ${absCover}`);
+          // Use manifest cover as baseline
+          if (!config.metadata.coverPath || !fs.existsSync(config.metadata.coverPath)) {
+            config.metadata.coverPath = absCover;
+            console.log(`[REASSEMBLY] Resolved cover from manifest: ${absCover}`);
+          } else {
+            console.log(`[REASSEMBLY] Using provided cover (manifest available as fallback): ${config.metadata.coverPath}`);
+          }
         }
       }
     } catch {
-      // Non-fatal — continue without cover
+      // Non-fatal — continue without manifest cover
     }
+  }
+
+  // Validate cover path exists on this machine — cross-platform synced projects may
+  // have paths from another OS (e.g., /Volumes/... from Mac when running on Windows)
+  if (config.metadata?.coverPath && !fs.existsSync(config.metadata.coverPath)) {
+    console.warn(`[REASSEMBLY] Cover path does not exist (cross-platform?): ${config.metadata.coverPath}`);
+    config.metadata.coverPath = undefined;
   }
 
   // Copy project cover to session directory, replacing any e2a-extracted cover
@@ -1714,6 +1720,16 @@ async function applyMetadataWithM4bTool(
   activeMetadataAborts.set(jobId, controller);
 
   try {
+    // Remove existing cover first to ensure clean state (strips Calibre-generated covers)
+    if (metadataToApply.coverPath) {
+      try {
+        await removeCover(m4bPath);
+        console.log('[REASSEMBLY] Removed existing cover before applying new one');
+      } catch (removeErr) {
+        console.warn('[REASSEMBLY] Failed to remove existing cover (continuing):', removeErr);
+      }
+    }
+
     await applyMetadata(m4bPath, metadataToApply, {
       timeoutMs: 60_000,
       signal: controller.signal

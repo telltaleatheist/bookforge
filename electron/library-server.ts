@@ -56,9 +56,10 @@ export class LibraryServer {
   private port: number = 8765;
   private userDataPath: string | null = null;
 
-  // Cover cache to avoid repeated extraction
+  // Cover cache to avoid repeated extraction (capped to limit memory)
   private coverCache: Map<string, { data: string; timestamp: number }> = new Map();
   private readonly COVER_CACHE_TTL = 1000 * 60 * 60; // 1 hour
+  private readonly MAX_COVER_CACHE_SIZE = 50;
 
   // Books/ebooks response cache to avoid re-scanning on every request
   private booksCache: { data: AudiobookEntry[]; timestamp: number } | null = null;
@@ -362,6 +363,11 @@ export class LibraryServer {
       }
 
       if (cover) {
+        // Evict oldest entry if cache is at capacity
+        if (this.coverCache.size >= this.MAX_COVER_CACHE_SIZE) {
+          const oldestKey = this.coverCache.keys().next().value;
+          if (oldestKey !== undefined) this.coverCache.delete(oldestKey);
+        }
         this.coverCache.set(cacheKey, { data: cover, timestamp: Date.now() });
         res.json({ cover });
       } else {

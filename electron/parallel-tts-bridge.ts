@@ -2755,37 +2755,39 @@ async function applyMetadataWithM4bTool(
     // Still try to apply metadata in place
   }
 
-  // Resolve cover from manifest if not provided (defense in depth)
-  // Use bfpPath (project dir) first since it's always correct;
-  // the outputDir-based fallback is unreliable (outputDir may be the global projects path, not {projectDir}/output)
-  if (!metadata.coverPath) {
-    const projectId = bfpPath ? path.basename(bfpPath) : (outputDir ? path.basename(path.dirname(outputDir)) : null);
-    if (projectId) {
+  // Always resolve cover from manifest as authoritative source,
+  // then allow provided metadata.coverPath to override if valid
+  {
+    const libRoot = manifestService.getLibraryBasePath();
+    const candidates: string[] = [];
+    if (bfpPath) candidates.push(path.basename(bfpPath));
+    if (outputDir) {
+      const parent = path.basename(path.dirname(outputDir));
+      if (parent !== 'projects') candidates.push(parent);
+    }
+
+    let manifestCoverPath: string | undefined;
+    for (const projectId of candidates) {
       try {
         const mResult = await manifestService.getManifest(projectId);
         if (mResult.success && mResult.manifest?.metadata?.coverPath) {
-          const libRoot = manifestService.getLibraryBasePath();
           const absCover = path.join(libRoot, mResult.manifest.metadata.coverPath);
           if (fsSync.existsSync(absCover)) {
-            metadata.coverPath = absCover;
-            console.log(`[PARALLEL-TTS] Resolved cover from manifest (projectId=${projectId}): ${absCover}`);
+            manifestCoverPath = absCover;
+            break;
           }
         }
-      } catch (err) {
-        console.warn('[PARALLEL-TTS] Failed to resolve cover from manifest:', err);
-      }
+      } catch { /* ignore */ }
     }
-  }
 
-  console.log('[PARALLEL-TTS] Applying metadata:', metadata);
-
-  // ALWAYS remove e2a's default cover - we don't want auto-extracted covers
-  // Only apply our own cover if coverPath is provided
-  console.log('[PARALLEL-TTS] Removing e2a default cover...');
-  try {
-    await removeCover(inputPath);
-  } catch (err) {
-    console.warn('[PARALLEL-TTS] Failed to remove cover (may not exist):', err);
+    if (metadata.coverPath && fsSync.existsSync(metadata.coverPath)) {
+      console.log('[PARALLEL-TTS] Using provided coverPath:', metadata.coverPath);
+    } else if (manifestCoverPath) {
+      metadata.coverPath = manifestCoverPath;
+      console.log('[PARALLEL-TTS] Resolved cover from manifest:', manifestCoverPath);
+    } else {
+      console.warn('[PARALLEL-TTS] Could not resolve cover from any source');
+    }
   }
 
   // Build metadata object for the shared module
@@ -2806,15 +2808,25 @@ async function applyMetadataWithM4bTool(
       await fs.access(metadata.coverPath);
       metadataToApply.coverPath = metadata.coverPath;
     } catch {
-      console.error('[PARALLEL-TTS] Cover file not found:', metadata.coverPath);
+      console.error('[PARALLEL-TTS] Cover file not found at:', metadata.coverPath);
     }
   } else {
-    console.log('[PARALLEL-TTS] No coverPath provided - leaving cover blank');
+    console.log('[PARALLEL-TTS] No coverPath available - M4B will have no custom cover');
   }
 
   // Apply metadata if we have any changes
   if (Object.keys(metadataToApply).length > 0) {
-    console.log('[PARALLEL-TTS] Applying metadata:', metadataToApply);
+    // Remove existing cover first to ensure clean state (strips Calibre-generated covers)
+    if (metadataToApply.coverPath) {
+      try {
+        await removeCover(inputPath);
+        console.log('[PARALLEL-TTS] Removed existing cover before applying new one');
+      } catch (removeErr) {
+        console.warn('[PARALLEL-TTS] Failed to remove existing cover (continuing):', removeErr);
+      }
+    }
+
+    console.log('[PARALLEL-TTS] Applying metadata to M4B:', JSON.stringify(metadataToApply, null, 2));
     await applyMetadata(inputPath, metadataToApply);
   }
 

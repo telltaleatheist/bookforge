@@ -2943,6 +2943,27 @@ export async function cleanupEpub(
     processor.close();
     processor = null;
 
+    // Embed cover from manifest if available
+    if (options?.outputDir) {
+      try {
+        const projectDir = path.resolve(options.outputDir, '..', '..');
+        const manifestPath = path.join(projectDir, 'manifest.json');
+        const manifestRaw = await fsPromises.readFile(manifestPath, 'utf-8');
+        const manifest = JSON.parse(manifestRaw);
+        if (manifest?.metadata?.coverPath) {
+          // coverPath is relative to library root; project dir is inside library
+          const libraryRoot = path.resolve(projectDir, '..', '..');
+          const absCover = path.join(libraryRoot, manifest.metadata.coverPath);
+          await fsPromises.access(absCover);
+          const { embedCoverInEpub } = await import('./epub-processor.js');
+          await embedCoverInEpub(outputPath, absCover);
+          console.log(`[AI-BRIDGE] Embedded cover in cleanup output: ${outputPath}`);
+        }
+      } catch (coverErr) {
+        console.warn('[AI-BRIDGE] Failed to embed cover in cleanup output:', coverErr);
+      }
+    }
+
     // Finalize diff cache (mark as complete)
     await finalizeDiffCache();
 

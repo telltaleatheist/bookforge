@@ -598,6 +598,15 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('pdf:close', async () => {
+    try {
+      await pdfWorkerProxy.call('close', []);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('pdf:clear-cache', async (_event, fileHash: string) => {
     try {
       await pdfWorkerProxy.call('clearCache', [fileHash]);
@@ -1316,6 +1325,45 @@ function setupIpcHandlers(): void {
 
         manifest.modifiedAt = new Date().toISOString();
         await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+        // Propagate cover to all project EPUBs when a cover is set
+        if (meta.coverImagePath && typeof meta.coverImagePath === 'string') {
+          const absCoverPath = path.join(getLibraryRoot(), meta.coverImagePath as string);
+          if (fsSync.existsSync(absCoverPath)) {
+            const { embedCoverInEpub } = await import('./epub-processor.js');
+            const epubCandidates = [
+              path.join(bfpPath, 'source', 'exported.epub'),
+              // Only embed in original.epub if it's actually an EPUB (not a PDF)
+              path.join(bfpPath, 'source', 'original.epub'),
+              path.join(bfpPath, 'stages', '01-cleanup', 'cleaned.epub'),
+              path.join(bfpPath, 'stages', '01-cleanup', 'simplified.epub'),
+              path.join(bfpPath, 'stages', '02-translate', 'translated.epub'),
+            ];
+            // Also scan for language EPUBs (e.g., de.epub, ko.epub) in translate dir
+            const translateDir = path.join(bfpPath, 'stages', '02-translate');
+            if (fsSync.existsSync(translateDir)) {
+              try {
+                const translateFiles = await fs.readdir(translateDir);
+                for (const f of translateFiles) {
+                  if (f.endsWith('.epub') && f !== 'translated.epub') {
+                    epubCandidates.push(path.join(translateDir, f));
+                  }
+                }
+              } catch { /* ignore */ }
+            }
+            for (const epubPath of epubCandidates) {
+              if (fsSync.existsSync(epubPath)) {
+                try {
+                  await embedCoverInEpub(epubPath, absCoverPath);
+                  console.log(`[project:update-metadata] Embedded cover in ${epubPath}`);
+                } catch (embedErr) {
+                  console.warn(`[project:update-metadata] Failed to embed cover in ${epubPath}:`, embedErr);
+                }
+              }
+            }
+          }
+        }
+
         return { success: true };
       }
 
@@ -3393,6 +3441,24 @@ function setupIpcHandlers(): void {
       const { shell } = await import('electron');
       await shell.openPath(absolutePath);
       return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:update-tags', async (_event, relativePath: string, tags: string[]) => {
+    try {
+      await ebookLibrary.updateBookTags(relativePath, tags);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ebookLibrary:get-all-tags', async () => {
+    try {
+      const tags = ebookLibrary.getAllTags();
+      return { success: true, data: { tags } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -5744,7 +5810,12 @@ function setupIpcHandlers(): void {
             const candidate = path.join(getLibraryRoot(), meta.coverPath);
             if (fsSync.existsSync(candidate)) {
               coverAbsPath = candidate;
+              console.log('[bilingual-assembly:finalize-output] Cover resolved:', coverAbsPath);
+            } else {
+              console.warn('[bilingual-assembly:finalize-output] Cover in manifest but file missing:', candidate);
             }
+          } else {
+            console.log('[bilingual-assembly:finalize-output] No coverPath in manifest');
           }
           await applyMetadata(projectAudioPath, {
             title: meta.title,
@@ -5754,7 +5825,7 @@ function setupIpcHandlers(): void {
             series: meta.series,
             coverPath: coverAbsPath,
           });
-          console.log('[bilingual-assembly:finalize-output] Metadata + cover applied to M4B');
+          console.log('[bilingual-assembly:finalize-output] Metadata applied (cover:', coverAbsPath ? 'yes' : 'none', ')');
         }
       } catch (metaErr) {
         console.error('[bilingual-assembly:finalize-output] Failed to apply metadata (non-fatal):', metaErr);
@@ -8720,7 +8791,6 @@ app.whenReady().then(async () => {
   registerPageProtocol();
   registerAudioProtocol();
 
-  pdfWorkerProxy.start();
   setupIpcHandlers();
   setupAlignmentIpc();
   createWindow();

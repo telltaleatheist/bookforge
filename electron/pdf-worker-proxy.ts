@@ -4,6 +4,9 @@
  * Thin main-thread proxy that spawns pdf-worker.js in a Worker thread and
  * forwards IPC calls.  Correlates request ↔ response via a requestId map
  * and routes progress messages to the correct BrowserWindow.
+ *
+ * The worker is spawned lazily on first call() and auto-terminates after
+ * 5 minutes of idle time to free ~200MB of memory.
  */
 import { Worker } from 'worker_threads';
 import * as path from 'path';
@@ -15,17 +18,39 @@ interface PendingCall {
   sender?: WebContents;
 }
 
+const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+
 let worker: Worker | null = null;
 let pending = new Map<string, PendingCall>();
 let requestCounter = 0;
 let defaultSender: WebContents | null = null;
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
 function workerPath(): string {
   return path.join(__dirname, 'pdf-worker.js');
 }
 
+function clearIdleTimer(): void {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
+}
+
+function resetIdleTimer(): void {
+  clearIdleTimer();
+  idleTimer = setTimeout(() => {
+    if (worker && pending.size === 0) {
+      console.log('[pdf-worker-proxy] Worker terminated (idle)');
+      worker.terminate();
+      worker = null;
+    }
+  }, IDLE_TIMEOUT);
+}
+
 function spawn(): Worker {
   const w = new Worker(workerPath());
+  console.log('[pdf-worker-proxy] Worker started');
 
   w.on('message', (msg: any) => {
     if (msg.type === 'progress') {
@@ -61,6 +86,11 @@ function spawn(): Worker {
     } else if (type === 'error') {
       entry.reject(new Error(msg.error));
     }
+
+    // Start/reset idle timer when a call completes and nothing is pending
+    if (pending.size === 0) {
+      resetIdleTimer();
+    }
   });
 
   w.on('error', (err) => {
@@ -68,6 +98,7 @@ function spawn(): Worker {
   });
 
   w.on('exit', (code) => {
+    clearIdleTimer();
     if (code !== 0) {
       console.error(`[pdf-worker-proxy] Worker exited with code ${code}`);
     }
@@ -90,14 +121,6 @@ function ensureWorker(): Worker {
 }
 
 /**
- * Start the worker. Call once during app initialization.
- */
-export function start(): void {
-  ensureWorker();
-  console.log('[pdf-worker-proxy] Worker started');
-}
-
-/**
  * Set the default WebContents for progress messages
  * when no specific sender is available.
  */
@@ -113,6 +136,8 @@ export function setDefaultSender(sender: WebContents): void {
  */
 export function call(method: string, args: any[], sender?: WebContents): Promise<any> {
   const w = ensureWorker();
+  // Any active call means the worker is not idle
+  clearIdleTimer();
   const requestId = `r${++requestCounter}`;
   return new Promise((resolve, reject) => {
     pending.set(requestId, { resolve, reject, sender });
@@ -124,6 +149,7 @@ export function call(method: string, args: any[], sender?: WebContents): Promise
  * Terminate the worker. Call during app shutdown.
  */
 export async function terminate(): Promise<void> {
+  clearIdleTimer();
   if (worker) {
     await worker.terminate();
     worker = null;

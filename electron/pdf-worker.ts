@@ -125,6 +125,11 @@ const dispatch: Record<string, Dispatcher> = {
     return undefined;
   },
 
+  async close(_args) {
+    pdfAnalyzer.close();
+    return undefined;
+  },
+
   // ── Outline / chapters ────────────────────────────────────────────────────
   async extractOutline(_args) {
     return pdfAnalyzer.extractOutline();

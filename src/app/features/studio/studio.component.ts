@@ -442,6 +442,7 @@ import { SettingsService } from '../../core/services/settings.service';
                         [projectTitle]="selectedMetadata()?.title || ''"
                         [author]="selectedMetadata()?.author || ''"
                         [year]="selectedMetadata()?.year || ''"
+                        [coverPath]="selectedItem()?.coverPath || ''"
                         [itemType]="selectedItem()?.type || 'book'"
                         [bfpPath]="selectedItem()?.bfpPath || ''"
                         [projectId]="selectedItem()?.id || ''"

@@ -499,6 +499,15 @@ export class ElectronService {
   }
 
   /**
+   * Close the main analysis document and free all WASM memory.
+   */
+  async closePdf(): Promise<void> {
+    if (this.isElectron) {
+      await (window as any).electron.pdf.closePdf();
+    }
+  }
+
+  /**
    * Clean up temp files from previous render session (legacy, now no-op).
    */
   async cleanupTempFiles(): Promise<void> {
@@ -2372,6 +2381,20 @@ export class ElectronService {
       return result.success ? result.data.absolutePath : null;
     }
     return null;
+  }
+
+  async ebookLibraryUpdateTags(relativePath: string, tags: string[]): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.updateTags(relativePath, tags);
+    }
+    return { success: false, error: 'Not in Electron' };
+  }
+
+  async ebookLibraryGetAllTags(): Promise<{ success: boolean; data?: { tags: string[] }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ebookLibrary.getAllTags();
+    }
+    return { success: false, error: 'Not in Electron' };
   }
 
   async generateUniqueFilename(originalPath: string, suffix: string): Promise<string | null> {

@@ -2007,6 +2007,7 @@ export class LLWizardComponent implements OnInit {
   readonly projectId = input<string>('');
   readonly projectDir = input<string>('');
   readonly audiobookFolder = input<string>('');
+  readonly coverPath = input<string>('');  // Absolute path to cover image
 
   // Language Learning specific inputs
   readonly projectTitle = input<string>('');
@@ -3334,7 +3335,7 @@ export class LLWizardComponent implements OnInit {
             type: 'tts-conversion',
             epubPath: resumeData.sourceEpubPath || '',
             projectDir,
-            metadata: { title: `TTS Continue (${session.language.toUpperCase()})` },
+            metadata: { title: `TTS Continue (${session.language.toUpperCase()})`, coverPath: this.coverPath() || undefined },
             config: {
               type: 'tts-conversion',
               language: session.language,
@@ -3421,6 +3422,7 @@ export class LLWizardComponent implements OnInit {
           // Build metadata with chaining info when assembly is enabled
           const metadata: any = {
             title: `TTS (${row.language.toUpperCase()})`,
+            coverPath: this.coverPath() || undefined,
           };
 
           if (soloTts && (row.language === asmSourceLang || row.language === asmTargetLang)) {
@@ -3529,6 +3531,7 @@ export class LLWizardComponent implements OnInit {
               title: `Assembly (${sourceLang.toUpperCase()}-${targetLang.toUpperCase()})`,
               author: this.author(),
               year: this.year() || undefined,
+              coverPath: this.coverPath() || undefined,
               bilingualPlaceholder: { role: 'assembly', projectId: this.projectId() },
             },
             config: {
@@ -3557,6 +3560,7 @@ export class LLWizardComponent implements OnInit {
               title: `Assembly (${sourceLang.toUpperCase()}-${targetLang.toUpperCase()})`,
               author: this.author(),
               year: this.year() || undefined,
+              coverPath: this.coverPath() || undefined,
             },
             config: {
               type: 'bilingual-assembly',

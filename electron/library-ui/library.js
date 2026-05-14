@@ -15,6 +15,8 @@ class LibraryManager {
     this.currentCategory = 'all';
     this.audiobookTags = [];
     this.currentAudiobookTag = 'all';
+    this.ebookTags = [];
+    this.currentEbookTag = 'all';
 
     // Queue state
     this.queuePollTimer = null;
@@ -42,6 +44,7 @@ class LibraryManager {
     this.sortTitle = document.getElementById('sort-title');
     this.sortDate = document.getElementById('sort-date');
     this.categoryBar = document.getElementById('category-bar');
+    this.ebookTagBar = document.getElementById('ebook-tag-bar');
 
     // Section containers
     this.libraryBar = document.getElementById('library-bar');
@@ -285,10 +288,67 @@ class LibraryManager {
 
   setCategory(category) {
     this.currentCategory = category;
+    this.currentEbookTag = 'all';
 
     // Update active state on pills
     this.categoryBar.querySelectorAll('.category-pill').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.category === category);
+    });
+
+    this.buildEbookTagBar();
+    this.renderEbooks();
+    this.loadEbookCoversProgressively();
+  }
+
+  buildEbookTagBar() {
+    // Collect tags from ebooks within current category
+    const booksInCategory = this.currentCategory === 'all'
+      ? this.allEbooks
+      : this.allEbooks.filter(b => b.category === this.currentCategory);
+
+    const tagCounts = new Map();
+    for (const book of booksInCategory) {
+      if (book.tags) {
+        for (const t of book.tags) {
+          tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
+        }
+      }
+    }
+
+    this.ebookTags = [...tagCounts.keys()].sort();
+
+    if (this.ebookTags.length === 0) {
+      this.ebookTagBar.style.display = 'none';
+      return;
+    }
+
+    this.ebookTagBar.innerHTML = '';
+
+    const allBtn = document.createElement('button');
+    allBtn.className = 'category-pill' + (this.currentEbookTag === 'all' ? ' active' : '');
+    allBtn.dataset.tag = 'all';
+    allBtn.textContent = `All Tags`;
+    allBtn.addEventListener('click', () => this.setEbookTag('all'));
+    this.ebookTagBar.appendChild(allBtn);
+
+    for (const tag of this.ebookTags) {
+      const count = tagCounts.get(tag);
+      const btn = document.createElement('button');
+      btn.className = 'category-pill' + (this.currentEbookTag === tag ? ' active' : '');
+      btn.dataset.tag = tag;
+      btn.textContent = `${tag} (${count})`;
+      btn.addEventListener('click', () => this.setEbookTag(tag));
+      this.ebookTagBar.appendChild(btn);
+    }
+
+    this.ebookTagBar.style.display = 'flex';
+  }
+
+  setEbookTag(tag) {
+    this.currentEbookTag = tag;
+
+    this.ebookTagBar.querySelectorAll('.category-pill').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tag === tag);
     });
 
     this.renderEbooks();
@@ -313,6 +373,7 @@ class LibraryManager {
       this.libraryBar.style.display = 'none';
       this.searchContainer.style.display = 'none';
       this.categoryBar.style.display = 'none';
+      this.ebookTagBar.style.display = 'none';
       this.libraryContent.style.display = 'none';
       this.queueContent.style.display = 'block';
       this.startQueuePolling();
@@ -329,7 +390,10 @@ class LibraryManager {
       this.clearSearch.style.display = 'none';
 
       if (tab === 'ebooks') {
+        this.ebookTagBar.style.display = 'none';
+        this.currentEbookTag = 'all';
         this.buildCategoryBar();
+        this.buildEbookTagBar();
         if (this.allEbooks.length === 0) {
           await this.loadEbooks();
         } else {
@@ -337,6 +401,8 @@ class LibraryManager {
         }
       } else {
         this.currentCategory = 'all';
+        this.currentEbookTag = 'all';
+        this.ebookTagBar.style.display = 'none';
         this.buildAudiobookTagBar();
         if (this.allBooks.length === 0) {
           await this.loadBooks();
@@ -377,7 +443,7 @@ class LibraryManager {
       this.loadCoversProgressively();
     } catch (err) {
       console.error('Failed to load books:', err);
-      this.loadStatus.textContent = 'Error loading library';
+      this.loadStatus.textContent = 'Error loading bookshelf';
       this.loadingIndicator.style.display = 'none';
     }
   }
@@ -487,6 +553,7 @@ class LibraryManager {
 
       this.sortEbooks();
       this.buildCategoryBar();
+      this.buildEbookTagBar();
       this.renderEbooks();
       this.loadingIndicator.style.display = 'none';
 
@@ -502,9 +569,13 @@ class LibraryManager {
     this.booksContainer.innerHTML = '';
     this.statLabel.textContent = 'Ebooks';
 
-    const filtered = this.currentCategory === 'all'
+    let filtered = this.currentCategory === 'all'
       ? this.allEbooks
       : this.allEbooks.filter(b => b.category === this.currentCategory);
+
+    if (this.currentEbookTag !== 'all') {
+      filtered = filtered.filter(b => b.tags && b.tags.includes(this.currentEbookTag));
+    }
 
     this.totalBooks.textContent = filtered.length;
 
@@ -527,10 +598,15 @@ class LibraryManager {
     card.dataset.relativePath = book.relativePath;
     card.dataset.title = (book.title || '').toLowerCase();
     card.dataset.author = (book.authorFull || book.authorLast || '').toLowerCase();
+    card.dataset.tags = (book.tags || []).join(',').toLowerCase();
 
     const format = (book.format || 'epub').toUpperCase();
     const formatClass = `format-${book.format}`;
     const author = book.authorFull || (book.authorLast ? `${book.authorLast}, ${book.authorFirst || ''}`.trim() : '');
+
+    const tagsHtml = (book.tags && book.tags.length > 0)
+      ? `<div class="book-tags">${book.tags.slice(0, 3).map(t => `<span class="book-tag">${this.escapeHtml(t)}</span>`).join('')}${book.tags.length > 3 ? `<span class="book-tag book-tag-more">+${book.tags.length - 3}</span>` : ''}</div>`
+      : '';
 
     card.innerHTML = `
       <div class="book-cover">
@@ -540,6 +616,7 @@ class LibraryManager {
       <div class="book-info">
         <div class="book-title" title="${this.escapeHtml(book.title)}">${this.escapeHtml(book.title)}</div>
         ${author ? `<div class="book-author">${this.escapeHtml(author)}</div>` : ''}
+        ${tagsHtml}
         <div class="book-size">${this.formatSize(book.fileSize)}${book.year ? ` &middot; ${book.year}` : ''}</div>
       </div>
     `;
