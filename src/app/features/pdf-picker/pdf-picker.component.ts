@@ -396,6 +396,7 @@ interface AlertModal {
                 [blocks]="blocks()"
                 [categories]="categoriesWithPreview()"
               [categoryHighlights]="combinedHighlights()"
+              [pulseRects]="pulseHighlightRects()"
               [deletedHighlightIds]="deletedHighlightIds()"
               [correctedBlockIds]="correctedBlockIds()"
               [blockOffsets]="blockOffsets()"
@@ -569,14 +570,15 @@ interface AlertModal {
           <app-categories-panel
             pane-secondary
             [categories]="categoriesArray()"
-            [blocks]="[]"
+            [blocks]="textLayerFilteredBlocks()"
             [selectedBlockIds]="[]"
             [includedChars]="0"
             [excludedChars]="0"
             [analysisFlags]="analysisFlags()"
             [analysisCategories]="analysisCategories()"
             [analysisOnly]="true"
-            (navigateToFlag)="scrollToPage($event.page)"
+            [selectedFlagIndex]="selectedAnalysisFlagIndex()"
+            (navigateToFlag)="onAnalysisNavigate($event)"
           />
         } @else {
           <app-categories-panel
@@ -2679,12 +2681,10 @@ export class PdfPickerComponent implements OnInit {
             this.setMode('chapters');
           }
           break;
-        case 'a': // A for analysis
+        case 'a': // A for analysis & search
           if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
-            if (this.analysisFlags().length > 0) {
-              event.preventDefault();
-              this.setMode('analysis');
-            }
+            event.preventDefault();
+            this.setMode('analysis');
           }
           break;
       }
@@ -2899,6 +2899,12 @@ export class PdfPickerComponent implements OnInit {
   readonly pendingAnalysisMatch = signal(false);
   // Separate category records for analysis highlights (not shown in categories list)
   readonly analysisHighlightCategories = signal<Record<string, any>>({});
+  // Index of the selected/scrolled-to flag in the sidebar
+  readonly selectedAnalysisFlagIndex = signal<number>(-1);
+
+  // Pulse highlight rects — temporary pulsing overlays shown when navigating to a flag or search result
+  readonly pulseHighlightRects = signal<Array<{ page: number; x: number; y: number; w: number; h: number; color: string }>>([]);
+  private pulseTimer: any = null;
 
   // Custom category highlights - stored by category ID, then by page for O(1) lookup
   // This avoids creating heavy TextBlock objects for pattern matches
@@ -3362,14 +3368,12 @@ export class PdfPickerComponent implements OnInit {
     { id: 'split', icon: '📖', label: 'Split', tooltip: 'Split scanned pages (P)' },
     { id: 'ocr', icon: '👁️', label: 'OCR', tooltip: 'OCR scanned pages (O)' },
     { id: 'chapters', icon: '📚', label: 'Chapters', tooltip: 'Manage chapters (H)' },
-    { id: 'analysis', icon: '🔬', label: 'Analysis', tooltip: 'View content analysis flags (A)' }
+    { id: 'analysis', icon: '🔬', label: 'Analysis', tooltip: 'Analysis flags & text search (A)' }
   ];
 
   // Only show analysis mode when results are loaded
-  readonly visibleModes = computed(() => {
-    if (this.analysisFlags().length > 0) return this.modes;
-    return this.modes.filter(m => m.id !== 'analysis');
-  });
+  // Analysis mode is always visible (search is available even without analysis data)
+  readonly visibleModes = computed(() => this.modes);
 
   // Crop mode state (derived from currentMode)
   readonly cropMode = computed(() => this.currentMode() === 'crop');
@@ -4963,6 +4967,20 @@ export class PdfPickerComponent implements OnInit {
    * Toggles the deleted state of the highlight.
    */
   onHighlightClick(event: { catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }): void {
+    // In analysis mode, scroll the sidebar to the matching flag instead of toggling deletion
+    if (this.analysisMode() && event.catId.startsWith('analysis_')) {
+      const categoryId = event.catId.replace('analysis_', '');
+      // Find the flag that matches this page and category
+      const flags = this.analysisFlags();
+      const flagIndex = flags.findIndex(f =>
+        f.categoryId === categoryId && f.page === event.pageNum
+      );
+      if (flagIndex >= 0) {
+        this.selectedAnalysisFlagIndex.set(flagIndex);
+      }
+      return;
+    }
+
     const highlightId = this.getHighlightId(event.catId, event.pageNum, event.rect.x, event.rect.y);
     const deletedIds = this.deletedHighlightIds();
 
@@ -5149,6 +5167,72 @@ export class PdfPickerComponent implements OnInit {
   // Scroll to a specific page (used by timeline)
   scrollToPage(pageNum: number): void {
     this.pdfViewer?.scrollToPage(pageNum);
+  }
+
+  /**
+   * Handle navigation from the analysis panel (flag click or search result click).
+   * Scrolls to the page and triggers a pulse animation on the matching rects.
+   */
+  onAnalysisNavigate(event: { page: number; categoryId?: string; color?: string; blockText?: string }): void {
+    this.scrollToPage(event.page);
+
+    const pulseRects: Array<{ page: number; x: number; y: number; w: number; h: number; color: string }> = [];
+    const color = event.color || '#FFD54F';
+
+    if (event.categoryId) {
+      // Analysis flag — find rects from analysisHighlightCategories
+      const catKey = 'analysis_' + event.categoryId;
+      const analysisHighlights = this.analysisHighlightCategories();
+      const cat = analysisHighlights[catKey];
+      if (cat) {
+        // Look up rects in combinedHighlights
+        const combined = this.combinedHighlights();
+        const pageMap = combined.get(catKey);
+        if (pageMap) {
+          const rects = pageMap[event.page];
+          if (rects) {
+            for (const r of rects) {
+              pulseRects.push({ page: r.page, x: r.x, y: r.y, w: r.w, h: r.h, color: cat.color || color });
+            }
+          }
+        }
+      }
+    }
+
+    if (event.blockText) {
+      // Search result — find matching block by text and page to get its bounding rect
+      const blocks = this.blocks();
+      for (const block of blocks) {
+        if (block.page === event.page && block.text === event.blockText) {
+          pulseRects.push({
+            page: block.page,
+            x: block.x,
+            y: block.y,
+            w: block.width,
+            h: block.height,
+            color,
+          });
+          break;
+        }
+      }
+    }
+
+    if (pulseRects.length > 0) {
+      this.triggerPulse(pulseRects);
+    }
+  }
+
+  private triggerPulse(rects: Array<{ page: number; x: number; y: number; w: number; h: number; color: string }>): void {
+    // Clear any existing pulse timer
+    if (this.pulseTimer) {
+      clearTimeout(this.pulseTimer);
+    }
+    this.pulseHighlightRects.set(rects);
+    // Auto-clear after animation completes (7 pulses x 1.5s = 10.5s)
+    this.pulseTimer = setTimeout(() => {
+      this.pulseHighlightRects.set([]);
+      this.pulseTimer = null;
+    }, 11000);
   }
 
   async exportText(): Promise<void> {

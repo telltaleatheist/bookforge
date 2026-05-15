@@ -229,6 +229,20 @@ export interface CropRect {
                         }
                       </g>
                     }
+
+                    <!-- Pulse highlight overlays -->
+                    @for (pulse of getPulseRectsForPage(pageNum); track $index) {
+                      <rect
+                        class="pulse-rect"
+                        [attr.x]="pulse.x"
+                        [attr.y]="pulse.y"
+                        [attr.width]="pulse.w"
+                        [attr.height]="pulse.h"
+                        [attr.fill]="pulse.color + '50'"
+                        [attr.stroke]="pulse.color"
+                        stroke-width="2"
+                      />
+                    }
                   }
 
                   <!-- Chapter markers -->
@@ -713,6 +727,19 @@ export interface CropRect {
                           />
                         }
                       </g>
+                    }
+                    <!-- Pulse highlight overlays (grid mode) -->
+                    @for (pulse of getPulseRectsForPage(pageNum); track $index) {
+                      <rect
+                        class="pulse-rect"
+                        [attr.x]="pulse.x"
+                        [attr.y]="pulse.y"
+                        [attr.width]="pulse.w"
+                        [attr.height]="pulse.h"
+                        [attr.fill]="pulse.color + '50'"
+                        [attr.stroke]="pulse.color"
+                        stroke-width="2"
+                      />
                     }
                     <!-- Chapter markers (grid mode) -->
                     @if (chapters().length > 0 || chaptersMode()) {
@@ -1411,6 +1438,19 @@ export interface CropRect {
       stroke-width: 0.25 !important;
     }
 
+    // Pulse highlight overlay (analysis flag / search result navigation)
+    .block-overlay .pulse-rect {
+      pointer-events: none;
+      animation: highlight-pulse 1.5s ease-in-out 7;
+      animation-fill-mode: forwards;
+    }
+
+    @keyframes highlight-pulse {
+      0% { opacity: 0.15; stroke-width: 2; }
+      50% { opacity: 0.85; stroke-width: 3; }
+      100% { opacity: 0.15; stroke-width: 2; }
+    }
+
     // Category highlight rects (lightweight pattern matches)
     // Click to toggle deleted state
     .block-overlay .highlight-group {
@@ -1755,6 +1795,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Deleted highlight IDs - highlights that should show X strikethrough
   deletedHighlightIds = input<Set<string>>(new Set());
+
+  // Pulse highlight rects — temporary pulsing overlays (e.g., when clicking analysis flags or search results)
+  pulseRects = input<Array<{ page: number; x: number; y: number; w: number; h: number; color: string }>>([]);
 
   // Block IDs that have text corrections (for visual indicator)
   correctedBlockIds = input<Set<string>>(new Set());
@@ -2141,6 +2184,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     }
 
     return result;
+  }
+
+  getPulseRectsForPage(pageNum: number): Array<{ x: number; y: number; w: number; h: number; color: string }> {
+    return this.pulseRects().filter(r => r.page === pageNum);
   }
 
   // Computed handles for crop resize

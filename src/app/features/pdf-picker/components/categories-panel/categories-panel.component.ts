@@ -1,8 +1,17 @@
-import { Component, input, output, computed, signal, HostListener, ChangeDetectionStrategy } from '@angular/core';
+import { Component, input, output, computed, signal, HostListener, ChangeDetectionStrategy, ElementRef, inject, effect, Pipe, PipeTransform } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { Category, TextBlock } from '../../services/pdf.service';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+
+@Pipe({ name: 'safeHtml', standalone: true })
+class SafeHtmlPipe implements PipeTransform {
+  private sanitizer = inject(DomSanitizer);
+  transform(value: string): SafeHtml {
+    return this.sanitizer.bypassSecurityTrustHtml(value);
+  }
+}
 
 interface RegexMatch {
   page: number;
@@ -12,7 +21,7 @@ interface RegexMatch {
 @Component({
   selector: 'app-categories-panel',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, SafeHtmlPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (!analysisOnly()) {
@@ -291,46 +300,130 @@ interface RegexMatch {
 
     <div class="categories-list">
       @if (analysisOnly()) {
-        <!-- Analysis-only mode: show only analysis results -->
-        <div class="analysis-section">
-          <div class="analysis-header">
-            <span class="analysis-title">Content Analysis</span>
-            <span class="analysis-count">{{ analysisFlags().length }} flags</span>
-          </div>
+        <!-- Analysis mode: tabs for Flags and Search -->
+        <div class="analysis-tabs">
+          <button
+            class="analysis-tab"
+            [class.active]="analysisTab() === 'flags'"
+            (click)="analysisTab.set('flags')"
+          >
+            Flags
+            @if (analysisFlags().length > 0) {
+              <span class="tab-badge">{{ analysisFlags().length }}</span>
+            }
+          </button>
+          <button
+            class="analysis-tab"
+            [class.active]="analysisTab() === 'search'"
+            (click)="analysisTab.set('search')"
+          >
+            Search
+            @if (searchResults().length > 0) {
+              <span class="tab-badge">{{ searchResults().length }}</span>
+            }
+          </button>
+        </div>
 
-          @for (cat of analysisCategories(); track cat.id) {
-            @if (cat.flagCount > 0) {
-              <div class="analysis-category">
-                <div class="analysis-cat-header">
-                  <span class="category-color" [style.background]="cat.color"></span>
-                  <span class="analysis-cat-name">{{ cat.name }}</span>
-                  <span class="analysis-cat-count">{{ cat.flagCount }}</span>
-                </div>
-
-                @for (flag of getAnalysisFlagsForCategory(cat.id); track $index) {
-                  <div
-                    class="analysis-flag"
-                    [class.severity-high]="flag.severity === 'high'"
-                    [class.severity-medium]="flag.severity === 'medium'"
-                    [class.severity-low]="flag.severity === 'low'"
-                    [class.clickable]="flag.page !== undefined"
-                    (click)="onFlagClick(flag)"
-                  >
-                    <div class="flag-header">
-                      <span class="severity-dot" [class]="'dot-' + flag.severity"></span>
-                      <span class="flag-chapter">{{ flag.chapterTitle }}</span>
-                      @if (flag.page !== undefined) {
-                        <span class="flag-page">p.{{ flag.page + 1 }}</span>
-                      }
+        @if (analysisTab() === 'flags') {
+          <div class="analysis-section">
+            @if (analysisFlags().length > 0) {
+              <!-- Color legend -->
+              <div class="analysis-legend">
+                @for (cat of analysisCategories(); track cat.id) {
+                  @if (cat.flagCount > 0) {
+                    <div class="legend-item">
+                      <span class="legend-color" [style.background]="cat.color"></span>
+                      <span class="legend-name">{{ cat.name }}</span>
+                      <span class="legend-count">{{ cat.flagCount }}</span>
                     </div>
-                    <div class="flag-quote">"{{ flag.quote.length > 100 ? flag.quote.substring(0, 100) + '...' : flag.quote }}"</div>
-                    <div class="flag-description">{{ flag.description }}</div>
-                  </div>
+                  }
                 }
               </div>
+
+              <!-- Flat chronological list -->
+              @for (flag of sortedFlags(); track $index) {
+                <div
+                  class="analysis-flag"
+                  [class.expanded]="expandedFlagIndex() === $index"
+                  [class.clickable]="flag.page !== undefined"
+                  [class.selected]="flag === selectedFlag()"
+                  [style.border-left-color]="flag.categoryColor"
+                  (click)="onFlagItemClick(flag, $index)"
+                >
+                  <div class="flag-header">
+                    <span class="category-dot" [style.background]="flag.categoryColor"></span>
+                    <span class="flag-category-label">{{ flag.categoryName }}</span>
+                    <span class="flag-chapter">{{ flag.chapterTitle }}</span>
+                    @if (flag.page !== undefined) {
+                      <span class="flag-page">p.{{ flag.page + 1 }}</span>
+                    }
+                  </div>
+                  @if (expandedFlagIndex() === $index) {
+                    <div class="flag-quote-full">"{{ flag.quote }}"</div>
+                    <div class="flag-description-full">{{ flag.description }}</div>
+                  } @else {
+                    <div class="flag-quote">"{{ flag.quote.length > 80 ? flag.quote.substring(0, 80) + '...' : flag.quote }}"</div>
+                  }
+                </div>
+              }
+            } @else {
+              <div class="empty-state">
+                <p>No analysis results</p>
+                <p class="empty-hint">Run content analysis from the version picker to see flags here</p>
+              </div>
             }
-          }
-        </div>
+          </div>
+        } @else {
+          <!-- Search tab -->
+          <div class="search-section">
+            <div class="search-input-wrapper">
+              <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/>
+                <path d="M21 21l-4.35-4.35"/>
+              </svg>
+              <input
+                type="text"
+                class="search-input"
+                placeholder="Search text..."
+                [ngModel]="searchQuery()"
+                (ngModelChange)="onSearchQueryChange($event)"
+              />
+              @if (searchQuery()) {
+                <button class="clear-search" (click)="clearSearch()">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M18 6L6 18M6 6l12 12"/>
+                  </svg>
+                </button>
+              }
+            </div>
+            <div class="search-options">
+              <label class="search-option" title="Match words consecutively as a phrase">
+                <input type="checkbox" [ngModel]="searchPhraseMode()" (ngModelChange)="searchPhraseMode.set($event)" />
+                Phrase
+              </label>
+              <label class="search-option" title="Match similar-sounding words (Soundex + Levenshtein)">
+                <input type="checkbox" [ngModel]="searchPhoneticMode()" (ngModelChange)="searchPhoneticMode.set($event)" />
+                Phonetic
+              </label>
+            </div>
+            @if (searchQuery()) {
+              <div class="search-status">
+                {{ searchResults().length }} {{ searchResults().length === 1 ? 'match' : 'matches' }}
+              </div>
+            }
+            <div class="search-results-list">
+              @for (result of searchResults().slice(0, 200); track $index) {
+                <div class="search-result clickable" (click)="onSearchResultClick(result)">
+                  <span class="result-page">p.{{ result.page + 1 }}</span>
+                  <span class="result-text" [innerHTML]="result.highlightedText | safeHtml"></span>
+                </div>
+              }
+              @if (searchResults().length > 200) {
+                <div class="search-more">...and {{ searchResults().length - 200 }} more</div>
+              }
+            </div>
+          </div>
+        }
       } @else if (categories().length === 0) {
         <div class="empty-state">
           <p>Load a PDF to see categories</p>
@@ -1045,65 +1138,164 @@ interface RegexMatch {
       }
     }
 
-    /* Analysis Results Section */
-    .analysis-section {
-      border-top: 1px solid var(--border-subtle);
-      margin-top: var(--ui-spacing-sm);
-      padding-top: var(--ui-spacing-sm);
+    ::ng-deep mark {
+      background: rgba(255, 213, 79, 0.4);
+      color: inherit;
+      padding: 0 1px;
+      border-radius: 2px;
     }
 
-    .analysis-header {
+    /* Analysis Tabs */
+    .analysis-tabs {
       display: flex;
-      justify-content: space-between;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-elevated);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    .analysis-tab {
+      flex: 1;
+      display: flex;
       align-items: center;
+      justify-content: center;
+      gap: 6px;
       padding: var(--ui-spacing-sm) var(--ui-spacing-md);
-    }
-
-    .analysis-title {
-      font-size: var(--ui-font-sm);
-      font-weight: 600;
-      color: var(--text-primary);
-    }
-
-    .analysis-count {
-      font-size: var(--ui-font-xs);
+      border: none;
+      background: transparent;
       color: var(--text-secondary);
-      background: var(--bg-subtle);
-      padding: 2px 8px;
-      border-radius: 10px;
-    }
-
-    .analysis-category {
-      margin-bottom: var(--ui-spacing-sm);
-    }
-
-    .analysis-cat-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 4px var(--ui-spacing-md);
       font-size: var(--ui-font-sm);
       font-weight: 500;
-      color: var(--text-primary);
-    }
-
-    .analysis-cat-count {
-      margin-left: auto;
-      font-size: var(--ui-font-xs);
-      color: var(--text-secondary);
-    }
-
-    .analysis-flag {
-      padding: 6px var(--ui-spacing-md) 6px calc(var(--ui-spacing-md) + 16px);
-      border-left: 2px solid transparent;
-      cursor: default;
-
-      &.severity-high { border-left-color: #B71C1C; }
-      &.severity-medium { border-left-color: #FB8C00; }
-      &.severity-low { border-left-color: #7B1FA2; }
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s ease;
 
       &:hover {
-        background: var(--bg-hover);
+        color: var(--text-primary);
+        background: var(--hover-bg);
+      }
+
+      &.active {
+        color: var(--accent);
+        border-bottom-color: var(--accent);
+      }
+
+      .tab-badge {
+        font-size: 10px;
+        padding: 1px 6px;
+        background: var(--bg-subtle);
+        border-radius: 8px;
+        font-weight: 600;
+      }
+
+      &.active .tab-badge {
+        background: var(--accent-subtle);
+        color: var(--accent);
+      }
+    }
+
+    /* Search Section */
+    .search-section {
+      padding: var(--ui-spacing-sm);
+    }
+
+    .search-input-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+
+      .search-icon {
+        position: absolute;
+        left: 8px;
+        color: var(--text-tertiary);
+        pointer-events: none;
+      }
+
+      .search-input {
+        width: 100%;
+        padding: var(--ui-spacing-sm) var(--ui-spacing-sm) var(--ui-spacing-sm) 30px;
+        border: 1px solid var(--border-default);
+        border-radius: $radius-sm;
+        background: var(--bg-surface);
+        color: var(--text-primary);
+        font-size: var(--ui-font-sm);
+
+        &:focus {
+          outline: none;
+          border-color: var(--accent);
+        }
+
+        &::placeholder {
+          color: var(--text-tertiary);
+        }
+      }
+
+      .clear-search {
+        position: absolute;
+        right: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border: none;
+        background: var(--bg-subtle);
+        border-radius: 50%;
+        cursor: pointer;
+        color: var(--text-secondary);
+        padding: 0;
+
+        &:hover {
+          background: var(--hover-bg);
+          color: var(--text-primary);
+        }
+      }
+    }
+
+    .search-options {
+      display: flex;
+      gap: var(--ui-spacing-md);
+      padding: var(--ui-spacing-xs) 0;
+    }
+
+    .search-option {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: var(--ui-font-xs);
+      color: var(--text-secondary);
+      cursor: pointer;
+
+      input[type="checkbox"] {
+        width: 13px;
+        height: 13px;
+        margin: 0;
+        accent-color: var(--accent);
+        cursor: pointer;
+      }
+    }
+
+    .search-status {
+      font-size: var(--ui-font-xs);
+      color: var(--text-secondary);
+      padding: var(--ui-spacing-xs) 0;
+    }
+
+    .search-results-list {
+      margin-top: var(--ui-spacing-xs);
+    }
+
+    .search-result {
+      display: flex;
+      gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-xs) var(--ui-spacing-sm);
+      font-size: 11px;
+      border-bottom: 1px solid var(--border-subtle);
+      align-items: flex-start;
+
+      &:last-child {
+        border-bottom: none;
       }
 
       &.clickable {
@@ -1113,29 +1305,128 @@ interface RegexMatch {
           background: var(--accent-subtle);
         }
       }
+
+      .result-page {
+        color: #ff7b54;
+        font-weight: 600;
+        flex-shrink: 0;
+        width: 32px;
+        padding-top: 1px;
+      }
+
+      .result-text {
+        color: var(--text-primary);
+        line-height: 1.4;
+        word-break: break-word;
+      }
+    }
+
+    .search-more {
+      padding: var(--ui-spacing-xs) var(--ui-spacing-sm);
+      font-size: 10px;
+      color: var(--text-tertiary);
+      font-style: italic;
+    }
+
+    .empty-hint {
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      margin-top: 4px;
+    }
+
+    /* Analysis Results Section */
+    .analysis-section {
+      padding-top: var(--ui-spacing-xs);
+    }
+
+    /* Color legend */
+    .analysis-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px var(--ui-spacing-md);
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: var(--ui-spacing-xs);
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: var(--text-secondary);
+    }
+
+    .legend-color {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+
+    .legend-name {
+      white-space: nowrap;
+    }
+
+    .legend-count {
+      color: var(--text-tertiary);
+      font-weight: 600;
+    }
+
+    /* Flat flag list */
+    .analysis-flag {
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      border-left: 3px solid transparent;
+      cursor: pointer;
+      transition: background 0.1s ease;
+
+      &:hover {
+        background: var(--hover-bg);
+      }
+
+      &.selected {
+        background: var(--accent-subtle);
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
+
+      &.expanded {
+        background: var(--bg-elevated);
+        border-left-width: 4px;
+        padding-bottom: var(--ui-spacing-md);
+      }
+
+      & + .analysis-flag {
+        border-top: 1px solid var(--border-subtle);
+      }
     }
 
     .flag-header {
       display: flex;
       align-items: center;
       gap: 6px;
-      margin-bottom: 2px;
+      margin-bottom: 3px;
     }
 
-    .severity-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
+    .category-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
       flex-shrink: 0;
+    }
 
-      &.dot-high { background: #B71C1C; }
-      &.dot-medium { background: #FB8C00; }
-      &.dot-low { background: #7B1FA2; }
+    .flag-category-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      white-space: nowrap;
     }
 
     .flag-chapter {
       font-size: 10px;
       color: var(--text-tertiary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .flag-page {
@@ -1143,6 +1434,7 @@ interface RegexMatch {
       font-size: 9px;
       color: #ff7b54;
       font-weight: 600;
+      flex-shrink: 0;
     }
 
     .flag-quote {
@@ -1150,13 +1442,27 @@ interface RegexMatch {
       color: var(--text-secondary);
       font-style: italic;
       line-height: 1.4;
-      margin-bottom: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
-    .flag-description {
-      font-size: 10px;
-      color: var(--text-tertiary);
-      line-height: 1.3;
+    .flag-quote-full {
+      font-size: 12px;
+      color: var(--text-primary);
+      font-style: italic;
+      line-height: 1.5;
+      margin: var(--ui-spacing-xs) 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .flag-description-full {
+      font-size: 11px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
   `],
 })
@@ -1202,6 +1508,9 @@ export class CategoriesPanelComponent {
     flagCount: number;
   }>>([]);
 
+  // Selected flag index (set when user clicks a highlight on the PDF in analysis mode)
+  selectedFlagIndex = input<number>(-1);
+
   // Filter inputs
   regexCategoryFilter = input<string[]>([]);  // Empty = all categories
   regexPageFilterType = input<'all' | 'range' | 'even' | 'odd' | 'specific'>('all');
@@ -1246,11 +1555,47 @@ export class CategoriesPanelComponent {
   regexPageRangeEndChange = output<number>();
   regexSpecificPagesChange = output<string>();
 
-  // Analysis flag navigation
-  navigateToFlag = output<{ page: number }>();
+  // Analysis flag / search result navigation
+  navigateToFlag = output<{
+    page: number;
+    // For pulsing: either flag category info or search block bounds
+    categoryId?: string;
+    color?: string;
+    blockText?: string;  // search result text to find matching block
+  }>();
 
   // Create section state (can be controlled by parent)
   createSectionExpandedChange = output<boolean>();
+
+  private readonly el = inject(ElementRef);
+
+  // Resolved selected flag object (from flat index into unsorted analysisFlags)
+  readonly selectedFlag = computed(() => {
+    const idx = this.selectedFlagIndex();
+    if (idx < 0) return null;
+    // Index is into the unsorted analysisFlags array — resolve the object
+    // so reference equality works against sortedFlags in the template
+    return this.analysisFlags()[idx] ?? null;
+  });
+
+  // Scroll to and expand selected flag when it changes
+  private readonly scrollToFlagEffect = effect(() => {
+    const flag = this.selectedFlag();
+    if (!flag) return;
+    // Find the index in sortedFlags to expand it
+    const sorted = this.sortedFlags();
+    const sortedIdx = sorted.indexOf(flag);
+    if (sortedIdx >= 0) {
+      this.expandedFlagIndex.set(sortedIdx);
+    }
+    // Use setTimeout to let the DOM update first
+    setTimeout(() => {
+      const el = this.el.nativeElement.querySelector('.analysis-flag.selected');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 0);
+  });
 
   // Local state
   readonly createSectionExpanded = signal(false);
@@ -1258,6 +1603,50 @@ export class CategoriesPanelComponent {
   readonly filtersExpanded = signal(false);
   readonly contextMenu = signal<{ x: number; y: number; categoryId: string } | null>(null);
   readonly selectedPreset = signal<string>('');
+
+  // Analysis tab state
+  readonly analysisTab = signal<'flags' | 'search'>('flags');
+  readonly expandedFlagIndex = signal<number>(-1);
+
+  // Flags sorted by page (chronological order through the document)
+  readonly sortedFlags = computed(() => {
+    const flags = this.analysisFlags();
+    if (!flags.length) return flags;
+    return [...flags].sort((a, b) => {
+      const pa = a.page ?? Infinity;
+      const pb = b.page ?? Infinity;
+      return pa - pb;
+    });
+  });
+
+  // Search state
+  readonly searchQuery = signal('');
+  readonly searchPhraseMode = signal(false);
+  readonly searchPhoneticMode = signal(false);
+
+  // Search results computed from blocks
+  readonly searchResults = computed(() => {
+    const query = this.searchQuery().trim();
+    if (!query) return [];
+
+    const blocks = this.blocks();
+    if (!blocks.length) return [];
+
+    const results: Array<{ page: number; text: string; highlightedText: string }> = [];
+
+    for (const block of blocks) {
+      if (!block.text) continue;
+      if (this.matchesQuery(query, block.text)) {
+        results.push({
+          page: block.page,
+          text: block.text,
+          highlightedText: this.highlightMatch(query, block.text),
+        });
+      }
+    }
+
+    return results;
+  });
 
   // Pattern presets for common reference formats
   readonly patternPresets = [
@@ -1405,9 +1794,22 @@ export class CategoriesPanelComponent {
     return this.analysisFlags().filter(f => f.categoryId === categoryId);
   }
 
-  onFlagClick(flag: { page?: number }): void {
+  onFlagClick(flag: { page?: number; categoryId?: string; categoryColor?: string }): void {
     if (flag.page !== undefined) {
-      this.navigateToFlag.emit({ page: flag.page });
+      this.navigateToFlag.emit({ page: flag.page, categoryId: flag.categoryId, color: flag.categoryColor });
+    }
+  }
+
+  onFlagItemClick(flag: { page?: number; categoryId?: string; categoryColor?: string }, index: number): void {
+    // Toggle expand/collapse
+    if (this.expandedFlagIndex() === index) {
+      this.expandedFlagIndex.set(-1);
+    } else {
+      this.expandedFlagIndex.set(index);
+      // Also navigate to the page and pulse
+      if (flag.page !== undefined) {
+        this.navigateToFlag.emit({ page: flag.page, categoryId: flag.categoryId, color: flag.categoryColor });
+      }
     }
   }
 
@@ -1454,5 +1856,207 @@ export class CategoriesPanelComponent {
   @HostListener('document:keydown.escape')
   onEscapeKey(): void {
     this.closeContextMenu();
+  }
+
+  // --- Search methods ---
+
+  onSearchQueryChange(value: string): void {
+    this.searchQuery.set(value);
+  }
+
+  clearSearch(): void {
+    this.searchQuery.set('');
+  }
+
+  onSearchResultClick(result: { page: number; text: string }): void {
+    this.navigateToFlag.emit({ page: result.page, blockText: result.text, color: '#FFD54F' });
+  }
+
+  matchesQuery(query: string, text: string): boolean {
+    if (!query || !text) return false;
+    const trimmed = query.trim();
+    if (!trimmed) return false;
+
+    // Auto-detect boolean operators
+    if (/\s+(AND|OR|NOT)\s+/.test(trimmed)) {
+      return this.evaluateBooleanQuery(trimmed, text);
+    } else if (this.searchPhraseMode()) {
+      return this.matchesPhrase(trimmed, text);
+    } else {
+      return this.matchesAnyWord(trimmed, text);
+    }
+  }
+
+  private matchesAnyWord(query: string, text: string): boolean {
+    const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+    const textLower = text.toLowerCase();
+    const textWords = textLower.split(/\s+/).filter(w => w.length > 0);
+
+    for (const searchWord of words) {
+      // Simple substring check first
+      if (textLower.includes(searchWord)) return true;
+
+      // Phonetic matching if enabled
+      if (this.searchPhoneticMode() && searchWord.length >= 3) {
+        for (const textWord of textWords) {
+          if (this.wordsMatchPhonetically(searchWord, textWord)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private matchesPhrase(query: string, text: string): boolean {
+    const textLower = text.toLowerCase();
+    const textWords = textLower.split(/\s+/).filter(w => w.length > 0);
+
+    // Exact phrase in double quotes
+    const exactMatch = query.match(/^"([^"]+)"$/);
+    if (exactMatch) {
+      return textLower.includes(exactMatch[1].toLowerCase());
+    }
+
+    // Phonetic phrase: words must appear consecutively
+    const searchWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+    if (searchWords.length === 0) return false;
+
+    for (let start = 0; start <= textWords.length - searchWords.length; start++) {
+      let allMatch = true;
+      for (let i = 0; i < searchWords.length; i++) {
+        const tw = textWords[start + i];
+        const sw = searchWords[i];
+        if (this.searchPhoneticMode()) {
+          if (!this.wordsMatchPhonetically(sw, tw)) { allMatch = false; break; }
+        } else {
+          if (!tw.includes(sw)) { allMatch = false; break; }
+        }
+      }
+      if (allMatch) return true;
+    }
+    return false;
+  }
+
+  private wordsMatchPhonetically(search: string, text: string): boolean {
+    if (text === search) return true;
+    if (search.length <= 2) return text === search;
+    if (search.length >= 3 && text.includes(search)) return true;
+
+    if (this.searchPhoneticMode() && search.length >= 3) {
+      const ss = this.soundex(search);
+      const ts = this.soundex(text);
+      if (ss && ts && ss === ts && ss !== '0000') return true;
+
+      const maxDist = Math.max(1, Math.floor(search.length / 3));
+      if (this.levenshteinDistance(search, text) <= maxDist) return true;
+    }
+    return false;
+  }
+
+  private evaluateBooleanQuery(query: string, line: string): boolean {
+    let processed = query;
+
+    // OR
+    const orPattern = /("?[\w]+"?)\s+OR\s+("?[\w]+"?)/g;
+    for (const match of [...query.matchAll(orPattern)]) {
+      const a = this.termMatches(match[1], line);
+      const b = this.termMatches(match[2], line);
+      processed = processed.replace(match[0], (a || b) ? 'TRUE' : 'FALSE');
+    }
+
+    // AND
+    const andPattern = /("?[\w]+"?)\s+AND\s+("?[\w]+"?)/g;
+    for (const match of [...processed.matchAll(andPattern)]) {
+      const a = match[1] === 'TRUE' || match[1] === 'FALSE' ? match[1] === 'TRUE' : this.termMatches(match[1], line);
+      const b = match[2] === 'TRUE' || match[2] === 'FALSE' ? match[2] === 'TRUE' : this.termMatches(match[2], line);
+      processed = processed.replace(match[0], (a && b) ? 'TRUE' : 'FALSE');
+    }
+
+    // NOT
+    const notPattern = /("?[\w]+"?)\s+NOT\s+("?[\w]+"?)/g;
+    for (const match of [...processed.matchAll(notPattern)]) {
+      const a = match[1] === 'TRUE' || match[1] === 'FALSE' ? match[1] === 'TRUE' : this.termMatches(match[1], line);
+      const b = match[2] === 'TRUE' || match[2] === 'FALSE' ? match[2] === 'TRUE' : this.termMatches(match[2], line);
+      processed = processed.replace(match[0], (a && !b) ? 'TRUE' : 'FALSE');
+    }
+
+    if (!/\s+(AND|OR|NOT)\s+/.test(query)) {
+      return this.termMatches(query, line);
+    }
+    return processed.includes('TRUE');
+  }
+
+  private termMatches(term: string, text: string): boolean {
+    const clean = term.replace(/"/g, '').toLowerCase();
+    return text.toLowerCase().includes(clean);
+  }
+
+  private soundex(word: string): string {
+    if (!word || word.length === 0) return '0000';
+    const clean = word.toUpperCase().replace(/[^A-Z]/g, '');
+    if (clean.length === 0) return '0000';
+
+    const codes: Record<string, string> = {
+      'B': '1', 'F': '1', 'P': '1', 'V': '1',
+      'C': '2', 'G': '2', 'J': '2', 'K': '2', 'Q': '2', 'S': '2', 'X': '2', 'Z': '2',
+      'D': '3', 'T': '3',
+      'L': '4',
+      'M': '5', 'N': '5',
+      'R': '6',
+    };
+
+    let result = clean[0];
+    let prevCode = codes[clean[0]] || '';
+
+    for (let i = 1; i < clean.length && result.length < 4; i++) {
+      const code = codes[clean[i]];
+      if (code && code !== prevCode) {
+        result += code;
+        prevCode = code;
+      } else if (!code) {
+        prevCode = '';
+      }
+    }
+    return (result + '000').substring(0, 4);
+  }
+
+  private levenshteinDistance(a: string, b: string): number {
+    const m = a.length;
+    const n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+
+    let prev = Array(n + 1).fill(0).map((_, i) => i);
+    let curr = Array(n + 1).fill(0);
+
+    for (let i = 1; i <= m; i++) {
+      curr[0] = i;
+      for (let j = 1; j <= n; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+      }
+      [prev, curr] = [curr, prev];
+    }
+    return prev[n];
+  }
+
+  private highlightMatch(query: string, text: string): string {
+    // Escape HTML entities first
+    const escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Truncate for display
+    const maxLen = 120;
+    const truncated = escaped.length > maxLen ? escaped.substring(0, maxLen) + '...' : escaped;
+
+    // Highlight matching terms
+    const terms = query.replace(/"/g, '').split(/\s+/).filter(w => w.length > 0 && !['AND', 'OR', 'NOT'].includes(w));
+    let result = truncated;
+    for (const term of terms) {
+      const regex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      result = result.replace(regex, '<mark>$&</mark>');
+    }
+    return result;
   }
 }
