@@ -42,6 +42,9 @@ testem.log
 /typings
 __screenshots__/
 
+# Model weights / checkpoints
+checkpoints/
+
 # System files
 .DS_Store
 Thumbs.db
