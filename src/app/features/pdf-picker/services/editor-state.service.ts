@@ -236,6 +236,8 @@ export class PdfEditorStateService {
     this.deletedBlockIds.set(data.deletedBlockIds || new Set());
     this.pageOrder.set(data.pageOrder || []);
     this.deletedPages.set(data.deletedPages || new Set());
+    this.blockSplits.set(new Map());
+    this.blockMerges.set(new Map());
     this.removeBackgrounds.set(false);  // Always reset background removal for new document
     this.showTextLayer.set(false);  // Always reset text layer visibility for new document
     this.paragraphBreaks.set(data.paragraphBreaks || new Set());

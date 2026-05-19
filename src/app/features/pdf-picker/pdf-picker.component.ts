@@ -4432,6 +4432,32 @@ export class PdfPickerComponent implements OnInit {
           blocks: data.blocks as TextBlock[],
           categories: data.categories as Record<string, Category>,
         });
+
+        // Re-apply any block merges that were restored before text arrived.
+        // updateTextData() replaced all blocks, undoing any previous merge application.
+        const blockMerges = this.editorState.blockMerges();
+        if (blockMerges.size > 0) {
+          const allBlocks = this.editorState.blocks();
+          const blocksById = new Map(allBlocks.map(b => [b.id, b]));
+          const definitions: MergeDefinition[] = [];
+          for (const [, def] of blockMerges) {
+            const sourceBlocks = def.sourceBlockIds
+              .map(id => blocksById.get(id))
+              .filter((b): b is TextBlock => !!b);
+            if (sourceBlocks.length >= 2) {
+              definitions.push({
+                ...def,
+                sourceBlocks,
+                mergedBlock: createMergedBlock(def.mergedBlockId, sourceBlocks),
+              });
+            }
+          }
+          if (definitions.length > 0) {
+            // Clear existing merge map first (mergeBlocks appends)
+            this.editorState.blockMerges.set(new Map());
+            this.editorState.mergeBlocks(definitions, false);
+          }
+        }
       }
 
       // Also update the OpenDocument in tabs so tab switching preserves text
@@ -8251,6 +8277,29 @@ export class PdfPickerComponent implements OnInit {
         }
       }
 
+      // Restore block splits: re-fetch spans and rebuild child blocks
+      if (isLoadingOriginal && quickResult.textReady && project.block_splits && project.block_splits.length > 0) {
+        await this.restoreBlockSplits(project.block_splits);
+      }
+
+      // Restore block merges: find source blocks and rebuild merged blocks
+      if (isLoadingOriginal && quickResult.textReady && project.block_merges && project.block_merges.length > 0) {
+        this.restoreBlockMerges(project.block_merges);
+
+        // Clean up deletedBlockIds: remove any stale source IDs
+        const mergeSourceIds = new Set<string>();
+        for (const m of project.block_merges) {
+          for (const srcId of m.sourceBlockIds) mergeSourceIds.add(srcId);
+        }
+        if (mergeSourceIds.size > 0) {
+          this.editorState.deletedBlockIds.update(deleted => {
+            const next = new Set(deleted);
+            for (const srcId of mergeSourceIds) next.delete(srcId);
+            return next;
+          });
+        }
+      }
+
       // Restore classification thresholds
       if (isLoadingOriginal && project.classification_thresholds) {
         this.editorState.classificationThresholds.set(project.classification_thresholds);
@@ -8291,9 +8340,11 @@ export class PdfPickerComponent implements OnInit {
         const pendingOcrCategories = isLoadingOriginal ? project.ocr_categories : undefined;
         const pendingCategoryCorrections = isLoadingOriginal && project.category_corrections?.length
           ? new Map(project.category_corrections) : undefined;
+        const pendingBlockSplits = isLoadingOriginal ? project.block_splits : undefined;
+        const pendingBlockMerges = isLoadingOriginal ? project.block_merges : undefined;
 
         this.editorState.textLoading.set(true);
-        const unsub = this.electronService.onTextReady((data) => {
+        const unsub = this.electronService.onTextReady(async (data) => {
           unsub();
           this.textReadyUnsubs.delete(docId);
 
@@ -8333,6 +8384,27 @@ export class PdfPickerComponent implements OnInit {
             if (pendingCategoryCorrections && pendingCategoryCorrections.size > 0) {
               this.editorState.applyCategoryCorrections();
               this.editorState.updateCategoryStats();
+            }
+
+            // Apply deferred block splits
+            if (pendingBlockSplits && pendingBlockSplits.length > 0) {
+              await this.restoreBlockSplits(pendingBlockSplits);
+            }
+
+            // Apply deferred block merges
+            if (pendingBlockMerges && pendingBlockMerges.length > 0) {
+              this.restoreBlockMerges(pendingBlockMerges);
+              const mergeSourceIds = new Set<string>();
+              for (const m of pendingBlockMerges) {
+                for (const srcId of m.sourceBlockIds) mergeSourceIds.add(srcId);
+              }
+              if (mergeSourceIds.size > 0) {
+                this.editorState.deletedBlockIds.update(deleted => {
+                  const next = new Set(deleted);
+                  for (const srcId of mergeSourceIds) next.delete(srcId);
+                  return next;
+                });
+              }
             }
           }
 
