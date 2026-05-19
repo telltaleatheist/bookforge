@@ -101,7 +101,8 @@ export class ExportService {
     deletedIds: Set<string>,
     pdfName: string,
     textCorrections?: Map<string, string>,
-    deletedPages?: Set<number>
+    deletedPages?: Set<number>,
+    paragraphBreaks?: Set<string>
   ): Promise<ExportResult> {
     const exportBlocks = blocks
       .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
@@ -116,9 +117,15 @@ export class ExportService {
 
     const lines: string[] = [];
     let currentPage = -1;
+    let paragraphBuffer: string[] = [];
 
     for (const block of exportBlocks) {
       if (block.page !== currentPage) {
+        // Flush paragraph buffer on page change
+        if (paragraphBuffer.length > 0) {
+          lines.push(this.joinParagraphLines(paragraphBuffer));
+          paragraphBuffer = [];
+        }
         if (currentPage >= 0) lines.push('');
         currentPage = block.page;
       }
@@ -126,8 +133,21 @@ export class ExportService {
       const blockText = textCorrections?.get(block.id) ?? block.text;
       const cleanedText = this.stripFootnoteRefs(blockText);
       if (cleanedText.trim()) {
-        lines.push(cleanedText);
+        if (paragraphBreaks && paragraphBreaks.size > 0) {
+          if (paragraphBreaks.has(block.id) && paragraphBuffer.length > 0) {
+            lines.push(this.joinParagraphLines(paragraphBuffer));
+            paragraphBuffer = [];
+          }
+          paragraphBuffer.push(cleanedText);
+        } else {
+          lines.push(cleanedText);
+        }
       }
+    }
+
+    // Flush remaining buffer
+    if (paragraphBuffer.length > 0) {
+      lines.push(this.joinParagraphLines(paragraphBuffer));
     }
 
     const text = lines.join('\n');
@@ -234,7 +254,8 @@ export class ExportService {
     pdfName: string,
     textCorrections?: Map<string, string>,
     deletedPages?: Set<number>,
-    deletedHighlights?: DeletedHighlight[]
+    deletedHighlights?: DeletedHighlight[],
+    paragraphBreaks?: Set<string>
   ): Promise<ExportResult> {
     const result = this.generateEpubBlobInternal(
       blocks,
@@ -243,7 +264,9 @@ export class ExportService {
       pdfName,
       textCorrections,
       deletedPages,
-      deletedHighlights
+      deletedHighlights,
+      undefined,
+      paragraphBreaks
     );
 
     if (!result.success || !result.blob) {
@@ -555,7 +578,8 @@ export class ExportService {
     textCorrections?: Map<string, string>,
     deletedPages?: Set<number>,
     deletedHighlights?: DeletedHighlight[],
-    metadata?: BookMetadata
+    metadata?: BookMetadata,
+    paragraphBreaks?: Set<string>
   ): Promise<ExportResult> {
     if (!this.electron) {
       return {
@@ -573,7 +597,8 @@ export class ExportService {
       textCorrections,
       deletedPages,
       deletedHighlights,
-      metadata
+      metadata,
+      paragraphBreaks
     );
 
     if (!epubResult.success || !epubResult.blob) {
@@ -630,6 +655,7 @@ export class ExportService {
     deletedPages?: Set<number>,
     deletedHighlights?: DeletedHighlight[],
     metadata?: BookMetadata,
+    paragraphBreaks?: Set<string>,
   ): Promise<ExportResult> {
     if (!this.electron) {
       return { success: false, message: 'Save As is only available in Electron' };
@@ -638,6 +664,7 @@ export class ExportService {
     const epubResult = this.generateEpubBlobInternal(
       blocks, deletedIds, chapters, pdfName,
       textCorrections, deletedPages, deletedHighlights, metadata,
+      paragraphBreaks,
     );
 
     if (!epubResult.success || !epubResult.blob) {
@@ -690,7 +717,8 @@ export class ExportService {
     metadata?: BookMetadata,
     navigateAfter: boolean = true,
     categories?: Map<string, Category>,
-    savePath?: string
+    savePath?: string,
+    paragraphBreaks?: Set<string>
   ): Promise<ExportResult> {
     if (!this.electron) {
       return {
@@ -715,7 +743,8 @@ export class ExportService {
       textCorrections,
       deletedPages,
       deletedHighlights,
-      metadata
+      metadata,
+      paragraphBreaks
     );
 
     if (!epubResult.success || !epubResult.blob) {
@@ -889,7 +918,8 @@ export class ExportService {
     textCorrections?: Map<string, string>,
     deletedPages?: Set<number>,
     deletedHighlights?: DeletedHighlight[],
-    metadata?: BookMetadata
+    metadata?: BookMetadata,
+    paragraphBreaks?: Set<string>
   ): { success: boolean; blob?: Blob; message?: string; chapterCount?: number; blockCount?: number; warning?: string } {
     console.log('[generateEpub] Input blocks:', blocks.length,
       'deletedIds:', deletedIds.size,
@@ -926,6 +956,7 @@ export class ExportService {
     let normalizedTitle = 'introduction';
     let blocksInChapter = 0; // Track how many blocks processed in current chapter
     const SKIP_TITLE_WITHIN_FIRST_N_BLOCKS = 5; // Skip title matches within first N blocks
+    let paragraphBuffer: string[] = []; // For paragraph-aware export
 
     for (const block of exportBlocks) {
       while (
@@ -934,6 +965,11 @@ export class ExportService {
          (block.page === sortedChapters[currentChapterIndex].page &&
           block.y >= (sortedChapters[currentChapterIndex].y || 0)))
       ) {
+        // Flush paragraph buffer before chapter boundary
+        if (paragraphBuffer.length > 0) {
+          currentContent.push(`<p>${this.joinParagraphLines(paragraphBuffer)}</p>`);
+          paragraphBuffer = [];
+        }
         // Push the previous chapter section. Always push user-defined chapters
         // even if they have no body content (e.g., a title-only section where the
         // title block was deduped) — the heading alone is meaningful in the EPUB.
@@ -973,8 +1009,25 @@ export class ExportService {
             this.isTitleDuplicate(normalizedBlock, normalizedTitle)) {
           continue; // Skip this title block
         }
-        currentContent.push(`<p>${this.escapeHtml(sanitizedText)}</p>`);
+
+        if (paragraphBreaks && paragraphBreaks.size > 0) {
+          // Paragraph-aware mode: accumulate lines into paragraphs
+          if (paragraphBreaks.has(block.id) && paragraphBuffer.length > 0) {
+            currentContent.push(`<p>${this.joinParagraphLines(paragraphBuffer)}</p>`);
+            paragraphBuffer = [];
+          }
+          paragraphBuffer.push(this.escapeHtml(sanitizedText));
+        } else {
+          // Default: one block = one <p>
+          currentContent.push(`<p>${this.escapeHtml(sanitizedText)}</p>`);
+        }
       }
+    }
+
+    // Flush remaining paragraph buffer
+    if (paragraphBuffer.length > 0) {
+      currentContent.push(`<p>${this.joinParagraphLines(paragraphBuffer)}</p>`);
+      paragraphBuffer = [];
     }
 
     if (currentContent.length > 0) {
@@ -1026,6 +1079,28 @@ export class ExportService {
     a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  /**
+   * Join paragraph buffer lines, handling end-of-line hyphens.
+   * If line A ends with a hyphen and line B starts with a lowercase letter,
+   * join them without space and strip the hyphen ("excep-" + "tional" = "exceptional").
+   */
+  private joinParagraphLines(lines: string[]): string {
+    if (lines.length === 0) return '';
+    if (lines.length === 1) return lines[0];
+
+    let result = lines[0];
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (result.endsWith('-') && line.length > 0 && line[0] === line[0].toLowerCase() && line[0] !== line[0].toUpperCase()) {
+        // Strip trailing hyphen and join without space
+        result = result.slice(0, -1) + line;
+      } else {
+        result += ' ' + line;
+      }
+    }
+    return result;
   }
 
   private stripFootnoteRefs(text: string): string {

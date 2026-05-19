@@ -1461,6 +1461,47 @@ export async function exportEpubAsBook(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Update EPUB Metadata In-Place (standalone — does not use module-level singleton)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Update metadata in an existing EPUB file in-place.
+ * Opens the EPUB, updates OPF metadata fields, rewrites the ZIP atomically.
+ * Uses its own EpubProcessor instance to avoid interfering with the PDF editor.
+ */
+export async function updateEpubMetadataStandalone(
+  epubPath: string,
+  metadata: Partial<EpubMetadata>
+): Promise<void> {
+  const processor = new EpubProcessor();
+  try {
+    const structure = await processor.open(epubPath);
+    const zipWriter = new ZipWriter();
+    const entries = (processor as any).zipReader?.getEntries() || [];
+
+    for (const entryName of entries) {
+      if (entryName === structure.opfPath) {
+        const originalOpf = await processor.readFile(entryName);
+        const newOpf = updateOpfMetadata(originalOpf, metadata);
+        zipWriter.addFile(entryName, Buffer.from(newOpf, 'utf8'));
+        continue;
+      }
+
+      const data = await processor.readBinaryFile(entryName);
+      const compress = entryName !== 'mimetype';
+      zipWriter.addFile(entryName, data, compress);
+    }
+
+    // Atomic write via temp file
+    const tempPath = epubPath + '.tmp';
+    await zipWriter.write(tempPath);
+    await fs.rename(tempPath, epubPath);
+  } finally {
+    processor.close();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Comparison Functions (for diff view)
 // ─────────────────────────────────────────────────────────────────────────────
 

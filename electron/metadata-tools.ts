@@ -3,10 +3,11 @@
  * Uses `tone` on Windows and `m4b-tool` on macOS/Linux.
  */
 
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
+import { getFfmpegPath } from './tool-paths';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -170,6 +171,48 @@ export function removeCover(filePath: string): Promise<void> {
 }
 
 /**
+ * Optimize a cover image for M4B embedding.
+ * Converts to JPEG and resizes to fit within maxDim pixels on the longest side.
+ * Many audiobook players silently skip covers that are too large or in PNG format.
+ *
+ * Returns the path to the optimized JPEG (in os.tmpdir()), or the original path
+ * if ffmpeg is unavailable or conversion fails.
+ */
+export function optimizeCoverForM4b(coverPath: string, maxDim = 1400): string {
+  const ext = path.extname(coverPath).toLowerCase();
+  const stats = fs.statSync(coverPath);
+
+  // Skip optimization if already a small JPEG (under 500KB)
+  if ((ext === '.jpg' || ext === '.jpeg') && stats.size < 500 * 1024) {
+    return coverPath;
+  }
+
+  const ffmpeg = getFfmpegPath();
+  const optimizedPath = path.join(os.tmpdir(), `bookforge-cover-${Date.now()}.jpg`);
+
+  try {
+    execFileSync(ffmpeg, [
+      '-y', '-i', coverPath,
+      '-vf', `scale='min(${maxDim},iw)':'min(${maxDim},ih)':force_original_aspect_ratio=decrease`,
+      '-q:v', '2',
+      '-update', '1',
+      optimizedPath,
+    ], { timeout: 15_000, stdio: 'pipe' });
+
+    if (fs.existsSync(optimizedPath)) {
+      const optStats = fs.statSync(optimizedPath);
+      console.log(`[METADATA-TOOLS] Optimized cover: ${path.basename(coverPath)} (${(stats.size / 1024).toFixed(0)}KB ${ext}) → ${(optStats.size / 1024).toFixed(0)}KB JPEG`);
+      return optimizedPath;
+    }
+  } catch (err) {
+    console.warn('[METADATA-TOOLS] Cover optimization failed, using original:', err instanceof Error ? err.message : err);
+    try { fs.unlinkSync(optimizedPath); } catch { /* ignore */ }
+  }
+
+  return coverPath;
+}
+
+/**
  * Apply metadata to an audiobook file
  */
 export function applyMetadata(
@@ -200,6 +243,12 @@ export function applyMetadata(
           .join('; ')
       : metadata.author;
 
+    // Optimize cover for M4B compatibility (convert to JPEG, resize)
+    let optimizedCoverPath: string | undefined;
+    if (metadata.coverPath && fs.existsSync(metadata.coverPath)) {
+      optimizedCoverPath = optimizeCoverForM4b(metadata.coverPath);
+    }
+
     let args: string[];
 
     if (toolInfo.tool === 'tone') {
@@ -229,8 +278,8 @@ export function applyMetadata(
       if (metadata.description) {
         args.push('--meta-description', metadata.description);
       }
-      if (metadata.coverPath && fs.existsSync(metadata.coverPath)) {
-        args.push('--meta-cover-file', metadata.coverPath);
+      if (optimizedCoverPath) {
+        args.push('--meta-cover-file', optimizedCoverPath);
       }
 
       args.push('--force', filePath);
@@ -263,8 +312,8 @@ export function applyMetadata(
       if (metadata.description) {
         args.push('--description', metadata.description);
       }
-      if (metadata.coverPath && fs.existsSync(metadata.coverPath)) {
-        args.push('--cover', metadata.coverPath);
+      if (optimizedCoverPath) {
+        args.push('--cover', optimizedCoverPath);
       }
 
       args.push('-f', filePath);
@@ -311,6 +360,12 @@ export function applyMetadata(
       } catch { /* non-critical */ }
     }
 
+    function cleanupOptimizedCover() {
+      if (optimizedCoverPath && optimizedCoverPath !== metadata.coverPath) {
+        try { fs.unlinkSync(optimizedCoverPath); } catch { /* non-critical */ }
+      }
+    }
+
     const proc = spawn(toolInfo.path, args, {
       shell: os.platform() === 'win32' && toolInfo.tool === 'm4b-tool'
     });
@@ -323,6 +378,7 @@ export function applyMetadata(
       if (settled) return;
       settled = true;
       clearTimeout(timeoutTimer);
+      cleanupOptimizedCover();
       if (onAbort) options!.signal!.removeEventListener('abort', onAbort);
       if (resolution === 'resolve') {
         removeBackup();
@@ -341,6 +397,7 @@ export function applyMetadata(
       proc.kill('SIGKILL');
       restoreBackup();
       removeBackup();
+      cleanupOptimizedCover();
       settled = true;
       clearTimeout(timeoutTimer);
       if (onAbort) options!.signal!.removeEventListener('abort', onAbort);
@@ -356,6 +413,7 @@ export function applyMetadata(
         proc.kill('SIGKILL');
         restoreBackup();
         removeBackup();
+        cleanupOptimizedCover();
         settled = true;
         clearTimeout(timeoutTimer);
         options!.signal!.removeEventListener('abort', onAbort!);

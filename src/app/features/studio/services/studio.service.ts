@@ -623,6 +623,7 @@ export class StudioService {
       }
 
       // Update local state immediately with all metadata fields
+      const newBfpPath = result.newBfpPath;
       this._books.update(books =>
         books.map(b => b.id === id ? {
           ...b,
@@ -634,7 +635,9 @@ export class StudioService {
           outputFilename: metadata.outputFilename ?? b.outputFilename,
           contributors: metadata.contributors ?? b.contributors,
           tags: metadata.tags ?? b.tags,
-          modifiedAt: new Date().toISOString()
+          modifiedAt: new Date().toISOString(),
+          // Update bfpPath and id if project folder was renamed
+          ...(newBfpPath ? { bfpPath: newBfpPath, id: newBfpPath } : {})
         } : b)
       );
 

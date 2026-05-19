@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
 import { ElectronService, Chapter, TocLine } from '../../core/services/electron.service';
-import { PdfEditorStateService, HistoryAction, BlockEdit } from './services/editor-state.service';
+import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService, DeletedHighlight } from './services/export.service';
 import { PageRenderService } from './services/page-render.service';
@@ -21,6 +21,9 @@ import { FilePickerComponent } from './components/file-picker/file-picker.compon
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
 import { SplitPanelComponent, SplitConfig } from './components/split-panel/split-panel.component';
 import { ChaptersPanelComponent } from './components/chapters-panel/chapters-panel.component';
+import { ParagraphPanelComponent } from './components/paragraph-panel/paragraph-panel.component';
+import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionStats, type DetectionConfig, type DocumentBaselines } from './services/paragraph-detector';
+import { redetectCategories as redetectCategoriesFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, recategorizeWithThresholds, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type CategoryBaselines, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
 import { LibraryViewComponent, ProjectFile } from './components/library-view/library-view.component';
 import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
 import { OcrSettingsModalComponent, OcrSettings, OcrPageResult, OcrCompletionEvent } from './components/ocr-settings-modal/ocr-settings-modal.component';
@@ -49,6 +52,9 @@ interface OpenDocument {
   undoStack: HistoryAction[];
   redoStack: HistoryAction[];
   lightweightMode?: boolean;  // Process without rendering pages
+  paragraphBreaks?: Set<string>;
+  categoryCorrections?: Map<string, string>;
+  learnedCategories?: Map<string, string>;
 }
 
 
@@ -142,6 +148,16 @@ interface BookForgeProject {
   chapters_source?: 'toc' | 'heuristic' | 'manual' | 'mixed';  // How chapters were determined
   deleted_pages?: number[];  // Pages to exclude from export (0-indexed)
   metadata?: BookMetadata;  // Book metadata for EPUB export
+  paragraph_breaks?: string[];  // Paragraph boundary block IDs
+  category_corrections?: [string, string][];  // [blockId, categoryId][] explicit user overrides
+  learned_categories?: [string, string][];  // [blockId, categoryId][] from re-detect
+  classification_thresholds?: ClassificationThresholds;
+  block_splits?: Array<{
+    originalBlockId: string;
+    splitPoints: number[];
+    childBlockIds: string[];
+  }>;
+  block_merges?: Array<{ mergedBlockId: string; sourceBlockIds: string[] }>;
   // Audiobook production (unified with BFP project)
   audiobook?: AudiobookState;
   created_at: string;
@@ -163,7 +179,7 @@ interface MatchRect {
 type CategoryHighlights = Map<string, Record<number, MatchRect[]>>;
 
 // Editor modes
-type EditorMode = 'select' | 'edit' | 'crop' | 'organize' | 'split' | 'ocr' | 'chapters' | 'analysis';
+type EditorMode = 'select' | 'edit' | 'crop' | 'organize' | 'split' | 'ocr' | 'chapters' | 'analysis' | 'paragraph';
 
 interface ModeInfo {
   id: EditorMode;
@@ -198,6 +214,7 @@ interface AlertModal {
     CropPanelComponent,
     SplitPanelComponent,
     ChaptersPanelComponent,
+    ParagraphPanelComponent,
     LibraryViewComponent,
     TabBarComponent,
     OcrSettingsModalComponent,
@@ -431,9 +448,18 @@ interface AlertModal {
               [chaptersMode]="chaptersMode()"
               [tocSelectedBlockIds]="tocSelectedBlockIdSet()"
               [isEpub]="isCurrentDocumentEpub()"
+              [splitOriginalBlockIds]="splitOriginalBlockIds()"
+              [mergeSourceBlockIds]="mergeSourceBlockIds()"
               [deletedPages]="deletedPages()"
               [selectedPages]="selectedPageNumbers()"
               [organizeMode]="organizeMode()"
+              [paragraphMode]="paragraphMode()"
+              [paragraphBreaks]="editorState.paragraphBreaks()"
+              [categoryList]="autoDetectedCategoryList()"
+              [categoryCorrections]="editorState.categoryCorrections()"
+              (paragraphBreakToggle)="toggleParagraphBreak($event)"
+              (paragraphBreakDelete)="deleteParagraphBreak($event)"
+              (paragraphBreakMove)="moveParagraphBreak($event)"
               (blockClick)="onBlockClick($event)"
               (chapterClick)="onChapterClick($event)"
               (chapterPlacement)="onChapterPlacement($event)"
@@ -452,6 +478,8 @@ interface AlertModal {
               (deleteBlock)="deleteBlock($event)"
               (highlightClick)="onHighlightClick($event)"
               (revertBlock)="revertBlockText($event)"
+              (splitBlock)="onSplitBlockRequest($event)"
+              (setBlockCategory)="onSetBlockCategory($event)"
               (zoomChange)="onZoomChange($event)"
               (selectAllOnPage)="selectAllOnPage($event)"
               (deselectAllOnPage)="deselectAllOnPage($event)"
@@ -580,6 +608,20 @@ interface AlertModal {
             [selectedFlagIndex]="selectedAnalysisFlagIndex()"
             (navigateToFlag)="onAnalysisNavigate($event)"
           />
+        } @else if (paragraphMode()) {
+          <app-paragraph-panel
+            pane-secondary
+            [paragraphBreaks]="editorState.paragraphBreaks()"
+            [detectionStats]="paragraphDetectionStats()"
+            [detectionConfig]="paragraphDetectionConfig()"
+            [baselines]="paragraphBaselines()"
+            [paragraphFixMode]="paragraphFixMode()"
+            (detect)="detectParagraphs()"
+            (clearAll)="clearParagraphs()"
+            (configChange)="onParagraphConfigChange($event)"
+            (done)="setMode('select')"
+            (finishFix)="finishParagraphFix()"
+          />
         } @else {
           <app-categories-panel
             pane-secondary
@@ -605,8 +647,17 @@ interface AlertModal {
             [regexMatches]="regexMatches()"
             [regexMatchCount]="regexMatchCount()"
             [isEditing]="!!editingCategoryId()"
+            [categoryCorrections]="editorState.categoryCorrections()"
+            [thresholds]="editorState.classificationThresholds()"
+            [baselines]="computedBaselines()"
             [analysisFlags]="analysisFlags()"
             [analysisCategories]="analysisCategories()"
+            (mergeBlocks)="mergeAdjacentBlocks()"
+            (redetect)="redetectCategories()"
+            (clearCorrections)="clearCategoryCorrections()"
+            (thresholdChange)="onThresholdChange($event)"
+            (recategorize)="recategorizeBlocks()"
+            (resetThresholds)="resetThresholds()"
             (selectCategory)="selectAllOfCategory($event)"
             (selectInverse)="selectInverseOfCategory($event)"
             (selectAll)="selectAllBlocks()"
@@ -757,6 +808,40 @@ interface AlertModal {
         [fontSize]="inlineEditorFontSize()"
         (editComplete)="onInlineEditComplete($event)"
       />
+    }
+
+    <!-- Split Block Popover -->
+    @if (splitPopoverBlock()) {
+      <div class="modal-overlay" (click)="cancelSplit()">
+        <div class="split-block-popover" (click)="$event.stopPropagation()">
+          <div class="split-header">Split Block</div>
+          <div class="split-lines">
+            @for (line of splitPopoverLines(); track $index; let i = $index) {
+              @if (i > 0) {
+                <div class="split-divider"
+                     [class.active]="splitPopoverPoints().has(i)"
+                     (click)="toggleSplitPoint(i)">
+                  <span class="split-divider-line"></span>
+                  <span class="split-divider-label">{{ splitPopoverPoints().has(i) ? 'split here' : 'click to split' }}</span>
+                  <span class="split-divider-line"></span>
+                </div>
+              }
+              <div class="split-line" [class.bold]="line.isBold" [class.italic]="line.isItalic">
+                <span class="split-line-meta">{{ line.fontSize }}pt</span>
+                {{ line.text }}
+              </div>
+            }
+          </div>
+          <div class="split-actions">
+            <desktop-button variant="ghost" size="sm" (click)="cancelSplit()">Cancel</desktop-button>
+            <desktop-button variant="primary" size="sm"
+                            [disabled]="splitPopoverPoints().size === 0"
+                            (click)="confirmSplit()">
+              Split into {{ splitPopoverPoints().size + 1 }} blocks
+            </desktop-button>
+          </div>
+        </div>
+      </div>
     }
 
     <!-- Alert Modal -->
@@ -1717,6 +1802,94 @@ interface AlertModal {
     }
 
     // Alert Modal
+    .split-block-popover {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: $radius-lg;
+      width: 520px;
+      max-height: 70vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+      animation: modalSlideIn $duration-normal $ease-out forwards;
+      overflow: hidden;
+
+      .split-header {
+        padding: $spacing-4 $spacing-4 $spacing-2;
+        font-size: $font-size-lg;
+        font-weight: $font-weight-semibold;
+        color: var(--text-primary);
+      }
+
+      .split-lines {
+        padding: $spacing-2 $spacing-4;
+        overflow-y: auto;
+        flex: 1;
+        min-height: 0;
+      }
+
+      .split-line {
+        padding: $spacing-2 $spacing-3;
+        font-size: $font-size-sm;
+        color: var(--text-primary);
+        line-height: 1.5;
+        border-radius: $radius-sm;
+        background: var(--bg-surface);
+        margin: $spacing-1 0;
+
+        &.bold { font-weight: $font-weight-bold; }
+        &.italic { font-style: italic; }
+
+        .split-line-meta {
+          display: inline-block;
+          font-size: 10px;
+          color: var(--text-tertiary);
+          margin-right: $spacing-2;
+          font-weight: normal;
+          font-style: normal;
+        }
+      }
+
+      .split-divider {
+        display: flex;
+        align-items: center;
+        gap: $spacing-2;
+        padding: $spacing-1 0;
+        cursor: pointer;
+        opacity: 0.5;
+        transition: opacity $duration-fast;
+
+        &:hover { opacity: 0.8; }
+
+        &.active {
+          opacity: 1;
+          .split-divider-line { border-color: var(--accent); }
+          .split-divider-label { color: var(--accent); }
+        }
+
+        .split-divider-line {
+          flex: 1;
+          border-top: 1px dashed var(--border-default);
+        }
+
+        .split-divider-label {
+          font-size: 11px;
+          color: var(--text-tertiary);
+          white-space: nowrap;
+          user-select: none;
+        }
+      }
+
+      .split-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: $spacing-2;
+        padding: $spacing-3 $spacing-4;
+        border-top: 1px solid var(--border-subtle);
+        background: var(--bg-surface);
+      }
+    }
+
     .alert-modal {
       background: var(--bg-elevated);
       border: 1px solid var(--border-default);
@@ -2410,6 +2583,18 @@ export class PdfPickerComponent implements OnInit {
   readonly layout = signal<'vertical' | 'grid'>('grid');
   // Remove backgrounds state is managed by editor state service for undo/redo
   readonly removeBackgrounds = computed(() => this.editorState.removeBackgrounds());
+  // Block IDs that were split (for hiding originals in pdf-viewer)
+  readonly splitOriginalBlockIds = computed(() => new Set(this.editorState.blockSplits().keys()));
+  // Block IDs that were merged into larger blocks (for hiding sources in pdf-viewer)
+  readonly mergeSourceBlockIds = computed(() => {
+    const ids = new Set<string>();
+    for (const def of this.editorState.blockMerges().values()) {
+      for (const srcId of def.sourceBlockIds) {
+        ids.add(srcId);
+      }
+    }
+    return ids;
+  });
   // Text layer management
   readonly textLayersExpanded = signal(false);
   readonly showPdfTextLayer = signal(true);
@@ -2687,6 +2872,12 @@ export class PdfPickerComponent implements OnInit {
             this.setMode('analysis');
           }
           break;
+        case 'g': // G for paragraph detection
+          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
+            event.preventDefault();
+            this.setMode('paragraph');
+          }
+          break;
       }
     }
   }
@@ -2818,6 +3009,16 @@ export class PdfPickerComponent implements OnInit {
   // Alert modal state
   readonly alertModal = signal<AlertModal | null>(null);
   readonly showLibrarySaveModal = signal(false);
+
+  // Split block popover state
+  readonly splitPopoverBlock = signal<TextBlock | null>(null);
+  readonly splitPopoverLines = signal<Array<{
+    text: string; y: number; height: number;
+    isBold: boolean; isItalic: boolean; fontSize: number;
+    fontName: string;
+    spans: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; font_name: string; is_bold: boolean; is_italic: boolean }>;
+  }>>([]);
+  readonly splitPopoverPoints = signal<Set<number>>(new Set());
 
   // OCR settings state
   readonly showOcrSettings = signal(false);
@@ -3368,7 +3569,8 @@ export class PdfPickerComponent implements OnInit {
     { id: 'split', icon: '📖', label: 'Split', tooltip: 'Split scanned pages (P)' },
     { id: 'ocr', icon: '👁️', label: 'OCR', tooltip: 'OCR scanned pages (O)' },
     { id: 'chapters', icon: '📚', label: 'Chapters', tooltip: 'Manage chapters (H)' },
-    { id: 'analysis', icon: '🔬', label: 'Analysis', tooltip: 'Analysis flags & text search (A)' }
+    { id: 'analysis', icon: '🔬', label: 'Analysis', tooltip: 'Analysis flags & text search (A)' },
+    { id: 'paragraph', icon: '\u00B6', label: 'Paragraphs', tooltip: 'Detect paragraph boundaries (G)' }
   ];
 
   // Only show analysis mode when results are loaded
@@ -3398,6 +3600,17 @@ export class PdfPickerComponent implements OnInit {
 
   // Analysis mode state
   readonly analysisMode = computed(() => this.currentMode() === 'analysis');
+
+  // Paragraph mode state
+  readonly paragraphMode = computed(() => this.currentMode() === 'paragraph');
+  readonly paragraphDetectionStats = signal<DetectionStats | null>(null);
+  readonly paragraphDetectionConfig = signal<DetectionConfig | null>(null);
+  readonly paragraphBaselines = signal<DocumentBaselines | null>(null);
+  private userDetectionConfig: DetectionConfig | null = null;
+
+  // Paragraph fix mode — entered after save to auto-detect and fix paragraph breaks
+  readonly paragraphFixMode = signal(false);
+  readonly paragraphFixEpubPath = signal<string | null>(null);
 
   // Chapters mode state
   readonly chaptersMode = computed(() => this.currentMode() === 'chapters');
@@ -3464,8 +3677,15 @@ export class PdfPickerComponent implements OnInit {
 
     // Items only shown when PDF is open
     if (pdfIsOpen) {
+      const inFixMode = this.paragraphFixMode();
+
+      // In paragraph fix mode, show "Done" instead of normal save/export
       // In embedded mode, show both Save and Export; standalone shows only Export
-      const actionItems: ToolbarItem[] = isEmbedded
+      const actionItems: ToolbarItem[] = inFixMode
+        ? [
+            { id: 'finishParagraphFix', type: 'button', icon: '✓', label: 'Done', tooltip: 'Save paragraph corrections and finish' },
+          ]
+        : isEmbedded
         ? [
             { id: 'finalize', type: 'button', icon: '✓', label: 'Save', tooltip: 'Save changes to EPUB' },
             { id: 'export', type: 'button', icon: '📤', label: 'Export', tooltip: 'Export document (Cmd+E)' },
@@ -3521,6 +3741,37 @@ export class PdfPickerComponent implements OnInit {
 
   readonly categoriesArray = computed(() => {
     return Object.values(this.categories()).sort((a, b) => b.char_count - a.char_count);
+  });
+
+  readonly computedBaselines = computed(() => {
+    const blocks = this.blocks();
+    if (blocks.length === 0) return null;
+    return computeCategoryBaselines(blocks);
+  });
+
+  // All standard category types for the "Set Category" submenu.
+  // Always shows every type — not just ones the auto-detector happened to assign.
+  readonly autoDetectedCategoryList = computed(() => {
+    const ALL_STANDARD_CATEGORIES: Array<{ id: string; name: string; color: string }> = [
+      { id: 'body',         name: 'Body Text',        color: '#4CAF50' },
+      { id: 'heading',      name: 'Section Headings',  color: '#FF9800' },
+      { id: 'subheading',   name: 'Subheadings',       color: '#9C27B0' },
+      { id: 'title',        name: 'Titles',            color: '#F44336' },
+      { id: 'quote',        name: 'Block Quotes',      color: '#FFEB3B' },
+      { id: 'caption',      name: 'Captions',          color: '#00BCD4' },
+      { id: 'footnote',     name: 'Footnotes',         color: '#2196F3' },
+      { id: 'footnote_ref', name: 'Footnote Numbers',  color: '#E91E63' },
+      { id: 'header',       name: 'Page Headers',      color: '#795548' },
+      { id: 'footer',       name: 'Page Footers',      color: '#607D8B' },
+      { id: 'image',        name: 'Images',            color: '#9E9E9E' },
+    ];
+
+    // Override colors from actual detected categories (user may have customized)
+    const existing = this.categories();
+    return ALL_STANDARD_CATEGORIES.map(cat => {
+      const detected = existing[cat.id];
+      return detected ? { id: cat.id, name: detected.name, color: detected.color } : cat;
+    });
   });
 
   readonly includedChars = computed(() => {
@@ -3597,6 +3848,9 @@ export class PdfPickerComponent implements OnInit {
         break;
       case 'export':
         this.showExportSettings.set(true);
+        break;
+      case 'finishParagraphFix':
+        this.finishParagraphFix();
         break;
       case 'finalize':
         if (this.librarySourcePath()) {
@@ -4431,6 +4685,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   onBlockClick(event: { block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }): void {
+    if (this.paragraphMode()) return;
     const { block, shiftKey, metaKey, ctrlKey } = event;
     const isCmdOrCtrl = metaKey || ctrlKey;
 
@@ -4947,6 +5202,194 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
+  // ─── Category correction & re-detection ────────────────────────────────
+
+  onSetBlockCategory(event: { blockIds: string[]; categoryId: string }): void {
+    // If the target category doesn't exist in the document yet, create it
+    const existing = this.categories();
+    if (!existing[event.categoryId]) {
+      const catInfo = this.autoDetectedCategoryList().find(c => c.id === event.categoryId);
+      if (catInfo) {
+        this.editorState.addCategory({
+          id: catInfo.id,
+          name: catInfo.name,
+          description: '',
+          color: catInfo.color,
+          block_count: 0,
+          char_count: 0,
+          font_size: 0,
+          region: 'body',
+          sample_text: '',
+          enabled: true,
+        });
+      }
+    }
+
+    if (event.blockIds.length === 1) {
+      this.editorState.setCategoryCorrection(event.blockIds[0], event.categoryId);
+    } else {
+      this.editorState.setBulkCategoryCorrections(
+        event.blockIds.map(id => ({ blockId: id, categoryId: event.categoryId }))
+      );
+    }
+  }
+
+  redetectCategories(): void {
+    const corrections = this.editorState.categoryCorrections();
+    if (corrections.size === 0) return;
+
+    const blocks = this.blocks();
+    const pageDimensions = this.pageDimensions();
+    const deletedBlockIds = this.deletedBlockIds();
+
+    let newAssignments: Map<string, string>;
+    try {
+      newAssignments = redetectCategoriesFromLearner(blocks, corrections, pageDimensions, deletedBlockIds);
+    } catch (err) {
+      console.error('[redetectCategories] Learner threw:', err);
+      return;
+    }
+
+    // Ensure all assigned categories exist
+    const cats = this.categories();
+    const catList = this.autoDetectedCategoryList();
+    for (const categoryId of new Set(newAssignments.values())) {
+      if (!cats[categoryId]) {
+        const catInfo = catList.find(c => c.id === categoryId);
+        if (catInfo) {
+          this.editorState.addCategory({
+            id: catInfo.id,
+            name: catInfo.name,
+            description: '',
+            color: catInfo.color,
+            block_count: 0,
+            char_count: 0,
+            font_size: 0,
+            region: 'body',
+            sample_text: '',
+            enabled: true,
+          });
+        }
+      }
+    }
+
+    // Apply new category assignments to all blocks
+    let changedCount = 0;
+    const learned = new Map<string, string>();
+    this.editorState.blocks.update(currentBlocks =>
+      currentBlocks.map(b => {
+        const newCatId = newAssignments.get(b.id);
+        if (newCatId && newCatId !== b.category_id) {
+          changedCount++;
+          // Don't store explicit user corrections again — they're already in categoryCorrections
+          if (!corrections.has(b.id)) {
+            learned.set(b.id, newCatId);
+          }
+          return { ...b, category_id: newCatId };
+        }
+        return b;
+      })
+    );
+
+    // Store learned assignments separately (no outline, but persisted)
+    this.editorState.learnedCategories.set(learned);
+
+    console.log(`[redetectCategories] ${corrections.size} user corrections, ${learned.size} learned, ${changedCount} blocks changed out of ${blocks.length}`);
+
+    // Recalculate category stats
+    this.editorState.updateCategoryStats();
+    this.editorState.markChanged();
+  }
+
+  clearCategoryCorrections(): void {
+    this.editorState.clearAllCategoryCorrections();
+  }
+
+  onThresholdChange(event: { path: string; value: number }): void {
+    this.editorState.updateThreshold(event.path, event.value);
+  }
+
+  resetThresholds(): void {
+    this.editorState.resetThresholdsToDefault();
+  }
+
+  recategorizeBlocks(): void {
+    const blocks = this.blocks();
+    const corrections = this.editorState.categoryCorrections();
+    const pageDimensions = this.pageDimensions();
+    const thresholds = this.editorState.classificationThresholds();
+    const deletedBlockIds = this.deletedBlockIds();
+
+    // If corrections exist, use re-detect (centroid-based) to propagate them.
+    // Otherwise fall back to threshold-based heuristic re-classification.
+    let newAssignments: Map<string, string>;
+    if (corrections.size > 0) {
+      try {
+        newAssignments = redetectCategoriesFromLearner(blocks, corrections, pageDimensions, deletedBlockIds);
+      } catch (err) {
+        console.error('[recategorizeBlocks] Re-detect threw:', err);
+        return;
+      }
+    } else {
+      try {
+        newAssignments = recategorizeWithThresholds(blocks, corrections, pageDimensions, thresholds, deletedBlockIds);
+      } catch (err) {
+        console.error('[recategorizeBlocks] Threshold classifier threw:', err);
+        return;
+      }
+    }
+
+    // Ensure all assigned categories exist
+    const cats = this.categories();
+    const catList = this.autoDetectedCategoryList();
+    for (const categoryId of new Set(newAssignments.values())) {
+      if (!cats[categoryId]) {
+        const catInfo = catList.find(c => c.id === categoryId);
+        if (catInfo) {
+          this.editorState.addCategory({
+            id: catInfo.id,
+            name: catInfo.name,
+            description: '',
+            color: catInfo.color,
+            block_count: 0,
+            char_count: 0,
+            font_size: 0,
+            region: 'body',
+            sample_text: '',
+            enabled: true,
+          });
+        }
+      }
+    }
+
+    // Build learned map (non-correction assignments)
+    const learned = new Map<string, string>();
+    let changedCount = 0;
+    this.editorState.blocks.update(currentBlocks =>
+      currentBlocks.map(b => {
+        const newCatId = newAssignments.get(b.id);
+        if (newCatId && newCatId !== b.category_id) {
+          changedCount++;
+          if (!corrections.has(b.id)) {
+            learned.set(b.id, newCatId);
+          }
+          return { ...b, category_id: newCatId };
+        }
+        if (newCatId && !corrections.has(b.id)) {
+          learned.set(b.id, newCatId);
+        }
+        return b;
+      })
+    );
+
+    this.editorState.learnedCategories.set(learned);
+
+    console.log(`[recategorizeBlocks] ${changedCount} blocks changed, ${learned.size} learned`);
+
+    this.editorState.updateCategoryStats();
+    this.editorState.markChanged();
+  }
+
   deleteBlock(blockId: string): void {
     if (this.deletedBlockIds().has(blockId)) return;
 
@@ -4959,6 +5402,587 @@ export class PdfPickerComponent implements OnInit {
     // Re-render the page to remove deleted content
     if (pageNum !== undefined) {
       this.rerenderPageWithEdits(pageNum);
+    }
+  }
+
+  // ─── Split Block Popover ────────────────────────────────────────────────────
+
+  async onSplitBlockRequest(block: TextBlock): Promise<void> {
+    if (this.editorState.textLoading()) {
+      this.showAlert({ title: 'Split Block', message: 'Text extraction is still in progress. Please wait for it to complete.', type: 'error' });
+      return;
+    }
+
+    // Merged blocks are synthetic — no span data exists. Offer to unmerge instead.
+    if (this.editorState.blockMerges().has(block.id)) {
+      this.unmergeBlock(block.id);
+      return;
+    }
+
+    let spans = await this.electronService.getSpansForBlock(block.id);
+    if (!spans || spans.length === 0) {
+      // Spans may be unavailable if the PDF worker was recycled (5-min idle timeout).
+      // Try fetching all spans and filtering client-side as a fallback.
+      const allSpans = await this.electronService.getSpans();
+      if (allSpans && allSpans.length > 0) {
+        spans = allSpans.filter(s => s.block_id === block.id);
+        if (!spans || spans.length === 0) {
+          console.warn('[onSplitBlockRequest] No spans match block', block.id, '— total spans:', allSpans.length);
+          this.showAlert({ title: 'Split Block', message: 'No span data found for this block. The block may have been generated by OCR or a different analysis pass.', type: 'error' });
+          return;
+        }
+      } else {
+        this.showAlert({ title: 'Split Block', message: 'Span data is not available. The PDF text extraction may need to complete first, or try reopening the document.', type: 'error' });
+        return;
+      }
+    }
+
+    const lines = this.groupSpansByLine(spans);
+    if (lines.length <= 1) {
+      this.showAlert({ title: 'Split Block', message: 'Block has only one visual line — nothing to split.', type: 'error' });
+      return;
+    }
+
+    this.splitPopoverBlock.set(block);
+    this.splitPopoverLines.set(lines);
+    this.splitPopoverPoints.set(new Set());
+  }
+
+  private groupSpansByLine(spans: Array<{
+    x: number; y: number; width: number; height: number;
+    text: string; font_size: number; font_name: string;
+    is_bold: boolean; is_italic: boolean;
+  }>): Array<{
+    text: string; y: number; height: number;
+    isBold: boolean; isItalic: boolean; fontSize: number; fontName: string;
+    spans: typeof spans;
+  }> {
+    if (spans.length === 0) return [];
+
+    const sorted = [...spans].sort((a, b) => a.y - b.y);
+    const rawGroups: Array<{ spans: typeof spans; y: number }> = [];
+    let cur = { spans: [sorted[0]], y: sorted[0].y };
+
+    for (let i = 1; i < sorted.length; i++) {
+      if (Math.abs(sorted[i].y - cur.y) <= 2) {
+        cur.spans.push(sorted[i]);
+      } else {
+        rawGroups.push(cur);
+        cur = { spans: [sorted[i]], y: sorted[i].y };
+      }
+    }
+    rawGroups.push(cur);
+
+    return rawGroups.map(g => {
+      let boldChars = 0, italicChars = 0, totalChars = 0;
+      const fontSizes = new Map<number, number>();
+      const fontNames = new Map<string, number>();
+      const texts: string[] = [];
+      let y0 = Infinity, y1 = -Infinity;
+
+      for (const s of g.spans) {
+        const len = s.text.length;
+        totalChars += len;
+        if (s.is_bold) boldChars += len;
+        if (s.is_italic) italicChars += len;
+        fontSizes.set(s.font_size, (fontSizes.get(s.font_size) || 0) + len);
+        fontNames.set(s.font_name, (fontNames.get(s.font_name) || 0) + len);
+        texts.push(s.text);
+        y0 = Math.min(y0, s.y);
+        y1 = Math.max(y1, s.y + s.height);
+      }
+
+      let dominantSize = 10, maxCount = 0;
+      for (const [size, count] of fontSizes) {
+        if (count > maxCount) { maxCount = count; dominantSize = size; }
+      }
+      let dominantFont = 'unknown', maxFontCount = 0;
+      for (const [font, count] of fontNames) {
+        if (count > maxFontCount) { maxFontCount = count; dominantFont = font; }
+      }
+
+      return {
+        text: texts.join(' '),
+        y: y0,
+        height: y1 - y0,
+        isBold: totalChars > 0 && boldChars > totalChars * 0.5,
+        isItalic: totalChars > 0 && italicChars > totalChars * 0.5,
+        fontSize: dominantSize,
+        fontName: dominantFont,
+        spans: g.spans,
+      };
+    });
+  }
+
+  toggleSplitPoint(index: number): void {
+    this.splitPopoverPoints.update(pts => {
+      const next = new Set(pts);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  }
+
+  confirmSplit(): void {
+    const block = this.splitPopoverBlock();
+    const lines = this.splitPopoverLines();
+    const points = this.splitPopoverPoints();
+    if (!block || lines.length === 0 || points.size === 0) return;
+
+    // Build segments from split points
+    const sortedPoints = [...points].sort((a, b) => a - b);
+    const segments: Array<typeof lines> = [];
+    let start = 0;
+    for (const sp of sortedPoints) {
+      segments.push(lines.slice(start, sp));
+      start = sp;
+    }
+    segments.push(lines.slice(start));
+
+    // Build classification context
+    const allBlocks = this.blocks();
+    const pageDimensions = this.pageDimensions();
+    const baselines = computeCategoryBaselines(allBlocks);
+    const imagesByPage = new Map<number, TextBlock[]>();
+    const blocksByPage = new Map<number, TextBlock[]>();
+    for (const b of allBlocks) {
+      if (b.is_image) {
+        if (!imagesByPage.has(b.page)) imagesByPage.set(b.page, []);
+        imagesByPage.get(b.page)!.push(b);
+      }
+      if (!blocksByPage.has(b.page)) blocksByPage.set(b.page, []);
+      blocksByPage.get(b.page)!.push(b);
+    }
+    // Build repeatedTopTexts
+    const topTextCounts = new Map<string, number>();
+    for (const b of allBlocks) {
+      if (b.region === 'header' && b.text.trim()) {
+        const t = b.text.trim().toLowerCase();
+        topTextCounts.set(t, (topTextCounts.get(t) || 0) + 1);
+      }
+    }
+    const repeatedTopTexts = new Set<string>();
+    for (const [t, count] of topTextCounts) {
+      if (count >= 2) repeatedTopTexts.add(t);
+    }
+
+    const pageHeight = pageDimensions[block.page]?.height || 800;
+    const childBlocks: TextBlock[] = [];
+    const childBlockIds: string[] = [];
+
+    for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+      const seg = segments[segIdx];
+      if (seg.length === 0) continue;
+
+      const segSpans = seg.flatMap(l => l.spans);
+      const segText = seg.map(l => l.text).join(' ');
+      if (!segText.trim()) continue;
+
+      // Aggregate formatting
+      let boldChars = 0, italicChars = 0, totalChars = 0;
+      const fontSizes = new Map<number, number>();
+      const fontNames = new Map<string, number>();
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+
+      for (const s of segSpans) {
+        const len = s.text.length;
+        totalChars += len;
+        if (s.is_bold) boldChars += len;
+        if (s.is_italic) italicChars += len;
+        fontSizes.set(s.font_size, (fontSizes.get(s.font_size) || 0) + len);
+        fontNames.set(s.font_name, (fontNames.get(s.font_name) || 0) + len);
+        x0 = Math.min(x0, s.x);
+        y0 = Math.min(y0, s.y);
+        x1 = Math.max(x1, s.x + s.width);
+        y1 = Math.max(y1, s.y + s.height);
+      }
+
+      let dominantSize = 10, maxSizeCount = 0;
+      for (const [size, count] of fontSizes) {
+        if (count > maxSizeCount) { maxSizeCount = count; dominantSize = size; }
+      }
+      let dominantFont = 'unknown', maxFontCount = 0;
+      for (const [font, count] of fontNames) {
+        if (count > maxFontCount) { maxFontCount = count; dominantFont = font; }
+      }
+
+      const isBold = totalChars > 0 && boldChars > totalChars * 0.5;
+      const isItalic = totalChars > 0 && italicChars > totalChars * 0.5;
+
+      // Region detection
+      const segY = y0, segHeight = y1 - y0;
+      const yPct = segY / pageHeight;
+      const trimmedText = segText.trim();
+      const textLen = trimmedText.length;
+      const lineCount = seg.length;
+      const looksLikeBodyText = textLen > 100 ||
+        /[.!?]["']?\s+[A-Z]/.test(trimmedText) ||
+        (trimmedText.endsWith('.') && textLen > 60);
+      let region = 'body';
+      const bottomPct = (segY + segHeight) / pageHeight;
+      if (lineCount <= 2 && (yPct < 0.10 || bottomPct < 0.15) && !looksLikeBodyText) {
+        region = 'header';
+      } else if (yPct > 0.90 || (yPct > 0.88 && textLen < 50)) {
+        region = 'footer';
+      } else if (yPct > 0.70) {
+        region = 'lower';
+      }
+
+      // Deterministic ID from original block + segment index
+      const blockId = this.simpleHash(`${block.id}:split:${segIdx}`);
+
+      const childBlock: TextBlock = {
+        id: blockId,
+        page: block.page,
+        x: x0,
+        y: segY,
+        width: x1 - x0,
+        height: segHeight,
+        text: segText,
+        font_size: dominantSize,
+        font_name: dominantFont,
+        char_count: segText.length,
+        region,
+        category_id: '',
+        is_bold: isBold,
+        is_italic: isItalic,
+        is_superscript: false,
+        is_image: false,
+        is_footnote_marker: false,
+        line_count: lineCount,
+      };
+
+      // Auto-classify
+      childBlock.category_id = classifyBlockHeuristic(
+        childBlock, baselines, imagesByPage, blocksByPage, pageDimensions, repeatedTopTexts
+      );
+
+      // Ensure category exists
+      const cats = this.categories();
+      if (childBlock.category_id && !cats[childBlock.category_id]) {
+        const catInfo = this.autoDetectedCategoryList().find(c => c.id === childBlock.category_id);
+        if (catInfo) {
+          this.editorState.addCategory({
+            id: catInfo.id, name: catInfo.name, description: '',
+            color: catInfo.color, block_count: 0, char_count: 0,
+            font_size: 0, region: 'body', sample_text: '', enabled: true,
+          });
+        }
+      }
+
+      childBlocks.push(childBlock);
+      childBlockIds.push(blockId);
+    }
+
+    if (childBlocks.length <= 1) {
+      this.showAlert({ title: 'Split Block', message: 'Split produced only one block — nothing changed.', type: 'error' });
+      this.splitPopoverBlock.set(null);
+      return;
+    }
+
+    const definition: SplitDefinition = {
+      originalBlockId: block.id,
+      splitPoints: sortedPoints,
+      childBlockIds,
+      childBlocks,
+    };
+
+    this.editorState.splitBlock(definition);
+    this.editorState.updateCategoryStats();
+    this.splitPopoverBlock.set(null);
+  }
+
+  cancelSplit(): void {
+    this.splitPopoverBlock.set(null);
+  }
+
+  /**
+   * Restore block splits from persisted data by re-fetching spans and rebuilding
+   * child blocks. Called during project restore (no history push).
+   */
+  private async restoreBlockSplits(splits: Array<{
+    originalBlockId: string;
+    splitPoints: number[];
+    childBlockIds: string[];
+  }>): Promise<void> {
+    const allBlocks = this.blocks();
+    const pageDimensions = this.pageDimensions();
+    const baselines = computeCategoryBaselines(allBlocks);
+    const imagesByPage = new Map<number, TextBlock[]>();
+    const blocksByPage = new Map<number, TextBlock[]>();
+    for (const b of allBlocks) {
+      if (b.is_image) {
+        if (!imagesByPage.has(b.page)) imagesByPage.set(b.page, []);
+        imagesByPage.get(b.page)!.push(b);
+      }
+      if (!blocksByPage.has(b.page)) blocksByPage.set(b.page, []);
+      blocksByPage.get(b.page)!.push(b);
+    }
+    const topTextCounts = new Map<string, number>();
+    for (const b of allBlocks) {
+      if (b.region === 'header' && b.text.trim()) {
+        const t = b.text.trim().toLowerCase();
+        topTextCounts.set(t, (topTextCounts.get(t) || 0) + 1);
+      }
+    }
+    const repeatedTopTexts = new Set<string>();
+    for (const [t, count] of topTextCounts) {
+      if (count >= 2) repeatedTopTexts.add(t);
+    }
+
+    for (const split of splits) {
+      const originalBlock = allBlocks.find(b => b.id === split.originalBlockId);
+      if (!originalBlock) {
+        console.warn('[restoreBlockSplits] Original block not found:', split.originalBlockId);
+        continue;
+      }
+
+      const spans = await this.electronService.getSpansForBlock(split.originalBlockId);
+      if (!spans || spans.length === 0) {
+        console.warn('[restoreBlockSplits] No spans for block:', split.originalBlockId);
+        continue;
+      }
+
+      const lines = this.groupSpansByLine(spans);
+      if (lines.length <= 1) continue;
+
+      // Build segments from persisted split points
+      const sortedPoints = [...split.splitPoints].sort((a, b) => a - b);
+      const segments: Array<typeof lines> = [];
+      let start = 0;
+      for (const sp of sortedPoints) {
+        if (sp <= lines.length) {
+          segments.push(lines.slice(start, sp));
+          start = sp;
+        }
+      }
+      segments.push(lines.slice(start));
+
+      const pageHeight = pageDimensions[originalBlock.page]?.height || 800;
+      const childBlocks: TextBlock[] = [];
+      const childBlockIds: string[] = [];
+
+      for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+        const seg = segments[segIdx];
+        if (seg.length === 0) continue;
+
+        const segSpans = seg.flatMap(l => l.spans);
+        const segText = seg.map(l => l.text).join(' ');
+        if (!segText.trim()) continue;
+
+        let boldChars = 0, italicChars = 0, totalChars = 0;
+        const fontSizes = new Map<number, number>();
+        const fontNames = new Map<string, number>();
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+
+        for (const s of segSpans) {
+          const len = s.text.length;
+          totalChars += len;
+          if (s.is_bold) boldChars += len;
+          if (s.is_italic) italicChars += len;
+          fontSizes.set(s.font_size, (fontSizes.get(s.font_size) || 0) + len);
+          fontNames.set(s.font_name, (fontNames.get(s.font_name) || 0) + len);
+          x0 = Math.min(x0, s.x);
+          y0 = Math.min(y0, s.y);
+          x1 = Math.max(x1, s.x + s.width);
+          y1 = Math.max(y1, s.y + s.height);
+        }
+
+        let dominantSize = 10, maxSizeCount = 0;
+        for (const [size, count] of fontSizes) {
+          if (count > maxSizeCount) { maxSizeCount = count; dominantSize = size; }
+        }
+        let dominantFont = 'unknown', maxFontCount = 0;
+        for (const [font, count] of fontNames) {
+          if (count > maxFontCount) { maxFontCount = count; dominantFont = font; }
+        }
+
+        const isBold = totalChars > 0 && boldChars > totalChars * 0.5;
+        const isItalic = totalChars > 0 && italicChars > totalChars * 0.5;
+
+        const segY = y0, segHeight = y1 - y0;
+        const yPct = segY / pageHeight;
+        const trimmedText = segText.trim();
+        const textLen = trimmedText.length;
+        const lineCount = seg.length;
+        const looksLikeBodyText = textLen > 100 ||
+          /[.!?]["']?\s+[A-Z]/.test(trimmedText) ||
+          (trimmedText.endsWith('.') && textLen > 60);
+        let region = 'body';
+        const bottomPct = (segY + segHeight) / pageHeight;
+        if (lineCount <= 2 && (yPct < 0.10 || bottomPct < 0.15) && !looksLikeBodyText) {
+          region = 'header';
+        } else if (yPct > 0.90 || (yPct > 0.88 && textLen < 50)) {
+          region = 'footer';
+        } else if (yPct > 0.70) {
+          region = 'lower';
+        }
+
+        const blockId = this.simpleHash(`${originalBlock.id}:split:${segIdx}`);
+
+        const childBlock: TextBlock = {
+          id: blockId,
+          page: originalBlock.page,
+          x: x0,
+          y: segY,
+          width: x1 - x0,
+          height: segHeight,
+          text: segText,
+          font_size: dominantSize,
+          font_name: dominantFont,
+          char_count: segText.length,
+          region,
+          category_id: '',
+          is_bold: isBold,
+          is_italic: isItalic,
+          is_superscript: false,
+          is_image: false,
+          is_footnote_marker: false,
+          line_count: lineCount,
+        };
+
+        childBlock.category_id = classifyBlockHeuristic(
+          childBlock, baselines, imagesByPage, blocksByPage, pageDimensions, repeatedTopTexts
+        );
+
+        const cats = this.categories();
+        if (childBlock.category_id && !cats[childBlock.category_id]) {
+          const catInfo = this.autoDetectedCategoryList().find(c => c.id === childBlock.category_id);
+          if (catInfo) {
+            this.editorState.addCategory({
+              id: catInfo.id, name: catInfo.name, description: '',
+              color: catInfo.color, block_count: 0, char_count: 0,
+              font_size: 0, region: 'body', sample_text: '', enabled: true,
+            });
+          }
+        }
+
+        childBlocks.push(childBlock);
+        childBlockIds.push(blockId);
+      }
+
+      if (childBlocks.length > 1) {
+        this.editorState.splitBlock({
+          originalBlockId: split.originalBlockId,
+          splitPoints: sortedPoints,
+          childBlockIds,
+          childBlocks,
+        }, false); // false = don't push to history
+      }
+    }
+
+    this.editorState.updateCategoryStats();
+  }
+
+  private simpleHash(input: string): string {
+    let hash = 0;
+    for (let i = 0; i < input.length; i++) {
+      const char = input.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash |= 0; // Convert to 32bit integer
+    }
+    return 'split_' + Math.abs(hash).toString(36);
+  }
+
+  /**
+   * Detect and merge consecutive same-category blocks on each page.
+   * Consolidates fragmented body text into unified paragraph blocks.
+   */
+  mergeAdjacentBlocks(): void {
+    const blocks = this.blocks();
+    const deletedBlockIds = this.deletedBlockIds();
+    console.log('[mergeAdjacentBlocks] Starting with', blocks.length, 'blocks,', deletedBlockIds.size, 'deleted');
+    const groups = detectMergeableGroups(blocks, deletedBlockIds);
+
+    if (groups.length === 0) {
+      console.log('[mergeAdjacentBlocks] No mergeable groups found');
+      return;
+    }
+
+    console.log('[mergeAdjacentBlocks] Found', groups.length, 'groups to merge');
+
+    const definitions: MergeDefinition[] = groups.map(group => {
+      const mergedId = this.mergeHash('merge:' + group.blockIds.join(','));
+      return {
+        mergedBlockId: mergedId,
+        sourceBlockIds: group.blockIds,
+        sourceBlocks: group.blocks,
+        mergedBlock: createMergedBlock(mergedId, group.blocks),
+      };
+    });
+
+    this.editorState.mergeBlocks(definitions);
+    this.editorState.updateCategoryStats();
+  }
+
+  /**
+   * Unmerge a merged block back into its original source blocks.
+   */
+  unmergeBlock(mergedBlockId: string): void {
+    const def = this.editorState.blockMerges().get(mergedBlockId);
+    if (!def) return;
+
+    // Remove merged block from blocks array and re-add source blocks
+    this.editorState.blocks.update(blocks => [
+      ...blocks.filter(b => b.id !== mergedBlockId),
+      ...def.sourceBlocks,
+    ]);
+
+    // Remove from blockMerges map
+    this.editorState.blockMerges.update(map => {
+      const next = new Map(map);
+      next.delete(mergedBlockId);
+      return next;
+    });
+
+    // Select the restored source blocks
+    this.editorState.selectedBlockIds.set(def.sourceBlockIds);
+    this.editorState.updateCategoryStats();
+    this.editorState.markChanged();
+  }
+
+  private mergeHash(input: string): string {
+    let hash = 0;
+    for (let i = 0; i < input.length; i++) {
+      const char = input.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash |= 0;
+    }
+    return 'merge_' + Math.abs(hash).toString(36);
+  }
+
+  /**
+   * Restore block merges from persisted data by finding source blocks
+   * and rebuilding merged blocks. Called during project restore (no history push).
+   */
+  private restoreBlockMerges(merges: Array<{ mergedBlockId: string; sourceBlockIds: string[] }>): void {
+    const allBlocks = this.blocks();
+    const blocksById = new Map(allBlocks.map(b => [b.id, b]));
+
+    const definitions: MergeDefinition[] = [];
+    for (const merge of merges) {
+      const sourceBlocks = merge.sourceBlockIds
+        .map(id => blocksById.get(id))
+        .filter((b): b is TextBlock => !!b);
+
+      if (sourceBlocks.length < 2) {
+        console.warn('[restoreBlockMerges] Not enough source blocks found for merge:', merge.mergedBlockId);
+        continue;
+      }
+
+      definitions.push({
+        mergedBlockId: merge.mergedBlockId,
+        sourceBlockIds: merge.sourceBlockIds,
+        sourceBlocks: sourceBlocks,
+        mergedBlock: createMergedBlock(merge.mergedBlockId, sourceBlocks),
+      });
+    }
+
+    if (definitions.length > 0) {
+      this.editorState.mergeBlocks(definitions, false); // false = don't push to history
     }
   }
 
@@ -5236,12 +6260,14 @@ export class PdfPickerComponent implements OnInit {
   }
 
   async exportText(): Promise<void> {
+    const pb = this.editorState.paragraphBreaks();
     const result = await this.exportService.exportText(
       this.getExportableBlocks(),
       this.deletedBlockIds(),
       this.pdfName(),
       this.textCorrections(),
-      this.deletedPages()
+      this.deletedPages(),
+      pb.size > 0 ? pb : undefined
     );
 
     if (!result.success) {
@@ -5257,6 +6283,7 @@ export class PdfPickerComponent implements OnInit {
     // Use chapter-aware export if chapters are defined
     const chapters = this.chapters();
     const deletedHighlights = this.getDeletedHighlights();
+    const epubPB = this.editorState.paragraphBreaks();
     const result = chapters.length > 0
       ? await this.exportService.exportEpubWithChapters(
           this.getExportableBlocks(),
@@ -5265,7 +6292,8 @@ export class PdfPickerComponent implements OnInit {
           this.pdfName(),
           this.textCorrections(),
           this.deletedPages(),
-          deletedHighlights
+          deletedHighlights,
+          epubPB.size > 0 ? epubPB : undefined
         )
       : await this.exportService.exportEpub(
           this.getExportableBlocks(),
@@ -5467,12 +6495,14 @@ export class PdfPickerComponent implements OnInit {
   private async exportAsTxt(): Promise<void> {
     this.loadingText.set('Exporting text...');
 
+    const txtPB = this.editorState.paragraphBreaks();
     const result = await this.exportService.exportText(
       this.getExportableBlocks(),
       this.deletedBlockIds(),
       this.pdfName(),
       this.editorState.textCorrections(),
-      this.deletedPages()
+      this.deletedPages(),
+      txtPB.size > 0 ? txtPB : undefined
     );
 
     if (!result.success) {
@@ -5545,6 +6575,7 @@ export class PdfPickerComponent implements OnInit {
     // Use chapter-aware export if chapters are defined
     const chapters = this.chapters();
     const deletedHighlights = this.getDeletedHighlights();
+    const exportPB = this.editorState.paragraphBreaks();
     const result = chapters.length > 0
       ? await this.exportService.exportEpubWithChapters(
           this.getExportableBlocks(),
@@ -5553,7 +6584,8 @@ export class PdfPickerComponent implements OnInit {
           this.pdfName(),
           this.editorState.textCorrections(),
           this.deletedPages(),
-          deletedHighlights
+          deletedHighlights,
+          exportPB.size > 0 ? exportPB : undefined
         )
       : await this.exportService.exportEpub(
           this.getExportableBlocks(),
@@ -5653,6 +6685,7 @@ export class PdfPickerComponent implements OnInit {
     const chapters = this.chapters();
     const deletedHighlights = this.getDeletedHighlights();
 
+    const paragraphBreaks = this.editorState.paragraphBreaks();
     const result = await this.exportService.exportToAudiobook(
       this.getExportableBlocks(),
       this.deletedBlockIds(),
@@ -5663,7 +6696,10 @@ export class PdfPickerComponent implements OnInit {
       this.deletedPages(),
       deletedHighlights,
       this.metadata(),  // Pass metadata for title, author, cover, etc.
-      true // Navigate to audiobook producer after
+      true, // Navigate to audiobook producer after
+      undefined,
+      undefined,
+      paragraphBreaks.size > 0 ? paragraphBreaks : undefined
     );
 
     if (!result.success) {
@@ -5694,6 +6730,7 @@ export class PdfPickerComponent implements OnInit {
     this.loadingText.set('Preparing EPUB...');
 
     try {
+      const saveAsPB = this.editorState.paragraphBreaks();
       const result = await this.exportService.saveEpubAs(
         this.getExportableBlocks(),
         this.deletedBlockIds(),
@@ -5703,6 +6740,7 @@ export class PdfPickerComponent implements OnInit {
         this.deletedPages(),
         this.getDeletedHighlights(),
         this.metadata(),
+        saveAsPB.size > 0 ? saveAsPB : undefined,
       );
 
       if (result.message === 'Canceled') {
@@ -5757,6 +6795,7 @@ export class PdfPickerComponent implements OnInit {
       const deletedHighlights = this.getDeletedHighlights();
 
       // Export to audiobook folder - NEVER modifies the original source file
+      const pBreaks = this.editorState.paragraphBreaks();
       const result = await this.exportService.exportToAudiobook(
         this.getExportableBlocks(),
         this.deletedBlockIds(),
@@ -5769,32 +6808,23 @@ export class PdfPickerComponent implements OnInit {
         this.metadata(),
         false, // Don't navigate to audiobook producer
         undefined, // categories
-        savePath
+        savePath,
+        pBreaks.size > 0 ? pBreaks : undefined
       );
 
       if (result.success) {
-        const emitSuccess = () => this.finalized.emit({
-          success: true,
-          epubPath: result.filename  // 'exported.epub' - the filename in the audiobook folder
-        });
+        // Determine the full path of the saved EPUB
+        const fullEpubPath = savePath || `${projectPath}/source/exported.epub`;
 
-        const savedName = savePath ? savePath.split('/').pop() : 'exported.epub';
         if (result.warning) {
-          // Wait for user to acknowledge the warning before emitting finalized
-          // (which triggers window close in embedded mode)
           this.showAlert({
             title: 'Saved with Warning',
             message: result.warning,
             type: 'warning',
-            onConfirm: emitSuccess
+            onConfirm: () => this.enterParagraphFixMode(fullEpubPath)
           });
         } else {
-          emitSuccess();
-          this.showAlert({
-            title: 'Saved',
-            message: `Saved to ${savedName}.`,
-            type: 'success'
-          });
+          this.enterParagraphFixMode(fullEpubPath);
         }
       } else {
         this.finalized.emit({
@@ -5844,6 +6874,7 @@ export class PdfPickerComponent implements OnInit {
       console.log('[saveToSourceEpub] Chapters:', chapters.length);
 
       // Generate the EPUB with the same logic as export, but write to the source path
+      const savePB = this.editorState.paragraphBreaks();
       const result = await this.exportService.saveToEpub(
         blocks,
         deletedBlockIds,
@@ -5853,23 +6884,16 @@ export class PdfPickerComponent implements OnInit {
         this.editorState.textCorrections(),
         deletedPages,
         deletedHighlights,
-        this.metadata()
+        this.metadata(),
+        savePB.size > 0 ? savePB : undefined
       );
 
       if (result.success) {
-        this.finalized.emit({
-          success: true,
-          epubPath: epubPath
-        });
-
-        this.showAlert({
-          title: 'Changes Saved',
-          message: `EPUB updated successfully.`,
-          type: 'success'
-        });
-
         // Clear unsaved changes flag
         this.editorState.hasUnsavedChanges.set(false);
+
+        // Enter paragraph fix mode to auto-detect and fix paragraph breaks
+        this.enterParagraphFixMode(epubPath);
       } else {
         this.finalized.emit({
           success: false,
@@ -6210,6 +7234,24 @@ export class PdfPickerComponent implements OnInit {
       this.tryLoadOutline();
     }
 
+    // Restore paragraph breaks
+    if (project.paragraph_breaks && project.paragraph_breaks.length > 0) {
+      this.editorState.paragraphBreaks.set(new Set(project.paragraph_breaks));
+    }
+
+    // Restore category corrections and learned categories (applied to blocks later)
+    if (project.category_corrections && project.category_corrections.length > 0) {
+      this.editorState.categoryCorrections.set(new Map(project.category_corrections));
+    }
+    if (project.learned_categories && project.learned_categories.length > 0) {
+      this.editorState.learnedCategories.set(new Map(project.learned_categories));
+    }
+
+    // Restore classification thresholds
+    if (project.classification_thresholds) {
+      this.editorState.classificationThresholds.set(project.classification_thresholds);
+    }
+
     // Restore deleted pages
     if (project.deleted_pages && project.deleted_pages.length > 0) {
       this.deletedPages.set(new Set(project.deleted_pages));
@@ -6254,6 +7296,39 @@ export class PdfPickerComponent implements OnInit {
       this.editorState.removeBackgrounds.set(true);
     }
 
+    // Apply category corrections AFTER all block mutations (OCR blocks, block edits)
+    // are done. Otherwise, replaceTextBlocksOnPages or categories.set will overwrite
+    // the corrected category_ids.
+    if (this.editorState.categoryCorrections().size > 0) {
+      this.editorState.applyCategoryCorrections();
+      this.editorState.updateCategoryStats();
+    }
+
+    // Restore block splits: re-fetch spans and rebuild child blocks
+    if (project.block_splits && project.block_splits.length > 0) {
+      await this.restoreBlockSplits(project.block_splits);
+    }
+
+    // Restore block merges: find source blocks and rebuild merged blocks
+    if (project.block_merges && project.block_merges.length > 0) {
+      this.restoreBlockMerges(project.block_merges);
+
+      // Clean up deletedBlockIds: old saves stored merge source IDs there,
+      // but mergeBlocks() now removes source blocks from the array instead.
+      // Remove any stale source IDs from deletedBlockIds so they don't cause issues.
+      const mergeSourceIds = new Set<string>();
+      for (const m of project.block_merges) {
+        for (const srcId of m.sourceBlockIds) mergeSourceIds.add(srcId);
+      }
+      if (mergeSourceIds.size > 0) {
+        this.editorState.deletedBlockIds.update(deleted => {
+          const next = new Set(deleted);
+          for (const srcId of mergeSourceIds) next.delete(srcId);
+          return next;
+        });
+      }
+    }
+
     // Suppress auto-save triggered by replaceTextBlocksOnPages() during restore.
     // Loading existing state should not be treated as a user change.
     if (this.autoSaveTimeout) {
@@ -6265,7 +7340,9 @@ export class PdfPickerComponent implements OnInit {
     console.log('[restoreProjectState] Restored project from:', projectFilePath,
       'chapters:', project.chapters?.length || 0,
       'ocrBlocks:', project.ocr_blocks?.length || 0,
-      'ocrCategories:', project.ocr_categories ? Object.keys(project.ocr_categories).length : 0);
+      'ocrCategories:', project.ocr_categories ? Object.keys(project.ocr_categories).length : 0,
+      'blockSplits:', project.block_splits?.length || 0,
+      'blockMerges:', project.block_merges?.length || 0);
   }
 
   // Schedule auto-save (debounced)
@@ -6313,6 +7390,17 @@ export class PdfPickerComponent implements OnInit {
         chapters_source: chapters.length > 0 ? chaptersSource : undefined,
         deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
         metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
+        paragraph_breaks: this.editorState.paragraphBreaks().size > 0 ? [...this.editorState.paragraphBreaks()] : undefined,
+        category_corrections: this.editorState.categoryCorrections().size > 0 ? [...this.editorState.categoryCorrections().entries()] : undefined,
+        learned_categories: this.editorState.learnedCategories().size > 0 ? [...this.editorState.learnedCategories().entries()] : undefined,
+        classification_thresholds: isDefaultThresholds(this.editorState.classificationThresholds())
+          ? undefined : this.editorState.classificationThresholds(),
+        block_merges: this.editorState.blockMerges().size > 0
+          ? [...this.editorState.blockMerges().values()].map(m => ({
+              mergedBlockId: m.mergedBlockId,
+              sourceBlockIds: m.sourceBlockIds,
+            }))
+          : undefined,
         created_at: new Date().toISOString(),
         modified_at: new Date().toISOString()
       };
@@ -6361,6 +7449,17 @@ export class PdfPickerComponent implements OnInit {
         chapters_source: chapters.length > 0 ? chaptersSource : undefined,
         deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
         metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
+        paragraph_breaks: this.editorState.paragraphBreaks().size > 0 ? [...this.editorState.paragraphBreaks()] : undefined,
+        category_corrections: this.editorState.categoryCorrections().size > 0 ? [...this.editorState.categoryCorrections().entries()] : undefined,
+        learned_categories: this.editorState.learnedCategories().size > 0 ? [...this.editorState.learnedCategories().entries()] : undefined,
+        classification_thresholds: isDefaultThresholds(this.editorState.classificationThresholds())
+          ? undefined : this.editorState.classificationThresholds(),
+        block_merges: this.editorState.blockMerges().size > 0
+          ? [...this.editorState.blockMerges().values()].map(m => ({
+              mergedBlockId: m.mergedBlockId,
+              sourceBlockIds: m.sourceBlockIds,
+            }))
+          : undefined,
         created_at: new Date().toISOString(),
         modified_at: new Date().toISOString()
       };
@@ -6408,6 +7507,17 @@ export class PdfPickerComponent implements OnInit {
       chapters_source: chapters.length > 0 ? chaptersSource : undefined,
       deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
       metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
+      paragraph_breaks: this.editorState.paragraphBreaks().size > 0 ? [...this.editorState.paragraphBreaks()] : undefined,
+      category_corrections: this.editorState.categoryCorrections().size > 0 ? [...this.editorState.categoryCorrections().entries()] : undefined,
+      learned_categories: this.editorState.learnedCategories().size > 0 ? [...this.editorState.learnedCategories().entries()] : undefined,
+      classification_thresholds: isDefaultThresholds(this.editorState.classificationThresholds())
+        ? undefined : this.editorState.classificationThresholds(),
+      block_merges: this.editorState.blockMerges().size > 0
+        ? [...this.editorState.blockMerges().values()].map(m => ({
+            mergedBlockId: m.mergedBlockId,
+            sourceBlockIds: m.sourceBlockIds,
+          }))
+        : undefined,
       created_at: this.projectPath() ? new Date().toISOString() : new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -6531,13 +7641,38 @@ export class PdfPickerComponent implements OnInit {
       chapters: chapters.length > 0 ? chapters : undefined,
       chapters_source: chapters.length > 0 ? chaptersSource : undefined,
       metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
+      paragraph_breaks: this.editorState.paragraphBreaks().size > 0 ? [...this.editorState.paragraphBreaks()] : undefined,
+      category_corrections: this.editorState.categoryCorrections().size > 0 ? [...this.editorState.categoryCorrections().entries()] : undefined,
+      learned_categories: this.editorState.learnedCategories().size > 0 ? [...this.editorState.learnedCategories().entries()] : undefined,
+      classification_thresholds: isDefaultThresholds(this.editorState.classificationThresholds())
+        ? undefined : this.editorState.classificationThresholds(),
+      block_splits: this.editorState.blockSplits().size > 0
+        ? [...this.editorState.blockSplits().values()].map(s => ({
+            originalBlockId: s.originalBlockId,
+            splitPoints: s.splitPoints,
+            childBlockIds: s.childBlockIds,
+          }))
+        : undefined,
+      block_merges: this.editorState.blockMerges().size > 0
+        ? [...this.editorState.blockMerges().values()].map(m => ({
+            mergedBlockId: m.mergedBlockId,
+            sourceBlockIds: m.sourceBlockIds,
+          }))
+        : undefined,
       created_at: new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
 
+    console.log('[saveProjectToPath]', filePath,
+      'category_corrections:', projectData.category_corrections?.length ?? 0,
+      'paragraph_breaks:', projectData.paragraph_breaks?.length ?? 0,
+      'block_splits:', projectData.block_splits?.length ?? 0,
+      'block_merges:', projectData.block_merges?.length ?? 0);
+
     const result = await this.electronService.saveProjectToPath(filePath, projectData);
 
     if (result.success) {
+      console.log('[saveProjectToPath] SUCCESS');
       this.hasUnsavedChanges.set(false);
     } else {
       console.error('[saveProjectToPath] FAILED:', result.error, 'path:', filePath);
@@ -6683,7 +7818,11 @@ export class PdfPickerComponent implements OnInit {
         deletedBlockIds: new Set(project.deleted_block_ids || []),
         deletedPages: new Set<number>(project.deleted_pages || []),
         pageOrder: project.page_order || [],
-        blockEdits: quickResult.textReady ? blockEditsMap : undefined
+        blockEdits: quickResult.textReady ? blockEditsMap : undefined,
+        paragraphBreaks: project.paragraph_breaks?.length ? new Set(project.paragraph_breaks) : undefined,
+        categoryCorrections: project.category_corrections?.length ? new Map(project.category_corrections) : undefined,
+        learnedCategories: project.learned_categories?.length ? new Map(project.learned_categories) : undefined,
+        classificationThresholds: project.classification_thresholds || undefined,
       });
 
       // Restore undo/redo history from project (loadDocument clears it)
@@ -6718,6 +7857,25 @@ export class PdfPickerComponent implements OnInit {
         this.metadata.set(project.metadata);
       }
 
+      // Restore paragraph breaks
+      if (project.paragraph_breaks && project.paragraph_breaks.length > 0) {
+        this.editorState.paragraphBreaks.set(new Set(project.paragraph_breaks));
+      }
+
+      // Restore category corrections and apply to blocks (AFTER all block mutations)
+      if (project.category_corrections && project.category_corrections.length > 0) {
+        this.editorState.categoryCorrections.set(new Map(project.category_corrections));
+        if (quickResult.textReady) {
+          this.editorState.applyCategoryCorrections();
+          this.editorState.updateCategoryStats();
+        }
+      }
+
+      // Restore classification thresholds
+      if (project.classification_thresholds) {
+        this.editorState.classificationThresholds.set(project.classification_thresholds);
+      }
+
       this.pageRenderService.clear();
       this.projectService.projectPath.set(result.filePath || null);
 
@@ -6736,6 +7894,8 @@ export class PdfPickerComponent implements OnInit {
         // Store block edits to apply when text arrives
         const pendingEdits = blockEditsMap;
         const pendingDeletedBlockIds = new Set(project.deleted_block_ids || []);
+        const pendingCatCorrections = project.category_corrections?.length
+          ? new Map(project.category_corrections) : undefined;
 
         this.editorState.textLoading.set(true);
         const unsub = this.electronService.onTextReady((data) => {
@@ -6750,6 +7910,11 @@ export class PdfPickerComponent implements OnInit {
           }
           if (pendingDeletedBlockIds.size > 0) {
             this.editorState.deletedBlockIds.set(pendingDeletedBlockIds);
+          }
+          // Apply category corrections now that blocks exist
+          if (pendingCatCorrections && pendingCatCorrections.size > 0) {
+            this.editorState.applyCategoryCorrections();
+            this.editorState.updateCategoryStats();
           }
         });
 
@@ -6952,7 +8117,13 @@ export class PdfPickerComponent implements OnInit {
         projectPath: actualProjectPath,
         undoStack: project.undo_stack || [],
         redoStack: project.redo_stack || [],
-        lightweightMode: lightweight
+        lightweightMode: lightweight,
+        categoryCorrections: isLoadingOriginal && project.category_corrections?.length
+          ? new Map(project.category_corrections) : undefined,
+        learnedCategories: isLoadingOriginal && project.learned_categories?.length
+          ? new Map(project.learned_categories) : undefined,
+        paragraphBreaks: isLoadingOriginal && project.paragraph_breaks?.length
+          ? new Set(project.paragraph_breaks) : undefined,
       };
 
       // Add to open documents
@@ -6987,7 +8158,13 @@ export class PdfPickerComponent implements OnInit {
         deletedBlockIds: quickResult.textReady ? deletedBlockIds : new Set(),
         deletedPages: deletedPages,
         pageOrder: pageOrder,
-        blockEdits: quickResult.textReady ? blockEditsMap : undefined
+        blockEdits: quickResult.textReady ? blockEditsMap : undefined,
+        paragraphBreaks: isLoadingOriginal && project.paragraph_breaks?.length
+          ? new Set(project.paragraph_breaks) : undefined,
+        categoryCorrections: isLoadingOriginal && project.category_corrections?.length
+          ? new Map(project.category_corrections) : undefined,
+        learnedCategories: isLoadingOriginal && project.learned_categories?.length
+          ? new Map(project.learned_categories) : undefined,
       });
 
       // Restore undo/redo history from project (loadDocument clears it)
@@ -7060,6 +8237,25 @@ export class PdfPickerComponent implements OnInit {
         this.editorState.removeBackgrounds.set(true);
       }
 
+      // Restore paragraph breaks
+      if (isLoadingOriginal && project.paragraph_breaks && project.paragraph_breaks.length > 0) {
+        this.editorState.paragraphBreaks.set(new Set(project.paragraph_breaks));
+      }
+
+      // Restore category corrections and apply them to blocks (AFTER all block mutations)
+      if (isLoadingOriginal && project.category_corrections && project.category_corrections.length > 0) {
+        this.editorState.categoryCorrections.set(new Map(project.category_corrections));
+        if (quickResult.textReady) {
+          this.editorState.applyCategoryCorrections();
+          this.editorState.updateCategoryStats();
+        }
+      }
+
+      // Restore classification thresholds
+      if (isLoadingOriginal && project.classification_thresholds) {
+        this.editorState.classificationThresholds.set(project.classification_thresholds);
+      }
+
       this.pageRenderService.clear();
       this.projectService.projectPath.set(actualProjectPath);
 
@@ -7093,6 +8289,8 @@ export class PdfPickerComponent implements OnInit {
         const pendingDeletedBlockIds = deletedBlockIds;
         const pendingOcrBlocks = isLoadingOriginal ? project.ocr_blocks : undefined;
         const pendingOcrCategories = isLoadingOriginal ? project.ocr_categories : undefined;
+        const pendingCategoryCorrections = isLoadingOriginal && project.category_corrections?.length
+          ? new Map(project.category_corrections) : undefined;
 
         this.editorState.textLoading.set(true);
         const unsub = this.electronService.onTextReady((data) => {
@@ -7129,6 +8327,12 @@ export class PdfPickerComponent implements OnInit {
               if (pendingOcrCategories) {
                 this.editorState.categories.set(pendingOcrCategories);
               }
+            }
+
+            // Apply category corrections AFTER all block mutations
+            if (pendingCategoryCorrections && pendingCategoryCorrections.size > 0) {
+              this.editorState.applyCategoryCorrections();
+              this.editorState.updateCategoryStats();
             }
           }
 
@@ -8427,6 +9631,181 @@ export class PdfPickerComponent implements OnInit {
     this.hasUnsavedChanges.set(true);
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Paragraph detection
+  // ─────────────────────────────────────────────────────────────────────────
+
+  detectParagraphs(): void {
+    const blocks = this.blocks();
+    const deletedIds = this.deletedBlockIds();
+    const manualBreaks = this.editorState.paragraphBreaks();
+    const chapterBlockIds = new Set(this.chapters().map(c => {
+      // Find nearest block to each chapter marker
+      const pageBlocks = blocks.filter(b => b.page === c.page && !deletedIds.has(b.id) && !b.is_image && b.region === 'body');
+      const closest = pageBlocks.reduce<TextBlock | null>((best, b) => {
+        if (!best) return b;
+        return Math.abs(b.y - (c.y || 0)) < Math.abs(best.y - (c.y || 0)) ? b : best;
+      }, null);
+      return closest?.id;
+    }).filter((id): id is string => !!id));
+
+    const baselines = computeBaselines(blocks, deletedIds);
+
+    let config: DetectionConfig | undefined;
+    if (this.userDetectionConfig) {
+      config = this.userDetectionConfig;
+    }
+
+    const sdz = config?.shortLineDeadZone ?? getDefaultConfig().shortLineDeadZone;
+    const model = learnFromBreaks(blocks, manualBreaks, baselines, deletedIds, sdz);
+
+    // If no user config, build one from auto-learned model + defaults
+    if (!config) {
+      const defaults = getDefaultConfig();
+      config = {
+        ...defaults,
+        weights: model.weights,
+        threshold: model.threshold,
+      };
+    }
+
+    const result = detectParagraphBreaks(blocks, model, baselines, deletedIds, chapterBlockIds, manualBreaks, config);
+
+    this.editorState.setParagraphBreaks(result.breaks);
+    this.paragraphDetectionStats.set(result.stats);
+    this.paragraphDetectionConfig.set(result.config);
+    this.paragraphBaselines.set(result.baselines);
+  }
+
+  onParagraphConfigChange(config: DetectionConfig): void {
+    this.userDetectionConfig = config;
+  }
+
+  clearParagraphs(): void {
+    this.editorState.clearParagraphBreaks();
+    this.paragraphDetectionStats.set(null);
+    this.paragraphDetectionConfig.set(null);
+    this.paragraphBaselines.set(null);
+    this.userDetectionConfig = null;
+  }
+
+  toggleParagraphBreak(blockId: string): void {
+    this.editorState.toggleParagraphBreak(blockId);
+  }
+
+  deleteParagraphBreak(blockId: string): void {
+    const breaks = this.editorState.paragraphBreaks();
+    if (breaks.has(blockId)) {
+      const newBreaks = new Set(breaks);
+      newBreaks.delete(blockId);
+      this.editorState.setParagraphBreaks(newBreaks);
+    }
+  }
+
+  moveParagraphBreak(move: { fromBlockId: string; toBlockId: string }): void {
+    const breaks = this.editorState.paragraphBreaks();
+    const newBreaks = new Set(breaks);
+    newBreaks.delete(move.fromBlockId);
+    newBreaks.add(move.toBlockId);
+    if (newBreaks.size !== breaks.size || !breaks.has(move.toBlockId) || !breaks.has(move.fromBlockId)) {
+      this.editorState.setParagraphBreaks(newBreaks);
+    }
+  }
+
+  /**
+   * Enter paragraph fix mode after a save operation.
+   * Closes the current document (e.g., the PDF), reopens the exported EPUB
+   * so paragraph detection runs on EPUB text blocks (which map to <p> tags),
+   * then auto-detects paragraph breaks.
+   */
+  private async enterParagraphFixMode(epubPath: string): Promise<void> {
+    this.paragraphFixEpubPath.set(epubPath);
+    this.paragraphFixMode.set(true);
+
+    // Remove the current document from open tabs so loadPdf won't hit
+    // the duplicate-tab check (the EPUB path may differ from the original source)
+    const currentDocId = this.activeDocumentId();
+    if (currentDocId) {
+      this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
+    }
+
+    // Close the current document (frees WASM memory, resets editor state)
+    this.closePdf();
+
+    // Re-set fix mode state after closePdf resets it
+    this.paragraphFixMode.set(true);
+    this.paragraphFixEpubPath.set(epubPath);
+
+    // Load the exported EPUB — blocks will correspond to <p> tags
+    await this.loadPdf(epubPath);
+
+    // Switch to paragraph mode and auto-detect
+    this.setMode('paragraph');
+    this.detectParagraphs();
+  }
+
+  /**
+   * Finish paragraph fix mode — save corrected paragraphs and emit finalized.
+   */
+  async finishParagraphFix(): Promise<void> {
+    const epubPath = this.paragraphFixEpubPath();
+    if (!epubPath) return;
+
+    this.loading.set(true);
+    this.loadingText.set('Saving paragraph corrections...');
+
+    try {
+      const chapters = this.chapters();
+      const deletedHighlights = this.getDeletedHighlights();
+      const blocks = this.blocks();
+      const deletedBlockIds = this.deletedBlockIds();
+      const deletedPages = this.deletedPages();
+      const pBreaks = this.editorState.paragraphBreaks();
+
+      const result = await this.exportService.saveToEpub(
+        blocks,
+        deletedBlockIds,
+        chapters,
+        this.pdfName(),
+        epubPath,
+        this.editorState.textCorrections(),
+        deletedPages,
+        deletedHighlights,
+        this.metadata(),
+        pBreaks.size > 0 ? pBreaks : undefined
+      );
+
+      // Exit paragraph fix mode
+      this.paragraphFixMode.set(false);
+      this.paragraphFixEpubPath.set(null);
+      this.setMode('select');
+
+      if (result.success) {
+        this.finalized.emit({ success: true, epubPath });
+        this.showAlert({
+          title: 'Saved',
+          message: 'EPUB saved with corrected paragraphs.',
+          type: 'success'
+        });
+      } else {
+        this.finalized.emit({ success: false, error: result.message || 'Failed to save' });
+        this.showAlert({
+          title: 'Save Failed',
+          message: result.message || 'Failed to save EPUB',
+          type: 'error'
+        });
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.paragraphFixMode.set(false);
+      this.paragraphFixEpubPath.set(null);
+      this.finalized.emit({ success: false, error: errorMessage });
+      this.showAlert({ title: 'Save Failed', message: errorMessage, type: 'error' });
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
   /**
    * Finalize chapters for export - validates and prepares chapter metadata
    * This recalculates page numbers accounting for deleted pages and shows a summary
@@ -9251,7 +10630,10 @@ export class PdfPickerComponent implements OnInit {
             hasUnsavedChanges: this.hasUnsavedChanges(),
             projectPath: this.projectPath(),
             undoStack: history.undoStack,
-            redoStack: history.redoStack
+            redoStack: history.redoStack,
+            paragraphBreaks: this.editorState.paragraphBreaks(),
+            categoryCorrections: this.editorState.categoryCorrections(),
+            learnedCategories: this.editorState.learnedCategories(),
           };
         }
         return doc;
@@ -9278,7 +10660,10 @@ export class PdfPickerComponent implements OnInit {
       fileHash: doc.fileHash,
       deletedBlockIds: doc.deletedBlockIds,
       deletedPages: doc.deletedPages,
-      pageOrder: doc.pageOrder
+      pageOrder: doc.pageOrder,
+      paragraphBreaks: doc.paragraphBreaks,
+      categoryCorrections: doc.categoryCorrections,
+      learnedCategories: doc.learnedCategories,
     });
 
     // Restore additional state
@@ -9292,6 +10677,9 @@ export class PdfPickerComponent implements OnInit {
 
     this.pageRenderService.restorePageImages(doc.pageImages);
     this.projectService.projectPath.set(doc.projectPath);
+
+    // Note: paragraphBreaks and categoryCorrections are now passed directly to
+    // loadDocument() above, which applies corrections to blocks automatically.
   }
 
   private clearDocumentState(): void {

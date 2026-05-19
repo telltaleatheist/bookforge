@@ -36,6 +36,21 @@ export interface ToolPathsConfig {
   // Resemble Enhance (audio enhancement for removing reverb/echo from TTS output)
   resembleCondaEnv?: string;    // Conda environment name for Resemble Enhance (default: 'resemble')
   resembleDevice?: 'auto' | 'cuda' | 'mps' | 'cpu';  // Device for Resemble Enhance (default: 'auto')
+  resembleEngine?: 'resemble' | 'ffmpeg';  // Which engine to use for enhancement (default: 'resemble')
+  resembleDenoiseOnly?: boolean; // Only denoise, skip neural enhancement (avoids "underwater" artifacts)
+  resemblePasses?: number;      // Number of denoise passes (default: 1, only used when resembleDenoiseOnly=true)
+  resembleLambd?: number;       // Denoise strength 0.0-1.0 (default: 1.0 = max denoise)
+  resembleTau?: number;         // CFM prior temperature 0.0-1.0 (default: 0.5, lower = more conservative)
+  resembleNfe?: number;         // Number of function evaluations (default: 64, more = higher quality)
+  resembleSolver?: 'midpoint' | 'rk4' | 'euler';  // Numerical solver (default: midpoint)
+
+  // FFmpeg afftdn settings (used when resembleEngine='ffmpeg')
+  ffmpegNoiseReduction?: number;  // Noise reduction in dB (0.01-97, default: 20)
+  ffmpegNoiseFloor?: number;      // Noise floor in dB (-80 to -20, default: -40)
+  ffmpegResidualFloor?: number;   // Residual floor in dB (-80 to -20, default: -38)
+  ffmpegAdaptivity?: number;      // Adaptivity factor (0-1, default: 0.5)
+  ffmpegTrackNoise?: boolean;     // Dynamically track noise profile (default: true)
+
   useWsl2ForResemble?: boolean; // Use WSL2 for Resemble Enhance on Windows (default: true on Windows)
   wslResembleCondaEnv?: string; // Conda env name for Resemble in WSL (default: 'resemble')
 
@@ -421,6 +436,63 @@ export function getResembleDevice(): 'cuda' | 'mps' | 'cpu' {
   return 'cpu';
 }
 
+/**
+ * Get Resemble Enhance CLI arguments from config.
+ * Returns extra args to append to the resemble-enhance command.
+ */
+export function getResembleExtraArgs(): string[] {
+  loadConfig();
+  const args: string[] = [];
+
+  if (state.config.resembleDenoiseOnly) {
+    args.push('--denoise_only');
+  }
+  if (state.config.resembleLambd !== undefined) {
+    args.push('--lambd', String(state.config.resembleLambd));
+  }
+  if (state.config.resembleTau !== undefined) {
+    args.push('--tau', String(state.config.resembleTau));
+  }
+  if (state.config.resembleNfe !== undefined) {
+    args.push('--nfe', String(state.config.resembleNfe));
+  }
+  if (state.config.resembleSolver) {
+    args.push('--solver', state.config.resembleSolver);
+  }
+  return args;
+}
+
+/**
+ * Get number of denoise passes from config.
+ * Only relevant when resembleDenoiseOnly is true.
+ */
+export function getResemblePasses(): number {
+  loadConfig();
+  return state.config.resemblePasses ?? 1;
+}
+
+/**
+ * Get which enhancement engine to use: 'resemble' (neural) or 'ffmpeg' (afftdn filter).
+ */
+export function getEnhanceEngine(): 'resemble' | 'ffmpeg' {
+  loadConfig();
+  return state.config.resembleEngine ?? 'resemble';
+}
+
+/**
+ * Build FFmpeg afftdn filter string from config.
+ * Returns a filter like "afftdn=nr=20:nf=-40:rf=-38:ad=0.5:tn=1"
+ */
+export function getFfmpegDenoiseFilter(): string {
+  loadConfig();
+  const nr = state.config.ffmpegNoiseReduction ?? 20;
+  const nf = state.config.ffmpegNoiseFloor ?? -40;
+  const rf = state.config.ffmpegResidualFloor ?? -38;
+  const ad = state.config.ffmpegAdaptivity ?? 0.5;
+  const tn = state.config.ffmpegTrackNoise !== false ? 1 : 0;
+  return `afftdn=nr=${nr}:nf=${nf}:rf=${rf}:ad=${ad}:tn=${tn}`;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Detection Status (for UI)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -786,6 +858,10 @@ export const toolPaths = {
   getDeepFilterCondaEnv,
   getResembleCondaEnv,
   getResembleDevice,
+  getResembleExtraArgs,
+  getResemblePasses,
+  getEnhanceEngine,
+  getFfmpegDenoiseFilter,
   getToolStatus,
   // WSL2 functions
   detectWslAvailability,

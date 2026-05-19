@@ -19,6 +19,10 @@ import {
   getFfmpegPath,
   getResembleCondaEnv,
   getResembleDevice,
+  getResembleExtraArgs,
+  getResemblePasses,
+  getEnhanceEngine,
+  getFfmpegDenoiseFilter,
   shouldUseWsl2ForResemble,
   getWslCondaPath,
   getWslResembleCondaEnv,
@@ -225,110 +229,122 @@ export async function enhanceFile(inputPath: string): Promise<EnhanceResult> {
       fs.copyFileSync(inputPath, tempWav);
     }
 
-    // Step 2: Run Resemble Enhance
+    // Step 2: Run Resemble Enhance (with multi-pass support for denoise-only mode)
     const device = getResembleDevice();
     const useWsl = shouldUseWsl2ForResemble();
+    const extraArgs = getResembleExtraArgs();
+    const totalPasses = extraArgs.includes('--denoise_only') ? getResemblePasses() : 1;
 
-    emitProgress({ phase: 'enhancing', percentage: 20, message: `Running Resemble Enhance on ${device.toUpperCase()}${useWsl ? ' (WSL)' : ''} (this may take a while)...` });
-
-    console.log(`[RESEMBLE] Using device: ${device}, WSL: ${useWsl}`);
+    console.log(`[RESEMBLE] Using device: ${device}, WSL: ${useWsl}, passes: ${totalPasses}`);
 
     const startTime = Date.now();
 
-    await new Promise<void>((resolve, reject) => {
-      // Build environment with device-specific settings
-      const envVars: Record<string, string> = buildCondaSpawnEnv({
-        PYTHONUNBUFFERED: '1',
-      });
+    for (let pass = 1; pass <= totalPasses; pass++) {
+      const passLabel = totalPasses > 1 ? ` (pass ${pass}/${totalPasses})` : '';
+      emitProgress({ phase: 'enhancing', percentage: 20, message: `Running Resemble Enhance on ${device.toUpperCase()}${useWsl ? ' (WSL)' : ''}${passLabel}...` });
 
-      if (useWsl) {
-        // Use WSL for Resemble Enhance on Windows
-        const wslCondaPath = getWslCondaPath();
-        const wslCondaEnv = getWslResembleCondaEnv();
-        const wslInputDir = windowsToWslPath(tempInputDir);
-        const wslOutputDir = windowsToWslPath(tempOutputDir);
-        const distro = getWslDistro();
-
-        // Build the bash command to run in WSL
-        const condaBase = wslCondaPath.replace(/\/bin\/conda$/, '');
-        const bashCommand = `source ${condaBase}/etc/profile.d/conda.sh && conda activate ${wslCondaEnv} && resemble-enhance "${wslInputDir}" "${wslOutputDir}" --device ${device}`;
-
-        console.log(`[RESEMBLE] WSL command: ${bashCommand}`);
-
-        const wslArgs = distro
-          ? ['-d', distro, 'bash', '-c', bashCommand]
-          : ['bash', '-c', bashCommand];
-
-        activeProcess = spawn('wsl.exe', wslArgs, {
-          env: envVars,
-          windowsHide: true
-        });
-      } else {
-        // Direct spawn (macOS/Linux or Windows without WSL)
-        activeProcess = spawn(condaPath, [
-          'run', '-n', condaEnv, '--no-capture-output',
-          'resemble-enhance', tempInputDir, tempOutputDir, '--device', device
-        ], {
-          env: envVars,
-          windowsHide: true
-        });
+      // For passes 2+, copy previous output back to input dir
+      if (pass > 1) {
+        console.log(`[RESEMBLE] Pass ${pass}: copying output back to input for next pass`);
+        fs.copyFileSync(enhancedWav, tempWav);
+        // Clear output dir for fresh output
+        if (fs.existsSync(enhancedWav)) fs.unlinkSync(enhancedWav);
       }
 
-      let stderr = '';
+      await new Promise<void>((resolve, reject) => {
+        const envVars: Record<string, string> = buildCondaSpawnEnv({
+          PYTHONUNBUFFERED: '1',
+        });
 
-      activeProcess.stdout?.on('data', (data) => {
-        const output = data.toString();
-        console.log('[RESEMBLE]', output.trim());
+        if (useWsl) {
+          const wslCondaPath = getWslCondaPath();
+          const wslCondaEnv = getWslResembleCondaEnv();
+          const wslInputDir = windowsToWslPath(tempInputDir);
+          const wslOutputDir = windowsToWslPath(tempOutputDir);
+          const distro = getWslDistro();
 
-        // Parse progress from tqdm-style output
-        const progressMatch = output.match(/(\d+)%\|/);
-        if (progressMatch) {
-          const pct = parseInt(progressMatch[1]);
-          emitProgress({
-            phase: 'enhancing',
-            percentage: 20 + (pct * 0.6), // 20-80% range
-            message: `Enhancing audio: ${pct}%`
+          const condaBase = wslCondaPath.replace(/\/bin\/conda$/, '');
+          const extraArgsStr = extraArgs.length > 0 ? ' ' + extraArgs.join(' ') : '';
+          const bashCommand = `source ${condaBase}/etc/profile.d/conda.sh && conda activate ${wslCondaEnv} && resemble-enhance "${wslInputDir}" "${wslOutputDir}" --device ${device}${extraArgsStr}`;
+
+          console.log(`[RESEMBLE] WSL command: ${bashCommand}`);
+
+          const wslArgs = distro
+            ? ['-d', distro, 'bash', '-c', bashCommand]
+            : ['bash', '-c', bashCommand];
+
+          activeProcess = spawn('wsl.exe', wslArgs, {
+            env: envVars,
+            windowsHide: true
           });
-        }
-      });
-
-      activeProcess.stderr?.on('data', (data) => {
-        const output = data.toString();
-        stderr = appendCapped(stderr, output);
-
-        // Progress also comes through stderr for tqdm
-        const progressMatch = output.match(/(\d+)%\|/);
-        if (progressMatch) {
-          const pct = parseInt(progressMatch[1]);
-          emitProgress({
-            phase: 'enhancing',
-            percentage: 20 + (pct * 0.6),
-            message: `Enhancing audio: ${pct}%`
-          });
-        }
-      });
-
-      activeProcess.on('close', (code) => {
-        activeProcess = null;
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        if (code === 0) {
-          console.log(`[RESEMBLE] Enhancement completed in ${elapsed}s`);
-          resolve();
         } else {
-          reject(new Error(`Resemble Enhance failed with code ${code}: ${stderr}`));
+          activeProcess = spawn(condaPath, [
+            'run', '-n', condaEnv, '--no-capture-output',
+            'resemble-enhance', tempInputDir, tempOutputDir, '--device', device,
+            ...extraArgs
+          ], {
+            env: envVars,
+            windowsHide: true
+          });
         }
+
+        let stderr = '';
+        const progressBase = 20 + ((pass - 1) / totalPasses) * 60;
+        const progressRange = 60 / totalPasses;
+
+        activeProcess.stdout?.on('data', (data) => {
+          const output = data.toString();
+          console.log('[RESEMBLE]', output.trim());
+
+          const progressMatch = output.match(/(\d+)%\|/);
+          if (progressMatch) {
+            const pct = parseInt(progressMatch[1]);
+            emitProgress({
+              phase: 'enhancing',
+              percentage: progressBase + (pct / 100) * progressRange,
+              message: `Enhancing audio: ${pct}%${passLabel}`
+            });
+          }
+        });
+
+        activeProcess.stderr?.on('data', (data) => {
+          const output = data.toString();
+          stderr = appendCapped(stderr, output);
+
+          const progressMatch = output.match(/(\d+)%\|/);
+          if (progressMatch) {
+            const pct = parseInt(progressMatch[1]);
+            emitProgress({
+              phase: 'enhancing',
+              percentage: progressBase + (pct / 100) * progressRange,
+              message: `Enhancing audio: ${pct}%${passLabel}`
+            });
+          }
+        });
+
+        activeProcess.on('close', (code) => {
+          activeProcess = null;
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`Resemble Enhance failed with code ${code}: ${stderr}`));
+          }
+        });
+
+        activeProcess.on('error', (err) => {
+          activeProcess = null;
+          reject(err);
+        });
       });
 
-      activeProcess.on('error', (err) => {
-        activeProcess = null;
-        reject(err);
-      });
-    });
-
-    // Verify enhanced file exists
-    if (!fs.existsSync(enhancedWav)) {
-      throw new Error('Resemble Enhance did not produce output file');
+      // Verify enhanced file exists after this pass
+      if (!fs.existsSync(enhancedWav)) {
+        throw new Error(`Resemble Enhance did not produce output file (pass ${pass})`);
+      }
     }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[RESEMBLE] Enhancement completed in ${elapsed}s (${totalPasses} pass${totalPasses > 1 ? 'es' : ''})`);
 
     // Step 3: Convert back to original format if needed
     if (ext !== '.wav') {
@@ -587,6 +603,143 @@ export async function checkResembleAvailable(): Promise<{ available: boolean; de
 }
 
 /**
+ * Enhance audio using ffmpeg's afftdn filter (spectral gating denoiser).
+ * Much simpler than Resemble Enhance — single ffmpeg command, no conda needed.
+ * Good for voice recordings with echo/reverb.
+ */
+async function enhanceWithFfmpeg(
+  jobId: string,
+  inputPath: string,
+  outputPath: string | undefined,
+  onProgress?: (progress: { jobId: string; type: 'resemble-enhance'; phase: string; progress: number; message?: string }) => void
+): Promise<EnhanceResult> {
+  const normalizedInput = inputPath.replace(/\//g, path.sep);
+  const normalizedOutput = outputPath?.replace(/\//g, path.sep);
+  const ext = path.extname(normalizedInput).toLowerCase();
+  const dir = path.dirname(normalizedInput);
+  const basename = path.basename(normalizedInput, ext);
+  const finalOutputPath = normalizedOutput || normalizedInput;
+  const replaceOriginal = !normalizedOutput || normalizedOutput === normalizedInput;
+  const tempOutput = path.join(dir, `${basename}_ffdn_temp${ext}`);
+  const backupPath = replaceOriginal ? path.join(dir, `${basename}_backup${ext}`) : null;
+  const ffmpegPath = getFfmpegPath();
+  const filterStr = getFfmpegDenoiseFilter();
+
+  const emitProgress = (phase: string, progress: number, message?: string) => {
+    if (onProgress) {
+      onProgress({ jobId, type: 'resemble-enhance', phase, progress, message });
+    }
+    if (mainWindow) {
+      mainWindow.webContents.send('resemble:progress', { phase, percentage: progress, message: message || phase });
+    }
+  };
+
+  try {
+    // Clean up leftover temp file
+    if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
+
+    emitProgress('enhancing', 5, `Denoising with ffmpeg afftdn (${filterStr})...`);
+    console.log(`[FFMPEG-DENOISE] Job ${jobId}: filter=${filterStr}`);
+
+    const startTime = Date.now();
+
+    // Build ffmpeg args based on format
+    let ffmpegArgs: string[];
+    if (['.m4b', '.m4a'].includes(ext)) {
+      // Preserve chapters, metadata, and cover art
+      ffmpegArgs = [
+        '-y', '-i', normalizedInput,
+        '-af', filterStr,
+        '-c:a', 'aac', '-b:a', '128k',
+        '-c:v', 'copy',
+        '-map', '0',
+        '-map_metadata', '0',
+        '-map_chapters', '0',
+        '-f', 'ipod', '-movflags', '+faststart',
+        tempOutput
+      ];
+    } else if (ext === '.mp3') {
+      ffmpegArgs = ['-y', '-i', normalizedInput, '-af', filterStr, '-c:a', 'libmp3lame', '-b:a', '192k', tempOutput];
+    } else if (ext === '.flac') {
+      ffmpegArgs = ['-y', '-i', normalizedInput, '-af', filterStr, '-c:a', 'flac', tempOutput];
+    } else if (ext === '.ogg' || ext === '.opus') {
+      ffmpegArgs = ['-y', '-i', normalizedInput, '-af', filterStr, '-c:a', 'libopus', '-b:a', '128k', tempOutput];
+    } else {
+      // WAV or other
+      ffmpegArgs = ['-y', '-i', normalizedInput, '-af', filterStr, tempOutput];
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      console.log(`[FFMPEG-DENOISE] Job ${jobId}: ${ffmpegPath} ${ffmpegArgs.join(' ')}`);
+
+      const proc = spawn(ffmpegPath, ffmpegArgs, { windowsHide: true });
+      let stderr = '';
+
+      proc.stderr?.on('data', (data) => {
+        const output = data.toString();
+        stderr = appendCapped(stderr, output);
+
+        // Parse ffmpeg progress (time= or size=)
+        const timeMatch = output.match(/time=(\d{2}):(\d{2}):(\d{2})/);
+        if (timeMatch) {
+          emitProgress('enhancing', 50, 'Denoising audio...');
+        }
+      });
+
+      proc.on('close', (code) => {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        if (code === 0) {
+          console.log(`[FFMPEG-DENOISE] Job ${jobId}: Completed in ${elapsed}s`);
+          resolve();
+        } else {
+          console.error(`[FFMPEG-DENOISE] Job ${jobId}: stderr: ${stderr}`);
+          reject(new Error(`ffmpeg afftdn failed with code ${code}: ${stderr}`));
+        }
+      });
+
+      proc.on('error', reject);
+    });
+
+    // Verify output
+    if (!fs.existsSync(tempOutput)) {
+      throw new Error('ffmpeg did not produce output file');
+    }
+    const outputStats = fs.statSync(tempOutput);
+    if (outputStats.size === 0) {
+      throw new Error('ffmpeg output file is empty');
+    }
+    console.log(`[FFMPEG-DENOISE] Job ${jobId}: Output size: ${(outputStats.size / 1024 / 1024).toFixed(1)} MB`);
+
+    // Move to final location
+    emitProgress('finalizing', 90, 'Saving denoised file...');
+
+    if (replaceOriginal && backupPath) {
+      fs.copyFileSync(normalizedInput, backupPath);
+      fs.copyFileSync(tempOutput, normalizedInput);
+    } else if (normalizedOutput && normalizedOutput !== normalizedInput) {
+      const outputDir = path.dirname(normalizedOutput);
+      if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+      fs.copyFileSync(tempOutput, normalizedOutput);
+    }
+
+    // Cleanup
+    if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
+    if (backupPath && fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+
+    emitProgress('complete', 100, 'Denoising complete!');
+    return { success: true, outputPath: finalOutputPath };
+
+  } catch (error) {
+    if (fs.existsSync(tempOutput)) {
+      try { fs.unlinkSync(tempOutput); } catch { /* ignore */ }
+    }
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    emitProgress('error', 0, `Denoising failed: ${errorMessage}`);
+    return { success: false, error: errorMessage };
+  }
+}
+
+/**
  * Queue-compatible enhancement function
  * Emits queue:progress events instead of resemble:progress
  * Supports outputPath for non-destructive mode
@@ -604,6 +757,12 @@ export async function enhanceFileForQueue(
     message?: string;
   }) => void
 ): Promise<EnhanceResult> {
+  // Route to ffmpeg engine if configured
+  const engine = getEnhanceEngine();
+  if (engine === 'ffmpeg') {
+    return enhanceWithFfmpeg(jobId, inputPath, outputPath, onProgress);
+  }
+
   // Normalize path separators for Windows (may have mixed / and \)
   const normalizedInput = inputPath.replace(/\//g, path.sep);
   const normalizedOutput = outputPath?.replace(/\//g, path.sep);
@@ -690,102 +849,114 @@ export async function enhanceFileForQueue(
       fs.copyFileSync(normalizedInput, tempWav);
     }
 
-    // Step 2: Run Resemble Enhance
+    // Step 2: Run Resemble Enhance (with multi-pass support for denoise-only mode)
     const device = getResembleDevice();
     const useWsl = shouldUseWsl2ForResemble();
+    const extraArgs = getResembleExtraArgs();
+    const totalPasses = extraArgs.includes('--denoise_only') ? getResemblePasses() : 1;
 
-    emitProgress('enhancing', 3, `Running Resemble Enhance on ${device.toUpperCase()}${useWsl ? ' (WSL)' : ''}...`);
-
-    console.log(`[RESEMBLE-QUEUE] Job ${jobId}: Using device: ${device}, WSL: ${useWsl}`);
+    console.log(`[RESEMBLE-QUEUE] Job ${jobId}: Using device: ${device}, WSL: ${useWsl}, passes: ${totalPasses}`);
+    console.log(`[RESEMBLE-QUEUE] Job ${jobId}: Extra args: ${extraArgs.join(' ') || '(none)'}`);
 
     const startTime = Date.now();
 
-    await new Promise<void>((resolve, reject) => {
-      // Build environment with device-specific settings
-      const envVars: Record<string, string> = buildCondaSpawnEnv({
-        PYTHONUNBUFFERED: '1',
-      });
+    for (let pass = 1; pass <= totalPasses; pass++) {
+      const passLabel = totalPasses > 1 ? ` (pass ${pass}/${totalPasses})` : '';
+      emitProgress('enhancing', 3, `Running Resemble Enhance on ${device.toUpperCase()}${useWsl ? ' (WSL)' : ''}${passLabel}...`);
 
-      if (useWsl) {
-        // Use WSL for Resemble Enhance on Windows
-        const wslCondaPath = getWslCondaPath();
-        const wslCondaEnv = getWslResembleCondaEnv();
-        const wslInputDir = windowsToWslPath(tempInputDir);
-        const wslOutputDir = windowsToWslPath(tempOutputDir);
-        const distro = getWslDistro();
-
-        // Build the bash command to run in WSL
-        const condaBase = wslCondaPath.replace(/\/bin\/conda$/, '');
-        const bashCommand = `source ${condaBase}/etc/profile.d/conda.sh && conda activate ${wslCondaEnv} && resemble-enhance "${wslInputDir}" "${wslOutputDir}" --device ${device}`;
-
-        console.log(`[RESEMBLE-QUEUE] WSL command: ${bashCommand}`);
-
-        const wslArgs = distro
-          ? ['-d', distro, 'bash', '-c', bashCommand]
-          : ['bash', '-c', bashCommand];
-
-        activeProcess = spawn('wsl.exe', wslArgs, {
-          env: envVars,
-          windowsHide: true
-        });
-      } else {
-        // Direct spawn (macOS/Linux or Windows without WSL)
-        activeProcess = spawn(condaPath, [
-          'run', '-n', condaEnv, '--no-capture-output',
-          'resemble-enhance', tempInputDir, tempOutputDir, '--device', device
-        ], {
-          env: envVars,
-          windowsHide: true
-        });
+      // For passes 2+, copy previous output back to input dir
+      if (pass > 1) {
+        console.log(`[RESEMBLE-QUEUE] Job ${jobId}: Pass ${pass}: copying output back to input for next pass`);
+        fs.copyFileSync(enhancedWav, tempWav);
+        if (fs.existsSync(enhancedWav)) fs.unlinkSync(enhancedWav);
       }
 
-      let stderr = '';
+      await new Promise<void>((resolve, reject) => {
+        const envVars: Record<string, string> = buildCondaSpawnEnv({
+          PYTHONUNBUFFERED: '1',
+        });
 
-      const handleOutput = (data: Buffer) => {
-        const output = data.toString();
-        console.log('[RESEMBLE-QUEUE]', output.trim());
+        if (useWsl) {
+          const wslCondaPath = getWslCondaPath();
+          const wslCondaEnv = getWslResembleCondaEnv();
+          const wslInputDir = windowsToWslPath(tempInputDir);
+          const wslOutputDir = windowsToWslPath(tempOutputDir);
+          const distro = getWslDistro();
 
-        // Parse progress from tqdm-style output
-        const tqdmProgress = parseTqdmProgress(output);
-        if (tqdmProgress) {
-          const pct = tqdmProgress.percentage;
-          let message = `Enhancing: ${pct}%`;
-          if (tqdmProgress.remaining) {
-            message += ` (${tqdmProgress.remaining} remaining)`;
-          }
-          // Emit raw progress (0-95% range, leaving 5% for finalization)
-          emitProgress('enhancing', Math.min(pct * 0.95, 95), message);
-        }
-      };
+          const condaBase = wslCondaPath.replace(/\/bin\/conda$/, '');
+          const extraArgsStr = extraArgs.length > 0 ? ' ' + extraArgs.join(' ') : '';
+          const bashCommand = `source ${condaBase}/etc/profile.d/conda.sh && conda activate ${wslCondaEnv} && resemble-enhance "${wslInputDir}" "${wslOutputDir}" --device ${device}${extraArgsStr}`;
 
-      activeProcess.stdout?.on('data', handleOutput);
+          console.log(`[RESEMBLE-QUEUE] WSL command: ${bashCommand}`);
 
-      activeProcess.stderr?.on('data', (data) => {
-        stderr = appendCapped(stderr, data.toString());
-        handleOutput(data);
-      });
+          const wslArgs = distro
+            ? ['-d', distro, 'bash', '-c', bashCommand]
+            : ['bash', '-c', bashCommand];
 
-      activeProcess.on('close', (code) => {
-        activeProcess = null;
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        if (code === 0) {
-          console.log(`[RESEMBLE-QUEUE] Job ${jobId}: Enhancement completed in ${elapsed}s`);
-          resolve();
+          activeProcess = spawn('wsl.exe', wslArgs, {
+            env: envVars,
+            windowsHide: true
+          });
         } else {
-          reject(new Error(`Resemble Enhance failed with code ${code}: ${stderr}`));
+          activeProcess = spawn(condaPath, [
+            'run', '-n', condaEnv, '--no-capture-output',
+            'resemble-enhance', tempInputDir, tempOutputDir, '--device', device,
+            ...extraArgs
+          ], {
+            env: envVars,
+            windowsHide: true
+          });
         }
+
+        let stderr = '';
+        const progressBase = 3 + ((pass - 1) / totalPasses) * 92;
+        const progressRange = 92 / totalPasses;
+
+        const handleOutput = (data: Buffer) => {
+          const output = data.toString();
+          console.log('[RESEMBLE-QUEUE]', output.trim());
+
+          const tqdmProgress = parseTqdmProgress(output);
+          if (tqdmProgress) {
+            const pct = tqdmProgress.percentage;
+            let message = `Enhancing: ${pct}%${passLabel}`;
+            if (tqdmProgress.remaining) {
+              message += ` (${tqdmProgress.remaining} remaining)`;
+            }
+            emitProgress('enhancing', Math.min(progressBase + (pct / 100) * progressRange, 95), message);
+          }
+        };
+
+        activeProcess.stdout?.on('data', handleOutput);
+
+        activeProcess.stderr?.on('data', (data) => {
+          stderr = appendCapped(stderr, data.toString());
+          handleOutput(data);
+        });
+
+        activeProcess.on('close', (code) => {
+          activeProcess = null;
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`Resemble Enhance failed with code ${code}: ${stderr}`));
+          }
+        });
+
+        activeProcess.on('error', (err) => {
+          activeProcess = null;
+          reject(err);
+        });
       });
 
-      activeProcess.on('error', (err) => {
-        activeProcess = null;
-        reject(err);
-      });
-    });
-
-    // Verify enhanced file exists
-    if (!fs.existsSync(enhancedWav)) {
-      throw new Error('Resemble Enhance did not produce output file');
+      // Verify enhanced file exists after this pass
+      if (!fs.existsSync(enhancedWav)) {
+        throw new Error(`Resemble Enhance did not produce output file (pass ${pass})`);
+      }
     }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[RESEMBLE-QUEUE] Job ${jobId}: Enhancement completed in ${elapsed}s (${totalPasses} pass${totalPasses > 1 ? 'es' : ''})`);
 
     // Step 3: Convert back to original format if needed
     if (ext !== '.wav') {

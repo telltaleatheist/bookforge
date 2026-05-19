@@ -8,7 +8,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
 import * as os from 'os';
-import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
+import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata, optimizeCoverForM4b } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 import { getFfmpegPath } from './tool-paths';
@@ -731,14 +731,18 @@ export async function startReassembly(
     config.metadata.coverPath = undefined;
   }
 
-  // Copy project cover to session directory, replacing any e2a-extracted cover
-  // e2a uses covers from the processDir (cleaned.jpg, cover.jpg, etc.) during assembly
+  // Copy optimized project cover to session directory, replacing any e2a-extracted cover.
+  // e2a uses covers from the processDir (cleaned.jpg, cover.jpg, etc.) during assembly.
+  // Covers are optimized to JPEG ≤1400px to ensure player compatibility.
   if (config.metadata?.coverPath && fs.existsSync(config.metadata.coverPath)) {
     try {
-      const ext = path.extname(config.metadata.coverPath).toLowerCase() || '.jpg';
-      const targetCoverPath = path.join(config.processDir, `cover${ext}`);
-      fs.copyFileSync(config.metadata.coverPath, targetCoverPath);
-      console.log(`[REASSEMBLY] Copied project cover to session: ${config.metadata.coverPath} -> ${targetCoverPath}`);
+      const optimized = optimizeCoverForM4b(config.metadata.coverPath);
+      const targetCoverPath = path.join(config.processDir, 'cover.jpg');
+      fs.copyFileSync(optimized, targetCoverPath);
+      console.log(`[REASSEMBLY] Copied optimized cover to session: ${config.metadata.coverPath} -> ${targetCoverPath}`);
+      if (optimized !== config.metadata.coverPath) {
+        try { fs.unlinkSync(optimized); } catch { /* non-critical */ }
+      }
     } catch (err) {
       console.error('[REASSEMBLY] Failed to copy project cover to session:', err);
     }

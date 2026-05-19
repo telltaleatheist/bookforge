@@ -1,8 +1,23 @@
 import { Injectable, signal, computed } from '@angular/core';
 import { TextBlock, Category, PageDimension } from './pdf.service';
+import { ClassificationThresholds, getDefaultThresholds } from './category-learner';
+
+export interface SplitDefinition {
+  originalBlockId: string;
+  splitPoints: number[];       // line-group indices where splits were placed
+  childBlockIds: string[];     // IDs of generated child blocks
+  childBlocks: TextBlock[];    // full block data (needed for undo/redo)
+}
+
+export interface MergeDefinition {
+  mergedBlockId: string;
+  sourceBlockIds: string[];
+  sourceBlocks: TextBlock[];   // full source block data (needed for undo)
+  mergedBlock: TextBlock;
+}
 
 export interface HistoryAction {
-  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages' | 'selection';
+  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages' | 'selection' | 'paragraphBreak' | 'categoryCorrection' | 'splitBlock' | 'mergeBlocks';
   blockIds: string[];
   selectionBefore: string[];
   selectionAfter: string[];
@@ -26,6 +41,19 @@ export interface HistoryAction {
   pageNumbers?: number[];
   pageOrderBefore?: number[];
   pageOrderAfter?: number[];
+  // For paragraph break actions
+  paragraphBreaksBefore?: string[];
+  paragraphBreaksAfter?: string[];
+  // For category correction actions
+  categoryCorrectionsBefore?: [string, string][];
+  categoryCorrectionsAfter?: [string, string][];
+  blockCategoryBefore?: string;  // block's category_id before correction
+  blockCategoryAfter?: string;   // block's category_id after correction
+  bulkBlockCategoriesBefore?: [string, string][];  // for bulk: blockId → previous categoryId
+  // For splitBlock actions
+  splitDefinition?: SplitDefinition;
+  // For mergeBlocks actions
+  mergeDefinitions?: MergeDefinition[];
 }
 
 /**
@@ -86,6 +114,24 @@ export class PdfEditorStateService {
 
   // Background removal state
   readonly removeBackgrounds = signal(false);
+
+  // Paragraph break detection state
+  readonly paragraphBreaks = signal<Set<string>>(new Set());
+
+  // Block splits: originalBlockId → SplitDefinition (user-driven block splitting)
+  readonly blockSplits = signal<Map<string, SplitDefinition>>(new Map());
+
+  // Block merges: mergedBlockId → MergeDefinition (user-driven block merging)
+  readonly blockMerges = signal<Map<string, MergeDefinition>>(new Map());
+
+  // Category corrections: blockId → target categoryId (explicit user overrides)
+  readonly categoryCorrections = signal<Map<string, string>>(new Map());
+
+  // Learned category assignments from re-detect (not user-explicit, no outline)
+  readonly learnedCategories = signal<Map<string, string>>(new Map());
+
+  // Classification thresholds (user-adjustable per-book)
+  readonly classificationThresholds = signal<ClassificationThresholds>(getDefaultThresholds());
 
   // Show text layer overlay (for OCR verification)
   readonly showTextLayer = signal(false);
@@ -174,6 +220,10 @@ export class PdfEditorStateService {
     pageOrder?: number[];
     blockEdits?: Map<string, BlockEdit>;
     textCorrections?: Map<string, string>;  // Legacy support
+    paragraphBreaks?: Set<string>;
+    categoryCorrections?: Map<string, string>;
+    learnedCategories?: Map<string, string>;
+    classificationThresholds?: ClassificationThresholds;
   }): void {
     this.blocks.set(data.blocks);
     this.categories.set(data.categories);
@@ -188,6 +238,10 @@ export class PdfEditorStateService {
     this.deletedPages.set(data.deletedPages || new Set());
     this.removeBackgrounds.set(false);  // Always reset background removal for new document
     this.showTextLayer.set(false);  // Always reset text layer visibility for new document
+    this.paragraphBreaks.set(data.paragraphBreaks || new Set());
+    this.categoryCorrections.set(data.categoryCorrections || new Map());
+    this.learnedCategories.set(data.learnedCategories || new Map());
+    this.classificationThresholds.set(data.classificationThresholds || getDefaultThresholds());
 
     // Load block edits - prefer blockEdits, fall back to converting textCorrections
     if (data.blockEdits) {
@@ -206,6 +260,12 @@ export class PdfEditorStateService {
     this.selectedBlockIds.set([]);
     this.pdfLoaded.set(true);
 
+    // Apply all category overrides (learned + explicit) to blocks
+    if (this.learnedCategories().size > 0 || this.categoryCorrections().size > 0) {
+      this.applyCategoryCorrections();
+      this.updateCategoryStats();
+    }
+
     // Clear history on new document load
     this.clearHistory();
     this.hasUnsavedChanges.set(false);
@@ -215,11 +275,23 @@ export class PdfEditorStateService {
   /**
    * Update blocks and categories after background text extraction completes.
    * Called when analyzeText() finishes for a document that was opened with analyzeQuick().
+   * Re-applies any existing category corrections since the new blocks arrive with
+   * their original PDF-analyzed category_ids.
    */
   updateTextData(data: { blocks: TextBlock[]; categories: Record<string, Category> }): void {
+    const learned = this.learnedCategories();
+    const corrections = this.categoryCorrections();
+
     this.blocks.set(data.blocks);
     this.categories.set(data.categories);
     this.textLoading.set(false);
+
+    // New blocks from PDF analysis have original category_ids.
+    // Re-apply any saved overrides (learned + explicit).
+    if (learned.size > 0 || corrections.size > 0) {
+      this.applyCategoryCorrections();
+      this.updateCategoryStats();
+    }
   }
 
   // Clear all state
@@ -238,7 +310,13 @@ export class PdfEditorStateService {
     this.pageOrder.set([]);
     this.removeBackgrounds.set(false);
     this.showTextLayer.set(false);
+    this.paragraphBreaks.set(new Set());
+    this.categoryCorrections.set(new Map());
+    this.learnedCategories.set(new Map());
+    this.classificationThresholds.set(getDefaultThresholds());
     this.blockEdits.set(new Map());
+    this.blockSplits.set(new Map());
+    this.blockMerges.set(new Map());
     this.clearHistory();
     this.hasUnsavedChanges.set(false);
   }
@@ -727,6 +805,56 @@ export class PdfEditorStateService {
     } else if (action.type === 'reorderPages') {
       // Reverse page reorder
       this.pageOrder.set(action.pageOrderBefore ?? []);
+    } else if (action.type === 'paragraphBreak') {
+      this.paragraphBreaks.set(new Set(action.paragraphBreaksBefore || []));
+    } else if (action.type === 'categoryCorrection') {
+      this.categoryCorrections.set(new Map(action.categoryCorrectionsBefore || []));
+      // Restore block category_ids — bulk or single
+      if (action.bulkBlockCategoriesBefore && action.bulkBlockCategoriesBefore.length > 0) {
+        const beforeMap = new Map(action.bulkBlockCategoriesBefore);
+        this.blocks.update(blocks =>
+          blocks.map(b => beforeMap.has(b.id) ? { ...b, category_id: beforeMap.get(b.id)! } : b)
+        );
+      } else if (action.blockIds.length > 0 && action.blockCategoryBefore !== undefined) {
+        const blockId = action.blockIds[0];
+        this.blocks.update(blocks =>
+          blocks.map(b => b.id === blockId ? { ...b, category_id: action.blockCategoryBefore! } : b)
+        );
+      }
+      this.updateCategoryStats();
+    } else if (action.type === 'splitBlock' && action.splitDefinition) {
+      const def = action.splitDefinition;
+      // Remove child blocks from blocks array
+      const childIds = new Set(def.childBlockIds);
+      this.blocks.update(blocks => blocks.filter(b => !childIds.has(b.id)));
+      // Remove original from deletedBlockIds
+      this.deletedBlockIds.update(deleted => {
+        const next = new Set(deleted);
+        next.delete(def.originalBlockId);
+        return next;
+      });
+      // Remove from blockSplits
+      this.blockSplits.update(map => {
+        const next = new Map(map);
+        next.delete(def.originalBlockId);
+        return next;
+      });
+    } else if (action.type === 'mergeBlocks' && action.mergeDefinitions) {
+      // Undo merge: remove merged blocks, re-add source blocks
+      const mergedIds = new Set(action.mergeDefinitions.map(d => d.mergedBlockId));
+      const restoredBlocks = action.mergeDefinitions.flatMap(d => d.sourceBlocks);
+      this.blocks.update(blocks => [
+        ...blocks.filter(b => !mergedIds.has(b.id)),
+        ...restoredBlocks,
+      ]);
+      // Remove from blockMerges map
+      this.blockMerges.update(map => {
+        const next = new Map(map);
+        for (const def of action.mergeDefinitions!) {
+          next.delete(def.mergedBlockId);
+        }
+        return next;
+      });
     } else if (action.type === 'selection') {
       // Selection-only action: restore handled below
     } else if (action.type === 'delete' || action.type === 'restore') {
@@ -793,6 +921,58 @@ export class PdfEditorStateService {
     } else if (action.type === 'reorderPages') {
       // Re-apply page reorder
       this.pageOrder.set(action.pageOrderAfter ?? []);
+    } else if (action.type === 'paragraphBreak') {
+      this.paragraphBreaks.set(new Set(action.paragraphBreaksAfter || []));
+    } else if (action.type === 'categoryCorrection') {
+      this.categoryCorrections.set(new Map(action.categoryCorrectionsAfter || []));
+      // Apply block category_ids — bulk or single
+      if (action.blockIds.length > 1 && action.blockCategoryAfter !== undefined) {
+        const targetCat = action.blockCategoryAfter;
+        const idSet = new Set(action.blockIds);
+        this.blocks.update(blocks =>
+          blocks.map(b => idSet.has(b.id) ? { ...b, category_id: targetCat } : b)
+        );
+      } else if (action.blockIds.length > 0 && action.blockCategoryAfter !== undefined) {
+        const blockId = action.blockIds[0];
+        this.blocks.update(blocks =>
+          blocks.map(b => b.id === blockId ? { ...b, category_id: action.blockCategoryAfter! } : b)
+        );
+      }
+      this.updateCategoryStats();
+    } else if (action.type === 'splitBlock' && action.splitDefinition) {
+      const def = action.splitDefinition;
+      // Re-add child blocks
+      this.blocks.update(blocks => [...blocks, ...def.childBlocks]);
+      // Re-delete original
+      this.deletedBlockIds.update(deleted => {
+        const next = new Set(deleted);
+        next.add(def.originalBlockId);
+        return next;
+      });
+      // Re-store split definition
+      this.blockSplits.update(map => {
+        const next = new Map(map);
+        next.set(def.originalBlockId, def);
+        return next;
+      });
+    } else if (action.type === 'mergeBlocks' && action.mergeDefinitions) {
+      // Redo merge: remove source blocks, re-add merged blocks
+      const allSourceIds = new Set<string>();
+      for (const def of action.mergeDefinitions) {
+        for (const srcId of def.sourceBlockIds) allSourceIds.add(srcId);
+      }
+      this.blocks.update(blocks => [
+        ...blocks.filter(b => !allSourceIds.has(b.id)),
+        ...action.mergeDefinitions!.map(d => d.mergedBlock),
+      ]);
+      // Re-store merge definitions
+      this.blockMerges.update(map => {
+        const next = new Map(map);
+        for (const def of action.mergeDefinitions!) {
+          next.set(def.mergedBlockId, def);
+        }
+        return next;
+      });
     } else if (action.type === 'selection') {
       // Selection-only action: restore handled below
     } else if (action.type === 'delete' || action.type === 'restore') {
@@ -839,6 +1019,294 @@ export class PdfEditorStateService {
     this.markChanged();
 
     return after;
+  }
+
+  // Block split methods
+  splitBlock(definition: SplitDefinition, addToHistory: boolean = true): void {
+    // Add child blocks to the blocks array
+    this.blocks.update(blocks => [...blocks, ...definition.childBlocks]);
+
+    // Hide the original block by adding it to deletedBlockIds
+    this.deletedBlockIds.update(deleted => {
+      const next = new Set(deleted);
+      next.add(definition.originalBlockId);
+      return next;
+    });
+
+    // Store split definition
+    this.blockSplits.update(map => {
+      const next = new Map(map);
+      next.set(definition.originalBlockId, definition);
+      return next;
+    });
+
+    if (addToHistory) {
+      this.pushHistory({
+        type: 'splitBlock',
+        blockIds: [definition.originalBlockId],
+        selectionBefore: [...this.selectedBlockIds()],
+        selectionAfter: definition.childBlockIds,
+        splitDefinition: definition,
+      });
+    }
+
+    // Select the new child blocks
+    this.selectedBlockIds.set(definition.childBlockIds);
+    this.markChanged();
+  }
+
+  // Block merge methods
+  mergeBlocks(definitions: MergeDefinition[], addToHistory: boolean = true): void {
+    // Remove source blocks from blocks array and add merged blocks in one update
+    const allSourceIds = new Set<string>();
+    for (const def of definitions) {
+      for (const srcId of def.sourceBlockIds) {
+        allSourceIds.add(srcId);
+      }
+    }
+    this.blocks.update(blocks => [
+      ...blocks.filter(b => !allSourceIds.has(b.id)),
+      ...definitions.map(d => d.mergedBlock),
+    ]);
+
+    // Store merge definitions
+    this.blockMerges.update(map => {
+      const next = new Map(map);
+      for (const def of definitions) {
+        next.set(def.mergedBlockId, def);
+      }
+      return next;
+    });
+
+    if (addToHistory) {
+      this.pushHistory({
+        type: 'mergeBlocks',
+        blockIds: definitions.map(d => d.mergedBlockId),
+        selectionBefore: [...this.selectedBlockIds()],
+        selectionAfter: definitions.map(d => d.mergedBlockId),
+        mergeDefinitions: definitions,
+      });
+    }
+
+    // Select the new merged blocks
+    this.selectedBlockIds.set(definitions.map(d => d.mergedBlockId));
+    this.markChanged();
+  }
+
+  // Paragraph break methods
+  setParagraphBreaks(breaks: Set<string>, addToHistory: boolean = true): void {
+    if (addToHistory) {
+      this.pushHistory({
+        type: 'paragraphBreak',
+        blockIds: [],
+        selectionBefore: [...this.selectedBlockIds()],
+        selectionAfter: [...this.selectedBlockIds()],
+        paragraphBreaksBefore: [...this.paragraphBreaks()],
+        paragraphBreaksAfter: [...breaks],
+      });
+    }
+    this.paragraphBreaks.set(new Set(breaks));
+    this.markChanged();
+  }
+
+  toggleParagraphBreak(blockId: string): void {
+    const before = this.paragraphBreaks();
+    const after = new Set(before);
+    if (after.has(blockId)) {
+      after.delete(blockId);
+    } else {
+      after.add(blockId);
+    }
+    this.pushHistory({
+      type: 'paragraphBreak',
+      blockIds: [blockId],
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      paragraphBreaksBefore: [...before],
+      paragraphBreaksAfter: [...after],
+    });
+    this.paragraphBreaks.set(after);
+    this.markChanged();
+  }
+
+  clearParagraphBreaks(): void {
+    if (this.paragraphBreaks().size === 0) return;
+    this.pushHistory({
+      type: 'paragraphBreak',
+      blockIds: [],
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      paragraphBreaksBefore: [...this.paragraphBreaks()],
+      paragraphBreaksAfter: [],
+    });
+    this.paragraphBreaks.set(new Set());
+    this.markChanged();
+  }
+
+  // Category correction methods
+  setCategoryCorrection(blockId: string, categoryId: string): void {
+    console.log('[setCategoryCorrection]', blockId, '→', categoryId,
+      'total corrections after:', this.categoryCorrections().size + 1);
+    const before = [...this.categoryCorrections().entries()] as [string, string][];
+
+    // Capture block's current category_id before the correction
+    const block = this.blocks().find(b => b.id === blockId);
+    const blockCategoryBefore = block?.category_id;
+
+    this.categoryCorrections.update(map => {
+      const newMap = new Map(map);
+      newMap.set(blockId, categoryId);
+      return newMap;
+    });
+    const after = [...this.categoryCorrections().entries()] as [string, string][];
+
+    // Update the block's category_id directly
+    this.blocks.update(blocks =>
+      blocks.map(b => b.id === blockId ? { ...b, category_id: categoryId } : b)
+    );
+
+    this.pushHistory({
+      type: 'categoryCorrection',
+      blockIds: [blockId],
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      categoryCorrectionsBefore: before,
+      categoryCorrectionsAfter: after,
+      blockCategoryBefore,
+      blockCategoryAfter: categoryId,
+    });
+    this.markChanged();
+  }
+
+  setBulkCategoryCorrections(entries: Array<{ blockId: string; categoryId: string }>): void {
+    const before = [...this.categoryCorrections().entries()] as [string, string][];
+
+    // Capture each block's current category_id
+    const blockCategoriesBefore = new Map<string, string>();
+    for (const { blockId } of entries) {
+      const block = this.blocks().find(b => b.id === blockId);
+      if (block) blockCategoriesBefore.set(blockId, block.category_id);
+    }
+
+    // Apply corrections to the map
+    this.categoryCorrections.update(map => {
+      const newMap = new Map(map);
+      for (const { blockId, categoryId } of entries) {
+        newMap.set(blockId, categoryId);
+      }
+      return newMap;
+    });
+    const after = [...this.categoryCorrections().entries()] as [string, string][];
+
+    // Update block category_ids
+    const entryMap = new Map(entries.map(e => [e.blockId, e.categoryId]));
+    this.blocks.update(blocks =>
+      blocks.map(b => entryMap.has(b.id) ? { ...b, category_id: entryMap.get(b.id)! } : b)
+    );
+
+    this.pushHistory({
+      type: 'categoryCorrection',
+      blockIds: entries.map(e => e.blockId),
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      categoryCorrectionsBefore: before,
+      categoryCorrectionsAfter: after,
+      bulkBlockCategoriesBefore: [...blockCategoriesBefore.entries()],
+      blockCategoryAfter: entries[0]?.categoryId,
+    });
+    this.markChanged();
+    this.updateCategoryStats();
+  }
+
+  clearCategoryCorrection(blockId: string): void {
+    if (!this.categoryCorrections().has(blockId)) return;
+    const before = [...this.categoryCorrections().entries()] as [string, string][];
+
+    // Capture block's current category_id before clearing
+    const block = this.blocks().find(b => b.id === blockId);
+    const blockCategoryBefore = block?.category_id;
+
+    this.categoryCorrections.update(map => {
+      const newMap = new Map(map);
+      newMap.delete(blockId);
+      return newMap;
+    });
+    const after = [...this.categoryCorrections().entries()] as [string, string][];
+
+    this.pushHistory({
+      type: 'categoryCorrection',
+      blockIds: [blockId],
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      categoryCorrectionsBefore: before,
+      categoryCorrectionsAfter: after,
+      blockCategoryBefore,
+    });
+    this.markChanged();
+  }
+
+  clearAllCategoryCorrections(): void {
+    if (this.categoryCorrections().size === 0) return;
+    const before = [...this.categoryCorrections().entries()] as [string, string][];
+    this.categoryCorrections.set(new Map());
+    this.pushHistory({
+      type: 'categoryCorrection',
+      blockIds: [],
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      categoryCorrectionsBefore: before,
+      categoryCorrectionsAfter: [],
+    });
+    this.markChanged();
+  }
+
+  // Classification threshold methods
+  updateThreshold(path: string, value: number): void {
+    const current = this.classificationThresholds();
+    const updated = JSON.parse(JSON.stringify(current)) as ClassificationThresholds;
+    const parts = path.split('.');
+    if (parts.length === 2) {
+      (updated as any)[parts[0]][parts[1]] = value;
+    }
+    this.classificationThresholds.set(updated);
+    this.markChanged();
+  }
+
+  resetThresholdsToDefault(): void {
+    this.classificationThresholds.set(getDefaultThresholds());
+    this.markChanged();
+  }
+
+  /**
+   * Apply all category corrections to blocks.
+   * Called after loading a project to sync block category_ids with the corrections map.
+   * Blocks are re-analyzed from the PDF and have their original category_ids,
+   * so corrections must be re-applied.
+   */
+  applyCategoryCorrections(): void {
+    const learned = this.learnedCategories();
+    const corrections = this.categoryCorrections();
+    if (learned.size === 0 && corrections.size === 0) return;
+
+    // Merge: learned first, then explicit corrections override
+    const merged = new Map(learned);
+    for (const [blockId, catId] of corrections) {
+      merged.set(blockId, catId);
+    }
+
+    let applied = 0;
+    this.blocks.update(blocks =>
+      blocks.map(b => {
+        const newCat = merged.get(b.id);
+        if (newCat) {
+          if (b.category_id !== newCat) applied++;
+          return { ...b, category_id: newCat };
+        }
+        return b;
+      })
+    );
+    console.log('[applyCategoryCorrections] learned:', learned.size,
+      'explicit:', corrections.size, 'applied:', applied);
   }
 
   pushSelectionHistory(selectionBefore: string[], selectionAfter: string[]): void {

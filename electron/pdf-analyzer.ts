@@ -385,6 +385,9 @@ export class PDFAnalyzer {
         this.categories = cached.categories;
         this.pageDimensions = cached.page_dimensions;
 
+        // Fix up spans from older caches that lack block_id
+        this.assignBlockIdsToSpans();
+
         // Still need to open the document for rendering
         const data = await fsPromises.readFile(pdfPath);
         const mimeType = getMimeType(pdfPath);
@@ -533,6 +536,9 @@ export class PDFAnalyzer {
             block_id: ms.block_id
           }));
 
+          // Assign block_id to mutool spans (mutool creates spans with empty block_id)
+          this.assignBlockIdsToSpans();
+
           usedMutool = true;
 
           // Also extract images using mupdf.js (mutool stext doesn't include images)
@@ -618,6 +624,9 @@ export class PDFAnalyzer {
         this.categories = cached.categories;
         this.pageDimensions = cached.page_dimensions;
 
+        // Fix up spans from older caches that lack block_id
+        this.assignBlockIdsToSpans();
+
         // Open document for rendering (under WASM lock)
         const data = await fsPromises.readFile(pdfPath);
         const mimeType = getMimeType(pdfPath);
@@ -636,7 +645,7 @@ export class PDFAnalyzer {
           textReady: true,
           blocks: cached.blocks,
           categories: cached.categories,
-          spans: cached.spans,
+          spans: this.spans,
         };
       }
     }
@@ -790,6 +799,9 @@ export class PDFAnalyzer {
             baseline_offset: ms.baseline_offset,
             block_id: ms.block_id
           }));
+
+          // Assign block_id to mutool spans (mutool creates spans with empty block_id)
+          this.assignBlockIdsToSpans();
 
           usedMutool = true;
 
@@ -1210,6 +1222,11 @@ export class PDFAnalyzer {
       }
     }
   }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Block Splitting: detect formatting transitions within a single mupdf block
+  // and split into separate TextBlocks for correct classification.
+  // ─────────────────────────────────────────────────────────────────────────────
 
   /**
    * Extract image blocks using mupdf.js
@@ -1635,6 +1652,69 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Matches text that starts with a footnote numbering/marker pattern:
+   *   "1. Russell...", "18 See...", "31° See...", "* Note...",
+   *   "¹⁸ Russell...", "• See...", "18] Russell...", "1) See..."
+   */
+  private startsWithFootnotePattern(text: string): boolean {
+    return /^(\d{1,3}[.\s°)\]:]\s*|[*†‡§¶•]\s?|[¹²³⁴⁵⁶⁷⁸⁹⁰]+\s?)\S/.test(text.trim());
+  }
+
+  /**
+   * Detects whether a block has a significant vertical gap above it on the same page
+   * — a common indicator of a footnote separator.
+   */
+  private hasSignificantGapAbove(
+    block: TextBlock,
+    blocksByPage: Map<number, TextBlock[]>,
+    pageHeight: number
+  ): boolean {
+    // Only relevant for blocks in the lower 50% of the page
+    if (block.y / pageHeight < 0.50) return false;
+
+    const pageBlocks = blocksByPage.get(block.page);
+    if (!pageBlocks) return false;
+
+    // Find the nearest block above this one
+    let nearestAboveBottom = 0;
+    for (const b of pageBlocks) {
+      if (b.id === block.id || b.is_image) continue;
+      const bBottom = b.y + b.height;
+      if (bBottom <= block.y && bBottom > nearestAboveBottom) {
+        nearestAboveBottom = bBottom;
+      }
+    }
+
+    if (nearestAboveBottom === 0) return false;
+
+    const gap = block.y - nearestAboveBottom;
+    // A gap of > 1.5× the block's own height suggests a separator
+    return gap > block.height * 1.5;
+  }
+
+  /**
+   * Checks whether any genuine body text exists below a block on the same page.
+   * Excludes blocks that start with footnote numbering patterns — those are
+   * sibling footnotes, not body text (important when footnotes share body font size).
+   */
+  private hasBodyTextBelow(
+    block: TextBlock,
+    blocksByPage: Map<number, TextBlock[]>,
+    bodySize: number
+  ): boolean {
+    const pageBlocks = blocksByPage.get(block.page);
+    const blockBottom = block.y + block.height;
+    return !!pageBlocks?.some(b =>
+      b.y > blockBottom &&
+      b.id !== block.id &&
+      !b.is_image &&
+      b.char_count > 20 &&
+      b.font_size >= bodySize * 0.95 &&
+      !this.startsWithFootnotePattern(b.text)
+    );
+  }
+
+  /**
    * Classify a block into a semantic category
    */
   private classifyBlock(
@@ -1690,18 +1770,31 @@ export class PDFAnalyzer {
       if (score >= 3) return 'header';
     }
 
-    // Footnotes: lower region with smaller font — but only if no body-sized text follows
-    if (block.region === 'lower' && block.font_size < bodySize * 0.95) {
-      const pageBlocks = blocksByPage.get(block.page);
-      const blockBottom = block.y + block.height;
-      const hasBodyTextBelow = pageBlocks?.some(b =>
-        b.y > blockBottom &&
-        b.id !== block.id &&
-        !b.is_image &&
-        b.char_count > 20 &&
-        b.font_size >= bodySize * 0.95
-      );
-      if (!hasBodyTextBelow) return 'footnote';
+    // Footnotes: multiple signals — font size, content pattern, gap above
+    const isLowerHalf = block.y / pageHeight > 0.50;
+    const hasSmallerFont = block.font_size < bodySize * 0.95;
+    const hasFootnotePattern = this.startsWithFootnotePattern(block.text);
+    const hasGap = this.hasSignificantGapAbove(block, blocksByPage, pageHeight);
+    const bodyTextBelow = this.hasBodyTextBelow(block, blocksByPage, bodySize);
+
+    // Original rule: lower region + smaller font + no body text below
+    if (block.region === 'lower' && hasSmallerFont && !bodyTextBelow) {
+      return 'footnote';
+    }
+
+    // Content pattern in lower half — even at body font size
+    if (isLowerHalf && hasFootnotePattern && !bodyTextBelow) {
+      return 'footnote';
+    }
+
+    // Gap above + lower half — strong spatial signal (footnote separator)
+    if (isLowerHalf && hasGap && hasSmallerFont) {
+      return 'footnote';
+    }
+
+    // Gap above + content pattern — very strong combined signal
+    if (hasGap && hasFootnotePattern) {
+      return 'footnote';
     }
 
     // --- Caption detection ---
@@ -1726,13 +1819,21 @@ export class PDFAnalyzer {
       return 'caption';
     }
 
-    // Large text is titles
-    if (block.font_size > bodySize * 1.4) return 'title';
+    // Large text is titles — but not drop caps.
+    // Drop caps (lettrine) are 1-3 oversized characters at the start of a chapter.
+    // No real title is ≤3 characters, so this cleanly separates them.
+    if (block.font_size > bodySize * 1.4 && block.char_count > 3) return 'title';
 
     // Bold text = headings
     if (block.is_bold) {
       if (block.font_size > bodySize * 1.1) return 'heading';
-      if (block.line_count <= 2 && block.char_count < 200) return 'subheading';
+      // Don't classify as subheading if also italic (mixed format = likely quote or body)
+      // Don't classify as subheading if text has quote attribution pattern (—NAME)
+      if (block.line_count <= 2 && block.char_count < 200
+          && !block.is_italic
+          && !/[—–-]\s*[A-Z][A-Z\s.]+$/.test(block.text.trim())) {
+        return 'subheading';
+      }
     }
 
     // Italic multi-line = quotes (but NOT if adjacent to an image — those are captions)
@@ -4687,6 +4788,57 @@ export class PDFAnalyzer {
     // For other patterns, we can't easily enumerate - return empty
     console.log(`[getSimplePatternsFromRegex] Complex pattern "${pattern}": cannot enumerate, will use span matching`);
     return patterns;
+  }
+
+  /**
+   * Assign block_id to spans that have empty block_id (from mutool path).
+   * Matches each span to the block that contains it by page + bbox overlap.
+   */
+  private assignBlockIdsToSpans(): void {
+    // Build page → blocks index for fast lookup
+    const blocksByPage = new Map<number, TextBlock[]>();
+    for (const block of this.blocks) {
+      if (block.is_image) continue;
+      if (!blocksByPage.has(block.page)) blocksByPage.set(block.page, []);
+      blocksByPage.get(block.page)!.push(block);
+    }
+
+    let assigned = 0;
+    for (const span of this.spans) {
+      if (span.block_id) continue; // Already assigned
+
+      const pageBlocks = blocksByPage.get(span.page);
+      if (!pageBlocks) continue;
+
+      // Find the block whose bbox contains the span's midpoint
+      const spanMidX = span.x + span.width / 2;
+      const spanMidY = span.y + span.height / 2;
+      let bestBlock: TextBlock | null = null;
+      let bestArea = Infinity;
+
+      for (const block of pageBlocks) {
+        // Check if span midpoint falls within block bbox (with 2pt tolerance)
+        const tol = 2;
+        if (spanMidX >= block.x - tol && spanMidX <= block.x + block.width + tol &&
+            spanMidY >= block.y - tol && spanMidY <= block.y + block.height + tol) {
+          // Prefer the smallest containing block (most specific match)
+          const area = block.width * block.height;
+          if (area < bestArea) {
+            bestArea = area;
+            bestBlock = block;
+          }
+        }
+      }
+
+      if (bestBlock) {
+        span.block_id = bestBlock.id;
+        assigned++;
+      }
+    }
+
+    if (assigned > 0) {
+      console.log(`[assignBlockIdsToSpans] Assigned block_id to ${assigned}/${this.spans.length} spans`);
+    }
   }
 
   /**

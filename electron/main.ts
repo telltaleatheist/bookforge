@@ -819,6 +819,25 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('pdf:get-spans-for-block', async (event, blockId: string) => {
+    try {
+      const spans = await pdfWorkerProxy.call('getSpans', [], event.sender);
+      if (!spans || spans.length === 0) {
+        console.warn('[pdf:get-spans-for-block] No spans available (worker may have been recycled)');
+        return { success: true, data: [] };
+      }
+      const blockSpans = (spans as any[]).filter((s: any) => s.block_id === blockId);
+      if (blockSpans.length === 0) {
+        // Log a sample of block_ids to help diagnose mismatches
+        const sampleIds = [...new Set((spans as any[]).slice(0, 20).map((s: any) => s.block_id))];
+        console.warn(`[pdf:get-spans-for-block] No spans match block_id="${blockId}". Total spans: ${spans.length}. Sample block_ids:`, sampleIds);
+      }
+      return { success: true, data: blockSpans };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('pdf:update-spans-for-ocr', async (event, pageNum: number, ocrBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; id?: string }>) => {
     try {
       await pdfWorkerProxy.call('updateSpansForOcrPage', [pageNum, ocrBlocks], event.sender);
@@ -1223,6 +1242,9 @@ function setupIpcHandlers(): void {
         manifest.editor.customCategories = mergedData.custom_categories || undefined;
         manifest.editor.ocrBlocks = mergedData.ocr_blocks || undefined;
         manifest.editor.ocrCategories = mergedData.ocr_categories || undefined;
+        manifest.editor.categoryCorrections = mergedData.category_corrections || undefined;
+        manifest.editor.learnedCategories = mergedData.learned_categories || undefined;
+        manifest.editor.paragraphBreaks = mergedData.paragraph_breaks || undefined;
 
         // Chapters
         manifest.chapters = mergedData.chapters || [];
@@ -1239,6 +1261,13 @@ function setupIpcHandlers(): void {
         }
 
         manifest.modifiedAt = new Date().toISOString();
+
+        const catCount = Array.isArray(mergedData.category_corrections) ? mergedData.category_corrections.length : 0;
+        const learnedCount = Array.isArray(mergedData.learned_categories) ? mergedData.learned_categories.length : 0;
+        const paraCount = Array.isArray(mergedData.paragraph_breaks) ? mergedData.paragraph_breaks.length : 0;
+        if (catCount > 0 || learnedCount > 0 || paraCount > 0) {
+          console.log(`[project:save] Writing to manifest: ${catCount} corrections, ${learnedCount} learned, ${paraCount} paragraph breaks`);
+        }
 
         await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
         return { success: true, filePath };
@@ -1326,31 +1355,32 @@ function setupIpcHandlers(): void {
         manifest.modifiedAt = new Date().toISOString();
         await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
 
+        // Build list of all project EPUBs (used for both cover and metadata propagation)
+        const epubCandidates = [
+          path.join(bfpPath, 'source', 'exported.epub'),
+          path.join(bfpPath, 'source', 'original.epub'),
+          path.join(bfpPath, 'stages', '01-cleanup', 'cleaned.epub'),
+          path.join(bfpPath, 'stages', '01-cleanup', 'simplified.epub'),
+          path.join(bfpPath, 'stages', '02-translate', 'translated.epub'),
+        ];
+        // Also scan for language EPUBs (e.g., de.epub, ko.epub) in translate dir
+        const translateDir = path.join(bfpPath, 'stages', '02-translate');
+        if (fsSync.existsSync(translateDir)) {
+          try {
+            const translateFiles = await fs.readdir(translateDir);
+            for (const f of translateFiles) {
+              if (f.endsWith('.epub') && f !== 'translated.epub') {
+                epubCandidates.push(path.join(translateDir, f));
+              }
+            }
+          } catch { /* ignore */ }
+        }
+
         // Propagate cover to all project EPUBs when a cover is set
         if (meta.coverImagePath && typeof meta.coverImagePath === 'string') {
           const absCoverPath = path.join(getLibraryRoot(), meta.coverImagePath as string);
           if (fsSync.existsSync(absCoverPath)) {
             const { embedCoverInEpub } = await import('./epub-processor.js');
-            const epubCandidates = [
-              path.join(bfpPath, 'source', 'exported.epub'),
-              // Only embed in original.epub if it's actually an EPUB (not a PDF)
-              path.join(bfpPath, 'source', 'original.epub'),
-              path.join(bfpPath, 'stages', '01-cleanup', 'cleaned.epub'),
-              path.join(bfpPath, 'stages', '01-cleanup', 'simplified.epub'),
-              path.join(bfpPath, 'stages', '02-translate', 'translated.epub'),
-            ];
-            // Also scan for language EPUBs (e.g., de.epub, ko.epub) in translate dir
-            const translateDir = path.join(bfpPath, 'stages', '02-translate');
-            if (fsSync.existsSync(translateDir)) {
-              try {
-                const translateFiles = await fs.readdir(translateDir);
-                for (const f of translateFiles) {
-                  if (f.endsWith('.epub') && f !== 'translated.epub') {
-                    epubCandidates.push(path.join(translateDir, f));
-                  }
-                }
-              } catch { /* ignore */ }
-            }
             for (const epubPath of epubCandidates) {
               if (fsSync.existsSync(epubPath)) {
                 try {
@@ -1364,7 +1394,102 @@ function setupIpcHandlers(): void {
           }
         }
 
-        return { success: true };
+        // Propagate metadata (title/author/year/language) to all project EPUBs
+        const hasMetadataChange = meta.title !== undefined || meta.author !== undefined
+          || meta.year !== undefined || meta.language !== undefined
+          || meta.contributors !== undefined;
+        if (hasMetadataChange) {
+          const { updateEpubMetadataStandalone } = await import('./epub-processor.js');
+          const epubMeta: Record<string, unknown> = {};
+          if (meta.title !== undefined) epubMeta.title = meta.title;
+          if (meta.author !== undefined) epubMeta.author = meta.author;
+          if (meta.year !== undefined) epubMeta.year = meta.year;
+          if (meta.language !== undefined) epubMeta.language = meta.language;
+          if (meta.contributors !== undefined) epubMeta.contributors = meta.contributors;
+
+          for (const epubPath of epubCandidates) {
+            if (fsSync.existsSync(epubPath)) {
+              try {
+                await updateEpubMetadataStandalone(epubPath, epubMeta as any);
+                console.log(`[project:update-metadata] Updated EPUB metadata in ${path.basename(epubPath)}`);
+              } catch (epubErr) {
+                console.warn(`[project:update-metadata] Failed to update EPUB metadata in ${epubPath}:`, epubErr);
+              }
+            }
+          }
+        }
+
+        // Update M4B metadata if output exists
+        const outputDir = path.join(bfpPath, 'output');
+        if (fsSync.existsSync(outputDir)) {
+          try {
+            const outputFiles = await fs.readdir(outputDir);
+            const m4bFiles = outputFiles.filter(f => f.toLowerCase().endsWith('.m4b'));
+
+            for (const m4bFile of m4bFiles) {
+              const m4bPath = path.join(outputDir, m4bFile);
+
+              // Apply updated metadata tags to M4B
+              if (hasMetadataChange || meta.narrator !== undefined || meta.series !== undefined) {
+                try {
+                  const m4bMeta: Record<string, unknown> = {};
+                  if (meta.title !== undefined) m4bMeta.title = meta.title;
+                  if (meta.author !== undefined) m4bMeta.author = meta.author;
+                  if (meta.year !== undefined) m4bMeta.year = meta.year;
+                  if (meta.narrator !== undefined) m4bMeta.narrator = meta.narrator;
+                  if (meta.series !== undefined) m4bMeta.series = meta.series;
+                  if (meta.contributors !== undefined) m4bMeta.contributors = meta.contributors;
+                  await applyMetadata(m4bPath, m4bMeta as any);
+                  console.log(`[project:update-metadata] Updated M4B metadata in ${m4bFile}`);
+                } catch (m4bErr) {
+                  console.warn(`[project:update-metadata] Failed to update M4B metadata in ${m4bFile}:`, m4bErr);
+                }
+              }
+
+              // Rename M4B file if outputFilename changed or title/author changed
+              const desiredFilename = meta.outputFilename
+                ? (String(meta.outputFilename).endsWith('.m4b') ? String(meta.outputFilename) : `${meta.outputFilename}.m4b`)
+                : (meta.title || meta.author)
+                  ? `${meta.title || manifest.metadata.title || 'Audiobook'} - ${meta.author || manifest.metadata.author || 'Unknown'}.m4b`
+                  : null;
+
+              if (desiredFilename) {
+                const sanitized = desiredFilename.replace(/[<>:"/\\|?*]/g, '_');
+                const newM4bPath = path.join(outputDir, sanitized);
+                if (newM4bPath !== m4bPath) {
+                  try {
+                    await fs.rename(m4bPath, newM4bPath);
+                    console.log(`[project:update-metadata] Renamed M4B: ${m4bFile} → ${sanitized}`);
+                  } catch (renameErr) {
+                    console.warn(`[project:update-metadata] Failed to rename M4B:`, renameErr);
+                  }
+                }
+              }
+            }
+          } catch { /* output dir read failed, skip */ }
+        }
+
+        // Rename project folder if title/author/year changed
+        let newBfpPath: string | undefined;
+        if (meta.title !== undefined || meta.author !== undefined || meta.year !== undefined) {
+          const { renameProjectFolder, computeProjectSlug } = await import('./manifest-service.js');
+          const newSlug = computeProjectSlug(
+            (meta.title as string) || manifest.metadata.title || 'Untitled',
+            (meta.author as string) || manifest.metadata.author || 'Unknown',
+            (meta.year as string | undefined) || manifest.metadata.year
+          );
+          const currentSlug = path.basename(bfpPath);
+          if (newSlug !== currentSlug) {
+            try {
+              newBfpPath = await renameProjectFolder(bfpPath, newSlug);
+              console.log(`[project:update-metadata] Renamed project folder → ${path.basename(newBfpPath)}`);
+            } catch (renameErr) {
+              console.warn(`[project:update-metadata] Failed to rename project folder:`, renameErr);
+            }
+          }
+        }
+
+        return { success: true, newBfpPath };
       }
 
       // Legacy BFP file
@@ -2260,6 +2385,9 @@ function setupIpcHandlers(): void {
           custom_categories: editor.customCategories || undefined,
           ocr_blocks: editor.ocrBlocks || undefined,
           ocr_categories: editor.ocrCategories || undefined,
+          category_corrections: editor.categoryCorrections || undefined,
+          learned_categories: editor.learnedCategories || undefined,
+          paragraph_breaks: editor.paragraphBreaks || undefined,
           chapters: manifest.chapters || [],
           chapters_source: manifest.chaptersSource || 'manual',
           metadata: {
@@ -2271,6 +2399,12 @@ function setupIpcHandlers(): void {
           created_at: manifest.createdAt || new Date().toISOString(),
           modified_at: manifest.modifiedAt || new Date().toISOString(),
         };
+
+        const catCount = Array.isArray(data.category_corrections) ? data.category_corrections.length : 0;
+        const paraCount = Array.isArray(data.paragraph_breaks) ? data.paragraph_breaks.length : 0;
+        if (catCount > 0 || paraCount > 0) {
+          console.log(`[project:load] Read from manifest: ${catCount} category corrections, ${paraCount} paragraph breaks`);
+        }
 
         return { success: true, data, filePath };
       }

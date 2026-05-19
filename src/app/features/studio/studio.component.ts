@@ -26,7 +26,6 @@ import { VersionPickerDialogComponent, VersionPickerDialogData } from './compone
 import { ProjectFilesComponent, DiffRequest } from './components/project-files/project-files.component';
 import { ProjectVersion } from './models/project-version.types';
 
-import { EpubService } from '../audiobook/services/epub.service';
 import { AudiobookService } from '../audiobook/services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
@@ -1300,7 +1299,6 @@ import { SettingsService } from '../../core/services/settings.service';
 })
 export class StudioComponent implements OnInit, OnDestroy {
   readonly studioService = inject(StudioService);
-  private readonly epubService = inject(EpubService);
   private readonly audiobookService = inject(AudiobookService);
   private readonly electronService = inject(ElectronService);
   private readonly libraryService = inject(LibraryService);
@@ -2122,13 +2120,6 @@ export class StudioComponent implements OnInit, OnDestroy {
 
       // Refresh tags for the filter bar
       this.loadAllTags();
-
-      // Also update the EPUB file if it exists
-      if (item.epubPath) {
-        await this.epubService.open(item.epubPath);
-        await this.epubService.setMetadata(metadata);
-        await this.epubService.close();
-      }
     } finally {
       this.savingMetadata.set(false);
     }

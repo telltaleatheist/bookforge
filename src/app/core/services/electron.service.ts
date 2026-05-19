@@ -709,12 +709,24 @@ export class ElectronService {
     return null;
   }
 
-  async getSpans(): Promise<Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number; font_name: string; baseline_offset: number }> | null> {
+  async getSpans(): Promise<Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number; font_name: string; baseline_offset: number; is_bold: boolean; is_italic: boolean; block_id: string }> | null> {
     if (this.isElectron) {
       const result = await (window as any).electron.pdf.getSpans();
       if (result.success) {
         return result.data;
       }
+    }
+    return null;
+  }
+
+  async getSpansForBlock(blockId: string): Promise<Array<{
+    page: number; x: number; y: number; width: number; height: number;
+    text: string; font_size: number; font_name: string; baseline_offset: number;
+    is_bold: boolean; is_italic: boolean; block_id: string;
+  }> | null> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.pdf.getSpansForBlock(blockId);
+      if (result.success) return result.data;
     }
     return null;
   }
@@ -1363,7 +1375,7 @@ export class ElectronService {
     outputFilename?: string;
     contributors?: Array<{ first: string; last: string }>;
     tags?: string[];
-  }): Promise<{ success: boolean; error?: string }> {
+  }): Promise<{ success: boolean; error?: string; newBfpPath?: string }> {
     if (this.isElectron) {
       return (window as any).electron.project.updateMetadata(bfpPath, metadata);
     }

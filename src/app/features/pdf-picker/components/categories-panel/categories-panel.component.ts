@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { Category, TextBlock } from '../../services/pdf.service';
+import { ClassificationThresholds, CategoryBaselines } from '../../services/category-learner';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 
 @Pipe({ name: 'safeHtml', standalone: true })
@@ -298,6 +299,57 @@ interface RegexMatch {
     </div>
     }
 
+    @if (!analysisOnly() && baselines()) {
+      <div class="baselines-info">
+        Body font: {{ baselines()!.bodySize }}pt {{ baselines()!.bodyFont }}
+        @if (baselines()!.bodyIsItalic) { | Italic: Yes } @else { | Italic: No }
+      </div>
+    }
+
+    @if (!analysisOnly() && categoryCorrections().size >= 0) {
+      <div class="redetect-section">
+        <div class="redetect-actions">
+          <desktop-button
+            variant="primary"
+            size="sm"
+            (click)="recategorize.emit()"
+          >
+            Re-categorize
+          </desktop-button>
+          <desktop-button
+            variant="secondary"
+            size="sm"
+            (click)="mergeBlocks.emit()"
+          >
+            Merge Blocks
+          </desktop-button>
+          <desktop-button
+            variant="ghost"
+            size="sm"
+            (click)="resetThresholds.emit()"
+          >
+            Reset Defaults
+          </desktop-button>
+        </div>
+        <p class="redetect-hint">Correct a few blocks, then re-detect to fix the rest.</p>
+        <div class="redetect-actions">
+          <desktop-button
+            variant="secondary"
+            size="sm"
+            [disabled]="categoryCorrections().size < 1"
+            (click)="redetect.emit()"
+          >
+            Re-detect ({{ categoryCorrections().size }} correction{{ categoryCorrections().size !== 1 ? 's' : '' }})
+          </desktop-button>
+          @if (categoryCorrections().size > 0) {
+            <desktop-button variant="ghost" size="sm" (click)="clearCorrections.emit()">
+              Clear
+            </desktop-button>
+          }
+        </div>
+      </div>
+    }
+
     <div class="categories-list">
       @if (analysisOnly()) {
         <!-- Analysis mode: tabs for Flags and Search -->
@@ -435,6 +487,7 @@ interface RegexMatch {
             [class.has-selection]="getSelectedCount(cat.id) > 0"
             [class.is-custom]="isCustomCategory(cat.id)"
             [class.is-enabled]="cat.enabled"
+            [class.has-thresholds-open]="thresholdExpanded() === cat.id"
             (click)="onCategoryClick($event, cat.id)"
             (contextmenu)="onCategoryRightClick($event, cat.id)"
           >
@@ -444,6 +497,11 @@ interface RegexMatch {
                 {{ cat.name }}
                 @if (isCustomCategory(cat.id)) {
                   <span class="custom-badge">custom</span>
+                }
+                @if (hasThresholdControls(cat.id) && thresholds()) {
+                  <button class="threshold-chevron" (click)="toggleThresholdPanel($event, cat.id)" title="Tune thresholds">
+                    {{ thresholdExpanded() === cat.id ? '▼' : '▶' }}
+                  </button>
                 }
               </div>
               <div class="category-meta">
@@ -457,6 +515,26 @@ interface RegexMatch {
               }
             </div>
           </div>
+          @if (thresholdExpanded() === cat.id && thresholds()) {
+            <div class="threshold-panel" [style.border-left-color]="cat.color">
+              @for (control of getThresholdControls(cat.id); track control.path) {
+                <div class="threshold-row">
+                  <label class="threshold-label">{{ control.label }}</label>
+                  <input
+                    type="range"
+                    [min]="control.min"
+                    [max]="control.max"
+                    [step]="control.step"
+                    [value]="getThresholdValue(control.path)"
+                    [style.accent-color]="cat.color"
+                    (input)="onThresholdInput($event, control.path)"
+                    (click)="$event.stopPropagation()"
+                  />
+                  <span class="threshold-value">{{ formatThresholdValue(control.path, control.format) }}</span>
+                </div>
+              }
+            </div>
+          }
         }
       }
 
@@ -579,6 +657,102 @@ interface RegexMatch {
           }
         }
       }
+    }
+
+    .baselines-info {
+      padding: var(--ui-spacing-xs) var(--ui-spacing-md);
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-elevated);
+      font-size: var(--ui-font-xs);
+      color: var(--text-secondary);
+      font-family: monospace;
+    }
+
+    .redetect-section {
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-surface);
+
+      .redetect-hint {
+        font-size: var(--ui-font-xs);
+        color: var(--text-tertiary);
+        margin: var(--ui-spacing-sm) 0 var(--ui-spacing-xs);
+        line-height: 1.4;
+      }
+
+      .redetect-actions {
+        display: flex;
+        gap: var(--ui-spacing-sm);
+        align-items: center;
+      }
+    }
+
+    .threshold-chevron {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      margin-left: 4px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--text-tertiary);
+      font-size: 8px;
+      cursor: pointer;
+      border-radius: 3px;
+      vertical-align: middle;
+
+      &:hover {
+        background: var(--hover-bg);
+        color: var(--text-primary);
+      }
+    }
+
+    .threshold-panel {
+      margin: 0 0 var(--ui-spacing-xs);
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      background: var(--bg-sunken);
+      border-left: 3px solid var(--border-default);
+      border-radius: 0 $radius-sm $radius-sm 0;
+      animation: slideDown 0.15s ease-out;
+    }
+
+    .threshold-row {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-xs);
+      height: 28px;
+
+      .threshold-label {
+        flex: 0 0 110px;
+        font-size: 10px;
+        color: var(--text-secondary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      input[type="range"] {
+        flex: 1;
+        height: 4px;
+        cursor: pointer;
+        min-width: 60px;
+      }
+
+      .threshold-value {
+        flex: 0 0 60px;
+        font-size: 10px;
+        color: var(--text-primary);
+        text-align: right;
+        font-family: monospace;
+      }
+    }
+
+    .category-item.has-thresholds-open {
+      margin-bottom: 0;
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
     }
 
     .regex-form-section {
@@ -1487,6 +1661,13 @@ export class CategoriesPanelComponent {
   regexMatchCount = input<number>(0);
   isEditing = input<boolean>(false);  // True when editing existing category
 
+  // Category correction inputs
+  categoryCorrections = input<Map<string, string>>(new Map());
+
+  // Classification threshold inputs
+  thresholds = input<ClassificationThresholds | null>(null);
+  baselines = input<CategoryBaselines | null>(null);
+
   // Analysis inputs
   analysisOnly = input<boolean>(false);
   analysisFlags = input<Array<{
@@ -1534,6 +1715,18 @@ export class CategoriesPanelComponent {
   editCategory = output<string>();
   // Toggle category enabled state
   toggleCategory = output<string>();
+
+  // Block merge output
+  mergeBlocks = output<void>();
+
+  // Category re-detection outputs
+  redetect = output<void>();
+  clearCorrections = output<void>();
+
+  // Threshold outputs
+  thresholdChange = output<{ path: string; value: number }>();
+  recategorize = output<void>();
+  resetThresholds = output<void>();
 
   // Regex form outputs
   regexNameChange = output<string>();
@@ -1603,6 +1796,14 @@ export class CategoriesPanelComponent {
   readonly filtersExpanded = signal(false);
   readonly contextMenu = signal<{ x: number; y: number; categoryId: string } | null>(null);
   readonly selectedPreset = signal<string>('');
+
+  // Threshold accordion state
+  readonly thresholdExpanded = signal<string | null>(null);
+
+  // Categories that have tunable thresholds (body and image do not)
+  private readonly thresholdCategories = new Set([
+    'header', 'footer', 'footnote_ref', 'footnote', 'caption', 'title', 'heading', 'subheading', 'quote'
+  ]);
 
   // Analysis tab state
   readonly analysisTab = signal<'flags' | 'search'>('flags');
@@ -1769,6 +1970,100 @@ export class CategoriesPanelComponent {
 
   getSelectedCount(categoryId: string): number {
     return this.selectionCountsCache().get(categoryId) || 0;
+  }
+
+  // Threshold control methods
+  hasThresholdControls(categoryId: string): boolean {
+    return this.thresholdCategories.has(categoryId);
+  }
+
+  toggleThresholdPanel(event: MouseEvent, categoryId: string): void {
+    event.stopPropagation();
+    this.thresholdExpanded.set(this.thresholdExpanded() === categoryId ? null : categoryId);
+  }
+
+  getThresholdControls(categoryId: string): Array<{ path: string; label: string; min: number; max: number; step: number; format: 'pct' | 'ratio' | 'int' }> {
+    switch (categoryId) {
+      case 'header':
+        return [
+          { path: 'header.topYPct', label: 'Header zone', min: 0.05, max: 0.25, step: 0.01, format: 'pct' },
+          { path: 'header.regionScoreThreshold', label: 'Region threshold', min: 1, max: 5, step: 1, format: 'int' },
+          { path: 'region.headerBottomPct', label: 'Header region max', min: 0.05, max: 0.30, step: 0.01, format: 'pct' },
+        ];
+      case 'footer':
+        return [
+          { path: 'region.footerBottomPct', label: 'Footer zone start', min: 0.80, max: 0.99, step: 0.01, format: 'pct' },
+          { path: 'region.footerShortBottomPct', label: 'Short text zone', min: 0.80, max: 0.99, step: 0.01, format: 'pct' },
+          { path: 'region.footerShortMaxChars', label: 'Short max chars', min: 10, max: 200, step: 10, format: 'int' },
+        ];
+      case 'footnote_ref':
+        return [
+          { path: 'footnoteRef.maxFontRatio', label: 'Font ratio', min: 0.50, max: 1.0, step: 0.05, format: 'ratio' },
+          { path: 'footnoteRef.maxChars', label: 'Max chars', min: 1, max: 10, step: 1, format: 'int' },
+        ];
+      case 'footnote':
+        return [
+          { path: 'region.lowerBottomPct', label: 'Lower region start', min: 0.50, max: 0.90, step: 0.01, format: 'pct' },
+          { path: 'footnote.fontRatio', label: 'Font ratio', min: 0.80, max: 1.10, step: 0.05, format: 'ratio' },
+          { path: 'footnote.lowerHalfYPct', label: 'Lower half start', min: 0.30, max: 0.80, step: 0.05, format: 'pct' },
+        ];
+      case 'caption':
+        return [
+          { path: 'caption.smallFontRatio', label: 'Small font ratio', min: 0.60, max: 1.0, step: 0.05, format: 'ratio' },
+          { path: 'caption.nearImageFontRatio', label: 'Near-image ratio', min: 0.80, max: 1.05, step: 0.05, format: 'ratio' },
+          { path: 'caption.maxLinesNearImage', label: 'Max lines', min: 1, max: 20, step: 1, format: 'int' },
+        ];
+      case 'title':
+        return [
+          { path: 'title.minFontRatio', label: 'Font ratio', min: 1.1, max: 3.0, step: 0.1, format: 'ratio' },
+          { path: 'title.minChars', label: 'Min chars', min: 1, max: 10, step: 1, format: 'int' },
+        ];
+      case 'heading':
+        return [
+          { path: 'heading.minFontRatio', label: 'Font ratio', min: 1.0, max: 2.0, step: 0.05, format: 'ratio' },
+        ];
+      case 'subheading':
+        return [
+          { path: 'subheading.maxLines', label: 'Max lines', min: 1, max: 10, step: 1, format: 'int' },
+          { path: 'subheading.maxChars', label: 'Max chars', min: 50, max: 500, step: 50, format: 'int' },
+        ];
+      case 'quote':
+        return [
+          { path: 'quote.minLines', label: 'Min lines', min: 1, max: 10, step: 1, format: 'int' },
+        ];
+      default:
+        return [];
+    }
+  }
+
+  getThresholdValue(path: string): number {
+    const t = this.thresholds();
+    if (!t) return 0;
+    const parts = path.split('.');
+    if (parts.length === 2) {
+      return (t as any)[parts[0]]?.[parts[1]] ?? 0;
+    }
+    return 0;
+  }
+
+  formatThresholdValue(path: string, format: 'pct' | 'ratio' | 'int'): string {
+    const value = this.getThresholdValue(path);
+    const bl = this.baselines();
+
+    if (format === 'pct') {
+      return `${Math.round(value * 100)}%`;
+    }
+    if (format === 'ratio') {
+      const base = bl ? `(${(value * bl.bodySize).toFixed(1)}pt)` : '';
+      return `${value.toFixed(2)} ${base}`;
+    }
+    return `${value}`;
+  }
+
+  onThresholdInput(event: Event, path: string): void {
+    const target = event.target as HTMLInputElement;
+    const value = parseFloat(target.value);
+    this.thresholdChange.emit({ path, value });
   }
 
   onCategoryClick(event: MouseEvent, categoryId: string): void {

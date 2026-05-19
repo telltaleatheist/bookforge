@@ -138,6 +138,7 @@ export interface CropRect {
                           [class.toc-selected]="isTocSelected(block.id)"
                           [class.deleted]="isDeleted(block.id)"
                           [class.corrected]="hasCorrectedText(block.id)"
+                          [class.category-corrected]="hasCategoryCorrection(block.id)"
                           [class.moved]="hasOffset(block.id)"
                           [class.search-highlight]="isSearchHighlighted(block.id)"
                           [class.search-current]="isCurrentSearchResult(block.id)"
@@ -333,6 +334,42 @@ export interface CropRect {
                             />
                           </foreignObject>
                         }
+                      </g>
+                    }
+                  }
+
+                  <!-- Paragraph break markers -->
+                  @if (paragraphMode()) {
+                    <!-- Clickable gap areas between blocks (for adding new breaks) -->
+                    @for (gap of getParagraphGapsForPage(pageNum); track gap.blockBelowId) {
+                      <rect
+                        class="paragraph-gap-click"
+                        [attr.x]="gap.x"
+                        [attr.y]="gap.y"
+                        [attr.width]="gap.width"
+                        [attr.height]="gap.height"
+                        fill="transparent"
+                        [style.cursor]="'pointer'"
+                        (click)="onParagraphGapClick($event, gap.blockBelowId)"
+                      />
+                    }
+                    <!-- Break markers (like chapter markers but for paragraph breaks) -->
+                    @for (brk of getParagraphBreakLinesForPage(pageNum); track brk.blockId) {
+                      <g class="paragraph-marker"
+                         [class.selected]="selectedParagraphBreakId() === brk.blockId"
+                         (mousedown)="onParagraphMarkerMouseDown($event, brk.blockId, pageNum)">
+                        <!-- Invisible hit area -->
+                        <rect [attr.x]="brk.x1" [attr.y]="brk.y - 8" [attr.width]="brk.x2 - brk.x1" height="16" fill="transparent" class="paragraph-hit-area" />
+                        <!-- Dashed line -->
+                        <line [attr.x1]="brk.x1" [attr.y1]="brk.y" [attr.x2]="brk.x2" [attr.y2]="brk.y"
+                              stroke="#ff9500" stroke-width="1.5" stroke-dasharray="6,4" class="paragraph-line" />
+                        <!-- Remove button (X) -->
+                        <g class="paragraph-remove-btn"
+                           [attr.transform]="'translate(' + (brk.x2 + 4) + ',' + (brk.y - 7) + ')'"
+                           (click)="onParagraphBreakRemoveClick($event, brk.blockId)">
+                          <circle cx="7" cy="7" r="6" fill="rgba(0,0,0,0.5)" />
+                          <text x="7" y="10" fill="white" font-size="10" font-weight="600" text-anchor="middle">&times;</text>
+                        </g>
                       </g>
                     }
                   }
@@ -640,6 +677,7 @@ export interface CropRect {
                             [class.toc-selected]="isTocSelected(block.id)"
                             [class.deleted]="isDeleted(block.id)"
                             [class.corrected]="hasCorrectedText(block.id)"
+                            [class.category-corrected]="hasCategoryCorrection(block.id)"
                             [class.moved]="hasOffset(block.id)"
                             [class.search-highlight]="isSearchHighlighted(block.id)"
                             [class.search-current]="isCurrentSearchResult(block.id)"
@@ -826,6 +864,22 @@ export interface CropRect {
                         </g>
                       }
                     }
+                    <!-- Paragraph break markers (grid mode) -->
+                    @if (paragraphMode()) {
+                      @for (gap of getParagraphGapsForPage(pageNum); track gap.blockBelowId) {
+                        <rect class="paragraph-gap-click" [attr.x]="gap.x" [attr.y]="gap.y" [attr.width]="gap.width" [attr.height]="gap.height" fill="transparent" [style.cursor]="'pointer'" (click)="onParagraphGapClick($event, gap.blockBelowId)" />
+                      }
+                      @for (brk of getParagraphBreakLinesForPage(pageNum); track brk.blockId) {
+                        <g class="paragraph-marker" [class.selected]="selectedParagraphBreakId() === brk.blockId" (mousedown)="onParagraphMarkerMouseDown($event, brk.blockId, pageNum)">
+                          <rect [attr.x]="brk.x1" [attr.y]="brk.y - 8" [attr.width]="brk.x2 - brk.x1" height="16" fill="transparent" class="paragraph-hit-area" />
+                          <line [attr.x1]="brk.x1" [attr.y1]="brk.y" [attr.x2]="brk.x2" [attr.y2]="brk.y" stroke="#ff9500" stroke-width="1.5" stroke-dasharray="6,4" class="paragraph-line" />
+                          <g class="paragraph-remove-btn" [attr.transform]="'translate(' + (brk.x2 + 4) + ',' + (brk.y - 7) + ')'" (click)="onParagraphBreakRemoveClick($event, brk.blockId)">
+                            <circle cx="7" cy="7" r="6" fill="rgba(0,0,0,0.5)" />
+                            <text x="7" y="10" fill="white" font-size="10" font-weight="600" text-anchor="middle">&times;</text>
+                          </g>
+                        </g>
+                      }
+                    }
                     @if (isMarqueeSelecting() && currentMarqueeRect() && currentMarqueeRect()!.pageNum === pageNum) {
                       <rect
                         class="marquee-rect"
@@ -906,7 +960,33 @@ export interface CropRect {
           @if (hasCorrectedText(hoveredBlock()!.id)) {
             <desktop-button variant="ghost" size="xs" (click)="onRevertBlock()">Revert to original</desktop-button>
           }
+          @if ((hoveredBlock()!.line_count || 1) > 1 && !hoveredBlock()!.is_image) {
+            <desktop-button variant="ghost" size="xs" (click)="onSplitBlock()">Split block</desktop-button>
+          }
         </div>
+        @if (categoryList().length > 0) {
+          <div class="tooltip-category-section">
+            <div class="tooltip-section-label">
+              @if (selectedBlockIds().length > 1 && selectedBlockIds().includes(hoveredBlock()!.id)) {
+                Set Category ({{ selectedBlockIds().length }} blocks)
+              } @else {
+                Set Category
+              }
+            </div>
+            <div class="tooltip-category-options">
+              @for (cat of categoryList(); track cat.id) {
+                <button
+                  class="tooltip-category-option"
+                  [class.active]="hoveredBlock()!.category_id === cat.id"
+                  [style.border-left-color]="cat.color"
+                  (click)="onSetCategory(cat.id)"
+                >
+                  {{ cat.name }}
+                </button>
+              }
+            </div>
+          </div>
+        }
       </div>
     }
 
@@ -1427,6 +1507,13 @@ export interface CropRect {
       fill: rgba(76, 175, 80, 0.1);
     }
 
+    .block-overlay .block-rect.category-corrected {
+      stroke: #ff9800 !important;
+      stroke-width: 2;
+      stroke-dasharray: 4, 3;
+      fill: rgba(255, 152, 0, 0.08);
+    }
+
     .block-overlay .block-rect.toc-selected {
       stroke: var(--accent, #06b6d4) !important;
       stroke-width: 2;
@@ -1563,6 +1650,63 @@ export interface CropRect {
       color: #333;
     }
 
+    /* Paragraph break markers */
+    .paragraph-marker {
+      pointer-events: all;
+      cursor: grab;
+
+      &:hover {
+        .paragraph-line {
+          stroke-width: 2.5;
+          stroke: #e65100;
+        }
+        .paragraph-remove-btn {
+          opacity: 1;
+        }
+      }
+
+      &:active {
+        cursor: grabbing;
+      }
+
+      &.selected {
+        .paragraph-remove-btn {
+          opacity: 1;
+        }
+        .paragraph-line {
+          stroke-width: 2.5;
+        }
+      }
+    }
+
+    .paragraph-hit-area {
+      pointer-events: all;
+    }
+
+    .paragraph-line {
+      pointer-events: none;
+      transition: stroke-width 0.15s ease, stroke 0.15s ease;
+    }
+
+    .paragraph-remove-btn {
+      pointer-events: all;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+
+      &:hover circle {
+        fill: #d32f2f;
+      }
+    }
+
+    .paragraph-gap-click {
+      pointer-events: all;
+
+      &:hover {
+        fill: rgba(255, 149, 0, 0.08) !important;
+      }
+    }
+
     /* Text overlay for corrected/moved blocks */
     .epub-fill-rect {
       pointer-events: none;
@@ -1666,6 +1810,50 @@ export interface CropRect {
       display: flex;
       gap: var(--ui-spacing-sm);
       justify-content: flex-end;
+    }
+
+    .tooltip-category-section {
+      border-top: 1px solid var(--border-subtle);
+      margin-top: var(--ui-spacing-sm);
+      padding-top: var(--ui-spacing-sm);
+    }
+
+    .tooltip-section-label {
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .tooltip-category-options {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .tooltip-category-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 3px 8px;
+      font-size: var(--ui-font-xs);
+      color: var(--text-primary);
+      background: transparent;
+      border: none;
+      border-left: 3px solid transparent;
+      border-radius: 2px;
+      cursor: pointer;
+
+      &:hover {
+        background: var(--hover-bg);
+      }
+
+      &.active {
+        background: var(--accent-subtle);
+        font-weight: 600;
+      }
     }
 
     /* Page Context Menu */
@@ -1786,6 +1974,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // This is controlled by the parent and used to show text overlays
   blankedPages = input<Set<number>>(new Set());
 
+  // Block IDs that were split (original blocks replaced by children — hide entirely, no X)
+  splitOriginalBlockIds = input<Set<string>>(new Set());
+  mergeSourceBlockIds = input<Set<string>>(new Set());
+
   // Whether the current document is an EPUB (vs PDF). EPUBs can't use MuPDF's
   // redaction API, so edited/deleted blocks get white SVG fill rects instead.
   isEpub = input<boolean>(false);
@@ -1821,6 +2013,14 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   selectedPages = input<Set<number>>(new Set());
   organizeMode = input<boolean>(false);
 
+  // Paragraph mode inputs
+  paragraphMode = input<boolean>(false);
+  paragraphBreaks = input<Set<string>>(new Set());
+
+  // Category correction inputs
+  categoryList = input<Array<{ id: string; name: string; color: string }>>([]);
+  categoryCorrections = input<Map<string, string>>(new Map());
+
   blockClick = output<{ block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
   blockDoubleClick = output<{
     block: TextBlock;
@@ -1837,6 +2037,8 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   deleteBlock = output<string>();
   highlightClick = output<{ catId: string; rect: { x: number; y: number; w: number; h: number; text: string }; pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();  // Click on category highlight
   revertBlock = output<string>();  // Revert text correction
+  splitBlock = output<TextBlock>();  // Request to split a multi-line block
+  setBlockCategory = output<{ blockIds: string[]; categoryId: string }>();
   zoomChange = output<number>();  // Emits zoom delta (e.g., +5 for zoom in, -5 for zoom out)
   selectAllOnPage = output<number>();
   deselectAllOnPage = output<number>();
@@ -1881,6 +2083,11 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // Page selection outputs (for organize/chapters mode)
   pageSelect = output<{ pageNum: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
   deleteSelectedPages = output<Set<number>>();
+
+  // Paragraph break outputs
+  paragraphBreakToggle = output<string>();
+  paragraphBreakDelete = output<string>();
+  paragraphBreakMove = output<{ fromBlockId: string; toBlockId: string }>();
 
   // Search highlight state
   readonly searchHighlightIds = signal<Set<string>>(new Set());
@@ -2078,6 +2285,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // Selected chapter marker (for deletion)
   readonly selectedChapterId = signal<string | null>(null);
 
+  // Paragraph break drag state
+  private draggingParagraphBreakId: string | null = null;
+  private draggingParagraphBreakPageNum: number = 0;
+  readonly isDraggingParagraphBreak = signal(false);
+  readonly selectedParagraphBreakId = signal<string | null>(null);
+
   // Inline chapter editing state
   readonly editingChapterId = signal<string | null>(null);
   readonly editingChapterTitle = signal<string>('');
@@ -2099,7 +2312,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // Cache blocks grouped by page - computed once when blocks change
   readonly blocksByPage = computed(() => {
     const map = new Map<number, TextBlock[]>();
+    const mergeSourceIds = this.mergeSourceBlockIds();
     for (const block of this.blocks()) {
+      // Skip merge source blocks entirely — they're replaced by merged blocks
+      if (mergeSourceIds.has(block.id)) continue;
       const page = block.page;
       if (!map.has(page)) {
         map.set(page, []);
@@ -2511,6 +2727,229 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     return this.chapters().filter(c => c.page === pageNum);
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Paragraph visualization helpers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Get dashed break lines to render at paragraph boundaries.
+   */
+  getParagraphBreakLinesForPage(pageNum: number): Array<{
+    blockId: string; x1: number; x2: number; y: number;
+  }> {
+    const breaks = this.paragraphBreaks();
+    if (breaks.size === 0) return [];
+
+    const deleted = this.deletedBlockIds();
+    const mergeSourceIds = this.mergeSourceBlockIds();
+    const pageBlocks = this.blocks()
+      .filter(b => b.page === pageNum && !deleted.has(b.id) && !mergeSourceIds.has(b.id) && !b.is_image && b.region === 'body')
+      .sort((a, b) => a.y - b.y);
+
+    const lines: Array<{ blockId: string; x1: number; x2: number; y: number }> = [];
+
+    for (let i = 0; i < pageBlocks.length; i++) {
+      if (!breaks.has(pageBlocks[i].id)) continue;
+      if (i === 0) {
+        // First block on page is a break — show line above it if there are blocks on previous pages
+        const allPrev = this.blocks()
+          .filter(b => !this.deletedBlockIds().has(b.id) && !b.is_image && b.page < pageNum);
+        if (allPrev.length > 0) {
+          const currBlock = pageBlocks[i];
+          const currTop = this.getBlockY(currBlock);
+          const x1 = this.getBlockX(currBlock);
+          const x2 = x1 + this.getBlockWidth(currBlock);
+          lines.push({ blockId: currBlock.id, x1, x2, y: currTop - 3 });
+        }
+      } else {
+        const prevBlock = pageBlocks[i - 1];
+        const currBlock = pageBlocks[i];
+        const prevBottom = this.getBlockY(prevBlock) + this.getBlockHeight(prevBlock);
+        const currTop = this.getBlockY(currBlock);
+        const y = (prevBottom + currTop) / 2;
+        const x1 = Math.min(this.getBlockX(prevBlock), this.getBlockX(currBlock));
+        const x2 = Math.max(
+          this.getBlockX(prevBlock) + this.getBlockWidth(prevBlock),
+          this.getBlockX(currBlock) + this.getBlockWidth(currBlock)
+        );
+        lines.push({ blockId: pageBlocks[i].id, x1, x2, y });
+      }
+    }
+
+    return lines;
+  }
+
+  /**
+   * Get transparent clickable gap areas between consecutive body blocks on a page.
+   * Clicking a gap toggles the paragraph break on the block below.
+   */
+  getParagraphGapsForPage(pageNum: number): Array<{
+    blockBelowId: string; x: number; y: number; width: number; height: number;
+  }> {
+    const deleted = this.deletedBlockIds();
+    const breaks = this.paragraphBreaks();
+    const mergeSourceIds = this.mergeSourceBlockIds();
+    const pageBlocks = this.blocks()
+      .filter(b => b.page === pageNum && !deleted.has(b.id) && !mergeSourceIds.has(b.id) && !b.is_image && b.region === 'body')
+      .sort((a, b) => a.y - b.y);
+
+    const gaps: Array<{ blockBelowId: string; x: number; y: number; width: number; height: number }> = [];
+
+    for (let i = 1; i < pageBlocks.length; i++) {
+      // Only show clickable gaps where there is NOT already a break line (those have their own click)
+      if (breaks.has(pageBlocks[i].id)) continue;
+
+      const prevBlock = pageBlocks[i - 1];
+      const currBlock = pageBlocks[i];
+      const prevBottom = this.getBlockY(prevBlock) + this.getBlockHeight(prevBlock);
+      const currTop = this.getBlockY(currBlock);
+      const gapHeight = currTop - prevBottom;
+
+      // For blocks that overlap or have tiny gaps, create a minimum clickable area
+      const minHeight = 6;
+      const effectiveHeight = Math.max(gapHeight, minHeight);
+      const y = gapHeight >= minHeight ? prevBottom : currTop - minHeight;
+
+      const x = Math.min(this.getBlockX(prevBlock), this.getBlockX(currBlock));
+      const width = Math.max(
+        this.getBlockX(prevBlock) + this.getBlockWidth(prevBlock),
+        this.getBlockX(currBlock) + this.getBlockWidth(currBlock)
+      ) - x;
+      gaps.push({
+        blockBelowId: pageBlocks[i].id,
+        x,
+        y,
+        width,
+        height: effectiveHeight
+      });
+    }
+
+    return gaps;
+  }
+
+  /**
+   * Handle click on a paragraph gap or break line — toggle the break.
+   */
+  onParagraphGapClick(event: MouseEvent, blockId: string): void {
+    event.stopPropagation();
+    event.preventDefault();
+    this.paragraphBreakToggle.emit(blockId);
+  }
+
+  /**
+   * Handle click on paragraph break remove button (X).
+   */
+  onParagraphBreakRemoveClick(event: MouseEvent, blockId: string): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.paragraphBreakDelete.emit(blockId);
+    if (this.selectedParagraphBreakId() === blockId) {
+      this.selectedParagraphBreakId.set(null);
+    }
+  }
+
+  /**
+   * Handle mousedown on a paragraph break marker — start drag or select.
+   */
+  onParagraphMarkerMouseDown(event: MouseEvent, blockId: string, pageNum: number): void {
+    if (!this.paragraphMode()) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    this.selectedParagraphBreakId.set(blockId);
+    this.draggingParagraphBreakId = blockId;
+    this.draggingParagraphBreakPageNum = pageNum;
+
+    let hasMoved = false;
+    const startX = event.clientX;
+    const startY = event.clientY;
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!hasMoved && (Math.abs(e.clientX - startX) > 5 || Math.abs(e.clientY - startY) > 5)) {
+        hasMoved = true;
+        this.isDraggingParagraphBreak.set(true);
+      }
+    };
+
+    const onMouseUp = (e: MouseEvent) => {
+      if (hasMoved) {
+        this.onParagraphMarkerDragEnd(e);
+      }
+      this.isDraggingParagraphBreak.set(false);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }
+
+  /**
+   * Finalize paragraph break drag — find the nearest block gap and move the break.
+   */
+  private onParagraphMarkerDragEnd(event: MouseEvent): void {
+    if (!this.isDraggingParagraphBreak() || !this.draggingParagraphBreakId) {
+      this.isDraggingParagraphBreak.set(false);
+      return;
+    }
+
+    const fromBlockId = this.draggingParagraphBreakId;
+    const pageNum = this.draggingParagraphBreakPageNum;
+    const pageWrapper = document.querySelector(`[data-page="${pageNum}"]`);
+
+    if (pageWrapper) {
+      const svg = pageWrapper.querySelector('.block-overlay') as SVGSVGElement;
+      if (svg) {
+        const pt = svg.createSVGPoint();
+        pt.x = event.clientX;
+        pt.y = event.clientY;
+        const ctm = svg.getScreenCTM();
+        if (ctm) {
+          const svgP = pt.matrixTransform(ctm.inverse());
+          const toBlock = this.findNearestTextBlock(pageNum, svgP.y);
+          if (toBlock && toBlock.id !== fromBlockId) {
+            this.paragraphBreakMove.emit({ fromBlockId, toBlockId: toBlock.id });
+          }
+        }
+      }
+    }
+
+    this.draggingParagraphBreakId = null;
+    this.isDraggingParagraphBreak.set(false);
+  }
+
+  /**
+   * Find the nearest text block to a Y position on a page (for paragraph break snap).
+   * Returns the block that the break should be placed above (i.e. the block below the gap).
+   * Works with all block types, not restricted to body-only.
+   */
+  private findNearestTextBlock(pageNum: number, clickY: number): TextBlock | null {
+    const deleted = this.deletedBlockIds();
+    const pageBlocks = this.blocks()
+      .filter(b => b.page === pageNum && !deleted.has(b.id) && !b.is_image)
+      .sort((a, b) => a.y - b.y);
+
+    if (pageBlocks.length < 2) return null;
+
+    // Find which gap the click is closest to, then return the block below that gap
+    let bestBlock: TextBlock | null = null;
+    let bestDist = Infinity;
+
+    for (let i = 1; i < pageBlocks.length; i++) {
+      const prevBottom = pageBlocks[i - 1].y + pageBlocks[i - 1].height;
+      const currTop = pageBlocks[i].y;
+      const gapCenter = (prevBottom + currTop) / 2;
+      const dist = Math.abs(clickY - gapCenter);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestBlock = pageBlocks[i];
+      }
+    }
+
+    return bestBlock;
+  }
+
   /**
    * Get chapter label width (max 200px)
    */
@@ -2564,6 +3003,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   shouldHideDeletedBlock(block: TextBlock): boolean {
     // Only consider hiding if block is actually deleted
     if (!this.isDeleted(block.id)) return false;
+
+    // Hide split originals entirely (replaced by child blocks, no X needed)
+    if (this.splitOriginalBlockIds().has(block.id)) return true;
+
+    // Hide merge source blocks entirely (replaced by merged block, no X needed)
+    if (this.mergeSourceBlockIds().has(block.id)) return true;
 
     // Hide full-page image blocks (background scans) - don't show giant X across page
     if (block.is_image) {
@@ -3057,12 +3502,13 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
    * Returns blocks sorted by area (smallest first) so more specific blocks are selected first.
    */
   private findBlocksAtPosition(x: number, y: number, pageNum: number): TextBlock[] {
-    const allBlocks = this.blocks();
-    const pageBlocks = allBlocks.filter(b => b.page === pageNum);
+    const pageBlocks = this.getPageBlocks(pageNum);
+    const deleted = this.deletedBlockIds();
 
-    // Find blocks that contain the click point (exclude background images)
+    // Find blocks that contain the click point (exclude background images and deleted blocks)
     const containingBlocks = pageBlocks.filter(block => {
       if (this.isBackgroundImage(block)) return false;
+      if (deleted.has(block.id)) return false;
 
       const bx = this.getBlockX(block);
       const by = this.getBlockY(block);
@@ -3444,6 +3890,32 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       this.revertBlock.emit(block.id);
       this.closeAllContextMenus();
     }
+  }
+
+  onSplitBlock(): void {
+    const block = this.contextMenuBlock();
+    if (block) {
+      this.splitBlock.emit(block);
+      this.closeAllContextMenus();
+    }
+  }
+
+  onSetCategory(categoryId: string): void {
+    const block = this.contextMenuBlock();
+    if (!block) return;
+
+    // If the right-clicked block is part of a multi-selection, apply to all selected
+    const selected = this.selectedBlockIds();
+    if (selected.length > 1 && selected.includes(block.id)) {
+      this.setBlockCategory.emit({ blockIds: [...selected], categoryId });
+    } else {
+      this.setBlockCategory.emit({ blockIds: [block.id], categoryId });
+    }
+    this.closeAllContextMenus();
+  }
+
+  hasCategoryCorrection(blockId: string): boolean {
+    return this.categoryCorrections().has(blockId);
   }
 
   // Grid scroll/viewport state for on-demand rendering

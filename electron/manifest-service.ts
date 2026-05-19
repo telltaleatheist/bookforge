@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { normalizeFsPath } from './path-utils';
+import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import type {
   ProjectManifest,
   ProjectType,
@@ -598,6 +598,45 @@ export function projectExists(projectId: string): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 // Utilities
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Rename a project folder to a new slug derived from metadata.
+ * If the target already exists, appends a timestamp for uniqueness.
+ * Returns the new absolute path of the project folder.
+ */
+export async function renameProjectFolder(
+  currentPath: string,
+  newSlug: string
+): Promise<string> {
+  const projectsDir = path.dirname(currentPath);
+  let targetPath = path.join(projectsDir, newSlug);
+
+  // If target already exists and isn't the same folder, append timestamp
+  if (fs.existsSync(targetPath) && targetPath !== currentPath) {
+    const timestamp = Date.now();
+    targetPath = path.join(projectsDir, `${newSlug}_${timestamp}`);
+  }
+
+  // No-op if path didn't change
+  if (targetPath === currentPath) {
+    return currentPath;
+  }
+
+  await fs.promises.rename(currentPath, targetPath);
+  console.log(`[ManifestService] Renamed project folder: ${path.basename(currentPath)} → ${path.basename(targetPath)}`);
+  return targetPath;
+}
+
+/**
+ * Compute a project folder slug from metadata fields.
+ * Format: Title_-_Author_(Year), truncated to 150 chars.
+ */
+export function computeProjectSlug(title: string, author: string, year?: string): string {
+  const cleanTitle = toAsciiSlug(title.replace(/\s+/g, '_'));
+  const cleanAuthor = toAsciiSlug(author.replace(/\s+/g, '_'));
+  const yearStr = year ? `_(${year})` : '';
+  return toAsciiSlug(`${cleanTitle}_-_${cleanAuthor}${yearStr}`).substring(0, 150);
+}
 
 /**
  * Clean up old temp files in staging directory

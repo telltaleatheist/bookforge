@@ -856,6 +856,7 @@ export interface ElectronAPI {
     findMatchingSpans: (pattern: SamplePattern) => Promise<{ success: boolean; data?: MatchingSpansResult; error?: string }>;
     findSpansByRegex: (pattern: string, minFontSize: number, maxFontSize: number, minBaseline?: number | null, maxBaseline?: number | null, caseSensitive?: boolean) => Promise<{ success: boolean; data?: MatchingSpansResult; error?: string }>;
     getSpans: () => Promise<{ success: boolean; data?: TextSpan[]; error?: string }>;
+    getSpansForBlock: (blockId: string) => Promise<{ success: boolean; data?: TextSpan[]; error?: string }>;
     updateSpansForOcr: (pageNum: number, ocrBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; id?: string }>) => Promise<{ success: boolean; error?: string }>;
     // Chapter detection
     extractOutline: () => Promise<{ success: boolean; data?: OutlineItem[]; error?: string }>;
@@ -2133,6 +2134,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:find-spans-by-regex', pattern, minFontSize, maxFontSize, minBaseline, maxBaseline, caseSensitive),
     getSpans: () =>
       ipcRenderer.invoke('pdf:get-spans'),
+    getSpansForBlock: (blockId: string) =>
+      ipcRenderer.invoke('pdf:get-spans-for-block', blockId),
     updateSpansForOcr: (pageNum: number, ocrBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; font_size: number; id?: string }>) =>
       ipcRenderer.invoke('pdf:update-spans-for-ocr', pageNum, ocrBlocks),
     // Chapter detection
