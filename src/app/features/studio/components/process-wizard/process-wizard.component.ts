@@ -462,6 +462,19 @@ interface AvailableEpub {
                   }
                 </div>
 
+                <!-- Custom Instructions -->
+                <div class="config-section">
+                  <label class="field-label">Custom Instructions</label>
+                  <textarea
+                    class="custom-instructions"
+                    [value]="translateCustomInstructions()"
+                    (input)="translateCustomInstructions.set($any($event.target).value)"
+                    placeholder="Optional: Add specific instructions for the AI (e.g., 'If you encounter English text, return it unchanged')"
+                    rows="3"
+                  ></textarea>
+                  <span class="hint">Appended to the translation prompt for each batch</span>
+                </div>
+
                 <div class="translation-note">
                   Translation will create a new EPUB with English text, which will then be used for TTS.
                 </div>
@@ -2331,6 +2344,7 @@ export class ProcessWizardComponent implements OnInit {
   readonly textContent = input<string>('');  // Plain text content for article cleanup
   readonly coverPath = input<string>('');  // Cover image path from BFP metadata
   readonly year = input<string>('');  // Publication year from BFP metadata
+  readonly contributors = input<Array<{ first: string; last: string }> | undefined>(undefined);
   readonly cachedSession = input<any>(null);  // Cached TTS session for reassembly
   // Book-specific inputs for bilingual cache
 
@@ -2380,6 +2394,7 @@ export class ProcessWizardComponent implements OnInit {
   readonly translateTargetLang = signal('en');  // Target language (usually English)
   readonly translateProvider = signal<AIProvider>('ollama');
   readonly translateModel = signal<string>('');
+  readonly translateCustomInstructions = signal('');
 
   // TTS config
   ttsDevice: 'gpu' | 'mps' | 'cpu' = 'cpu';
@@ -2422,6 +2437,7 @@ export class ProcessWizardComponent implements OnInit {
     { code: 'de', name: 'German' },
     { code: 'fr', name: 'French' },
     { code: 'es', name: 'Spanish' },
+    { code: 'hu', name: 'Hungarian' },
     { code: 'it', name: 'Italian' },
     { code: 'pt', name: 'Portuguese' },
     { code: 'nl', name: 'Dutch' },
@@ -3536,6 +3552,7 @@ export class ProcessWizardComponent implements OnInit {
             claudeApiKey: aiConfig.claude?.apiKey,
             openaiApiKey: aiConfig.openai?.apiKey,
             monoTranslation: true,  // Flag to indicate full book translation (not bilingual interleave)
+            customInstructions: this.translateCustomInstructions() || undefined,
           },
           workflowId,
           parentJobId: masterJobId,
@@ -3570,7 +3587,7 @@ export class ProcessWizardComponent implements OnInit {
               author: this.author(),
               year: this.year() || undefined,
               coverPath: this.coverPath() || undefined,
-              outputFilename: `${this.title() || 'audiobook'}.m4b`,
+              outputFilename: this.generateOutputFilename(),
             },
             config: {
               type: 'tts-conversion',
@@ -3631,7 +3648,7 @@ export class ProcessWizardComponent implements OnInit {
               author: this.author(),
               year: this.year() || undefined,
               coverPath: this.coverPath() || undefined,
-              outputFilename: `${this.title() || 'audiobook'}.m4b`,
+              outputFilename: this.generateOutputFilename(),
             },
             config: ttsConfig,
             workflowId,
@@ -3660,7 +3677,7 @@ export class ProcessWizardComponent implements OnInit {
                 author: this.author() || '',
                 coverPath: this.coverPath() || undefined,
                 year: this.year() || undefined,
-                outputFilename: `${this.title() || 'audiobook'}.m4b`,
+                outputFilename: this.generateOutputFilename(),
               },
               excludedChapters: [],
             },
@@ -3689,7 +3706,7 @@ export class ProcessWizardComponent implements OnInit {
               author: this.author() || session.metadata?.author || '',
               year: this.year() || session.metadata?.year,
               coverPath: this.coverPath() || session.metadata?.coverPath,
-              outputFilename: `${this.title() || 'audiobook'}.m4b`,
+              outputFilename: this.generateOutputFilename(),
             },
             excludedChapters: [],
           };
@@ -3790,6 +3807,40 @@ export class ProcessWizardComponent implements OnInit {
   /**
    * Derive output folder from project directory path.
    */
+  /**
+   * Generate output filename in "Title. LastName, FirstName.m4b" format.
+   */
+  private generateOutputFilename(): string {
+    const title = this.title() || 'Audiobook';
+    let filename = title + '.';
+
+    const contribs = this.contributors();
+    if (contribs && contribs.length > 0) {
+      const c = contribs[0];
+      if (c.last && c.first) {
+        filename += ` ${c.last}, ${c.first}.`;
+      } else if (c.last || c.first) {
+        filename += ` ${c.last || c.first}.`;
+      }
+    } else {
+      const author = this.author();
+      if (author) {
+        const parts = author.trim().split(/\s+/);
+        if (parts.length >= 2) {
+          const last = parts.pop()!;
+          filename += ` ${last}, ${parts.join(' ')}.`;
+        } else {
+          filename += ` ${author}.`;
+        }
+      }
+    }
+
+    // Clean up double dots and append extension
+    filename = filename.replace(/\.\s*\./g, '.');
+    filename += 'm4b';
+    return filename;
+  }
+
   private getAudiobookDirFromBfp(bfpPath: string): string {
     return `${bfpPath.replace(/\\/g, '/')}/output`;
   }

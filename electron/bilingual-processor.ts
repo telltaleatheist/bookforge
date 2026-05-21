@@ -58,6 +58,7 @@ export interface BilingualProcessingConfig {
   cleanupPrompt?: string;
   // Translation settings
   translationPrompt?: string;
+  customInstructions?: string;    // Additional instructions appended to the translation prompt
   batchSize?: number;  // Number of sentences per batch (default: 8)
   // Test mode - limit chunks for faster testing
   testMode?: boolean;
@@ -87,6 +88,7 @@ export const LANGUAGE_NAMES: Record<string, string> = {
   'de': 'German',
   'es': 'Spanish',
   'fr': 'French',
+  'hu': 'Hungarian',
   'it': 'Italian',
   'pt': 'Portuguese',
   'nl': 'Dutch',
@@ -630,6 +632,43 @@ export function splitIntoSentences(
   return allSegments;
 }
 
+/**
+ * Split text into sentences and track which indices start a new paragraph.
+ * Returns { sentences, paragraphBreaks } where paragraphBreaks contains the
+ * indices of sentences that begin a new paragraph.
+ */
+export function splitIntoSentencesWithBreaks(
+  text: string,
+  locale: string = 'en',
+  granularity: SplitGranularity = 'sentence'
+): { sentences: string[]; paragraphBreaks: number[] } {
+  const normalizedText = normalizeAbbreviations(text);
+  const paragraphs = normalizedText.split(/\n\n+/);
+  const sentences: string[] = [];
+  const paragraphBreaks: number[] = [];
+
+  for (const paragraph of paragraphs) {
+    const trimmed = paragraph.trim();
+    if (!trimmed) continue;
+
+    // Mark the start of each paragraph
+    paragraphBreaks.push(sentences.length);
+
+    if (granularity === 'paragraph') {
+      sentences.push(trimmed);
+    } else {
+      const segmenter = new Intl.Segmenter(locale, { granularity: 'sentence' });
+      const segments = [...segmenter.segment(trimmed)]
+        .map(s => s.segment.trim())
+        .filter(s => s.length > 0)
+        .filter(s => s.length > 3 || /^[A-Z]/.test(s));
+      sentences.push(...segments);
+    }
+  }
+
+  return { sentences, paragraphBreaks };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 3: Batched Translation
 // ─────────────────────────────────────────────────────────────────────────────
@@ -642,7 +681,8 @@ function buildBatchTranslationPrompt(
   sourceLang: string,
   targetLang: string,
   contextSentences: string[],
-  customPrompt?: string
+  customPrompt?: string,
+  customInstructions?: string
 ): string {
   const sourceLanguage = LANGUAGE_NAMES[sourceLang] || sourceLang;
   const targetLanguage = LANGUAGE_NAMES[targetLang] || targetLang;
@@ -653,12 +693,16 @@ function buildBatchTranslationPrompt(
 
   if (customPrompt) {
     // Custom prompt - replace placeholders
-    return customPrompt
+    let result = customPrompt
       .replace(/{sourceLang}/g, sourceLanguage)
       .replace(/{targetLang}/g, targetLanguage)
       .replace(/{count}/g, String(count))
       .replace(/{sentences}/g, numberedSentences)
       .replace(/{context}/g, contextSentences.join(' '));
+    if (customInstructions) {
+      result += `\n\nADDITIONAL INSTRUCTIONS:\n${customInstructions}`;
+    }
+    return result;
   }
 
   // Default batch translation prompt
@@ -672,6 +716,13 @@ Do NOT include numbers, explanations, or original text - only the translations.
   if (contextSentences.length > 0) {
     prompt += `Context (previous sentences, for reference only - do NOT translate):
 ${contextSentences.join(' ')}
+
+`;
+  }
+
+  if (customInstructions) {
+    prompt += `ADDITIONAL INSTRUCTIONS:
+${customInstructions}
 
 `;
   }
@@ -727,10 +778,14 @@ async function translateSingleSentence(
   const sourceLanguage = LANGUAGE_NAMES[config.sourceLang] || config.sourceLang;
   const targetLanguage = LANGUAGE_NAMES[config.targetLang] || config.targetLang;
 
-  const prompt = `Translate the following sentence from ${sourceLanguage} to ${targetLanguage}.
-Return ONLY the translation, nothing else.
+  let prompt = `Translate the following sentence from ${sourceLanguage} to ${targetLanguage}.
+Return ONLY the translation, nothing else.`;
 
-${contextSentences.length > 0 ? `Context: ${contextSentences.slice(-2).join(' ')}\n\n` : ''}Sentence: ${sentence}
+  if (config.customInstructions) {
+    prompt += `\n\nADDITIONAL INSTRUCTIONS:\n${config.customInstructions}`;
+  }
+
+  prompt += `\n\n${contextSentences.length > 0 ? `Context: ${contextSentences.slice(-2).join(' ')}\n\n` : ''}Sentence: ${sentence}
 
 Translation:`;
 
@@ -755,7 +810,8 @@ async function translateBatch(
     config.sourceLang,
     config.targetLang,
     contextSentences,
-    config.translationPrompt
+    config.translationPrompt,
+    config.customInstructions
   );
 
   const response = await callAI(prompt, config);
@@ -977,6 +1033,8 @@ export async function generateMonolingualEpub(
 export interface ChapterSentences {
   title: string;
   sentences: string[];
+  /** Indices of sentences that start a new paragraph. If absent, one <p> per sentence. */
+  paragraphBreaks?: number[];
 }
 
 /**
@@ -1028,12 +1086,37 @@ export async function generateChapteredEpub(
       <content src="${chapterFile}"/>
     </navPoint>`);
 
-      // Generate chapter HTML - one paragraph per sentence with global index
-      const sentencesHtml = chapter.sentences.map((sentence) => {
-        const html = `<p id="s${globalSentenceIndex}">${escapeHtml(sentence)}</p>`;
-        globalSentenceIndex++;
-        return html;
-      }).join('\n');
+      // Safety net: filter out any skip markers that slipped through
+      // These should have been replaced upstream, but defend against it here
+      const SKIP_MARKERS = ['[SKIP]', '[NO READABLE TEXT]', '[NOTHING TO CLEAN]'];
+      const isSkipMarker = (s: string) => SKIP_MARKERS.some(m => s.trim() === m || s.trim().startsWith(m));
+      chapter.sentences = chapter.sentences.filter(s => !isSkipMarker(s));
+
+      // Generate chapter HTML
+      let sentencesHtml: string;
+      const breaks = chapter.paragraphBreaks;
+      if (breaks && breaks.length > 0) {
+        // Paragraph-aware mode: group sentences into <p> tags, use <span> for sentence IDs
+        const paragraphHtmls: string[] = [];
+        for (let pIdx = 0; pIdx < breaks.length; pIdx++) {
+          const start = breaks[pIdx];
+          const end = pIdx + 1 < breaks.length ? breaks[pIdx + 1] : chapter.sentences.length;
+          const spans = chapter.sentences.slice(start, end).map((sentence) => {
+            const span = `<span id="s${globalSentenceIndex}">${escapeHtml(sentence)}</span>`;
+            globalSentenceIndex++;
+            return span;
+          });
+          paragraphHtmls.push(`<p>${spans.join(' ')}</p>`);
+        }
+        sentencesHtml = paragraphHtmls.join('\n');
+      } else {
+        // Legacy mode: one <p> per sentence
+        sentencesHtml = chapter.sentences.map((sentence) => {
+          const html = `<p id="s${globalSentenceIndex}">${escapeHtml(sentence)}</p>`;
+          globalSentenceIndex++;
+          return html;
+        }).join('\n');
+      }
 
       const headingHtml = options?.flattenHeadings ? '' : `\n  <h1>${escapeHtml(chapter.title)}</h1>`;
       const chapterHtml = `<?xml version="1.0" encoding="UTF-8"?>

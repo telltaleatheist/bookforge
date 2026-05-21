@@ -2831,6 +2831,14 @@ export function replaceBlockTexts(xhtml: string, cleanedTexts: string[], options
         return; // Leave h1 unchanged
       }
       if (textIndex < cleanedTexts.length) {
+        // Skip markers mean "keep the original" — leave element unchanged
+        const SKIP_MARKERS = ['[SKIP]', '[NO READABLE TEXT]', '[NOTHING TO CLEAN]'];
+        const trimmedCandidate = cleanedTexts[textIndex].trim();
+        if (SKIP_MARKERS.some(m => trimmedCandidate === m || trimmedCandidate.startsWith(m))) {
+          textIndex++;
+          return; // Keep original element text unchanged
+        }
+
         // Sanitize: strip any [[BLOCK]] markers that might have slipped into the text
         // These are internal processing markers and should NEVER appear in final output
         let cleanedText = cleanedTexts[textIndex].replace(/\[\[BLOCK\]\]/g, '');

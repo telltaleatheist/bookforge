@@ -653,7 +653,6 @@ interface AlertModal {
             [analysisFlags]="analysisFlags()"
             [analysisCategories]="analysisCategories()"
             (mergeBlocks)="mergeAdjacentBlocks()"
-            (redetect)="redetectCategories()"
             (clearCorrections)="clearCategoryCorrections()"
             (thresholdChange)="onThresholdChange($event)"
             (recategorize)="recategorizeBlocks()"
@@ -2522,7 +2521,10 @@ export class PdfPickerComponent implements OnInit {
   // Crop, Split, and OCR only work on PDFs, not EPUBs
   isModeDisabledForDocType(modeId: string): boolean {
     const pdfOnlyModes = ['crop', 'split', 'ocr'];
-    return this.isCurrentDocumentEpub() && pdfOnlyModes.includes(modeId);
+    if (this.isCurrentDocumentEpub() && pdfOnlyModes.includes(modeId)) return true;
+    // Paragraph mode disabled during EPUB review step
+    if (this.pipelineStep() === 'epub-review' && modeId === 'paragraph') return true;
+    return false;
   }
 
   // Get tooltip message for a mode (includes reason if disabled)
@@ -2948,6 +2950,10 @@ export class PdfPickerComponent implements OnInit {
   readonly loading = signal(false);
   readonly loadingText = signal('Loading...');
   readonly lightweightMode = signal(false);  // Process without rendering pages
+
+  // Pipeline state (embedded mode: Select → Chapters → EPUB Review)
+  readonly pipelineStep = signal<'select' | 'chapters' | 'epub-review'>('select');
+  private pipelineTransitioning = false; // guard to prevent reset during transitions
 
   // Search state
   readonly showSearch = signal(false);
@@ -3680,16 +3686,13 @@ export class PdfPickerComponent implements OnInit {
       const inFixMode = this.paragraphFixMode();
 
       // In paragraph fix mode, show "Done" instead of normal save/export
-      // In embedded mode, show both Save and Export; standalone shows only Export
+      // In embedded mode, show pipeline Back/Next/Complete + Export; standalone shows only Export
       const actionItems: ToolbarItem[] = inFixMode
         ? [
             { id: 'finishParagraphFix', type: 'button', icon: '✓', label: 'Done', tooltip: 'Save paragraph corrections and finish' },
           ]
         : isEmbedded
-        ? [
-            { id: 'finalize', type: 'button', icon: '✓', label: 'Save', tooltip: 'Save changes to EPUB' },
-            { id: 'export', type: 'button', icon: '📤', label: 'Export', tooltip: 'Export document (Cmd+E)' },
-          ]
+        ? this.getPipelineToolbarItems()
         : [
             { id: 'export', type: 'button', icon: '📤', label: 'Export', tooltip: 'Export document (Cmd+E)' },
           ];
@@ -3732,6 +3735,65 @@ export class PdfPickerComponent implements OnInit {
       { id: 'spacer', type: 'spacer' }
     ];
   });
+
+  /** Build toolbar items for the editing pipeline (embedded mode). */
+  private getPipelineToolbarItems(): ToolbarItem[] {
+    const step = this.pipelineStep();
+    const items: ToolbarItem[] = [];
+
+    // Back button
+    items.push({
+      id: 'pipeline-back',
+      type: 'button',
+      icon: '←',
+      label: 'Back',
+      tooltip: 'Go to previous step',
+      disabled: step === 'select'
+    });
+
+    // Step label (disabled button for display)
+    const stepLabels: Record<string, string> = {
+      'select': '1/3 Select',
+      'chapters': '2/3 Chapters',
+      'epub-review': '3/3 Review'
+    };
+    items.push({
+      id: 'pipeline-step-label',
+      type: 'button',
+      label: stepLabels[step],
+      disabled: true
+    });
+
+    // Next or Complete button
+    if (step === 'epub-review') {
+      items.push({
+        id: 'pipeline-complete',
+        type: 'button',
+        icon: '✓',
+        label: 'Complete',
+        tooltip: 'Save EPUB and finish editing'
+      });
+    } else {
+      items.push({
+        id: 'pipeline-next',
+        type: 'button',
+        icon: '→',
+        label: 'Next',
+        tooltip: 'Go to next step'
+      });
+    }
+
+    // Export always available
+    items.push({
+      id: 'export',
+      type: 'button',
+      icon: '📤',
+      label: 'Export',
+      tooltip: 'Export document (Cmd+E)'
+    });
+
+    return items;
+  }
 
   // Computed values
   readonly visibleBlocks = computed(() => {
@@ -3858,6 +3920,15 @@ export class PdfPickerComponent implements OnInit {
         } else {
           this.finalizeProject();
         }
+        break;
+      case 'pipeline-back':
+        this.pipelineBack();
+        break;
+      case 'pipeline-next':
+        this.pipelineNext();
+        break;
+      case 'pipeline-complete':
+        this.pipelineComplete();
         break;
       case 'search':
         this.toggleSearch();
@@ -4506,6 +4577,9 @@ export class PdfPickerComponent implements OnInit {
 
   async loadPdf(path: string, lightweight: boolean = false): Promise<void> {
     this.showFilePicker.set(false);
+    if (!this.pipelineTransitioning) {
+      this.pipelineStep.set('select');
+    }
 
     const lowerPath = path.toLowerCase();
     let effectivePath = path;
@@ -5258,73 +5332,6 @@ export class PdfPickerComponent implements OnInit {
         event.blockIds.map(id => ({ blockId: id, categoryId: event.categoryId }))
       );
     }
-  }
-
-  redetectCategories(): void {
-    const corrections = this.editorState.categoryCorrections();
-    if (corrections.size === 0) return;
-
-    const blocks = this.blocks();
-    const pageDimensions = this.pageDimensions();
-    const deletedBlockIds = this.deletedBlockIds();
-
-    let newAssignments: Map<string, string>;
-    try {
-      newAssignments = redetectCategoriesFromLearner(blocks, corrections, pageDimensions, deletedBlockIds);
-    } catch (err) {
-      console.error('[redetectCategories] Learner threw:', err);
-      return;
-    }
-
-    // Ensure all assigned categories exist
-    const cats = this.categories();
-    const catList = this.autoDetectedCategoryList();
-    for (const categoryId of new Set(newAssignments.values())) {
-      if (!cats[categoryId]) {
-        const catInfo = catList.find(c => c.id === categoryId);
-        if (catInfo) {
-          this.editorState.addCategory({
-            id: catInfo.id,
-            name: catInfo.name,
-            description: '',
-            color: catInfo.color,
-            block_count: 0,
-            char_count: 0,
-            font_size: 0,
-            region: 'body',
-            sample_text: '',
-            enabled: true,
-          });
-        }
-      }
-    }
-
-    // Apply new category assignments to all blocks
-    let changedCount = 0;
-    const learned = new Map<string, string>();
-    this.editorState.blocks.update(currentBlocks =>
-      currentBlocks.map(b => {
-        const newCatId = newAssignments.get(b.id);
-        if (newCatId && newCatId !== b.category_id) {
-          changedCount++;
-          // Don't store explicit user corrections again — they're already in categoryCorrections
-          if (!corrections.has(b.id)) {
-            learned.set(b.id, newCatId);
-          }
-          return { ...b, category_id: newCatId };
-        }
-        return b;
-      })
-    );
-
-    // Store learned assignments separately (no outline, but persisted)
-    this.editorState.learnedCategories.set(learned);
-
-    console.log(`[redetectCategories] ${corrections.size} user corrections, ${learned.size} learned, ${changedCount} blocks changed out of ${blocks.length}`);
-
-    // Recalculate category stats
-    this.editorState.updateCategoryStats();
-    this.editorState.markChanged();
   }
 
   clearCategoryCorrections(): void {
@@ -6881,6 +6888,213 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Pipeline Navigation (Select → Chapters → EPUB Review)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Advance to the next pipeline step. */
+  private pipelineNext(): void {
+    const step = this.pipelineStep();
+
+    if (step === 'select') {
+      // Check for unmerged blocks before moving to chapters
+      const groups = detectMergeableGroups(this.blocks(), this.deletedBlockIds());
+      if (groups.length > 0) {
+        this.showAlert({
+          title: 'Unmerged Blocks Detected',
+          message: `There are ${groups.length} groups of blocks that could be merged. Merge them before continuing?`,
+          type: 'warning',
+          confirmText: 'Merge All',
+          cancelText: 'Skip',
+          onConfirm: () => {
+            this.mergeAdjacentBlocks();
+            this.setMode('chapters');
+            this.pipelineStep.set('chapters');
+          },
+          onCancel: () => {
+            this.setMode('chapters');
+            this.pipelineStep.set('chapters');
+          }
+        });
+      } else {
+        this.setMode('chapters');
+        this.pipelineStep.set('chapters');
+      }
+    } else if (step === 'chapters') {
+      this.pipelineExportAndReview();
+    }
+  }
+
+  /** Go back to the previous pipeline step. */
+  private pipelineBack(): void {
+    const step = this.pipelineStep();
+
+    if (step === 'chapters') {
+      this.setMode('select');
+      this.pipelineStep.set('select');
+    } else if (step === 'epub-review') {
+      this.pipelineBackFromReview();
+    }
+  }
+
+  /** Export EPUB and transition to review step. */
+  private async pipelineExportAndReview(): Promise<void> {
+    const projectPath = this.projectPath();
+    if (!projectPath) {
+      this.showAlert({
+        title: 'Export Failed',
+        message: 'No project path available. Please save the project first.',
+        type: 'error'
+      });
+      return;
+    }
+
+    this.loading.set(true);
+    this.loadingText.set('Exporting EPUB...');
+
+    try {
+      // Save project state first
+      await this.saveProjectToPath(projectPath, true);
+
+      // Pipeline always exports to exported.epub (the canonical finalized location)
+      const pBreaks = this.editorState.paragraphBreaks();
+      const result = await this.exportService.exportToAudiobook(
+        this.getExportableBlocks(),
+        this.deletedBlockIds(),
+        this.chapters(),
+        this.pdfName(),
+        projectPath,
+        this.editorState.textCorrections(),
+        this.deletedPages(),
+        this.getDeletedHighlights(),
+        this.metadata(),
+        false,
+        undefined,
+        undefined, // No savePath override — always creates exported.epub
+        pBreaks.size > 0 ? pBreaks : undefined
+      );
+
+      if (!result.success) {
+        this.showAlert({
+          title: 'Export Failed',
+          message: result.message || 'Failed to export EPUB',
+          type: 'error'
+        });
+        return;
+      }
+
+      const epubPath = `${projectPath}/source/exported.epub`;
+
+      // Remove current document from open tabs so loadPdf won't hit duplicate check
+      const currentDocId = this.activeDocumentId();
+      if (currentDocId) {
+        this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
+      }
+
+      // Close PDF and load the exported EPUB
+      this.pipelineTransitioning = true;
+      this.closePdf();
+      await this.loadPdf(epubPath);
+      this.setMode('select');
+      this.pipelineStep.set('epub-review');
+      this.pipelineTransitioning = false;
+    } catch (error) {
+      this.pipelineTransitioning = false;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.showAlert({
+        title: 'Export Failed',
+        message: errorMessage,
+        type: 'error'
+      });
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  /** Navigate back from EPUB review to chapters mode by reloading the PDF project. */
+  private async pipelineBackFromReview(): Promise<void> {
+    const bfp = this.bfpPath();
+    if (!bfp) return;
+
+    this.loading.set(true);
+    this.loadingText.set('Reloading project...');
+
+    try {
+      // Remove current document from open tabs so loadProjectFromPath won't hit duplicate check
+      const currentDocId = this.activeDocumentId();
+      if (currentDocId) {
+        this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
+      }
+
+      this.pipelineTransitioning = true;
+      this.closePdf();
+      await this.loadProjectFromPath(bfp);
+      this.setMode('chapters');
+      this.pipelineStep.set('chapters');
+      this.pipelineTransitioning = false;
+    } catch (error) {
+      this.pipelineTransitioning = false;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.showAlert({
+        title: 'Load Failed',
+        message: errorMessage,
+        type: 'error'
+      });
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  /** Complete the pipeline: save EPUB changes and emit finalized event. */
+  private async pipelineComplete(): Promise<void> {
+    const epubPath = this.effectivePath();
+    if (!epubPath) return;
+
+    this.loading.set(true);
+    this.loadingText.set('Saving...');
+
+    try {
+      const pBreaks = this.editorState.paragraphBreaks();
+      const result = await this.exportService.saveToEpub(
+        this.blocks(),
+        this.deletedBlockIds(),
+        this.chapters(),
+        this.pdfName(),
+        epubPath,
+        this.editorState.textCorrections(),
+        this.deletedPages(),
+        this.getDeletedHighlights(),
+        this.metadata(),
+        pBreaks.size > 0 ? pBreaks : undefined
+      );
+
+      if (result.success) {
+        this.pipelineStep.set('select');
+        this.finalized.emit({ success: true, epubPath });
+        this.showAlert({
+          title: 'Complete',
+          message: 'EPUB saved successfully.',
+          type: 'success'
+        });
+      } else {
+        this.showAlert({
+          title: 'Save Failed',
+          message: result.message || 'Failed to save EPUB',
+          type: 'error'
+        });
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.showAlert({
+        title: 'Save Failed',
+        message: errorMessage,
+        type: 'error'
+      });
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
   /**
    * Save changes back to the source EPUB file.
    * Used when editing an EPUB directly (not via BFP project).
@@ -7974,6 +8188,9 @@ export class PdfPickerComponent implements OnInit {
   async loadProjectFromPath(filePath: string, lightweight: boolean = false): Promise<void> {
     // Clear sourceFilePath when loading via BFP - we want finalize to use the BFP export flow
     this.sourceFilePath.set(null);
+    if (!this.pipelineTransitioning) {
+      this.pipelineStep.set('select');
+    }
 
     // Check if this project is already open
     const existingDoc = this.openDocuments().find(d => d.projectPath === filePath);

@@ -277,6 +277,7 @@ export interface BilingualTranslationJobConfig {
   claudeApiKey?: string;
   openaiApiKey?: string;
   translationPrompt?: string;  // Custom translation prompt template
+  customInstructions?: string;  // Additional instructions appended to the translation prompt
 
   // Alignment verification
   autoApproveAlignment?: boolean;  // Skip preview if sentence counts match (default: true)

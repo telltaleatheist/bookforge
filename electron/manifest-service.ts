@@ -623,7 +623,25 @@ export async function renameProjectFolder(
   }
 
   await fs.promises.rename(currentPath, targetPath);
-  console.log(`[ManifestService] Renamed project folder: ${path.basename(currentPath)} → ${path.basename(targetPath)}`);
+  const newProjectId = path.basename(targetPath);
+  console.log(`[ManifestService] Renamed project folder: ${path.basename(currentPath)} → ${newProjectId}`);
+
+  // Update projectId inside manifest.json to match the new folder name.
+  // Without this, all subsequent saves via modifyManifest(projectId) would
+  // write to a ghost folder at the old path instead of the renamed one.
+  const manifestPath = path.join(targetPath, MANIFEST_FILENAME);
+  try {
+    const raw = await fs.promises.readFile(manifestPath, 'utf-8');
+    const manifest = JSON.parse(raw);
+    if (manifest.projectId !== newProjectId) {
+      manifest.projectId = newProjectId;
+      await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
+      console.log(`[ManifestService] Updated projectId in manifest: ${manifest.projectId}`);
+    }
+  } catch (err) {
+    console.error(`[ManifestService] Failed to update projectId in manifest after rename:`, err);
+  }
+
   return targetPath;
 }
 

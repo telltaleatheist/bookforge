@@ -42,13 +42,29 @@ interface AudiobookEntry {
   downloadPath: string;      // absolute path to M4B
   outputFilename?: string;   // metadata-defined display filename (e.g. "Title. Author. (Year).m4b")
   coverPath?: string;        // absolute path to cover image (from manifest)
-  dateAdded?: string;        // ISO timestamp from manifest.createdAt
+  dateAdded?: string;        // ISO timestamp — audiobook completedAt or manifest.modifiedAt
   tags?: string[];           // user-defined tags
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Library Server Class
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Lazy-loaded music-metadata module (imported once)
+let mmModule: typeof import('music-metadata') | null = null;
+async function getMusicMetadata() {
+  if (!mmModule) {
+    mmModule = await import('music-metadata');
+  }
+  return mmModule;
+}
+
+// Persistent duration cache: filepath → { size, mtimeMs, duration }
+interface DurationCacheEntry {
+  size: number;
+  mtimeMs: number;
+  duration: number;
+}
 
 export class LibraryServer {
   private app: Application;
@@ -65,6 +81,27 @@ export class LibraryServer {
   private booksCache: { data: AudiobookEntry[]; timestamp: number } | null = null;
   private ebooksCache: { data: any[]; timestamp: number } | null = null;
   private readonly DATA_CACHE_TTL = 1000 * 60 * 5; // 5 minutes
+
+  /**
+   * Invalidate caches for a specific project (or all projects).
+   * Call this after metadata changes so the library serves fresh data.
+   */
+  invalidateCache(projectId?: string): void {
+    // Always invalidate the books/ebooks list cache
+    this.booksCache = null;
+    this.ebooksCache = null;
+
+    // Invalidate cover cache for specific project or all
+    if (projectId) {
+      this.coverCache.delete(projectId);
+    } else {
+      this.coverCache.clear();
+    }
+  }
+
+  // Persistent duration cache to avoid re-parsing M4B headers
+  private durationCache: Map<string, DurationCacheEntry> = new Map();
+  private durationCacheDirty = false;
 
   // Queue control callback (set by main process to bridge to renderer)
   private queueControlHandler: ((action: 'start' | 'pause') => void) | null = null;
@@ -125,6 +162,9 @@ export class LibraryServer {
       this.userDataPath = config.userDataPath;
     }
 
+    // Load persistent duration cache
+    await this.loadDurationCache();
+
     return new Promise((resolve, reject) => {
       this.server = this.app.listen(this.port, '0.0.0.0', () => {
         console.log(`[LibraryServer] Started on port ${this.port}`);
@@ -139,6 +179,37 @@ export class LibraryServer {
         }
       });
     });
+  }
+
+  private getDurationCachePath(): string | null {
+    if (!this.userDataPath) return null;
+    return path.join(this.userDataPath, 'duration-cache.json');
+  }
+
+  private async loadDurationCache(): Promise<void> {
+    const cachePath = this.getDurationCachePath();
+    if (!cachePath) return;
+    try {
+      const content = await fs.readFile(cachePath, 'utf-8');
+      const entries: Record<string, DurationCacheEntry> = JSON.parse(content);
+      this.durationCache = new Map(Object.entries(entries));
+      console.log(`[LibraryServer] Loaded duration cache (${this.durationCache.size} entries)`);
+    } catch {
+      // No cache file yet — that's fine
+    }
+  }
+
+  private async saveDurationCache(): Promise<void> {
+    if (!this.durationCacheDirty) return;
+    const cachePath = this.getDurationCachePath();
+    if (!cachePath) return;
+    try {
+      const obj: Record<string, DurationCacheEntry> = Object.fromEntries(this.durationCache);
+      await fs.writeFile(cachePath, JSON.stringify(obj), 'utf-8');
+      this.durationCacheDirty = false;
+    } catch (err) {
+      console.error('[LibraryServer] Failed to save duration cache:', err);
+    }
   }
 
   async stop(): Promise<void> {
@@ -205,6 +276,7 @@ export class LibraryServer {
 
     const entries: AudiobookEntry[] = [];
 
+    // Phase 1: Collect all entries with file stats (fast — no audio parsing)
     for (const manifest of result.projects) {
       const projectDir = getProjectPath(manifest.projectId);
 
@@ -223,18 +295,16 @@ export class LibraryServer {
         if (fsSync.existsSync(absPath)) {
           try {
             const stats = fsSync.statSync(absPath);
-            const duration = await this.getAudioDuration(absPath);
             entries.push({
               projectId: manifest.projectId,
               title: manifest.metadata.title || manifest.projectId,
               author: manifest.metadata.author || '',
               type: 'audiobook',
               size: stats.size,
-              duration,
               downloadPath: absPath,
               outputFilename: manifest.metadata.outputFilename,
               coverPath: coverAbsPath,
-              dateAdded: manifest.createdAt,
+              dateAdded: manifest.outputs.audiobook.completedAt || new Date(stats.mtimeMs).toISOString(),
               tags: manifest.metadata.tags || [],
             });
           } catch { /* skip if stat fails */ }
@@ -249,7 +319,6 @@ export class LibraryServer {
           if (!fsSync.existsSync(absPath)) continue;
           try {
             const stats = fsSync.statSync(absPath);
-            const duration = await this.getAudioDuration(absPath);
             entries.push({
               projectId: manifest.projectId,
               title: manifest.metadata.title || manifest.projectId,
@@ -257,10 +326,9 @@ export class LibraryServer {
               type: 'bilingual',
               langPair,
               size: stats.size,
-              duration,
               downloadPath: absPath,
               coverPath: coverAbsPath,
-              dateAdded: manifest.createdAt,
+              dateAdded: (output as any).completedAt || new Date(stats.mtimeMs).toISOString(),
               tags: manifest.metadata.tags || [],
             });
           } catch { /* skip */ }
@@ -268,17 +336,46 @@ export class LibraryServer {
       }
     }
 
+    // Phase 2: Fetch all durations in parallel (with persistent cache)
+    await Promise.all(entries.map(async (entry) => {
+      entry.duration = await this.getAudioDuration(entry.downloadPath);
+    }));
+
+    // Persist any new cache entries to disk
+    await this.saveDurationCache();
+
     return entries;
   }
 
   /**
-   * Get audio file duration in seconds using music-metadata (header-only read)
+   * Get audio file duration in seconds.
+   * Uses a persistent cache keyed by filepath + size + mtime to avoid re-parsing.
    */
   private async getAudioDuration(filePath: string): Promise<number | undefined> {
     try {
-      const mm = await import('music-metadata');
+      const stats = fsSync.statSync(filePath);
+      const cached = this.durationCache.get(filePath);
+
+      // Cache hit: file hasn't changed
+      if (cached && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) {
+        return cached.duration;
+      }
+
+      // Cache miss: parse the file
+      const mm = await getMusicMetadata();
       const metadata = await mm.parseFile(filePath, { skipCovers: true });
-      return metadata.format.duration;
+      const duration = metadata.format.duration;
+
+      if (duration !== undefined) {
+        this.durationCache.set(filePath, {
+          size: stats.size,
+          mtimeMs: stats.mtimeMs,
+          duration,
+        });
+        this.durationCacheDirty = true;
+      }
+
+      return duration;
     } catch {
       return undefined;
     }
@@ -731,7 +828,7 @@ export class LibraryServer {
    */
   private async extractAudioCover(filePath: string): Promise<string | null> {
     try {
-      const mm = await import('music-metadata');
+      const mm = await getMusicMetadata();
       const metadata = await mm.parseFile(filePath);
       const picture = metadata.common.picture?.[0];
 

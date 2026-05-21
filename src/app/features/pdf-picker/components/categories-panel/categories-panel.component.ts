@@ -331,22 +331,16 @@ interface RegexMatch {
             Reset Defaults
           </desktop-button>
         </div>
-        <p class="redetect-hint">Correct a few blocks, then re-detect to fix the rest.</p>
-        <div class="redetect-actions">
-          <desktop-button
-            variant="secondary"
-            size="sm"
-            [disabled]="categoryCorrections().size < 1"
-            (click)="redetect.emit()"
-          >
-            Re-detect ({{ categoryCorrections().size }} correction{{ categoryCorrections().size !== 1 ? 's' : '' }})
-          </desktop-button>
-          @if (categoryCorrections().size > 0) {
+        @if (categoryCorrections().size > 0) {
+          <p class="redetect-hint">{{ categoryCorrections().size }} correction{{ categoryCorrections().size !== 1 ? 's' : '' }} — re-categorize to propagate.</p>
+          <div class="redetect-actions">
             <desktop-button variant="ghost" size="sm" (click)="clearCorrections.emit()">
-              Clear
+              Clear Corrections
             </desktop-button>
-          }
-        </div>
+          </div>
+        } @else {
+          <p class="redetect-hint">Correct a few blocks, then re-categorize to fix the rest.</p>
+        }
       </div>
     }
 
@@ -1720,7 +1714,6 @@ export class CategoriesPanelComponent {
   mergeBlocks = output<void>();
 
   // Category re-detection outputs
-  redetect = output<void>();
   clearCorrections = output<void>();
 
   // Threshold outputs

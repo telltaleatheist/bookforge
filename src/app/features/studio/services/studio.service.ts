@@ -123,8 +123,8 @@ export class StudioService {
       // Single IPC call to check all paths at once
       const existsMap = await this.electronService.fsBatchExists(allPaths);
 
-      // Process all books in parallel (cover loading is the only remaining IPC)
-      const books = await Promise.all(bookPathMaps.map(async ({ manifest, projectDir, paths }) => {
+      // Build all book objects synchronously (no IPC needed — uses existsMap from batch check)
+      const books = bookPathMaps.map(({ manifest, projectDir, paths }) => {
         const exists = (key: string) => !!existsMap[paths[key]];
 
         // Standard audiobook
@@ -235,26 +235,34 @@ export class StudioService {
           sortOrder: manifest.sortOrder,
         };
 
-        // Load cover image (coverPath is library-relative)
-        if (manifest.metadata?.coverPath) {
+        return book;
+      });
+
+      // Load cover images in batches to avoid saturating the IPC channel
+      const COVER_BATCH_SIZE = 10;
+      const booksWithCovers = books.filter((_, i) => !!bookPathMaps[i].manifest.metadata?.coverPath);
+      for (let i = 0; i < booksWithCovers.length; i += COVER_BATCH_SIZE) {
+        const batch = booksWithCovers.slice(i, i + COVER_BATCH_SIZE);
+        await Promise.all(batch.map(async (book) => {
+          const entry = bookPathMaps.find(m => m.projectDir === book.id);
+          const coverPath = entry?.manifest.metadata?.coverPath;
+          if (!coverPath) return;
           try {
-            const coverResult = await this.electronService.mediaLoadImage(manifest.metadata.coverPath);
+            const coverResult = await this.electronService.mediaLoadImage(coverPath);
             if (coverResult.success && coverResult.data) {
               book.coverData = coverResult.data;
             }
-          } catch {
-            // Cover not found, continue without it
+          } catch (err) {
+            console.warn(`[StudioService] Cover load failed for ${book.title}:`, err);
           }
-        }
-
-        return book;
-      }));
+        }));
+      }
 
       // Separate archived books
       const activeBooks = books.filter(b => !b.archived);
       const archivedBooks = books.filter(b => b.archived);
 
-      // Sort: items with sortOrder first (ascending), then by modifiedAt descending
+      // Sort: unsorted items first (by modifiedAt desc), then items with sortOrder
       this.sortItems(activeBooks);
       this.sortItems(archivedBooks);
 
@@ -348,7 +356,7 @@ export class StudioService {
       const activeArticles = articles.filter(a => !a.archived);
       const archivedArticles = articles.filter(a => a.archived);
 
-      // Sort: items with sortOrder first (ascending), then by modifiedAt descending
+      // Sort: unsorted items first (by modifiedAt desc), then items with sortOrder
       this.sortItems(activeArticles);
       this.sortItems(archivedArticles);
 
@@ -687,16 +695,19 @@ export class StudioService {
   }
 
   /**
-   * Sort items: items with sortOrder first (ascending), then by modifiedAt descending
+   * Sort items: unsorted items first (by modifiedAt desc), then items with sortOrder (ascending).
+   * This ensures recently completed books (whose sortOrder is cleared) appear at the top.
    */
   private sortItems(items: StudioItem[]): void {
     items.sort((a, b) => {
       const aHasOrder = a.sortOrder !== undefined;
       const bHasOrder = b.sortOrder !== undefined;
-      if (aHasOrder && bHasOrder) return a.sortOrder! - b.sortOrder!;
-      if (aHasOrder) return -1;
-      if (bHasOrder) return 1;
-      return new Date(b.modifiedAt || 0).getTime() - new Date(a.modifiedAt || 0).getTime();
+      if (!aHasOrder && !bHasOrder) {
+        return new Date(b.modifiedAt || 0).getTime() - new Date(a.modifiedAt || 0).getTime();
+      }
+      if (!aHasOrder) return -1;  // a unsorted → a first
+      if (!bHasOrder) return 1;   // b unsorted → b first
+      return a.sortOrder! - b.sortOrder!;
     });
   }
 

@@ -3082,6 +3082,7 @@ const electronAPI: ElectronAPI = {
       claudeApiKey?: string;
       openaiApiKey?: string;
       translationPrompt?: string;
+      customInstructions?: string;
       monoTranslation?: boolean;
       testMode?: boolean;
       testModeChunks?: number;

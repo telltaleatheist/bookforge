@@ -451,6 +451,8 @@ class LibraryManager {
   renderAudiobooks() {
     this.booksContainer.innerHTML = '';
     this.coverLoadQueue = [];
+    this.loadedCovers.clear();
+    this.isLoadingCovers = false;
     this.statLabel.textContent = 'Audiobooks';
 
     const filtered = this.currentAudiobookTag === 'all'
@@ -567,6 +569,7 @@ class LibraryManager {
 
   renderEbooks() {
     this.booksContainer.innerHTML = '';
+    this.loadedCovers.clear();
     this.statLabel.textContent = 'Ebooks';
 
     let filtered = this.currentCategory === 'all'

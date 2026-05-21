@@ -1039,6 +1039,12 @@ export class ExportService {
       });
     }
 
+    // Merge fragmented paragraphs: any <p> not ending with terminal punctuation
+    // gets merged with the next <p>, preventing mid-sentence TTS pauses.
+    for (const section of chapterSections) {
+      section.content = this.mergeFragmentedPContent(section.content);
+    }
+
     if (chapterSections.length === 0) {
       return { success: false, message: 'No content to export after organizing by chapters.' };
     }
@@ -1101,6 +1107,74 @@ export class ExportService {
       }
     }
     return result;
+  }
+
+  /**
+   * Check if HTML text ends with terminal punctuation (.?!),
+   * handling HTML entities like &quot; &#039; etc.
+   */
+  private endsWithTerminalPunctuation(html: string): boolean {
+    const decoded = html
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&#0?39;/g, "'")
+      .replace(/&#x27;/g, "'")
+      .replace(/&#x201[cd];/g, '"')
+      .replace(/&#x2019;/g, '\u2019')
+      .trimEnd();
+    return /[.?!]["'\u201d\u2019)\]]*$/.test(decoded);
+  }
+
+  /**
+   * Merge fragmented <p> tags in content array.
+   * Any <p> whose text doesn't end with terminal punctuation is merged
+   * with the next <p>, preventing mid-sentence TTS pauses.
+   */
+  private mergeFragmentedPContent(content: string[]): string[] {
+    const pTagRegex = /^<p>(.*)<\/p>$/s;
+
+    // Check if any <p> needs merging
+    const needsMerge = content.some(line => {
+      const m = line.match(pTagRegex);
+      if (!m) return false;
+      const text = m[1].replace(/<[^>]+>/g, '').trim();
+      return text.length > 0 && !this.endsWithTerminalPunctuation(text);
+    });
+    if (!needsMerge) return content;
+
+    const merged: string[] = [];
+    let buffer: string[] = [];
+
+    for (const line of content) {
+      const m = line.match(pTagRegex);
+      if (!m) {
+        // Non-<p> content (headings, etc.) — flush buffer, pass through
+        if (buffer.length > 0) {
+          merged.push(`<p>${this.joinParagraphLines(buffer)}</p>`);
+          buffer = [];
+        }
+        merged.push(line);
+        continue;
+      }
+
+      const inner = m[1].trim();
+      const text = inner.replace(/<[^>]+>/g, '').trim();
+      if (!text) continue;
+
+      buffer.push(inner);
+
+      if (this.endsWithTerminalPunctuation(text)) {
+        merged.push(`<p>${this.joinParagraphLines(buffer)}</p>`);
+        buffer = [];
+      }
+    }
+
+    // Flush remaining
+    if (buffer.length > 0) {
+      merged.push(`<p>${this.joinParagraphLines(buffer)}</p>`);
+    }
+
+    return merged;
   }
 
   private stripFootnoteRefs(text: string): string {

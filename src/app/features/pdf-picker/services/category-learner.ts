@@ -421,7 +421,8 @@ function passesStructuralConstraint(
   block: TextBlock,
   baselines: CategoryBaselines,
   pageDimensions: PageDimension[],
-  imagesByPage: Map<number, TextBlock[]>
+  imagesByPage: Map<number, TextBlock[]>,
+  blocksByPage: Map<number, TextBlock[]>
 ): boolean {
   const pageDim = pageDimensions[block.page];
   const pageHeight = pageDim?.height || 792;
@@ -438,10 +439,14 @@ function passesStructuralConstraint(
       );
 
     case 'header':
-      return yRatio < 0.15 && (block.line_count || 1) <= 2;
+      // Page header must be near the top AND have nothing substantial above it
+      return yRatio < 0.15 && (block.line_count || 1) <= 2
+        && !hasSubstantialTextAbove(block, blocksByPage);
 
     case 'footer':
-      return bottomRatio > 0.85;
+      // Page footer must be near the bottom AND have nothing substantial below it
+      return bottomRatio > 0.85
+        && !hasSubstantialTextBelow(block, blocksByPage);
 
     case 'caption':
       return isAdjacentToImage(block, imagesByPage) ||
@@ -549,6 +554,23 @@ function hasSubstantialTextBelow(
 }
 
 /**
+ * Check if there's any substantial text block above this one on the same page.
+ * Used to reject header classification — a real page header is the first thing on the page.
+ */
+function hasSubstantialTextAbove(
+  block: TextBlock,
+  blocksByPage: Map<number, TextBlock[]>
+): boolean {
+  const pageBlocks = blocksByPage.get(block.page);
+  return !!pageBlocks?.some(b =>
+    (b.y + b.height) < block.y &&
+    b.id !== block.id &&
+    !b.is_image &&
+    b.char_count > 20
+  );
+}
+
+/**
  * Heuristic block classification — port of classifyBlock() from pdf-analyzer.ts.
  * Used as fallback when no centroid is close enough.
  */
@@ -573,9 +595,6 @@ export function classifyBlockHeuristic(
     const score = computeHeaderScore(block, baselines, blocksByPage, repeatedTopTexts);
     return score >= 2 ? 'header' : 'body';
   }
-  // Footer: only if nothing substantial below it on the same page
-  if (block.region === 'footer' && !hasSubstantialTextBelow(block, blocksByPage)) return 'footer';
-
   const pageHeight = pageDimensions[block.page]?.height || 800;
   const yPct = block.y / pageHeight;
   const text = block.text.trim();
@@ -583,6 +602,12 @@ export function classifyBlockHeuristic(
   const looksLikeBodyText = block.char_count > 100 ||
     /[.!?]["']?\s+[A-Z]/.test(text) ||
     (text.endsWith('.') && block.char_count > 60);
+
+  // Footer: only if nothing substantial below it AND it doesn't look like body text
+  // Body text at the bottom of a page should remain "body", not get reclassified as "footer"
+  const isBodyFontSize = block.font_size >= baselines.bodySize * 0.90;
+  if (block.region === 'footer' && !hasSubstantialTextBelow(block, blocksByPage)
+      && !looksLikeBodyText && !isBodyFontSize) return 'footer';
 
   const bottomPct = (block.y + block.height) / pageHeight;
   if ((block.line_count || 1) <= 2 && (yPct < 0.10 || bottomPct < 0.15) && !looksLikeBodyText) {
@@ -836,7 +861,7 @@ export function redetectCategories(
     const isBottomBlock = bPct > 0.80;
 
     for (const candidate of candidates) {
-      if (passesStructuralConstraint(candidate.categoryId, block, baselines, pageDimensions, imagesByPage)) {
+      if (passesStructuralConstraint(candidate.categoryId, block, baselines, pageDimensions, imagesByPage, blocksByPage)) {
         result.set(block.id, candidate.categoryId);
         if (candidate.categoryId !== block.category_id) changedCount++;
         assigned = true;
@@ -947,9 +972,6 @@ export function classifyBlockWithThresholds(
     const score = computeHeaderScore(block, baselines, blocksByPage, repeatedTopTexts);
     return score >= thresholds.header.regionScoreThreshold ? 'header' : 'body';
   }
-  // Footer: only if nothing substantial below it on the same page
-  if (region === 'footer' && !hasSubstantialTextBelow(block, blocksByPage)) return 'footer';
-
   const pageHeight = pageDimensions[block.page]?.height || 800;
   const yPct = block.y / pageHeight;
   const text = block.text.trim();
@@ -957,6 +979,11 @@ export function classifyBlockWithThresholds(
   const looksLikeBodyText = block.char_count > 100 ||
     /[.!?]["']?\s+[A-Z]/.test(text) ||
     (text.endsWith('.') && block.char_count > 60);
+
+  // Footer: only if nothing substantial below it AND it doesn't look like body text
+  const isBodyFontSize = block.font_size >= baselines.bodySize * 0.90;
+  if (region === 'footer' && !hasSubstantialTextBelow(block, blocksByPage)
+      && !looksLikeBodyText && !isBodyFontSize) return 'footer';
 
   const bottomPct = (block.y + block.height) / pageHeight;
   if ((block.line_count || 1) <= 2 && (yPct < thresholds.header.topYPct || bottomPct < thresholds.region.headerBottomPct) && !looksLikeBodyText) {

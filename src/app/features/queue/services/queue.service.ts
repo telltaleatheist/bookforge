@@ -218,6 +218,7 @@ declare global {
           claudeApiKey?: string;
           openaiApiKey?: string;
           translationPrompt?: string;
+          customInstructions?: string;
           monoTranslation?: boolean;  // Full book translation (not bilingual interleave)
           testMode?: boolean;
           testModeChunks?: number;
@@ -3090,6 +3091,7 @@ export class QueueService {
           claudeApiKey: config.claudeApiKey,
           openaiApiKey: config.openaiApiKey,
           translationPrompt: config.translationPrompt,
+          customInstructions: config.customInstructions,
           monoTranslation: config.monoTranslation,
           testMode: config.testMode,
           testModeChunks: config.testModeChunks
@@ -3813,6 +3815,7 @@ export class QueueService {
         claudeApiKey: config.claudeApiKey,
         openaiApiKey: config.openaiApiKey,
         translationPrompt: config.translationPrompt,
+        customInstructions: config.customInstructions,
         monoTranslation: config.monoTranslation,
         testMode: config.testMode,
         testModeChunks: config.testModeChunks

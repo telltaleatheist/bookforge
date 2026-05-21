@@ -18,6 +18,7 @@ import * as manifestMigration from './manifest-migration';
 import { findEbookConvert } from './ebook-convert-bridge';
 import { applyMetadata } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
+import { mergeEpubParagraphs } from './epub-paragraph-merger';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -1066,7 +1067,7 @@ function setupIpcHandlers(): void {
 
       // Check file size first
       const stats = await fs.stat(audioPath);
-      const MAX_SIZE_FOR_BASE64 = 500 * 1024 * 1024; // 500MB - streaming has issues in Electron
+      const MAX_SIZE_FOR_BASE64 = 100 * 1024 * 1024; // 100MB - base64 inflates ~33%, V8 string limit is 512MB
 
       const ext = audioPath.toLowerCase().split('.').pop();
       const mimeType = ext === 'm4b' || ext === 'm4a' ? 'audio/mp4' : 'audio/mpeg';
@@ -1488,6 +1489,10 @@ function setupIpcHandlers(): void {
             }
           }
         }
+
+        // Invalidate library server cache so changes appear immediately
+        const projectSlug = path.basename(newBfpPath || bfpPath);
+        libraryServer.invalidateCache(projectSlug);
 
         return { success: true, newBfpPath };
       }
@@ -4925,6 +4930,9 @@ function setupIpcHandlers(): void {
         const epubBuffer = Buffer.from(epubData);
         await fs.writeFile(epubPath, epubBuffer);
 
+        // Merge fragmented paragraphs (line-level PDF blocks → sentence-aligned paragraphs)
+        await mergeEpubParagraphs(epubPath);
+
         // Verify the file was written
         const stat = await fs.stat(epubPath);
         console.log(`[audiobook:export-from-project] Wrote EPUB: ${stat.size} bytes to ${epubPath}`);
@@ -5744,6 +5752,7 @@ function setupIpcHandlers(): void {
           completedAt: new Date().toISOString(),
           ...(vttRelPath && { vttPath: vttRelPath }),
         };
+        delete manifest.sortOrder;  // Bump to top of "recent" sort
       });
       console.log('[audiobook:link-audio] Manifest saved:', saveResult.success);
       return { success: saveResult.success, error: saveResult.error };
@@ -5861,6 +5870,9 @@ function setupIpcHandlers(): void {
       if (!project.audiobook) {
         project.audiobook = {};
       }
+
+      // Bump to top of "recent" sort
+      delete project.sortOrder;
 
       // Convert WSL paths to Windows paths before storing
       // Handles both /mnt/c/ mount paths and native /home/ WSL paths
@@ -7717,6 +7729,7 @@ function setupIpcHandlers(): void {
     claudeApiKey?: string;
     openaiApiKey?: string;
     translationPrompt?: string;
+    customInstructions?: string;
     monoTranslation?: boolean;
     testMode?: boolean;
     testModeChunks?: number;
@@ -7742,8 +7755,8 @@ function setupIpcHandlers(): void {
   // Language name mapping for display
   const LANGUAGE_NAMES: Record<string, string> = {
     'en': 'English', 'de': 'German', 'es': 'Spanish', 'fr': 'French',
-    'it': 'Italian', 'pt': 'Portuguese', 'nl': 'Dutch', 'pl': 'Polish',
-    'ru': 'Russian', 'ja': 'Japanese', 'zh': 'Chinese', 'ko': 'Korean',
+    'hu': 'Hungarian', 'it': 'Italian', 'pt': 'Portuguese', 'nl': 'Dutch',
+    'pl': 'Polish', 'ru': 'Russian', 'ja': 'Japanese', 'zh': 'Chinese', 'ko': 'Korean',
   };
 
   // List cached languages for a project
@@ -8993,6 +9006,9 @@ function setupIpcHandlers(): void {
       // Write the EPUB data to the file
       const buffer = Buffer.from(epubData);
       await fs.writeFile(epubPath, buffer);
+
+      // Merge fragmented paragraphs (line-level PDF blocks → sentence-aligned paragraphs)
+      await mergeEpubParagraphs(epubPath);
 
       console.log(`[EDITOR:SAVE-EPUB] Saved EPUB to ${epubPath} (${buffer.length} bytes)`);
 

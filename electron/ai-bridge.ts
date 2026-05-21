@@ -240,6 +240,40 @@ const AI_ASSISTANT_PATTERNS = [
 ];
 
 /**
+ * Check if a single paragraph is a skip marker.
+ */
+function isSkipMarker(text: string): boolean {
+  const trimmed = text.trim();
+  return SKIP_MARKERS.some(m => trimmed === m || trimmed.startsWith(m));
+}
+
+/**
+ * Replace per-paragraph SKIP markers with original text.
+ * When the AI returns [SKIP] for individual paragraphs within a chunk,
+ * the original text should be preserved — not the marker itself.
+ */
+function replaceSkipMarkers(cleanedParagraphs: string[], originalXhtml: string): string[] {
+  // Quick check: any SKIP markers?
+  if (!cleanedParagraphs.some(p => isSkipMarker(p))) return cleanedParagraphs;
+
+  // Extract original paragraphs from the XHTML
+  const originalParagraphs = splitTextIntoParagraphs(extractChapterAsText(originalXhtml));
+
+  // If counts match, do 1-to-1 substitution
+  if (cleanedParagraphs.length === originalParagraphs.length) {
+    return cleanedParagraphs.map((p, i) =>
+      isSkipMarker(p) ? originalParagraphs[i] : p
+    );
+  }
+
+  // Counts don't match — filter out SKIP markers entirely rather than
+  // inserting misaligned original text. The content is already in the
+  // other cleaned paragraphs that the AI successfully processed.
+  console.warn(`[AI-CLEANUP] Removing ${cleanedParagraphs.filter(p => isSkipMarker(p)).length} SKIP markers (paragraph count mismatch: ${cleanedParagraphs.length} cleaned vs ${originalParagraphs.length} original)`);
+  return cleanedParagraphs.filter(p => !isSkipMarker(p));
+}
+
+/**
  * Check if AI output indicates a skip condition or conversational response.
  * Returns { skip: true, reason: string } if the output should be discarded,
  * or { skip: false } if the output is valid.
@@ -2547,7 +2581,7 @@ export async function cleanupEpub(
 
           if (originalXhtml) {
             const cleanedText = chapterResults.map(c => c.cleanedText).join('\n\n');
-            const paragraphs = splitTextIntoParagraphs(cleanedText);
+            const paragraphs = replaceSkipMarkers(splitTextIntoParagraphs(cleanedText), originalXhtml);
             const rebuiltXhtml = rebuildChapterFromParagraphs(originalXhtml, paragraphs);
             modifiedChapters.set(chapterId, rebuiltXhtml);
 
@@ -2708,8 +2742,8 @@ export async function cleanupEpub(
         // Join all chunk results into one cleaned text
         const cleanedText = chapterResults.map(c => c.cleanedText).join('\n\n');
 
-        // Split into paragraphs and rebuild XHTML
-        const paragraphs = splitTextIntoParagraphs(cleanedText);
+        // Split into paragraphs, replace any SKIP markers with original text, and rebuild XHTML
+        const paragraphs = replaceSkipMarkers(splitTextIntoParagraphs(cleanedText), originalXhtml);
         const rebuiltXhtml = rebuildChapterFromParagraphs(originalXhtml, paragraphs);
 
         modifiedChapters.set(chapterId, rebuiltXhtml);
@@ -2880,7 +2914,7 @@ export async function cleanupEpub(
         const originalXhtml = chapterXhtmlMap.get(chapter.id);
         if (originalXhtml && cleanedChunkTexts.length > 0) {
           const cleanedText = cleanedChunkTexts.join('\n\n');
-          const paragraphs = splitTextIntoParagraphs(cleanedText);
+          const paragraphs = replaceSkipMarkers(splitTextIntoParagraphs(cleanedText), originalXhtml);
           const rebuiltXhtml = rebuildChapterFromParagraphs(originalXhtml, paragraphs);
           modifiedChapters.set(chapter.id, rebuiltXhtml);
 
@@ -3172,6 +3206,10 @@ async function saveModifiedEpubLocal(
   }
 
   await zipWriter.finalize(outputPath);
+
+  // Merge fragmented paragraphs (line-level blocks → sentence-aligned paragraphs)
+  const { mergeEpubParagraphs } = await import('./epub-paragraph-merger.js');
+  await mergeEpubParagraphs(outputPath);
 }
 
 /**
@@ -3263,7 +3301,9 @@ function replaceXhtmlBodyLocal(xhtml: string, cleanedText: string): string {
       }
     }
 
-    const paragraphs = cleanedBlocks.map(p => `<p>${escapeXmlLocal(p)}</p>`).join('\n');
+    // Filter out any per-block skip markers (can't map back to originals in fallback path)
+    const filteredBlocks = cleanedBlocks.filter(p => !isSkipMarker(p));
+    const paragraphs = filteredBlocks.map(p => `<p>${escapeXmlLocal(p)}</p>`).join('\n');
     const bodyHtml = headingHtml ? `${headingHtml}\n${paragraphs}` : paragraphs;
     return xhtml.replace(
       /<body([^>]*)>[\s\S]*<\/body>/i,
@@ -3277,6 +3317,11 @@ function replaceXhtmlBodyLocal(xhtml: string, cleanedText: string): string {
   for (let i = textMatches.length - 1; i >= 0; i--) {
     const m = textMatches[i];
     let cleanedBlock = cleanedBlocks[i];
+
+    // If AI returned a skip marker for this block, use original text
+    if (isSkipMarker(cleanedBlock)) {
+      cleanedBlock = m.content.replace(/<[^>]+>/g, '').trim();
+    }
 
     // Ensure heading content ends with punctuation for TTS pause
     if (/^h[1-6]$/i.test(m.tag) && cleanedBlock) {

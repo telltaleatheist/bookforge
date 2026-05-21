@@ -397,6 +397,19 @@ interface SourceStage {
                 <span class="hint">Test mode translates only first N chunks</span>
               </div>
 
+              <!-- Custom Instructions -->
+              <div class="config-section">
+                <label class="field-label">Custom Instructions</label>
+                <textarea
+                  class="custom-instructions"
+                  [value]="translateCustomInstructions()"
+                  (input)="translateCustomInstructions.set($any($event.target).value)"
+                  placeholder="Optional: Add specific instructions for the AI (e.g., 'If you encounter English text, return it unchanged')"
+                  rows="3"
+                ></textarea>
+                <span class="hint">Appended to the translation prompt for each batch</span>
+              </div>
+
               <!-- Source Language Display -->
               <div class="source-lang-display">
                 <span class="label">Detected source language:</span>
@@ -2149,6 +2162,7 @@ export class LLWizardComponent implements OnInit {
   readonly detectedSourceLang = signal<string>('en');
   readonly translateTestMode = signal(false);
   readonly translateTestChunks = signal(5);
+  readonly translateCustomInstructions = signal('');
 
   readonly supportedLanguages = SUPPORTED_LANGUAGES;
 
@@ -3307,6 +3321,7 @@ export class LLWizardComponent implements OnInit {
               openaiApiKey: aiConfig.openai?.apiKey,
               testMode: this.translateTestMode(),
               testModeChunks: this.translateTestChunks(),
+              customInstructions: this.translateCustomInstructions() || undefined,
             },
             workflowId,
           });

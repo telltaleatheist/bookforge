@@ -11,8 +11,10 @@ import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { loadPrompt, PROMPTS } from './prompts.js';
+import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import {
   splitIntoSentences,
+  splitIntoSentencesWithBreaks,
   translateSentences,
   cleanupText,
   callAI,
@@ -41,6 +43,13 @@ import {
   validateNumberedParagraphs,
 } from './epub-processor.js';
 import * as cheerio from 'cheerio';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Skip Marker Detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SKIP_MARKERS = ['[SKIP]', '[NO READABLE TEXT]', '[NOTHING TO CLEAN]'];
+const isSkip = (s: string) => SKIP_MARKERS.some(m => s.trim() === m || s.trim().startsWith(m));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Analytics Types & Helpers
@@ -170,6 +179,7 @@ export interface LLTranslationConfig {
   claudeApiKey?: string;
   openaiApiKey?: string;
   translationPrompt?: string;
+  customInstructions?: string;    // Additional instructions appended to the translation prompt
   // Alignment verification
   autoApproveAlignment?: boolean;  // Skip preview if sentence counts match (default: true)
   // Sentence splitting granularity
@@ -845,6 +855,7 @@ export async function runLLTranslation(
       title: string;          // Chapter title (for TOC/nav)
       sourceSentences: string[];       // ALL sentences including heading as first item
       translatedSentences: string[];   // ALL translated sentences, 1:1 with source
+      paragraphBreaks?: number[];      // Indices of sentences that start a new paragraph
     }
 
     // Clean up stale outputs from previous runs before starting
@@ -885,7 +896,8 @@ export async function runLLTranslation(
             chapterId: ch.chapterId || '',
             title: ch.title,
             sourceSentences: ch.sentences.map((s: any) => s.source),
-            translatedSentences: ch.sentences.map((s: any) => s.target)
+            translatedSentences: ch.sentences.map((s: any) => s.target),
+            ...(ch.paragraphBreaks ? { paragraphBreaks: ch.paragraphBreaks } : {})
           }));
           // Flatten for alignment validation
           let idx = 0;
@@ -956,20 +968,28 @@ export async function runLLTranslation(
         title: string;         // For TOC/nav display
         startIndex: number;    // Start in allSentences
         endIndex: number;      // End in allSentences
+        paragraphBreaks: number[];  // Indices within this chapter's sentences that start a new paragraph
       }
       const chapterBoundaries: ChapterBoundary[] = [];
       const allSentences: string[] = [];
 
       for (const chapter of extractResult.chapters) {
         const chapterSentences: string[] = [];
+        const chapterParagraphBreaks: number[] = [];
 
         // Heading becomes the first sentence (if present)
         if (chapter.heading) {
+          chapterParagraphBreaks.push(0);
           chapterSentences.push(chapter.heading);
         }
 
-        // Body text split into remaining sentences
-        const bodySentences = splitIntoSentences(chapter.bodyText, config.sourceLang, granularity);
+        // Body text split into sentences with paragraph boundary tracking
+        const { sentences: bodySentences, paragraphBreaks: bodyBreaks } =
+          splitIntoSentencesWithBreaks(chapter.bodyText, config.sourceLang, granularity);
+        // Offset body paragraph breaks by the heading sentence
+        for (const breakIdx of bodyBreaks) {
+          chapterParagraphBreaks.push(chapterSentences.length + breakIdx);
+        }
         chapterSentences.push(...bodySentences);
 
         const start = allSentences.length;
@@ -979,7 +999,8 @@ export async function runLLTranslation(
           chapterId: chapter.chapterId,
           title: chapter.heading || chapter.chapterId,
           startIndex: start,
-          endIndex: allSentences.length
+          endIndex: allSentences.length,
+          paragraphBreaks: chapterParagraphBreaks
         });
       }
 
@@ -1028,7 +1049,8 @@ export async function runLLTranslation(
         ollamaBaseUrl: config.ollamaBaseUrl,
         claudeApiKey: config.claudeApiKey,
         openaiApiKey: config.openaiApiKey,
-        translationPrompt: config.translationPrompt
+        translationPrompt: config.translationPrompt,
+        customInstructions: config.customInstructions
       };
 
       const totalSentencesToProcess = Math.min(allSentences.length, totalSentenceLimit);
@@ -1066,7 +1088,8 @@ export async function runLLTranslation(
           chapterId: boundary.chapterId,
           title: boundary.title,
           sourceSentences: chapterPairs.map(p => p.source),
-          translatedSentences: chapterPairs.map(p => p.target)
+          translatedSentences: chapterPairs.map(p => p.target),
+          paragraphBreaks: boundary.paragraphBreaks
         });
 
         // Re-index pairs for global sequential ordering
@@ -1079,8 +1102,8 @@ export async function runLLTranslation(
         );
         if (flushChapters.length > 0) {
           // Flush source and target EPUBs
-          const sourceChaptersForFlush = flushChapters.map(ch => ({ title: ch.title, sentences: ch.sourceSentences }));
-          const targetChaptersForFlush = flushChapters.map(ch => ({ title: ch.title, sentences: ch.translatedSentences }));
+          const sourceChaptersForFlush = flushChapters.map(ch => ({ title: ch.title, sentences: ch.sourceSentences, paragraphBreaks: ch.paragraphBreaks }));
+          const targetChaptersForFlush = flushChapters.map(ch => ({ title: ch.title, sentences: ch.translatedSentences, paragraphBreaks: ch.paragraphBreaks }));
           await flushGenerateEpub(sourceChaptersForFlush, flushBookTitle, config.sourceLang, flushSourceEpubPath, { flattenHeadings: true, coverPath: flushCoverPath });
           await flushGenerateEpub(targetChaptersForFlush, `${flushBookTitle} (${config.targetLang.toUpperCase()})`, config.targetLang, flushTargetEpubPath, { flattenHeadings: true, coverPath: flushCoverPath });
 
@@ -1182,6 +1205,7 @@ export async function runLLTranslation(
       title: string;
       sourceSentences: string[];
       targetSentences: string[];
+      paragraphBreaks?: number[];
     }> = [];
 
     for (const ch of chapters) {
@@ -1189,17 +1213,27 @@ export async function runLLTranslation(
       const sourceSentences = (ch.sourceSentences || []).filter((s): s is string => typeof s === 'string' && s.length > 0);
       const targetSentences = (ch.translatedSentences || []).filter((s): s is string => typeof s === 'string' && s.length > 0);
 
+      // Replace any skip markers in translated sentences with source text
+      for (let i = 0; i < targetSentences.length; i++) {
+        if (isSkip(targetSentences[i]) && i < sourceSentences.length) {
+          targetSentences[i] = sourceSentences[i];
+        }
+      }
+
       // Only include chapter if both have sentences AND counts match
       if (sourceSentences.length > 0 && targetSentences.length > 0) {
         const minLen = Math.min(sourceSentences.length, targetSentences.length);
         if (sourceSentences.length !== targetSentences.length) {
           console.warn(`[LL-TRANSLATION] Chapter "${ch.title}" has mismatched counts: ${sourceSentences.length} source, ${targetSentences.length} target. Truncating to ${minLen}.`);
         }
+        // Filter paragraph breaks to only include indices within the truncated range
+        const breaks = ch.paragraphBreaks?.filter(idx => idx < minLen);
         validChapters.push({
           chapterId: ch.chapterId,
           title: ch.title,
           sourceSentences: sourceSentences.slice(0, minLen),
-          targetSentences: targetSentences.slice(0, minLen)
+          targetSentences: targetSentences.slice(0, minLen),
+          paragraphBreaks: breaks
         });
       }
     }
@@ -1236,7 +1270,8 @@ export async function runLLTranslation(
     // Source EPUB (e.g., en.epub)
     const sourceChapters = validChapters.map(ch => ({
       title: ch.title,
-      sentences: ch.sourceSentences
+      sentences: ch.sourceSentences,
+      paragraphBreaks: ch.paragraphBreaks
     }));
     await generateChapteredEpub(
       sourceChapters,
@@ -1249,7 +1284,8 @@ export async function runLLTranslation(
     // Target EPUB (e.g., de.epub) — use translated first sentence as chapter title
     const targetChapters = validChapters.map(ch => ({
       title: ch.targetSentences[0] || ch.title,
-      sentences: ch.targetSentences
+      sentences: ch.targetSentences,
+      paragraphBreaks: ch.paragraphBreaks
     }));
     await generateChapteredEpub(
       targetChapters,
@@ -1258,6 +1294,10 @@ export async function runLLTranslation(
       targetEpubPath,
       { flattenHeadings: true, coverPath: resolvedCoverPath }
     );
+
+    // Merge fragmented paragraphs in generated EPUBs
+    await mergeEpubParagraphs(sourceEpubPath);
+    await mergeEpubParagraphs(targetEpubPath);
 
     console.log(`[LL-TRANSLATION] Generated ${config.sourceLang}.epub and ${config.targetLang}.epub with ${validChapters.length} chapters, ${totalSourceSentences} sentences each`);
 
@@ -1285,7 +1325,8 @@ export async function runLLTranslation(
       chapters: validChapters.map(ch => ({
         chapterId: ch.chapterId,
         title: ch.title,
-        sentences: ch.sourceSentences
+        sentences: ch.sourceSentences,
+        paragraphBreaks: ch.paragraphBreaks
       }))
     };
     await fs.writeFile(
@@ -1305,7 +1346,8 @@ export async function runLLTranslation(
         sentences: ch.sourceSentences.map((src, i) => ({
           source: src,
           target: ch.targetSentences[i]
-        }))
+        })),
+        paragraphBreaks: ch.paragraphBreaks
       }))
     };
     await fs.writeFile(
@@ -1478,6 +1520,7 @@ export interface MonoTranslationConfig {
   claudeApiKey?: string;
   openaiApiKey?: string;
   translationPrompt?: string;
+  customInstructions?: string;    // Additional instructions appended to the translation prompt
 }
 
 /** Max paragraphs per AI batch - increased for better context */
@@ -1547,11 +1590,15 @@ async function translateParagraphBatch(
     systemPrompt = await loadPrompt(PROMPTS.MONO_TRANSLATION);
   }
 
-  const prompt = `Translate the following paragraphs from ${sourceLanguage} to ${targetLanguage}.
+  let prompt = `Translate the following paragraphs from ${sourceLanguage} to ${targetLanguage}.
 Each paragraph is marked with <<<N>>>. Preserve these markers exactly.
-Return ONLY the translated paragraphs with the same <<<N>>> markers. Do not add explanations.
+Return ONLY the translated paragraphs with the same <<<N>>> markers. Do not add explanations.`;
 
-${formatted}`;
+  if (config.customInstructions) {
+    prompt += `\n\nADDITIONAL INSTRUCTIONS:\n${config.customInstructions}`;
+  }
+
+  prompt += `\n\n${formatted}`;
 
   const response = await callAI(prompt, bilingualConfig, systemPrompt);
 
@@ -1565,10 +1612,14 @@ ${formatted}`;
     const originalText = paragraphs[originalIdx];
     console.log(`[MONO-TRANSLATION] Retrying missing paragraph ${missingIdx}: "${originalText.substring(0, 60)}..."`);
 
-    const retryPrompt = `Translate the following paragraph from ${sourceLanguage} to ${targetLanguage}.
-Return ONLY the translation, nothing else.
+    let retryPrompt = `Translate the following paragraph from ${sourceLanguage} to ${targetLanguage}.
+Return ONLY the translation, nothing else.`;
 
-${originalText}`;
+    if (config.customInstructions) {
+      retryPrompt += `\n\nADDITIONAL INSTRUCTIONS:\n${config.customInstructions}`;
+    }
+
+    retryPrompt += `\n\n${originalText}`;
 
     const retryResponse = await callAI(retryPrompt, bilingualConfig, systemPrompt);
     parsed.set(missingIdx, retryResponse.trim());
@@ -1875,6 +1926,15 @@ export async function runMonoTranslation(
 
       paragraphsDone += chData.paragraphs.length;
 
+      // Replace any [SKIP] markers with the original paragraph text
+      // The AI may return [SKIP] for paragraphs it refuses to translate —
+      // we must substitute the original text so markers never reach the EPUB.
+      for (let i = 0; i < translated.length; i++) {
+        if (isSkip(translated[i]) && i < chData.paragraphs.length) {
+          translated[i] = chData.paragraphs[i];
+        }
+      }
+
       // Replace block texts in original XHTML (preserves structure, CSS, etc.)
       let modifiedXhtml = replaceBlockTexts(chData.xhtml, translated);
 
@@ -2017,6 +2077,9 @@ export async function runMonoTranslation(
     const tempPath = outputEpubPath + '.tmp';
     await zipWriter.write(tempPath);
     await fs.rename(tempPath, outputEpubPath);
+
+    // Merge fragmented paragraphs in translated EPUB
+    await mergeEpubParagraphs(outputEpubPath);
 
     // Clean up checkpoint and cache after successful write
     await deleteTranslationCheckpoint(translateDir);

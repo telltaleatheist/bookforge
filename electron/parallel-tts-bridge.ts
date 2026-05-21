@@ -2180,6 +2180,25 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       await logger.log('INFO', session.jobId, 'All workers complete, starting assembly');
     }
 
+    // Cache TTS session to project BEFORE assembly or skipAssembly return,
+    // because e2a's headless mode deletes the process dir (sentence files)
+    // after successful assembly, and skipAssembly callers still need cached sessions.
+    if (session.config.bfpPath && session.prepInfo?.sessionDir) {
+      const language = session.config.settings.language || 'en';
+      try {
+        const cacheResult = await cacheSessionToProject(
+          session.prepInfo.sessionDir, session.config.bfpPath, language
+        );
+        if (cacheResult.success) {
+          console.log(`[PARALLEL-TTS] Session cached: ${cacheResult.cachedSentencesDir}`);
+        } else {
+          console.error(`[PARALLEL-TTS] Session cache failed: ${cacheResult.error}`);
+        }
+      } catch (err) {
+        console.error('[PARALLEL-TTS] Session cache error:', err);
+      }
+    }
+
     // Check if we should skip assembly (for dual-voice bilingual workflows)
     if (session.config.skipAssembly) {
       const sentencesDir = session.prepInfo?.chaptersDirSentences || session.prepInfo?.chaptersDir;
@@ -2188,24 +2207,6 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       emitComplete(session, true, sentencesDir);
       activeSessions.delete(session.jobId);
       return;
-    }
-
-    // Cache TTS session to project BEFORE assembly, because e2a's headless mode
-    // deletes the process dir (sentence files) after successful assembly.
-    if (session.config.bfpPath && session.prepInfo?.sessionDir) {
-      const language = session.config.settings.language || 'en';
-      try {
-        const cacheResult = await cacheSessionToProject(
-          session.prepInfo.sessionDir, session.config.bfpPath, language
-        );
-        if (cacheResult.success) {
-          console.log(`[PARALLEL-TTS] Session cached before assembly: ${cacheResult.cachedSentencesDir}`);
-        } else {
-          console.error(`[PARALLEL-TTS] Pre-assembly cache failed: ${cacheResult.error}`);
-        }
-      } catch (err) {
-        console.error('[PARALLEL-TTS] Pre-assembly cache error:', err);
-      }
     }
 
     try {
