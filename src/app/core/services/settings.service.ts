@@ -167,11 +167,11 @@ export class SettingsService {
         ],
       },
       {
-        id: 'libraryServer',
-        name: 'Library Server',
-        description: 'Share your book library on the network',
+        id: 'bookshelf',
+        name: 'Bookshelf Server',
+        description: 'Share your audiobook bookshelf on the network',
         icon: '🌐',
-        fields: [], // Library Server section has custom UI
+        fields: [], // Bookshelf Server section has custom UI
       },
       {
         id: 'tools',
@@ -409,8 +409,8 @@ export class SettingsService {
     // Initialize AI config with defaults
     defaults['aiConfig'] = { ...DEFAULT_AI_CONFIG };
 
-    // Initialize library server config with defaults
-    defaults['libraryServerConfig'] = {
+    // Initialize bookshelf server config with defaults
+    defaults['bookshelfConfig'] = {
       enabled: false,
       port: 8765
     };
@@ -457,30 +457,30 @@ export class SettingsService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Library Server Configuration
+  // Bookshelf Server Configuration
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Library server configuration interface
+   * Bookshelf server configuration
    */
-  getLibraryServerConfig(): { enabled: boolean; port: number } {
-    const config = this.values()['libraryServerConfig'] as { enabled: boolean; port: number } | undefined;
+  getBookshelfConfig(): { enabled: boolean; port: number } {
+    const config = this.values()['bookshelfConfig'] as { enabled: boolean; port: number } | undefined;
     return config || { enabled: false, port: 8765 };
   }
 
   /**
-   * Set library server configuration
+   * Set bookshelf server configuration
    */
-  setLibraryServerConfig(config: { enabled: boolean; port: number }): void {
-    this.values.update(v => ({ ...v, libraryServerConfig: config }));
+  setBookshelfConfig(config: { enabled: boolean; port: number }): void {
+    this.values.update(v => ({ ...v, bookshelfConfig: config }));
     this.saveSettings();
   }
 
   /**
-   * Update library server configuration
+   * Update bookshelf server configuration
    */
-  updateLibraryServerConfig(updates: Partial<{ enabled: boolean; port: number }>): void {
-    const current = this.getLibraryServerConfig();
-    this.setLibraryServerConfig({ ...current, ...updates });
+  updateBookshelfConfig(updates: Partial<{ enabled: boolean; port: number }>): void {
+    const current = this.getBookshelfConfig();
+    this.setBookshelfConfig({ ...current, ...updates });
   }
 }

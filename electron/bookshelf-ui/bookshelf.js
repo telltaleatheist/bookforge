@@ -1,9 +1,11 @@
 /**
- * BookForge Library Manager
- * Client-side JavaScript for browsing and downloading audiobooks and ebooks
+ * BookForge Bookshelf — Web UI for browsing and downloading audiobooks
+ *
+ * This is the remote-accessible web interface (HTTP server).
+ * Not to be confused with the Angular Library (ebook catalog) or Studio (TTS pipeline).
  */
 
-class LibraryManager {
+class BookshelfManager {
   constructor() {
     this.allBooks = [];
     this.allEbooks = [];
@@ -11,7 +13,7 @@ class LibraryManager {
     this.coverLoadQueue = [];
     this.isLoadingCovers = false;
     this.currentTab = 'audiobooks';
-    this.currentSort = localStorage.getItem('library-sort') || 'title';
+    this.currentSort = localStorage.getItem('bookshelf-sort') || 'title';
     this.currentCategory = 'all';
     this.audiobookTags = [];
     this.currentAudiobookTag = 'all';
@@ -47,9 +49,9 @@ class LibraryManager {
     this.ebookTagBar = document.getElementById('ebook-tag-bar');
 
     // Section containers
-    this.libraryBar = document.getElementById('library-bar');
+    this.bookshelfBar = document.getElementById('bookshelf-bar');
     this.searchContainer = document.getElementById('search-container');
-    this.libraryContent = document.getElementById('library-content');
+    this.bookshelfContent = document.getElementById('bookshelf-content');
     this.queueContent = document.getElementById('queue-content');
 
     // Player elements
@@ -72,7 +74,7 @@ class LibraryManager {
   }
 
   setupTheme() {
-    const savedTheme = localStorage.getItem('library-theme') || 'dark';
+    const savedTheme = localStorage.getItem('bookshelf-theme') || 'dark';
     document.documentElement.setAttribute('data-theme', savedTheme);
   }
 
@@ -80,7 +82,7 @@ class LibraryManager {
     const current = document.documentElement.getAttribute('data-theme');
     const next = current === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
-    localStorage.setItem('library-theme', next);
+    localStorage.setItem('bookshelf-theme', next);
   }
 
   setupEventListeners() {
@@ -169,7 +171,7 @@ class LibraryManager {
 
   setSort(sort) {
     this.currentSort = sort;
-    localStorage.setItem('library-sort', sort);
+    localStorage.setItem('bookshelf-sort', sort);
     this.applySortToggleState();
 
     if (this.currentTab === 'audiobooks') {
@@ -370,18 +372,18 @@ class LibraryManager {
 
     if (tab === 'queue') {
       // Hide library UI, show queue
-      this.libraryBar.style.display = 'none';
+      this.bookshelfBar.style.display = 'none';
       this.searchContainer.style.display = 'none';
       this.categoryBar.style.display = 'none';
       this.ebookTagBar.style.display = 'none';
-      this.libraryContent.style.display = 'none';
+      this.bookshelfContent.style.display = 'none';
       this.queueContent.style.display = 'block';
       this.startQueuePolling();
     } else {
       // Show library UI, hide queue
-      this.libraryBar.style.display = 'flex';
+      this.bookshelfBar.style.display = 'flex';
       this.searchContainer.style.display = 'block';
-      this.libraryContent.style.display = 'block';
+      this.bookshelfContent.style.display = 'block';
       this.queueContent.style.display = 'none';
 
       // Update search placeholder
@@ -1251,6 +1253,6 @@ class LibraryManager {
 
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-  const library = new LibraryManager();
-  library.init();
+  const bookshelf = new BookshelfManager();
+  bookshelf.init();
 });

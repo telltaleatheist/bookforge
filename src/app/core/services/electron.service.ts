@@ -2276,26 +2276,26 @@ export class ElectronService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Library Server
+  // Bookshelf Server
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async libraryServerStart(config: { port: number }): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[] }; error?: string }> {
+  async bookshelfStart(config: { port: number }): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[] }; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.libraryServer.start(config);
+      return (window as any).electron.bookshelf.start(config);
     }
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async libraryServerStop(): Promise<{ success: boolean; error?: string }> {
+  async bookshelfStop(): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.libraryServer.stop();
+      return (window as any).electron.bookshelf.stop();
     }
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async libraryServerGetStatus(): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[] }; error?: string }> {
+  async bookshelfGetStatus(): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[] }; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.libraryServer.getStatus();
+      return (window as any).electron.bookshelf.getStatus();
     }
     return { success: false, error: 'Not running in Electron' };
   }

@@ -773,16 +773,16 @@ export interface EnhanceProgress {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Library Server Types
+// Bookshelf Server Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface LibraryServerStatus {
+export interface BookshelfStatus {
   running: boolean;
   port: number;
   addresses: string[];
 }
 
-export interface LibraryServerConfig {
+export interface BookshelfConfig {
   port: number;
 }
 
@@ -1152,10 +1152,10 @@ export interface ElectronAPI {
     showItemInFolder: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>;
   };
-  libraryServer: {
-    start: (config: LibraryServerConfig) => Promise<{ success: boolean; data?: LibraryServerStatus; error?: string }>;
+  bookshelf: {
+    start: (config: BookshelfConfig) => Promise<{ success: boolean; data?: BookshelfStatus; error?: string }>;
     stop: () => Promise<{ success: boolean; error?: string }>;
-    getStatus: () => Promise<{ success: boolean; data?: LibraryServerStatus; error?: string }>;
+    getStatus: () => Promise<{ success: boolean; data?: BookshelfStatus; error?: string }>;
   };
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string }) => Promise<{ success: boolean; error?: string }>;
@@ -2405,13 +2405,13 @@ const electronAPI: ElectronAPI = {
     openPath: (filePath: string) =>
       ipcRenderer.invoke('shell:open-path', filePath),
   },
-  libraryServer: {
-    start: (config: LibraryServerConfig) =>
-      ipcRenderer.invoke('library-server:start', config),
+  bookshelf: {
+    start: (config: BookshelfConfig) =>
+      ipcRenderer.invoke('bookshelf:start', config),
     stop: () =>
-      ipcRenderer.invoke('library-server:stop'),
+      ipcRenderer.invoke('bookshelf:stop'),
     getStatus: () =>
-      ipcRenderer.invoke('library-server:status'),
+      ipcRenderer.invoke('bookshelf:status'),
   },
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string }) =>

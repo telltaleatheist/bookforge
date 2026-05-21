@@ -8,7 +8,7 @@ import * as pdfWorkerProxy from './pdf-worker-proxy.js';
 import { getOcrService } from './ocr-service';
 import { getPluginRegistry } from './plugins/plugin-registry';
 import { loadBuiltinPlugins } from './plugins/plugin-loader';
-import { libraryServer } from './library-server';
+import { bookshelfServer } from './bookshelf-server';
 import * as ebookLibrary from './ebook-library';
 import { getHeadlessOcrService } from './headless-ocr';
 import { initializeLoggers, getMainLogger, closeLoggers } from './rolling-logger';
@@ -144,15 +144,31 @@ function getLibraryRoot(): string {
   return path.join(app.getPath('documents'), 'BookForge');
 }
 
-// Library server config file path
-function getLibraryServerConfigPath(): string {
-  return path.join(getLibraryRoot(), 'library-server.json');
+// Bookshelf config file path
+function getBookshelfConfigPath(): string {
+  return path.join(getLibraryRoot(), 'bookshelf.json');
 }
 
-// Load library server config from file
-async function loadLibraryServerConfig(): Promise<{ enabled: boolean; port: number } | null> {
+// One-time migration: rename legacy config file
+async function migrateBookshelfConfig(): Promise<void> {
+  const newPath = getBookshelfConfigPath();
+  if (fsSync.existsSync(newPath)) return;
+  const legacyPath = path.join(getLibraryRoot(), 'library-server.json');
+  if (fsSync.existsSync(legacyPath)) {
+    try {
+      await fs.rename(legacyPath, newPath);
+      console.log('[BookshelfServer] Migrated config from library-server.json to bookshelf.json');
+    } catch (err) {
+      console.error('[BookshelfServer] Config migration failed:', err);
+    }
+  }
+}
+
+// Load bookshelf config from file
+async function loadBookshelfConfig(): Promise<{ enabled: boolean; port: number } | null> {
   try {
-    const configPath = getLibraryServerConfigPath();
+    await migrateBookshelfConfig();
+    const configPath = getBookshelfConfigPath();
     if (!fsSync.existsSync(configPath)) {
       return null;
     }
@@ -163,9 +179,9 @@ async function loadLibraryServerConfig(): Promise<{ enabled: boolean; port: numb
   }
 }
 
-// Save library server config to file
-async function saveLibraryServerConfig(config: { enabled: boolean; port: number }): Promise<void> {
-  const configPath = getLibraryServerConfigPath();
+// Save bookshelf config to file
+async function saveBookshelfConfig(config: { enabled: boolean; port: number }): Promise<void> {
+  const configPath = getBookshelfConfigPath();
   const dir = path.dirname(configPath);
   if (!fsSync.existsSync(dir)) {
     await fs.mkdir(dir, { recursive: true });
@@ -173,15 +189,15 @@ async function saveLibraryServerConfig(config: { enabled: boolean; port: number 
   await fs.writeFile(configPath, JSON.stringify(config, null, 2));
 }
 
-// Auto-start library server if enabled
-async function autoStartLibraryServer(): Promise<void> {
-  const config = await loadLibraryServerConfig();
+// Auto-start bookshelf server if enabled
+async function autoStartBookshelf(): Promise<void> {
+  const config = await loadBookshelfConfig();
   if (config && config.enabled) {
     try {
-      console.log('[LibraryServer] Auto-starting with config:', config);
-      await libraryServer.start({ port: config.port, userDataPath: app.getPath('userData') });
+      console.log('[BookshelfServer] Auto-starting with config:', config);
+      await bookshelfServer.start({ port: config.port, userDataPath: app.getPath('userData') });
     } catch (err) {
-      console.error('[LibraryServer] Auto-start failed:', err);
+      console.error('[BookshelfServer] Auto-start failed:', err);
     }
   }
 }
@@ -1060,7 +1076,7 @@ function setupIpcHandlers(): void {
   });
 
   // Read audio file and return as data URL (for playback in renderer)
-  // For large files (>100MB), returns a streaming URL via LibraryServer instead
+  // For large files (>100MB), returns a streaming URL via BookshelfServer instead
   ipcMain.handle('fs:read-audio', async (_event, audioPath: string) => {
     try {
       console.log('[fs:read-audio] Loading:', audioPath);
@@ -1490,9 +1506,9 @@ function setupIpcHandlers(): void {
           }
         }
 
-        // Invalidate library server cache so changes appear immediately
+        // Invalidate bookshelf server cache so changes appear immediately
         const projectSlug = path.basename(newBfpPath || bfpPath);
-        libraryServer.invalidateCache(projectSlug);
+        bookshelfServer.invalidateCache(projectSlug);
 
         return { success: true, newBfpPath };
       }
@@ -3407,31 +3423,31 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Library Server handlers
+  // Bookshelf Server handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  ipcMain.handle('library-server:start', async (_event, config: { port: number }) => {
+  ipcMain.handle('bookshelf:start', async (_event, config: { port: number }) => {
     try {
       // Stop existing server if running
-      if (libraryServer.isRunning()) {
-        await libraryServer.stop();
+      if (bookshelfServer.isRunning()) {
+        await bookshelfServer.stop();
       }
-      await libraryServer.start({ ...config, userDataPath: app.getPath('userData') });
+      await bookshelfServer.start({ ...config, userDataPath: app.getPath('userData') });
       // Save config with enabled=true for auto-start on next launch
-      await saveLibraryServerConfig({ ...config, enabled: true });
-      return { success: true, data: libraryServer.getStatus() };
+      await saveBookshelfConfig({ ...config, enabled: true });
+      return { success: true, data: bookshelfServer.getStatus() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('library-server:stop', async () => {
+  ipcMain.handle('bookshelf:stop', async () => {
     try {
-      await libraryServer.stop();
+      await bookshelfServer.stop();
       // Save config with enabled=false
-      const currentConfig = await loadLibraryServerConfig();
+      const currentConfig = await loadBookshelfConfig();
       if (currentConfig) {
-        await saveLibraryServerConfig({ ...currentConfig, enabled: false });
+        await saveBookshelfConfig({ ...currentConfig, enabled: false });
       }
       return { success: true };
     } catch (err) {
@@ -3439,9 +3455,9 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('library-server:status', async () => {
+  ipcMain.handle('bookshelf:status', async () => {
     try {
-      return { success: true, data: libraryServer.getStatus() };
+      return { success: true, data: bookshelfServer.getStatus() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -9121,7 +9137,7 @@ app.whenReady().then(async () => {
   }
   await loadBuiltinPlugins(registry);
 
-  // Restore persisted library root before auto-starting the library server.
+  // Restore persisted library root before auto-starting the bookshelf server.
   // The renderer sets this via IPC, but that happens after the window loads —
   // too late for auto-start. So we persist it to userData and read it here.
   const persistedRoot = loadPersistedLibraryRoot();
@@ -9131,11 +9147,11 @@ app.whenReady().then(async () => {
     console.log('[Startup] Restored persisted library root:', persistedRoot);
   }
 
-  // Auto-start library server if configured
-  await autoStartLibraryServer();
+  // Auto-start bookshelf server if configured
+  await autoStartBookshelf();
 
-  // Bridge library server queue control to renderer process
-  libraryServer.setQueueControlHandler((action) => {
+  // Bridge bookshelf server queue control to renderer process
+  bookshelfServer.setQueueControlHandler((action) => {
     mainWindow?.webContents.send('queue:remote-control', action);
   });
 
@@ -9346,9 +9362,9 @@ app.on('before-quit', async (event) => {
     console.error('[MAIN] Failed to kill TTS workers:', err);
   }
 
-  // Stop library server if running
-  if (libraryServer.isRunning()) {
-    await libraryServer.stop();
+  // Stop bookshelf server if running
+  if (bookshelfServer.isRunning()) {
+    await bookshelfServer.stop();
   }
 
   // Terminate PDF worker thread

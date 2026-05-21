@@ -6,7 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>BookForge Bookshelf</title>
-  <link rel="stylesheet" href="library.css">
+  <link rel="stylesheet" href="bookshelf.css">
 </head>
 <body>
   <nav class="navbar">
@@ -28,7 +28,7 @@
     </div>
   </nav>
 
-  <div id="library-bar" class="stats-bar">
+  <div id="bookshelf-bar" class="stats-bar">
     <div class="stat">
       <span class="stat-value" id="total-books">0</span>
       <span class="stat-label" id="stat-label">Audiobooks</span>
@@ -51,8 +51,8 @@
   </div>
 
   <main class="content">
-    <!-- Library content (audiobooks + ebooks) -->
-    <div id="library-content">
+    <!-- Bookshelf content (audiobooks + ebooks) -->
+    <div id="bookshelf-content">
       <div id="loading-indicator" class="loading-indicator">
         <div class="spinner"></div>
         <span>Loading bookshelf...</span>
@@ -116,6 +116,6 @@
 
   <audio id="audio-element" preload="auto"></audio>
 
-  <script src="library.js"></script>
+  <script src="bookshelf.js"></script>
 </body>
 </html>

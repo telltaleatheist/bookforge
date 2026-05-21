@@ -380,21 +380,21 @@ import {
                   }
                 </div>
               </div>
-            } @else if (section.id === 'libraryServer') {
-              <!-- Library Server Section -->
-              <div class="library-server-section">
+            } @else if (section.id === 'bookshelf') {
+              <!-- Bookshelf Server Section -->
+              <div class="bookshelf-section">
                 <!-- Server Status -->
-                <div class="server-status-card" [class.running]="libraryServerStatus()?.running">
+                <div class="server-status-card" [class.running]="bookshelfStatus()?.running">
                   <div class="status-indicator">
                     <span class="status-dot"></span>
                     <span class="status-text">
-                      {{ libraryServerStatus()?.running ? 'Running' : 'Stopped' }}
+                      {{ bookshelfStatus()?.running ? 'Running' : 'Stopped' }}
                     </span>
                   </div>
-                  @if (libraryServerStatus()?.running) {
+                  @if (bookshelfStatus()?.running) {
                     <div class="server-addresses">
                       <h4>Access URLs</h4>
-                      @for (address of libraryServerStatus()?.addresses || []; track address) {
+                      @for (address of bookshelfStatus()?.addresses || []; track address) {
                         <a class="server-address" [href]="address" target="_blank">{{ address }}</a>
                       }
                     </div>
@@ -415,11 +415,11 @@ import {
                       <input
                         type="number"
                         class="number-input"
-                        [value]="libraryServerConfig().port"
+                        [value]="bookshelfConfig().port"
                         min="1"
                         max="65535"
-                        (change)="updateLibraryServerPort(+$any($event.target).value)"
-                        [disabled]="libraryServerStatus()?.running ?? false"
+                        (change)="updateBookshelfPort(+$any($event.target).value)"
+                        [disabled]="bookshelfStatus()?.running ?? false"
                       />
                     </div>
                   </div>
@@ -427,28 +427,28 @@ import {
 
                 <!-- Control Buttons -->
                 <div class="server-controls">
-                  @if (libraryServerStatus()?.running) {
+                  @if (bookshelfStatus()?.running) {
                     <desktop-button
                       variant="danger"
                       size="md"
-                      (click)="stopLibraryServer()"
-                      [disabled]="libraryServerLoading()"
+                      (click)="stopBookshelf()"
+                      [disabled]="bookshelfLoading()"
                     >
-                      {{ libraryServerLoading() ? 'Stopping...' : 'Stop Server' }}
+                      {{ bookshelfLoading() ? 'Stopping...' : 'Stop Server' }}
                     </desktop-button>
                   } @else {
                     <desktop-button
                       variant="primary"
                       size="md"
-                      (click)="startLibraryServer()"
-                      [disabled]="libraryServerLoading()"
+                      (click)="startBookshelf()"
+                      [disabled]="bookshelfLoading()"
                     >
-                      {{ libraryServerLoading() ? 'Starting...' : 'Start Server' }}
+                      {{ bookshelfLoading() ? 'Starting...' : 'Start Server' }}
                     </desktop-button>
                   }
                 </div>
 
-                @if (libraryServerError(); as error) {
+                @if (bookshelfError(); as error) {
                   <div class="status-message error">
                     {{ error }}
                   </div>
@@ -1498,8 +1498,8 @@ import {
       }
     }
 
-    // Library Server Section Styles
-    .library-server-section {
+    // Bookshelf Server Section Styles
+    .bookshelf-section {
       display: flex;
       flex-direction: column;
       gap: var(--ui-spacing-xl);
@@ -1881,11 +1881,11 @@ export class SettingsComponent implements OnInit {
     return fetched.length > 0 ? fetched : this.defaultOpenaiModels;
   });
 
-  // Library Server section state
-  readonly libraryServerConfig = computed(() => this.settingsService.getLibraryServerConfig());
-  readonly libraryServerStatus = signal<{ running: boolean; port: number; addresses: string[] } | null>(null);
-  readonly libraryServerLoading = signal(false);
-  readonly libraryServerError = signal<string | null>(null);
+  // Bookshelf Server section state
+  readonly bookshelfConfig = computed(() => this.settingsService.getBookshelfConfig());
+  readonly bookshelfStatus = signal<{ running: boolean; port: number; addresses: string[] } | null>(null);
+  readonly bookshelfLoading = signal(false);
+  readonly bookshelfError = signal<string | null>(null);
 
   // Tools section state
   readonly toolPathsConfig = signal<Record<string, string | undefined>>({});
@@ -1924,8 +1924,8 @@ export class SettingsComponent implements OnInit {
   ngOnInit(): void {
     // Load cache size on init
     this.refreshCacheSize();
-    // Check library server status
-    this.refreshLibraryServerStatus();
+    // Check bookshelf server status
+    this.refreshBookshelfStatus();
     // Load tool paths
     this.refreshToolPaths();
     // Detect WSL on Windows
@@ -2240,97 +2240,97 @@ export class SettingsComponent implements OnInit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Library Server Methods
+  // Bookshelf Server Methods
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async refreshLibraryServerStatus(): Promise<void> {
+  async refreshBookshelfStatus(): Promise<void> {
     try {
-      const result = await this.electronService.libraryServerGetStatus();
+      const result = await this.electronService.bookshelfGetStatus();
       if (result.success && result.data) {
-        this.libraryServerStatus.set(result.data);
+        this.bookshelfStatus.set(result.data);
       }
     } catch (err) {
-      console.error('Failed to get library server status:', err);
+      console.error('Failed to get bookshelf server status:', err);
     }
   }
 
-  async startLibraryServer(): Promise<void> {
-    const config = this.libraryServerConfig();
+  async startBookshelf(): Promise<void> {
+    const config = this.bookshelfConfig();
 
-    this.libraryServerLoading.set(true);
-    this.libraryServerError.set(null);
+    this.bookshelfLoading.set(true);
+    this.bookshelfError.set(null);
 
     try {
-      const result = await this.electronService.libraryServerStart({
+      const result = await this.electronService.bookshelfStart({
         port: config.port
       });
 
       if (result.success && result.data) {
-        this.libraryServerStatus.set(result.data);
-        this.settingsService.updateLibraryServerConfig({ enabled: true });
+        this.bookshelfStatus.set(result.data);
+        this.settingsService.updateBookshelfConfig({ enabled: true });
       } else {
-        this.libraryServerError.set(result.error || 'Failed to start server');
+        this.bookshelfError.set(result.error || 'Failed to start server');
       }
     } catch (err) {
-      this.libraryServerError.set(err instanceof Error ? err.message : 'Failed to start server');
+      this.bookshelfError.set(err instanceof Error ? err.message : 'Failed to start server');
     } finally {
-      this.libraryServerLoading.set(false);
+      this.bookshelfLoading.set(false);
     }
   }
 
-  async stopLibraryServer(): Promise<void> {
-    this.libraryServerLoading.set(true);
-    this.libraryServerError.set(null);
+  async stopBookshelf(): Promise<void> {
+    this.bookshelfLoading.set(true);
+    this.bookshelfError.set(null);
 
     try {
-      const result = await this.electronService.libraryServerStop();
+      const result = await this.electronService.bookshelfStop();
       if (result.success) {
-        this.libraryServerStatus.set({ running: false, port: 0, addresses: [] });
-        this.settingsService.updateLibraryServerConfig({ enabled: false });
+        this.bookshelfStatus.set({ running: false, port: 0, addresses: [] });
+        this.settingsService.updateBookshelfConfig({ enabled: false });
       } else {
-        this.libraryServerError.set(result.error || 'Failed to stop server');
+        this.bookshelfError.set(result.error || 'Failed to stop server');
       }
     } catch (err) {
-      this.libraryServerError.set(err instanceof Error ? err.message : 'Failed to stop server');
+      this.bookshelfError.set(err instanceof Error ? err.message : 'Failed to stop server');
     } finally {
-      this.libraryServerLoading.set(false);
+      this.bookshelfLoading.set(false);
     }
   }
 
-  async updateLibraryServerPort(port: number): Promise<void> {
+  async updateBookshelfPort(port: number): Promise<void> {
     if (port >= 1 && port <= 65535) {
-      this.settingsService.updateLibraryServerConfig({ port });
-      if (this.libraryServerStatus()?.running) {
-        await this.restartLibraryServer();
+      this.settingsService.updateBookshelfConfig({ port });
+      if (this.bookshelfStatus()?.running) {
+        await this.restartBookshelf();
       }
     }
   }
 
-  private async restartLibraryServer(): Promise<void> {
-    const config = this.libraryServerConfig();
+  private async restartBookshelf(): Promise<void> {
+    const config = this.bookshelfConfig();
 
-    this.libraryServerLoading.set(true);
-    this.libraryServerError.set(null);
+    this.bookshelfLoading.set(true);
+    this.bookshelfError.set(null);
 
     try {
-      if (this.libraryServerStatus()?.running) {
-        await this.electronService.libraryServerStop();
+      if (this.bookshelfStatus()?.running) {
+        await this.electronService.bookshelfStop();
       }
 
-      const result = await this.electronService.libraryServerStart({
+      const result = await this.electronService.bookshelfStart({
         port: config.port
       });
 
       if (result.success && result.data) {
-        this.libraryServerStatus.set(result.data);
-        this.settingsService.updateLibraryServerConfig({ enabled: true });
+        this.bookshelfStatus.set(result.data);
+        this.settingsService.updateBookshelfConfig({ enabled: true });
       } else {
-        this.libraryServerError.set(result.error || 'Failed to start server');
+        this.bookshelfError.set(result.error || 'Failed to start server');
       }
     } catch (err) {
-      this.libraryServerError.set(err instanceof Error ? err.message : 'Failed to start server');
+      this.bookshelfError.set(err instanceof Error ? err.message : 'Failed to start server');
     } finally {
-      this.libraryServerLoading.set(false);
+      this.bookshelfLoading.set(false);
     }
   }
 

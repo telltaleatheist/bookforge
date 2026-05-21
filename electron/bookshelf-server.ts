@@ -1,9 +1,13 @@
 /**
- * Library Server - HTTP server for browsing and downloading audiobooks from the network
+ * Bookshelf Server — HTTP server for remotely browsing/downloading/playing audiobooks.
  *
- * Discovers audiobooks from BookForge manifest data (not flat file scanning).
- * Provides a mobile-friendly web interface for accessing audiobooks
- * from any device on the local network.
+ * This is the WEB-BASED UI (accessible via browser on any device on the network).
+ * It is NOT the Angular Library (ebook catalog on nav rail) or Studio (TTS pipeline).
+ *
+ * Three distinct views in BookForge:
+ *   - Library:   Angular nav rail page — original ebooks/EPUBs/PDFs (electron/ebook-library.ts)
+ *   - Studio:    Angular nav rail page — TTS pipeline & project management
+ *   - Bookshelf: Web UI (this file) — browse/download/play finished audiobooks remotely
  */
 
 import express, { Request, Response, Application } from 'express';
@@ -20,12 +24,12 @@ import { scanLibrary, getCoverData, getEbooksRoot } from './ebook-library';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface LibraryServerConfig {
+export interface BookshelfServerConfig {
   port: number;
   userDataPath?: string;
 }
 
-export interface LibraryServerStatus {
+export interface BookshelfServerStatus {
   running: boolean;
   port: number;
   addresses: string[];
@@ -47,7 +51,7 @@ interface AudiobookEntry {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Library Server Class
+// Bookshelf Server Class
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Lazy-loaded music-metadata module (imported once)
@@ -66,7 +70,7 @@ interface DurationCacheEntry {
   duration: number;
 }
 
-export class LibraryServer {
+export class BookshelfServer {
   private app: Application;
   private server: http.Server | null = null;
   private port: number = 8765;
@@ -112,8 +116,8 @@ export class LibraryServer {
   }
 
   private setupRoutes(): void {
-    const uiPath = path.join(__dirname, 'library-ui');
-    console.log('[LibraryServer] UI path:', uiPath);
+    const uiPath = path.join(__dirname, 'bookshelf-ui');
+    console.log('[BookshelfServer] UI path:', uiPath);
 
     // CORS preflight for audio streaming
     this.app.options('/api/audio', (_req: Request, res: Response) => {
@@ -156,7 +160,7 @@ export class LibraryServer {
     });
   }
 
-  async start(config: LibraryServerConfig): Promise<void> {
+  async start(config: BookshelfServerConfig): Promise<void> {
     this.port = config.port;
     if (config.userDataPath) {
       this.userDataPath = config.userDataPath;
@@ -167,7 +171,7 @@ export class LibraryServer {
 
     return new Promise((resolve, reject) => {
       this.server = this.app.listen(this.port, '0.0.0.0', () => {
-        console.log(`[LibraryServer] Started on port ${this.port}`);
+        console.log(`[BookshelfServer] Started on port ${this.port}`);
         resolve();
       });
 
@@ -193,7 +197,7 @@ export class LibraryServer {
       const content = await fs.readFile(cachePath, 'utf-8');
       const entries: Record<string, DurationCacheEntry> = JSON.parse(content);
       this.durationCache = new Map(Object.entries(entries));
-      console.log(`[LibraryServer] Loaded duration cache (${this.durationCache.size} entries)`);
+      console.log(`[BookshelfServer] Loaded duration cache (${this.durationCache.size} entries)`);
     } catch {
       // No cache file yet — that's fine
     }
@@ -208,7 +212,7 @@ export class LibraryServer {
       await fs.writeFile(cachePath, JSON.stringify(obj), 'utf-8');
       this.durationCacheDirty = false;
     } catch (err) {
-      console.error('[LibraryServer] Failed to save duration cache:', err);
+      console.error('[BookshelfServer] Failed to save duration cache:', err);
     }
   }
 
@@ -216,7 +220,7 @@ export class LibraryServer {
     return new Promise((resolve) => {
       if (this.server) {
         this.server.close(() => {
-          console.log('[LibraryServer] Stopped');
+          console.log('[BookshelfServer] Stopped');
           this.server = null;
           resolve();
         });
@@ -230,7 +234,7 @@ export class LibraryServer {
     return this.server !== null;
   }
 
-  getStatus(): LibraryServerStatus {
+  getStatus(): BookshelfServerStatus {
     return {
       running: this.isRunning(),
       port: this.port,
@@ -398,7 +402,7 @@ export class LibraryServer {
       this.booksCache = { data: entries, timestamp: Date.now() };
       res.json({ books: entries });
     } catch (err) {
-      console.error('[LibraryServer] Error getting books:', err);
+      console.error('[BookshelfServer] Error getting books:', err);
       res.status(500).json({ error: 'Failed to get books' });
     }
   }
@@ -420,7 +424,7 @@ export class LibraryServer {
       }
       res.json({ tags: [...tagSet].sort() });
     } catch (err) {
-      console.error('[LibraryServer] Error getting tags:', err);
+      console.error('[BookshelfServer] Error getting tags:', err);
       res.status(500).json({ error: 'Failed to get tags' });
     }
   }
@@ -471,7 +475,7 @@ export class LibraryServer {
         res.json({ cover: null });
       }
     } catch (err) {
-      console.error('[LibraryServer] Error getting cover:', err);
+      console.error('[BookshelfServer] Error getting cover:', err);
       res.status(500).json({ error: 'Failed to get cover' });
     }
   }
@@ -520,7 +524,7 @@ export class LibraryServer {
       const fileStream = fsSync.createReadStream(filePath);
       fileStream.pipe(res);
     } catch (err) {
-      console.error('[LibraryServer] Error downloading file:', err);
+      console.error('[BookshelfServer] Error downloading file:', err);
       res.status(500).json({ error: 'Failed to download file' });
     }
   }
@@ -603,7 +607,7 @@ export class LibraryServer {
         stream.pipe(res);
       }
     } catch (err) {
-      console.error('[LibraryServer] Error streaming audio:', err);
+      console.error('[BookshelfServer] Error streaming audio:', err);
       res.status(500).json({ error: 'Failed to stream audio' });
     }
   }
@@ -625,7 +629,7 @@ export class LibraryServer {
       this.ebooksCache = { data: books, timestamp: Date.now() };
       res.json({ ebooks: books });
     } catch (err) {
-      console.error('[LibraryServer] Error getting ebooks:', err);
+      console.error('[BookshelfServer] Error getting ebooks:', err);
       res.status(500).json({ error: 'Failed to get ebooks' });
     }
   }
@@ -641,7 +645,7 @@ export class LibraryServer {
       const coverData = await getCoverData(relativePath);
       res.json({ cover: coverData });
     } catch (err) {
-      console.error('[LibraryServer] Error getting ebook cover:', err);
+      console.error('[BookshelfServer] Error getting ebook cover:', err);
       res.status(500).json({ error: 'Failed to get ebook cover' });
     }
   }
@@ -695,7 +699,7 @@ export class LibraryServer {
       const fileStream = fsSync.createReadStream(absolutePath);
       fileStream.pipe(res);
     } catch (err) {
-      console.error('[LibraryServer] Error downloading ebook:', err);
+      console.error('[BookshelfServer] Error downloading ebook:', err);
       res.status(500).json({ error: 'Failed to download ebook' });
     }
   }
@@ -758,7 +762,7 @@ export class LibraryServer {
 
       res.json({ jobs: sanitized, isRunning: state.isRunning ?? false, currentJobId: state.currentJobId ?? null });
     } catch (err) {
-      console.error('[LibraryServer] Error reading queue:', err);
+      console.error('[BookshelfServer] Error reading queue:', err);
       res.status(500).json({ error: 'Failed to read queue' });
     }
   }
@@ -818,7 +822,7 @@ export class LibraryServer {
       }
       return `data:${mimeType};base64,${buffer.toString('base64')}`;
     } catch (err) {
-      console.error('[LibraryServer] Error loading manifest cover:', err);
+      console.error('[BookshelfServer] Error loading manifest cover:', err);
       return null;
     }
   }
@@ -837,11 +841,11 @@ export class LibraryServer {
         return `data:${picture.format};base64,${base64}`;
       }
     } catch (err) {
-      console.error('[LibraryServer] Error extracting audio cover:', err);
+      console.error('[BookshelfServer] Error extracting audio cover:', err);
     }
     return null;
   }
 }
 
 // Export singleton instance
-export const libraryServer = new LibraryServer();
+export const bookshelfServer = new BookshelfServer();

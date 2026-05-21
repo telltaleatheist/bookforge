@@ -1,5 +1,7 @@
 /**
- * Ebook Library - Manages a collection of ebook files with Calibre ebook-meta integration
+ * Ebook Library — manages the ebook catalog (EPUBs, PDFs, etc.) shown on the Library nav rail page.
+ *
+ * This is the ANGULAR LIBRARY backend, NOT the Bookshelf web UI (bookshelf-server.ts).
  *
  * Books are stored in {library}/ebooks/ organized by category folders.
  * Metadata is cached in .cache/metadata.json with mtime-based invalidation.
