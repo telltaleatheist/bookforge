@@ -91,6 +91,7 @@ export interface StudioItem {
   tags?: string[];
   archived?: boolean;
   sortOrder?: number;
+  archiveCount?: number;
 
   // Error message if status is 'error'
   errorMessage?: string;

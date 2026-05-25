@@ -13,7 +13,8 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as crypto from 'crypto';
-import { getLibraryBasePath } from './manifest-service';
+import { getLibraryBasePath, listProjects, getProjectPath } from './manifest-service';
+import type { ProjectManifest } from './manifest-types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -606,7 +607,111 @@ export async function scanLibrary(): Promise<LibraryBookEntry[]> {
     console.error('[EbookLibrary] Scan failed:', err);
   }
 
+  // Merge archive entries from Studio projects (dedup against ebook library)
+  try {
+    const archiveBooks = await scanProjectArchives();
+    if (archiveBooks.length > 0) {
+      // Build a dedup set from ebook library: normalize title+authorLast
+      const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const existing = new Set<string>();
+      for (const b of books) {
+        const key = normalize(b.title) + '|' + normalize(b.authorLast || b.authorFull || '');
+        existing.add(key);
+      }
+
+      let merged = 0;
+      for (const ab of archiveBooks) {
+        const key = normalize(ab.title) + '|' + normalize(ab.authorLast || ab.authorFull || '');
+        if (!existing.has(key)) {
+          books.push(ab);
+          existing.add(key);
+          merged++;
+        }
+      }
+
+      if (merged > 0) {
+        console.log(`[EbookLibrary] Merged ${merged} archive entries (${archiveBooks.length - merged} deduped)`);
+      }
+    }
+  } catch (err) {
+    console.warn('[EbookLibrary] Failed to scan project archives:', err);
+  }
+
   return books;
+}
+
+/**
+ * Scan all project archive/ folders and return entries as LibraryBookEntry[].
+ * These represent original source files archived during import.
+ */
+async function scanProjectArchives(): Promise<LibraryBookEntry[]> {
+  const result = await listProjects({ type: 'book' });
+  if (!result.success || !result.projects) return [];
+
+  const entries: LibraryBookEntry[] = [];
+
+  for (const manifest of result.projects as ProjectManifest[]) {
+    if (!manifest.archive || manifest.archive.length === 0) continue;
+
+    const projectDir = getProjectPath(manifest.projectId);
+
+    for (const entry of manifest.archive) {
+      if (entry.role !== 'original') continue;
+
+      const absPath = path.join(projectDir, entry.path);
+      if (!fsSync.existsSync(absPath)) continue;
+
+      const filename = path.basename(entry.path);
+      const ext = path.extname(filename).toLowerCase();
+      if (!EBOOK_EXTENSIONS.has(ext)) continue;
+
+      // Parse author from manifest metadata
+      let authorFirst: string | undefined;
+      let authorLast: string | undefined;
+      let authorFull: string | undefined;
+      const author = manifest.metadata.author;
+      if (author && author !== 'Unknown') {
+        if (manifest.metadata.authorFileAs) {
+          authorFull = manifest.metadata.authorFileAs;
+          const parts = manifest.metadata.authorFileAs.split(',').map(s => s.trim());
+          authorLast = parts[0];
+          authorFirst = parts[1];
+        } else if (author.includes(',')) {
+          authorFull = author;
+          const parts = author.split(',').map(s => s.trim());
+          authorLast = parts[0];
+          authorFirst = parts[1];
+        } else {
+          authorFull = author;
+          const parts = author.split(/\s+/);
+          if (parts.length >= 2) {
+            authorFirst = parts.slice(0, -1).join(' ');
+            authorLast = parts[parts.length - 1];
+          } else {
+            authorLast = author;
+          }
+        }
+      }
+
+      entries.push({
+        relativePath: `__archive__/${manifest.projectId}/${filename}`,
+        filename,
+        title: manifest.metadata.title,
+        subtitle: undefined,
+        authorFirst,
+        authorLast,
+        authorFull,
+        year: manifest.metadata.year ? parseInt(manifest.metadata.year) : undefined,
+        language: manifest.metadata.language,
+        format: ext.replace('.', ''),
+        category: 'Studio Projects',
+        fileSize: entry.size || 0,
+        dateAdded: new Date(entry.archivedAt).getTime(),
+      });
+    }
+  }
+
+  return entries;
 }
 
 /**
@@ -731,6 +836,9 @@ export async function addBooks(
  * Remove a book from the library (deletes the copy)
  */
 export async function removeBook(relativePath: string): Promise<void> {
+  if (isArchiveEntry(relativePath)) {
+    throw new Error('Cannot delete archive entries from the library view');
+  }
   const absolutePath = path.join(getEbooksRoot(), relativePath);
   await fs.unlink(absolutePath);
 
@@ -907,7 +1015,7 @@ export async function getCoverData(relativePath: string): Promise<string | null>
   }
 
   // Try extracting cover on demand
-  const absolutePath = path.join(getEbooksRoot(), relativePath);
+  const absolutePath = getAbsolutePath(relativePath);
   const coverOut = path.join(getCoversDir(), `${coverHash(relativePath)}.jpg`);
   const hasCover = await extractCover(absolutePath, coverOut);
   if (hasCover) {
@@ -1076,7 +1184,22 @@ export async function renameCategory(oldName: string, newName: string): Promise<
  * by the caller (main.ts) via the existing audiobook:import-epub flow.
  */
 export function getAbsolutePath(relativePath: string): string {
+  // Archive entries use virtual prefix: __archive__/{projectId}/{filename}
+  if (relativePath.startsWith('__archive__/')) {
+    const parts = relativePath.split('/');
+    // parts: ["__archive__", projectId, filename]
+    const projectId = parts[1];
+    const filename = parts.slice(2).join('/');
+    return path.join(getProjectPath(projectId), 'archive', filename);
+  }
   return path.join(getEbooksRoot(), relativePath);
+}
+
+/**
+ * Check if a relativePath points to a project archive entry (read-only in library)
+ */
+export function isArchiveEntry(relativePath: string): boolean {
+  return relativePath.startsWith('__archive__/');
 }
 
 /**

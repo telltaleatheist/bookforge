@@ -5065,11 +5065,27 @@ function setupIpcHandlers(): void {
       }
       processor.close();
 
+      // Resolve author display name: prefer contributors (parsed from opf:file-as),
+      // then detect "Last, First" in raw dc:creator and flip to "First Last"
+      let authorDisplay = metadata?.author || '';
+      if (metadata?.contributors && metadata.contributors.length > 0) {
+        // Build "First Last" from contributors
+        authorDisplay = metadata.contributors
+          .map(c => [c.first, c.last].filter(Boolean).join(' '))
+          .join(', ') || authorDisplay;
+      } else if (authorDisplay.includes(',') && !authorDisplay.includes(' and ')) {
+        // Raw dc:creator is likely "Last, First" — flip it
+        const parts = authorDisplay.split(',').map(s => s.trim());
+        if (parts.length === 2 && parts[1]) {
+          authorDisplay = `${parts[1]} ${parts[0]}`;
+        }
+      }
+
       return {
         success: true,
         metadata: {
           title: metadata?.title || '',
-          author: metadata?.author || '',
+          author: authorDisplay,
           year: metadata?.year || '',
           language: metadata?.language || 'en',
           coverData,
@@ -5105,6 +5121,7 @@ function setupIpcHandlers(): void {
 
       let title: string;
       let author: string;
+      let authorFileAs: string | undefined;
       let year: number | undefined;
       let language = 'en';
       let subtitle: string | undefined;
@@ -5120,10 +5137,16 @@ function setupIpcHandlers(): void {
         // Fall back to filename parsing using the shared library convention parser
         const parsed = ebookLibrary.parseFilename(filename);
         title = parsed.title || filename.replace(/\.[^.]+$/i, '');
-        author = parsed.authorFull || parsed.authorLast || 'Unknown';
         year = parsed.year;
         language = parsed.language || 'en';
         subtitle = parsed.subtitle;
+        // Build display author as "First Last", preserve "Last, First" as authorFileAs
+        if (parsed.authorFirst && parsed.authorLast) {
+          author = `${parsed.authorFirst} ${parsed.authorLast}`;
+          authorFileAs = `${parsed.authorLast}, ${parsed.authorFirst}`;
+        } else {
+          author = parsed.authorLast || parsed.authorFull || 'Unknown';
+        }
       }
 
       // Generate human-readable, ASCII-only slug for folder name.
@@ -5146,11 +5169,12 @@ function setupIpcHandlers(): void {
         slug = `${slug}_${timestamp}`;
       }
 
-      // Create the project structure — only source and output dirs
+      // Create the project structure — only source, archive, and output dirs
       // Stage dirs (01-cleanup, 02-translate, 03-tts) are created when those stages actually run
       const projectDir = path.join(projectsFolder, slug);
       await fs.mkdir(projectDir, { recursive: true });
       await fs.mkdir(path.join(projectDir, 'source'), { recursive: true });
+      await fs.mkdir(path.join(projectDir, 'archive'), { recursive: true });
       await fs.mkdir(path.join(projectDir, 'output'), { recursive: true });
 
       // Determine source type and copy file
@@ -5163,6 +5187,22 @@ function setupIpcHandlers(): void {
       const sourcePath = path.join(projectDir, 'source', originalFilename);
       await fs.copyFile(epubSourcePath, sourcePath);
 
+      // Archive pristine copy of the original file with descriptive name
+      const archiveMetadata = {
+        title,
+        author,
+        authorFileAs,
+        year: year ? String(year) : undefined,
+      };
+      const descriptiveFilename = manifestService.computeDescriptiveFilename(archiveMetadata, ext);
+      const archivePath = path.join(projectDir, 'archive', descriptiveFilename);
+      try {
+        await manifestService.atomicCopyFile(epubSourcePath, archivePath);
+        console.log(`[audiobook:import] Archived pristine copy: ${descriptiveFilename}`);
+      } catch (archiveErr) {
+        console.warn('[audiobook:import] Failed to archive pristine copy (non-fatal):', archiveErr);
+      }
+
       // For non-EPUB formats, also convert to original.epub if an EPUB was provided alongside
       // (The add-modal handles conversion before calling this handler for convertible formats)
       let epubPath = sourcePath;
@@ -5173,6 +5213,16 @@ function setupIpcHandlers(): void {
         // PDF or other format: no original.epub yet — user will create exported.epub from editor
         epubPath = sourcePath;
       }
+
+      // Compute descriptive output filename for M4B exports
+      const outputFilename = manifestService.computeDescriptiveFilename(archiveMetadata, '.m4b');
+
+      // Get archive entry info (size from original source)
+      let archiveSize: number | undefined;
+      try {
+        const archiveStats = await fs.stat(archivePath);
+        archiveSize = archiveStats.size;
+      } catch { /* ignore */ }
 
       // Create manifest.json
       const manifest = {
@@ -5190,14 +5240,24 @@ function setupIpcHandlers(): void {
           title,
           subtitle,
           author,
+          authorFileAs,
           year,
           language,
+          outputFilename,
           coverPath: undefined as string | undefined,
         },
         sortOrder: -1,
         chapters: [],
         pipeline: {},
-        outputs: {}
+        outputs: {},
+        archive: [{
+          path: `archive/${descriptiveFilename}`,
+          role: 'original' as const,
+          format: ext.replace('.', ''),
+          label: `Original ${ext.replace('.', '').toUpperCase()}`,
+          archivedAt: new Date().toISOString(),
+          size: archiveSize,
+        }],
       };
 
       const manifestPath = path.join(projectDir, 'manifest.json');
@@ -5217,24 +5277,6 @@ function setupIpcHandlers(): void {
       console.log(`[audiobook:import] Created manifest project: ${projectDir}`);
       console.log(`[audiobook:import] Copied ${sourceType} to: ${sourcePath}`);
 
-      // Auto-copy original source to ebook library (skip if already there)
-      const ebooksRoot = path.resolve(ebookLibrary.getEbooksRoot());
-      const resolvedSource = path.resolve(epubSourcePath);
-      if (resolvedSource.startsWith(ebooksRoot + path.sep)) {
-        console.log(`[audiobook:import] Source is already in ebook library, skipping auto-copy`);
-      } else {
-        try {
-          const libResult = await ebookLibrary.addBooks([epubSourcePath]);
-          if (libResult.added.length > 0) {
-            console.log(`[audiobook:import] Also added to ebook library: ${libResult.added[0].relativePath}`);
-          } else if (libResult.duplicates.length > 0) {
-            console.log(`[audiobook:import] Already in ebook library (skipped)`);
-          }
-        } catch (libErr) {
-          console.warn('[audiobook:import] Failed to add to ebook library (non-fatal):', libErr);
-        }
-      }
-
       return {
         success: true,
         projectId: slug,
@@ -5248,6 +5290,273 @@ function setupIpcHandlers(): void {
     } catch (err) {
       console.error('[audiobook:import] Error:', err);
       return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─── Archive IPC Handlers ─────────────────────────────────────────────────
+
+  ipcMain.handle('archive:save-to-archive', async (
+    _event,
+    projectId: string,
+    sourcePath: string,
+    options: { role: 'original' | 'translation' | 'export' | 'audiobook'; format: string; language?: string; label?: string }
+  ) => {
+    try {
+      const result = await manifestService.getManifest(projectId);
+      if (!result.success || !result.manifest) {
+        return { success: false, error: result.error || 'Project not found' };
+      }
+
+      const metadata = result.manifest.metadata;
+      let descriptiveFilename = manifestService.computeDescriptiveFilename(
+        { title: metadata.title, author: metadata.author, authorFileAs: metadata.authorFileAs, year: metadata.year },
+        options.format.startsWith('.') ? options.format : `.${options.format}`
+      );
+
+      // For translations, append language code before extension
+      if (options.language) {
+        const ext = path.extname(descriptiveFilename);
+        const base = descriptiveFilename.slice(0, -ext.length);
+        descriptiveFilename = `${base} [${options.language}]${ext}`;
+      }
+
+      return await manifestService.archiveFile(projectId, sourcePath, {
+        ...options,
+        descriptiveFilename,
+      });
+    } catch (err) {
+      console.error('[archive:save-to-archive] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('archive:list', async (_event, projectId: string) => {
+    try {
+      return await manifestService.listArchive(projectId);
+    } catch (err) {
+      console.error('[archive:list] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('archive:add-file', async (_event, projectId: string) => {
+    try {
+      const result = await manifestService.getManifest(projectId);
+      if (!result.success || !result.manifest) {
+        return { success: false, error: result.error || 'Project not found' };
+      }
+
+      const { canceled, filePaths } = await dialog.showOpenDialog({
+        title: 'Add file to archive',
+        filters: [
+          { name: 'Documents', extensions: ['pdf', 'epub', 'm4b', 'mp3', 'txt'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+        properties: ['openFile'],
+      });
+
+      if (canceled || !filePaths?.length) {
+        return { success: false, canceled: true };
+      }
+
+      const filePath = filePaths[0];
+      const ext = path.extname(filePath);
+      const format = ext.replace('.', '').toLowerCase();
+      const metadata = result.manifest.metadata;
+      const descriptiveFilename = manifestService.computeDescriptiveFilename(
+        { title: metadata.title, author: metadata.author, authorFileAs: metadata.authorFileAs, year: metadata.year },
+        ext
+      );
+
+      return await manifestService.archiveFile(projectId, filePath, {
+        role: 'original',
+        format,
+        label: `Original ${format.toUpperCase()}`,
+        descriptiveFilename,
+      });
+    } catch (err) {
+      console.error('[archive:add-file] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─── Archive Migration: Populate archive/ for existing projects ────────────
+
+  ipcMain.handle('archive:migrate-from-library', async (event) => {
+    const results = {
+      migrated: 0,
+      skipped: 0,
+      failed: [] as Array<{ title: string; error: string }>,
+    };
+
+    function normalizeForMatch(s: string): string {
+      return s.trim().toLowerCase().replace(/\s+/g, ' ');
+    }
+
+    function findLibraryMatch(
+      manifest: { metadata: { title: string; author: string; year?: string } },
+      libraryBooks: ebookLibrary.LibraryBookEntry[]
+    ): ebookLibrary.LibraryBookEntry | undefined {
+      const mTitle = normalizeForMatch(manifest.metadata.title);
+      const mAuthor = normalizeForMatch(manifest.metadata.author);
+
+      const candidates = libraryBooks.filter(book => {
+        if (normalizeForMatch(book.title) !== mTitle) return false;
+        const bookAuthorFull = book.authorFull ? normalizeForMatch(book.authorFull) : '';
+        const bookAuthorLast = book.authorLast ? normalizeForMatch(book.authorLast) : '';
+        return mAuthor === bookAuthorFull || mAuthor === bookAuthorLast
+          || bookAuthorFull.includes(mAuthor) || mAuthor.includes(bookAuthorLast);
+      });
+
+      if (candidates.length === 0) return undefined;
+      if (candidates.length === 1) return candidates[0];
+
+      // Multiple matches — prefer year match
+      const mYear = manifest.metadata.year;
+      if (mYear) {
+        const yearNum = parseInt(mYear);
+        const yearMatch = candidates.find(b => b.year === yearNum);
+        if (yearMatch) return yearMatch;
+      }
+      return candidates[0];
+    }
+
+    try {
+      // 1. Scan ebook library
+      const libraryBooks = await ebookLibrary.scanLibrary();
+      console.log(`[archive:migrate] Found ${libraryBooks.length} ebook library entries`);
+
+      // 2. List all book projects
+      const listResult = await manifestService.listProjects({ type: 'book' });
+      if (!listResult.success || !listResult.projects) {
+        return { success: false, migrated: 0, skipped: 0, failed: [], error: listResult.error || 'Failed to list projects' };
+      }
+
+      const projects = listResult.projects;
+      console.log(`[archive:migrate] Found ${projects.length} book projects`);
+
+      for (let i = 0; i < projects.length; i++) {
+        const manifest = projects[i];
+        const title = manifest.metadata.title || manifest.projectId;
+
+        // Send progress
+        event.sender.send('archive:migration-progress', {
+          current: i + 1,
+          total: projects.length,
+          title,
+        });
+
+        // Skip if already has archive entries
+        if (manifest.archive && manifest.archive.length > 0) {
+          results.skipped++;
+          continue;
+        }
+
+        try {
+          const projectDir = manifestService.getProjectPath(manifest.projectId);
+          const archiveDir = path.join(projectDir, 'archive');
+          await fs.mkdir(archiveDir, { recursive: true });
+
+          // Try to match against ebook library
+          const match = findLibraryMatch(manifest, libraryBooks);
+
+          if (match) {
+            // Copy ebook library file — it already has a descriptive filename
+            const ebookAbsPath = ebookLibrary.getAbsolutePath(match.relativePath);
+            const descriptiveFilename = match.filename;
+            const archivePath = path.join(archiveDir, descriptiveFilename);
+
+            await manifestService.atomicCopyFile(ebookAbsPath, archivePath);
+
+            const stats = await fs.stat(archivePath);
+            const ext = path.extname(descriptiveFilename).replace('.', '').toLowerCase();
+
+            await manifestService.modifyManifest(manifest.projectId, (m) => {
+              if (!m.archive) m.archive = [];
+              m.archive.push({
+                path: `archive/${descriptiveFilename}`,
+                role: 'original' as const,
+                format: ext,
+                label: `Original ${ext.toUpperCase()}`,
+                archivedAt: new Date().toISOString(),
+                size: stats.size,
+              });
+              // Set outputFilename if not already set
+              if (!m.metadata.outputFilename) {
+                m.metadata.outputFilename = manifestService.computeDescriptiveFilename(
+                  { title: m.metadata.title, author: m.metadata.author, authorFileAs: m.metadata.authorFileAs, year: m.metadata.year },
+                  '.m4b'
+                );
+              }
+            });
+
+            console.log(`[archive:migrate] Matched & archived: ${title} ← ${match.relativePath}`);
+            results.migrated++;
+          } else {
+            // No library match — fall back to source/original.{ext}
+            const sourceDir = path.join(projectDir, 'source');
+            let originalPath: string | undefined;
+            let originalExt: string | undefined;
+
+            for (const ext of ['.epub', '.pdf']) {
+              const candidate = path.join(sourceDir, `original${ext}`);
+              try {
+                await fs.access(candidate);
+                originalPath = candidate;
+                originalExt = ext;
+                break;
+              } catch { /* not found */ }
+            }
+
+            if (!originalPath || !originalExt) {
+              results.skipped++;
+              console.log(`[archive:migrate] No source found, skipping: ${title}`);
+              continue;
+            }
+
+            const descriptiveFilename = manifestService.computeDescriptiveFilename(
+              { title: manifest.metadata.title, author: manifest.metadata.author, authorFileAs: manifest.metadata.authorFileAs, year: manifest.metadata.year },
+              originalExt
+            );
+            const archivePath = path.join(archiveDir, descriptiveFilename);
+
+            await manifestService.atomicCopyFile(originalPath, archivePath);
+
+            const stats = await fs.stat(archivePath);
+            const format = originalExt.replace('.', '').toLowerCase();
+
+            await manifestService.modifyManifest(manifest.projectId, (m) => {
+              if (!m.archive) m.archive = [];
+              m.archive.push({
+                path: `archive/${descriptiveFilename}`,
+                role: 'original' as const,
+                format,
+                label: `Original ${format.toUpperCase()}`,
+                archivedAt: new Date().toISOString(),
+                size: stats.size,
+              });
+              if (!m.metadata.outputFilename) {
+                m.metadata.outputFilename = manifestService.computeDescriptiveFilename(
+                  { title: m.metadata.title, author: m.metadata.author, authorFileAs: m.metadata.authorFileAs, year: m.metadata.year },
+                  '.m4b'
+                );
+              }
+            });
+
+            console.log(`[archive:migrate] Fallback archived: ${title} ← source/original${originalExt}`);
+            results.migrated++;
+          }
+        } catch (err) {
+          console.error(`[archive:migrate] Failed: ${title}`, err);
+          results.failed.push({ title, error: (err as Error).message });
+        }
+      }
+
+      console.log(`[archive:migrate] Done — migrated: ${results.migrated}, skipped: ${results.skipped}, failed: ${results.failed.length}`);
+      return { success: true, ...results };
+    } catch (err) {
+      console.error('[archive:migrate] Fatal error:', err);
+      return { success: false, ...results, error: (err as Error).message };
     }
   });
 

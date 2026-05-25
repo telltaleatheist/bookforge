@@ -33,6 +33,19 @@ export interface ProjectManifest {
   // Organization
   archived?: boolean;
   sortOrder?: number;
+
+  // Archive
+  archive?: ArchiveEntry[];
+}
+
+export interface ArchiveEntry {
+  path: string;           // Relative: "archive/Title. Author. (2022).pdf"
+  role: 'original' | 'translation' | 'export' | 'audiobook';
+  format: string;         // 'pdf', 'epub', 'm4b', etc.
+  language?: string;      // For translations: 'en', 'de', etc.
+  label?: string;         // User-facing: "Original PDF", "English Translation"
+  archivedAt: string;     // ISO timestamp
+  size?: number;          // File size in bytes
 }
 
 export interface ManifestSource {

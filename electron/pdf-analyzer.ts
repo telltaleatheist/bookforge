@@ -162,6 +162,7 @@ export interface Chapter {
   title: string;
   page: number;              // 0-indexed
   blockId?: string;          // Linked text block
+  mergedBlockIds?: string[]; // All block IDs contributing to a merged multi-line title
   y?: number;                // Y position for ordering within page
   level: number;             // 1=chapter, 2=section, 3+=subsection
   source: 'toc' | 'heuristic' | 'manual';
@@ -1802,8 +1803,8 @@ export class PDFAnalyzer {
     const differentFont = block.font_name !== bodyFont;
     const isItalicCaption = block.is_italic && !bodyIsItalic;
 
-    // Rule 1: Small font in non-lower region → caption
-    if (block.font_size < bodySize * 0.85 && block.region !== 'lower') {
+    // Rule 1: Small font near an image → caption
+    if (nearImage && block.font_size < bodySize * 0.85) {
       return 'caption';
     }
     // Rule 2: Italic text near an image (when body text isn't italic) → caption
@@ -5065,6 +5066,13 @@ export class PDFAnalyzer {
               ? combinedTitle.substring(0, 77) + '...'
               : combinedTitle;
             prev.confidence = Math.max(prev.confidence || 0, chapter.confidence || 0);
+            // Track all block IDs contributing to this merged title
+            if (!prev.mergedBlockIds) {
+              prev.mergedBlockIds = prev.blockId ? [prev.blockId] : [];
+            }
+            if (chapter.blockId) {
+              prev.mergedBlockIds.push(chapter.blockId);
+            }
             continue; // Skip adding current — it's merged into prev
           }
         }

@@ -449,8 +449,7 @@ function passesStructuralConstraint(
         && !hasSubstantialTextBelow(block, blocksByPage);
 
     case 'caption':
-      return isAdjacentToImage(block, imagesByPage) ||
-        block.font_size < baselines.bodySize * 0.9;
+      return isAdjacentToImage(block, imagesByPage);
 
     case 'image':
       return !!block.is_image;
@@ -647,7 +646,7 @@ export function classifyBlockHeuristic(
   const differentFont = block.font_name !== baselines.bodyFont;
   const isItalicCaption = !!block.is_italic && !baselines.bodyIsItalic;
 
-  if (block.font_size < baselines.bodySize * 0.85 && block.region !== 'lower') return 'caption';
+  if (nearImage && block.font_size < baselines.bodySize * 0.85) return 'caption';
   if (nearImage && isItalicCaption) return 'caption';
   if (nearImage && differentFont && (block.line_count || 1) <= 8) return 'caption';
   if (nearImage && block.font_size < baselines.bodySize * 0.95) return 'caption';
@@ -1008,7 +1007,7 @@ export function classifyBlockWithThresholds(
   const differentFont = block.font_name !== baselines.bodyFont;
   const isItalicCaption = !!block.is_italic && !baselines.bodyIsItalic;
 
-  if (block.font_size < baselines.bodySize * thresholds.caption.smallFontRatio && region !== 'lower') return 'caption';
+  if (nearImage && block.font_size < baselines.bodySize * thresholds.caption.smallFontRatio) return 'caption';
   if (nearImage && isItalicCaption) return 'caption';
   if (nearImage && differentFont && (block.line_count || 1) <= thresholds.caption.maxLinesNearImage) return 'caption';
   if (nearImage && block.font_size < baselines.bodySize * thresholds.caption.nearImageFontRatio) return 'caption';

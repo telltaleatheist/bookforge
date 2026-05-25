@@ -24,6 +24,7 @@ export interface Chapter {
   title: string;
   page: number;              // 0-indexed
   blockId?: string;          // Linked text block
+  mergedBlockIds?: string[]; // All block IDs contributing to a merged multi-line title
   y?: number;                // Y position for ordering within page
   level: number;             // 1=chapter, 2=section, 3+=subsection
   source: 'toc' | 'heuristic' | 'manual';
@@ -3374,5 +3375,56 @@ export class ElectronService {
       return (window as any).electron.manifest.migrateAll();
     }
     return { success: false, migrated: [], failed: [] };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Archive Service
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Save a project file to the archive
+   */
+  async archiveSaveToArchive(
+    projectId: string,
+    sourcePath: string,
+    options: { role: 'original' | 'translation' | 'export' | 'audiobook'; format: string; language?: string; label?: string }
+  ): Promise<{ success: boolean; entry?: any; error?: string }> {
+    if (this.isElectron && (window as any).electron.archive) {
+      return (window as any).electron.archive.saveToArchive(projectId, sourcePath, options);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * List archive entries for a project
+   */
+  async archiveList(projectId: string): Promise<{ success: boolean; entries?: any[]; error?: string }> {
+    if (this.isElectron && (window as any).electron.archive) {
+      return (window as any).electron.archive.list(projectId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Add a file to the archive via file picker
+   */
+  async archiveAddFile(projectId: string): Promise<{ success: boolean; canceled?: boolean; entry?: any; error?: string }> {
+    if (this.isElectron && (window as any).electron.archive) {
+      return (window as any).electron.archive.addFile(projectId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Migrate existing projects to the archive system by matching against ebook library
+   */
+  async archiveMigrateFromLibrary(): Promise<{
+    success: boolean; migrated: number; skipped: number;
+    failed: Array<{ title: string; error: string }>; error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.archive) {
+      return (window as any).electron.archive.migrateFromLibrary();
+    }
+    return { success: false, migrated: 0, skipped: 0, failed: [], error: 'Not running in Electron' };
   }
 }

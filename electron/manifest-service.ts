@@ -25,6 +25,7 @@ import type {
   ManifestListResult,
   ProjectSummary,
   ManifestUpdate,
+  ArchiveEntry,
 } from './manifest-types.js';
 
 // Generate UUID v4 without external dependency
@@ -41,7 +42,7 @@ const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
 const MANIFEST_VERSION = 2;
 
 // Folder structure within each project
-const PROJECT_FOLDERS = ['source', 'stages', 'stages/01-cleanup', 'stages/02-translate', 'stages/03-tts', 'output'];
+const PROJECT_FOLDERS = ['source', 'archive', 'stages', 'stages/01-cleanup', 'stages/02-translate', 'stages/03-tts', 'output'];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-project write lock (prevents concurrent read-modify-write races)
@@ -441,6 +442,9 @@ export async function updateManifest(update: ManifestUpdate): Promise<ManifestSa
     if (update.sortOrder !== undefined) {
       manifest.sortOrder = update.sortOrder;
     }
+    if (update.archive !== undefined) {
+      manifest.archive = update.archive;
+    }
   });
 }
 
@@ -655,6 +659,138 @@ export function computeProjectSlug(title: string, author: string, year?: string)
   const yearStr = year ? `_(${year})` : '';
   return toAsciiSlug(`${cleanTitle}_-_${cleanAuthor}${yearStr}`).substring(0, 150);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Archive Operations
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Characters unsafe for filenames on Windows/macOS/Linux */
+const UNSAFE_FILENAME_CHARS = /[<>:"/\\|?*]/g;
+
+/**
+ * Compute a descriptive filename from project metadata.
+ * Format: "Title. LastName, FirstName. (Year).ext"
+ * Omits author if missing/Unknown, omits year if missing.
+ */
+export function computeDescriptiveFilename(
+  metadata: { title: string; author?: string; authorFileAs?: string; year?: string },
+  ext: string
+): string {
+  // Ensure extension starts with a dot
+  if (!ext.startsWith('.')) ext = '.' + ext;
+
+  const title = metadata.title.trim();
+
+  // Build author part: prefer authorFileAs ("Last, First"), else parse author
+  let authorPart = '';
+  const author = metadata.author?.trim();
+  if (author && author !== 'Unknown') {
+    if (metadata.authorFileAs) {
+      authorPart = metadata.authorFileAs.trim();
+    } else {
+      // Try to parse "First Last" → "Last, First"
+      const parts = author.split(/\s+/);
+      if (parts.length >= 2) {
+        const last = parts[parts.length - 1];
+        const first = parts.slice(0, -1).join(' ');
+        authorPart = `${last}, ${first}`;
+      } else {
+        authorPart = author;
+      }
+    }
+  }
+
+  // Build filename
+  let name = title;
+  if (authorPart) name += `. ${authorPart}.`;
+  if (metadata.year) name += ` (${metadata.year})`;
+  name += ext;
+
+  // Sanitize unsafe characters
+  return name.replace(UNSAFE_FILENAME_CHARS, '_');
+}
+
+/**
+ * Archive a file into a project's archive/ folder.
+ * - Copies the file with a descriptive name (never moves/deletes)
+ * - Never overwrites — appends timestamp on name collision
+ * - Adds an ArchiveEntry to the manifest
+ */
+export async function archiveFile(
+  projectId: string,
+  sourcePath: string,
+  options: {
+    role: ArchiveEntry['role'];
+    format: string;
+    language?: string;
+    label?: string;
+    descriptiveFilename: string;
+  }
+): Promise<{ success: boolean; entry?: ArchiveEntry; error?: string }> {
+  try {
+    const archiveDir = path.join(getProjectPath(projectId), 'archive');
+    await fs.promises.mkdir(archiveDir, { recursive: true });
+
+    // Determine target filename — never overwrite
+    let targetFilename = options.descriptiveFilename;
+    let targetPath = path.join(archiveDir, targetFilename);
+
+    if (fs.existsSync(targetPath)) {
+      // Append timestamp before extension to avoid collision
+      const ext = path.extname(targetFilename);
+      const base = targetFilename.slice(0, -ext.length);
+      const timestamp = Date.now();
+      targetFilename = `${base}_${timestamp}${ext}`;
+      targetPath = path.join(archiveDir, targetFilename);
+    }
+
+    // Atomic copy
+    await atomicCopyFile(sourcePath, targetPath);
+
+    // Get file size
+    const stats = await fs.promises.stat(targetPath);
+
+    const entry: ArchiveEntry = {
+      path: `archive/${targetFilename}`,
+      role: options.role,
+      format: options.format,
+      language: options.language,
+      label: options.label,
+      archivedAt: new Date().toISOString(),
+      size: stats.size,
+    };
+
+    // Append entry to manifest
+    await modifyManifest(projectId, (manifest) => {
+      if (!manifest.archive) manifest.archive = [];
+      manifest.archive.push(entry);
+    });
+
+    console.log(`[ManifestService] Archived file: ${targetFilename} (${options.role})`);
+    return { success: true, entry };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * List archive entries from a project's manifest.
+ */
+export async function listArchive(projectId: string): Promise<{ success: boolean; entries?: ArchiveEntry[]; error?: string }> {
+  try {
+    const result = await getManifest(projectId);
+    if (!result.success || !result.manifest) {
+      return { success: false, error: result.error || 'Project not found' };
+    }
+    return { success: true, entries: result.manifest.archive || [] };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Staging Directory Cleanup
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Clean up old temp files in staging directory

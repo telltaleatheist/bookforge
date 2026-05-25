@@ -1932,6 +1932,36 @@ export interface ElectronAPI {
     onMigrationProgress: (callback: (progress: Record<string, unknown>) => void) => void;
     offMigrationProgress: () => void;
   };
+  archive: {
+    saveToArchive: (projectId: string, sourcePath: string, options: {
+      role: 'original' | 'translation' | 'export' | 'audiobook';
+      format: string;
+      language?: string;
+      label?: string;
+    }) => Promise<{
+      success: boolean;
+      entry?: Record<string, unknown>;
+      error?: string;
+    }>;
+    list: (projectId: string) => Promise<{
+      success: boolean;
+      entries?: Array<Record<string, unknown>>;
+      error?: string;
+    }>;
+    addFile: (projectId: string) => Promise<{
+      success: boolean;
+      canceled?: boolean;
+      entry?: Record<string, unknown>;
+      error?: string;
+    }>;
+    migrateFromLibrary: () => Promise<{
+      success: boolean;
+      migrated: number;
+      skipped: number;
+      failed: Array<{ title: string; error: string }>;
+      error?: string;
+    }>;
+  };
   editor: {
     openWindow: (projectPath: string, options?: { mode?: string }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
     openWindowWithBfp: (bfpPath: string, sourcePath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
@@ -3381,6 +3411,22 @@ const electronAPI: ElectronAPI = {
     offMigrationProgress: () => {
       ipcRenderer.removeAllListeners('manifest:migration-progress');
     },
+  },
+
+  archive: {
+    saveToArchive: (projectId: string, sourcePath: string, options: {
+      role: 'original' | 'translation' | 'export' | 'audiobook';
+      format: string;
+      language?: string;
+      label?: string;
+    }) =>
+      ipcRenderer.invoke('archive:save-to-archive', projectId, sourcePath, options),
+    list: (projectId: string) =>
+      ipcRenderer.invoke('archive:list', projectId),
+    addFile: (projectId: string) =>
+      ipcRenderer.invoke('archive:add-file', projectId),
+    migrateFromLibrary: () =>
+      ipcRenderer.invoke('archive:migrate-from-library'),
   },
 
   editor: {

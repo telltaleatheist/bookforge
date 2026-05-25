@@ -949,6 +949,17 @@ export class ExportService {
     // Track whether user defined chapters - if not, we won't render headings
     const userDefinedChapters = sortedChapters.length > 0;
 
+    // Build set of all block IDs that are chapter headings — these should never
+    // appear as body content since they're rendered as <h1>/<h2>/<h3> headings.
+    // Includes both primary blockId and any merged multi-line title block IDs.
+    const chapterBlockIds = new Set<string>();
+    for (const ch of sortedChapters) {
+      if (ch.blockId) chapterBlockIds.add(ch.blockId);
+      if (ch.mergedBlockIds) {
+        for (const bid of ch.mergedBlockIds) chapterBlockIds.add(bid);
+      }
+    }
+
     const chapterSections: { title: string; level: number; content: string[]; showHeading: boolean }[] = [];
     let currentChapterIndex = 0;
     let currentContent: string[] = [];
@@ -1002,6 +1013,14 @@ export class ExportService {
       const sanitizedText = this.sanitizeText(blockText);
       if (sanitizedText) {
         blocksInChapter++;
+
+        // Skip blocks that ARE chapter headings (matched by block ID from detection).
+        // This is the most reliable dedup — the exact block used to create the chapter
+        // marker should never appear as body content.
+        if (chapterBlockIds.has(block.id)) {
+          continue;
+        }
+
         // Skip blocks that match (or mostly match) the chapter title near the start of a chapter.
         // Handles: exact matches, edited titles, and multi-line title blocks.
         const normalizedBlock = sanitizedText.toLowerCase().replace(/\s+/g, ' ').trim();

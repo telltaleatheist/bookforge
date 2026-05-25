@@ -631,11 +631,12 @@ export class AddModalComponent {
   async onMetadataConfirmed(metadata: ImportMetadata): Promise<void> {
     this.showMetadataConfirm.set(false);
     const filePath = this.pendingFilePath;
+    const coverData = this.pendingCoverData();
     this.pendingFilePath = null;
     this.pendingMetadata.set(null);
     this.pendingCoverData.set(null);
     if (filePath) {
-      await this.doImport(filePath, metadata);
+      await this.doImport(filePath, metadata, coverData ?? undefined);
     }
   }
 
@@ -646,13 +647,16 @@ export class AddModalComponent {
     this.pendingCoverData.set(null);
   }
 
-  private async doImport(filePath: string, metadata?: ImportMetadata): Promise<void> {
+  private async doImport(filePath: string, metadata?: ImportMetadata, coverData?: string): Promise<void> {
     this.isLoadingEpub.set(true);
     const isPdf = filePath.toLowerCase().endsWith('.pdf');
     this.loadingMessage.set(isPdf ? 'Importing PDF...' : 'Importing EPUB...');
 
     try {
-      const result = await this.studioService.addBook(filePath, metadata);
+      const metaWithCover = metadata && coverData
+        ? { ...metadata, coverData }
+        : metadata;
+      const result = await this.studioService.addBook(filePath, metaWithCover);
 
       if (result.success) {
         if (result.item) {

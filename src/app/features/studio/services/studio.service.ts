@@ -233,6 +233,7 @@ export class StudioService {
           tags: manifest.metadata?.tags,
           archived: manifest.archived,
           sortOrder: manifest.sortOrder,
+          archiveCount: manifest.archive?.length || 0,
         };
 
         return book;
@@ -409,7 +410,7 @@ export class StudioService {
    * Add book from EPUB file
    * Creates a BFP project file and audiobook folder for the EPUB
    */
-  async addBook(epubPath: string, metadata?: { title: string; author: string; year?: string; language?: string }): Promise<{ success: boolean; item?: StudioItem; error?: string }> {
+  async addBook(epubPath: string, metadata?: { title: string; author: string; year?: string; language?: string; coverData?: string }): Promise<{ success: boolean; item?: StudioItem; error?: string }> {
     if (!this.electronService.isRunningInElectron) {
       return { success: false, error: 'Not running in Electron' };
     }
