@@ -50,6 +50,7 @@ class BookshelfManager {
 
     // Section containers
     this.bookshelfBar = document.getElementById('bookshelf-bar');
+    this.refreshBtn = document.getElementById('refresh-btn');
     this.searchContainer = document.getElementById('search-container');
     this.bookshelfContent = document.getElementById('bookshelf-content');
     this.queueContent = document.getElementById('queue-content');
@@ -99,6 +100,9 @@ class BookshelfManager {
     this.tabAudiobooks.addEventListener('click', () => this.switchTab('audiobooks'));
     this.tabEbooks.addEventListener('click', () => this.switchTab('ebooks'));
     this.tabQueue.addEventListener('click', () => this.switchTab('queue'));
+
+    // Refresh button
+    this.refreshBtn.addEventListener('click', () => this.refreshBooks());
 
     // Sort toggle
     this.sortTitle.addEventListener('click', () => this.setSort('title'));
@@ -419,12 +423,13 @@ class BookshelfManager {
   // Audiobooks
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async loadBooks() {
+  async loadBooks(forceRefresh = false) {
     try {
       this.loadingIndicator.style.display = 'flex';
       this.emptyState.style.display = 'none';
 
-      const response = await fetch('/api/books');
+      const url = forceRefresh ? '/api/books?refresh=true' : '/api/books';
+      const response = await fetch(url);
       const data = await response.json();
 
       this.allBooks = data.books || [];
@@ -448,6 +453,16 @@ class BookshelfManager {
       this.loadStatus.textContent = 'Error loading bookshelf';
       this.loadingIndicator.style.display = 'none';
     }
+  }
+
+  async refreshBooks() {
+    this.refreshBtn.classList.add('spinning');
+    if (this.currentTab === 'audiobooks') {
+      await this.loadBooks(true);
+    } else if (this.currentTab === 'ebooks') {
+      await this.loadEbooks(true);
+    }
+    this.refreshBtn.classList.remove('spinning');
   }
 
   renderAudiobooks() {
@@ -477,7 +492,7 @@ class BookshelfManager {
 
   createAudiobookCard(book, delay = 0) {
     const card = document.createElement('div');
-    card.className = 'book-card';
+    card.className = 'book-card' + (book.source === 'external' ? ' external' : '');
     card.style.animationDelay = `${delay * 0.03}s`;
     card.dataset.projectId = book.projectId;
     card.dataset.downloadPath = book.downloadPath;
@@ -485,9 +500,9 @@ class BookshelfManager {
     card.dataset.author = (book.author || '').toLowerCase();
     card.dataset.tags = (book.tags || []).join(',').toLowerCase();
 
-    const typeLabel = book.type === 'bilingual'
-      ? `bilingual ${book.langPair || ''}`
-      : 'audiobook';
+    const typeLabel = book.source === 'external'
+      ? 'imported'
+      : (book.type === 'bilingual' ? `bilingual ${book.langPair || ''}` : 'audiobook');
 
     const durationStr = book.duration ? this.formatDuration(book.duration) : '';
     const sizeAndDuration = durationStr
@@ -537,12 +552,13 @@ class BookshelfManager {
   // Ebooks
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async loadEbooks() {
+  async loadEbooks(forceRefresh = false) {
     try {
       this.loadingIndicator.style.display = 'flex';
       this.emptyState.style.display = 'none';
 
-      const response = await fetch('/api/ebooks');
+      const url = forceRefresh ? '/api/ebooks?refresh=true' : '/api/ebooks';
+      const response = await fetch(url);
       const data = await response.json();
 
       this.allEbooks = data.ebooks || [];
@@ -661,6 +677,13 @@ class BookshelfManager {
         img.src = data.cover;
         img.alt = 'Cover';
         img.loading = 'lazy';
+
+        img.onload = () => {
+          const ratio = img.naturalWidth / img.naturalHeight;
+          if (ratio > 0.85) {
+            coverEl.classList.add('square-cover');
+          }
+        };
 
         const placeholder = coverEl.querySelector('.placeholder');
         if (placeholder) {
@@ -1181,6 +1204,14 @@ class BookshelfManager {
         img.src = data.cover;
         img.alt = 'Cover';
         img.loading = 'lazy';
+
+        // Detect square/landscape covers and switch to contain mode
+        img.onload = () => {
+          const ratio = img.naturalWidth / img.naturalHeight;
+          if (ratio > 0.85) {
+            coverEl.classList.add('square-cover');
+          }
+        };
 
         const placeholder = coverEl.querySelector('.placeholder');
         if (placeholder) {

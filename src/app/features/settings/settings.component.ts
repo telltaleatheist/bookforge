@@ -423,6 +423,28 @@ import {
                       />
                     </div>
                   </div>
+
+                  <!-- External Audiobooks Folder -->
+                  <div class="field-row">
+                    <div class="field-info">
+                      <label class="field-label">External Audiobooks Folder</label>
+                      <p class="field-description">M4B files placed here will appear on the bookshelf. Leave empty to disable.</p>
+                    </div>
+                    <div class="field-control">
+                      <div class="path-input-group">
+                        <input
+                          type="text"
+                          class="text-input path-input"
+                          [value]="bookshelfConfig().externalAudiobooksDir || ''"
+                          placeholder="/path/to/audiobooks"
+                          (change)="updateExternalAudiobooksDir($any($event.target).value)"
+                        />
+                        <desktop-button variant="ghost" size="sm" (click)="browseExternalAudiobooksDir()">
+                          Browse...
+                        </desktop-button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <!-- Control Buttons -->
@@ -2262,7 +2284,8 @@ export class SettingsComponent implements OnInit {
 
     try {
       const result = await this.electronService.bookshelfStart({
-        port: config.port
+        port: config.port,
+        externalAudiobooksDir: config.externalAudiobooksDir,
       });
 
       if (result.success && result.data) {
@@ -2306,6 +2329,20 @@ export class SettingsComponent implements OnInit {
     }
   }
 
+  updateExternalAudiobooksDir(dirPath: string): void {
+    const value = dirPath || undefined;
+    this.settingsService.updateBookshelfConfig({ externalAudiobooksDir: value });
+    this.electronService.bookshelfUpdateConfig({ externalAudiobooksDir: value });
+  }
+
+  async browseExternalAudiobooksDir(): Promise<void> {
+    const result = await this.electronService.openFolderDialog();
+    if (result.success && result.folderPath) {
+      this.settingsService.updateBookshelfConfig({ externalAudiobooksDir: result.folderPath });
+      this.electronService.bookshelfUpdateConfig({ externalAudiobooksDir: result.folderPath });
+    }
+  }
+
   private async restartBookshelf(): Promise<void> {
     const config = this.bookshelfConfig();
 
@@ -2318,7 +2355,8 @@ export class SettingsComponent implements OnInit {
       }
 
       const result = await this.electronService.bookshelfStart({
-        port: config.port
+        port: config.port,
+        externalAudiobooksDir: config.externalAudiobooksDir,
       });
 
       if (result.success && result.data) {

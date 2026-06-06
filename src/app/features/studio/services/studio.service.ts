@@ -1,4 +1,4 @@
-import { Injectable, inject, signal, computed } from '@angular/core';
+import { Injectable, inject, signal, computed, effect } from '@angular/core';
 import { ElectronService } from '../../../core/services/electron.service';
 import { LibraryService } from '../../../core/services/library.service';
 import { StudioItem, StudioItemType, FetchUrlResult, EditAction } from '../models/studio.types';
@@ -34,6 +34,26 @@ export class StudioService {
 
   // Combined count
   readonly totalCount = computed(() => this._books().length + this._articles().length);
+
+  // Tracks the library path the loaded items belong to, so we can reload live
+  // when the user switches library locations in Settings.
+  private lastLibraryPath: string | null = null;
+
+  constructor() {
+    // Reload projects whenever the library location changes to a different
+    // folder (e.g. the user picks a new library in Settings) so Studio updates
+    // immediately instead of requiring an app restart. The initial null→path
+    // load at startup is owned by the component's ngOnInit, so we only react to
+    // genuine switches between two real locations.
+    effect(() => {
+      const path = this.libraryService.libraryPath();
+      const prev = this.lastLibraryPath;
+      this.lastLibraryPath = path;
+      if (prev !== null && path !== null && path !== prev) {
+        void this.loadAll();
+      }
+    });
+  }
 
   /**
    * Load all items (books and articles)

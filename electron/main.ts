@@ -106,7 +106,15 @@ function loadPersistedLibraryRoot(): string | null {
   try {
     const data = fsSync.readFileSync(libraryRootConfigPath, 'utf-8');
     const parsed = JSON.parse(data);
-    if (parsed.libraryRoot && fsSync.existsSync(parsed.libraryRoot)) {
+    if (parsed.libraryRoot) {
+      // Return the saved path even if it is not currently present on disk.
+      // The library often lives on an external/network drive that mounts a few
+      // seconds after launch; discarding the path here (and silently falling
+      // back to the default ~/Documents/BookForge) is what caused the saved
+      // library to be lost on every "drive not mounted yet" launch.
+      if (!fsSync.existsSync(parsed.libraryRoot)) {
+        console.warn('[Startup] Persisted library root not currently present (drive offline?), keeping it anyway:', parsed.libraryRoot);
+      }
       return parsed.libraryRoot;
     }
   } catch { /* no persisted root */ }
@@ -165,7 +173,7 @@ async function migrateBookshelfConfig(): Promise<void> {
 }
 
 // Load bookshelf config from file
-async function loadBookshelfConfig(): Promise<{ enabled: boolean; port: number } | null> {
+async function loadBookshelfConfig(): Promise<{ enabled: boolean; port: number; externalAudiobooksDir?: string } | null> {
   try {
     await migrateBookshelfConfig();
     const configPath = getBookshelfConfigPath();
@@ -180,7 +188,7 @@ async function loadBookshelfConfig(): Promise<{ enabled: boolean; port: number }
 }
 
 // Save bookshelf config to file
-async function saveBookshelfConfig(config: { enabled: boolean; port: number }): Promise<void> {
+async function saveBookshelfConfig(config: { enabled: boolean; port: number; externalAudiobooksDir?: string }): Promise<void> {
   const configPath = getBookshelfConfigPath();
   const dir = path.dirname(configPath);
   if (!fsSync.existsSync(dir)) {
@@ -1695,6 +1703,10 @@ function setupIpcHandlers(): void {
     persistLibraryRoot(libraryPath);
     // Sync to manifest service
     manifestService.setLibraryBasePath(libraryPath);
+    // The bookshelf server resolves the library root dynamically but caches its
+    // scanned book/ebook lists — drop those so it serves the new library on the
+    // next request instead of the previous location.
+    bookshelfServer.invalidateCache();
     return { success: true };
   });
 
@@ -3426,7 +3438,7 @@ function setupIpcHandlers(): void {
   // Bookshelf Server handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  ipcMain.handle('bookshelf:start', async (_event, config: { port: number }) => {
+  ipcMain.handle('bookshelf:start', async (_event, config: { port: number; externalAudiobooksDir?: string }) => {
     try {
       // Stop existing server if running
       if (bookshelfServer.isRunning()) {
@@ -3458,6 +3470,19 @@ function setupIpcHandlers(): void {
   ipcMain.handle('bookshelf:status', async () => {
     try {
       return { success: true, data: bookshelfServer.getStatus() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('bookshelf:updateConfig', async (_event, updates: { externalAudiobooksDir?: string }) => {
+    try {
+      const currentConfig = await loadBookshelfConfig();
+      const merged = { ...currentConfig, ...updates };
+      await saveBookshelfConfig(merged as any);
+      // Invalidate book list cache so next request re-scans
+      bookshelfServer.invalidateCache();
+      return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

@@ -1,5 +1,6 @@
-import { Injectable, inject, signal, computed } from '@angular/core';
+import { Injectable, inject, signal, computed, effect } from '@angular/core';
 import { ElectronService } from '../../../core/services/electron.service';
+import { LibraryService } from '../../../core/services/library.service';
 import type { LibraryBook, Category, DuplicateInfo } from '../models/library.types';
 
 @Injectable({
@@ -7,6 +8,7 @@ import type { LibraryBook, Category, DuplicateInfo } from '../models/library.typ
 })
 export class EbookLibraryService {
   private readonly electronService = inject(ElectronService);
+  private readonly libraryService = inject(LibraryService);
 
   // Private writable state
   private readonly _books = signal<LibraryBook[]>([]);
@@ -137,6 +139,26 @@ export class EbookLibraryService {
     }
     return counts;
   });
+
+  // Tracks the library path the current scan belongs to, so we can re-scan live
+  // when the user switches library locations in Settings.
+  private lastLibraryPath: string | null = null;
+
+  constructor() {
+    // Re-scan the ebook library whenever the library location changes to a
+    // different folder so the Library tab updates immediately instead of
+    // requiring an app restart. The initial null→path load is owned by the
+    // component's init(), so we only react to genuine switches between two
+    // real locations.
+    effect(() => {
+      const path = this.libraryService.libraryPath();
+      const prev = this.lastLibraryPath;
+      this.lastLibraryPath = path;
+      if (prev !== null && path !== null && path !== prev) {
+        void this.init();
+      }
+    });
+  }
 
   async init(): Promise<void> {
     this._loading.set(true);

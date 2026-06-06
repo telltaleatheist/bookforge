@@ -463,15 +463,15 @@ export class SettingsService {
   /**
    * Bookshelf server configuration
    */
-  getBookshelfConfig(): { enabled: boolean; port: number } {
-    const config = this.values()['bookshelfConfig'] as { enabled: boolean; port: number } | undefined;
+  getBookshelfConfig(): { enabled: boolean; port: number; externalAudiobooksDir?: string } {
+    const config = this.values()['bookshelfConfig'] as { enabled: boolean; port: number; externalAudiobooksDir?: string } | undefined;
     return config || { enabled: false, port: 8765 };
   }
 
   /**
    * Set bookshelf server configuration
    */
-  setBookshelfConfig(config: { enabled: boolean; port: number }): void {
+  setBookshelfConfig(config: { enabled: boolean; port: number; externalAudiobooksDir?: string }): void {
     this.values.update(v => ({ ...v, bookshelfConfig: config }));
     this.saveSettings();
   }
@@ -479,7 +479,7 @@ export class SettingsService {
   /**
    * Update bookshelf server configuration
    */
-  updateBookshelfConfig(updates: Partial<{ enabled: boolean; port: number }>): void {
+  updateBookshelfConfig(updates: Partial<{ enabled: boolean; port: number; externalAudiobooksDir?: string }>): void {
     const current = this.getBookshelfConfig();
     this.setBookshelfConfig({ ...current, ...updates });
   }

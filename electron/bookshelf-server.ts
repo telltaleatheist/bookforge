@@ -48,6 +48,15 @@ interface AudiobookEntry {
   coverPath?: string;        // absolute path to cover image (from manifest)
   dateAdded?: string;        // ISO timestamp — audiobook completedAt or manifest.modifiedAt
   tags?: string[];           // user-defined tags
+  source?: 'project' | 'external';  // identifies where the audiobook came from
+}
+
+interface ExternalMetaCacheEntry {
+  size: number;
+  mtimeMs: number;
+  title: string;
+  author: string;
+  year?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,6 +115,10 @@ export class BookshelfServer {
   // Persistent duration cache to avoid re-parsing M4B headers
   private durationCache: Map<string, DurationCacheEntry> = new Map();
   private durationCacheDirty = false;
+
+  // Persistent external audiobook metadata cache
+  private externalMetaCache: Map<string, ExternalMetaCacheEntry> = new Map();
+  private externalMetaCacheDirty = false;
 
   // Queue control callback (set by main process to bridge to renderer)
   private queueControlHandler: ((action: 'start' | 'pause') => void) | null = null;
@@ -166,8 +179,9 @@ export class BookshelfServer {
       this.userDataPath = config.userDataPath;
     }
 
-    // Load persistent duration cache
+    // Load persistent caches
     await this.loadDurationCache();
+    await this.loadExternalMetaCache();
 
     return new Promise((resolve, reject) => {
       this.server = this.app.listen(this.port, '0.0.0.0', () => {
@@ -213,6 +227,48 @@ export class BookshelfServer {
       this.durationCacheDirty = false;
     } catch (err) {
       console.error('[BookshelfServer] Failed to save duration cache:', err);
+    }
+  }
+
+  private getExternalMetaCachePath(): string | null {
+    if (!this.userDataPath) return null;
+    return path.join(this.userDataPath, 'external-audiobooks-cache.json');
+  }
+
+  private async loadExternalMetaCache(): Promise<void> {
+    const cachePath = this.getExternalMetaCachePath();
+    if (!cachePath) return;
+    try {
+      const content = await fs.readFile(cachePath, 'utf-8');
+      const entries: Record<string, ExternalMetaCacheEntry> = JSON.parse(content);
+      this.externalMetaCache = new Map(Object.entries(entries));
+      console.log(`[BookshelfServer] Loaded external meta cache (${this.externalMetaCache.size} entries)`);
+    } catch {
+      // No cache file yet — that's fine
+    }
+  }
+
+  private async saveExternalMetaCache(): Promise<void> {
+    if (!this.externalMetaCacheDirty) return;
+    const cachePath = this.getExternalMetaCachePath();
+    if (!cachePath) return;
+    try {
+      const obj: Record<string, ExternalMetaCacheEntry> = Object.fromEntries(this.externalMetaCache);
+      await fs.writeFile(cachePath, JSON.stringify(obj), 'utf-8');
+      this.externalMetaCacheDirty = false;
+    } catch (err) {
+      console.error('[BookshelfServer] Failed to save external meta cache:', err);
+    }
+  }
+
+  private getExternalAudiobooksDir(): string | null {
+    try {
+      const configPath = path.join(getLibraryBasePath(), 'bookshelf.json');
+      if (!fsSync.existsSync(configPath)) return null;
+      const config = JSON.parse(fsSync.readFileSync(configPath, 'utf-8'));
+      return config.externalAudiobooksDir || null;
+    } catch {
+      return null;
     }
   }
 
@@ -310,6 +366,7 @@ export class BookshelfServer {
               coverPath: coverAbsPath,
               dateAdded: manifest.outputs.audiobook.completedAt || new Date(stats.mtimeMs).toISOString(),
               tags: manifest.metadata.tags || [],
+              source: 'project',
             });
           } catch { /* skip if stat fails */ }
         }
@@ -334,11 +391,16 @@ export class BookshelfServer {
               coverPath: coverAbsPath,
               dateAdded: (output as any).completedAt || new Date(stats.mtimeMs).toISOString(),
               tags: manifest.metadata.tags || [],
+              source: 'project',
             });
           } catch { /* skip */ }
         }
       }
     }
+
+    // Phase 1.5: Add external audiobooks from configured folder
+    const externalBooks = await this.scanExternalAudiobooks();
+    entries.push(...externalBooks);
 
     // Phase 2: Fetch all durations in parallel (with persistent cache)
     await Promise.all(entries.map(async (entry) => {
@@ -383,6 +445,86 @@ export class BookshelfServer {
     } catch {
       return undefined;
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // External Audiobook Discovery
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private async scanExternalAudiobooks(): Promise<AudiobookEntry[]> {
+    const audiobooksDir = this.getExternalAudiobooksDir();
+    if (!audiobooksDir) return [];
+
+    try {
+      await fs.access(audiobooksDir);
+    } catch {
+      return [];
+    }
+
+    const m4bFiles = await this.findM4bFiles(audiobooksDir);
+    const entries: AudiobookEntry[] = [];
+
+    for (const filePath of m4bFiles) {
+      try {
+        const stats = fsSync.statSync(filePath);
+        let meta = this.externalMetaCache.get(filePath);
+
+        if (!meta || meta.size !== stats.size || meta.mtimeMs !== stats.mtimeMs) {
+          const mm = await getMusicMetadata();
+          const parsed = await mm.parseFile(filePath, { skipCovers: true });
+          meta = {
+            size: stats.size,
+            mtimeMs: stats.mtimeMs,
+            title: parsed.common.title || path.basename(filePath, path.extname(filePath)),
+            author: parsed.common.artist || parsed.common.albumartist || '',
+            year: parsed.common.year,
+          };
+          this.externalMetaCache.set(filePath, meta);
+          this.externalMetaCacheDirty = true;
+        }
+
+        entries.push({
+          projectId: '',
+          title: meta.title,
+          author: meta.author,
+          type: 'audiobook',
+          size: stats.size,
+          downloadPath: filePath,
+          outputFilename: path.basename(filePath),
+          dateAdded: new Date(stats.mtimeMs).toISOString(),
+          tags: [],
+          source: 'external',
+        });
+      } catch {
+        // Skip unparseable files
+      }
+    }
+
+    if (this.externalMetaCacheDirty) {
+      await this.saveExternalMetaCache();
+      this.externalMetaCacheDirty = false;
+    }
+
+    return entries;
+  }
+
+  private async findM4bFiles(dir: string): Promise<string[]> {
+    const results: string[] = [];
+    try {
+      const dirents = await fs.readdir(dir, { withFileTypes: true });
+      for (const dirent of dirents) {
+        if (dirent.name.startsWith('.')) continue;
+        const full = path.join(dir, dirent.name);
+        if (dirent.isDirectory()) {
+          results.push(...await this.findM4bFiles(full));
+        } else if (dirent.name.toLowerCase().endsWith('.m4b')) {
+          results.push(full);
+        }
+      }
+    } catch {
+      // Skip unreadable directories
+    }
+    return results;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -796,7 +938,13 @@ export class BookshelfServer {
     const resolved = path.resolve(filePath);
     const projectsDir = path.resolve(getProjectsPath());
     const libraryDir = path.resolve(getLibraryBasePath());
-    return resolved.startsWith(projectsDir) || resolved.startsWith(libraryDir);
+    if (resolved.startsWith(projectsDir) || resolved.startsWith(libraryDir)) return true;
+
+    // Also allow paths within the configured external audiobooks dir
+    const externalDir = this.getExternalAudiobooksDir();
+    if (externalDir && resolved.startsWith(path.resolve(externalDir))) return true;
+
+    return false;
   }
 
   /**

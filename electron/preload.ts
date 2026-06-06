@@ -784,6 +784,7 @@ export interface BookshelfStatus {
 
 export interface BookshelfConfig {
   port: number;
+  externalAudiobooksDir?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1156,6 +1157,7 @@ export interface ElectronAPI {
     start: (config: BookshelfConfig) => Promise<{ success: boolean; data?: BookshelfStatus; error?: string }>;
     stop: () => Promise<{ success: boolean; error?: string }>;
     getStatus: () => Promise<{ success: boolean; data?: BookshelfStatus; error?: string }>;
+    updateConfig: (updates: { externalAudiobooksDir?: string }) => Promise<{ success: boolean; error?: string }>;
   };
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string }) => Promise<{ success: boolean; error?: string }>;
@@ -2442,6 +2444,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('bookshelf:stop'),
     getStatus: () =>
       ipcRenderer.invoke('bookshelf:status'),
+    updateConfig: (updates: { externalAudiobooksDir?: string }) =>
+      ipcRenderer.invoke('bookshelf:updateConfig', updates),
   },
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string }) =>

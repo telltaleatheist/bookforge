@@ -140,29 +140,47 @@ export class LibraryService {
   }
 
   /**
-   * Validate stored path exists on current system, reset if not
+   * Sync the stored path to the main process.
+   *
+   * IMPORTANT: a failed sync means the path is not reachable *right now* — most
+   * commonly because the library lives on an external/network drive that hasn't
+   * finished mounting yet. We must NEVER wipe the saved setting in that case, or
+   * a slow-mounting drive permanently erases the user's library location. Instead
+   * we retry a few times (drives usually mount within a few seconds) and, if it
+   * still fails, preserve the path so the library auto-recovers on the next launch
+   * once the drive is available.
    */
   private async validateAndSyncPath(settings: LibrarySettings): Promise<void> {
     this.logToMain(`[LibraryService] Validating path: ${settings.libraryPath}`);
-    try {
-      const result = await this.electronService.setLibraryRoot(settings.libraryPath);
-      this.logToMain(`[LibraryService] setLibraryRoot result: ${JSON.stringify(result)}`);
-      if (result.success) {
-        this._libraryPath.set(settings.libraryPath);
-        this._onboardingComplete.set(settings.onboardingComplete);
-        this.logToMain(`[LibraryService] Path validated successfully`);
-      } else {
-        // Path doesn't exist (e.g., Mac path on Windows) - reset settings
-        this.logToMain(`[LibraryService] Path invalid, resetting: ${result.error}`);
-        this._libraryPath.set(null);
-        this._onboardingComplete.set(false);
-        this.saveSettings();
+
+    let result = { success: false, error: 'not attempted' } as { success: boolean; error?: string };
+    const maxAttempts = 6; // ~5s total — covers a slow external/network mount
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        result = await this.electronService.setLibraryRoot(settings.libraryPath);
+      } catch (e) {
+        result = { success: false, error: (e as Error).message };
       }
-    } catch (e) {
-      this.logToMain(`[LibraryService] Exception during validation: ${(e as Error).message}`);
-      this._libraryPath.set(null);
-      this._onboardingComplete.set(false);
-      this.saveSettings();
+      if (result.success) break;
+      if (attempt < maxAttempts - 1) {
+        this.logToMain(`[LibraryService] Path not reachable yet (attempt ${attempt + 1}/${maxAttempts}), retrying: ${result.error}`);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+
+    this.logToMain(`[LibraryService] setLibraryRoot result: ${JSON.stringify(result)}`);
+    if (result.success) {
+      this._libraryPath.set(settings.libraryPath);
+      this._onboardingComplete.set(settings.onboardingComplete);
+      this.logToMain(`[LibraryService] Path validated successfully`);
+    } else {
+      // Path could not be reached (drive offline, etc.). Do NOT reset the saved
+      // setting — preserve it so the library reconnects automatically once the
+      // drive is mounted. The setting was already persisted, so we leave
+      // localStorage untouched and simply keep the path in memory.
+      this.logToMain(`[LibraryService] Path unreachable, preserving saved setting: ${result.error}`);
+      this._libraryPath.set(settings.libraryPath);
+      this._onboardingComplete.set(settings.onboardingComplete);
     }
   }
 
