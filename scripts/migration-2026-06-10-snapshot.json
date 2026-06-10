@@ -1,0 +1,1379 @@
+{
+  "migrationDate": "2026-06-10",
+  "libraryRoot": "/Volumes/Callisto/Shared/BookForge",
+  "generatedFromDisk": true,
+  "created": [
+    {
+      "slug": "(pik-E_Eu)_Jehovah_s_Witnesses_Your_Neighbors_and_Fellow_Citizens_-_Pennsylvania_Watch_Tower_Bible_Tract_Society_of",
+      "migratedFrom": "Jehovahs Witnesses/(pik-E Eu) Jehovah's Witnesses—Your Neighbors and Fellow Citizens. Bible, Watch Tower.pdf",
+      "archive": [
+        "archive/(pik-E Eu) Jehovah's Witnesses—Your Neighbors and Fellow Citizens. Pennsylvania, Watch Tower Bible & Tract Society of.pdf"
+      ]
+    },
+    {
+      "slug": "1947-07-01_Military_Government_of_Germany_Fragebogen_-_questionnaire_spruchkammer_(2019)",
+      "migratedFrom": "Nazism/1947-07-01 Military Government of Germany Fragebogen. questionnaire, spruchkammer. (2019).pdf",
+      "archive": [
+        "archive/1947-07-01 Military Government of Germany Fragebogen. questionnaire, spruchkammer. (2019).pdf"
+      ]
+    },
+    {
+      "slug": "1978_my_book_of_bible_stories_-_witnesses_jehovahs_(2007)",
+      "migratedFrom": "Jehovahs Witnesses/1978 my book of bible stories. witnesses, jehovahs. (2007).pdf",
+      "archive": [
+        "archive/1978 my book of bible stories. witnesses, jehovahs. (2007).pdf"
+      ]
+    },
+    {
+      "slug": "1988-2006_Revelation-Its_grand_climax_at_hand_(2006_printing)_-_witnesses_jehovahs_(2008)",
+      "migratedFrom": "Jehovahs Witnesses/1988-2006 Revelation-Its grand climax at hand (2006 printing). witnesses, jehovahs. (2008).pdf",
+      "archive": [
+        "archive/1988-2006 Revelation-Its grand climax at hand (2006 printing). witnesses, jehovahs. (2008).pdf"
+      ]
+    },
+    {
+      "slug": "2000_Isaiahs_Prophecy_-_Volume_1_witnesses_jehovahs_(2011)_(2011)",
+      "migratedFrom": "Jehovahs Witnesses/2000 Isaiahs Prophecy - Light for All Mankind - Volume 1. witnesses, jehovahs. (2011).pdf",
+      "archive": [
+        "archive/2000 Isaiahs Prophecy. Volume 1. witnesses, jehovahs. (2011). (2011).pdf"
+      ]
+    },
+    {
+      "slug": "2001_Isaiahs_Prophecy_-_Volume_2_witnesses_jehovahs_(2011)_(2011)",
+      "migratedFrom": "Jehovahs Witnesses/2001 Isaiahs Prophecy - Light for All Mankind - Volume 2. witnesses, jehovahs. (2011).pdf",
+      "archive": [
+        "archive/2001 Isaiahs Prophecy. Volume 2. witnesses, jehovahs. (2011). (2011).pdf"
+      ]
+    },
+    {
+      "slug": "2010_jehovahs_witnesses_elders_handbook_-_Unknown_(2013)",
+      "migratedFrom": "Jehovahs Witnesses/2010 jehovahs witnesses elders handbook. Unknown. (2013).pdf",
+      "archive": [
+        "archive/2010 jehovahs witnesses elders handbook. (2013).pdf"
+      ]
+    },
+    {
+      "slug": "2022_addendum_to_jehovahs_witnesses_elders_handbook_-_Unknown_(2021)",
+      "migratedFrom": "Jehovahs Witnesses/2022 addendum to jehovahs witnesses elders handbook. Unknown. (2021).pdf",
+      "archive": [
+        "archive/2022 addendum to jehovahs witnesses elders handbook. (2021).pdf"
+      ]
+    },
+    {
+      "slug": "2023-06_jehovahs_witnesses_tract_with_letter_from_lisa_-_Unknown",
+      "migratedFrom": "Jehovahs Witnesses/2023-06 jehovahs witnesses tract with letter from lisa. Unknown.pdf",
+      "archive": [
+        "archive/2023-06 jehovahs witnesses tract with letter from lisa.pdf"
+      ]
+    },
+    {
+      "slug": "2025-12-03_Its_Okay_To_Be_White_-_book_stew_peters_childrens",
+      "migratedFrom": "Children/2025-12-03 Its Okay To Be White. book, stew peters childrens.pdf",
+      "archive": [
+        "archive/2025-12-03 Its Okay To Be White. book, stew peters childrens.pdf"
+      ]
+    },
+    {
+      "slug": "30_Years_a_Watchtower_Slave_The_Confessions_of_a_Converted_Jehovah_s_Witness_-_Schnell_William_J_(2002)",
+      "migratedFrom": "Jehovahs Witnesses/30 Years a Watchtower Slave_ The Confessions of a Converted Jehovah's Witness. Schnell, William J.. (2002).epub",
+      "archive": [
+        "archive/30 Years a Watchtower Slave_ The Confessions of a Converted Jehovah's Witness. Schnell, William J.. (2002).epub"
+      ]
+    },
+    {
+      "slug": "88_reasons_why_the_rapture_will_come_in_1988_-_(101)_(101)",
+      "migratedFrom": "Religion/88 reasons why the rapture will come in 1988. Unknown. (101).epub",
+      "archive": [
+        "archive/88 reasons why the rapture will come in 1988. (101). (101).epub"
+      ]
+    },
+    {
+      "slug": "A_Culture_of_Conspiracy_-_Jamous",
+      "migratedFrom": "Psychology/A Culture of Conspiracy. Jamous.pdf",
+      "archive": [
+        "archive/A Culture of Conspiracy. Jamous.pdf"
+      ]
+    },
+    {
+      "slug": "A_Curch_Undone_-_Salsburg_Mary_(2015)",
+      "migratedFrom": "Nazism/A Curch Undone - Documents From The German Christian Faith Movement, 1932-1940. Salsburg, Mary. (2015).pdf",
+      "archive": [
+        "archive/A Curch Undone. Salsburg, Mary. (2015).pdf"
+      ]
+    },
+    {
+      "slug": "A_Manual_for_Creating_Atheists_-_Boghossian_Peter_(2013)",
+      "migratedFrom": "Religion/A Manual for Creating Atheists. Boghossian, Peter [Boghossian. (2013).epub",
+      "archive": [
+        "archive/A Manual for Creating Atheists. Boghossian, Peter. (2013).epub"
+      ]
+    },
+    {
+      "slug": "Aesop_s_Fables_(Collins_Classics)_-_Aesop_(2012)",
+      "migratedFrom": "Fiction/Aesop’s Fables (Collins Classics). [Aesop], Aesop. (2012).epub",
+      "archive": [
+        "archive/Aesop’s Fables (Collins Classics). Aesop. (2012).epub"
+      ]
+    },
+    {
+      "slug": "After_Hitler_Recivilizing_Germans_1945-1995_-_Jarausch_Konrad_Hugo_(1997)",
+      "migratedFrom": "Nazism/After Hitler_ Recivilizing Germans, 1945-1995. Konrad Hugo Jarausch [Jarausch, Konrad Hugo]. (1997).pdf",
+      "archive": [
+        "archive/After Hitler_ Recivilizing Germans, 1945-1995. Jarausch, Konrad Hugo. (1997).pdf"
+      ]
+    },
+    {
+      "slug": "After_the_Reich_-_sue_caulfield_(2009)",
+      "migratedFrom": "Nazism/After the Reich - The Brutal History of the Allied Occupation. [sue.caulfield], Giles Macdonogh. (2009).pdf",
+      "archive": [
+        "archive/After the Reich. sue.caulfield. (2009).pdf"
+      ]
+    },
+    {
+      "slug": "Anarchist_Cookbook_p1_max_-_(101)_(101)",
+      "migratedFrom": "Extremism/Anarchist Cookbook p1.max. Unknown. (101).pdf",
+      "archive": [
+        "archive/Anarchist Cookbook p1.max. (101). (101).pdf"
+      ]
+    },
+    {
+      "slug": "And_the_Band_Played_On_Politics_People_and_the_AIDS_Epidemic_-_Shilts_Randy_(1987)",
+      "migratedFrom": "History/And the Band Played On_ Politics, People, and the AIDS Epidemic. Shilts, Randy. (1987).epub",
+      "archive": [
+        "archive/And the Band Played On_ Politics, People, and the AIDS Epidemic. Shilts, Randy. (1987).epub"
+      ]
+    },
+    {
+      "slug": "Answering_Jehovah_s_Witnesses_-_Evert_Jason_(2014)",
+      "migratedFrom": "Jehovahs Witnesses/Answering Jehovah's Witnesses. Jason Evert [Evert, Jason]. (2014).epub",
+      "archive": [
+        "archive/Answering Jehovah's Witnesses. Evert, Jason. (2014).epub"
+      ]
+    },
+    {
+      "slug": "As_You_Grow_-_cameron_kirk_(2023)",
+      "migratedFrom": "Children/As You Grow. kirk cameron [cameron, kirk]. (2023).epub",
+      "archive": [
+        "archive/As You Grow. cameron, kirk. (2023).epub"
+      ]
+    },
+    {
+      "slug": "B006OAL1QM_EBOK_-_Fraenkel_Heinrich_(101)",
+      "migratedFrom": "Nazism/B006OAL1QM EBOK. Fraenkel, Heinrich. (101).epub",
+      "archive": [
+        "archive/B006OAL1QM EBOK. Fraenkel, Heinrich. (101).epub"
+      ]
+    },
+    {
+      "slug": "Bathsheba_s_Breast_-_Women_Cancer_History_Olson_James_(2010)_(2010)",
+      "migratedFrom": "History/Bathsheba's Breast - Women, Cancer, And History. Olson, James. (2010).pdf",
+      "archive": [
+        "archive/Bathsheba's Breast. Women, Cancer & History. Olson, James. (2010). (2010).pdf"
+      ]
+    },
+    {
+      "slug": "Battling_the_Gods_Atheism_in_the_Ancient_World_-_Whitmarsh_Tim_(2015)",
+      "migratedFrom": "Religion/Battling the Gods_ Atheism in the Ancient World. Whitmarsh, Tim. (2015).epub",
+      "archive": [
+        "archive/Battling the Gods_ Atheism in the Ancient World. Whitmarsh, Tim. (2015).epub"
+      ]
+    },
+    {
+      "slug": "Between_resistance_and_martyrdom_Jehovah_s_Witnesses_in_the_Third_Reich_-_Garbe_Detlef_1956-_(2022)",
+      "migratedFrom": "Nazism/Between resistance and martyrdom _ Jehovah's Witnesses in the Third Reich. Garbe, Detlef. (2022).pdf",
+      "archive": [
+        "archive/Between resistance and martyrdom _ Jehovah's Witnesses in the Third Reich. Garbe, Detlef, 1956-. (2022).pdf"
+      ]
+    },
+    {
+      "slug": "Biblical_Basis_for_War_-_Shea_Matthew_(101)",
+      "migratedFrom": "Extremism/Biblical Basis for War. Shea, Matthew.pdf",
+      "archive": [
+        "archive/Biblical Basis for War. Shea, Matthew. (101).pdf"
+      ]
+    },
+    {
+      "slug": "Black_Sun_Aryan_Cults_Esoteric_Nazism_and_the_Politics_of_Identity_(_PDFDrive_com_)_epub_-_John_(2009)",
+      "migratedFrom": "Nazism/Black Sun_ Aryan Cults, Esoteric Nazism and the Politics of Identity _( PDFDrive.com _).epub. John. (2009).epub",
+      "archive": [
+        "archive/Black Sun_ Aryan Cults, Esoteric Nazism and the Politics of Identity _( PDFDrive.com _).epub. John. (2009).epub"
+      ]
+    },
+    {
+      "slug": "Blessed_A_History_of_the_American_Prosperity_Gospel_-_Bowler_Kate_(2013)",
+      "migratedFrom": "Religion/Blessed_ A History of the American Prosperity Gospel. Kate Bowler [Bowler, Kate]. (2013).epub",
+      "archive": [
+        "archive/Blessed_ A History of the American Prosperity Gospel. Bowler, Kate. (2013).epub"
+      ]
+    },
+    {
+      "slug": "Blitzed_Drugs_in_Nazi_Germany_-_Ohler_Norman_(2016)",
+      "migratedFrom": "Nazism/Blitzed_ Drugs in Nazi Germany. Ohler, Norman. (2016).epub",
+      "archive": [
+        "archive/Blitzed_ Drugs in Nazi Germany. Ohler, Norman. (2016).epub"
+      ]
+    },
+    {
+      "slug": "Bonhoeffer_Pastor_Martyr_Prophet_Spy_A_Righteous_Gentile_vs_The_Third_Reich_-_Metaxas_Eric_(2010)",
+      "migratedFrom": "Nazism/Bonhoeffer_ Pastor, Martyr, Prophet, Spy_ A Righteous Gentile vs. The Third Reich. Eric Metaxas [Metaxas, Eric]. (2010).epub",
+      "archive": [
+        "archive/Bonhoeffer_ Pastor, Martyr, Prophet, Spy_ A Righteous Gentile vs. The Third Reich. Metaxas, Eric. (2010).epub"
+      ]
+    },
+    {
+      "slug": "CES_letter_by_jeremy_runnells_-_Unknown_(2017)",
+      "migratedFrom": "Religion/CES letter by jeremy runnells. Unknown. (2017).pdf",
+      "archive": [
+        "archive/CES letter by jeremy runnells. (2017).pdf"
+      ]
+    },
+    {
+      "slug": "Christianity_and_the_Nazi_Movement_A_Response_from_Stiegmann-Gall_-_Steigmann-Gall_Richard_(2024)",
+      "migratedFrom": "Nazism/Christianity and the Nazi Movement_ A Response from Stiegmann-Gall. Steigmann-Gall, Richard. (2024).pdf",
+      "archive": [
+        "archive/Christianity and the Nazi Movement_ A Response from Stiegmann-Gall. Steigmann-Gall, Richard. (2024).pdf"
+      ]
+    },
+    {
+      "slug": "CoC_Intro_Mat_-_Cabeen_Tom_(2002)",
+      "migratedFrom": "Jehovahs Witnesses/CoC Intro Mat. Cabeen, Tom. (2002).pdf",
+      "archive": [
+        "archive/CoC Intro Mat. Cabeen, Tom. (2002).pdf"
+      ]
+    },
+    {
+      "slug": "Collapse_How_Societies_Choose_to_Fail_or_Succeed_-_Diamond_Jared_M_(2011)",
+      "migratedFrom": "Science/Collapse_ How Societies Choose to Fail or Succeed. Diamond, Jared M.. (2011).epub",
+      "archive": [
+        "archive/Collapse_ How Societies Choose to Fail or Succeed. Diamond, Jared M.. (2011).epub"
+      ]
+    },
+    {
+      "slug": "Crisis_of_Conscience_-_Franz_Raymond_(2018)",
+      "migratedFrom": "Jehovahs Witnesses/Crisis of Conscience. Raymond Franz [Franz, Raymond]. (2018).epub",
+      "archive": [
+        "archive/Crisis of Conscience. Franz, Raymond. (2018).epub"
+      ]
+    },
+    {
+      "slug": "DNS_and_BIND_5th_Edition_-_Liu_Cricket_Albitz_Paul_(2009)",
+      "migratedFrom": "Science/DNS and BIND, 5th Edition. Liu, Cricket. (2009).pdf",
+      "archive": [
+        "archive/DNS and BIND, 5th Edition. Liu, Cricket & Albitz, Paul. (2009).pdf"
+      ]
+    },
+    {
+      "slug": "DWBE_-_Bonhoeffer_Dietrich",
+      "migratedFrom": "Nazism/DWBE - Theological Education Underground, 1937-1940. Bonhoeffer, Dietrich.epub",
+      "archive": [
+        "archive/DWBE. Bonhoeffer, Dietrich.epub"
+      ]
+    },
+    {
+      "slug": "Deathstalker_Prelude_1_-_Green_Simon_R_(101)",
+      "migratedFrom": "Fiction/Deathstalker Prelude 1 - Mistworld. Green, Simon R. (101).epub",
+      "archive": [
+        "archive/Deathstalker Prelude 1. Green, Simon R. (101).epub"
+      ]
+    },
+    {
+      "slug": "Deathstalker_Prelude_2_-_Green_Simon_R_(101)",
+      "migratedFrom": "Fiction/Deathstalker Prelude 2 - Ghostworld. Green, Simon R. (101).epub",
+      "archive": [
+        "archive/Deathstalker Prelude 2. Green, Simon R. (101).epub"
+      ]
+    },
+    {
+      "slug": "Deathstalker_Prelude_3_-_Green_Simon_R_(101)",
+      "migratedFrom": "Fiction/Deathstalker Prelude 3 - Hellworld. Green, Simon R.. (101).epub",
+      "archive": [
+        "archive/Deathstalker Prelude 3. Green, Simon R.. (101).epub"
+      ]
+    },
+    {
+      "slug": "Denying_the_Holocaust_-_Lipstadt_Deborah_E_(2023)",
+      "migratedFrom": "Nazism/Denying the Holocaust. Lipstadt, Deborah E.. (2023).epub",
+      "archive": [
+        "archive/Denying the Holocaust. Lipstadt, Deborah E.. (2023).epub"
+      ]
+    },
+    {
+      "slug": "Dietrich_Bonhoeffer_-_Bethge_Eberhard_Edited_by_Barnett_Victoria_(2024)",
+      "migratedFrom": "Nazism/Dietrich Bonhoeffer - A Biography. Bethge, Eberhard. (2024).pdf",
+      "archive": [
+        "archive/Dietrich Bonhoeffer. Bethge, Eberhard, Edited by Barnett, Victoria. (2024).pdf"
+      ]
+    },
+    {
+      "slug": "Ein_Volk_Ein_Reich_Ein_Glaube_-_Krause_Reinhold_(2006)",
+      "migratedFrom": "Nazism/Ein Volk, Ein Reich, Ein Glaube. Krause, Reinhold. (2006).pdf",
+      "archive": [
+        "archive/Ein Volk, Ein Reich, Ein Glaube. Krause, Reinhold. (2006).pdf"
+      ]
+    },
+    {
+      "slug": "Ein_Volk_Ein_Reich_Ein_Glaube_-_Kuhl-Freudenstein_Olaf_(2006)",
+      "migratedFrom": "Nazism/Ein Volk, Ein Reich, Ein Glaube. Kühl-Freudenstein, Olaf. (2006).epub",
+      "archive": [
+        "archive/Ein Volk, Ein Reich, Ein Glaube. Kühl-Freudenstein, Olaf. (2006).epub"
+      ]
+    },
+    {
+      "slug": "Encyclopedia_of_Evangelicalism_-_Balmer_Randall_Herbert_(2004)",
+      "migratedFrom": "Religion/Encyclopedia of Evangelicalism. Randall Herbert Balmer [Balmer, Randall Herbert]. (2004).pdf",
+      "archive": [
+        "archive/Encyclopedia of Evangelicalism. Balmer, Randall Herbert. (2004).pdf"
+      ]
+    },
+    {
+      "slug": "Enjoy_Life_Forever_An_Interactive_Bible_Course_(Book)_-_Pennsylvania_Watch_Tower_Bible_Tract_Society_of",
+      "migratedFrom": "Jehovahs Witnesses/Enjoy Life Forever!—An Interactive Bible Course (Book). Bible, Watch Tower.pdf",
+      "archive": [
+        "archive/Enjoy Life Forever!—An Interactive Bible Course (Book). Pennsylvania, Watch Tower Bible & Tract Society of.pdf"
+      ]
+    },
+    {
+      "slug": "Escape_from_Camp_14_-_Blaine_Harden_(2012)",
+      "migratedFrom": "History/Escape from Camp 14. Harden], Blaine Harden [Blaine. (2012).epub",
+      "archive": [
+        "archive/Escape from Camp 14. Blaine Harden. (2012).epub"
+      ]
+    },
+    {
+      "slug": "Ethics_-_Bonhoeffer_Dietrich_West_Charles_C_Stott_Douglas_W_Krauss_Reinhard_Todt_Ilse_Green_Clifford_J_(2010)",
+      "migratedFrom": "Uncategorized/Ethics. Bonhoeffer, Dietrich. (2010).pdf",
+      "archive": [
+        "archive/Ethics. Bonhoeffer, Dietrich,West, Charles C.,Stott, Douglas W.,Krauss, Reinhard,Tödt, Ilse,Green, Clifford J.. (2010).pdf"
+      ]
+    },
+    {
+      "slug": "Evangelical_Kirch_Leaders_with_Hitler_-_Niemoller_Martin_(2022)",
+      "migratedFrom": "Uncategorized/Evangelical Kirch Leaders with Hitler. Niemoller, Martin. (2022). Unknown.pdf",
+      "archive": [
+        "archive/Evangelical Kirch Leaders with Hitler. Niemoller, Martin. (2022).pdf"
+      ]
+    },
+    {
+      "slug": "Everyday_Denazification_In_Postwar_Germany_the_Fragebogen_Dack_Mikkel_-_(101)_(101)",
+      "migratedFrom": "Nazism/Everyday Denazification In Postwar Germany. the Fragebogen. Dack, Mikkel. (101).pdf",
+      "archive": [
+        "archive/Everyday Denazification In Postwar Germany. the Fragebogen. Dack, Mikkel. (101). (101).pdf"
+      ]
+    },
+    {
+      "slug": "Exorcising_Hitler_The_Occupation_and_Denazification_of_Germany_-_Taylor_Frederick_(2011)",
+      "migratedFrom": "Nazism/Exorcising Hitler_ The Occupation and Denazification of Germany. Frederick Taylor [Taylor, Frederick]. (2011).epub",
+      "archive": [
+        "archive/Exorcising Hitler_ The Occupation and Denazification of Germany. Taylor, Frederick. (2011).epub"
+      ]
+    },
+    {
+      "slug": "Fahrenheit_451_-_Bradbury_Ray_(2013)",
+      "migratedFrom": "Fiction/Fahrenheit 451. Bradbury, Ray. (2013).epub",
+      "archive": [
+        "archive/Fahrenheit 451. Bradbury, Ray. (2013).epub"
+      ]
+    },
+    {
+      "slug": "Falun_Gong_The_End_of_Days_-_Chang_Ms_Maria_Hsia_(2003)",
+      "migratedFrom": "Religion/Falun Gong_ The End of Days. Chang, Ms. Maria Hsia. (2003).pdf",
+      "archive": [
+        "archive/Falun Gong_ The End of Days. Chang, Ms. Maria Hsia. (2003).pdf"
+      ]
+    },
+    {
+      "slug": "Fateful_Choices_Ten_Decisions_That_Changed_the_World_1940-1941_-_Kershaw_Ian",
+      "migratedFrom": "Nazism/Fateful Choices_ Ten Decisions That Changed the World, 1940-1941. Ian Kershaw [Kershaw, Ian].epub",
+      "archive": [
+        "archive/Fateful Choices_ Ten Decisions That Changed the World, 1940-1941. Kershaw, Ian.epub"
+      ]
+    },
+    {
+      "slug": "Fragebogen_The_Questionnaire_Von_Salomon_Ernst_-_1955",
+      "migratedFrom": "Nazism/Fragebogen. The Questionnaire. Von Salomon, Ernst. 1955.pdf",
+      "archive": [
+        "archive/Fragebogen. The Questionnaire. Von Salomon, Ernst. 1955.pdf"
+      ]
+    },
+    {
+      "slug": "God_Trump_and_the_2020_Election_-_Strang_Stephen_E_(2019)",
+      "migratedFrom": "Extremism/God, Trump, and the 2020 Election. Strang, Stephen E.. (2019).epub",
+      "archive": [
+        "archive/God, Trump, and the 2020 Election. Strang, Stephen E.. (2019).epub"
+      ]
+    },
+    {
+      "slug": "God_and_Donald_Trump_-_Strang_Stephen_E_(2017)",
+      "migratedFrom": "Extremism/God and Donald Trump. Stephen E. Strang [Strang, Stephen E.]. (2017).epub",
+      "archive": [
+        "archive/God and Donald Trump. Strang, Stephen E.. (2017).epub"
+      ]
+    },
+    {
+      "slug": "God_and_cancel_culture_stand_strong_before_it_s_too_late_-_Strang_Stephen_author_(2023)",
+      "migratedFrom": "Extremism/God and cancel culture _ stand strong before it's too late. Strang, Stephen. (2023).pdf",
+      "archive": [
+        "archive/God and cancel culture _ stand strong before it's too late. Strang, Stephen, author. (2023).pdf"
+      ]
+    },
+    {
+      "slug": "God_s_profits_faith_fraud_and_the_Republican_crusade_for_values_voters_-_Posner_Sarah_(2018)",
+      "migratedFrom": "Religion/God's profits _ faith, fraud, and the Republican crusade for values voters. Posner, Sarah. (2018).pdf",
+      "archive": [
+        "archive/God's profits _ faith, fraud, and the Republican crusade for values voters. Posner, Sarah. (2018).pdf"
+      ]
+    },
+    {
+      "slug": "Goring_A_Biography_-_Irving_David_(2002)",
+      "migratedFrom": "Nazism/Göring. A Biography. Irving, David. (2002).pdf",
+      "archive": [
+        "archive/Göring. A Biography. Irving, David. (2002).pdf"
+      ]
+    },
+    {
+      "slug": "Gospel_of_Lies_-_Surviving_(2026)",
+      "migratedFrom": "Uncategorized/Gospel of Lies. Surviving. (2026).pdf",
+      "archive": [
+        "archive/Gospel of Lies. Surviving. (2026).pdf"
+      ]
+    },
+    {
+      "slug": "Guns_germs_and_steel_the_fates_of_human_societies_-_Diamond_Jared_M_(1997)",
+      "migratedFrom": "Misc/Guns, germs, and steel_ the fates of human societies. Diamond, Jared M.. (1997).epub",
+      "archive": [
+        "archive/Guns, germs, and steel_ the fates of human societies. Diamond, Jared M.. (1997).epub"
+      ]
+    },
+    {
+      "slug": "Hammer_of_the_Gods_-_Society_The_Thule_(2020)",
+      "migratedFrom": "Religion/Hammer of the Gods. Society, The Thule. (2020).pdf",
+      "archive": [
+        "archive/Hammer of the Gods. Society, The Thule. (2020).pdf"
+      ]
+    },
+    {
+      "slug": "He_She_and_It_-_Piercy_Marge_(1991)",
+      "migratedFrom": "Misc/He, She and It. Piercy, Marge. (1991).epub",
+      "archive": [
+        "archive/He, She and It. Piercy, Marge. (1991).epub"
+      ]
+    },
+    {
+      "slug": "Heaven_s_Gate_(Routledge_New_Religions)_-_Postmodernity_(2016)",
+      "migratedFrom": "Uncategorized/Heaven's Gate (Routledge New Religions). Postmodernity. (2016).epub",
+      "archive": [
+        "archive/Heaven's Gate (Routledge New Religions). Postmodernity. (2016).epub"
+      ]
+    },
+    {
+      "slug": "Heaven_s_Gate_-_Zeller_Benjamin_E_(2014)",
+      "migratedFrom": "Uncategorized/Heaven's Gate. Zeller, Benjamin E.. (2014).epub",
+      "archive": [
+        "archive/Heaven's Gate. Zeller, Benjamin E.. (2014).epub"
+      ]
+    },
+    {
+      "slug": "Heinrich_Himmler_-_Longerich_Peter_(2011)",
+      "migratedFrom": "Nazism/Heinrich Himmler. Peter Longerich [Longerich, Peter]. (2011).epub",
+      "archive": [
+        "archive/Heinrich Himmler. Longerich, Peter. (2011).epub"
+      ]
+    },
+    {
+      "slug": "Heinrich_Himmler_-_Manvell_Roger_(2011)",
+      "migratedFrom": "Nazism/Heinrich Himmler. Manvell, Roger. (2011).epub",
+      "archive": [
+        "archive/Heinrich Himmler. Manvell, Roger. (2011).epub"
+      ]
+    },
+    {
+      "slug": "Hidden_Holocaust_-_Wohlberg_Steve_(2015)",
+      "migratedFrom": "Nazism/Hidden Holocaust. Wohlberg, Steve. (2015).epub",
+      "archive": [
+        "archive/Hidden Holocaust. Wohlberg, Steve. (2015).epub"
+      ]
+    },
+    {
+      "slug": "Hitler_-_Kershaw_Ian_(2013)",
+      "migratedFrom": "Nazism/Hitler. Kershaw, Ian [Kershaw. (2013).epub",
+      "archive": [
+        "archive/Hitler. Kershaw, Ian. (2013).epub"
+      ]
+    },
+    {
+      "slug": "Hitler_A_Biography_-_Longerich_Peter_(2019)",
+      "migratedFrom": "Nazism/Hitler_ A Biography. Peter Longerich [Longerich, Peter]. (2019).epub",
+      "archive": [
+        "archive/Hitler_ A Biography. Longerich, Peter. (2019).epub"
+      ]
+    },
+    {
+      "slug": "Hitler_Speeches_and_Proclamations_Volume_I_1932-1934_-_Domarus_Max_(2009)",
+      "migratedFrom": "Nazism/Hitler_  Speeches and Proclamations, Volume I, 1932-1934. Domarus, Max. (2009).pdf",
+      "archive": [
+        "archive/Hitler_ Speeches and Proclamations, Volume I, 1932-1934. Domarus, Max. (2009).pdf"
+      ]
+    },
+    {
+      "slug": "Hitler_s_American_Model_The_United_States_and_the_Making_of_Nazi_Race_Law_-_Whitman_James_Q_(2017)",
+      "migratedFrom": "Nazism/Hitler’s American Model_ The United States and the Making of Nazi Race Law. Whitman, James Q.. (2017).epub",
+      "archive": [
+        "archive/Hitler’s American Model_ The United States and the Making of Nazi Race Law. Whitman, James Q.. (2017).epub"
+      ]
+    },
+    {
+      "slug": "Hitler_s_Cross_-_LUTZER_ERWIN_W_(2012)",
+      "migratedFrom": "Nazism/Hitler's Cross. Erwin W. Lutzer [LUTZER, ERWIN W.]. (2012).epub",
+      "archive": [
+        "archive/Hitler's Cross. LUTZER, ERWIN W.. (2012).epub"
+      ]
+    },
+    {
+      "slug": "Hitler_s_Religion_-_Weikart_Richard_(2016)",
+      "migratedFrom": "Nazism/Hitler's Religion. Weikart, Richard. (2016).epub",
+      "archive": [
+        "archive/Hitler's Religion. Weikart, Richard. (2016).epub"
+      ]
+    },
+    {
+      "slug": "Hitlers_secretary_gives_an_interview_Junge_Gertrud_-_(March_20_1948)_(2012)",
+      "migratedFrom": "Nazism/Hitlers secretary gives an interview. Junge, Gertrud. (March 20, 1948). Unknown. (2012).pdf",
+      "archive": [
+        "archive/Hitlers secretary gives an interview. Junge, Gertrud. (March 20, 1948). (2012).pdf"
+      ]
+    },
+    {
+      "slug": "How_and_When_Heaven_s_Gate_(The_Door_to_the_Physical_Kingdom_Level_Above_Human)_May_Be_Entered_-_Heaven_Representatives_from_the_Kingdom_of_(2013)",
+      "migratedFrom": "Uncategorized/How and When Heaven's Gate (The Door to the Physical Kingdom Level Above Human) May Be Entered. (2013).epub",
+      "archive": [
+        "archive/How and When Heaven's Gate (The Door to the Physical Kingdom Level Above Human) May Be Entered. Heaven, Representatives from the Kingdom of. (2013).epub"
+      ]
+    },
+    {
+      "slug": "How_to_Spot_a_Fascist_-_Eco_Umberto_(2020)",
+      "migratedFrom": "Extremism/How to Spot a Fascist. Umberto Eco [Eco, Umberto]. (2020).epub",
+      "archive": [
+        "archive/How to Spot a Fascist. Eco, Umberto. (2020).epub"
+      ]
+    },
+    {
+      "slug": "Humani_Generis_Unitas_-_XI_Pope_Pius_(1939)",
+      "migratedFrom": "Nazism/Humani Generis Unitas - Pope Pius XI's Hidden Encyclical. Pope Pius XI [XI, Pope Pius]. (1939).pdf",
+      "archive": [
+        "archive/Humani Generis Unitas. XI, Pope Pius. (1939).pdf"
+      ]
+    },
+    {
+      "slug": "Karl_Barth_-_Busch_Eberhard_(1976)",
+      "migratedFrom": "Nazism/Karl Barth - His Life From Letters and Autobiographical Texts. Busch, Eberhard. (1976).pdf",
+      "archive": [
+        "archive/Karl Barth. Busch, Eberhard. (1976).pdf"
+      ]
+    },
+    {
+      "slug": "Koresh_-_Talty_Stephan_(2023)",
+      "migratedFrom": "Religion/Koresh. Talty, Stephan. (2023).epub",
+      "archive": [
+        "archive/Koresh. Talty, Stephan. (2023).epub"
+      ]
+    },
+    {
+      "slug": "Law_as_Politics_Carl_Schmitt_s_Critique_of_Liberalism_-_(Foreword)_David_Dyzenhaus_(Editor)_Ronald_Beiner_(2008)",
+      "migratedFrom": "Nazism/Law as Politics_ Carl Schmitt’s Critique of Liberalism. (Editor), David Dyzenhaus. (2008).pdf",
+      "archive": [
+        "archive/Law as Politics_ Carl Schmitt’s Critique of Liberalism. (Foreword), David Dyzenhaus (Editor) & Ronald Beiner. (2008).pdf"
+      ]
+    },
+    {
+      "slug": "Mandate_for_Leadership_Project_2025_Manifesto_-_Dans_Paul_(2024)",
+      "migratedFrom": "Extremism/Mandate for Leadership. Project 2025 Manifesto. Dans, Paul. (2024).pdf",
+      "archive": [
+        "archive/Mandate for Leadership. Project 2025 Manifesto. Dans, Paul. (2024).pdf"
+      ]
+    },
+    {
+      "slug": "Media_Interview_Techniques_-_Taylor_Robert_(2015)",
+      "migratedFrom": "Media/Media Interview Techniques. Taylor, Robert. (2015).epub",
+      "archive": [
+        "archive/Media Interview Techniques. Taylor, Robert. (2015).epub"
+      ]
+    },
+    {
+      "slug": "Michelle_remembers_-_Smith_Michelle_(2013)",
+      "migratedFrom": "Religion/Michelle remembers. Smith, Michelle. (2013).pdf",
+      "archive": [
+        "archive/Michelle remembers. Smith, Michelle. (2013).pdf"
+      ]
+    },
+    {
+      "slug": "Microsoft_Word_-_DELIVERANCE_HANDBOOK_eBook_9PM_9_1_22_docx_Exorcism_Manual_Locke_Greg_(2022)_(2022)",
+      "migratedFrom": "Religion/Microsoft Word - DELIVERANCE HANDBOOK eBook 9PM 9.1.22.docx. Exorcism Manual. Locke, Greg. (2022).pdf",
+      "archive": [
+        "archive/Microsoft Word. DELIVERANCE HANDBOOK eBook 9PM 9.1.22.docx. Exorcism Manual. Locke, Greg. (2022). (2022).pdf"
+      ]
+    },
+    {
+      "slug": "Money_Lies_and_God_-_Stewart_Katherine_(101)",
+      "migratedFrom": "Extremism/Money, Lies, and God. Stewart, Katherine. (101).epub",
+      "archive": [
+        "archive/Money, Lies, and God. Stewart, Katherine. (101).epub"
+      ]
+    },
+    {
+      "slug": "Nazism_Liberalism_and_Christianity_-_Barnes_Kenneth_C_(2014)",
+      "migratedFrom": "Nazism/Nazism, Liberalism, and Christianity. Barnes, Kenneth C [Barnes. (2014).pdf",
+      "archive": [
+        "archive/Nazism, Liberalism, and Christianity. Barnes, Kenneth C. (2014).pdf"
+      ]
+    },
+    {
+      "slug": "No_Ordinary_Men_-_Sifton_Elisabeth_(2013)",
+      "migratedFrom": "Nazism/No Ordinary Men. Fritz Stern [Sifton, Elisabeth]. (2013).epub",
+      "archive": [
+        "archive/No Ordinary Men. Sifton, Elisabeth. (2013).epub"
+      ]
+    },
+    {
+      "slug": "Nothing_to_Envy_Ordinary_Lives_in_North_Korea_-_Demick_Barbara_(2009)",
+      "migratedFrom": "History/Nothing to Envy_ Ordinary Lives in North Korea. Barbara Demick [Demick, Barbara]. (2009).epub",
+      "archive": [
+        "archive/Nothing to Envy_ Ordinary Lives in North Korea. Demick, Barbara. (2009).epub"
+      ]
+    },
+    {
+      "slug": "Occult_Roots_of_Nazism_Secret_Aryan_Cults_and_Their_Influence_on_Nazi_Ideology_-_Goodrick-Clarke_Nicholas_(2017)",
+      "migratedFrom": "Nazism/Occult Roots of Nazism Secret Aryan Cults and Their Influence on Nazi Ideology. Goodrick-Clarke, Nicholas. (2017).epub",
+      "archive": [
+        "archive/Occult Roots of Nazism Secret Aryan Cults and Their Influence on Nazi Ideology. Goodrick-Clarke, Nicholas. (2017).epub"
+      ]
+    },
+    {
+      "slug": "One_Hundred_Questions_for_Jehovah_s_Witnesses_-_Morgan_Owen_(2024)",
+      "migratedFrom": "Jehovahs Witnesses/One Hundred Questions for Jehovah’s Witnesses. Morgan, Owen. (2024).pdf",
+      "archive": [
+        "archive/One Hundred Questions for Jehovah’s Witnesses. Morgan, Owen. (2024).pdf"
+      ]
+    },
+    {
+      "slug": "Organized_to_Do_Jehovah_s_Will_-_Pennsylvania_Watch_Tower_Bible_Tract_Society_of",
+      "migratedFrom": "Jehovahs Witnesses/Organized to Do Jehovah's Will. Bible, Watch Tower.pdf",
+      "archive": [
+        "archive/Organized to Do Jehovah's Will. Pennsylvania, Watch Tower Bible & Tract Society of.pdf"
+      ]
+    },
+    {
+      "slug": "Pay_Attention_To_Yourselves_And_To_All_The_Flock_-_WYNNEJ1_(2015)",
+      "migratedFrom": "Jehovahs Witnesses/Pay Attention To Yourselves And To All The Flock. WYNNEJ1. (2015).pdf",
+      "archive": [
+        "archive/Pay Attention To Yourselves And To All The Flock. WYNNEJ1. (2015).pdf"
+      ]
+    },
+    {
+      "slug": "Pokemon_Harry_Potter_A_Fatal_Attraction_-_Arms_Phil_(2024)",
+      "migratedFrom": "Religion/Pokemon & Harry Potter_ A Fatal Attraction. Arms, Phil. (2024).pdf",
+      "archive": [
+        "archive/Pokemon & Harry Potter_ A Fatal Attraction. Arms, Phil. (2024).pdf"
+      ]
+    },
+    {
+      "slug": "Pope_at_War_The_Secret_History_of_Pius_XII_Mussolini_and_Hitler_(9780812989953)_The_Secret_History_of_Pius_XII_Mussolini_and_Hitler_-_Kertzer_David_I_",
+      "migratedFrom": "Nazism/Pope at War _ The Secret History of Pius XII, Mussolini, and Hitler (9780812989953)_ The Secret History of Pius XII, Mussolini, and Hitler. Kertzer, David I. [Kertzer. (2022).epub",
+      "archive": [
+        "archive/Pope at War _ The Secret History of Pius XII, Mussolini, and Hitler (9780812989953)_ The Secret History of Pius XII, Mussolini, and Hitler. Kertzer, David I.. (2022).epub"
+      ]
+    },
+    {
+      "slug": "Preparing_for_War_-_Bradley_Onishi",
+      "migratedFrom": "Extremism/Preparing for War. Onishi], Bradley Onishi [Bradley.epub",
+      "archive": [
+        "archive/Preparing for War. Bradley Onishi.epub"
+      ]
+    },
+    {
+      "slug": "Pseudoscience_-_Kaufman_Allison_B_Kaufman_James_C_(2018)",
+      "migratedFrom": "Science/Pseudoscience. Kaufman, Allison B.. (2018).epub",
+      "archive": [
+        "archive/Pseudoscience. Kaufman, Allison B. Kaufman & James C.. (2018).epub"
+      ]
+    },
+    {
+      "slug": "QAnon_An_Invitation_to_The_Great_Awakening_by_WWG1WGA_-_Anonymous_An_Invitation_to_The_Great_Awakening_(2019)",
+      "migratedFrom": "Extremism/QAnon An Invitation to The Great Awakening by WWG1WGA. Anonymous, An Invitation to The Great Awakening.. (2019).pdf",
+      "archive": [
+        "archive/QAnon An Invitation to The Great Awakening by WWG1WGA. Anonymous, An Invitation to The Great Awakening. (2019).pdf"
+      ]
+    },
+    {
+      "slug": "QAnon_Chaos_and_the_Cross_-_Bock_Edited_by_Michael_W_Austin_Gregory_L_(2023)",
+      "migratedFrom": "Extremism/QAnon, Chaos, and the Cross. Austin, Edited by Michael W.. (2023).pdf",
+      "archive": [
+        "archive/QAnon, Chaos, and the Cross. Bock, Edited by Michael W. Austin & Gregory L.. (2023).pdf"
+      ]
+    },
+    {
+      "slug": "QAnon_The_Storm_Is_Here_Who_is_Q_The_Deep_State_Conspiracy_Against_America_and_The_Great_Awakening_-_White_Jack_(2020)",
+      "migratedFrom": "Extremism/QAnon, The Storm Is Here_ Who is Q_ The Deep State Conspiracy Against America and The Great Awakening. Jack White [White, Jack]. (2020).epub",
+      "archive": [
+        "archive/QAnon, The Storm Is Here_ Who is Q_ The Deep State Conspiracy Against America and The Great Awakening. White, Jack. (2020).epub"
+      ]
+    },
+    {
+      "slug": "Qanon_The_Secrets_Behind_The_Secrets_-_Anon_Q_(2018)",
+      "migratedFrom": "Extremism/Qanon_ The Secrets Behind The Secrets. Q Anon [Anon, Q]. (2018).pdf",
+      "archive": [
+        "archive/Qanon_ The Secrets Behind The Secrets. Anon, Q. (2018).pdf"
+      ]
+    },
+    {
+      "slug": "Rare_DECISION_IN_GERMANY_by_LUCIUS_D_-_HIST_CLAY_RUSSIAN_BERLIN_BLOCKADE_WW2_(2024)",
+      "migratedFrom": "Nazism/Rare DECISION IN GERMANY by LUCIUS D. CLAY; RUSSIAN BERLIN BLOCKADE WW2 HIST. Unknown. (2024).pdf",
+      "archive": [
+        "archive/Rare DECISION IN GERMANY by LUCIUS D. HIST, CLAY; RUSSIAN BERLIN BLOCKADE WW2. (2024).pdf"
+      ]
+    },
+    {
+      "slug": "Rede_des_Gauobmannes_Dr_Krause_im_Sportpalast_-_Krause_Reinhold_(1933)",
+      "migratedFrom": "Nazism/Rede des Gauobmannes Dr. Krauſe im Sportpalaſt. Krause, Reinhold. (1933).pdf",
+      "archive": [
+        "archive/Rede des Gauobmannes Dr. Krauſe im Sportpalaſt. Krause, Reinhold. (1933).pdf"
+      ]
+    },
+    {
+      "slug": "Rise_of_Fascism_The_-_Carsten_F_L_(2024)",
+      "migratedFrom": "Nazism/Rise of Fascism, The. Carsten, F L. (1982). Unknown. (2024).pdf",
+      "archive": [
+        "archive/Rise of Fascism, The. Carsten, F L. (2024).pdf"
+      ]
+    },
+    {
+      "slug": "Satanic_Panic_Pop-Cultural_Paranoia_in_the_1980s_-_Janisse_Kier-la_(2016)",
+      "migratedFrom": "Religion/Satanic Panic. Pop-Cultural Paranoia in the 1980s. Janisse, Kier-la. (2015). (2016).pdf",
+      "archive": [
+        "archive/Satanic Panic. Pop-Cultural Paranoia in the 1980s. Janisse, Kier-la. (2016).pdf"
+      ]
+    },
+    {
+      "slug": "Satanism_A_Reader_-_Nilsson_Per_Faxneld_Johan_(2023)",
+      "migratedFrom": "Extremism/Satanism_ A Reader. Faxneld, Per. (2023).epub",
+      "archive": [
+        "archive/Satanism_ A Reader. Nilsson;, Per Faxneld;Johan. (2023).epub"
+      ]
+    },
+    {
+      "slug": "Saving_America_by_Saving_the_Family_A_Foundation_for_the_Next_250_Years_The_Heritage_Foundation_-_Foundation_The_Heritage",
+      "migratedFrom": "Extremism/Saving America by Saving the Family_ A Foundation for the Next 250 Years _ The Heritage Foundation. Foundation, The Heritage.pdf",
+      "archive": [
+        "archive/Saving America by Saving the Family_ A Foundation for the Next 250 Years _ The Heritage Foundation. Foundation, The Heritage.pdf"
+      ]
+    },
+    {
+      "slug": "Scarred_The_True_Story_of_How_I_Escaped_NXIVM_the_Cult_That_Bound_My_Life_-_Edmondson_Sarah_(2019)",
+      "migratedFrom": "Religion/Scarred_ The True Story of How I Escaped NXIVM, the Cult That Bound My Life. Sarah Edmondson [Edmondson, Sarah]. (2019).epub",
+      "archive": [
+        "archive/Scarred_ The True Story of How I Escaped NXIVM, the Cult That Bound My Life. Edmondson, Sarah. (2019).epub"
+      ]
+    },
+    {
+      "slug": "Seeking_A_Sanctuary_Seventh-Day_Adventism_And_The_American_Dream_-_Bull_Malcolm_Lockhart_Keith_(2016)",
+      "migratedFrom": "Uncategorized/Seeking A Sanctuary Seventh-Day Adventism And The American Dream. Bull, Malcolm. (2016).epub",
+      "archive": [
+        "archive/Seeking A Sanctuary Seventh-Day Adventism And The American Dream. Bull, Malcolm & Lockhart, Keith. (2016).epub"
+      ]
+    },
+    {
+      "slug": "Shepherd_the_Flock_of_God_1_Peter_5_2_-_Watch_Tower_Bible_Tract_Society_of_Republic_of_Korea_Incorporated_Association",
+      "migratedFrom": "Jehovahs Witnesses/“Shepherd the Flock of God”—1 Peter 5_2. Bible, Watch Tower.pdf",
+      "archive": [
+        "archive/“Shepherd the Flock of God”—1 Peter 5_2. Watch Tower Bible & Tract Society of Republic of Korea, Incorporated Association.pdf"
+      ]
+    },
+    {
+      "slug": "Son_of_Truth_-_Unknown_(2022)",
+      "migratedFrom": "Children/Son of Truth. Unknown. (2022).epub",
+      "archive": [
+        "archive/Son of Truth. (2022).epub"
+      ]
+    },
+    {
+      "slug": "Spin_the_art_of_managing_the_media_-_Clelland_Nick_author_(2023)",
+      "migratedFrom": "Media/Spin _ the art of managing the media. Clelland, Nick. (2023).pdf",
+      "archive": [
+        "archive/Spin _ the art of managing the media. Clelland, Nick, author. (2023).pdf"
+      ]
+    },
+    {
+      "slug": "Stalin_-_Khlevniuk_Oleg_V_(2015)",
+      "migratedFrom": "Nazism/Stalin. Khlevniuk, Oleg V.. (2015).epub",
+      "archive": [
+        "archive/Stalin. Khlevniuk, Oleg V.. (2015).epub"
+      ]
+    },
+    {
+      "slug": "Stormtroopers_-_Siemens_Daniel",
+      "migratedFrom": "Nazism/Stormtroopers. Siemens, Daniel.epub",
+      "archive": [
+        "archive/Stormtroopers. Siemens, Daniel.epub"
+      ]
+    },
+    {
+      "slug": "Thank_You_for_Arguing_-_Heinrichs_Jay_(2007)",
+      "migratedFrom": "Debate/Thank You for Arguing. Heinrichs, Jay. (2007).pdf",
+      "archive": [
+        "archive/Thank You for Arguing. Heinrichs, Jay. (2007).pdf"
+      ]
+    },
+    {
+      "slug": "The_Anatomy_of_Fascism_-_Paxton_Robert_O_(2007)",
+      "migratedFrom": "Nazism/The Anatomy of Fascism. Paxton, Robert O.. (2007).epub",
+      "archive": [
+        "archive/The Anatomy of Fascism. Paxton, Robert O.. (2007).epub"
+      ]
+    },
+    {
+      "slug": "The_Aryan_Ancestry_of_Jesus_-_Haupt_Paul_(2011)",
+      "migratedFrom": "Nazism/The Aryan Ancestry of Jesus.. Haupt, Paul. (2011).pdf",
+      "archive": [
+        "archive/The Aryan Ancestry of Jesus.. Haupt, Paul. (2011).pdf"
+      ]
+    },
+    {
+      "slug": "The_Balkans_1804_2012_Nationalism_War_and_the_Great_Powers_-_Glenny_Misha_(2012)",
+      "migratedFrom": "History/The Balkans, 1804–2012_ Nationalism, War and the Great Powers. Misha Glenny [Glenny, Misha]. (2012).epub",
+      "archive": [
+        "archive/The Balkans, 1804–2012_ Nationalism, War and the Great Powers. Glenny, Misha. (2012).epub"
+      ]
+    },
+    {
+      "slug": "The_Battle_for_Bonhoeffer_-_Haynes_Stephen_R_(101)",
+      "migratedFrom": "Nazism/The Battle for Bonhoeffer. Stephen R. Haynes [Haynes, Stephen R.]. (101).epub",
+      "archive": [
+        "archive/The Battle for Bonhoeffer. Haynes, Stephen R.. (101).epub"
+      ]
+    },
+    {
+      "slug": "The_Blitzkrieg_Legend_-_Frieser_Karl-Heinz",
+      "migratedFrom": "Nazism/The Blitzkrieg Legend. Karl-Heinz  Frieser [Frieser, Karl-Heinz].epub",
+      "archive": [
+        "archive/The Blitzkrieg Legend. Frieser, Karl-Heinz.epub"
+      ]
+    },
+    {
+      "slug": "The_Bonhoeffer_legacy_post-Holocaust_perspectives_-_R_Haynes_Stephen_(2022)",
+      "migratedFrom": "Nazism/The Bonhoeffer legacy_ post-Holocaust perspectives. R, Haynes. (2022).pdf",
+      "archive": [
+        "archive/The Bonhoeffer legacy_ post-Holocaust perspectives. R, Haynes, Stephen. (2022).pdf"
+      ]
+    },
+    {
+      "slug": "The_Camp_Of_The_Saints_-_Raspail_Jean_(1994)",
+      "migratedFrom": "Extremism/The Camp Of The Saints. Raspail, Jean. (1994).epub",
+      "archive": [
+        "archive/The Camp Of The Saints. Raspail, Jean. (1994).epub"
+      ]
+    },
+    {
+      "slug": "The_Case_for_Christian_Nationalism_-_Wolfe_Stephen_(2022)",
+      "migratedFrom": "Extremism/The Case for Christian Nationalism. Stephen Wolfe [Wolfe, Stephen]. (2022).epub",
+      "archive": [
+        "archive/The Case for Christian Nationalism. Wolfe, Stephen. (2022).epub"
+      ]
+    },
+    {
+      "slug": "The_Cost_of_Discipleship_-_Bonhoeffer_Dietrich_(1995)",
+      "migratedFrom": "Uncategorized/The Cost of Discipleship. Bonhoeffer, Dietrich. (1995).epub",
+      "archive": [
+        "archive/The Cost of Discipleship. Bonhoeffer, Dietrich. (1995).epub"
+      ]
+    },
+    {
+      "slug": "The_Cure_What_If_God_Isn_t_Who_You_Think_He_Is_and_Neither_Are_You_-_John_Lynch_Bruce_McNicol_and_Bill_Thrall_(2018)",
+      "migratedFrom": "Religion/The Cure_ What If God Isn't Who You Think He Is and Neither Are You. John Lynch [John Lynch, Bruce McNicol. (2018).epub",
+      "archive": [
+        "archive/The Cure_ What If God Isn't Who You Think He Is and Neither Are You. John Lynch, Bruce McNicol, and Bill Thrall. (2018).epub"
+      ]
+    },
+    {
+      "slug": "The_Dark_Enlightenment_-_Land_Nick_(2014)",
+      "migratedFrom": "Extremism/The Dark Enlightenment. Land, Nick. (2014).epub",
+      "archive": [
+        "archive/The Dark Enlightenment. Land, Nick. (2014).epub"
+      ]
+    },
+    {
+      "slug": "The_Debater_s_Guide_3rd_Edition_-_Jon_M_Ericson_James_J_Murphy_Raymond_Bud_Zeuschner_(2005)",
+      "migratedFrom": "Debate/The Debater's Guide, 3rd Edition. Jon M. Ericson, James J. Murphy. (2005).pdf",
+      "archive": [
+        "archive/The Debater's Guide, 3rd Edition. Jon M. Ericson, James J. Murphy, Raymond Bud Zeuschner. (2005).pdf"
+      ]
+    },
+    {
+      "slug": "The_Extremism_Gradient_Owen_Morgan_-_Unknown",
+      "migratedFrom": "Science/The Extremism Gradient – Owen Morgan. Unknown.pdf",
+      "archive": [
+        "archive/The Extremism Gradient – Owen Morgan.pdf"
+      ]
+    },
+    {
+      "slug": "The_German_Christians_-_Meier_Kurt_(2026)",
+      "migratedFrom": "Uncategorized/The German Christians - The Image of a Movement in the Church Struggle of the Third Reich. Meier, Kurt. (2026).pdf",
+      "archive": [
+        "archive/The German Christians. Meier, Kurt. (2026).pdf"
+      ]
+    },
+    {
+      "slug": "The_Gestapo_-_McDonough_Frank_(2017)",
+      "migratedFrom": "Nazism/The Gestapo. McDonough, Frank. (2017).epub",
+      "archive": [
+        "archive/The Gestapo. McDonough, Frank. (2017).epub"
+      ]
+    },
+    {
+      "slug": "The_Great_Gatsby_-_Fitzgerald_F_Scott_(1925)",
+      "migratedFrom": "Fiction/The Great Gatsby. Fitzgerald, F. Scott. (1925).epub",
+      "archive": [
+        "archive/The Great Gatsby. Fitzgerald, F. Scott. (1925).epub"
+      ]
+    },
+    {
+      "slug": "The_Hitler_Conspiracies_-_Evans_Richard_J_(2020)",
+      "migratedFrom": "Nazism/The Hitler Conspiracies. Richard J. Evans [Evans, Richard J.]. (2020).epub",
+      "archive": [
+        "archive/The Hitler Conspiracies. Evans, Richard J.. (2020).epub"
+      ]
+    },
+    {
+      "slug": "The_Hitler_Myth_-_Roche_Helen_(2017)",
+      "migratedFrom": "Nazism/The _Hitler Myth_. Roche, Helen. (2017).pdf",
+      "archive": [
+        "archive/The _Hitler Myth_. Roche, Helen. (2017).pdf"
+      ]
+    },
+    {
+      "slug": "The_Hitler_myth_image_and_reality_in_the_Third_Reich_-_Kershaw_Ian_1943-_(2022)",
+      "migratedFrom": "Nazism/The _Hitler myth_ _ image and reality in the Third Reich. Kershaw, Ian. (2022).pdf",
+      "archive": [
+        "archive/The _Hitler myth_ _ image and reality in the Third Reich. Kershaw, Ian, 1943-. (2022).pdf"
+      ]
+    },
+    {
+      "slug": "The_Invisible_Gorilla_How_Our_Intuitions_Deceive_Us_-_Chabris_Christopher_(2011)",
+      "migratedFrom": "Science/The Invisible Gorilla_ How Our Intuitions Deceive Us. Chabris, Christopher. (2011).epub",
+      "archive": [
+        "archive/The Invisible Gorilla_ How Our Intuitions Deceive Us. Chabris, Christopher. (2011).epub"
+      ]
+    },
+    {
+      "slug": "The_Looming_Tower_-_Wright_Lawrence_(2006)",
+      "migratedFrom": "Extremism/The Looming Tower. Wright, Lawrence. (2006).epub",
+      "archive": [
+        "archive/The Looming Tower. Wright, Lawrence. (2006).epub"
+      ]
+    },
+    {
+      "slug": "The_Man_in_the_High_Castle_-_Dick_Philip_(2011)",
+      "migratedFrom": "Fiction/The Man in the High Castle. Dick, Philip. (2011).epub",
+      "archive": [
+        "archive/The Man in the High Castle. Dick, Philip. (2011).epub"
+      ]
+    },
+    {
+      "slug": "The_Media_Training_Bible_101_Things_You_Absolutely_Positively_Need_to_Know_Before_Your_Next_Interview_-_Phillips_Brad_(2012)",
+      "migratedFrom": "Media/The Media Training Bible_ 101 Things You Absolutely, Positively Need to Know Before Your Next Interview. Phillips, Brad. (2012).epub",
+      "archive": [
+        "archive/The Media Training Bible_ 101 Things You Absolutely, Positively Need to Know Before Your Next Interview. Phillips, Brad. (2012).epub"
+      ]
+    },
+    {
+      "slug": "The_Plot_Against_the_King_-_Patel_Kash",
+      "migratedFrom": "Children/The Plot Against the King. Patel, Kash.pdf",
+      "archive": [
+        "archive/The Plot Against the King. Patel, Kash.pdf"
+      ]
+    },
+    {
+      "slug": "The_Pursuit_of_Power_-_Evans_Richard_J_(2016)",
+      "migratedFrom": "History/The Pursuit of Power. Evans, Richard J.. (2016).epub",
+      "archive": [
+        "archive/The Pursuit of Power. Evans, Richard J.. (2016).epub"
+      ]
+    },
+    {
+      "slug": "The_Rise_and_Fall_of_the_Third_Reich_-_Shirer_William_L_(101)",
+      "migratedFrom": "Nazism/The Rise and Fall of the Third Reich - A History of Nazi Germany. William L Shirer [Shirer, William L]. (101).pdf",
+      "archive": [
+        "archive/The Rise and Fall of the Third Reich. Shirer, William L. (101).pdf"
+      ]
+    },
+    {
+      "slug": "The_Sportpalast_Speech_-_Krause_Reinhold_(1933)",
+      "migratedFrom": "Nazism/The Sportpalast Speech - The German Christians and the Completion of the Reformation. Krause, Reinhold. (1933).epub",
+      "archive": [
+        "archive/The Sportpalast Speech. Krause, Reinhold. (1933).epub"
+      ]
+    },
+    {
+      "slug": "The_Third_Reich_A_New_History_-_Burleigh_Michael_(2001)",
+      "migratedFrom": "Nazism/The Third Reich_ A New History. Michael Burleigh [Burleigh, Michael]. (2001).epub",
+      "archive": [
+        "archive/The Third Reich_ A New History. Burleigh, Michael. (2001).epub"
+      ]
+    },
+    {
+      "slug": "The_Third_Reich_at_War_-_Evans_Richard_J_(101)",
+      "migratedFrom": "Nazism/The Third Reich at War. Richard J. Evans [Evans, Richard J.]. (101).epub",
+      "archive": [
+        "archive/The Third Reich at War. Evans, Richard J.. (101).epub",
+        "archive/The Third Reich at War. Evans, Richard J.. (101).pdf"
+      ]
+    },
+    {
+      "slug": "The_Third_Reich_in_History_and_Memory_-_Evans_Richard_J_(2015)",
+      "migratedFrom": "Nazism/The Third Reich in History and Memory. Richard J. Evans [Evans, Richard J.]. (2015).epub",
+      "archive": [
+        "archive/The Third Reich in History and Memory. Evans, Richard J.. (2015).epub"
+      ]
+    },
+    {
+      "slug": "The_Third_Reich_in_Power_-_Evans_Richard_J_(101)",
+      "migratedFrom": "Nazism/The Third Reich in Power. Richard J. Evans [Evans, Richard J.]. (101).epub",
+      "archive": [
+        "archive/The Third Reich in Power. Evans, Richard J.. (101).epub",
+        "archive/The Third Reich in Power. Evans, Richard J.. (101).pdf"
+      ]
+    },
+    {
+      "slug": "The_Tools_of_Argument_How_the_Best_Lawyers_Think_Argue_and_Win_-_Trachtman_Joel_(2013)",
+      "migratedFrom": "Debate/The Tools of Argument_ How the Best Lawyers Think, Argue, and Win. Trachtman, Joel. (2013).epub",
+      "archive": [
+        "archive/The Tools of Argument_ How the Best Lawyers Think, Argue, and Win. Trachtman, Joel. (2013).epub"
+      ]
+    },
+    {
+      "slug": "The_Turner_Diaries_-_Pierce_William_Luther_(1996)",
+      "migratedFrom": "Extremism/The Turner Diaries. William Luther Pierce [Pierce, William Luther]. (1996).epub",
+      "archive": [
+        "archive/The Turner Diaries. Pierce, William Luther. (1996).epub"
+      ]
+    },
+    {
+      "slug": "The_Violent_Take_It_by_Force_-_Taylor_Matthew_D_(2024)",
+      "migratedFrom": "Extremism/The Violent Take It by Force. Taylor, Matthew D.. (2024).epub",
+      "archive": [
+        "archive/The Violent Take It by Force. Taylor, Matthew D.. (2024).epub"
+      ]
+    },
+    {
+      "slug": "The_War_on_Science_-_Krauss_Lawrence_M_(2025)",
+      "migratedFrom": "Religion/The War on Science. Krauss, Lawrence M.. (2025).epub",
+      "archive": [
+        "archive/The War on Science. Krauss, Lawrence M.. (2025).epub"
+      ]
+    },
+    {
+      "slug": "The_coming_of_the_Third_Reich_-_Evans_Richard_J_(2017)",
+      "migratedFrom": "Nazism/The coming of the Third Reich. Evans, Richard J. (2017).pdf",
+      "archive": [
+        "archive/The coming of the Third Reich. Evans, Richard J. (2017).pdf"
+      ]
+    },
+    {
+      "slug": "The_illustrated_story_of_President_Joseph_Fielding_Smith_-_Rasmussen_Della_Mae_(2021)",
+      "migratedFrom": "Religion/The illustrated story of President Joseph Fielding Smith. Rasmussen, Della Mae. (2021).pdf",
+      "archive": [
+        "archive/The illustrated story of President Joseph Fielding Smith. Rasmussen, Della Mae. (2021).pdf"
+      ]
+    },
+    {
+      "slug": "The_nazi_persecution_of_the_churches_1933-45_-_Conway_J_S_(2022)",
+      "migratedFrom": "Nazism/The Nazi Persecution of the Churches - 1933-1945. Conway, J.S.. (1968).pdf",
+      "archive": [
+        "archive/The nazi persecution of the churches 1933-45. Conway, J.S. (2022).pdf"
+      ]
+    },
+    {
+      "slug": "Then_They_Came_for_Me_-_HOCKENOS_MATTHEW_D_(2018)",
+      "migratedFrom": "Nazism/Then They Came for Me. Matthew D Hockenos [HOCKENOS, MATTHEW D.]. (2018).epub",
+      "archive": [
+        "archive/Then They Came for Me. HOCKENOS, MATTHEW D.. (2018).epub"
+      ]
+    },
+    {
+      "slug": "Theological_Education_at_Finkenwalde_-_Bonhoeffer_Dietrich_Todt_Ilse_Stott_Douglas_W_Watson_Cheryl_Schulz_Dirk_Barker_H_Gaylon_Brocker_Mark_S_Bobert-S",
+      "migratedFrom": "Nazism/Theological Education at Finkenwalde. Bonhoeffer, Dietrich. (2014).epub",
+      "archive": [
+        "archive/Theological Education at Finkenwalde. Bonhoeffer, Dietrich,Tödt, Ilse,Stott, Douglas W.,Watson, Cheryl,Schulz, Dirk,Barker, H. Gaylon,Brocker, Mark S.,Bobert-Stützel, Sabine,HK Scrip. (2014).epub"
+      ]
+    },
+    {
+      "slug": "Theological_education_underground_1937-1940_-_Bonhoeffer_Dietrich_1906-1945_(2022)",
+      "migratedFrom": "Nazism/Theological education underground, 1937-1940. Bonhoeffer, Dietrich. (2022).pdf",
+      "archive": [
+        "archive/Theological education underground, 1937-1940. Bonhoeffer, Dietrich, 1906-1945. (2022).pdf"
+      ]
+    },
+    {
+      "slug": "They_Thought_They_Were_Free_-_Mayer_Milton",
+      "migratedFrom": "Nazism/They Thought They Were Free. Milton Mayer [Mayer, Milton].epub",
+      "archive": [
+        "archive/They Thought They Were Free. Mayer, Milton.epub"
+      ]
+    },
+    {
+      "slug": "Transitional_justice_how_emerging_democracies_reckon_with_former_regimes_-_How_Emerging_Democracies_Reckon_With_Kritz_Neil_J_(1995)_ocr_(2022)",
+      "migratedFrom": "Democracy/Transitional justice _ how emerging democracies reckon with former regimes. How Emerging Democracies Reckon With. Kritz, Neil J. (1995) ocr. (2022).epub",
+      "archive": [
+        "archive/Transitional justice _ how emerging democracies reckon with former regimes. How Emerging Democracies Reckon With. Kritz, Neil J. (1995) ocr. (2022).epub"
+      ]
+    },
+    {
+      "slug": "Tricks_of_the_Mind_-_Brown_Derren_(2007)",
+      "migratedFrom": "Science/Tricks of the Mind. Brown, Derren. (2007).epub",
+      "archive": [
+        "archive/Tricks of the Mind. Brown, Derren. (2007).epub"
+      ]
+    },
+    {
+      "slug": "UFOs_Nazi_Secret_Weapon_-_Zundel_Ernst_(2016)",
+      "migratedFrom": "Nazism/UFOs Nazi Secret Weapon. Zundel, Ernst. (2016).pdf",
+      "archive": [
+        "archive/UFOs Nazi Secret Weapon. Zundel, Ernst. (2016).pdf"
+      ]
+    },
+    {
+      "slug": "Understanding_Jehovah_s_Witnesses_-_Morgan_Owen_(2024)",
+      "migratedFrom": "Jehovahs Witnesses/Understanding Jehovah’s Witnesses. Morgan, Owen. (2024).pdf",
+      "archive": [
+        "archive/Understanding Jehovah’s Witnesses. Morgan, Owen. (2024).pdf"
+      ]
+    },
+    {
+      "slug": "Unholy_Why_White_Evangelicals_Worship_at_the_Altar_of_Donald_Trump_-_Posner_Sarah_(2020)",
+      "migratedFrom": "Religion/Unholy_ Why White Evangelicals Worship at the Altar of Donald Trump. Sarah Posner [Posner, Sarah]. (2020).epub",
+      "archive": [
+        "archive/Unholy_ Why White Evangelicals Worship at the Altar of Donald Trump. Posner, Sarah. (2020).epub"
+      ]
+    },
+    {
+      "slug": "Unspeakable_Truths_Transitional_Justice_And_The_Challenge_Of_Truth_Commissions_-_Hayner_Priscilla_B_(2022)",
+      "migratedFrom": "Democracy/Unspeakable Truths_ Transitional Justice And The Challenge Of Truth Commissions. Hayner, Priscilla B. (2022).pdf",
+      "archive": [
+        "archive/Unspeakable Truths_ Transitional Justice And The Challenge Of Truth Commissions. Hayner, Priscilla B. (2022).pdf"
+      ]
+    },
+    {
+      "slug": "Ur-Fascism_-_Eco_Umberto_(1995)",
+      "migratedFrom": "Nazism/Ur-Fascism. Eco, Umberto. (1995). Unknown.pdf",
+      "archive": [
+        "archive/Ur-Fascism. Eco, Umberto. (1995).pdf"
+      ]
+    },
+    {
+      "slug": "War_Stories_The_Search_for_a_Usable_Past_in_the_Federal_Republic_of_Germany_-_Moeller_Robert_G_(Author)",
+      "migratedFrom": "Nazism/War Stories _ The Search for a Usable Past in the Federal Republic of Germany. Moeller, Robert G.(Author).pdf",
+      "archive": [
+        "archive/War Stories _ The Search for a Usable Past in the Federal Republic of Germany. Moeller, Robert G.(Author).pdf"
+      ]
+    },
+    {
+      "slug": "War_and_Genocide_-_Bergen_Doris_L_(2016)",
+      "migratedFrom": "Nazism/War and Genocide - A Concise History Of The Holocaust. Bergen, Doris L. (2016).epub",
+      "archive": [
+        "archive/War and Genocide. Bergen, Doris L. (2016).epub"
+      ]
+    },
+    {
+      "slug": "Was_America_Founded_As_a_Christian_Nation_-_Fea_John_(2011)",
+      "migratedFrom": "Religion/Was America Founded As a Christian Nation_. John Fea [Fea, John]. (2011).epub",
+      "archive": [
+        "archive/Was America Founded As a Christian Nation_. Fea, John. (2011).epub"
+      ]
+    },
+    {
+      "slug": "Was_Goering_Right_Anderson_Victoria_(2024)_-_Anderson_Victoria_(2025)",
+      "migratedFrom": "Nazism/Was Goering Right. Anderson, Victoria. (2024). Anderson, Victoria. (2025).pdf",
+      "archive": [
+        "archive/Was Goering Right. Anderson, Victoria. (2024). Anderson, Victoria. (2025).pdf"
+      ]
+    },
+    {
+      "slug": "Was_Hitler_an_Atheist_How_Hitler_Exploited_Religion_to_Seize_Power_-_Morgan_Owen",
+      "migratedFrom": "Nazism/Was Hitler an Atheist_ How Hitler Exploited Religion to Seize Power. Owen Morgan [Morgan, Owen].epub",
+      "archive": [
+        "archive/Was Hitler an Atheist__ How Hitler Exploited Religion to Seize Power. Morgan, Owen.epub"
+      ]
+    },
+    {
+      "slug": "We_Believe_the_Children_-_Beck_Richard_(2015)",
+      "migratedFrom": "Religion/We Believe the Children. Beck, Richard. (2015).epub",
+      "archive": [
+        "archive/We Believe the Children. Beck, Richard. (2015).epub"
+      ]
+    },
+    {
+      "slug": "What_Does_the_Bible_Really_Teach_-_Pennsylvania_Watch_Tower_Bible_Tract_Society_of",
+      "migratedFrom": "Jehovahs Witnesses/What Does the Bible Really Teach_. Bible, Watch Tower.pdf",
+      "archive": [
+        "archive/What Does the Bible Really Teach_. Pennsylvania, Watch Tower Bible & Tract Society of.pdf"
+      ]
+    },
+    {
+      "slug": "White_American_Youth_-_PICCIOLINI_CHRISTIAN_(2017)",
+      "migratedFrom": "Extremism/White American Youth. Picciolini, Christian. (2017).epub",
+      "archive": [
+        "archive/White American Youth. PICCIOLINI, CHRISTIAN. (2017).epub"
+      ]
+    },
+    {
+      "slug": "Who_Deserved_to_Be_Researched_Selective_Biographical_Treatment_and_Institutional_Influence_in_Detlef_Garbe_s_Zwischen_Widerstand_und_Martyrium_-_Morga",
+      "migratedFrom": "Uncategorized/Who Deserved to Be Researched_ Selective Biographical Treatment and Institutional Influence in Detlef Garbe's Zwischen Widerstand und Martyrium. Morgan, Owen.epub",
+      "archive": [
+        "archive/Who Deserved to Be Researched_ Selective Biographical Treatment and Institutional Influence in Detlef Garbe's Zwischen Widerstand und Martyrium. Morgan, Owen.epub"
+      ]
+    },
+    {
+      "slug": "Working_Towards_the_Fuhrer_Reflections_on_the_Nature_of_the_Hitler_Dictatorship_-_(101)_(101)",
+      "migratedFrom": "Nazism/'Working Towards the Führer.' Reflections on the Nature of the Hitler Dictatorship. Unknown. (101).pdf",
+      "archive": [
+        "archive/'Working Towards the Führer.' Reflections on the Nature of the Hitler Dictatorship. (101). (101).pdf"
+      ]
+    },
+    {
+      "slug": "Yahweh_or_Jesus_-_Niedlich_Joachim_Kurd_(1921)",
+      "migratedFrom": "Uncategorized/Yahweh or Jesus_ - The Source of Our Degeneracy. Niedlich, Joachim Kurd. (1921).pdf",
+      "archive": [
+        "archive/Yahweh or Jesus_. Niedlich, Joachim Kurd. (1921).pdf"
+      ]
+    },
+    {
+      "slug": "Zionism_and_anti-semitism_in_Nazi_Germany_-_Nicosia_Francis_R_1944-_(2023)",
+      "migratedFrom": "Nazism/Zionism and anti-semitism in Nazi Germany. Nicosia, Francis R.. (2023).pdf",
+      "archive": [
+        "archive/Zionism and anti-semitism in Nazi Germany. Nicosia, Francis R., 1944-. (2023).pdf"
+      ]
+    },
+    {
+      "slug": "beautiful_differences_-_crowde_steven_(2023)",
+      "migratedFrom": "Children/beautiful differences. steven crowder [crowde, steven]. (2023).epub",
+      "archive": [
+        "archive/beautiful differences. crowde, steven. (2023).epub"
+      ]
+    },
+    {
+      "slug": "dinesh_dsousa_-_way_freedom_day_the_asher_(2023)",
+      "migratedFrom": "Children/dinesh dsousa. freedom day the asher way [way, freedom day the asher]. (2023).epub",
+      "archive": [
+        "archive/dinesh dsousa. way, freedom day the asher. (2023).epub",
+        "archive/dinesh dsousa. way, freedom day the asher. (2023).pdf"
+      ]
+    },
+    {
+      "slug": "flat_earth_curriculum_-_Unknown",
+      "migratedFrom": "Extremism/flat earth curriculum. Unknown.pdf",
+      "archive": [
+        "archive/flat earth curriculum.pdf"
+      ]
+    },
+    {
+      "slug": "life_how_did_it_get_here_-_1985_By_Evolution_Or_By_Creation_(2023)",
+      "migratedFrom": "Jehovahs Witnesses/life how did it get here. 1985, By Evolution Or By Creation.. (2023).pdf",
+      "archive": [
+        "archive/life how did it get here. 1985, By Evolution Or By Creation. (2023).pdf"
+      ]
+    },
+    {
+      "slug": "literacy_test_pg1_jpg_-_Stacie_(2002)",
+      "migratedFrom": "Extremism/literacy test pg1.jpg. Stacie. (2002).pdf",
+      "archive": [
+        "archive/literacy test pg1.jpg. Stacie. (2002).pdf"
+      ]
+    },
+    {
+      "slug": "no_more_secrets_-_raichik_chaya_(2023)",
+      "migratedFrom": "Children/no more secrets. chaya raichik [raichik, chaya]. (2023).epub",
+      "archive": [
+        "archive/no more secrets. raichik, chaya. (2023).epub"
+      ]
+    },
+    {
+      "slug": "pride_comes_before_the_fall_-_cameron_kirk_(2023)",
+      "migratedFrom": "Children/pride comes before the fall. cameron, kirk. (2023).pdf",
+      "archive": [
+        "archive/pride comes before the fall. cameron, kirk. (2023).pdf"
+      ]
+    },
+    {
+      "slug": "run_hide_fight_winnie_the_pooh_school_shooting_instructions_-_Unknown_(2023)",
+      "migratedFrom": "Children/run hide fight winnie the pooh school shooting instructions. Unknown. (2023).pdf",
+      "archive": [
+        "archive/run hide fight winnie the pooh school shooting instructions. (2023).pdf"
+      ]
+    },
+    {
+      "slug": "sean_spicer_-_bananas_the_parrots_go_(2023)",
+      "migratedFrom": "Children/sean spicer. bananas, the parrots go. (2023).pdf",
+      "archive": [
+        "archive/sean spicer. bananas, the parrots go. (2023).pdf"
+      ]
+    },
+    {
+      "slug": "the_night_the_snow_monster_attacked_-_flynn_michael_(2023)",
+      "migratedFrom": "Children/the night the snow monster attacked. flynn, michael. (2023).pdf",
+      "archive": [
+        "archive/the night the snow monster attacked. flynn, michael. (2023).pdf"
+      ]
+    },
+    {
+      "slug": "the_parrots_go_bananas_-_spicer_sean_(2023)",
+      "migratedFrom": "Children/the parrots go bananas. sean spicer [spicer, sean]. (2023).epub",
+      "archive": [
+        "archive/the parrots go bananas. spicer, sean. (2023).epub"
+      ]
+    },
+    {
+      "slug": "the_snapfast_challenge_-_sears_jp_(2023)",
+      "migratedFrom": "Children/the snapfast challenge. sears, jp. (2023).pdf",
+      "archive": [
+        "archive/the snapfast challenge. sears, jp. (2023).pdf"
+      ]
+    },
+    {
+      "slug": "the_test_of_lionhood_-_sorbo_kevin_(2023)",
+      "migratedFrom": "Children/the test of lionhood. sorbo, kevin. (2023).pdf",
+      "archive": [
+        "archive/the test of lionhood. sorbo, kevin. (2023).pdf"
+      ]
+    }
+  ],
+  "attached": [
+    {
+      "slug": "Die_Moorsoldaten_-_Langhoff,_Wolfgang_(1935)",
+      "path": "archive/Die Moorsoldaten. Wolfgang Langhoff. (1935).pdf",
+      "format": "pdf",
+      "size": 2515390
+    },
+    {
+      "slug": "Ecclesiastical_Investigations_in_the_Case_of_Minorite_Father_Andras_Kun,_1944_1945_-_Adam_Kurucz_(2020)",
+      "path": "archive/Ecclesiastical Investigations in the Case of Minorite Father András Kun, 1944–1945. Adam Kurucz. (2020).pdf",
+      "format": "pdf",
+      "size": 2009738
+    },
+    {
+      "slug": "For_the_Soul_of_the_People_Barnett_Victoria_J_-_Unknown",
+      "path": "archive/For the Soul of the People. Victoria J Barnett. (1992).epub",
+      "format": "epub",
+      "size": 27061213
+    },
+    {
+      "slug": "Jehovah_s_Witnesses_Proclaimers_of_God_s_Kingdom_-_Jehovah_s_Witnesses_(1993)",
+      "path": "archive/Jehovah’s Witnesses—Proclaimers of God’s Kingdom. Jehovah's Witnesses. (1993).pdf",
+      "format": "pdf",
+      "size": 84871071
+    },
+    {
+      "slug": "What_Did_You_Do_In_The_War,_Sister_Catholic_Sisters_in_the_WWII_Nazi_Resistance_-_Dennis_J_Turner_-_2020",
+      "path": "archive/What Did You Do In The War, Sister_ Catholic Sisters in the WWII Nazi Resistance. Turner, Dennis J.. (2020).epub",
+      "format": "epub",
+      "size": 512662
+    }
+  ]
+}
