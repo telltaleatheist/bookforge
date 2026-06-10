@@ -8,6 +8,7 @@ import { StudioService } from './services/studio.service';
 import { StudioItem, MainTab, AudiobookSubTab, LanguageLearningSubTab, ProcessStep } from './models/studio.types';
 import { StudioListComponent } from './components/studio-list/studio-list.component';
 import { StudioBrowseComponent } from './components/studio-browse/studio-browse.component';
+import { StudioVersionsComponent } from './components/studio-versions/studio-versions.component';
 import { AddModalComponent } from './components/add-modal/add-modal.component';
 import { ContentEditorComponent } from './components/content-editor/content-editor.component';
 import { ProcessWizardComponent } from './components/process-wizard/process-wizard.component';
@@ -24,7 +25,7 @@ import { ChapterRecoveryComponent } from '../audiobook/components/chapter-recove
 import { BilingualPlayerComponent } from '../language-learning/components/bilingual-player/bilingual-player.component';
 import { AudiobookPlayerComponent } from './components/audiobook-player/audiobook-player.component';
 import { VersionPickerDialogComponent, VersionPickerDialogData } from './components/version-picker-dialog/version-picker-dialog.component';
-import { ProjectFilesComponent, DiffRequest } from './components/project-files/project-files.component';
+import { DiffRequest } from './components/project-files/project-files.component';
 import { ProjectVersion } from './models/project-version.types';
 
 import { AudiobookService } from '../audiobook/services/audiobook.service';
@@ -61,8 +62,8 @@ import { SettingsService } from '../../core/services/settings.service';
     BilingualPlayerComponent,
     AudiobookPlayerComponent,
     VersionPickerDialogComponent,
-    ProjectFilesComponent,
-    StudioBrowseComponent
+    StudioBrowseComponent,
+    StudioVersionsComponent
   ],
   template: `
     <div class="studio-container"
@@ -203,7 +204,7 @@ import { SettingsService } from '../../core/services/settings.service';
                   [class.active]="mainTab() === 'files'"
                   (click)="setMainTab('files')"
                 >
-                  Files
+                  Versions
                 </button>
                 @if (selectedItem()!.type === 'article') {
                   <button
@@ -358,13 +359,18 @@ import { SettingsService } from '../../core/services/settings.service';
                   (save)="onSaveMetadata($event)"
                 />
                 @if (selectedItem()?.bfpPath) {
-                  <app-project-files
-                    [projectDir]="getProjectDir()"
-                    [projectId]="selectedItem()?.id || ''"
+                  <app-studio-versions
+                    [bfpPath]="selectedItem()?.bfpPath || ''"
+                    [item]="selectedItem()"
                     [refreshTrigger]="filesRefreshTrigger()"
-                    (fileChanged)="onFileChanged()"
-                    (editFile)="openEditorWithFile($event)"
-                    (diffFiles)="onDiffFiles($event)"
+                    (edit)="openEditorWithFile($event)"
+                    (exportDoc)="exportEpub($event)"
+                    (exportAudio)="exportM4b()"
+                    (listen)="goToPlay()"
+                    (enhance)="goToEnhance()"
+                    (fixChapters)="goToChapters()"
+                    (skipped)="goToSkipped()"
+                    (changed)="onFileChanged()"
                   />
                 }
               }
@@ -1776,6 +1782,11 @@ export class StudioComponent implements OnInit, OnDestroy {
       this.setLLSubTab('play');
     }
   }
+
+  // Audio row actions from the Versions tab.
+  goToEnhance(): void { this.setMainTab('audiobook'); this.setAudiobookSubTab('enhance'); }
+  goToChapters(): void { this.setMainTab('audiobook'); this.setAudiobookSubTab('chapters'); }
+  goToSkipped(): void { this.setMainTab('audiobook'); this.setAudiobookSubTab('skipped'); }
 
   handleSubTabClick(
     mainTab: 'audiobook' | 'language-learning',

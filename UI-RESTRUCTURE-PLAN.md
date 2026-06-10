@@ -71,7 +71,11 @@ Goal: nav rail becomes **Library, Studio, Queue, Settings**. No behavior change 
 5. **Single source of truth for nav items**: nav-rail.component.ts has its own hardcoded item list that diverges from app.ts. Make it purely input-driven (`[items]`), delete the hardcoded list.
 6. Verify: `npm run electron:dev`, click through all four remaining nav items, open the editor window from Studio, confirm queue still lists/runs jobs.
 
-## Phase 2 — Merge Library + Studio into one "Books" feature with two views
+## Phase 2 — Merge Library + Studio into one feature with two views ✅ DONE 2026-06-10 (commits 38c27a0, a526efd, a28614e)
+
+Done differently/better than originally drafted below: instead of a separate "Books" feature, the unified view lives in StudioComponent with a **Browse (cover grid) / Workspace (list+workflow)** toggle. Data migration (191 new projects + 5 attaches, all SHA-256 verified, ebooks/ intact) reconciled every archival ebook into a manifest project. Old ebooks-based Library feature deleted; nav collapsed to Library · Queue · Settings (Library → /studio). `ebooks/` still on disk (redundant) — delete manually only after in-app verification. Known follow-ups: ~17 imperfect-metadata books (mostly Children category) to fix in-app; tag editing on projects; the 10 junk-titled ebooks left in ebooks/.
+
+### Original draft (superseded, kept for reference)
 
 Goal: one collection, one metadata/tag system, two views. This is the largest phase; sub-plan before executing.
 
