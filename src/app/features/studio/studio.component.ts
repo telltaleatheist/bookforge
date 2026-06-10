@@ -119,6 +119,8 @@ import { SettingsService } from '../../core/services/settings.service';
           [items]="browseItems()"
           [selectedId]="selectedItemId()"
           (open)="openInWorkspace($event)"
+          (editRequested)="editFromBrowse($event)"
+          (exportRequested)="exportFromBrowse($event)"
         />
       } @else {
       <desktop-split-pane [primarySize]="280" [minSize]="200" [maxSize]="500">
@@ -551,8 +553,20 @@ import { SettingsService } from '../../core/services/settings.service';
     }
 
     /* Browse/Workspace content fills the area below the top bar */
-    desktop-split-pane { flex: 1; min-height: 0; }
-    app-studio-browse { flex: 1; min-height: 0; display: block; }
+    desktop-split-pane { flex: 1; min-height: 0; animation: viewFade 0.2s ease both; }
+    app-studio-browse { flex: 1; min-height: 0; display: block; animation: viewFade 0.2s ease both; }
+
+    /* Tab content fades in when switching tabs (each @if block recreates its root) */
+    .tab-content > * { animation: tabFade 0.16s ease both; }
+
+    @keyframes viewFade {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes tabFade {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
 
     .studio-topbar {
       display: flex;
@@ -1690,6 +1704,19 @@ export class StudioComponent implements OnInit, OnDestroy {
   openInWorkspace(item: StudioItem): void {
     this.selectItem(item);
     this.viewMode.set('workspace');
+  }
+
+  // Quick "Edit" from the Browse context menu — open the PDF/EPUB editor without
+  // leaving Browse (the editor opens in its own window).
+  editFromBrowse(item: StudioItem): void {
+    this.selectItem(item);
+    void this.openEditor();
+  }
+
+  // Quick "Export audiobook" from the Browse context menu.
+  exportFromBrowse(item: StudioItem): void {
+    this.contextMenuItem = item;
+    void this.exportM4b();
   }
 
   onItemAdded(item: StudioItem): void {
