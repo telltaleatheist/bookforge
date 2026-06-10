@@ -338,6 +338,7 @@ import { SettingsService } from '../../core/services/settings.service';
                       [sourceLang]="selectedItem()?.sourceLang || 'en'"
                       [textContent]="selectedItem()?.textContent || ''"
                       [cachedSession]="cachedSession()"
+                      [refreshTrigger]="filesRefreshTrigger()"
                       (queued)="onProcessQueued()"
                     />
                   } @else {
@@ -355,6 +356,7 @@ import { SettingsService } from '../../core/services/settings.service';
                       [projectDir]="getProjectDir()"
                       [audiobookFolder]="getAudiobookFolder()"
                       [initialSourceLang]="selectedItem()?.language || 'en'"
+                      [refreshTrigger]="filesRefreshTrigger()"
                       (queued)="onProcessQueued()"
                     />
                   }
@@ -1954,8 +1956,10 @@ export class StudioComponent implements OnInit, OnDestroy {
 
       if (result.success) {
         this.exportStatus.set(`Deleted ${labels[stage]}`);
-        // Refresh the list to update stage indicators
+        // Refresh the list flags AND the open Versions tab / wizards so the
+        // change is reflected immediately (no app restart needed).
         await this.studioService.loadBooks();
+        this.refreshProjectFiles();
       } else {
         this.exportStatus.set(`Failed to delete ${labels[stage]}: ${result.error || 'Unknown error'}`);
       }
@@ -1977,6 +1981,8 @@ export class StudioComponent implements OnInit, OnDestroy {
 
       if (result.success) {
         this.exportStatus.set('Editor state reset');
+        await this.studioService.loadBooks();
+        this.refreshProjectFiles();
       } else {
         this.exportStatus.set(`Failed to reset: ${result.error || 'Unknown error'}`);
       }

@@ -2346,6 +2346,7 @@ export class ProcessWizardComponent implements OnInit {
   readonly year = input<string>('');  // Publication year from BFP metadata
   readonly contributors = input<Array<{ first: string; last: string }> | undefined>(undefined);
   readonly cachedSession = input<any>(null);  // Cached TTS session for reassembly
+  readonly refreshTrigger = input<number>(0);  // bump to re-scan stages after a delete/reset
   // Book-specific inputs for bilingual cache
 
   // Outputs
@@ -2641,6 +2642,7 @@ export class ProcessWizardComponent implements OnInit {
   // Re-scan project EPUBs whenever bfpPath changes (e.g. after exporting from PDF viewer)
   private readonly bfpPathEffect = effect(() => {
     const p = this.bfpPath();
+    this.refreshTrigger();  // re-scan stages when the host bumps this (after delete/reset)
     if (p) this.scanProjectEpubs();
   });
 

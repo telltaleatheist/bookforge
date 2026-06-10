@@ -2025,6 +2025,7 @@ export class LLWizardComponent implements OnInit {
   // Language Learning specific inputs
   readonly projectTitle = input<string>('');
   readonly initialSourceLang = input<string>('en');
+  readonly refreshTrigger = input<number>(0);  // bump to re-scan stages after a delete/reset
 
   readonly queued = output<void>();
   readonly back = output<void>();
@@ -2356,6 +2357,7 @@ export class LLWizardComponent implements OnInit {
     // Re-scan project EPUBs whenever project dir changes (e.g. after exporting from PDF viewer)
     effect(() => {
       const dir = this.effectiveProjectDir();
+      this.refreshTrigger();  // re-scan stages when the host bumps this (after delete/reset)
       if (dir) this.scanProjectEpubs();
     });
 
