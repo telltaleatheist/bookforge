@@ -4525,7 +4525,7 @@ export class PdfPickerComponent implements OnInit {
         type: 'success'
       });
       // Navigate to audiobook producer
-      this.router.navigate(['/audiobook']);
+      this.router.navigate(['/studio']);
     } else if (errors.length > 0) {
       this.alertModal.set({
         title: 'Transfer Failed',
@@ -6779,7 +6779,7 @@ export class PdfPickerComponent implements OnInit {
 
         if (queueResult.success) {
           // Navigate to audiobook producer
-          await this.router.navigate(['/audiobook']);
+          await this.router.navigate(['/studio']);
 
           this.showAlert({
             title: 'Export Successful',

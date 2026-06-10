@@ -196,45 +196,8 @@ export interface NavRailItem {
 export class NavRailComponent {
   private readonly router = inject(Router);
 
-  // Default navigation items
-  readonly items = input<NavRailItem[]>([
-    {
-      id: 'library',
-      icon: '\u{1F4DA}', // Books emoji
-      label: 'Library',
-      route: '/library'
-    },
-    {
-      id: 'studio',
-      icon: '\u{1F3AC}', // Clapper board emoji
-      label: 'Studio',
-      route: '/studio'
-    },
-    {
-      id: 'queue',
-      icon: '\u{23F3}', // Hourglass emoji
-      label: 'Queue',
-      route: '/queue'
-    },
-    {
-      id: 'past-sessions',
-      icon: '\u{1F4C1}', // File folder emoji
-      label: 'Sessions',
-      route: '/reassembly'
-    },
-    {
-      id: 'post-processing',
-      icon: '\u{1F3A7}', // Headphone emoji
-      label: 'Post',
-      route: '/post-processing'
-    },
-    {
-      id: 'settings',
-      icon: '\u{2699}', // Gear emoji
-      label: 'Settings',
-      route: '/settings'
-    }
-  ]);
+  // Navigation items are provided by the host (see app.ts navItems).
+  readonly items = input<NavRailItem[]>([]);
 
   // Track current route
   private readonly currentRoute = signal<string>('');

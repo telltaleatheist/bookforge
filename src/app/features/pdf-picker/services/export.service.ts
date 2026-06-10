@@ -781,7 +781,7 @@ export class ExportService {
       }
 
       if (navigateAfter) {
-        this.router.navigate(['/audiobook']);
+        this.router.navigate(['/studio']);
       }
 
       return {

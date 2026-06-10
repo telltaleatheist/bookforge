@@ -23,50 +23,13 @@ export const routes: Routes = [
     loadComponent: () => import('./features/settings/settings.component').then(m => m.SettingsComponent)
   },
   {
-    path: 'reassembly',
-    loadComponent: () => import('./features/reassembly/reassembly.component').then(m => m.ReassemblyComponent)
-  },
-  {
-    path: 'post-processing',
-    loadComponent: () => import('./features/post-processing/post-processing.component').then(m => m.PostProcessingComponent)
-  },
-  {
     // Editor window - opens in separate Electron window
     path: 'editor',
     loadComponent: () => import('./features/studio/components/editor-window/editor-window.component').then(m => m.EditorWindowComponent)
   },
   {
-    // Legacy epub-editor route
-    path: 'epub-editor',
-    redirectTo: 'studio',
-    pathMatch: 'full'
-  },
-  {
+    // Sentence alignment - opens in separate Electron window
     path: 'alignment',
     loadComponent: () => import('./features/language-learning/components/sentence-alignment/sentence-alignment.component').then(m => m.SentenceAlignmentComponent)
-  },
-  // Legacy routes - redirect to studio
-  {
-    path: 'audiobook',
-    redirectTo: 'studio',
-    pathMatch: 'full'
-  },
-  {
-    path: 'language-learning',
-    redirectTo: 'studio',
-    pathMatch: 'full'
-  },
-  {
-    path: 'pdf-picker',
-    redirectTo: 'library',
-    pathMatch: 'full'
-  },
-  {
-    path: 'home',
-    loadComponent: () => import('./pages/home/home.component').then(m => m.HomeComponent)
-  },
-  {
-    path: 'components',
-    loadComponent: () => import('./pages/components/components.component').then(m => m.ComponentsComponent)
   }
 ];
