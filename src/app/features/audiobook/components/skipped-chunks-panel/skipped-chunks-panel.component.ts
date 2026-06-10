@@ -588,6 +588,10 @@ export class SkippedChunksPanelComponent implements OnChanges {
         return 'Skip';
       case 'ai-refusal':
         return 'Refused';
+      case 'truncated':
+        return 'Truncated';
+      case 'error':
+        return 'Error';
       default:
         return reason;
     }

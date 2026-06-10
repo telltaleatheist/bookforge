@@ -190,7 +190,7 @@ export interface SkippedChunk {
   chunkIndex: number;
   overallChunkNumber: number;  // 1-based overall chunk number (e.g., "Chunk 5/121")
   totalChunks: number;         // Total chunks in the job
-  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated';
+  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'error';
   text: string;           // The original text that was skipped
   aiResponse?: string;    // What the AI actually returned (for debugging)
 }
@@ -199,9 +199,11 @@ let copyrightFallbackCount = 0;
 let skipFallbackCount = 0;  // Chunks where AI returned [SKIP] for non-trivial content
 let markerMismatchCount = 0;  // Chunks where AI dropped/added [[BLOCK]] markers
 let truncatedFallbackCount = 0;  // Chunks where AI returned <70% of input (non-copyright)
+let errorFallbackCount = 0;  // Chunks where the AI request itself failed (network error, HTTP error, hung server)
 let skippedChunks: SkippedChunk[] = [];  // Detailed tracking of all skipped chunks
 const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break point
 const TIMEOUT_MS = 180000; // 3 minutes per chunk
+const OLLAMA_INACTIVITY_TIMEOUT_MS = 300000; // Abort if Ollama sends no data for 5 minutes (covers model load + prompt eval; healthy generation streams tokens continuously)
 const MAX_FALLBACK_COUNT = 10;  // Abort job if this many chunks fall back to original text
 const TRUNCATION_RETRY_REMINDER = 'IMPORTANT REMINDER: You must return ALL of the text content. Do not summarize, condense, or skip sections. Minor length reduction from removing artifacts is fine, but the full text must be preserved.\n\n';
 
@@ -209,7 +211,7 @@ const TRUNCATION_RETRY_REMINDER = 'IMPORTANT REMINDER: You must return ALL of th
  * Get total number of chunks that fell back to original text (all failure types)
  */
 function getTotalFallbackCount(): number {
-  return copyrightFallbackCount + skipFallbackCount + truncatedFallbackCount;
+  return copyrightFallbackCount + skipFallbackCount + truncatedFallbackCount + errorFallbackCount;
 }
 
 /**
@@ -830,6 +832,46 @@ export async function checkConnection(): Promise<{ connected: boolean; models?: 
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     return { connected: false, error: message };
+  }
+}
+
+/**
+ * Verify Ollama can actually serve a generate request end-to-end.
+ * A hung server can still answer light endpoints like /api/tags while generate
+ * requests sit in its queue forever — this catches that before a job starts.
+ * Also warms the model (keep_alive) so the first real chunk doesn't pay load time.
+ */
+export async function verifyOllamaGenerate(model: string): Promise<{ ok: boolean; error?: string }> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+      signal: controller.signal,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        prompt: 'Reply with the word OK.',
+        stream: false,
+        options: { num_predict: 8, num_ctx: 2048 },
+        keep_alive: '5m'
+      })
+    });
+    if (!response.ok) {
+      return { ok: false, error: `HTTP ${response.status}` };
+    }
+    const data = await response.json();
+    if (typeof data.response !== 'string' || data.response.length === 0) {
+      return { ok: false, error: 'generate returned no response text' };
+    }
+    return { ok: true };
+  } catch (error) {
+    if (controller.signal.aborted) {
+      return { ok: false, error: `no response within ${TIMEOUT_MS / 1000}s — the server may be hung (check for stale ollama processes on port 11434)` };
+    }
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -1693,30 +1735,84 @@ async function cleanChunk(
     abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
   }
 
-  const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-    signal: controller.signal,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      prompt: text,
-      system: systemPrompt,
-      stream: false,
-      options: {
-        temperature: 0.1, // Low temperature for consistent output
-        num_predict: text.length * 2, // Allow enough tokens
-        num_ctx: estimateNumCtx(systemPrompt, text, 2)
-      },
-      keep_alive: '5m' // Keep model loaded for 5 minutes
-    })
-  });
+  // Stream the response so a hung server surfaces as an inactivity timeout instead of
+  // hanging forever (a non-streaming request also dies at undici's 5-minute headers
+  // timeout for long generations, which read as a generic "fetch failed").
+  let timedOut = false;
+  let inactivityTimer: NodeJS.Timeout | undefined;
+  const resetInactivityTimer = () => {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, OLLAMA_INACTIVITY_TIMEOUT_MS);
+  };
 
-  if (!response.ok) {
-    throw new Error(`Ollama returned HTTP ${response.status}`);
+  let cleaned: string;
+  try {
+    resetInactivityTimer();
+    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+      signal: controller.signal,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        prompt: text,
+        system: systemPrompt,
+        stream: true,
+        options: {
+          temperature: 0.1, // Low temperature for consistent output
+          num_predict: text.length * 2, // Allow enough tokens
+          num_ctx: estimateNumCtx(systemPrompt, text, 2)
+        },
+        keep_alive: '5m' // Keep model loaded for 5 minutes
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama returned HTTP ${response.status}`);
+    }
+    if (!response.body) {
+      throw new Error('Ollama returned no response body');
+    }
+
+    let result = '';
+    let buffer = '';
+    let sawDone = false;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      resetInactivityTimer();
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIdx;
+      while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIdx).trim();
+        buffer = buffer.slice(newlineIdx + 1);
+        if (!line) continue;
+        const data = JSON.parse(line);
+        if (data.error) {
+          throw new Error(`Ollama error: ${data.error}`);
+        }
+        if (typeof data.response === 'string') {
+          result += data.response;
+        }
+        if (data.done) sawDone = true;
+      }
+    }
+    if (!sawDone) {
+      throw new Error('Ollama stream ended without a completion message');
+    }
+    cleaned = result;
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(`Ollama timeout: no data received for ${OLLAMA_INACTIVITY_TIMEOUT_MS / 1000}s — the server may be hung`);
+    }
+    throw error;
+  } finally {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
   }
-
-  const data = await response.json();
-  const cleaned = data.response || text;
 
   // Safeguard 1: Check for skip markers or AI assistant responses
   const outputCheck = checkAIOutput(cleaned, text);
@@ -2058,6 +2154,7 @@ export async function cleanupEpub(
   skipFallbackCount = 0;
   markerMismatchCount = 0;
   truncatedFallbackCount = 0;
+  errorFallbackCount = 0;
   skippedChunks = [];
 
   // providerConfig is required - no fallbacks
@@ -2078,6 +2175,13 @@ export async function cleanupEpub(
       stopAIPowerBlock();
       return { success: false, error: `Model '${config.ollama.model}' not found. Run: ollama pull ${config.ollama.model}` };
     }
+    console.log(`[AI-BRIDGE] Running Ollama generate preflight for ${config.ollama.model}...`);
+    const generateCheck = await verifyOllamaGenerate(config.ollama.model);
+    if (!generateCheck.ok) {
+      stopAIPowerBlock();
+      return { success: false, error: `Ollama is reachable but not serving generate requests: ${generateCheck.error}` };
+    }
+    console.log('[AI-BRIDGE] Ollama generate preflight passed');
   } else if (config.provider === 'claude') {
     if (!config.claude?.apiKey) {
       stopAIPowerBlock();
@@ -2692,7 +2796,19 @@ export async function cleanupEpub(
                 errorMessage.includes('403') || errorMessage.includes('quota')) {
               throw error; // Re-throw to stop all workers
             }
-            // For recoverable errors, keep original text
+            // For recoverable errors, keep original text — but count it toward the
+            // fallback threshold (checked in updateProgress) so a dead/hung AI backend
+            // aborts the job instead of silently producing an unchanged book.
+            errorFallbackCount++;
+            skippedChunks.push({
+              chapterTitle: work.chapterTitle,
+              chunkIndex: work.chunkIndex,
+              overallChunkNumber: work.overallChunkNumber,
+              totalChunks: totalChunksInJob,
+              reason: 'error',
+              text: work.text,
+              aiResponse: errorMessage.substring(0, 500)
+            });
             const result: ChunkResult = {
               chapterId: work.chapterId,
               chunkIndex: work.chunkIndex,
@@ -2902,11 +3018,24 @@ export async function cleanupEpub(
               throw new Error(`AI cleanup stopped: ${errorMessage}`);
             }
 
-            // For recoverable errors, use original chunk text
+            // For recoverable errors, use original chunk text — but count it toward
+            // the fallback threshold so a dead/hung AI backend aborts the job loudly
+            // instead of silently producing an unchanged book.
             console.warn(`[AI-CLEANUP] Chunk ${currentChunkInJob} failed - using original text`);
+            errorFallbackCount++;
+            skippedChunks.push({
+              chapterTitle: chapter.title,
+              chunkIndex: c,
+              overallChunkNumber: currentChunkInJob,
+              totalChunks: totalChunksInJob,
+              reason: 'error',
+              text: chunkInfo.text,
+              aiResponse: errorMessage.substring(0, 500)
+            });
             cleanedChunkTexts.push(chunkInfo.text);
             chunksCompletedInJob++;
             chunksCompletedInSession++;
+            checkFallbackThreshold();
           }
         }
 
