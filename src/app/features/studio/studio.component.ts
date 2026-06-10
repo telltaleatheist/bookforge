@@ -7,6 +7,7 @@ import {
 import { StudioService } from './services/studio.service';
 import { StudioItem, MainTab, AudiobookSubTab, LanguageLearningSubTab, ProcessStep } from './models/studio.types';
 import { StudioListComponent } from './components/studio-list/studio-list.component';
+import { StudioBrowseComponent } from './components/studio-browse/studio-browse.component';
 import { AddModalComponent } from './components/add-modal/add-modal.component';
 import { ContentEditorComponent } from './components/content-editor/content-editor.component';
 import { ProcessWizardComponent } from './components/process-wizard/process-wizard.component';
@@ -60,7 +61,8 @@ import { SettingsService } from '../../core/services/settings.service';
     BilingualPlayerComponent,
     AudiobookPlayerComponent,
     VersionPickerDialogComponent,
-    ProjectFilesComponent
+    ProjectFilesComponent,
+    StudioBrowseComponent
   ],
   template: `
     <div class="studio-container"
@@ -77,6 +79,49 @@ import { SettingsService } from '../../core/services/settings.service';
           </div>
         </div>
       }
+
+      <!-- Top bar: view toggle (Browse grid vs Workspace) -->
+      <div class="studio-topbar">
+        <div class="view-toggle">
+          <button [class.active]="viewMode() === 'browse'" (click)="viewMode.set('browse')">Browse</button>
+          <button [class.active]="viewMode() === 'workspace'" (click)="viewMode.set('workspace')">Workspace</button>
+        </div>
+        @if (viewMode() === 'browse') {
+          <div class="topbar-search">
+            <input
+              type="text"
+              placeholder="Search titles, authors, tags..."
+              [ngModel]="searchQuery()"
+              (ngModelChange)="searchQuery.set($event)"
+              class="search-input"
+            />
+            @if (searchQuery()) {
+              <button class="search-clear" (click)="searchQuery.set('')">&times;</button>
+            }
+          </div>
+          <div class="topbar-actions">
+            <span class="browse-count">{{ browseItems().length }} books</span>
+            <button class="btn-header-action" (click)="studioService.loadAll()" title="Refresh">↻</button>
+            <button class="btn-add" (click)="showAddModal.set(true)" title="Add Content">+</button>
+          </div>
+        }
+      </div>
+
+      @if (viewMode() === 'browse') {
+        @if (allTags().length > 0) {
+          <div class="tag-filter-bar browse-tags">
+            <button class="tag-filter-pill" [class.active]="!activeTag()" (click)="activeTag.set(null)">All</button>
+            @for (tag of allTags(); track tag) {
+              <button class="tag-filter-pill" [class.active]="activeTag() === tag" (click)="toggleTag(tag)">{{ tag }}</button>
+            }
+          </div>
+        }
+        <app-studio-browse
+          [items]="browseItems()"
+          [selectedId]="selectedItemId()"
+          (open)="openInWorkspace($event)"
+        />
+      } @else {
       <desktop-split-pane [primarySize]="280" [minSize]="200" [maxSize]="500">
         <!-- Left Panel: List -->
         <div pane-primary class="list-panel">
@@ -505,6 +550,7 @@ import { SettingsService } from '../../core/services/settings.service';
           }
         </div>
       </desktop-split-pane>
+      }
     </div>
 
     <!-- Add Modal -->
@@ -630,7 +676,52 @@ import { SettingsService } from '../../core/services/settings.service';
       flex: 1;
       overflow: hidden;
       position: relative;
+      display: flex;
+      flex-direction: column;
     }
+
+    /* Browse/Workspace content fills the area below the top bar */
+    desktop-split-pane { flex: 1; min-height: 0; }
+    app-studio-browse { flex: 1; min-height: 0; display: block; }
+
+    .studio-topbar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border-default, rgba(255,255,255,0.08));
+      flex-shrink: 0;
+    }
+    .view-toggle {
+      display: flex;
+      background: var(--bg-elevated);
+      border-radius: 7px;
+      padding: 2px;
+      flex-shrink: 0;
+    }
+    .view-toggle button {
+      border: none;
+      background: none;
+      color: var(--text-secondary);
+      padding: 5px 14px;
+      border-radius: 5px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .view-toggle button.active {
+      background: var(--accent-primary, #06b6d4);
+      color: #fff;
+    }
+    .topbar-search { flex: 1; position: relative; max-width: 420px; }
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-left: auto;
+    }
+    .browse-count { font-size: 0.78rem; color: var(--text-secondary); }
+    .browse-tags { padding: 8px 16px; flex-shrink: 0; }
 
     .drop-overlay {
       position: absolute;
@@ -1315,6 +1406,9 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly selectedItemId = signal<string | null>(null);
   readonly fullscreenPlayer = signal<boolean>(false);
 
+  // View mode: 'browse' = cover-grid library view, 'workspace' = list + workflow.
+  readonly viewMode = signal<'browse' | 'workspace'>('browse');
+
   // Drag-and-drop file import
   readonly showDropOverlay = signal<boolean>(false);
   readonly dragDropFiles = signal<string[]>([]);
@@ -1366,6 +1460,9 @@ export class StudioComponent implements OnInit, OnDestroy {
     if (q) archived = archived.filter(a => this.matchesSearch(a, q));
     return archived;
   });
+
+  // Combined collection for the Browse grid (books first, then articles).
+  readonly browseItems = computed(() => [...this.filteredBooks(), ...this.filteredArticles()]);
 
   // Tab navigation
   readonly mainTab = signal<MainTab>('files');
@@ -1719,6 +1816,12 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.selectedItemId.set(item.id);
     this.mainTab.set('audiobook');
     this.audiobookSubTab.set('play');
+  }
+
+  // Open a book from the Browse grid into the Studio workspace.
+  openInWorkspace(item: StudioItem): void {
+    this.selectItem(item);
+    this.viewMode.set('workspace');
   }
 
   onItemAdded(item: StudioItem): void {

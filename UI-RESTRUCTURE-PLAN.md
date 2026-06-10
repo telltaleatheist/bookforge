@@ -60,7 +60,7 @@ Button consolidation rule: a verb appears on the row of the thing it acts on, an
 
 ---
 
-## Phase 1 — Nav rail cleanup + dead code purge (app code only, low risk)
+## Phase 1 — Nav rail cleanup + dead code purge (app code only, low risk) ✅ DONE 2026-06-10 (commit 3cf4936)
 
 Goal: nav rail becomes **Library, Studio, Queue, Settings**. No behavior change beyond removed pages.
 
