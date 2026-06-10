@@ -700,10 +700,12 @@ export function computeDescriptiveFilename(
     }
   }
 
-  // Build filename
+  // Build filename: "Title. Author. (Year).ext" — year at the end. Each segment
+  // adds its own leading ". " so there are never double periods when a part
+  // (author or year) is absent.
   let name = title;
-  if (authorPart) name += `. ${authorPart}.`;
-  if (metadata.year) name += ` (${metadata.year})`;
+  if (authorPart) name += `. ${authorPart}`;
+  if (metadata.year) name += `. (${metadata.year})`;
   name += ext;
 
   // Sanitize unsafe characters
