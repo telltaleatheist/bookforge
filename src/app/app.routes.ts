@@ -3,16 +3,20 @@ import { Routes } from '@angular/router';
 export const routes: Routes = [
   {
     path: '',
-    redirectTo: 'library',
+    redirectTo: 'studio',
     pathMatch: 'full'
   },
   {
-    path: 'library',
-    loadComponent: () => import('./features/library/library.component').then(m => m.LibraryComponent)
-  },
-  {
+    // Unified Library/Studio: StudioComponent opens to the Browse grid and
+    // toggles to the Workspace. The old ebooks/-based Library was retired once
+    // every ebook became a manifest project (Jun 2026).
     path: 'studio',
     loadComponent: () => import('./features/studio/studio.component').then(m => m.StudioComponent)
+  },
+  {
+    path: 'library',
+    redirectTo: 'studio',
+    pathMatch: 'full'
   },
   {
     path: 'queue',

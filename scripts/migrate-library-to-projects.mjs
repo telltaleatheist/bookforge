@@ -37,7 +37,8 @@ const FLAG_DECISIONS = {
   'Nazism/Die Moorsoldaten. esterw. (2020).pdf': { attach: 'Die_Moorsoldaten_-_Langhoff,_Wolfgang_(1935)' },
 };
 // Projects with a live queue job — defer manifest-modifying attaches until the job finishes.
-const DEFER_ATTACH_PROJECTS = new Set([
+// Pass --include-deferred once the job is stopped to complete these.
+const DEFER_ATTACH_PROJECTS = process.argv.includes('--include-deferred') ? new Set() : new Set([
   'Jehovah_s_Witnesses_Proclaimers_of_God_s_Kingdom_-_Jehovah_s_Witnesses_(1993)',
 ]);
 const LIBRARY_ROOT = process.argv.find(a => a.startsWith('--root='))?.slice(7)
