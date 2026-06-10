@@ -1376,14 +1376,18 @@ function setupIpcHandlers(): void {
         if (meta.tags !== undefined) manifest.metadata.tags = meta.tags;
         if (meta.coverImagePath !== undefined) manifest.metadata.coverPath = meta.coverImagePath;
 
-        // Always derive the output filename from the (now-updated) metadata so it
-        // stays in sync — "Title. Author. (Year).m4b" with year at the end.
-        manifest.metadata.outputFilename = manifestService.computeDescriptiveFilename({
-          title: manifest.metadata.title,
-          author: manifest.metadata.author,
-          authorFileAs: manifest.metadata.authorFileAs,
-          year: manifest.metadata.year,
-        }, '.m4b');
+        // Output filename: the renderer sends the effective name (live-generated or
+        // a manual override). Use it when provided; otherwise derive from metadata.
+        if (typeof meta.outputFilename === 'string' && meta.outputFilename.trim()) {
+          manifest.metadata.outputFilename = meta.outputFilename.trim();
+        } else {
+          manifest.metadata.outputFilename = manifestService.computeDescriptiveFilename({
+            title: manifest.metadata.title,
+            author: manifest.metadata.author,
+            authorFileAs: manifest.metadata.authorFileAs,
+            year: manifest.metadata.year,
+          }, '.m4b');
+        }
 
         manifest.modifiedAt = new Date().toISOString();
         await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));

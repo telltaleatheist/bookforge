@@ -390,31 +390,18 @@ export class MetadataEditorComponent {
     return data.coverData || null;
   });
 
-  // Generated filename (used when not manually edited)
+  // Live-generated filename ("Title. Author. (Year).m4b" — year at the end).
+  // Each segment owns its leading ". " so absent parts never create double periods.
   readonly generatedFilename = computed(() => {
     const data = this.formData();
     const authors = this.formAuthors();
-    let filename = data.title || 'Untitled';
-
-    if (data.subtitle) {
-      filename += ` - ${data.subtitle}`;
-    }
-
-    filename += '.';
-
+    let filename = (data.title || 'Untitled').trim();
+    if (data.subtitle) filename += ` - ${data.subtitle.trim()}`;
     const authorStr = this.formatAuthorsForFilename(authors);
-    if (authorStr) {
-      filename += ` ${authorStr}.`;
-    }
-
-    if (data.year) {
-      filename += ` (${data.year})`;
-    }
-
+    if (authorStr) filename += `. ${authorStr}`;
+    if (data.year) filename += `. (${data.year})`;
     filename += '.m4b';
-
-    // Clean up the filename
-    return filename.replace(/\s+/g, ' ').replace(/\.\s*\./g, '.');
+    return filename.replace(/\s+/g, ' ').trim();
   });
 
   private wasSaving = false;
@@ -448,10 +435,12 @@ export class MetadataEditorComponent {
           ...meta,
           authorFirst: authors[0]?.first || '',
           authorLast: authors[0]?.last || '',
+          // Start from the live-generated filename so it tracks title/author/year
+          // edits; the user can still override it by typing in the field.
+          outputFilename: '',
         });
 
-        // Reset manual edit flag when loading new metadata
-        this.filenameManuallyEdited = !!meta.outputFilename;
+        this.filenameManuallyEdited = false;
       }
     }, { allowSignalWrites: true });
 
@@ -561,6 +550,8 @@ export class MetadataEditorComponent {
     const authors = this.formAuthors();
     return {
       ...data,
+      // Persist the effective filename: the manual override if set, else the live one.
+      outputFilename: data.outputFilename || this.generatedFilename(),
       contributors: authors.filter(a => a.first || a.last),
       tags: data.tags || [],
     };
