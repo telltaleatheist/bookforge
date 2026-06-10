@@ -1282,7 +1282,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly fullscreenPlayer = signal<boolean>(false);
 
   // View mode: 'browse' = cover-grid library view, 'workspace' = list + workflow.
-  readonly viewMode = signal<'browse' | 'workspace'>('browse');
+  readonly viewMode = signal<'browse' | 'workspace'>('workspace');
 
   // Drag-and-drop file import
   readonly showDropOverlay = signal<boolean>(false);
