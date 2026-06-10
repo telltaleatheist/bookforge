@@ -829,7 +829,7 @@ export interface ElectronAPI {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
     analyzeQuick: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
     analyzeText: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
-    onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[] }) => void) => () => void;
+    onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath: string }) => void) => () => void;
     renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>, removeBackground?: boolean) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderBlankPage: (pageNum: number, scale?: number) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderAllPages: (pdfPath: string, scale?: number, concurrency?: number) => Promise<{ success: boolean; data?: { paths: string[] }; error?: string }>;
@@ -2075,7 +2075,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:analyze-quick', pdfPath, maxPages),
     analyzeText: (pdfPath: string, maxPages?: number) =>
       ipcRenderer.invoke('pdf:analyze-text', pdfPath, maxPages),
-    onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[] }) => void) => {
+    onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath: string }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: any) => {
         callback(data);
       };

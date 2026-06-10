@@ -35,6 +35,11 @@ export class PageRenderService {
   private currentTotalPages: number = 0;
   // Cache-buster: changes on each document open to invalidate stale browser cache
   private cacheBuster: string = '';
+  // Generation token: incremented on every initialize()/clear(). Async work
+  // captures the generation at entry and abandons its results if the document
+  // changed while it was awaiting — otherwise a stale render for document A
+  // writes its page paths into document B's state.
+  private generation = 0;
 
   // Callbacks
   private progressUnsubscribe: (() => void) | null = null;
@@ -65,6 +70,7 @@ export class PageRenderService {
    * Clear all cached paths and reset state
    */
   clear(): void {
+    this.generation++;
     this.previewPaths = [];
     this.fullPaths = [];
     this.pageImages.set(new Map());
@@ -156,6 +162,7 @@ export class PageRenderService {
   async loadAllPageImages(pageCount?: number): Promise<void> {
     const count = pageCount ?? this.currentTotalPages;
     if (!this.currentPdfPath || count === 0) return;
+    const gen = this.generation;
 
     this.isLoading.set(true);
     this.loadingProgress.set({ current: 0, total: count, phase: 'preview' });
@@ -174,6 +181,7 @@ export class PageRenderService {
 
     // Subscribe to page upgrade notifications
     this.upgradeUnsubscribe = this.electronService.onPageUpgraded((data) => {
+      if (gen !== this.generation) return; // stale event from a previous document
       this.fullPaths[data.pageNum] = data.path;
       this.updatePageImagesSignal();
     });
@@ -184,7 +192,7 @@ export class PageRenderService {
         4 // concurrency
       );
 
-      if (result) {
+      if (result && gen === this.generation) {
         this.previewPaths = result.previewPaths;
         this.currentFileHash = result.fileHash;
         this.updatePageImagesSignal();
@@ -235,13 +243,14 @@ export class PageRenderService {
   private async startBackgroundFullResUpgrade(): Promise<void> {
     if (this.backgroundUpgradeRunning) return;
     this.backgroundUpgradeRunning = true;
+    const gen = this.generation;
 
     const BATCH_SIZE = 10;
     const BATCH_DELAY_MS = 200; // Pause between batches to yield to UI
 
     try {
       for (let i = 0; i < this.currentTotalPages; i += BATCH_SIZE) {
-        if (this.backgroundUpgradeCancelled || !this.currentPdfPath) break;
+        if (gen !== this.generation || this.backgroundUpgradeCancelled || !this.currentPdfPath) break;
 
         // Collect pages in this batch that need full-res
         const batch: number[] = [];
@@ -315,6 +324,10 @@ export class PageRenderService {
    */
   private async requestPagesImmediate(pageNumbers: number[], quality: 'preview' | 'full'): Promise<void> {
     if (!this.currentPdfPath) return;
+    // Capture the document context — if the document changes mid-flight,
+    // results are discarded rather than written into the new document's state
+    const gen = this.generation;
+    const pdfPath = this.currentPdfPath;
 
     // Filter out already-rendered and in-flight pages
     const toRender = pageNumbers.filter(p => {
@@ -346,10 +359,13 @@ export class PageRenderService {
         const batch = toRender.slice(i, i + this.RENDER_BATCH_SIZE);
 
         const result = await this.electronService.renderPages(
-          this.currentPdfPath,
+          pdfPath,
           batch,
           quality
         );
+
+        // Document changed while we were rendering — discard stale results
+        if (gen !== this.generation) return;
 
         // Update paths with results from this batch
         for (const [pageNumStr, filePath] of Object.entries(result)) {
@@ -377,8 +393,12 @@ export class PageRenderService {
         }
       }
     } finally {
-      for (const p of toRender) {
-        this.inFlightPages.delete(p);
+      // Only release in-flight markers for our own generation — after a
+      // document switch the set tracks the new document's requests
+      if (gen === this.generation) {
+        for (const p of toRender) {
+          this.inFlightPages.delete(p);
+        }
       }
     }
 
@@ -386,7 +406,7 @@ export class PageRenderService {
     if (failedPages.length > 0) {
       console.warn(`[page-render] ${failedPages.length} pages failed to render, retrying in 500ms:`, failedPages);
       setTimeout(() => {
-        if (this.currentPdfPath) {
+        if (gen === this.generation && this.currentPdfPath) {
           this.requestPagesImmediate(failedPages, quality);
         }
       }, 500);
@@ -409,8 +429,10 @@ export class PageRenderService {
       clearTimeout(this.fullResIdleTimer);
     }
 
+    const gen = this.generation;
     this.fullResIdleTimer = setTimeout(async () => {
       this.fullResIdleTimer = null;
+      if (gen !== this.generation) return; // document changed
       // Prioritize visible pages for immediate upgrade
       const toUpgrade = pageNumbers.filter(p =>
         p >= 0 && p < this.currentTotalPages &&
@@ -490,8 +512,14 @@ export class PageRenderService {
         let filePath = url.substring(17);
         const qIdx = filePath.indexOf('?');
         if (qIdx !== -1) filePath = filePath.substring(0, qIdx);
-        // Assume full-res for restored images
-        this.fullPaths[pageNum] = filePath;
+        // Route to the correct tier based on the cache directory — calling a
+        // preview "full-res" would permanently block its upgrade
+        // (check both separators: Windows paths may carry backslashes)
+        if (filePath.includes('/preview/') || filePath.includes('\\preview\\')) {
+          this.previewPaths[pageNum] = filePath;
+        } else {
+          this.fullPaths[pageNum] = filePath;
+        }
       } else if (url.startsWith('file://')) {
         this.fullPaths[pageNum] = url.substring(7);
       } else if (url.startsWith('data:')) {
@@ -523,6 +551,7 @@ export class PageRenderService {
    */
   async rerenderPageFromOriginal(pageNum: number): Promise<string | null> {
     if (!this.currentPdfPath) return null;
+    const gen = this.generation;
 
     const scale = this.getRenderScale();
     const dataUrl = await this.electronService.renderPage(
@@ -532,7 +561,7 @@ export class PageRenderService {
       // No redactRegions - render original
     );
 
-    if (dataUrl) {
+    if (dataUrl && gen === this.generation) {
       this.fullPaths[pageNum] = `__data__${dataUrl}`;
       this.updatePageImagesSignal();
     }
@@ -551,6 +580,7 @@ export class PageRenderService {
     fillRegions?: Array<{ x: number; y: number; width: number; height: number }>
   ): Promise<string | null> {
     if (!this.currentPdfPath) return null;
+    const gen = this.generation;
 
     const scale = this.getRenderScale();
     const dataUrl = await this.electronService.renderPage(
@@ -561,7 +591,7 @@ export class PageRenderService {
       fillRegions
     );
 
-    if (dataUrl) {
+    if (dataUrl && gen === this.generation) {
       this.fullPaths[pageNum] = `__data__${dataUrl}`;
       this.updatePageImagesSignal();
     }
@@ -574,10 +604,11 @@ export class PageRenderService {
    * Text will be shown via overlays
    */
   async renderBlankPage(pageNum: number): Promise<string | null> {
+    const gen = this.generation;
     const scale = this.getRenderScale();
     const dataUrl = await this.electronService.renderBlankPage(pageNum, scale);
 
-    if (dataUrl) {
+    if (dataUrl && gen === this.generation) {
       this.fullPaths[pageNum] = `__data__${dataUrl}`;
       this.updatePageImagesSignal();
     }

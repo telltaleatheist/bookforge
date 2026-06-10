@@ -306,7 +306,7 @@ interface RegexMatch {
       </div>
     }
 
-    @if (!analysisOnly() && categoryCorrections().size >= 0) {
+    @if (!analysisOnly()) {
       <div class="redetect-section">
         <div class="redetect-actions">
           <desktop-button
@@ -1818,9 +1818,14 @@ export class CategoriesPanelComponent {
   readonly searchPhraseMode = signal(false);
   readonly searchPhoneticMode = signal(false);
 
+  // Debounced copy of the query — searchResults scans every block (with
+  // soundex/Levenshtein in phonetic mode), so don't run it per keystroke
+  private readonly debouncedSearchQuery = signal('');
+  private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
   // Search results computed from blocks
   readonly searchResults = computed(() => {
-    const query = this.searchQuery().trim();
+    const query = this.debouncedSearchQuery().trim();
     if (!query) return [];
 
     const blocks = this.blocks();
@@ -2150,10 +2155,22 @@ export class CategoriesPanelComponent {
 
   onSearchQueryChange(value: string): void {
     this.searchQuery.set(value);
+    if (this.searchDebounceTimer) {
+      clearTimeout(this.searchDebounceTimer);
+    }
+    this.searchDebounceTimer = setTimeout(() => {
+      this.searchDebounceTimer = null;
+      this.debouncedSearchQuery.set(value);
+    }, 200);
   }
 
   clearSearch(): void {
+    if (this.searchDebounceTimer) {
+      clearTimeout(this.searchDebounceTimer);
+      this.searchDebounceTimer = null;
+    }
     this.searchQuery.set('');
+    this.debouncedSearchQuery.set('');
   }
 
   onSearchResultClick(result: { page: number; text: string }): void {

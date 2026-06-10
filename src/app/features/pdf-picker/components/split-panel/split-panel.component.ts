@@ -551,14 +551,6 @@ export class SplitPanelComponent {
   // Local state
   readonly linkSliders = signal(true);
 
-  // Sync linked sliders
-  constructor() {
-    effect(() => {
-      // When config changes externally, nothing special needed
-      this.config();
-    });
-  }
-
   onOddSliderChange(event: Event): void {
     const value = (event.target as HTMLInputElement).valueAsNumber / 100;
     if (this.linkSliders()) {

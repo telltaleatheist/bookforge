@@ -271,9 +271,13 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
   private resizeStartLeft: number = 0;
   private resizeStartTop: number = 0;
 
-  // RxJS subjects for cleanup
-  private destroy$ = new Subject<void>();
+  // RxJS subject ending an in-progress resize's document listeners
   private resizeStop$ = new Subject<void>();
+
+  // True only after the user dragged a resize handle — auto-height growth
+  // while typing must not count as a resize (it would spuriously show the
+  // "reset size" button and persist a geometry edit the user never made)
+  private userResized = false;
 
   // Minimum dimensions
   private readonly MIN_WIDTH = 100;
@@ -286,7 +290,8 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
   }
 
   get wasResized(): boolean {
-    return this.currentWidth !== this.width || this.currentHeight !== this.height;
+    return this.userResized &&
+      (this.currentWidth !== this.width || this.currentHeight !== this.height);
   }
 
   get actionsWidth(): number {
@@ -355,8 +360,7 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
     }
     // Clean up RxJS subscriptions
     this.stopResize();
-    this.destroy$.next();
-    this.destroy$.complete();
+    this.resizeStop$.complete();
   }
 
   @HostListener('document:keydown', ['$event'])
@@ -432,6 +436,9 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
           newY = this.resizeStartTop + heightChange;
         }
 
+        if (newWidth !== this.resizeStartWidth || newHeight !== this.resizeStartHeight) {
+          this.userResized = true;
+        }
         this.currentWidth = newWidth;
         this.currentHeight = newHeight;
         this.currentX = newX;
@@ -470,6 +477,7 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
     this.currentHeight = this.height;
     this.currentX = this.x;
     this.currentY = this.y;
+    this.userResized = false;
   }
 
   save(): void {

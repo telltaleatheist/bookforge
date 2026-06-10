@@ -389,15 +389,17 @@ export class PDFAnalyzer {
         // Fix up spans from older caches that lack block_id
         this.assignBlockIdsToSpans();
 
-        // Still need to open the document for rendering
+        // Still need to open the document for rendering (under WASM lock)
         const data = await fsPromises.readFile(pdfPath);
         const mimeType = getMimeType(pdfPath);
-        this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
-
-        // Layout reflowable documents (EPUBs) so page numbers are meaningful
-        if (mimeType === 'application/epub+zip') {
-          this.doc.layout(600, 900, 18);
-        }
+        this.doc = await this.withWasmLock(async () => {
+          const d = await openDocumentWithRetry(mupdfLib, data, mimeType);
+          // Layout reflowable documents (EPUBs) so page numbers are meaningful
+          if (mimeType === 'application/epub+zip') {
+            d.layout(600, 900, 18);
+          }
+          return d;
+        });
 
         return cached;
       }
@@ -414,68 +416,73 @@ export class PDFAnalyzer {
     const data = await fsPromises.readFile(pdfPath);
     const mimeType = getMimeType(pdfPath);
 
-    // Open document with error handling for WebAssembly issues
-    try {
-      this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {
-        throw new Error(`Document is too large to load. Try closing other documents first, or restart the app to free memory.`);
-      }
-      throw err;
-    }
-
-    // Layout reflowable documents (EPUBs) so page numbers are meaningful
-    // Note: doc.isReflowable() has a bug in mupdf.js (missing return statement),
-    // so we use mimeType check instead, consistent with all other call sites.
-    if (mimeType === 'application/epub+zip') {
-      this.doc.layout(600, 900, 18);
-    }
-
-    let totalPages: number;
-    try {
-      totalPages = this.doc.countPages();
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
-        throw new Error(`Document is too large to process. The file may be corrupted or exceed memory limits.`);
-      }
-      throw err;
-    }
-
-    const pageCount = maxPages ? Math.min(totalPages, maxPages) : totalPages;
-    sendProgress('loading', `Document has ${pageCount} pages, getting dimensions...`);
-
-    // Get page dimensions (including origin for coordinate transformation)
-    for (let pageNum = 0; pageNum < pageCount; pageNum++) {
-      let page;
+    // All WASM operations under a single lock: open doc, count pages, get dimensions
+    const pageCount = await this.withWasmLock(async () => {
+      // Open document with error handling for WebAssembly issues
       try {
-        page = this.doc.loadPage(pageNum);
-        const bounds = page.getBounds();
-        this.pageDimensions.push({
-          width: bounds[2] - bounds[0],
-          height: bounds[3] - bounds[1],
-          originX: bounds[0],  // Store origin for coordinate transformation
-          originY: bounds[1],
-        });
+        this.doc = await openDocumentWithRetry(mupdfLib, data, mimeType);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {
+          throw new Error(`Document is too large to load. Try closing other documents first, or restart the app to free memory.`);
+        }
+        throw err;
+      }
+
+      // Layout reflowable documents (EPUBs) so page numbers are meaningful
+      // Note: doc.isReflowable() has a bug in mupdf.js (missing return statement),
+      // so we use mimeType check instead, consistent with all other call sites.
+      if (mimeType === 'application/epub+zip') {
+        this.doc.layout(600, 900, 18);
+      }
+
+      let totalPages: number;
+      try {
+        totalPages = this.doc.countPages();
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
-          console.error(`[PDF Analyzer] Memory error loading page ${pageNum}, using default dimensions`);
-          // Use default dimensions for pages that can't be loaded
-          this.pageDimensions.push({
-            width: 612,  // Letter size default
-            height: 792,
-            originX: 0,
-            originY: 0,
-          });
-        } else {
-          throw err;
+          throw new Error(`Document is too large to process. The file may be corrupted or exceed memory limits.`);
         }
-      } finally {
-        try { page?.destroy(); } catch { /* ignore */ }
+        throw err;
       }
-    }
+
+      const pc = maxPages ? Math.min(totalPages, maxPages) : totalPages;
+      sendProgress('loading', `Document has ${pc} pages, getting dimensions...`);
+
+      // Get page dimensions (including origin for coordinate transformation)
+      for (let pageNum = 0; pageNum < pc; pageNum++) {
+        let page;
+        try {
+          page = this.doc.loadPage(pageNum);
+          const bounds = page.getBounds();
+          this.pageDimensions.push({
+            width: bounds[2] - bounds[0],
+            height: bounds[3] - bounds[1],
+            originX: bounds[0],  // Store origin for coordinate transformation
+            originY: bounds[1],
+          });
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
+            console.error(`[PDF Analyzer] Memory error loading page ${pageNum}, using default dimensions`);
+            // Use default dimensions for pages that can't be loaded
+            this.pageDimensions.push({
+              width: 612,  // Letter size default
+              height: 792,
+              originX: 0,
+              originY: 0,
+            });
+          } else {
+            throw err;
+          }
+        } finally {
+          try { page?.destroy(); } catch { /* ignore */ }
+        }
+      }
+
+      return pc;
+    });
 
     // Determine if this is a PDF (mutool only works with PDFs, not EPUBs)
     const isPdf = mimeType === 'application/pdf' || pdfPath.toLowerCase().endsWith('.pdf');
@@ -1862,6 +1869,11 @@ export class PDFAnalyzer {
   } | null = null;
   private readonly RENDER_DOC_TIMEOUT = 60_000; // 60s inactivity timeout
 
+  // Generation counter for the fire-and-forget background full-res render loop
+  // in renderAllPagesWithPreviews(). Incrementing it (new render pass, close,
+  // closeRenderDoc) cancels any in-flight background loop at its next iteration.
+  private bgRenderGeneration = 0;
+
   /**
    * Get the base cache directory for BookForge
    */
@@ -2117,34 +2129,43 @@ export class PDFAnalyzer {
     const fileHash = await this.computeFileHash(pdfPath);
     this.currentFileHash = fileHash;
 
-    // Open document with error handling for memory issues
+    // Cancel any previous in-flight background full-res render pass — opening
+    // a new document supersedes the old pass.
+    const generation = ++this.bgRenderGeneration;
+
+    // Open document with error handling for memory issues (under WASM lock)
     const data = fs.readFileSync(pdfPath);
     const mimeType = getMimeType(pdfPath);
-    let doc;
-    try {
-      doc = mupdfLib.Document.openDocument(data, mimeType);
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {
-        throw new Error(`Document is too large to render. Try closing other documents first, or restart the app.`);
+    const { doc, totalPages } = await this.withWasmLock(() => {
+      let d;
+      try {
+        d = mupdfLib.Document.openDocument(data, mimeType);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        if (errorMsg.includes('memory') || errorMsg.includes('out of bounds') || errorMsg.includes('malloc')) {
+          throw new Error(`Document is too large to render. Try closing other documents first, or restart the app.`);
+        }
+        throw err;
       }
-      throw err;
-    }
 
-    if (mimeType === 'application/epub+zip') {
-      doc.layout(600, 900, 18);
-    }
-
-    let totalPages;
-    try {
-      totalPages = doc.countPages();
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
-        throw new Error(`Could not read document pages. The file may be too large or corrupted.`);
+      if (mimeType === 'application/epub+zip') {
+        d.layout(600, 900, 18);
       }
-      throw err;
-    }
+
+      let pages: number;
+      try {
+        pages = d.countPages();
+      } catch (err) {
+        try { d.destroy(); } catch { /* ignore */ }
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
+          throw new Error(`Could not read document pages. The file may be too large or corrupted.`);
+        }
+        throw err;
+      }
+
+      return { doc: d, totalPages: pages };
+    });
 
     const previewPaths: string[] = new Array(totalPages);
     const previewDir = this.getQualityCacheDir(fileHash, 'preview');
@@ -2156,20 +2177,24 @@ export class PDFAnalyzer {
       const filePath = path.join(previewDir, `page-${pageNum}.png`);
 
       if (!fs.existsSync(filePath)) {
-        let page, pixmap;
         try {
-          page = doc.loadPage(pageNum);
-          const matrix = mupdfLib.Matrix.scale(this.PREVIEW_SCALE, this.PREVIEW_SCALE);
-          pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-          const pngData = pixmap.asPNG();
+          const pngData = await this.withWasmLock(() => {
+            let page, pixmap;
+            try {
+              page = doc.loadPage(pageNum);
+              const matrix = mupdfLib.Matrix.scale(this.PREVIEW_SCALE, this.PREVIEW_SCALE);
+              pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+              return pixmap.asPNG();
+            } finally {
+              try { pixmap?.destroy(); } catch { /* ignore */ }
+              try { page?.destroy(); } catch { /* ignore */ }
+            }
+          });
           fs.writeFileSync(filePath, Buffer.from(pngData));
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           console.error(`[PDF Render] Error rendering preview for page ${pageNum}:`, errorMsg);
           // Continue with other pages even if one fails
-        } finally {
-          try { pixmap?.destroy(); } catch { /* ignore */ }
-          try { page?.destroy(); } catch { /* ignore */ }
         }
       }
 
@@ -2224,12 +2249,19 @@ export class PDFAnalyzer {
             fs.copyFileSync(previewPath, filePath);
           }
         } else {
-          let page, pixmap;
           try {
-            page = doc.loadPage(pageNum);
-            const matrix = mupdfLib.Matrix.scale(effectiveScale, effectiveScale);
-            pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-            const pngData = pixmap.asPNG();
+            const pngData = await this.withWasmLock(() => {
+              let page, pixmap;
+              try {
+                page = doc.loadPage(pageNum);
+                const matrix = mupdfLib.Matrix.scale(effectiveScale, effectiveScale);
+                pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+                return pixmap.asPNG();
+              } finally {
+                try { pixmap?.destroy(); } catch { /* ignore */ }
+                try { page?.destroy(); } catch { /* ignore */ }
+              }
+            });
             fs.writeFileSync(filePath, Buffer.from(pngData));
           } catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
@@ -2244,9 +2276,6 @@ export class PDFAnalyzer {
             } else {
               console.error(`[PDF Render] Error rendering page ${pageNum}:`, errorMsg);
             }
-          } finally {
-            try { pixmap?.destroy(); } catch { /* ignore */ }
-            try { page?.destroy(); } catch { /* ignore */ }
           }
         }
       }
@@ -2270,6 +2299,12 @@ export class PDFAnalyzer {
     (async () => {
       try {
         for (let i = 0; i < totalPages; i += effectiveConcurrency) {
+          // Cancelled by closeRenderDoc()/close() or superseded by a newer
+          // render pass — stop grinding through pages of a stale document.
+          if (generation !== this.bgRenderGeneration) {
+            console.log('[PDF Render] Background full-res render cancelled');
+            break;
+          }
           const batch = [];
           for (let j = i; j < Math.min(i + effectiveConcurrency, totalPages); j++) {
             batch.push(renderFull(j));
@@ -2279,18 +2314,16 @@ export class PDFAnalyzer {
           await new Promise(resolve => setImmediate(resolve));
         }
       } finally {
-        // Destroy document after all rendering is complete to free WebAssembly memory
-        // Skip if memory was corrupted — the WASM context is already broken
-        if (!memoryErrorOccurred) {
+        // Always destroy the document to free WebAssembly memory, routed
+        // through the WASM lock so it can't race another operation.
+        await this.withWasmLock(() => {
           try {
             doc.destroy();
-            console.log('[PDF Render] Background render complete, document destroyed');
+            console.log('[PDF Render] Background render finished, document destroyed');
           } catch (err) {
             console.warn('[PDF Render] Error destroying document after render:', err);
           }
-        } else {
-          console.log('[PDF Render] Background render complete (memory error occurred, skipping document destroy)');
-        }
+        });
       }
     })();
 
@@ -2310,14 +2343,16 @@ export class PDFAnalyzer {
     const fileHash = await this.computeFileHash(pdfPath);
     this.currentFileHash = fileHash;
 
-    // Open document
+    // Open document (under WASM lock)
     const data = fs.readFileSync(pdfPath);
     const mimeType = getMimeType(pdfPath);
-    const doc = mupdfLib.Document.openDocument(data, mimeType);
-    if (mimeType === 'application/epub+zip') {
-      doc.layout(600, 900, 18);
-    }
-    const totalPages = doc.countPages();
+    const { doc, totalPages } = await this.withWasmLock(() => {
+      const d = mupdfLib.Document.openDocument(data, mimeType);
+      if (mimeType === 'application/epub+zip') {
+        d.layout(600, 900, 18);
+      }
+      return { doc: d, totalPages: d.countPages() as number };
+    });
 
     const quality: 'preview' | 'full' = scale <= 1.0 ? 'preview' : 'full';
     const cacheDir = this.getQualityCacheDir(fileHash, quality);
@@ -2330,17 +2365,19 @@ export class PDFAnalyzer {
 
       // Check if already cached
       if (!fs.existsSync(filePath)) {
-        let page, pixmap;
-        try {
-          page = doc.loadPage(pageNum);
-          const matrix = mupdfLib.Matrix.scale(scale, scale);
-          pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-          const pngData = pixmap.asPNG();
-          fs.writeFileSync(filePath, Buffer.from(pngData));
-        } finally {
-          try { pixmap?.destroy(); } catch { /* ignore */ }
-          try { page?.destroy(); } catch { /* ignore */ }
-        }
+        const pngData = await this.withWasmLock(() => {
+          let page, pixmap;
+          try {
+            page = doc.loadPage(pageNum);
+            const matrix = mupdfLib.Matrix.scale(scale, scale);
+            pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
+            return pixmap.asPNG();
+          } finally {
+            try { pixmap?.destroy(); } catch { /* ignore */ }
+            try { page?.destroy(); } catch { /* ignore */ }
+          }
+        });
+        fs.writeFileSync(filePath, Buffer.from(pngData));
       }
 
       paths[pageNum] = filePath;
@@ -2364,12 +2401,14 @@ export class PDFAnalyzer {
 
       return paths;
     } finally {
-      // Destroy document to free WebAssembly memory
-      try {
-        doc.destroy();
-      } catch (err) {
-        console.warn('[PDF Render] Error destroying document:', err);
-      }
+      // Destroy document to free WebAssembly memory (under WASM lock)
+      await this.withWasmLock(() => {
+        try {
+          doc.destroy();
+        } catch (err) {
+          console.warn('[PDF Render] Error destroying document:', err);
+        }
+      });
     }
   }
 
@@ -2399,8 +2438,7 @@ export class PDFAnalyzer {
   }> {
     // If we already have the right doc open, reset the timeout and return it
     if (this.renderDoc && this.renderDoc.pdfPath === pdfPath) {
-      clearTimeout(this.renderDoc.closeTimer);
-      this.renderDoc.closeTimer = setTimeout(() => this.closeRenderDoc(), this.RENDER_DOC_TIMEOUT);
+      this.touchRenderDoc();
       return {
         doc: this.renderDoc.doc,
         mupdfLib: this.renderDoc.mupdfLib,
@@ -2408,8 +2446,11 @@ export class PDFAnalyzer {
       };
     }
 
-    // Different PDF or no doc — close old one and open new
-    this.closeRenderDoc();
+    // Different PDF or no doc — close old handle and open new.
+    // NOTE: only destroys the cached handle; does NOT cancel a background
+    // full-res render pass (renderPages on the same document follows
+    // renderAllPagesWithPreviews in the normal flow).
+    this.destroyRenderDocHandle();
 
     const mupdfLib = await getMupdf();
     const fileHash = await this.computeFileHash(pdfPath);
@@ -2430,27 +2471,55 @@ export class PDFAnalyzer {
       doc,
       mupdfLib,
       fileHash,
-      closeTimer: setTimeout(() => this.closeRenderDoc(), this.RENDER_DOC_TIMEOUT),
+      closeTimer: setTimeout(() => this.destroyRenderDocHandle(), this.RENDER_DOC_TIMEOUT),
     };
 
     return { doc, mupdfLib, fileHash };
   }
 
   /**
-   * Close the cached render document to free memory.
-   * Called on timeout, when switching PDFs, or when the user closes the document.
+   * Reset the cached render doc's idle-close timer.
+   * Called when the doc is (re)used so a long render loop doesn't have the
+   * document destroyed underneath it by the 60s inactivity timeout.
    */
-  closeRenderDoc(): void {
+  private touchRenderDoc(): void {
     if (this.renderDoc) {
       clearTimeout(this.renderDoc.closeTimer);
-      try {
-        this.renderDoc.doc.destroy();
-        console.log('[pdf-analyzer] Closed cached render document');
-      } catch (err) {
-        console.warn('[pdf-analyzer] Error destroying cached render doc:', err);
-      }
-      this.renderDoc = null;
+      this.renderDoc.closeTimer = setTimeout(() => this.destroyRenderDocHandle(), this.RENDER_DOC_TIMEOUT);
     }
+  }
+
+  /**
+   * Destroy the cached render document handle (if any) to free memory.
+   * The destroy is routed through the WASM lock so it can't run while another
+   * operation (e.g. an in-flight page render) is touching the WASM heap.
+   */
+  private destroyRenderDocHandle(): void {
+    if (this.renderDoc) {
+      clearTimeout(this.renderDoc.closeTimer);
+      const doc = this.renderDoc.doc;
+      this.renderDoc = null;
+      void this.withWasmLock(() => {
+        try {
+          doc.destroy();
+          console.log('[pdf-analyzer] Closed cached render document');
+        } catch (err) {
+          console.warn('[pdf-analyzer] Error destroying cached render doc:', err);
+        }
+      });
+    }
+  }
+
+  /**
+   * Close the cached render document to free memory.
+   * Called on the inactivity timeout and when the user closes the document.
+   * Also cancels any in-flight background full-res render pass from
+   * renderAllPagesWithPreviews().
+   */
+  closeRenderDoc(): void {
+    // Cancel the fire-and-forget background loop from renderAllPagesWithPreviews()
+    this.bgRenderGeneration++;
+    this.destroyRenderDocHandle();
   }
 
   /**
@@ -2466,16 +2535,21 @@ export class PDFAnalyzer {
   ): Promise<Record<number, string>> {
     const { doc, mupdfLib, fileHash } = await this.getOrOpenRenderDoc(pdfPath);
 
-    const totalPages = doc.countPages();
+    const totalPages = await this.withWasmLock(() => doc.countPages() as number);
     const scale = quality === 'preview'
       ? this.PREVIEW_SCALE
       : (totalPages > 200 ? 1.5 : totalPages > 100 ? 2.0 : this.FULL_SCALE);
 
     const qualityDir = this.getQualityCacheDir(fileHash, quality);
     const result: Record<number, string> = {};
+    const failedPages: number[] = [];
 
     for (const pageNum of pageNumbers) {
       if (pageNum < 0 || pageNum >= totalPages) continue;
+
+      // Keep the cached render doc alive while we're actively using it —
+      // otherwise a >60s loop can have the doc destroyed underneath it.
+      this.touchRenderDoc();
 
       const filePath = path.join(qualityDir, `page-${pageNum}.png`);
 
@@ -2510,7 +2584,14 @@ export class PDFAnalyzer {
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error(`[pdf-analyzer] Error rendering page ${pageNum} on demand:`, errorMsg);
+        failedPages.push(pageNum);
       }
+    }
+
+    if (failedPages.length > 0) {
+      // Failed pages are simply absent from the result — the renderer retries
+      // absent pages once. Log loudly so failures are visible.
+      console.error(`[pdf-analyzer] renderPages: ${failedPages.length} page(s) failed to render and were omitted: [${failedPages.join(', ')}]`);
     }
 
     return result;
@@ -2708,36 +2789,37 @@ export class PDFAnalyzer {
   ): Promise<string> {
     const mupdfLib = await getMupdf();
 
-    // If we have redaction regions, always open a fresh document copy
-    // to avoid corrupting the cached document
-    const hasRedactions = redactRegions && redactRegions.length > 0;
-
     const pathToUse = pdfPath || this.pdfPath;
+    const mimeType = pathToUse ? getMimeType(pathToUse) : null;
 
-    // For redactions or custom path, load fresh document
-    if (hasRedactions || pdfPath) {
+    // Separate image and text regions
+    const imageRegions = redactRegions ? redactRegions.filter(r => r.isImage) : [];
+    const textRegions = redactRegions ? redactRegions.filter(r => !r.isImage) : [];
+
+    // MuPDF's PDF redaction API only works on native PDFs. For EPUBs (and other
+    // non-PDF formats), applyRedactions corrupts the internal layout engine,
+    // causing distorted rendering (wrong font sizes, page dimensions, etc.).
+    // Non-PDF deletion is handled visually via SVG overlays in the viewer.
+    //
+    // Text redactions MUTATE the document, so they always need a fresh copy —
+    // applying them to a shared/cached document would bake the redactions into
+    // all subsequent renders.
+    const needsFreshDoc = mimeType === 'application/pdf' && textRegions.length > 0;
+
+    if (needsFreshDoc) {
       if (!pathToUse) {
         throw new Error('No PDF path available');
       }
 
       const data = fs.readFileSync(pathToUse);
-      const mimeType = getMimeType(pathToUse);
-      const tempDoc = mupdfLib.Document.openDocument(data, mimeType);
 
-      // Separate image and text regions
-      const imageRegions = redactRegions ? redactRegions.filter(r => r.isImage) : [];
-      const textRegions = redactRegions ? redactRegions.filter(r => !r.isImage) : [];
-
-      let pdfPage: any = null;
-      let renderPageObj: any = null;
-      let pixmap: any = null;
-      try {
-        // MuPDF's PDF redaction API only works on native PDFs. For EPUBs (and other
-        // non-PDF formats), applyRedactions corrupts the internal layout engine,
-        // causing distorted rendering (wrong font sizes, page dimensions, etc.).
-        // Non-PDF deletion is handled visually via SVG overlays in the viewer.
-        const isNativePdf = mimeType === 'application/pdf';
-        if (isNativePdf && textRegions.length > 0) {
+      // All WASM work (open, redact, render, pixel ops) under the lock
+      return await this.withWasmLock(() => {
+        const tempDoc = mupdfLib.Document.openDocument(data, mimeType!);
+        let pdfPage: any = null;
+        let renderPageObj: any = null;
+        let pixmap: any = null;
+        try {
           const pdfDoc = tempDoc.asPDF();
           if (pdfDoc) {
             pdfPage = pdfDoc.loadPage(pageNum) as any;
@@ -2755,96 +2837,95 @@ export class PDFAnalyzer {
             // Apply with: no black boxes, redact images, line art, AND text
             pdfPage.applyRedactions(false, 2, 2, 0);
           }
-        }
 
-        // Render the page (with text redactions applied if any)
-        renderPageObj = tempDoc.loadPage(pageNum);
+          // Render the page (with text redactions applied)
+          renderPageObj = tempDoc.loadPage(pageNum);
+          const matrix = mupdfLib.Matrix.scale(scale, scale);
+          pixmap = renderPageObj.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+
+          this.paintRegionsAndBackground(pixmap, scale, imageRegions, fillRegions, removeBackground);
+
+          const pngData = pixmap.asPNG();
+          return Buffer.from(pngData).toString('base64');
+        } finally {
+          try { pixmap?.destroy(); } catch { /* ignore */ }
+          try { renderPageObj?.destroy(); } catch { /* ignore */ }
+          try { pdfPage?.destroy(); } catch { /* ignore */ }
+          try { tempDoc.destroy(); } catch { /* ignore */ }
+        }
+      });
+    }
+
+    // Read-only render (image/fill regions are painted at the pixel level and
+    // don't mutate the document). Reuse an already-open document instead of
+    // re-reading the entire PDF from disk on every call:
+    //   1. The analyzer's main document, if the path matches (or no path given)
+    //   2. The cached on-demand render doc (getOrOpenRenderDoc) — only opens a
+    //      fresh document when the path actually differs from the cached one
+    let doc: any;
+    if (this.doc && (!pathToUse || pathToUse === this.pdfPath)) {
+      doc = this.doc;
+    } else if (pathToUse) {
+      const opened = await this.getOrOpenRenderDoc(pathToUse);
+      doc = opened.doc;
+    } else {
+      throw new Error('No document loaded');
+    }
+
+    return await this.withWasmLock(() => {
+      let page, pixmap;
+      try {
+        page = doc.loadPage(pageNum);
         const matrix = mupdfLib.Matrix.scale(scale, scale);
-        pixmap = renderPageObj.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
+        pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
 
-        // Now paint over deleted images AND fill regions with background color
-        // This preserves exact text positioning while removing unwanted images
-        const hasImageOrFillRegions = imageRegions.length > 0 || (fillRegions && fillRegions.length > 0);
-        if (hasImageOrFillRegions) {
-          const width = pixmap.getWidth();
-          const height = pixmap.getHeight();
-          const n = pixmap.getNumberOfComponents();
-          const samples = pixmap.getPixels();
-
-          // Sample background color from page margins (works for yellowed/scanned pages)
-          const bgColor = this.sampleBackgroundColor(samples, width, height, n);
-
-          // Paint over deleted images with background color
-          for (const region of imageRegions) {
-            this.fillRectInPixels(samples, width, height, n, {
-              x: region.x * scale,
-              y: region.y * scale,
-              w: region.width * scale,
-              h: region.height * scale
-            }, bgColor);
-          }
-
-          // Fill regions for moved blocks
-          if (fillRegions) {
-            for (const region of fillRegions) {
-              this.fillRectInPixels(samples, width, height, n, {
-                x: region.x * scale,
-                y: region.y * scale,
-                w: region.width * scale,
-                h: region.height * scale
-              }, bgColor);
-            }
-          }
-        }
-
-        // Apply background removal if requested (turns yellowed paper to white)
-        if (removeBackground) {
-          const width = pixmap.getWidth();
-          const height = pixmap.getHeight();
-          const n = pixmap.getNumberOfComponents();
-          const samples = pixmap.getPixels();
-          this.applyBackgroundRemoval(samples, width, height, n);
-        }
+        this.paintRegionsAndBackground(pixmap, scale, imageRegions, fillRegions, removeBackground);
 
         const pngData = pixmap.asPNG();
         return Buffer.from(pngData).toString('base64');
       } finally {
         try { pixmap?.destroy(); } catch { /* ignore */ }
-        try { renderPageObj?.destroy(); } catch { /* ignore */ }
-        try { pdfPage?.destroy(); } catch { /* ignore */ }
-        try { tempDoc.destroy(); } catch { /* ignore */ }
+        try { page?.destroy(); } catch { /* ignore */ }
       }
-    }
+    });
+  }
 
-    // No redactions - check if we have fill regions or background removal
-    const hasFillRegions = fillRegions && fillRegions.length > 0;
+  /**
+   * Paint deleted-image and fill regions with the sampled background color,
+   * then optionally apply background removal (yellowed paper -> white).
+   * Pure pixel operations on an existing pixmap — caller must hold the WASM lock.
+   */
+  private paintRegionsAndBackground(
+    pixmap: any,
+    scale: number,
+    imageRegions: Array<{ x: number; y: number; width: number; height: number }>,
+    fillRegions?: Array<{ x: number; y: number; width: number; height: number }>,
+    removeBackground?: boolean
+  ): void {
+    const hasImageOrFillRegions = imageRegions.length > 0 || (fillRegions && fillRegions.length > 0);
+    if (!hasImageOrFillRegions && !removeBackground) return;
 
-    if (hasFillRegions) {
-      // Need to load document for fill operations
-      const pathToUse = pdfPath || this.pdfPath;
-      if (!pathToUse) {
-        throw new Error('No PDF path available');
+    const width = pixmap.getWidth();
+    const height = pixmap.getHeight();
+    const n = pixmap.getNumberOfComponents();
+    const samples = pixmap.getPixels();
+
+    if (hasImageOrFillRegions) {
+      // Sample background color from page margins (works for yellowed/scanned pages)
+      const bgColor = this.sampleBackgroundColor(samples, width, height, n);
+
+      // Paint over deleted images with background color
+      for (const region of imageRegions) {
+        this.fillRectInPixels(samples, width, height, n, {
+          x: region.x * scale,
+          y: region.y * scale,
+          w: region.width * scale,
+          h: region.height * scale
+        }, bgColor);
       }
 
-      const data = fs.readFileSync(pathToUse);
-      const mimeType = getMimeType(pathToUse);
-      const tempDoc = mupdfLib.Document.openDocument(data, mimeType);
-      let renderPageObj: any = null;
-      let pixmap: any = null;
-      try {
-        renderPageObj = tempDoc.loadPage(pageNum);
-        const matrix = mupdfLib.Matrix.scale(scale, scale);
-        pixmap = renderPageObj.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
-
-        const width = pixmap.getWidth();
-        const height = pixmap.getHeight();
-        const n = pixmap.getNumberOfComponents();
-        const samples = pixmap.getPixels();
-
-        // Sample background color from page margins
-        const bgColor = this.sampleBackgroundColor(samples, width, height, n);
-
-        // Fill each region with background color (scaled to render coordinates)
+      // Fill regions for moved blocks
+      if (fillRegions) {
         for (const region of fillRegions) {
           this.fillRectInPixels(samples, width, height, n, {
             x: region.x * scale,
@@ -2853,46 +2934,12 @@ export class PDFAnalyzer {
             h: region.height * scale
           }, bgColor);
         }
-
-        // Apply background removal if requested (turns yellowed paper to white)
-        if (removeBackground) {
-          this.applyBackgroundRemoval(samples, width, height, n);
-        }
-
-        const pngData = pixmap.asPNG();
-        return Buffer.from(pngData).toString('base64');
-      } finally {
-        try { pixmap?.destroy(); } catch { /* ignore */ }
-        try { renderPageObj?.destroy(); } catch { /* ignore */ }
-        try { tempDoc.destroy(); } catch { /* ignore */ }
       }
     }
 
-    // No redactions or fills - render from cached document
-    if (!this.doc) {
-      throw new Error('No document loaded');
-    }
-
-    let page, pixmap;
-    try {
-      page = this.doc.loadPage(pageNum);
-      const matrix = mupdfLib.Matrix.scale(scale, scale);
-      pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
-
-      // Apply background removal if requested (turns yellowed paper to white)
-      if (removeBackground) {
-        const width = pixmap.getWidth();
-        const height = pixmap.getHeight();
-        const n = pixmap.getNumberOfComponents();
-        const samples = pixmap.getPixels();
-        this.applyBackgroundRemoval(samples, width, height, n);
-      }
-
-      const pngData = pixmap.asPNG();
-      return Buffer.from(pngData).toString('base64');
-    } finally {
-      try { pixmap?.destroy(); } catch { /* ignore */ }
-      try { page?.destroy(); } catch { /* ignore */ }
+    // Apply background removal if requested (turns yellowed paper to white)
+    if (removeBackground) {
+      this.applyBackgroundRemoval(samples, width, height, n);
     }
   }
 
@@ -2915,11 +2962,13 @@ export class PDFAnalyzer {
     if (!this.doc) {
       throw new Error('No document loaded');
     }
+    const doc = this.doc;
 
-    // Render the page normally first
+    // Render the page normally first — all WASM work under the lock
+    return await this.withWasmLock(() => {
     let page, pixmap;
     try {
-      page = this.doc.loadPage(pageNum);
+      page = doc.loadPage(pageNum);
       const matrix = mupdfLib.Matrix.scale(scale, scale);
       pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false, true);
 
@@ -3011,6 +3060,7 @@ export class PDFAnalyzer {
       try { pixmap?.destroy(); } catch { /* ignore */ }
       try { page?.destroy(); } catch { /* ignore */ }
     }
+    });
   }
 
   /**
@@ -3149,9 +3199,11 @@ export class PDFAnalyzer {
 
       // Use overlay method to remove content by painting over it
       // This avoids MuPDF's redaction API which corrupts fonts and text positioning
+      // The mupdf.js bridge shares the same WASM module as the analyzer —
+      // serialize with other WASM operations via the lock.
       if (regions.length > 0) {
         console.log(`[exportPdf] Using removeWithOverlay for ${regions.length} regions (avoids font corruption)`);
-        await pdfBridgeManager.getBridge().removeWithOverlay(
+        await this.withWasmLock(() => pdfBridgeManager.getBridge().removeWithOverlay(
           pdfPath,
           outputPath,
           regions,
@@ -3159,11 +3211,11 @@ export class PDFAnalyzer {
             deletedPages: deletedPages ? Array.from(deletedPages) : [],
             bookmarks: bookmarks
           }
-        );
+        ));
       } else {
         // No regions to remove, just handle deleted pages and bookmarks
         console.log(`[exportPdf] No regions to remove, just handling page deletions/bookmarks`);
-        await pdfBridgeManager.getBridge().redact(
+        await this.withWasmLock(() => pdfBridgeManager.getBridge().redact(
           pdfPath,
           outputPath,
           [],
@@ -3171,7 +3223,7 @@ export class PDFAnalyzer {
             deletedPages: deletedPages ? Array.from(deletedPages) : [],
             bookmarks: bookmarks
           }
-        );
+        ));
       }
 
       // Read the output PDF
@@ -3213,7 +3265,12 @@ export class PDFAnalyzer {
   ): Promise<string> {
     console.log(`[embedOcrText] Starting with ${ocrBlocks.length} OCR blocks, PDF size: ${pdfData.length} bytes`);
     const mupdfLib = await getMupdf();
+
+    // All WASM work under the lock; the document is destroyed in finally
+    // (covers the early returns below too)
+    return await this.withWasmLock(() => {
     const doc = mupdfLib.Document.openDocument(pdfData, 'application/pdf');
+    try {
     const pdfDoc = doc.asPDF();
 
     if (!pdfDoc) {
@@ -3376,6 +3433,10 @@ export class PDFAnalyzer {
     const result = Buffer.from(buffer.asUint8Array());
     console.log(`[embedOcrText] Final PDF size: ${result.length} bytes`);
     return result.toString('base64');
+    } finally {
+      try { doc.destroy(); } catch { /* ignore */ }
+    }
+    });
   }
 
   /**
@@ -3397,6 +3458,9 @@ export class PDFAnalyzer {
       throw new Error('No document loaded');
     }
 
+    // All WASM work (page renders, pixel ops, output PDF assembly) under the lock.
+    // Progress callbacks still fire from inside — posting messages doesn't touch WASM.
+    return await this.withWasmLock(() => {
     const totalPages = this.doc.countPages();
 
     // Calculate how many pages will be in the output (for progress reporting)
@@ -3430,8 +3494,9 @@ export class PDFAnalyzer {
       }
     }
 
-    // Create a new PDF document
+    // Create a new PDF document (destroyed in finally — H2 leak fix)
     const outputDoc = new mupdfLib.PDFDocument() as any;
+    try {
 
     // Process each page (skipping deleted pages)
     let outputPageNum = 0;
@@ -3652,6 +3717,10 @@ export class PDFAnalyzer {
     const base64 = Buffer.from(buffer.asUint8Array()).toString('base64');
 
     return base64;
+    } finally {
+      try { outputDoc.destroy(); } catch { /* ignore */ }
+    }
+    });
   }
 
   /**
@@ -3692,6 +3761,9 @@ export class PDFAnalyzer {
 
     console.log(`[exportPdfWysiwyg] UNIFIED EXPORT: ${deletedRegions?.length || 0} deleted regions, ${deletedPages?.size || 0} deleted pages, ${ocrPageSet.size} pages with deleted backgrounds`);
 
+    // All WASM work (page renders, pixel ops, output PDF assembly) under the lock.
+    // Progress callbacks still fire from inside — posting messages doesn't touch WASM.
+    return await this.withWasmLock(() => {
     const totalPages = this.doc.countPages();
     const outputPageCount = deletedPages ? totalPages - deletedPages.size : totalPages;
 
@@ -3707,8 +3779,9 @@ export class PDFAnalyzer {
       }
     }
 
-    // Create output PDF
+    // Create output PDF (destroyed in finally — H2 leak fix)
     const outputDoc = new mupdfLib.PDFDocument() as any;
+    try {
 
     let processedPages = 0;
     for (let pageNum = 0; pageNum < totalPages; pageNum++) {
@@ -3807,20 +3880,14 @@ export class PDFAnalyzer {
             console.log(`[exportPdfWysiwyg] Page ${pageNum}: Painting ${pageRegions.length} deleted regions`);
 
             for (const region of pageRegions) {
-              // Flip Y-axis (PDF y=0 at bottom, pixmap y=0 at top)
-              const flippedY = pageHeight - region.y - region.height;
-
+              // Regions are top-left-origin device coordinates — the same data
+              // renderPage() and exportPdfWithBackgroundsRemoved() paint without
+              // flipping. Flipping Y here erased the wrong end of the page
+              // (deleting a header blanked the footer in the exported PDF).
               const x1 = Math.floor(region.x * scale);
-              const y1 = Math.floor(flippedY * scale);
+              const y1 = Math.floor(region.y * scale);
               const x2 = Math.ceil((region.x + region.width) * scale);
-              const y2 = Math.ceil((flippedY + region.height) * scale);
-
-              // Skip suspicious large regions
-              const regionArea = (x2 - x1) * (y2 - y1);
-              if (regionArea > width * height * 0.5) {
-                console.warn(`[exportPdfWysiwyg] Skipping suspicious large region on page ${pageNum}`);
-                continue;
-              }
+              const y2 = Math.ceil((region.y + region.height) * scale);
 
               // Sample background color
               const bgColor = this.sampleBackgroundColorAroundRegion(samples, width, height, n, x1, y1, x2, y2);
@@ -3869,31 +3936,42 @@ export class PDFAnalyzer {
     const base64 = Buffer.from(buffer.asUint8Array()).toString('base64');
     console.log(`[exportPdfWysiwyg] Exported ${processedPages} pages, ${buffer.asUint8Array().length} bytes`);
     return base64;
+    } finally {
+      try { outputDoc.destroy(); } catch { /* ignore */ }
+    }
+    });
   }
 
   /**
    * Close the document and free WebAssembly memory
    */
   close(): void {
-    // IMPORTANT: Must call destroy() to free WebAssembly memory
-    if (this.doc) {
-      try {
-        this.doc.destroy();
-        console.log('[PDF Analyzer] Document destroyed, WebAssembly memory freed');
-      } catch (err) {
-        console.warn('[PDF Analyzer] Error destroying document:', err);
-      }
-    }
+    const doc = this.doc;
     this.doc = null;
-    // Also close the render document to prevent stale WASM handles
+    // Also close the render document to prevent stale WASM handles.
+    // This also cancels any in-flight background full-res render pass.
     this.closeRenderDoc();
     this.blocks = [];
     this.spans = [];
     this.categories = {};
     this.pageDimensions = [];
     this.pdfPath = '';
-    // Release the mupdf WASM module so its heap can be garbage collected
-    resetMupdf();
+
+    // IMPORTANT: Must call destroy() to free WebAssembly memory.
+    // Routed through the WASM lock so it can't run while another operation
+    // (e.g. an in-flight page render) is touching the WASM heap.
+    void this.withWasmLock(() => {
+      if (doc) {
+        try {
+          doc.destroy();
+          console.log('[PDF Analyzer] Document destroyed, WebAssembly memory freed');
+        } catch (err) {
+          console.warn('[PDF Analyzer] Error destroying document:', err);
+        }
+      }
+      // Release the mupdf WASM module so its heap can be garbage collected
+      resetMupdf();
+    });
   }
 
   /**
@@ -3955,36 +4033,44 @@ export class PDFAnalyzer {
 
     console.log(`[assembleFromImages] Creating PDF from ${pages.length} canvas images`);
 
-    // Create output PDF
-    const outputDoc = new mupdfLib.PDFDocument() as any;
+    // Assemble under the WASM lock; the output document is destroyed in finally.
+    // NOTE: addBookmarksToPdf() acquires the (non-reentrant) lock itself, so it
+    // is called AFTER this locked section.
+    let base64 = await this.withWasmLock(() => {
+      // Create output PDF
+      const outputDoc = new mupdfLib.PDFDocument() as any;
+      try {
+        for (const page of pages) {
+          // Extract base64 from data URL
+          const base64Match = page.imageData.match(/^data:image\/\w+;base64,(.+)$/);
+          if (!base64Match) {
+            console.error(`[assembleFromImages] Invalid data URL for page ${page.pageNum}`);
+            continue;
+          }
 
-    for (const page of pages) {
-      // Extract base64 from data URL
-      const base64Match = page.imageData.match(/^data:image\/\w+;base64,(.+)$/);
-      if (!base64Match) {
-        console.error(`[assembleFromImages] Invalid data URL for page ${page.pageNum}`);
-        continue;
+          const base64Data = base64Match[1];
+          const imageBuffer = Buffer.from(base64Data, 'base64');
+
+          // Create image from PNG data
+          const image = new mupdfLib.Image(imageBuffer);
+
+          // Create page with the image
+          const mediaBox: [number, number, number, number] = [0, 0, page.width, page.height];
+          const content = `q ${page.width} 0 0 ${page.height} 0 0 cm /Img Do Q`;
+
+          const imgRef = outputDoc.addImage(image);
+          const resources = outputDoc.addObject({ XObject: { Img: imgRef } });
+          const pageObj = outputDoc.addPage(mediaBox, 0, resources, content);
+          outputDoc.insertPage(-1, pageObj);
+        }
+
+        // Save to buffer
+        const buffer = outputDoc.saveToBuffer('compress');
+        return Buffer.from(buffer.asUint8Array()).toString('base64');
+      } finally {
+        try { outputDoc.destroy(); } catch { /* ignore */ }
       }
-
-      const base64Data = base64Match[1];
-      const imageBuffer = Buffer.from(base64Data, 'base64');
-
-      // Create image from PNG data
-      const image = new mupdfLib.Image(imageBuffer);
-
-      // Create page with the image
-      const mediaBox: [number, number, number, number] = [0, 0, page.width, page.height];
-      const content = `q ${page.width} 0 0 ${page.height} 0 0 cm /Img Do Q`;
-
-      const imgRef = outputDoc.addImage(image);
-      const resources = outputDoc.addObject({ XObject: { Img: imgRef } });
-      const pageObj = outputDoc.addPage(mediaBox, 0, resources, content);
-      outputDoc.insertPage(-1, pageObj);
-    }
-
-    // Save to buffer
-    let buffer = outputDoc.saveToBuffer('compress');
-    let base64 = Buffer.from(buffer.asUint8Array()).toString('base64');
+    });
 
     // Add bookmarks if chapters provided
     if (chapters && chapters.length > 0) {
@@ -4869,9 +4955,11 @@ export class PDFAnalyzer {
       throw new Error('No document loaded');
     }
 
+    // loadOutline/resolveLink touch the WASM heap — serialize with other ops
+    return await this.withWasmLock(() => {
     const outline = this.doc.loadOutline();
     if (!outline) {
-      return [];
+      return [] as OutlineItem[];
     }
 
     // Recursively convert mupdf outline to our OutlineItem format
@@ -4924,6 +5012,7 @@ export class PDFAnalyzer {
     };
 
     return convertOutline(outline);
+    });
   }
 
   /**
@@ -5545,6 +5634,7 @@ export class PDFAnalyzer {
 
     // 3. For each entry, score candidates
     const chapters: Chapter[] = [];
+    const claimedBlockIds = new Set<string>(); // blocks already claimed as chapters
     const unmapped: TocEntry[] = [];
     const matchedPages: Array<{ printed: number; actual: number }> = [];
     let pageOffset: number | null = null;
@@ -5556,7 +5646,7 @@ export class PDFAnalyzer {
 
       for (const block of candidates) {
         // Skip blocks already claimed as chapters
-        if (chapters.some(c => c.blockId === block.id)) continue;
+        if (claimedBlockIds.has(block.id)) continue;
 
         let score = this.scoreTitleMatch(entry.title, block.text.trim());
         if (score < 0.5) continue;
@@ -5599,6 +5689,8 @@ export class PDFAnalyzer {
           source: 'toc',
           confidence: bestScore,
         };
+
+        claimedBlockIds.add(bestBlock.id);
 
         // Track page offset
         if (entry.printedPage != null) {
@@ -5701,6 +5793,7 @@ export class PDFAnalyzer {
     );
 
     const chapters: Chapter[] = [];
+    const claimedBlockIds = new Set<string>(); // blocks already claimed as chapters
     const unmapped: TocEntry[] = [];
 
     for (const title of titles) {
@@ -5709,7 +5802,7 @@ export class PDFAnalyzer {
 
       for (const block of candidates) {
         // Skip blocks already claimed
-        if (chapters.some(c => c.blockId === block.id)) continue;
+        if (claimedBlockIds.has(block.id)) continue;
 
         let score = this.scoreTitleMatch(title, block.text.trim());
         if (score < 0.5) continue;
@@ -5734,6 +5827,7 @@ export class PDFAnalyzer {
       }
 
       if (bestBlock && bestScore >= 0.5) {
+        claimedBlockIds.add(bestBlock.id);
         chapters.push({
           id: this.hashId(`toc-${bestBlock.page}-${bestBlock.y}-${bestBlock.text.substring(0, 20)}`),
           title: title.length > 80 ? title.substring(0, 77) + '...' : title,
@@ -5768,13 +5862,18 @@ export class PDFAnalyzer {
     }
 
     const mupdfLib = await getMupdf();
-    const doc = mupdfLib.Document.openDocument(pdfData, 'application/pdf');
 
     // Sort chapters by page and position
     const sortedChapters = [...chapters].sort((a, b) => {
       if (a.page !== b.page) return a.page - b.page;
       return (a.y || 0) - (b.y || 0);
     });
+
+    // All WASM work under the lock; the document is destroyed in the outer
+    // finally (covers the early returns on failure / non-PDF too)
+    return await this.withWasmLock(() => {
+    const doc = mupdfLib.Document.openDocument(pdfData, 'application/pdf');
+    try {
 
     try {
       // Use OutlineIterator to add bookmarks
@@ -5846,7 +5945,13 @@ export class PDFAnalyzer {
       return pdfData;
     }
     const buffer = pdfDoc.saveToBuffer('compress');
-    return buffer.asUint8Array();
+    // Copy out of the WASM heap before the document is destroyed in finally
+    return new Uint8Array(buffer.asUint8Array());
+
+    } finally {
+      try { doc.destroy(); } catch { /* ignore */ }
+    }
+    });
   }
 }
 

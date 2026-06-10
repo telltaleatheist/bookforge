@@ -1049,13 +1049,30 @@ export class ExportService {
       paragraphBuffer = [];
     }
 
-    if (currentContent.length > 0) {
+    // Close out the chapter currently being accumulated. The level belongs to
+    // the chapter we're inside (currentChapterIndex - 1), not the last marker.
+    if (currentContent.length > 0 || (userDefinedChapters && currentChapterIndex > 0)) {
       chapterSections.push({
         title: currentTitle,
-        level: sortedChapters.length > 0 ? (sortedChapters[sortedChapters.length - 1]?.level || 1) : 1,
+        level: currentChapterIndex === 0 ? 1 : (sortedChapters[currentChapterIndex - 1]?.level || 1),
         content: currentContent,
         showHeading: userDefinedChapters
       });
+    }
+
+    // Chapter markers positioned after the last exportable block (or whose
+    // blocks were all deleted) would otherwise silently vanish — emit them
+    // as heading-only sections.
+    if (userDefinedChapters) {
+      while (currentChapterIndex < sortedChapters.length) {
+        chapterSections.push({
+          title: sortedChapters[currentChapterIndex].title,
+          level: sortedChapters[currentChapterIndex].level || 1,
+          content: [],
+          showHeading: true
+        });
+        currentChapterIndex++;
+      }
     }
 
     // Merge fragmented paragraphs: any <p> not ending with terminal punctuation
@@ -1305,8 +1322,12 @@ export class ExportService {
   private isTitleDuplicate(normalizedBlock: string, normalizedTitle: string): boolean {
     if (normalizedBlock === normalizedTitle) return true;
 
-    // Block text is a substring of the title (multi-line title fragment)
-    if (normalizedBlock.length >= 3 && normalizedTitle.includes(normalizedBlock)) return true;
+    // Block text is a substring of the title (multi-line title fragment).
+    // Require the block to be a substantial part of the title, otherwise a
+    // legitimate short body block (e.g. "war" under "The Art of War") is dropped.
+    if (normalizedBlock.length >= 3 &&
+        normalizedBlock.length >= normalizedTitle.length * 0.5 &&
+        normalizedTitle.includes(normalizedBlock)) return true;
 
     // Title is a substring of the block (block has extra decorators like "Chapter 1: Title")
     if (normalizedTitle.length >= 3 && normalizedBlock.includes(normalizedTitle)) return true;
@@ -1711,6 +1732,7 @@ ${headingHtml}${chapter.content.join('\n')}
     for (const file of files) {
       const fileData = encoder.encode(file.content);
       const fileName = encoder.encode(file.name);
+      const crc = this.crc32(fileData);
 
       // Local file header
       const localHeader = new Uint8Array(30 + fileName.length);
@@ -1722,7 +1744,7 @@ ${headingHtml}${chapter.content.join('\n')}
       view.setUint16(8, 0, true);            // Compression method (store)
       view.setUint16(10, 0, true);           // File last mod time
       view.setUint16(12, 0, true);           // File last mod date
-      view.setUint32(14, this.crc32(fileData), true); // CRC-32
+      view.setUint32(14, crc, true); // CRC-32
       view.setUint32(18, fileData.length, true);      // Compressed size
       view.setUint32(22, fileData.length, true);      // Uncompressed size
       view.setUint16(26, fileName.length, true);      // File name length
@@ -1741,7 +1763,7 @@ ${headingHtml}${chapter.content.join('\n')}
       centralView.setUint16(10, 0, true);          // Compression method
       centralView.setUint16(12, 0, true);          // File last mod time
       centralView.setUint16(14, 0, true);          // File last mod date
-      centralView.setUint32(16, this.crc32(fileData), true); // CRC-32
+      centralView.setUint32(16, crc, true); // CRC-32
       centralView.setUint32(20, fileData.length, true);      // Compressed size
       centralView.setUint32(24, fileData.length, true);      // Uncompressed size
       centralView.setUint16(28, fileName.length, true);      // File name length

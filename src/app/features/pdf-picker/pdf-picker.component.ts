@@ -55,6 +55,16 @@ interface OpenDocument {
   paragraphBreaks?: Set<string>;
   categoryCorrections?: Map<string, string>;
   learnedCategories?: Map<string, string>;
+  // Per-document component state (must be saved/restored on tab switch to
+  // avoid leaking one document's data into another's project file)
+  chapters?: Chapter[];
+  chaptersSource?: 'toc' | 'heuristic' | 'manual' | 'mixed';
+  metadata?: BookMetadata;
+  categoryHighlights?: CategoryHighlights;
+  deletedHighlightIds?: Set<string>;
+  splitConfig?: SplitConfig;
+  blankedPages?: Set<number>;
+  createdAt?: string;  // Project's original created_at (preserved across saves)
 }
 
 
@@ -432,7 +442,7 @@ interface AlertModal {
               [pageOrder]="pageOrder()"
               [splitMode]="splitMode()"
               [splitEnabled]="splitConfig().enabled"
-              [splitPositionFn]="getSplitPositionForPage.bind(this)"
+              [splitPositionFn]="getSplitPositionForPageFn"
               [skippedPages]="splitConfig().skippedPages"
               [sampleMode]="sampleMode()"
               [sampleRects]="sampleRects()"
@@ -493,7 +503,7 @@ interface AlertModal {
               (sampleMouseUp)="onSampleMouseUp()"
               (blockMoved)="onBlockMoved($event)"
               (blockDragEnd)="onBlockDragEnd($event)"
-              [getPageImageUrl]="getPageImageUrl.bind(this)"
+              [getPageImageUrl]="getPageImageUrlFn"
             />
               }
             </div>
@@ -925,7 +935,7 @@ interface AlertModal {
         [currentSettings]="ocrSettings()"
         [totalPages]="totalPages()"
         [currentPage]="splitPreviewPage()"
-        [getPageImage]="getPageImageForOcr.bind(this)"
+        [getPageImage]="getPageImageForOcrFn"
         [documentId]="activeDocumentId() || 'unknown'"
         [documentName]="pdfName()"
         [lightweightMode]="lightweightMode()"
@@ -2477,21 +2487,58 @@ export class PdfPickerComponent implements OnInit {
     });
   })();
 
+  // Global OCR job completion callback (stored as a stable reference so it can
+  // be unregistered on destroy)
+  private readonly ocrJobCompleteCallback = (job: OcrJob): void => {
+    // Convert OcrJobResult to OcrPageResult and process (including layoutBlocks)
+    // Cast layoutBlocks to LayoutBlock[] since PluginLayoutBlock.label is string but LayoutBlock.label is a union type
+    const results: OcrPageResult[] = job.results.map(r => ({
+      page: r.page,
+      text: r.text,
+      confidence: r.confidence,
+      textLines: r.textLines,
+      layoutBlocks: r.layoutBlocks as OcrPageResult['layoutBlocks']
+    }));
+    if (results.length > 0) {
+      this.onOcrCompleted(results);
+    }
+  };
+
   // Register global OCR job completion handler
   private readonly ocrJobCompletionHandler = (() => {
-    this.ocrJobService.onJobComplete((job) => {
-      // Convert OcrJobResult to OcrPageResult and process (including layoutBlocks)
-      // Cast layoutBlocks to LayoutBlock[] since PluginLayoutBlock.label is string but LayoutBlock.label is a union type
-      const results: OcrPageResult[] = job.results.map(r => ({
-        page: r.page,
-        text: r.text,
-        confidence: r.confidence,
-        textLines: r.textLines,
-        layoutBlocks: r.layoutBlocks as OcrPageResult['layoutBlocks']
-      }));
-      if (results.length > 0) {
-        this.onOcrCompleted(results);
+    this.ocrJobService.onJobComplete(this.ocrJobCompleteCallback);
+  })();
+
+  // Component teardown — release event subscriptions, timers, and global callbacks
+  private readonly destroyCleanup = (() => {
+    this.destroyRef.onDestroy(() => {
+      // Unsubscribe all pending pdf:text-ready listeners
+      for (const unsub of this.textReadyUnsubs.values()) {
+        unsub();
       }
+      this.textReadyUnsubs.clear();
+
+      // Clear pending timers
+      if (this.searchDebounceTimer) {
+        clearTimeout(this.searchDebounceTimer);
+        this.searchDebounceTimer = null;
+      }
+      if (this.regexDebounceTimer) {
+        clearTimeout(this.regexDebounceTimer);
+        this.regexDebounceTimer = null;
+      }
+      if (this.pulseTimer) {
+        clearTimeout(this.pulseTimer);
+        this.pulseTimer = null;
+      }
+      if (this.autoSaveTimeout) {
+        clearTimeout(this.autoSaveTimeout);
+        this.autoSaveTimeout = null;
+      }
+
+      // Unregister the global OCR completion callback so the destroyed
+      // component isn't retained and invoked against stale state
+      this.ocrJobService.offJobComplete(this.ocrJobCompleteCallback);
     });
   })();
 
@@ -2724,6 +2771,13 @@ export class PdfPickerComponent implements OnInit {
   }
 
   // Keyboard shortcuts
+  /** True when the event target is a text-entry element (input/textarea/contenteditable) */
+  private isTextInputTarget(target: EventTarget | null): boolean {
+    return target instanceof HTMLInputElement
+      || target instanceof HTMLTextAreaElement
+      || (target instanceof HTMLElement && target.isContentEditable);
+  }
+
   @HostListener('window:keydown', ['$event'])
   onKeyDown(event: KeyboardEvent): void {
     // Inline text editor is open - let it handle its own shortcuts
@@ -2775,20 +2829,23 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
-    // Ctrl/Cmd + Z for undo
-    if ((event.metaKey || event.ctrlKey) && event.key === 'z' && !event.shiftKey) {
+    // Ctrl/Cmd + Z for undo, Ctrl/Cmd + Shift + Z for redo
+    // (key is 'Z' when shift is held, so compare case-insensitively)
+    // Skip when typing in an input/textarea/contenteditable so the browser's
+    // own text undo isn't hijacked by document undo
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z'
+        && !this.isTextInputTarget(event.target)) {
       event.preventDefault();
-      this.undo();
-    }
-
-    // Ctrl/Cmd + Shift + Z for redo
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === 'z') {
-      event.preventDefault();
-      this.redo();
+      if (event.shiftKey) {
+        this.redo();
+      } else {
+        this.undo();
+      }
     }
 
     // Ctrl/Cmd + Y for redo (alternative)
-    if ((event.metaKey || event.ctrlKey) && event.key === 'y') {
+    if ((event.metaKey || event.ctrlKey) && event.key === 'y'
+        && !this.isTextInputTarget(event.target)) {
       event.preventDefault();
       this.redo();
     }
@@ -2805,8 +2862,9 @@ export class PdfPickerComponent implements OnInit {
       this.closeCurrentTabOrHideWindow();
     }
 
-    // Ctrl/Cmd + E for export
-    if ((event.metaKey || event.ctrlKey) && event.key === 'e') {
+    // Ctrl/Cmd + E for export (not while typing in a field)
+    if ((event.metaKey || event.ctrlKey) && event.key === 'e'
+        && !this.isTextInputTarget(event.target)) {
       event.preventDefault();
       if (this.pdfLoaded()) {
         this.showExportSettings.set(true);
@@ -3637,6 +3695,10 @@ export class PdfPickerComponent implements OnInit {
   // Book metadata for EPUB export
   readonly metadata = signal<BookMetadata>({});
 
+  // Original created_at of the loaded project (preserved across saves; per-document,
+  // saved/restored on tab switch via OpenDocument.createdAt)
+  private projectCreatedAt: string | null = null;
+
   // Page deletion - delegate to editor state (has undo/redo support)
   get deletedPages() { return this.editorState.deletedPages; }
 
@@ -4290,6 +4352,12 @@ export class PdfPickerComponent implements OnInit {
     return this.pageRenderService.getPageImageUrl(pageNum);
   }
 
+  // Stable function references for template inputs — avoids creating a new
+  // function identity on every change-detection pass (defeats OnPush children)
+  readonly getPageImageUrlFn = (pageNum: number): string => this.getPageImageUrl(pageNum);
+  readonly getSplitPositionForPageFn = (pageNum: number): number => this.getSplitPositionForPage(pageNum);
+  readonly getPageImageForOcrFn = (pageNum: number): string | null => this.getPageImageForOcr(pageNum);
+
   private getRenderScale(pageCount: number): number {
     return this.pageRenderService.getRenderScale(pageCount);
   }
@@ -4493,6 +4561,12 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.textLoading.set(true);
 
     const unsub = this.electronService.onTextReady((data) => {
+      // Ignore text-ready events for other documents (a missing pdfPath is
+      // treated as a match for safety during the transition period)
+      if (data.pdfPath && data.pdfPath !== libraryPath) {
+        return;
+      }
+
       // Clean up subscription — we only expect one text-ready per analyzeText call
       this.textReadyUnsubs.get(docId)?.();
       this.textReadyUnsubs.delete(docId);
@@ -4569,6 +4643,15 @@ export class PdfPickerComponent implements OnInit {
 
     // Clear blanked pages tracking
     this.blankedPages.set(new Set());
+
+    // Clear per-document component state
+    this.chapters.set([]);
+    this.chaptersSource.set('manual');
+    this.metadata.set({});
+    this.categoryHighlights.set(new Map());
+    this.deletedHighlightIds.set(new Set());
+    this.splitConfig.set(this.defaultSplitConfig());
+    this.projectCreatedAt = null;
 
     // Clear crop mode
     this.currentMode.set('select');
@@ -4717,6 +4800,14 @@ export class PdfPickerComponent implements OnInit {
       this.projectService.reset();
       this.blankedPages.set(new Set());  // Clear blanked pages for new document
       this.metadata.set({});  // Clear metadata for new document
+      // Clear remaining per-document component state so the previous tab's
+      // data doesn't leak into (and get auto-saved with) the new document
+      this.chapters.set([]);
+      this.chaptersSource.set('manual');
+      this.categoryHighlights.set(new Map());
+      this.deletedHighlightIds.set(new Set());
+      this.splitConfig.set(this.defaultSplitConfig());
+      this.projectCreatedAt = null;
 
       this.saveRecentFile(path, quickResult.pdf_name);
 
@@ -6050,7 +6141,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     this.deletedHighlightIds.set(newDeletedIds);
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   revertBlockText(blockId: string): void {
@@ -7130,7 +7221,7 @@ export class PdfPickerComponent implements OnInit {
 
       if (result.success) {
         // Clear unsaved changes flag
-        this.editorState.hasUnsavedChanges.set(false);
+        this.editorState.markSaved();
 
         // Enter paragraph fix mode to auto-detect and fix paragraph breaks
         this.enterParagraphFixMode(epubPath);
@@ -7418,6 +7509,7 @@ export class PdfPickerComponent implements OnInit {
     const result = await this.electronService.projectsSave(projectData, projectName);
     if (result.success && result.filePath) {
       this.projectPath.set(result.filePath);
+      this.projectCreatedAt = projectData.created_at;
     }
   }
 
@@ -7436,6 +7528,7 @@ export class PdfPickerComponent implements OnInit {
 
     const project = result.data as BookForgeProject;
     this.projectPath.set(projectFilePath);
+    this.projectCreatedAt = project.created_at || null;
 
     // Restore deleted block IDs
     if (project.deleted_block_ids && project.deleted_block_ids.length > 0) {
@@ -7575,7 +7668,7 @@ export class PdfPickerComponent implements OnInit {
       clearTimeout(this.autoSaveTimeout);
       this.autoSaveTimeout = null;
     }
-    this.editorState.hasUnsavedChanges.set(false);
+    this.editorState.markSaved();
 
     console.log('[restoreProjectState] Restored project from:', projectFilePath,
       'chapters:', project.chapters?.length || 0,
@@ -7650,7 +7743,8 @@ export class PdfPickerComponent implements OnInit {
 
       if (result.success && result.filePath) {
         this.projectPath.set(result.filePath);
-        this.hasUnsavedChanges.set(false);
+        this.projectCreatedAt = projectData.created_at;
+        this.editorState.markSaved();
       }
     }
   }
@@ -7709,7 +7803,8 @@ export class PdfPickerComponent implements OnInit {
 
       if (result.success && result.filePath) {
         this.projectPath.set(result.filePath);
-        this.hasUnsavedChanges.set(false);
+        this.projectCreatedAt = projectData.created_at;
+        this.editorState.markSaved();
       } else if (result.error) {
         this.showAlert({
           title: 'Save Failed',
@@ -7758,7 +7853,7 @@ export class PdfPickerComponent implements OnInit {
             sourceBlockIds: m.sourceBlockIds,
           }))
         : undefined,
-      created_at: this.projectPath() ? new Date().toISOString() : new Date().toISOString(),
+      created_at: this.projectCreatedAt ?? new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
 
@@ -7767,7 +7862,8 @@ export class PdfPickerComponent implements OnInit {
 
     if (result.success && result.filePath) {
       this.projectPath.set(result.filePath);
-      this.hasUnsavedChanges.set(false);
+      this.projectCreatedAt = projectData.created_at;
+      this.editorState.markSaved();
     } else if (result.error) {
       this.showAlert({
         title: 'Save Failed',
@@ -7842,6 +7938,9 @@ export class PdfPickerComponent implements OnInit {
   }
 
   private async saveProjectToPath(filePath: string, silent: boolean = false): Promise<void> {
+    // Snapshot the change generation so we only clear the dirty flag if no
+    // new edit happened while the save IPC was in flight
+    const generationAtSerialize = this.editorState.changeGeneration();
     const order = this.pageOrder();
     const history = this.editorState.getHistory();
     const customCategories = this.getCustomCategoriesData();
@@ -7899,7 +7998,7 @@ export class PdfPickerComponent implements OnInit {
             sourceBlockIds: m.sourceBlockIds,
           }))
         : undefined,
-      created_at: new Date().toISOString(),
+      created_at: this.projectCreatedAt ?? new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
 
@@ -7913,7 +8012,17 @@ export class PdfPickerComponent implements OnInit {
 
     if (result.success) {
       console.log('[saveProjectToPath] SUCCESS');
-      this.hasUnsavedChanges.set(false);
+      this.projectCreatedAt = projectData.created_at;
+      // Only clear the dirty flag if no edit occurred while the save was in
+      // flight — otherwise the newer changes would be silently marked saved
+      if (this.editorState.changeGeneration() === generationAtSerialize) {
+        this.editorState.markSaved();
+      } else {
+        console.log('[saveProjectToPath] Edits occurred during save; keeping dirty flag set');
+        // The auto-save effect won't refire (the signal never went false), so
+        // explicitly reschedule to persist the newer edits
+        this.scheduleAutoSave();
+      }
     } else {
       console.error('[saveProjectToPath] FAILED:', result.error, 'path:', filePath);
       if (!silent) {
@@ -8073,6 +8182,17 @@ export class PdfPickerComponent implements OnInit {
         });
       }
 
+      // Reset per-document component state so the previous document's data
+      // doesn't leak into this project (the restores below are conditional)
+      this.chapters.set([]);
+      this.chaptersSource.set('manual');
+      this.metadata.set({});
+      this.categoryHighlights.set(new Map());
+      this.deletedHighlightIds.set(new Set());
+      this.splitConfig.set(this.defaultSplitConfig());
+      this.blankedPages.set(new Set());
+      this.projectCreatedAt = project.created_at || null;
+
       // Restore custom categories
       if (project.custom_categories && project.custom_categories.length > 0) {
         this.restoreCustomCategories(project.custom_categories);
@@ -8139,7 +8259,14 @@ export class PdfPickerComponent implements OnInit {
 
         this.editorState.textLoading.set(true);
         const unsub = this.electronService.onTextReady((data) => {
+          // Ignore text-ready events for other documents (a missing pdfPath is
+          // treated as a match for safety during the transition period)
+          if (data.pdfPath && data.pdfPath !== pdfPathToLoad) {
+            return;
+          }
+
           unsub();
+          this.textReadyUnsubs.delete(syntheticDocId);
           this.editorState.updateTextData({
             blocks: data.blocks as TextBlock[],
             categories: data.categories as Record<string, Category>,
@@ -8158,11 +8285,15 @@ export class PdfPickerComponent implements OnInit {
           }
         });
 
+        // Track for cleanup on component destroy
+        this.textReadyUnsubs.set(syntheticDocId, unsub);
+
         // Fire-and-forget text extraction
         this.pdfService.analyzePdfText(pdfPathToLoad).catch(err => {
           console.error('[openProject] Background text extraction failed:', err);
           this.editorState.textLoading.set(false);
           unsub();
+          this.textReadyUnsubs.delete(syntheticDocId);
         });
       }
 
@@ -8171,7 +8302,7 @@ export class PdfPickerComponent implements OnInit {
         clearTimeout(this.autoSaveTimeout);
         this.autoSaveTimeout = null;
       }
-      this.editorState.hasUnsavedChanges.set(false);
+      this.editorState.markSaved();
     } catch (err) {
       console.error('Failed to load project source file:', err);
       const errorMsg = (err as Error).message || String(err);
@@ -8367,11 +8498,23 @@ export class PdfPickerComponent implements OnInit {
           ? new Map(project.learned_categories) : undefined,
         paragraphBreaks: isLoadingOriginal && project.paragraph_breaks?.length
           ? new Set(project.paragraph_breaks) : undefined,
+        createdAt: project.created_at || undefined,
       };
 
       // Add to open documents
       this.openDocuments.update(docs => [...docs, newDoc]);
       this.activeDocumentId.set(docId);
+
+      // Reset per-document component state so the previous tab's data doesn't
+      // leak into this project (the restores below are conditional)
+      this.chapters.set([]);
+      this.chaptersSource.set('manual');
+      this.metadata.set({});
+      this.categoryHighlights.set(new Map());
+      this.deletedHighlightIds.set(new Set());
+      this.splitConfig.set(this.defaultSplitConfig());
+      this.blankedPages.set(new Set());
+      this.projectCreatedAt = project.created_at || null;
 
       // Convert block edits Record to Map if present, fall back to text_corrections for legacy
       // Only load block edits when loading the original - edits are baked into exported versions
@@ -8562,6 +8705,12 @@ export class PdfPickerComponent implements OnInit {
 
         this.editorState.textLoading.set(true);
         const unsub = this.electronService.onTextReady(async (data) => {
+          // Ignore text-ready events for other documents (a missing pdfPath is
+          // treated as a match for safety during the transition period)
+          if (data.pdfPath && data.pdfPath !== pdfPathToLoad) {
+            return;
+          }
+
           unsub();
           this.textReadyUnsubs.delete(docId);
 
@@ -8657,7 +8806,7 @@ export class PdfPickerComponent implements OnInit {
         clearTimeout(this.autoSaveTimeout);
         this.autoSaveTimeout = null;
       }
-      this.editorState.hasUnsavedChanges.set(false);
+      this.editorState.markSaved();
 
       // Load analysis results (fire-and-forget — highlights appear when ready)
       this.loadAnalysisResults(actualProjectPath);
@@ -8854,7 +9003,7 @@ export class PdfPickerComponent implements OnInit {
     // Log stats for debugging
     const pageCount = Object.keys(matchesByPage).length;
 
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
     this.exitSampleMode();
 
     // Collapse the create category accordion
@@ -9273,7 +9422,7 @@ export class PdfPickerComponent implements OnInit {
         };
       });
 
-      this.hasUnsavedChanges.set(true);
+      this.editorState.markChanged();
       this.regexPanelExpanded.set(false);
       this.editingCategoryId.set(null);
       return;
@@ -9345,7 +9494,7 @@ export class PdfPickerComponent implements OnInit {
     });
 
     // Mark as having unsaved changes
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
 
     // Close modal and clear editing state
     this.regexPanelExpanded.set(false);
@@ -9377,7 +9526,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     // Mark as having unsaved changes
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
 
   }
 
@@ -9418,7 +9567,7 @@ export class PdfPickerComponent implements OnInit {
     this.deletedHighlightIds.set(newDeletedIds);
 
     // Mark as having unsaved changes
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   editCustomCategory(categoryId: string): void {
@@ -9613,13 +9762,13 @@ export class PdfPickerComponent implements OnInit {
   // Apply split settings and exit split mode
   applySplit(): void {
     // Keep split enabled, mark as changed, and exit mode
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
     this.setMode('select');
   }
 
   onSplitConfigChange(config: SplitConfig): void {
     this.splitConfig.set(config);
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   // Get split position for a specific page (considering overrides)
@@ -9642,7 +9791,7 @@ export class PdfPickerComponent implements OnInit {
     const config = this.splitConfig();
     const newOverrides = { ...config.pageOverrides, [pageNum]: position };
     this.splitConfig.set({ ...config, pageOverrides: newOverrides });
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   // Handle split position change from pdf-viewer drag
@@ -9664,7 +9813,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     this.splitConfig.set({ ...config, skippedPages: newSkipped });
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   // Deskew methods for split mode
@@ -9815,7 +9964,7 @@ export class PdfPickerComponent implements OnInit {
             return (a.y || 0) - (b.y || 0);
           }));
           this.chaptersSource.set('mixed');
-          this.hasUnsavedChanges.set(true);
+          this.editorState.markChanged();
         } else {
           this.showAlert({
             title: 'No New Chapters',
@@ -9863,7 +10012,7 @@ export class PdfPickerComponent implements OnInit {
     this.chapters.set(chapters);
     this.selectedChapterId.set(chapterId);
     this.chaptersSource.set(this.chapters().some(c => c.source !== 'manual') ? 'mixed' : 'manual');
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   removeChapter(chapterId: string): void {
@@ -9871,7 +10020,7 @@ export class PdfPickerComponent implements OnInit {
     if (this.selectedChapterId() === chapterId) {
       this.selectedChapterId.set(null);
     }
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   renameChapter(event: { chapterId: string; newTitle: string }): void {
@@ -9882,7 +10031,7 @@ export class PdfPickerComponent implements OnInit {
           : c
       )
     );
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   changeChapterLevel(event: { chapterId: string; level: number }): void {
@@ -9893,12 +10042,12 @@ export class PdfPickerComponent implements OnInit {
           : c
       )
     );
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   onMetadataChange(newMetadata: BookMetadata): void {
     this.metadata.set(newMetadata);
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   async onSaveMetadata(): Promise<void> {
@@ -9917,7 +10066,7 @@ export class PdfPickerComponent implements OnInit {
     this.chapters.set([]);
     this.chaptersSource.set('manual');
     this.selectedChapterId.set(null);
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -10347,7 +10496,7 @@ export class PdfPickerComponent implements OnInit {
             return (a.y || 0) - (b.y || 0);
           }));
           this.chaptersSource.set(existing.length > 0 ? 'mixed' : 'toc');
-          this.hasUnsavedChanges.set(true);
+          this.editorState.markChanged();
         }
 
         const mapped = result.chapters.length;
@@ -10445,7 +10594,7 @@ export class PdfPickerComponent implements OnInit {
     }));
 
     this.chaptersSource.set('manual');
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   /**
@@ -10473,7 +10622,7 @@ export class PdfPickerComponent implements OnInit {
       })
     );
 
-    this.hasUnsavedChanges.set(true);
+    this.editorState.markChanged();
   }
 
   // OCR methods
@@ -10851,10 +11000,16 @@ export class PdfPickerComponent implements OnInit {
     this.textReadyUnsubs.get(tab.id)?.();
     this.textReadyUnsubs.delete(tab.id);
 
-    // Auto-save if there are unsaved changes
-    if (doc.hasUnsavedChanges && this.projectService.projectPath()) {
-      // Save in background before closing
-      this.saveProject().catch(err => console.error('Auto-save on close failed:', err));
+    // Auto-save if there are unsaved changes — but only when closing the
+    // ACTIVE document. saveProject() serializes the active tab's editor state,
+    // so saving for a background tab would write the wrong document's data.
+    if (doc.hasUnsavedChanges) {
+      if (tab.id === this.activeDocumentId() && this.projectService.projectPath()) {
+        // Save in background before closing
+        this.saveProject().catch(err => console.error('Auto-save on close failed:', err));
+      } else if (tab.id !== this.activeDocumentId()) {
+        console.warn('[onTabClosed] Closing background tab with unsaved changes; changes are dropped:', doc.name);
+      }
     }
 
     // Remove from list
@@ -10923,6 +11078,14 @@ export class PdfPickerComponent implements OnInit {
             paragraphBreaks: this.editorState.paragraphBreaks(),
             categoryCorrections: this.editorState.categoryCorrections(),
             learnedCategories: this.editorState.learnedCategories(),
+            chapters: this.chapters(),
+            chaptersSource: this.chaptersSource(),
+            metadata: this.metadata(),
+            categoryHighlights: this.categoryHighlights(),
+            deletedHighlightIds: this.deletedHighlightIds(),
+            splitConfig: this.splitConfig(),
+            blankedPages: this.blankedPages(),
+            createdAt: this.projectCreatedAt ?? undefined,
           };
         }
         return doc;
@@ -10967,8 +11130,31 @@ export class PdfPickerComponent implements OnInit {
     this.pageRenderService.restorePageImages(doc.pageImages);
     this.projectService.projectPath.set(doc.projectPath);
 
+    // Restore per-document component state (reset to empty defaults when the
+    // document has none, so the previous tab's data doesn't leak in)
+    this.chapters.set(doc.chapters ?? []);
+    this.chaptersSource.set(doc.chaptersSource ?? 'manual');
+    this.metadata.set(doc.metadata ?? {});
+    this.categoryHighlights.set(doc.categoryHighlights ?? new Map());
+    this.deletedHighlightIds.set(doc.deletedHighlightIds ?? new Set());
+    this.splitConfig.set(doc.splitConfig ?? this.defaultSplitConfig());
+    this.blankedPages.set(doc.blankedPages ?? new Set());
+    this.projectCreatedAt = doc.createdAt ?? null;
+
     // Note: paragraphBreaks and categoryCorrections are now passed directly to
     // loadDocument() above, which applies corrections to blocks automatically.
+  }
+
+  /** Default split configuration for a freshly opened document */
+  private defaultSplitConfig(): SplitConfig {
+    return {
+      enabled: false,
+      oddPageSplit: 0.5,
+      evenPageSplit: 0.5,
+      pageOverrides: {},
+      skippedPages: new Set<number>(),
+      readingOrder: 'left-to-right'
+    };
   }
 
   private clearDocumentState(): void {

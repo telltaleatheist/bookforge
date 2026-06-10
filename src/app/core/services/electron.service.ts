@@ -343,7 +343,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  onTextReady(callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[] }) => void): () => void {
+  onTextReady(callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath?: string }) => void): () => void {
     if (this.isElectron) {
       return (window as any).electron.pdf.onTextReady(callback);
     }

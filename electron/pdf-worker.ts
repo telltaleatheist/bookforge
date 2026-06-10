@@ -65,8 +65,10 @@ const dispatch: Record<string, Dispatcher> = {
     const result = await pdfAnalyzer.analyzeText(pdfPath, maxPages, (phase: string, message: string) => {
       sendProgress('pdf:analyze-progress', { phase, message });
     });
-    // Fire text-ready event so the renderer can update without waiting for invoke return
-    sendProgress('pdf:text-ready', result);
+    // Fire text-ready event so the renderer can update without waiting for invoke return.
+    // Include the source pdfPath so the renderer can tell which document this
+    // background extraction result belongs to.
+    sendProgress('pdf:text-ready', { ...result, pdfPath });
     return result;
   },
 

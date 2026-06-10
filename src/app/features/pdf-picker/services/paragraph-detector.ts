@@ -718,9 +718,10 @@ function mergeStyledRuns(
     const curr = i < sorted.length ? sorted[i] : null;
 
     // Check if curr continues the same styled run as prev
+    // (normalize style flags — OCR blocks leave them undefined)
     const continues = curr &&
-      curr.is_italic === prev.is_italic &&
-      curr.is_bold === prev.is_bold &&
+      !!curr.is_italic === !!prev.is_italic &&
+      !!curr.is_bold === !!prev.is_bold &&
       curr.font_name === prev.font_name &&
       curr.font_size === prev.font_size &&
       // Must be on the same page or adjacent pages
@@ -733,8 +734,8 @@ function mergeStyledRuns(
       if (runLength >= 2) {
         const sample = sorted[runStart];
         const isDistinctive =
-          sample.is_italic !== false ||  // italic text
-          sample.is_bold !== false ||     // bold text
+          sample.is_italic === true ||  // italic text
+          sample.is_bold === true ||    // bold text
           sample.font_name !== baselines.bodyFont ||
           sample.font_size !== baselines.bodySize;
 

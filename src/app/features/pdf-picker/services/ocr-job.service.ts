@@ -38,6 +38,7 @@ export interface OcrJob {
   processedCount: number;
   totalPages: number;
   results: OcrJobResult[];
+  failedPages: number[];
   error?: string;
   startTime?: number;
   endTime?: number;
@@ -103,6 +104,7 @@ export class OcrJobService {
       processedCount: 0,
       totalPages: pages.length,
       results: [],
+      failedPages: [],
       queuePosition
     };
 
@@ -154,7 +156,20 @@ export class OcrJobService {
    * This is used by pdf-picker to handle results after the modal is closed
    */
   onJobComplete(callback: (job: OcrJob) => void): void {
+    if (this.globalCompletionCallback && this.globalCompletionCallback !== callback) {
+      console.warn('[OCR Queue] Replacing existing global completion callback');
+    }
     this.globalCompletionCallback = callback;
+  }
+
+  /**
+   * Unregister the global completion callback (call from ngOnDestroy so a
+   * destroyed component isn't retained and invoked against stale state)
+   */
+  offJobComplete(callback: (job: OcrJob) => void): void {
+    if (this.globalCompletionCallback === callback) {
+      this.globalCompletionCallback = null;
+    }
   }
 
   /**
@@ -308,7 +323,10 @@ export class OcrJobService {
         }
       } catch (err) {
         console.error(`[OCR Job] Failed on page ${pageNum + 1}:`, err);
-        // Continue processing other pages, just log the error
+        // Continue processing other pages, but record the failure
+        this.jobs.update(jobs => jobs.map(j =>
+          j.id === jobId ? { ...j, failedPages: [...j.failedPages, pageNum] } : j
+        ));
       }
 
       this.incrementProcessed(jobId);
@@ -317,20 +335,28 @@ export class OcrJobService {
     // Mark as completed (if not cancelled)
     const finalJob = this.getJob(jobId);
     if (finalJob && finalJob.status === 'running') {
+      // All pages failed → error, not a silent empty "completed"
+      const allFailed = finalJob.failedPages.length >= finalJob.totalPages && finalJob.totalPages > 0;
       this.jobs.update(jobs => jobs.map(j =>
         j.id === jobId ? {
           ...j,
-          status: 'completed' as const,
+          status: allFailed ? 'error' as const : 'completed' as const,
+          error: allFailed
+            ? `OCR failed on all ${j.totalPages} pages`
+            : j.failedPages.length > 0
+              ? `OCR failed on ${j.failedPages.length} of ${j.totalPages} pages`
+              : undefined,
           progress: 100,
           endTime: Date.now()
         } : j
       ));
 
-      console.log(`[OCR Queue] Job ${jobId} completed`);
+      console.log(`[OCR Queue] Job ${jobId} ${allFailed ? 'failed' : 'completed'}` +
+        (finalJob.failedPages.length ? ` (${finalJob.failedPages.length} failed pages)` : ''));
 
-      // Call completion callbacks
+      // Call completion callbacks (skip when nothing succeeded)
       const completedJob = this.getJob(jobId);
-      if (completedJob) {
+      if (completedJob && !allFailed) {
         // Per-job callback (may fail if modal is destroyed)
         const callback = this.completionCallbacks.get(jobId);
         if (callback) {
@@ -347,6 +373,11 @@ export class OcrJobService {
         }
       }
     }
+
+    // Job reached a terminal state — release the image-provider closure
+    // (it typically retains rendered page data) and the per-job callback
+    this.imageProviders.delete(jobId);
+    this.completionCallbacks.delete(jobId);
   }
 
   private updateJobStatus(jobId: string, status: OcrJob['status'], error?: string): void {

@@ -33,8 +33,9 @@ export interface CropRect {
         <cdk-virtual-scroll-viewport
           #cdkViewport
           class="pdf-viewport"
-          [itemSize]="getAveragePageHeight()"
+          [itemSize]="averagePageHeight()"
           (wheel)="onWheel($event)"
+          (scroll)="onScroll($event)"
         >
           <div class="pdf-container" [class.chapters-mode]="chaptersMode()">
             <div
@@ -607,6 +608,7 @@ export interface CropRect {
                       <div class="spinner"></div>
                     </div>
                   }
+                  @if (isPageInRenderWindow(pageNum)) {
                   <svg
                     class="block-overlay"
                     [class.crop-mode]="cropMode()"
@@ -893,6 +895,7 @@ export interface CropRect {
                       />
                     }
                   </svg>
+                  }
                 </div>
                 <div class="page-label">
                   @if (chaptersMode()) {
@@ -2177,9 +2180,28 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       return { start: startIdx, end: endIdx, pages: allPages.slice(startIdx, endIdx) };
     }
 
-    // In edit/select mode, show all pages
+    // In edit/select mode, use the DOM-observed visible pages so the
+    // on-demand renderer only gets pages near the viewport (previously this
+    // returned ALL pages, requesting the whole document at once)
     if (this.editorMode() === 'select' || this.editorMode() === 'edit') {
-      return { start: 0, end: allPages.length, pages: allPages };
+      const visible = this.domVisiblePages();
+      if (visible.size === 0) {
+        const end = Math.min(allPages.length, 5);
+        return { start: 0, end, pages: allPages.slice(0, end) };
+      }
+      let startIdx = allPages.length;
+      let endIdx = 0;
+      for (let i = 0; i < allPages.length; i++) {
+        if (visible.has(allPages[i])) {
+          if (i < startIdx) startIdx = i;
+          if (i + 1 > endIdx) endIdx = i + 1;
+        }
+      }
+      if (startIdx >= endIdx) {
+        const end = Math.min(allPages.length, 5);
+        return { start: 0, end, pages: allPages.slice(0, end) };
+      }
+      return { start: startIdx, end: endIdx, pages: allPages.slice(startIdx, endIdx) };
     }
 
     const dims = this.pageDimensions();
@@ -2472,8 +2494,8 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     // Effect to adjust scroll position after zoom changes
     effect(() => {
       const currentZoom = this.zoom();
-      if (this.pendingZoomAdjustment && this.viewport?.nativeElement) {
-        const vp = this.viewport.nativeElement;
+      const vp = this.pendingZoomAdjustment ? this.getScrollContainer() : null;
+      if (this.pendingZoomAdjustment && vp) {
         const adj = this.pendingZoomAdjustment;
         const zoomRatio = currentZoom / this.previousZoom;
 
@@ -2504,21 +2526,90 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       this.showTextLayer(); // Track text layer toggle for OCR fill visibility
       this.showOcrTextBlocks(); // Track OCR layer toggle for fill visibility
 
-      // Force Angular to re-render the component
+      // Force Angular to re-render the component (coalesced; guarded so a
+      // timeout scheduled just before destroy doesn't hit a destroyed view)
+      if (this.cdScheduled) return;
+      this.cdScheduled = true;
       setTimeout(() => {
-        this.cdr.detectChanges();
+        this.cdScheduled = false;
+        if (!this.destroyed) this.cdr.detectChanges();
       }, 0);
+    });
+
+    // Re-attach the page-visibility observer when the page list or the
+    // template branch (layout/mode) changes — both recreate the wrappers
+    effect(() => {
+      this.pageNumbers();
+      this.layout();
+      this.editorMode();
+      setTimeout(() => this.setupPageVisibilityObserver(), 0);
     });
   }
 
   ngAfterViewInit(): void {
     // Initialize viewport tracking after view is ready
-    setTimeout(() => this.initViewport(), 0);
+    setTimeout(() => {
+      this.initViewport();
+      this.setupPageVisibilityObserver();
+    }, 0);
   }
 
   ngOnDestroy(): void {
+    this.destroyed = true;
     // Clean up marquee auto-scroll listeners and interval
     this.stopMarqueeAutoScroll();
+    this.pageVisibilityObserver?.disconnect();
+    this.pageVisibilityObserver = null;
+    if (this.scrollThrottleTimer) {
+      clearTimeout(this.scrollThrottleTimer);
+      this.scrollThrottleTimer = null;
+    }
+  }
+
+  private destroyed = false;
+  private cdScheduled = false;
+
+  // ── Page render window ──────────────────────────────────────────────
+  // The non-CDK branch (grid/select/edit) keeps every page wrapper and
+  // image in the DOM for exact scroll geometry, but only renders the
+  // expensive SVG block overlays for pages near the viewport. Visibility
+  // is tracked with an IntersectionObserver (rootMargin = one viewport
+  // in each direction), so it's exact regardless of page heights.
+  private pageVisibilityObserver: IntersectionObserver | null = null;
+  private readonly domVisiblePages = signal<Set<number>>(new Set([0, 1, 2, 3, 4]));
+
+  private setupPageVisibilityObserver(): void {
+    if (this.destroyed) return;
+    this.pageVisibilityObserver?.disconnect();
+    this.pageVisibilityObserver = null;
+
+    // CDK mode virtualizes on its own — only the plain-scroll branch needs this
+    if (!this.viewport?.nativeElement) return;
+
+    this.pageVisibilityObserver = new IntersectionObserver((entries) => {
+      const current = this.domVisiblePages();
+      const next = new Set(current);
+      for (const entry of entries) {
+        const pageAttr = (entry.target as HTMLElement).dataset['page'];
+        if (pageAttr === undefined) continue;
+        const pageNum = Number(pageAttr);
+        if (entry.isIntersecting) next.add(pageNum);
+        else next.delete(pageNum);
+      }
+      if (next.size !== current.size || [...next].some(p => !current.has(p))) {
+        this.domVisiblePages.set(next);
+      }
+    }, { root: this.viewport.nativeElement, rootMargin: '100% 0px 100% 0px' });
+
+    const wrappers = this.viewport.nativeElement.querySelectorAll('.page-wrapper');
+    wrappers.forEach(el => this.pageVisibilityObserver!.observe(el));
+  }
+
+  // Whether a page's block overlay should be rendered (always true in CDK
+  // mode, where cdkVirtualFor already culls off-screen pages)
+  isPageInRenderWindow(pageNum: number): boolean {
+    if (!this.viewport?.nativeElement) return true;
+    return this.domVisiblePages().has(pageNum);
   }
 
   // Block context menu state (signals for proper change detection)
@@ -2657,23 +2748,27 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     return dims.width * (this.zoom() / 100);
   }
 
-  // Get average page height for CDK virtual scroll itemSize
-  getAveragePageHeight(): number {
+  // Average page height for CDK virtual scroll itemSize.
+  // computed() so the template binding doesn't re-run the loop every CD pass.
+  readonly averagePageHeight = computed(() => {
     const dims = this.pageDimensions();
     const zoom = this.zoom() / 100;
 
     if (dims.length === 0) return 800 * zoom;
 
-    // Calculate average height from first few pages
+    // Sample across the whole document, not just the front matter —
+    // a few tall cover/front pages would otherwise mis-size the scrollbar
+    const samplesToCheck = Math.min(dims.length, 25);
+    const stride = Math.max(1, Math.floor(dims.length / samplesToCheck));
     let totalHeight = 0;
-    const samplesToCheck = Math.min(dims.length, 5);
-    for (let i = 0; i < samplesToCheck; i++) {
+    let count = 0;
+    for (let i = 0; i < dims.length && count < samplesToCheck; i += stride, count++) {
       totalHeight += (dims[i]?.height || 800) * zoom;
     }
 
     // Add gap for spacing
-    return (totalHeight / samplesToCheck) + this.PAGE_GAP;
-  }
+    return (totalHeight / Math.max(1, count)) + this.PAGE_GAP;
+  });
 
   // TrackBy function for CDK virtual scrolling
   trackByPageNum(_index: number, pageNum: number): number {
@@ -3946,9 +4041,11 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       event.preventDefault();
       event.stopPropagation();
 
-      if (!this.viewport?.nativeElement) return;
+      // getScrollContainer() covers both the plain #viewport (grid/select/edit)
+      // and the CDK virtual-scroll viewport (vertical mode)
+      const vp = this.getScrollContainer();
+      if (!vp) return;
 
-      const vp = this.viewport.nativeElement;
       const rect = vp.getBoundingClientRect();
 
       // Cursor position relative to viewport
@@ -4302,10 +4399,13 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     const container = this.getScrollContainer();
     if (!container) return;
 
-    // For virtual scroll mode, calculate the offset and scroll there
+    // For CDK virtual scroll mode, let CDK do the offset math — it positions
+    // content by index × itemSize, which disagrees with cumulative real heights
     if (this.layout() !== 'grid' && this.editorMode() !== 'select' && this.editorMode() !== 'edit') {
-      const offset = this.getPageOffset(pageNum);
-      container.scrollTop = offset;
+      const index = this.pageNumbers().indexOf(pageNum);
+      if (index >= 0 && this.cdkViewport) {
+        this.cdkViewport.scrollToIndex(index);
+      }
       return;
     }
 

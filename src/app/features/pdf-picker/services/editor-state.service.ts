@@ -50,6 +50,7 @@ export interface HistoryAction {
   blockCategoryBefore?: string;  // block's category_id before correction
   blockCategoryAfter?: string;   // block's category_id after correction
   bulkBlockCategoriesBefore?: [string, string][];  // for bulk: blockId → previous categoryId
+  bulkBlockCategoriesAfter?: [string, string][];   // for bulk: blockId → new categoryId
   // For splitBlock actions
   splitDefinition?: SplitDefinition;
   // For mergeBlocks actions
@@ -907,9 +908,15 @@ export class PdfEditorStateService {
         this.setBlockPosition(blockId, action.offsetXAfter ?? 0, action.offsetYAfter ?? 0, false);
       }
     } else if (action.type === 'resize') {
-      // Re-apply resize
+      // Re-apply resize — if "after" equals the block's natural size this was a
+      // clear-size action, so clear instead of recording a spurious explicit edit
       const blockId = action.blockIds[0];
-      this.setBlockSize(blockId, action.widthAfter ?? 0, action.heightAfter ?? 0, false);
+      const block = this.blocks().find(b => b.id === blockId);
+      if (action.widthAfter === block?.width && action.heightAfter === block?.height) {
+        this.clearBlockSize(blockId, false);
+      } else {
+        this.setBlockSize(blockId, action.widthAfter ?? 0, action.heightAfter ?? 0, false);
+      }
     } else if (action.type === 'deletePage') {
       // Re-apply page deletion
       const deleted = new Set(this.deletedPages());
@@ -928,11 +935,10 @@ export class PdfEditorStateService {
     } else if (action.type === 'categoryCorrection') {
       this.categoryCorrections.set(new Map(action.categoryCorrectionsAfter || []));
       // Apply block category_ids — bulk or single
-      if (action.blockIds.length > 1 && action.blockCategoryAfter !== undefined) {
-        const targetCat = action.blockCategoryAfter;
-        const idSet = new Set(action.blockIds);
+      if (action.bulkBlockCategoriesAfter && action.bulkBlockCategoriesAfter.length > 0) {
+        const afterMap = new Map(action.bulkBlockCategoriesAfter);
         this.blocks.update(blocks =>
-          blocks.map(b => idSet.has(b.id) ? { ...b, category_id: targetCat } : b)
+          blocks.map(b => afterMap.has(b.id) ? { ...b, category_id: afterMap.get(b.id)! } : b)
         );
       } else if (action.blockIds.length > 0 && action.blockCategoryAfter !== undefined) {
         const blockId = action.blockIds[0];
@@ -1147,8 +1153,6 @@ export class PdfEditorStateService {
 
   // Category correction methods
   setCategoryCorrection(blockId: string, categoryId: string): void {
-    console.log('[setCategoryCorrection]', blockId, '→', categoryId,
-      'total corrections after:', this.categoryCorrections().size + 1);
     const before = [...this.categoryCorrections().entries()] as [string, string][];
 
     // Capture block's current category_id before the correction
@@ -1178,15 +1182,17 @@ export class PdfEditorStateService {
       blockCategoryAfter: categoryId,
     });
     this.markChanged();
+    this.updateCategoryStats();
   }
 
   setBulkCategoryCorrections(entries: Array<{ blockId: string; categoryId: string }>): void {
     const before = [...this.categoryCorrections().entries()] as [string, string][];
 
     // Capture each block's current category_id
+    const blocksById = new Map(this.blocks().map(b => [b.id, b]));
     const blockCategoriesBefore = new Map<string, string>();
     for (const { blockId } of entries) {
-      const block = this.blocks().find(b => b.id === blockId);
+      const block = blocksById.get(blockId);
       if (block) blockCategoriesBefore.set(blockId, block.category_id);
     }
 
@@ -1214,7 +1220,7 @@ export class PdfEditorStateService {
       categoryCorrectionsBefore: before,
       categoryCorrectionsAfter: after,
       bulkBlockCategoriesBefore: [...blockCategoriesBefore.entries()],
-      blockCategoryAfter: entries[0]?.categoryId,
+      bulkBlockCategoriesAfter: entries.map(e => [e.blockId, e.categoryId] as [string, string]),
     });
     this.markChanged();
     this.updateCategoryStats();
@@ -1245,6 +1251,7 @@ export class PdfEditorStateService {
       blockCategoryBefore,
     });
     this.markChanged();
+    this.updateCategoryStats();
   }
 
   clearAllCategoryCorrections(): void {
@@ -1320,8 +1327,15 @@ export class PdfEditorStateService {
     });
   }
 
+  // Cap so long sessions don't grow saves unboundedly — split/merge actions
+  // embed full block payloads and history is serialized into the project file
+  private static readonly MAX_HISTORY = 200;
+
   private pushHistory(action: HistoryAction): void {
     this.undoStack.push(action);
+    if (this.undoStack.length > PdfEditorStateService.MAX_HISTORY) {
+      this.undoStack.splice(0, this.undoStack.length - PdfEditorStateService.MAX_HISTORY);
+    }
     this.redoStack = []; // Clear redo stack on new action
     this.updateHistorySignals();
   }
@@ -1357,8 +1371,18 @@ export class PdfEditorStateService {
     this.markChanged();
   }
 
-  // Change tracking
+  // Change tracking.
+  // changeCounter is a monotonic count of change events — savers snapshot it
+  // before serializing and only clear the dirty flag if no edit happened
+  // while the save IPC was in flight.
+  private changeCounter = 0;
+
+  changeGeneration(): number {
+    return this.changeCounter;
+  }
+
   markChanged(): void {
+    this.changeCounter++;
     this.hasUnsavedChanges.set(true);
   }
 
@@ -1451,7 +1475,9 @@ export class PdfEditorStateService {
     this.markChanged();
   }
 
-  // Update category stats (block_count, char_count) and remove empty categories
+  // Update category stats (block_count, char_count).
+  // Empty categories are kept (counts zeroed) — deleting them breaks undo,
+  // which can restore blocks into a category that no longer has a definition.
   updateCategoryStats(): void {
     const blocks = this.blocks();
     const deleted = this.deletedBlockIds();
@@ -1469,17 +1495,13 @@ export class PdfEditorStateService {
     this.categories.update(cats => {
       const updated: Record<string, Category> = {};
 
-      // Only keep categories that have blocks
       for (const [catId, cat] of Object.entries(cats)) {
         const catStats = stats.get(catId);
-        if (catStats && catStats.block_count > 0) {
-          updated[catId] = {
-            ...cat,
-            block_count: catStats.block_count,
-            char_count: catStats.char_count
-          };
-        }
-        // Categories with 0 blocks are removed
+        updated[catId] = {
+          ...cat,
+          block_count: catStats?.block_count ?? 0,
+          char_count: catStats?.char_count ?? 0
+        };
       }
 
       return updated;
