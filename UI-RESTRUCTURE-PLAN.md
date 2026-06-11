@@ -97,7 +97,11 @@ Both views read the same `manifestList()` data. `StudioItem` and `LibraryBook` c
 - Library view reuses the existing library grid component bound to manifest data; Studio view is the existing studio split-pane.
 - One import flow (the existing add-modal) used by both views.
 
-## Phase 3 — The four-tab book view: Versions · Process · Listen · Insights
+## Phase 3 — The four-tab book view: Versions · Process · Listen · Insights ✅ MOSTLY DONE 2026-06-10/11
+
+Done: Versions tab (studio-versions; Compare any two EPUBs via generalized diff-view, Edit/Export/Delete per row; Enhance/Fix Chapters on audio rows; Skipped report on the cleanup row — commits d17fc32, f2d2bbb, 32d4c84). Listen tab (play + stream). Insights tab (commit 20b51f4). Remaining from 3c: editor save still has its legacy exit paths (save-as-new-version unification not done); articles still use the Content tab rather than the Edit verb.
+
+### Original spec (kept for reference)
 
 Goal: implement the target interaction model. The user never sees raw paths, can compare any two pipeline outputs, can edit from anywhere, and there is exactly ONE way to do each action. This replaces the Files/Content/Audiobook/Language-Learning tab maze and its 10 sub-tabs.
 
@@ -127,7 +131,11 @@ One player surface: select an audio output (or arrive via a row's Listen action)
 
 With a real project (e.g., the Dannenmann book): original→translated, translated→cleaned, cleaned→simplified comparisons all open; editing the original produces a new version and leaves `source/original.*` byte-identical; Enhance/Fix Chapters/Skipped reachable from the audio row; nothing reachable two ways.
 
-## Phase 4 — One pipeline wizard + Analysis becomes Insights
+## Phase 4 — One pipeline wizard + Analysis becomes Insights ✅ DONE 2026-06-11 (commits a6bd507, 20b51f4)
+
+Done differently than drafted: instead of extracting shared sub-components first, the ll-wizard was extended into the unified wizard (its Translate step gained the "Translation Type" switch: Whole Book vs Sentence-Aligned) and process-wizard was deleted. Mono mode submits exactly the old process-wizard job set (master `audiobook`, `ocr-cleanup`/`bilingual-cleanup`, `bilingual-translation` with `monoTranslation:true`, single `tts-conversion`, `reassembly` chained or from cached session, `video-assembly` monolingual); sentence mode is unchanged LL behavior. Analysis moved to the Insights tab (`studio-insights.component.ts`). Note: the unified wizard still lives at `features/language-learning/components/ll-wizard/` under the `LLWizardComponent` name — a rename/move to `features/studio/components/pipeline-wizard/` is cosmetic follow-up.
+
+### Original spec (kept for reference)
 
 Goal: merge `process-wizard.component.ts` (3,851 lines) and `ll-wizard.component.ts` (3,749 lines, ~40% duplicated) into ONE wizard, and remove Analysis from the pipeline.
 
