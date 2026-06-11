@@ -70,6 +70,43 @@ let currentVoice: string | null = null;
 let nextWorkerIndex = 0;
 let discoveredVoices: string[] = [];
 
+// Idle shutdown: kill the pool if nothing was generated for this long
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+let lastActivityAt = 0;
+let idleTimer: NodeJS.Timeout | null = null;
+
+function touchActivity(): void {
+  lastActivityAt = Date.now();
+}
+
+function startIdleWatch(): void {
+  stopIdleWatch();
+  touchActivity();
+  idleTimer = setInterval(() => {
+    if (isSessionActive() && Date.now() - lastActivityAt > IDLE_TIMEOUT_MS) {
+      console.log(`[XTTS Pool] Idle for ${Math.round(IDLE_TIMEOUT_MS / 60000)} min — shutting down`);
+      void endSession();
+    }
+  }, 60_000);
+  idleTimer.unref?.();
+}
+
+function stopIdleWatch(): void {
+  if (idleTimer) {
+    clearInterval(idleTimer);
+    idleTimer = null;
+  }
+}
+
+/** Session lifecycle events go to every window (main app + listen windows) */
+function broadcast(channel: string, data?: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(channel, data);
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,6 +136,8 @@ export async function startSession(): Promise<{ success: boolean; voices?: strin
 
     if (allSuccess) {
       console.log('[XTTS Pool] All workers started successfully');
+      startIdleWatch();
+      broadcast('play:session-started');
       return { success: true, voices: getAvailableVoices() };
     } else {
       const errors = results.filter(r => !r.success).map(r => r.error);
@@ -235,6 +274,7 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
   if (workers.length === 0) {
     return { success: false, error: 'No workers available' };
   }
+  touchActivity();
 
   if (currentVoice === voice) {
     return { success: true };
@@ -298,6 +338,7 @@ export async function generateSentence(
   sentenceIndex: number,
   settings: PlaySettings
 ): Promise<{ success: boolean; audio?: AudioChunk; error?: string }> {
+  touchActivity();
   const availableWorkers = workers.filter(w => w.isReady && !w.pendingRequest);
 
   if (availableWorkers.length === 0) {
@@ -377,6 +418,8 @@ export function stop(): void {
  */
 export async function endSession(): Promise<void> {
   console.log('[XTTS Pool] Ending session...');
+  stopIdleWatch();
+  const hadWorkers = workers.length > 0;
 
   for (const worker of workers) {
     sendToWorker(worker, { action: 'quit' });
@@ -394,6 +437,10 @@ export async function endSession(): Promise<void> {
   currentVoice = null;
   nextWorkerIndex = 0;
   discoveredVoices = [];
+
+  if (hadWorkers) {
+    broadcast('play:session-ended', { code: 0 });
+  }
 }
 
 /**

@@ -8978,6 +8978,81 @@ function setupIpcHandlers(): void {
   // Track open editor windows by project path
   const editorWindows = new Map<string, BrowserWindow>();
 
+  // ── Listen window (Play / Stream player) ──
+  // The XTTS stream engine's lifetime is tied to these windows: when the last
+  // listen window closes, the engine is shut down. That guarantees the engine
+  // is only ever running while a player window is open.
+  const listenWindows = new Map<string, BrowserWindow>();
+
+  ipcMain.handle('listen:open-window', async (_event, projectPath: string, mode?: 'play' | 'stream') => {
+    const existing = listenWindows.get(projectPath);
+    if (existing && !existing.isDestroyed()) {
+      existing.focus();
+      // Re-route the open window to the requested mode
+      if (mode) {
+        existing.webContents.send('listen:set-mode', mode);
+      }
+      return { success: true, alreadyOpen: true };
+    }
+
+    const iconPath = isDev
+      ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
+      : path.join(app.getAppPath(), 'bookforge-icon.png');
+
+    const listenWindow = new BrowserWindow({
+      width: 1100,
+      height: 850,
+      minWidth: 600,
+      minHeight: 500,
+      icon: iconPath,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, 'preload.js'),
+      },
+      titleBarStyle: 'hiddenInset',
+      backgroundColor: '#0a0a0a',
+    });
+
+    listenWindows.set(projectPath, listenWindow);
+
+    listenWindow.on('closed', () => {
+      listenWindows.delete(projectPath);
+      // Last listen window gone → the stream engine has no possible consumer
+      if (listenWindows.size === 0) {
+        void (async () => {
+          try {
+            const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+            if (xttsWorkerPool.isSessionActive()) {
+              console.log('[MAIN] Last listen window closed — ending stream TTS session');
+              await xttsWorkerPool.endSession();
+            }
+          } catch (err) {
+            console.error('[MAIN] Failed to end stream TTS session:', err);
+          }
+        })();
+      }
+    });
+
+    listenWindow.webContents.on('did-finish-load', () => {
+      listenWindow.webContents.setZoomLevel(loadZoomLevel());
+    });
+
+    const encodedPath = encodeURIComponent(projectPath);
+    const modeParam = mode ? `&mode=${mode}` : '';
+    if (isDev) {
+      listenWindow.loadURL(`http://localhost:4250/#/listen?project=${encodedPath}${modeParam}`);
+    } else {
+      const appPath = app.getAppPath();
+      const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
+      listenWindow.loadFile(indexPath, {
+        hash: `/listen?project=${encodedPath}${modeParam}`
+      });
+    }
+
+    return { success: true };
+  });
+
   ipcMain.handle('editor:open-window', async (_event, projectPath: string, options?: { mode?: string }) => {
     // Check if window already open for this project
     const existingWindow = editorWindows.get(projectPath);

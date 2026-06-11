@@ -17,12 +17,9 @@ import { LLWizardComponent } from '../language-learning/components/ll-wizard/ll-
 // Import existing audiobook components
 import { MetadataEditorComponent, EpubMetadata } from '../audiobook/components/metadata-editor/metadata-editor.component';
 import { TTSSettings } from './models/tts.types';
-import { PlayViewComponent } from '../audiobook/components/play-view/play-view.component';
 import { SkippedChunksPanelComponent } from '../audiobook/components/skipped-chunks-panel/skipped-chunks-panel.component';
 import { PostProcessingPanelComponent } from '../audiobook/components/post-processing-panel/post-processing-panel.component';
 import { ChapterRecoveryComponent } from '../audiobook/components/chapter-recovery/chapter-recovery.component';
-import { BilingualPlayerComponent } from '../language-learning/components/bilingual-player/bilingual-player.component';
-import { AudiobookPlayerComponent } from './components/audiobook-player/audiobook-player.component';
 import { VersionPickerDialogComponent, VersionPickerDialogData } from './components/version-picker-dialog/version-picker-dialog.component';
 import { DiffRequest } from './components/project-files/project-files.component';
 import { ProjectVersion } from './models/project-version.types';
@@ -51,12 +48,9 @@ import { SettingsService } from '../../core/services/settings.service';
     ContentEditorComponent,
     LLWizardComponent,
     MetadataEditorComponent,
-    PlayViewComponent,
     SkippedChunksPanelComponent,
     PostProcessingPanelComponent,
     ChapterRecoveryComponent,
-    BilingualPlayerComponent,
-    AudiobookPlayerComponent,
     VersionPickerDialogComponent,
     StudioBrowseComponent,
     StudioVersionsComponent,
@@ -233,16 +227,6 @@ import { SettingsService } from '../../core/services/settings.service';
                 }
               </div>
 
-              <!-- Listen tab: Play vs Stream preview -->
-              @if (mainTab() === 'listen') {
-                <div class="sub-tabs">
-                  <button class="sub-tab" [class.active]="listenMode() === 'play'" [class.disabled]="!hasMonoAudio() && !hasBilingualAudio()"
-                    (click)="hasMonoAudio() || hasBilingualAudio() ? listenMode.set('play') : null">Play</button>
-                  <button class="sub-tab" [class.active]="listenMode() === 'stream'" [class.disabled]="!currentEpubPath()"
-                    (click)="currentEpubPath() ? listenMode.set('stream') : null">Stream (preview)</button>
-                </div>
-              }
-
               <!-- Disabled tab message -->
               @if (disabledTabMessage()) {
                 <div class="disabled-tab-message">
@@ -357,44 +341,38 @@ import { SettingsService } from '../../core/services/settings.service';
                 }
               }
 
-              <!-- Listen Tab (Play audiobook / bilingual, or Stream preview) -->
+              <!-- Listen Tab: launcher for the dedicated player window -->
               @if (mainTab() === 'listen') {
-                @if (listenMode() === 'stream') {
-                  @if (currentEpubPath()) {
-                    <app-play-view
-                      [epubPath]="currentEpubPath()"
-                      [title]="selectedMetadata()?.title || ''"
-                      [author]="selectedMetadata()?.author || ''"
-                    />
-                  } @else {
-                    <div class="empty-state-panel">
-                      <div class="icon">🎧</div>
-                      <p>No EPUB available to stream.</p>
-                    </div>
-                  }
-                } @else {
-                  @if (bookAudioData() && !fullscreenPlayer()) {
-                    <app-audiobook-player [audiobook]="bookAudioData()" (requestFullscreen)="fullscreenPlayer.set(true)" />
-                  } @else if (bilingualAudioData()) {
-                    @if (bilingualPairKeys().length > 1) {
-                      <div class="bilingual-pair-picker">
-                        @for (key of bilingualPairKeys(); track key) {
-                          <button
-                            class="pair-btn"
-                            [class.active]="bilingualAudioData()?.sourceLang + '-' + bilingualAudioData()?.targetLang === key"
-                            (click)="selectBilingualPair(key)"
-                          >{{ bilingualPairLabel(key) }}</button>
-                        }
-                      </div>
-                    }
-                    <app-bilingual-player [audiobook]="bilingualAudioData()" />
-                  } @else {
-                    <div class="empty-state-panel">
-                      <div class="icon">🎧</div>
-                      <p>No audiobook yet. Run Process first, or use Stream to preview.</p>
-                    </div>
-                  }
-                }
+                <div class="listen-launcher">
+                  <button
+                    class="launch-card"
+                    [class.disabled]="!hasMonoAudio() && !hasBilingualAudio()"
+                    [disabled]="!hasMonoAudio() && !hasBilingualAudio()"
+                    (click)="openListen('play')"
+                  >
+                    <span class="launch-icon">🎧</span>
+                    <span class="launch-title">Play audiobook</span>
+                    <span class="launch-desc">
+                      @if (hasMonoAudio()) { Finished M4B }
+                      @else if (hasBilingualAudio()) { Bilingual: {{ bilingualPairKeys().length }} pair{{ bilingualPairKeys().length > 1 ? 's' : '' }} }
+                      @else { No audiobook yet — run Process first }
+                    </span>
+                  </button>
+                  <button
+                    class="launch-card"
+                    [class.disabled]="!currentEpubPath()"
+                    [disabled]="!currentEpubPath()"
+                    (click)="openListen('stream')"
+                  >
+                    <span class="launch-icon">🎙️</span>
+                    <span class="launch-title">Stream (preview)</span>
+                    <span class="launch-desc">
+                      @if (currentEpubPath()) { Live TTS — listen before producing }
+                      @else { No EPUB available }
+                    </span>
+                  </button>
+                </div>
+                <p class="listen-hint">The player opens in its own window, so you can keep working while you listen. Closing the window shuts the streaming engine down.</p>
               }
 
               <!-- Insights Tab (content analysis) -->
@@ -529,12 +507,6 @@ import { SettingsService } from '../../core/services/settings.service';
       />
     }
 
-    <!-- Fullscreen Player Overlay -->
-    @if (fullscreenPlayer()) {
-      <div class="fullscreen-overlay">
-        <app-audiobook-player [audiobook]="bookAudioData()" [fullscreen]="true" (closeFullscreen)="fullscreenPlayer.set(false)" />
-      </div>
-    }
   `,
   styles: [`
     :host {
@@ -1019,6 +991,49 @@ import { SettingsService } from '../../core/services/settings.service';
       }
     }
 
+    .listen-launcher {
+      display: flex;
+      gap: 16px;
+      padding: 24px 8px 8px;
+      max-width: 640px;
+    }
+
+    .launch-card {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 28px 16px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default, rgba(255,255,255,0.1));
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      color: var(--text-primary);
+
+      &:hover:not(.disabled) {
+        border-color: var(--accent-primary, #06b6d4);
+        background: color-mix(in srgb, var(--accent-primary, #06b6d4) 6%, var(--bg-elevated));
+      }
+
+      &.disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+    }
+
+    .launch-icon { font-size: 2rem; }
+    .launch-title { font-size: 0.95rem; font-weight: 600; }
+    .launch-desc { font-size: 0.76rem; color: var(--text-secondary); text-align: center; }
+
+    .listen-hint {
+      padding: 0 8px;
+      font-size: 0.76rem;
+      color: var(--text-secondary);
+      max-width: 640px;
+    }
+
     .bilingual-pair-picker {
       display: flex;
       gap: 8px;
@@ -1294,7 +1309,6 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   readonly showAddModal = signal<boolean>(false);
   readonly selectedItemId = signal<string | null>(null);
-  readonly fullscreenPlayer = signal<boolean>(false);
 
   // View mode: 'browse' = cover-grid library view, 'workspace' = list + workflow.
   readonly viewMode = signal<'browse' | 'workspace'>('workspace');
@@ -1360,7 +1374,6 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly llSubTab = signal<LanguageLearningSubTab>('process');
 
   // Four-tab book view modes.
-  readonly listenMode = signal<'play' | 'stream'>('play');              // Listen tab
   readonly versionsPanel = signal<'none' | 'enhance' | 'chapters' | 'skipped'>('none'); // inline panel in Versions tab
   readonly versionsComparing = signal(false); // a version Compare is open — go full-height, hide metadata editor
 
@@ -1453,107 +1466,16 @@ export class StudioComponent implements OnInit, OnDestroy {
   // Check if bilingual audiobook exists
   readonly hasBilingualAudio = computed(() => {
     const item = this.selectedItem();
-    return !!item?.bilingualAudioPath && !!item?.bilingualVttPath;
+    if (!item) return false;
+    if (item.bilingualOutputs && Object.keys(item.bilingualOutputs).length > 0) return true;
+    return !!item.bilingualAudioPath && !!item.bilingualVttPath;
   });
 
-  // Data for mono audiobook player
-  readonly bookAudioData = computed(() => {
-    const item = this.selectedItem();
-    if (!item || !item.audiobookPath || !item.vttPath) return null;
-    return {
-      id: item.id,
-      title: item.title,
-      author: item.author,
-      audiobookPath: item.audiobookPath,
-      vttPath: item.vttPath,
-      epubPath: item.epubPath,
-    };
-  });
-
-  // Bilingual language pair selection
-  readonly selectedBilingualKey = signal<string>('');
-
-  // Available bilingual language pairs for the picker
+  // Available bilingual language pairs (shown on the Listen launcher)
   readonly bilingualPairKeys = computed(() => {
     const item = this.selectedItem();
     if (!item?.bilingualOutputs) return [];
     return Object.keys(item.bilingualOutputs);
-  });
-
-  // Language code → display name
-  private readonly langDisplayNames: Record<string, string> = {
-    en: 'English', de: 'German', es: 'Spanish', fr: 'French', it: 'Italian',
-    pt: 'Portuguese', nl: 'Dutch', pl: 'Polish', ru: 'Russian',
-    ja: 'Japanese', zh: 'Chinese', ko: 'Korean', ar: 'Arabic',
-    hi: 'Hindi', sv: 'Swedish', da: 'Danish', no: 'Norwegian', fi: 'Finnish',
-  };
-
-  bilingualPairLabel(key: string): string {
-    const [src, tgt] = key.split('-');
-    const srcName = this.langDisplayNames[src] || src.toUpperCase();
-    const tgtName = this.langDisplayNames[tgt] || tgt.toUpperCase();
-    return `${srcName} / ${tgtName}`;
-  }
-
-  selectBilingualPair(key: string): void {
-    this.selectedBilingualKey.set(key);
-  }
-
-  // Data for bilingual player
-  readonly bilingualAudioData = computed(() => {
-    const item = this.selectedItem();
-    if (!item) return null;
-
-    // Use bilingualOutputs map if available (supports multiple pairs)
-    if (item.bilingualOutputs) {
-      const keys = Object.keys(item.bilingualOutputs);
-      if (keys.length === 0) return null;
-
-      // Use selected key, or default to first available
-      let key = this.selectedBilingualKey();
-      if (!key || !item.bilingualOutputs[key]) {
-        key = keys[0];
-      }
-      const output = item.bilingualOutputs[key];
-      if (!output.audioPath || !output.vttPath) return null;
-
-      return {
-        id: item.id,
-        title: item.title,
-        sourceLang: output.sourceLang,
-        targetLang: output.targetLang,
-        audiobookPath: output.audioPath,
-        vttPath: output.vttPath,
-        sentencePairsPath: output.sentencePairsPath
-      };
-    }
-
-    // Legacy fallback: single bilingual pair
-    if (item.bilingualAudioPath && item.bilingualVttPath) {
-      return {
-        id: item.id,
-        title: item.title,
-        sourceLang: item.sourceLang,
-        targetLang: item.targetLang,
-        audiobookPath: item.bilingualAudioPath,
-        vttPath: item.bilingualVttPath,
-        sentencePairsPath: item.bilingualSentencePairsPath
-      };
-    }
-
-    // Fallback for articles with regular audio
-    if (item.type === 'article' && item.audiobookPath && item.vttPath) {
-      return {
-        id: item.id,
-        title: item.title,
-        sourceLang: item.sourceLang,
-        targetLang: item.targetLang,
-        audiobookPath: item.audiobookPath,
-        vttPath: item.vttPath
-      };
-    }
-
-    return null;
   });
 
   // Determine if current tab should use full height (no padding)
@@ -1561,7 +1483,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     const main = this.mainTab();
     if (main === 'content') return true;       // article editor
     if (main === 'audiobook') return true;     // Process wizard
-    if (main === 'listen') return true;        // player / stream
     if (main === 'files') return this.versionsPanel() !== 'none' || this.versionsComparing(); // inline panel or compare
     return false;
   });
@@ -1632,11 +1553,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.mainTab.set(tab);
     this.disabledTabMessage.set(null);
     this.diffPaths.set(null);
-    // No audiobook yet → Play is impossible, fall back to the Stream preview.
-    // (An explicit Stream choice is preserved; Play re-selects itself via goToPlay.)
-    if (tab === 'listen' && this.listenMode() === 'play' && !this.hasMonoAudio() && !this.hasBilingualAudio()) {
-      this.listenMode.set('stream');
-    }
   }
 
   setAudiobookSubTab(tab: AudiobookSubTab): void {
@@ -1652,14 +1568,19 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.disabledTabMessage.set(null);
   }
 
+  /** Open the dedicated player window for the selected book */
+  openListen(mode: 'play' | 'stream'): void {
+    const item = this.selectedItem();
+    if (!item?.bfpPath) return;
+    void this.electronService.openListenWindow(item.bfpPath, mode);
+  }
+
   goToStream(): void {
-    this.listenMode.set('stream');
-    this.setMainTab('listen');
+    this.openListen('stream');
   }
 
   goToPlay(): void {
-    this.listenMode.set('play');
-    this.setMainTab('listen');
+    this.openListen('play');
   }
 
   handleSubTabClick(
@@ -1691,7 +1612,6 @@ export class StudioComponent implements OnInit, OnDestroy {
   selectItem(item: StudioItem): void {
     this.selectedItemId.set(item.id);
     this.mainTab.set('files');
-    this.listenMode.set('play');
     this.versionsPanel.set('none');
     this.versionsComparing.set(false);
     this.finalizingContent.set('idle');
@@ -1700,8 +1620,9 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   playItem(item: StudioItem): void {
     this.selectedItemId.set(item.id);
-    this.listenMode.set('play');
-    this.setMainTab('listen');
+    if (item.bfpPath) {
+      void this.electronService.openListenWindow(item.bfpPath, 'play');
+    }
   }
 
   // Open a book from the Browse grid into the Studio workspace.

@@ -1382,6 +1382,9 @@ export interface ElectronAPI {
     onAudioGenerated: (callback: (event: PlayAudioGeneratedEvent) => void) => () => void;
     onStatus: (callback: (status: { message: string }) => void) => () => void;
     onSessionEnded: (callback: (data: { code: number }) => void) => () => void;
+    onSessionStarted: (callback: () => void) => () => void;
+    openListenWindow: (projectPath: string, mode?: 'play' | 'stream') => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
+    onSetListenMode: (callback: (mode: 'play' | 'stream') => void) => () => void;
   };
   parallelTts: {
     detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: HardwareRecommendation; error?: string }>;
@@ -2713,6 +2716,22 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('play:session-ended', listener);
       return () => {
         ipcRenderer.removeListener('play:session-ended', listener);
+      };
+    },
+    onSessionStarted: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('play:session-started', listener);
+      return () => {
+        ipcRenderer.removeListener('play:session-started', listener);
+      };
+    },
+    openListenWindow: (projectPath: string, mode?: 'play' | 'stream') =>
+      ipcRenderer.invoke('listen:open-window', projectPath, mode),
+    onSetListenMode: (callback: (mode: 'play' | 'stream') => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, mode: 'play' | 'stream') => callback(mode);
+      ipcRenderer.on('listen:set-mode', listener);
+      return () => {
+        ipcRenderer.removeListener('listen:set-mode', listener);
       };
     },
   },

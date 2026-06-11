@@ -32,6 +32,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/studio/components/editor-window/editor-window.component').then(m => m.EditorWindowComponent)
   },
   {
+    // Listen window (Play / Stream player) - opens in separate Electron window
+    path: 'listen',
+    loadComponent: () => import('./features/studio/components/listen-window/listen-window.component').then(m => m.ListenWindowComponent)
+  },
+  {
     // Sentence alignment - opens in separate Electron window
     path: 'alignment',
     loadComponent: () => import('./features/language-learning/components/sentence-alignment/sentence-alignment.component').then(m => m.SentenceAlignmentComponent)

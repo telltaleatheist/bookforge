@@ -2276,6 +2276,27 @@ export class ElectronService {
     return () => {};
   }
 
+  onPlaySessionStarted(callback: () => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.play.onSessionStarted(callback);
+    }
+    return () => {};
+  }
+
+  async openListenWindow(projectPath: string, mode?: 'play' | 'stream'): Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.play.openListenWindow(projectPath, mode);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  onSetListenMode(callback: (mode: 'play' | 'stream') => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.play.onSetListenMode(callback);
+    }
+    return () => {};
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Bookshelf Server
   // ─────────────────────────────────────────────────────────────────────────────
