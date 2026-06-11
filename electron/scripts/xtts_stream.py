@@ -11,7 +11,7 @@ Protocol (one JSON object per line):
            repetition_penalty?, stream?: bool}
           {action: 'cancel'}   # only honored between stream chunks
           {action: 'list_voices' | 'stop' | 'quit'}
-  stdout: {type: 'ready', voices}
+  stdout: {type: 'ready', voices, device}
           {type: 'status' | 'loaded' | 'voices' | 'error' | 'stopped', ...}
           {type: 'audio', format: 'pcm16', data, duration, sampleRate}        # batch
           {type: 'chunk', seq, format: 'pcm16', data, duration, sampleRate}   # stream
@@ -19,7 +19,6 @@ Protocol (one JSON object per line):
 """
 
 import json
-import select
 import sys
 import os
 import base64
@@ -131,6 +130,52 @@ def audio_to_pcm16_base64(audio_array) -> str:
     return base64.b64encode(audio_int16.tobytes()).decode('utf-8')
 
 
+# All stdin reads go through _STDIN, an UNBUFFERED binary stream, so the
+# "is a command pending?" poll below is exact: with a buffered reader, lines
+# can sit in Python's buffer where neither select() nor PeekNamedPipe can see
+# them, and a pending cancel would be missed until the generation finished.
+#
+# Do NOT move stdin reading to a background thread. On Windows, a pending
+# blocking ReadFile on the stdin pipe deadlocks any later DLL load on another
+# thread (CRT initialization calls GetFileType on the std handles, which
+# blocks behind the pending pipe read) - this froze the lazy TTS import in
+# load_model for good. Polling between stream chunks needs no concurrent
+# reads: the main thread is the only reader, and it only blocks on stdin
+# while idle between requests.
+_STDIN = open(sys.stdin.fileno(), 'rb', buffering=0, closefd=False)
+
+if sys.platform == 'win32':
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    def _stdin_has_data() -> bool:
+        """True if at least one byte is readable. select() is POSIX-only
+        (raises OSError on Windows pipes), so peek at the pipe directly."""
+        handle = msvcrt.get_osfhandle(_STDIN.fileno())
+        available = wintypes.DWORD()
+        ok = ctypes.windll.kernel32.PeekNamedPipe(
+            wintypes.HANDLE(handle), None, 0, None, ctypes.byref(available), None
+        )
+        if not ok:
+            return True  # pipe broken - let the read hit EOF and report quit
+        return available.value > 0
+else:
+    import select
+
+    def _stdin_has_data() -> bool:
+        readable, _, _ = select.select([_STDIN], [], [], 0)
+        return bool(readable)
+
+
+def _read_command_line() -> str | None:
+    """Blocking read of the next request line. None means stdin closed."""
+    line = _STDIN.readline()
+    if not line:
+        return None
+    return line.decode('utf-8', errors='replace')
+
+
 def read_pending_action() -> str | None:
     """Non-blocking peek at stdin between stream chunks.
 
@@ -138,16 +183,15 @@ def read_pending_action() -> str | None:
     consuming it. The pool only ever sends 'cancel' or 'quit' while a
     generation is in flight, so anything else is ignored.
     """
+    if not _stdin_has_data():
+        return None
+    line = _read_command_line()
+    if line is None:
+        return 'quit'  # stdin closed - parent died
+    line = line.strip()
+    if not line:
+        return None
     try:
-        readable, _, _ = select.select([sys.stdin], [], [], 0)
-        if not readable:
-            return None
-        line = sys.stdin.readline()
-        if not line:
-            return 'quit'  # stdin closed - parent died
-        line = line.strip()
-        if not line:
-            return None
         request = json.loads(line)
         return request.get('action')
     except (json.JSONDecodeError, ValueError):
@@ -160,8 +204,9 @@ class XTTSStreamServer:
         self.current_voice = None
         self.gpt_cond_latent = None
         self.speaker_embedding = None
-        # Use CPU on Mac - MPS causes memory pressure without speed benefits for XTTS
-        # CUDA still preferred on Linux/Windows where it provides real speedup
+        # CUDA when available (Windows/Linux NVIDIA boxes). On Mac this lands
+        # on CPU deliberately - MPS causes memory pressure without any XTTS
+        # speedup, so it is never selected.
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.speakers_dict = None
         self.generations_since_cleanup = 0
@@ -394,11 +439,13 @@ class XTTSStreamServer:
     def run(self):
         """Main loop: read requests from stdin, process, send responses to stdout"""
         available_voices = get_available_voices()
-        send_response('ready', {'voices': available_voices})
+        # device tells the worker pool which topology to use (1 worker on
+        # CUDA, multiple on CPU)
+        send_response('ready', {'voices': available_voices, 'device': self.device})
 
         while True:
-            line = sys.stdin.readline()
-            if not line:
+            line = _read_command_line()
+            if line is None:
                 break  # stdin closed
             try:
                 line = line.strip()

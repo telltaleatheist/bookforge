@@ -5,12 +5,12 @@
  * Sentences are distributed round-robin across workers for parallel generation.
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execSync, ChildProcess } from 'child_process';
 import { BrowserWindow, app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as readline from 'readline';
-import { getDefaultE2aPath, getCondaRunArgs, getCondaPath } from './e2a-paths';
+import { getDefaultE2aPath, getCondaRunArgs, getCondaPath, buildCondaSpawnEnv } from './e2a-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -33,6 +33,7 @@ export interface AudioChunk {
 interface XTTSResponse {
   type: 'ready' | 'status' | 'loaded' | 'audio' | 'chunk' | 'done' | 'error' | 'stopped';
   voices?: string[];
+  device?: string;
   voice?: string;
   message?: string;
   data?: string;
@@ -81,12 +82,30 @@ interface Worker {
 
 const E2A_PATH = getDefaultE2aPath();
 
-// XTTS GPT decode is sequential and gains nothing past ~4 threads, while
-// pinned workers barely contend with each other (M1 Ultra bench, June 2026:
-// 4 workers x 4 threads -> RTF ~1.9 each, ~2.1x realtime aggregate; the old
-// 3 unpinned workers oversubscribed the cores to ~0.4x realtime).
-const NUM_WORKERS = 4;
+// Per-device topology:
+// - CPU: XTTS GPT decode is sequential and gains nothing past ~4 threads,
+//   while pinned workers barely contend with each other (M1 Ultra bench,
+//   June 2026: 4 workers x 4 threads -> RTF ~1.9 each, ~2.1x realtime
+//   aggregate; the old 3 unpinned workers oversubscribed the cores to ~0.4x
+//   realtime).
+// - CUDA: decode is autoregressive and serializes on the one GPU, so extra
+//   workers just fight over it and cost ~4 GB VRAM each. One worker
+//   saturates the device.
+const CPU_NUM_WORKERS = 4;
+const CUDA_NUM_WORKERS = 1;
 const THREADS_PER_WORKER = 4;
+
+// Device the Python workers run XTTS on, reported in the first worker's
+// 'ready' message (torch.cuda.is_available() in xtts_stream.py). macOS never
+// has CUDA and deliberately runs XTTS on CPU (MPS gives no speedup), so only
+// Windows/Linux need the worker-0 probe. Cached for the rest of the app run
+// so later sessions spawn the whole pool in one wave.
+let detectedDevice: 'cuda' | 'cpu' | null =
+  process.platform === 'darwin' ? 'cpu' : null;
+
+function targetWorkerCount(): number {
+  return detectedDevice === 'cuda' ? CUDA_NUM_WORKERS : CPU_NUM_WORKERS;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // State
@@ -217,36 +236,49 @@ async function doStartSession(): Promise<{ success: boolean; voices?: string[]; 
   startingSession = true;
   broadcastServiceState();
 
-  console.log(`[XTTS Pool] Starting ${NUM_WORKERS} workers...`);
-
-  const startPromises = [];
-  for (let i = 0; i < NUM_WORKERS; i++) {
-    startPromises.push(startWorker(i));
-  }
-
   try {
-    const results = await Promise.all(startPromises);
-    const allSuccess = results.every(r => r.success);
-
-    if (allSuccess) {
-      console.log('[XTTS Pool] All workers started successfully');
-      startIdleWatch();
-      startingSession = false;
-      broadcast('play:session-started');
-      broadcastServiceState();
-      return { success: true, voices: getAvailableVoices() };
-    } else {
-      const errors = results.filter(r => !r.success).map(r => r.error);
-      startingSession = false;
-      await endSession();
-      return { success: false, error: errors.join(', ') };
+    if (detectedDevice === null) {
+      // First start on Windows/Linux: bring up worker 0 alone to learn the
+      // device from its 'ready' message, then top the pool up to the
+      // device-appropriate size.
+      console.log('[XTTS Pool] Starting worker 0 (device probe)...');
+      const first = await startWorker(0);
+      if (!first.success) {
+        return await failStartSession(first.error || 'Worker 0 failed to start');
+      }
+      if (detectedDevice === null) {
+        return await failStartSession('Worker 0 did not report its device');
+      }
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
+
+    const target = targetWorkerCount();
+    console.log(`[XTTS Pool] Starting ${target} worker(s) on ${detectedDevice}...`);
+
+    const startPromises = [];
+    for (let i = workers.length; i < target; i++) {
+      startPromises.push(startWorker(i));
+    }
+    const results = await Promise.all(startPromises);
+    const errors = results.filter(r => !r.success).map(r => r.error);
+    if (errors.length > 0) {
+      return await failStartSession(errors.join(', '));
+    }
+
+    console.log('[XTTS Pool] All workers started successfully');
+    startIdleWatch();
     startingSession = false;
-    await endSession();
-    return { success: false, error: message };
+    broadcast('play:session-started');
+    broadcastServiceState();
+    return { success: true, voices: getAvailableVoices() };
+  } catch (err) {
+    return await failStartSession(err instanceof Error ? err.message : 'Unknown error');
   }
+}
+
+async function failStartSession(error: string): Promise<{ success: boolean; error: string }> {
+  startingSession = false;
+  await endSession();
+  return { success: false, error };
 }
 
 /**
@@ -273,21 +305,27 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
       condaArgs[condaArgs.length - 1] = 'python';
       condaArgs.push('-u', scriptPath);
 
-      const process = spawn(getCondaPath(), condaArgs, {
+      // shell: false like every other native conda spawn (parallel-tts-bridge):
+      // conda is an executable on all platforms, and skipping the shell avoids
+      // cmd.exe quoting rules on Windows. buildCondaSpawnEnv keeps System32 on
+      // PATH, which conda's env activation needs (chcp) and can otherwise drop.
+      const child = spawn(getCondaPath(), condaArgs, {
         cwd: E2A_PATH,
-        env: {
-          ...global.process.env,
+        env: buildCondaSpawnEnv({
           PYTHONUNBUFFERED: '1',
+          PYTHONIOENCODING: 'utf-8',
+          EBOOK2AUDIOBOOK_PATH: E2A_PATH,
           XTTS_THREADS: String(THREADS_PER_WORKER),
           OMP_NUM_THREADS: String(THREADS_PER_WORKER),
           MKL_NUM_THREADS: String(THREADS_PER_WORKER)
-        },
-        shell: true,
+        }),
+        shell: false,
+        windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe']
       });
 
       const worker: Worker = {
-        process,
+        process: child,
         isReady: false,
         currentVoice: null,
         pendingRequest: null,
@@ -298,9 +336,9 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
 
       // Use readline for line-based JSON parsing
       // Python sends one JSON object per line (using print() with newline)
-      if (process.stdout) {
+      if (child.stdout) {
         const rl = readline.createInterface({
-          input: process.stdout,
+          input: child.stdout,
           crlfDelay: Infinity
         });
 
@@ -321,6 +359,14 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
 
             if (response.type === 'ready') {
               worker.isReady = true;
+              // The worker reports which device torch picked - this decides
+              // the pool topology (1 worker on CUDA, CPU_NUM_WORKERS on CPU)
+              if (response.device === 'cuda' || response.device === 'cpu') {
+                if (detectedDevice !== null && detectedDevice !== response.device) {
+                  console.warn(`[XTTS Pool ${id}] Device mismatch: expected ${detectedDevice}, got ${response.device}`);
+                }
+                detectedDevice = response.device;
+              }
               // Store discovered voices from the first worker
               if (response.voices && response.voices.length > 0 && discoveredVoices.length === 0) {
                 discoveredVoices = response.voices;
@@ -336,14 +382,14 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
         });
       }
 
-      process.stderr?.on('data', (data: Buffer) => {
+      child.stderr?.on('data', (data: Buffer) => {
         const msg = data.toString().trim();
         if (msg) {
           console.log(`[XTTS Pool ${id} stderr]`, msg);
         }
       });
 
-      process.on('close', (code) => {
+      child.on('close', (code) => {
         console.log(`[XTTS Pool ${id}] Process exited with code:`, code);
         workers = workers.filter(w => w.id !== id);
 
@@ -359,7 +405,7 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
         }
       });
 
-      process.on('error', (error) => {
+      child.on('error', (error) => {
         console.error(`[XTTS Pool ${id}] Process error:`, error);
         resolve({ success: false, error: error.message });
       });
@@ -659,9 +705,7 @@ export async function endSession(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 500));
 
   for (const worker of workers) {
-    if (worker.process) {
-      worker.process.kill('SIGTERM');
-    }
+    killWorkerTree(worker);
   }
 
   workers = [];
@@ -707,6 +751,25 @@ export function getWorkerCount(): number {
 // ─────────────────────────────────────────────────────────────────────────────
 // Private helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Kill a worker and its children. On Windows the spawn chain is
+ * conda.exe -> python.exe; killing only conda.exe orphans the Python process
+ * (and its GPU memory), so use taskkill /T like parallel-tts-bridge does.
+ */
+function killWorkerTree(worker: Worker): void {
+  const child = worker.process;
+  if (!child || child.killed) return;
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      execSync(`taskkill /F /T /PID ${child.pid}`, { stdio: 'ignore', timeout: 5000 });
+    } catch {
+      // Process tree already exited (normal after a clean 'quit')
+    }
+  } else {
+    child.kill('SIGTERM');
+  }
+}
 
 function sendToWorker(worker: Worker, command: Record<string, unknown>): void {
   if (worker.process?.stdin) {
