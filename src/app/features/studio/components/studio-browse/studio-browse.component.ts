@@ -1,5 +1,6 @@
-import { Component, input, output, computed, signal } from '@angular/core';
+import { Component, input, output, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { CdkDragDrop, CdkDrag, CdkDropList, moveItemInArray } from '@angular/cdk/drag-drop';
 import { StudioItem } from '../../models/studio.types';
 
 /**
@@ -12,7 +13,7 @@ import { StudioItem } from '../../models/studio.types';
 @Component({
   selector: 'app-studio-browse',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, CdkDrag, CdkDropList],
   template: `
     <div class="browse">
       @if (items().length === 0) {
@@ -21,10 +22,12 @@ import { StudioItem } from '../../models/studio.types';
           <div>No books yet. Use + to import.</div>
         </div>
       } @else {
-        <div class="grid">
-          @for (item of items(); track item.id) {
+        <div class="grid" cdkDropList cdkDropListOrientation="mixed" (cdkDropListDropped)="onDrop($event)">
+          @for (item of gridItems(); track item.id) {
             <button
               class="card"
+              cdkDrag
+              [cdkDragData]="item"
               [class.selected]="item.id === selectedId()"
               (click)="open.emit(item)"
               (contextmenu)="onContextMenu($event, item)"
@@ -136,6 +139,18 @@ import { StudioItem } from '../../models/studio.types';
       padding: 8px 12px; border-radius: 5px; font-size: 0.82rem; cursor: pointer;
     }
     .ctx-item:hover { background: var(--accent-primary, #06b6d4); color: #fff; }
+
+    /* CDK drag-drop */
+    .card.cdk-drag-preview {
+      box-shadow: 0 8px 28px rgba(0,0,0,0.4);
+      background: var(--bg-elevated);
+      border-radius: 8px;
+    }
+    .card.cdk-drag-placeholder { opacity: 0.3; }
+    .card.cdk-drag-animating { transition: transform 200ms cubic-bezier(0, 0, 0.2, 1); }
+    .grid.cdk-drop-list-dragging .card:not(.cdk-drag-placeholder) {
+      transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+    }
   `]
 })
 export class StudioBrowseComponent {
@@ -144,8 +159,25 @@ export class StudioBrowseComponent {
   readonly open = output<StudioItem>();
   readonly editRequested = output<StudioItem>();
   readonly exportRequested = output<StudioItem>();
+  /** New combined order (item ids) after a drag. */
+  readonly reorder = output<string[]>();
 
   readonly ctxMenu = signal<{ x: number; y: number; item: StudioItem } | null>(null);
+
+  // Mutable copy for CDK drag/drop, kept in sync with the items input.
+  readonly gridItems = signal<StudioItem[]>([]);
+
+  ngOnChanges(): void {
+    this.gridItems.set([...this.items()]);
+  }
+
+  onDrop(event: CdkDragDrop<StudioItem[]>): void {
+    if (event.previousIndex === event.currentIndex) return;
+    const next = [...this.gridItems()];
+    moveItemInArray(next, event.previousIndex, event.currentIndex);
+    this.gridItems.set(next);
+    this.reorder.emit(next.map(i => i.id));
+  }
 
   onContextMenu(event: MouseEvent, item: StudioItem): void {
     event.preventDefault();
