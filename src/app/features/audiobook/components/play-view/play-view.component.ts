@@ -1600,19 +1600,29 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     void this.electronService.streamStop();
   }
 
+  /**
+   * Keep the sentence being read centered in the text pane, following it as
+   * playback advances. Scrolls only the pane — never an ancestor: the old
+   * el.scrollIntoView() walked every scrollable ancestor, which yanked the
+   * whole view to the top whenever a clicked sentence sat partly off-screen.
+   */
   private scrollToCurrent() {
     if (!this.textPane) return;
 
     const pane = this.textPane.nativeElement;
-    const el = pane.querySelector(`[data-index="${this.currentGlobalIndex()}"]`) as HTMLElement;
+    const el = pane.querySelector(`[data-index="${this.currentGlobalIndex()}"]`) as HTMLElement | null;
+    if (!el) return;
 
-    if (el) {
-      const paneRect = pane.getBoundingClientRect();
-      const elRect = el.getBoundingClientRect();
+    // Element's top within the pane's scroll content, then back off by half the
+    // leftover height so it lands centered.
+    const elTopInPane =
+      el.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop;
+    const target = elTopInPane - (pane.clientHeight - el.clientHeight) / 2;
+    const maxScroll = pane.scrollHeight - pane.clientHeight;
 
-      if (elRect.top < paneRect.top || elRect.bottom > paneRect.bottom) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }
+    pane.scrollTo({
+      top: Math.max(0, Math.min(target, maxScroll)),
+      behavior: 'smooth'
+    });
   }
 }
