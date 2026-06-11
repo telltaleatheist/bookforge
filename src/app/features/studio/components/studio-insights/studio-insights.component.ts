@@ -4,6 +4,8 @@ import { ElectronService } from '../../../../core/services/electron.service';
 import { SettingsService } from '../../../../core/services/settings.service';
 import { QueueService } from '../../../queue/services/queue.service';
 import { AIProvider } from '../../../../core/models/ai-config.types';
+import { ProjectAnalytics } from '../../../../core/models/analytics.types';
+import { AnalyticsPanelComponent } from '../../../audiobook/components/analytics-panel/analytics-panel.component';
 import { StudioItem } from '../../models/studio.types';
 
 interface VersionRow {
@@ -13,6 +15,7 @@ interface VersionRow {
 }
 
 interface AnalysisCategory { id: string; name: string; description: string; color: string; enabled: boolean; }
+interface SourceStage { id: string; label: string; completed: boolean; path: string; }
 
 /**
  * StudioInsightsComponent - the "Insights" surface of the book view.
@@ -21,11 +24,15 @@ interface AnalysisCategory { id: string; name: string; description: string; colo
  * of inside the processing pipeline. Pick a version + AI provider + categories,
  * run the existing book-analysis job, and view the resulting report (the PDF
  * editor highlights the flags when opened on a project with a report).
+ * Also hosts the job performance history (TTS/cleanup analytics).
+ *
+ * Controls intentionally mirror the pipeline wizard's (stage buttons,
+ * provider buttons, worker buttons) so the two surfaces feel like one app.
  */
 @Component({
   selector: 'app-studio-insights',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, AnalyticsPanelComponent],
   template: `
     <div class="insights">
       <!-- Existing report -->
@@ -37,7 +44,7 @@ interface AnalysisCategory { id: string; name: string; description: string; colo
               <div class="report-title">Analysis report</div>
               <div class="report-desc">{{ rep.description }}{{ rep.modifiedAt ? ' · ' + fmtDate(rep.modifiedAt) : '' }}</div>
             </div>
-            <button class="act primary" (click)="viewReport.emit()">View in editor</button>
+            <button class="run-btn small" (click)="viewReport.emit()">View in editor</button>
           </div>
         </div>
       }
@@ -45,29 +52,69 @@ interface AnalysisCategory { id: string; name: string; description: string; colo
       <h4 class="section-title">{{ report() ? 'Run again' : 'Run analysis' }}</h4>
       <p class="section-desc">Analyze a version for rhetorical manipulation, propaganda techniques, and problematic patterns.</p>
 
-      <!-- Source version -->
+      <!-- Source version (same stage buttons as the pipeline) -->
       <div class="config-section">
         <label class="field-label">Version to analyze</label>
-        <select class="select-input" [value]="sourcePath()" (change)="sourcePath.set($any($event.target).value)">
-          <option value="latest">Latest ({{ latestLabel() }})</option>
-          @for (v of epubVersions(); track v.id) {
-            <option [value]="v.path">{{ v.label }}</option>
+        <div class="source-stages">
+          @for (stage of sourceStages(); track stage.id) {
+            <button
+              class="stage-btn"
+              [class.selected]="isStageSelected(stage)"
+              [class.completed]="stage.completed"
+              [disabled]="!stage.completed"
+              (click)="selectStage(stage)"
+            >
+              {{ stage.label }}
+              @if (stage.completed) {
+                <span class="stage-check">&#10003;</span>
+              }
+            </button>
           }
-        </select>
+        </div>
+        <span class="hint">"Latest" picks the most recently modified version automatically.</span>
       </div>
 
       <!-- Provider -->
       <div class="config-section">
         <label class="field-label">AI Provider</label>
-        <div class="provider-row">
-          <button class="pill" [class.selected]="provider() === 'ollama'" (click)="selectProvider('ollama')">
-            Ollama {{ provider() === 'ollama' ? (ollamaConnected() ? '· connected' : '· not running') : '' }}
+        <div class="provider-buttons">
+          <button
+            class="provider-btn"
+            [class.selected]="provider() === 'ollama'"
+            [class.connected]="provider() === 'ollama' && ollamaConnected()"
+            (click)="selectProvider('ollama')"
+          >
+            <span class="provider-icon">🦙</span>
+            <span class="provider-name">Ollama</span>
+            @if (provider() === 'ollama') {
+              <span class="provider-status" [class.connected]="ollamaConnected()">
+                {{ ollamaConnected() ? 'Connected' : 'Not connected' }}
+              </span>
+            }
           </button>
-          <button class="pill" [class.selected]="provider() === 'claude'" [disabled]="!hasClaudeKey()" (click)="selectProvider('claude')">
-            Claude {{ hasClaudeKey() ? '' : '· no key' }}
+          <button
+            class="provider-btn"
+            [class.selected]="provider() === 'claude'"
+            [class.disabled]="!hasClaudeKey()"
+            (click)="selectProvider('claude')"
+          >
+            <span class="provider-icon">🧠</span>
+            <span class="provider-name">Claude</span>
+            @if (!hasClaudeKey()) {
+              <span class="provider-status">No API key</span>
+            }
           </button>
-          <button class="pill" [class.selected]="provider() === 'openai'" [disabled]="!hasOpenAIKey()" (click)="selectProvider('openai')">
-            OpenAI {{ hasOpenAIKey() ? '' : '· no key' }}
+          <button
+            class="provider-btn"
+            [class.selected]="provider() === 'openai'"
+            [class.disabled]="!hasOpenAIKey()"
+            (click)="selectProvider('openai')"
+          >
+            <span class="provider-icon">🤖</span>
+            <span class="provider-name">OpenAI</span>
+            @if (!hasOpenAIKey()) {
+              <span class="provider-status">No API key</span>
+            }
           </button>
         </div>
       </div>
@@ -102,17 +149,18 @@ interface AnalysisCategory { id: string; name: string; description: string; colo
         </div>
       </div>
 
-      <!-- Test mode -->
+      <!-- Test mode (same worker buttons as the pipeline) -->
       <div class="config-section">
-        <label class="field-label">Scope</label>
-        <div class="provider-row">
-          <button class="pill" [class.selected]="!testMode()" (click)="testMode.set(false)">Full book</button>
+        <label class="field-label">Test Mode</label>
+        <div class="worker-options">
+          <button class="worker-btn" [class.selected]="!testMode()" (click)="testMode.set(false)">Full</button>
           @for (count of [5, 10, 20]; track count) {
-            <button class="pill" [class.selected]="testMode() && testChunks() === count" (click)="testMode.set(true); testChunks.set(count)">
-              First {{ count }} chunks
+            <button class="worker-btn" [class.selected]="testMode() && testChunks() === count" (click)="testMode.set(true); testChunks.set(count)">
+              {{ count }}
             </button>
           }
         </div>
+        <span class="hint">Test mode analyzes only the first N chunks</span>
       </div>
 
       <button
@@ -125,6 +173,13 @@ interface AnalysisCategory { id: string; name: string; description: string; colo
         @else if (queuedOk()) { ✓ Added to queue }
         @else { Run analysis }
       </button>
+
+      <!-- Job performance history (TTS / cleanup analytics) -->
+      @if (jobAnalytics(); as analytics) {
+        <h4 class="section-title perf">Performance history</h4>
+        <p class="section-desc">Timing and throughput of past cleanup and TTS jobs for this book.</p>
+        <app-analytics-panel [analytics]="analytics" />
+      }
     </div>
   `,
   styles: [`
@@ -140,42 +195,98 @@ interface AnalysisCategory { id: string; name: string; description: string; colo
     .report-title { font-weight: 600; font-size: 0.9rem; color: var(--text-primary); }
     .report-desc { font-size: 0.76rem; color: var(--text-secondary); margin-top: 2px; }
     .section-title { margin: 0 0 4px; font-size: 0.95rem; color: var(--text-primary); }
+    .section-title.perf { margin-top: 32px; }
     .section-desc { margin: 0 0 16px; font-size: 0.8rem; color: var(--text-secondary); }
     .config-section { margin-bottom: 16px; }
     .field-label {
       display: block; font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
       letter-spacing: 0.04em; color: var(--text-secondary); margin-bottom: 6px;
     }
+    .hint { display: block; margin-top: 6px; font-size: 0.74rem; color: var(--text-secondary); }
+
+    /* Stage buttons — same look as the pipeline wizard */
+    .source-stages { display: flex; gap: 6px; flex-wrap: wrap; }
+    .stage-btn {
+      padding: 6px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      font-size: 13px;
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex; align-items: center; gap: 4px;
+    }
+    .stage-btn .stage-check { color: #22c55e; font-size: 11px; }
+    .stage-btn:hover:not(:disabled) { background: var(--bg-hover); }
+    .stage-btn.selected {
+      background: rgba(6, 182, 212, 0.15);
+      border-color: #06b6d4;
+      color: #06b6d4;
+    }
+    .stage-btn.selected .stage-check { color: #06b6d4; }
+    .stage-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    /* Provider buttons — same look as the pipeline wizard */
+    .provider-buttons { display: flex; gap: 8px; max-width: 480px; }
+    .provider-btn {
+      flex: 1;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 12px 8px;
+      background: var(--bg-elevated);
+      border: 2px solid var(--border-subtle);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      color: var(--text-primary);
+    }
+    .provider-btn .provider-icon { font-size: 1.5rem; }
+    .provider-btn .provider-name { font-size: 12px; font-weight: 500; color: var(--text-primary); }
+    .provider-btn .provider-status { font-size: 10px; color: var(--text-muted); }
+    .provider-btn .provider-status.connected { color: #22c55e; }
+    .provider-btn:hover:not(.disabled) { background: var(--bg-hover); border-color: var(--border-default); }
+    .provider-btn.selected { background: rgba(6, 182, 212, 0.15); border-color: #06b6d4; }
+    .provider-btn.selected .provider-name { color: #06b6d4; }
+    .provider-btn.disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Worker buttons — same look as the pipeline wizard */
+    .worker-options { display: flex; gap: 8px; }
+    .worker-btn {
+      padding: 8px 16px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      font-size: 13px;
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .worker-btn:hover { background: var(--bg-hover); }
+    .worker-btn.selected { background: rgba(6, 182, 212, 0.15); border-color: #06b6d4; color: #06b6d4; }
+
     .select-input {
       width: 100%; max-width: 420px; padding: 8px 10px;
       background: var(--bg-elevated); color: var(--text-primary);
       border: 1px solid var(--border-default, rgba(255,255,255,0.12)); border-radius: 6px;
       font-size: 0.84rem;
     }
-    .provider-row { display: flex; gap: 8px; flex-wrap: wrap; }
-    .pill {
-      padding: 7px 14px; border-radius: 6px; font-size: 0.8rem; cursor: pointer;
-      background: var(--bg-elevated); color: var(--text-primary);
-      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
-    }
-    .pill.selected { background: var(--accent-primary, #06b6d4); border-color: transparent; color: #fff; }
-    .pill:disabled { opacity: 0.45; cursor: default; }
     .category-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
     .category {
       display: flex; align-items: center; gap: 8px; padding: 7px 10px;
       background: var(--bg-elevated); border: 1px solid var(--border-default, rgba(255,255,255,0.1));
       border-radius: 6px; cursor: pointer; color: var(--text-secondary); opacity: 0.55;
       font-size: 0.78rem; text-align: left;
+      transition: all 0.15s ease;
     }
-    .category.enabled { opacity: 1; color: var(--text-primary); border-color: rgba(255,255,255,0.25); }
+    .category.enabled { opacity: 1; color: var(--text-primary); border-color: #06b6d4; background: rgba(6, 182, 212, 0.08); }
     .cat-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
     .cat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .hint { font-size: 0.78rem; color: var(--text-secondary); }
     .run-btn {
       margin-top: 6px; padding: 10px 22px; border: none; border-radius: 7px;
       background: var(--accent-primary, #06b6d4); color: #fff;
       font-size: 0.88rem; font-weight: 600; cursor: pointer;
     }
+    .run-btn.small { padding: 7px 14px; font-size: 0.8rem; margin-top: 0; }
     .run-btn:disabled { opacity: 0.55; cursor: default; }
     .run-btn.added { background: var(--success, #22c55e); }
   `]
@@ -204,6 +315,7 @@ export class StudioInsightsComponent {
   readonly testChunks = signal(5);
   readonly queueing = signal(false);
   readonly queuedOk = signal(false);
+  readonly jobAnalytics = signal<ProjectAnalytics | null>(null);
 
   readonly categories = signal<AnalysisCategory[]>([
     { id: 'thought_control', name: 'Thought Control', color: '#E53935', enabled: true, description: 'Discouraging critical thinking, independent thought, or questioning authority; demanding blind obedience' },
@@ -221,17 +333,31 @@ export class StudioInsightsComponent {
   ]);
 
   readonly report = computed(() => this.versions().find(v => v.type === 'analysis') ?? null);
-  readonly epubVersions = computed(() =>
-    this.versions().filter(v => v.type !== 'analysis' && (v.extension || '').toLowerCase() === 'epub'));
 
-  /** "Latest" = most recently modified non-per-language EPUB (whole-book versions only) */
+  /** Whole-book EPUB versions (per-language bilingual EPUBs excluded) */
+  readonly wholeBookVersions = computed(() =>
+    this.versions().filter(v =>
+      v.type !== 'analysis' && (v.extension || '').toLowerCase() === 'epub' && !v.language));
+
+  /** Stage buttons mirroring the pipeline wizard's Source EPUB row */
+  readonly sourceStages = computed<SourceStage[]>(() => {
+    const find = (type: string) => this.wholeBookVersions().find(v => v.type === type);
+    return [
+      { id: 'original', label: 'Original', completed: !!find('original'), path: find('original')?.path ?? '' },
+      { id: 'exported', label: 'Exported', completed: !!find('exported'), path: find('exported')?.path ?? '' },
+      { id: 'cleaned', label: 'AI Cleaned', completed: !!find('cleaned'), path: find('cleaned')?.path ?? '' },
+      { id: 'simplified', label: 'AI Simplified', completed: !!find('simplified'), path: find('simplified')?.path ?? '' },
+      { id: 'translated', label: 'Translated', completed: !!find('translated'), path: find('translated')?.path ?? '' },
+    ];
+  });
+
+  /** "Latest" = most recently modified whole-book EPUB */
   readonly latestVersion = computed(() => {
-    const candidates = this.epubVersions().filter(v => !v.language);
+    const candidates = this.wholeBookVersions();
     if (candidates.length === 0) return null;
     return [...candidates].sort((a, b) =>
       new Date(b.modifiedAt ?? 0).getTime() - new Date(a.modifiedAt ?? 0).getTime())[0];
   });
-  readonly latestLabel = computed(() => this.latestVersion()?.label ?? 'no EPUB found');
 
   readonly hasClaudeKey = computed(() => !!this.settings.getAIConfig().claude.apiKey);
   readonly hasOpenAIKey = computed(() => !!this.settings.getAIConfig().openai.apiKey);
@@ -257,9 +383,18 @@ export class StudioInsightsComponent {
   private async load(): Promise<void> {
     const bfp = this.bfpPath();
     this.queuedOk.set(false);
-    if (!bfp) { this.versions.set([]); return; }
+    this.sourcePath.set('latest');
+    if (!bfp) { this.versions.set([]); this.jobAnalytics.set(null); return; }
     const res = await this.electron.editorGetVersions(bfp);
     this.versions.set(res.success && res.versions ? res.versions as VersionRow[] : []);
+
+    // Job performance history (job-analytics.json / legacy bfp analytics)
+    try {
+      const analyticsRes = await (window as any).electron?.audiobook?.getAnalytics?.(bfp);
+      this.jobAnalytics.set(analyticsRes?.success ? (analyticsRes.analytics as ProjectAnalytics | null) : null);
+    } catch {
+      this.jobAnalytics.set(null);
+    }
   }
 
   private async initProviders(): Promise<void> {
@@ -286,6 +421,24 @@ export class StudioInsightsComponent {
     if (config.openai.apiKey) {
       const result = await this.electron.getOpenAIModels(config.openai.apiKey).catch(() => null);
       if (result?.success && result.models) this.openaiModels.set(result.models);
+    }
+  }
+
+  isStageSelected(stage: SourceStage): boolean {
+    const source = this.sourcePath();
+    if (source === 'latest') {
+      return stage.id === (this.latestVersion()?.type ?? '');
+    }
+    return source === stage.path;
+  }
+
+  /** Clicking the auto-selected stage returns to 'latest', like the wizard */
+  selectStage(stage: SourceStage): void {
+    const current = this.sourcePath();
+    if (current === stage.path || (current === 'latest' && stage.id === (this.latestVersion()?.type ?? ''))) {
+      this.sourcePath.set('latest');
+    } else {
+      this.sourcePath.set(stage.path);
     }
   }
 

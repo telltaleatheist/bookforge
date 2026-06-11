@@ -1077,6 +1077,11 @@ export interface ElectronAPI {
       success: boolean;
       error?: string;
     }>;
+    getAnalytics: (bfpPath: string) => Promise<{
+      success: boolean;
+      analytics?: Record<string, unknown> | null;
+      error?: string;
+    }>;
     copyVtt: (bfpPath: string, m4bOutputPath: string) => Promise<{
       success: boolean;
       vttPath?: string | null;
@@ -2333,6 +2338,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
     appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly', analytics: { jobId: string; [key: string]: unknown }) =>
       ipcRenderer.invoke('audiobook:append-analytics', bfpPath, jobType, analytics),
+    getAnalytics: (bfpPath: string) =>
+      ipcRenderer.invoke('audiobook:get-analytics', bfpPath),
     copyVtt: (bfpPath: string, m4bOutputPath: string) =>
       ipcRenderer.invoke('audiobook:copy-vtt', bfpPath, m4bOutputPath),
     getFolder: (bfpPath: string) =>

@@ -24,11 +24,12 @@ interface VersionRow {
   selector: 'app-studio-versions',
   standalone: true,
   imports: [CommonModule, DiffViewComponent],
+  host: { '[class.comparing]': '!!comparing()' },
   template: `
     @if (comparing(); as cmp) {
       <div class="compare-wrap">
         <div class="compare-bar">
-          <button class="back" (click)="comparing.set(null)">← Back to versions</button>
+          <button class="back" (click)="closeCompare()">← Back to versions</button>
           <span class="compare-title">{{ cmp.labelA }} <span class="vs">vs</span> {{ cmp.labelB }}</span>
         </div>
         <app-diff-view [originalPath]="cmp.a" [cleanedPath]="cmp.b" />
@@ -98,6 +99,9 @@ interface VersionRow {
     }
   `,
   styles: [`
+    /* While comparing, the host must give the diff view a definite height —
+       Studio switches the tab to full-height mode at the same time. */
+    :host(.comparing) { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 12px 16px; }
     .versions { padding: 4px 2px 24px; }
     .section-head {
       display: flex; align-items: center; gap: 12px;
@@ -130,7 +134,7 @@ interface VersionRow {
     .act.primary { background: var(--accent-primary, #06b6d4); border-color: transparent; color: #fff; }
     .act.danger:hover { background: color-mix(in srgb, #ef4444 20%, var(--bg-base)); border-color: #ef4444; }
     .muted { color: var(--text-secondary); padding: 12px 4px; font-size: 0.85rem; }
-    .compare-wrap { display: flex; flex-direction: column; height: 100%; }
+    .compare-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
     .compare-bar { display: flex; align-items: center; gap: 14px; padding: 8px 4px 12px; }
     .compare-bar .back { background: none; border: 1px solid var(--border-default); color: var(--text-primary); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
     .compare-title { font-size: 0.85rem; font-weight: 600; }
@@ -153,6 +157,7 @@ export class StudioVersionsComponent {
   readonly fixChapters = output<void>();
   readonly skipped = output<void>();
   readonly changed = output<void>();        // after delete -> tell Studio to refresh
+  readonly compareActive = output<boolean>(); // Studio goes full-height while comparing
 
   readonly versions = signal<VersionRow[]>([]);
   readonly loading = signal(false);
@@ -190,6 +195,9 @@ export class StudioVersionsComponent {
 
   async load(): Promise<void> {
     const bfp = this.bfpPath();
+    // Leave any in-progress compare when the project changes or files refresh
+    if (this.comparing()) this.closeCompare();
+    this.compareSource.set(null);
     if (!bfp) { this.versions.set([]); return; }
     this.loading.set(true);
     try {
@@ -205,6 +213,12 @@ export class StudioVersionsComponent {
     if (!a) return;
     this.comparing.set({ a: a.path, b: b.path, labelA: a.label, labelB: b.label });
     this.compareSource.set(null);
+    this.compareActive.emit(true);
+  }
+
+  closeCompare(): void {
+    this.comparing.set(null);
+    this.compareActive.emit(false);
   }
 
   async remove(v: VersionRow): Promise<void> {

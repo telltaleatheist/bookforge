@@ -280,13 +280,15 @@ import { SettingsService } from '../../core/services/settings.service';
                     />
                   }
                 } @else {
-                  <app-metadata-editor
-                    [metadata]="selectedMetadata()"
-                    [saving]="savingMetadata()"
-                    (metadataChange)="onMetadataChange($event)"
-                    (coverChange)="onCoverChange($event)"
-                    (save)="onSaveMetadata($event)"
-                  />
+                  @if (!versionsComparing()) {
+                    <app-metadata-editor
+                      [metadata]="selectedMetadata()"
+                      [saving]="savingMetadata()"
+                      (metadataChange)="onMetadataChange($event)"
+                      (coverChange)="onCoverChange($event)"
+                      (save)="onSaveMetadata($event)"
+                    />
+                  }
                   @if (selectedItem()?.bfpPath) {
                     <app-studio-versions
                       [bfpPath]="selectedItem()?.bfpPath || ''"
@@ -300,6 +302,7 @@ import { SettingsService } from '../../core/services/settings.service';
                       (fixChapters)="versionsPanel.set('chapters')"
                       (skipped)="versionsPanel.set('skipped')"
                       (changed)="onFileChanged()"
+                      (compareActive)="versionsComparing.set($event)"
                     />
                   }
                 }
@@ -1355,6 +1358,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   // Four-tab book view modes.
   readonly listenMode = signal<'play' | 'stream'>('play');              // Listen tab
   readonly versionsPanel = signal<'none' | 'enhance' | 'chapters' | 'skipped'>('none'); // inline panel in Versions tab
+  readonly versionsComparing = signal(false); // a version Compare is open — go full-height, hide metadata editor
 
   readonly processStep = signal<ProcessStep>('cleanup');
   readonly savingMetadata = signal<boolean>(false);
@@ -1554,7 +1558,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     if (main === 'content') return true;       // article editor
     if (main === 'audiobook') return true;     // Process wizard
     if (main === 'listen') return true;        // player / stream
-    if (main === 'files') return this.versionsPanel() !== 'none'; // inline enhance/chapters/skipped panel
+    if (main === 'files') return this.versionsPanel() !== 'none' || this.versionsComparing(); // inline panel or compare
     return false;
   });
 
@@ -1624,6 +1628,11 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.mainTab.set(tab);
     this.disabledTabMessage.set(null);
     this.diffPaths.set(null);
+    // No audiobook yet → Play is impossible, fall back to the Stream preview.
+    // (An explicit Stream choice is preserved; Play re-selects itself via goToPlay.)
+    if (tab === 'listen' && this.listenMode() === 'play' && !this.hasMonoAudio() && !this.hasBilingualAudio()) {
+      this.listenMode.set('stream');
+    }
   }
 
   setAudiobookSubTab(tab: AudiobookSubTab): void {
@@ -1680,6 +1689,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.mainTab.set('files');
     this.listenMode.set('play');
     this.versionsPanel.set('none');
+    this.versionsComparing.set(false);
     this.finalizingContent.set('idle');
     this.diffPaths.set(null);
   }
@@ -1687,7 +1697,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   playItem(item: StudioItem): void {
     this.selectedItemId.set(item.id);
     this.listenMode.set('play');
-    this.mainTab.set('listen');
+    this.setMainTab('listen');
   }
 
   // Open a book from the Browse grid into the Studio workspace.

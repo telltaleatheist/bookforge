@@ -5778,7 +5778,11 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Append analytics to BFP project (handles deduplication atomically)
+  // Append job analytics (handles deduplication atomically).
+  // Manifest projects (bfpPath = project directory) store them in
+  // {projectDir}/job-analytics.json — separate from the LL pipeline's
+  // analytics.json which has a different (stage-based) schema.
+  // Legacy .bfp files keep them in audiobook.analytics.
   ipcMain.handle('audiobook:append-analytics', async (
     _event,
     bfpPath: string,
@@ -5787,7 +5791,42 @@ function setupIpcHandlers(): void {
   ) => {
     const MAX_ANALYTICS_HISTORY = 10;
 
+    // Map job type to analytics array key
+    const typeToKey: Record<string, string> = {
+      'tts-conversion': 'ttsJobs',
+      'ocr-cleanup': 'cleanupJobs',
+      'reassembly': 'reassemblyJobs',
+      'video-assembly': 'videoAssemblyJobs'
+    };
+
+    const appendTo = (container: Record<string, any>) => {
+      const key = typeToKey[jobType];
+      if (key) {
+        const existing = container[key] || [];
+        const dedupedJobs = existing.filter(
+          (j: { jobId: string }) => j.jobId !== analytics.jobId
+        );
+        container[key] = [...dedupedJobs, analytics].slice(-MAX_ANALYTICS_HISTORY);
+      }
+      return container;
+    };
+
     try {
+      const isProjectDir = fsSync.existsSync(bfpPath) &&
+        fsSync.statSync(bfpPath).isDirectory() &&
+        fsSync.existsSync(path.join(bfpPath, 'manifest.json'));
+
+      if (isProjectDir) {
+        const analyticsPath = path.join(bfpPath, 'job-analytics.json');
+        let existing: Record<string, any> = { ttsJobs: [], cleanupJobs: [], reassemblyJobs: [], videoAssemblyJobs: [] };
+        try {
+          existing = JSON.parse(await fs.readFile(analyticsPath, 'utf-8'));
+        } catch { /* first write */ }
+        await atomicWriteFile(analyticsPath, JSON.stringify(appendTo(existing), null, 2));
+        return { success: true };
+      }
+
+      // Legacy .bfp file
       const bfpContent = await fs.readFile(bfpPath, 'utf-8');
       const bfpProject = JSON.parse(bfpContent);
 
@@ -5796,42 +5835,43 @@ function setupIpcHandlers(): void {
         bfpProject.audiobook = {};
       }
 
-      // Initialize analytics if needed
-      const existingAnalytics = bfpProject.audiobook.analytics || {
+      bfpProject.audiobook.analytics = appendTo(bfpProject.audiobook.analytics || {
         ttsJobs: [],
         cleanupJobs: [],
         reassemblyJobs: [],
         videoAssemblyJobs: []
-      };
-
-      // Map job type to analytics array key
-      const typeToKey: Record<string, string> = {
-        'tts-conversion': 'ttsJobs',
-        'ocr-cleanup': 'cleanupJobs',
-        'reassembly': 'reassemblyJobs',
-        'video-assembly': 'videoAssemblyJobs'
-      };
-
-      const key = typeToKey[jobType];
-      if (key) {
-        const existing = existingAnalytics[key] || [];
-        const dedupedJobs = existing.filter(
-          (j: { jobId: string }) => j.jobId !== analytics.jobId
-        );
-        existingAnalytics[key] = [...dedupedJobs, analytics].slice(-MAX_ANALYTICS_HISTORY);
-      }
+      });
 
       // Also set cleanedAt timestamp for OCR cleanup
       if (jobType === 'ocr-cleanup') {
         bfpProject.audiobook.cleanedAt = new Date().toISOString();
       }
 
-      bfpProject.audiobook.analytics = existingAnalytics;
       bfpProject.modified_at = new Date().toISOString();
 
       await atomicWriteFile(bfpPath, JSON.stringify(bfpProject, null, 2));
 
       return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Read job analytics for a project (manifest dir or legacy .bfp)
+  ipcMain.handle('audiobook:get-analytics', async (_event, bfpPath: string) => {
+    try {
+      if (!bfpPath || !fsSync.existsSync(bfpPath)) {
+        return { success: true, analytics: null };
+      }
+      if (fsSync.statSync(bfpPath).isDirectory()) {
+        const analyticsPath = path.join(bfpPath, 'job-analytics.json');
+        if (!fsSync.existsSync(analyticsPath)) {
+          return { success: true, analytics: null };
+        }
+        return { success: true, analytics: JSON.parse(await fs.readFile(analyticsPath, 'utf-8')) };
+      }
+      const bfpProject = JSON.parse(await fs.readFile(bfpPath, 'utf-8'));
+      return { success: true, analytics: bfpProject.audiobook?.analytics ?? null };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
