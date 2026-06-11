@@ -361,7 +361,11 @@ import { SettingsService } from '../../core/services/settings.service';
               @if (mainTab() === 'listen') {
                 @if (listenMode() === 'stream') {
                   @if (currentEpubPath()) {
-                    <app-play-view [epubPath]="currentEpubPath()" />
+                    <app-play-view
+                      [epubPath]="currentEpubPath()"
+                      [title]="selectedMetadata()?.title || ''"
+                      [author]="selectedMetadata()?.author || ''"
+                    />
                   } @else {
                     <div class="empty-state-panel">
                       <div class="icon">🎧</div>

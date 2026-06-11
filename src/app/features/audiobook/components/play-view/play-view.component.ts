@@ -19,7 +19,6 @@ import { PlayTextService } from '../../services/play-text.service';
 import { AudioPlayerService } from '../../services/audio-player.service';
 import {
   PlayableChapter,
-  PlayableSentence,
   PlaySettings,
   PlaybackState,
   SessionState,
@@ -32,6 +31,15 @@ interface StreamBookmark {
   chapterId: string;
   sentenceIndex: number;
   createdAt: number;
+}
+
+/** One sentence in the flattened, whole-book view */
+interface StreamCue {
+  chapterId: string;
+  chapterTitle: string;
+  localIndex: number;   // sentence index within its chapter
+  globalIndex: number;  // position in the whole book
+  text: string;
 }
 
 @Component({
@@ -85,7 +93,10 @@ interface StreamBookmark {
             <span class="header-chapter">{{ currentChapter()!.title }}</span>
           }
           <div class="header-center">
-            <span class="header-title">Stream preview</span>
+            <span class="header-title">{{ title() || 'Stream preview' }}</span>
+            @if (author()) {
+              <span class="header-author">{{ author() }}</span>
+            }
             @if (isGenerating()) {
               <span class="generating-indicator">Generating…</span>
             }
@@ -134,33 +145,47 @@ interface StreamBookmark {
           </div>
         }
 
-        <!-- Text display -->
-        <div class="text-pane" #textPane>
-          @if (currentChapter()) {
-            <div class="chapter-content">
-              @for (sentence of currentChapter()!.sentences; track sentence.index) {
-                <span
-                  class="sentence"
-                  [class.active]="sentence.index === currentSentenceIndex()"
-                  [class.played]="sentence.index < currentSentenceIndex()"
-                  (click)="onSentenceClick(sentence)"
-                  [attr.data-index]="sentence.index"
-                >{{ sentence.text }} </span>
-              }
-            </div>
-          } @else if (chaptersLoading()) {
-            <div class="loading-state">
-              <div class="spinner"></div>
-              <span>Loading chapter...</span>
-            </div>
-          } @else {
-            <div class="empty-state">
-              <p>No chapters available</p>
-            </div>
+        <!-- Search bar -->
+        <div class="search-bar">
+          <input type="text" placeholder="Search text..."
+            [value]="searchTerm()"
+            (input)="searchTerm.set($any($event.target).value)" />
+          @if (searchTerm()) {
+            <button class="search-clear" (click)="searchTerm.set('')">&times;</button>
+            <span class="search-count">{{ filteredCues().length }} / {{ allCues().length }}</span>
           }
         </div>
 
-        <!-- Progress through current chapter (sentence-based) -->
+        <!-- Scrollable text: whole book, chapter headings inline -->
+        <div class="text-container" #textPane>
+          @if (chaptersLoading()) {
+            <div class="loading-state">
+              <div class="spinner"></div>
+              <span>Loading book...</span>
+            </div>
+          } @else if (allCues().length === 0) {
+            <div class="empty-state">
+              <p>No readable text found</p>
+            </div>
+          } @else {
+            @for (cue of filteredCues(); track cue.globalIndex) {
+              @if (chapterHeaderMap().get(cue.globalIndex); as chapterTitle) {
+                <div class="chapter-header">{{ chapterTitle }}</div>
+              }
+              <div
+                class="text-segment"
+                [class.active]="cue.globalIndex === currentGlobalIndex()"
+                [class.past]="cue.globalIndex < currentGlobalIndex()"
+                [attr.data-index]="cue.globalIndex"
+                (click)="jumpToCue(cue)"
+              >
+                <p>{{ cue.text }}</p>
+              </div>
+            }
+          }
+        </div>
+
+        <!-- Progress bar (full width, sentence-based) -->
         <div class="progress-row">
           <div class="bar-progress">
             <div class="bar-progress-fill" [style.width.%]="progressPercent()"></div>
@@ -168,10 +193,10 @@ interface StreamBookmark {
               type="range"
               class="bar-progress-slider"
               [min]="0"
-              [max]="Math.max(totalSentences() - 1, 0)"
-              [value]="currentSentenceIndex()"
+              [max]="Math.max(allCues().length - 1, 0)"
+              [value]="currentGlobalIndex()"
               (change)="onProgressChange($event)"
-              [disabled]="!currentChapter()"
+              [disabled]="allCues().length === 0"
             />
           </div>
           <span class="bar-percent">{{ Math.round(progressPercent()) }}%</span>
@@ -179,11 +204,8 @@ interface StreamBookmark {
 
         <!-- Position display (centered) -->
         <div class="time-row">
-          @if (currentChapter()) {
-            <span class="bar-time">
-              Ch {{ currentChapterIndex() + 1 }}/{{ chapters().length }}
-              · Sentence {{ currentSentenceIndex() + 1 }}/{{ totalSentences() }}
-            </span>
+          @if (allCues().length > 0) {
+            <span class="bar-time">{{ currentGlobalIndex() + 1 }} / {{ allCues().length }}</span>
           }
           @if (bookmarkStatus()) {
             <span class="bookmark-status">{{ bookmarkStatus() }}</span>
@@ -193,8 +215,7 @@ interface StreamBookmark {
         <!-- Transport + speed on same line (matches the Play player) -->
         <div class="controls-row">
           <div class="transport-group">
-            <button class="bar-btn" (click)="prevChapter()" [disabled]="!canGoPrevChapter()" title="Previous chapter">⏮</button>
-            <button class="bar-btn" (click)="skipSentence(-1)" [disabled]="!currentChapter() || currentSentenceIndex() === 0" title="Back one sentence">⏪</button>
+            <button class="bar-btn" (click)="skipSentence(-1)" [disabled]="currentGlobalIndex() === 0" title="Previous sentence">⏮</button>
             @if (!isReady()) {
               <button class="start-btn" (click)="startSession()" [disabled]="chaptersLoading()">
                 Start TTS Engine
@@ -203,10 +224,8 @@ interface StreamBookmark {
               <button class="bar-btn bar-btn-play" (click)="isPlaying() ? pause() : play()" [title]="isPlaying() ? 'Pause' : 'Play'">
                 <span class="play-icon">{{ isPlaying() ? '⏸' : '▶' }}</span>
               </button>
-              <button class="bar-btn" (click)="stop()" [disabled]="playbackState() === 'idle'" title="Stop">⏹</button>
             }
-            <button class="bar-btn" (click)="skipSentence(1)" [disabled]="!currentChapter() || currentSentenceIndex() >= totalSentences() - 1" title="Forward one sentence">⏩</button>
-            <button class="bar-btn" (click)="nextChapter()" [disabled]="!canGoNextChapter()" title="Next chapter">⏭</button>
+            <button class="bar-btn" (click)="skipSentence(1)" [disabled]="currentGlobalIndex() >= allCues().length - 1" title="Next sentence">⏭</button>
           </div>
           <div class="speed-group">
             <button class="bar-btn bar-btn-bookmark" (click)="addBookmark()" title="Add bookmark">🔖</button>
@@ -236,7 +255,7 @@ interface StreamBookmark {
                 <button
                   class="chapter-item"
                   [class.active]="chapter.id === selectedChapterId()"
-                  (click)="onChapterChange(chapter.id)"
+                  (click)="onChapterSelect(chapter.id)"
                 >
                   <span class="chapter-order">{{ i + 1 }}</span>
                   <div class="chapter-info">
@@ -370,24 +389,31 @@ interface StreamBookmark {
       min-width: 0;
       text-align: center;
       overflow: hidden;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
+      white-space: nowrap;
     }
 
     .header-title {
       font-size: 14px;
       font-weight: 600;
       color: var(--text-primary);
-      white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    .header-author {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-left: 8px;
+    }
+
+    .header-author::before {
+      content: '— ';
     }
 
     .generating-indicator {
       font-size: 11px;
       color: var(--accent-primary);
+      margin-left: 10px;
       animation: pulse 1s infinite;
     }
 
@@ -436,6 +462,63 @@ interface StreamBookmark {
     .voice-select:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+
+    /* Search bar (player style) */
+    .search-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      flex-shrink: 0;
+    }
+
+    .search-bar input {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid var(--border-input, var(--border-default));
+      border-radius: 6px;
+      background: var(--bg-input, var(--surface-1));
+      color: var(--text-primary);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .search-bar input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .search-bar input:focus {
+      border-color: var(--accent, var(--accent-primary));
+    }
+
+    .search-clear {
+      width: 26px;
+      height: 26px;
+      border: none;
+      border-radius: 50%;
+      background: var(--bg-muted, var(--surface-2));
+      color: var(--text-secondary);
+      font-size: 15px;
+      line-height: 1;
+      cursor: pointer;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .search-clear:hover {
+      background: var(--bg-hover, var(--surface-2));
+      color: var(--text-primary);
+    }
+
+    .search-count {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
     /* Bookmark popup (player style) */
@@ -582,39 +665,58 @@ interface StreamBookmark {
       background: var(--bg-hover, var(--surface-2));
     }
 
-    /* Text pane */
-    .text-pane {
+    /* Text container (player style: block segments, whole book) */
+    .text-container {
       flex: 1;
-      min-height: 0;
       overflow-y: auto;
-      padding: 16px 16px 24px;
-      line-height: 1.8;
-      font-size: 16px;
+      min-height: 0;
+      padding: 8px 0;
+      scroll-behavior: smooth;
     }
 
-    .chapter-content {
-      max-width: 700px;
-      margin: 0 auto;
+    .chapter-header {
+      padding: 16px 16px 8px;
+      margin-top: 12px;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--accent, var(--accent-primary));
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 8px;
     }
 
-    .sentence {
+    .chapter-header:first-child {
+      margin-top: 0;
+    }
+
+    .text-segment {
+      padding: 8px 12px;
+      margin-bottom: 4px;
+      border-radius: 6px;
+      background: var(--bg-surface, var(--surface-1));
+      border: 2px solid transparent;
       cursor: pointer;
-      transition: background-color 0.15s ease;
-      border-radius: 2px;
-      padding: 0 2px;
-      margin: 0 -2px;
+      transition: all 0.2s ease;
+      opacity: 0.6;
     }
 
-    .sentence:hover {
-      background: var(--surface-2);
+    .text-segment:hover {
+      background: var(--bg-hover, var(--surface-2));
     }
 
-    .sentence.played {
-      color: var(--text-secondary);
+    .text-segment.past {
+      opacity: 0.4;
     }
 
-    .sentence.active {
-      background: rgba(255, 200, 0, 0.3);
+    .text-segment.active {
+      opacity: 1;
+      border-color: var(--accent, var(--accent-primary));
+      background: color-mix(in srgb, var(--accent, var(--accent-primary)) 8%, var(--bg-surface, var(--surface-1)));
+    }
+
+    .text-segment p {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.6;
       color: var(--text-primary);
     }
 
@@ -756,11 +858,11 @@ interface StreamBookmark {
     }
 
     .bar-btn-play {
-      width: 32px;
-      height: 32px;
+      width: 36px;
+      height: 36px;
       background: var(--accent, var(--accent-primary));
       color: white;
-      font-size: 13px;
+      font-size: 14px;
     }
 
     .bar-btn-play .play-icon {
@@ -775,9 +877,9 @@ interface StreamBookmark {
     }
 
     .start-btn {
-      padding: 7px 18px;
+      padding: 8px 18px;
       border: none;
-      border-radius: 16px;
+      border-radius: 18px;
       background: var(--accent, var(--accent-primary));
       color: white;
       font-size: 13px;
@@ -925,6 +1027,8 @@ interface StreamBookmark {
 export class PlayViewComponent implements OnInit, OnDestroy {
   // Inputs
   readonly epubPath = input.required<string>();
+  readonly title = input<string>('');
+  readonly author = input<string>('');
 
   // Services
   private readonly electronService = inject(ElectronService);
@@ -968,24 +1072,70 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   readonly isGenerating = signal(false);
   readonly selectedVoice = signal<string>('ScarlettJohansson');
   readonly selectedSpeed = signal<number>(1.25);
-  readonly currentSentenceIndex = signal<number>(0);
+  readonly currentSentenceIndex = signal<number>(0);  // within current chapter
 
   // Player chrome state
   readonly chapterDrawerOpen = signal(false);
   readonly bookmarkDrawerOpen = signal(false);
   readonly bookmarks = signal<StreamBookmark[]>([]);
   readonly bookmarkStatus = signal<string | null>(null);
+  readonly searchTerm = signal('');
 
-  // Computed
-  readonly canGoPrevChapter = computed(() => this.currentChapterIndex() > 0);
-  readonly canGoNextChapter = computed(() =>
-    this.currentChapterIndex() < this.chapters().length - 1
-  );
-  readonly totalSentences = computed(() => this.currentChapter()?.sentences.length ?? 0);
+  // Whole-book flattened view
+  readonly allCues = computed<StreamCue[]>(() => {
+    const cues: StreamCue[] = [];
+    let global = 0;
+    for (const chapter of this.chapters()) {
+      for (const sentence of chapter.sentences) {
+        cues.push({
+          chapterId: chapter.id,
+          chapterTitle: chapter.title,
+          localIndex: sentence.index,
+          globalIndex: global++,
+          text: sentence.text,
+        });
+      }
+    }
+    return cues;
+  });
+
+  readonly filteredCues = computed<StreamCue[]>(() => {
+    const term = this.searchTerm().trim().toLowerCase();
+    if (!term) return this.allCues();
+    return this.allCues().filter(c => c.text.toLowerCase().includes(term));
+  });
+
+  /** First visible cue of each chapter → chapter title (for inline headings) */
+  readonly chapterHeaderMap = computed<Map<number, string>>(() => {
+    const map = new Map<number, string>();
+    const seen = new Set<string>();
+    for (const cue of this.filteredCues()) {
+      if (!seen.has(cue.chapterId)) {
+        seen.add(cue.chapterId);
+        map.set(cue.globalIndex, cue.chapterTitle);
+      }
+    }
+    return map;
+  });
+
+  /** Global index of the first sentence of each chapter */
+  private readonly chapterStartIndex = computed<Map<string, number>>(() => {
+    const map = new Map<string, number>();
+    for (const cue of this.allCues()) {
+      if (!map.has(cue.chapterId)) map.set(cue.chapterId, cue.globalIndex);
+    }
+    return map;
+  });
+
+  readonly currentGlobalIndex = computed(() => {
+    const start = this.chapterStartIndex().get(this.selectedChapterId()) ?? 0;
+    return start + this.currentSentenceIndex();
+  });
+
   readonly progressPercent = computed(() => {
-    const total = this.totalSentences();
+    const total = this.allCues().length;
     if (total === 0) return 0;
-    return ((this.currentSentenceIndex() + 1) / total) * 100;
+    return ((this.currentGlobalIndex() + 1) / total) * 100;
   });
 
   // Private
@@ -1005,7 +1155,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       const index = this.audioPlayer.currentSentenceIndex();
       if (index >= 0) {
         this.currentSentenceIndex.set(index);
-        this.scrollToSentence(index);
+        this.scrollToCurrent();
       }
     });
   }
@@ -1030,8 +1180,11 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       }
 
       // Auto-advance to next chapter
-      if (this.canGoNextChapter()) {
-        this.nextChapter();
+      const index = this.currentChapterIndex();
+      if (index < this.chapters().length - 1) {
+        this.stop();
+        this.selectedChapterId.set(this.chapters()[index + 1].id);
+        this.currentSentenceIndex.set(0);
         setTimeout(() => this.play(), 300);
       }
     });
@@ -1118,7 +1271,8 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     }
 
     // Start fresh from the current position (sentence clicks / skips set it)
-    const startIndex = Math.min(this.currentSentenceIndex(), Math.max(this.totalSentences() - 1, 0));
+    const total = this.currentChapter()!.sentences.length;
+    const startIndex = Math.min(this.currentSentenceIndex(), Math.max(total - 1, 0));
     this.audioPlayer.clearQueue();
     this.currentSentenceIndex.set(startIndex);
 
@@ -1139,11 +1293,11 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.currentSentenceIndex.set(0);
   }
 
-  /** Move to a sentence; if audio was active, regenerate from there. */
-  private async jumpToSentence(index: number) {
-    const total = this.totalSentences();
-    if (total === 0) return;
-    const clamped = Math.max(0, Math.min(index, total - 1));
+  /** Move to a global position; if audio was active, regenerate from there. */
+  private async jumpToGlobal(globalIndex: number) {
+    const cues = this.allCues();
+    if (cues.length === 0) return;
+    const cue = cues[Math.max(0, Math.min(globalIndex, cues.length - 1))];
 
     const wasActive = this.isPlaying() || this.isGenerating() || this.playbackState() === 'paused';
     this.generateAbortController?.abort();
@@ -1151,50 +1305,38 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.audioPlayer.clearQueue();
     this.isGenerating.set(false);
 
-    this.currentSentenceIndex.set(clamped);
-    this.scrollToSentence(clamped);
+    this.selectedChapterId.set(cue.chapterId);
+    this.currentSentenceIndex.set(cue.localIndex);
+    this.scrollToCurrent();
 
     if (wasActive && this.isReady()) {
       await this.audioPlayer.initialize();
-      this.generateAndPlay(clamped);
+      this.generateAndPlay(cue.localIndex);
     }
   }
 
+  jumpToCue(cue: StreamCue) {
+    void this.jumpToGlobal(cue.globalIndex);
+  }
+
   skipSentence(delta: number) {
-    void this.jumpToSentence(this.currentSentenceIndex() + delta);
+    void this.jumpToGlobal(this.currentGlobalIndex() + delta);
   }
 
   onProgressChange(event: Event) {
     const value = Number((event.target as HTMLInputElement).value);
-    void this.jumpToSentence(value);
+    void this.jumpToGlobal(value);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Chapter navigation
   // ─────────────────────────────────────────────────────────────────────────────
 
-  onChapterChange(chapterId: string) {
-    this.stop();
-    this.selectedChapterId.set(chapterId);
-    this.currentSentenceIndex.set(0);
-  }
-
-  prevChapter() {
-    const index = this.currentChapterIndex();
-    if (index > 0) {
-      this.stop();
-      this.selectedChapterId.set(this.chapters()[index - 1].id);
-      this.currentSentenceIndex.set(0);
-    }
-  }
-
-  nextChapter() {
-    const index = this.currentChapterIndex();
-    if (index < this.chapters().length - 1) {
-      this.stop();
-      this.selectedChapterId.set(this.chapters()[index + 1].id);
-      this.currentSentenceIndex.set(0);
-    }
+  onChapterSelect(chapterId: string) {
+    const start = this.chapterStartIndex().get(chapterId);
+    if (start === undefined) return;
+    this.chapterDrawerOpen.set(false);
+    void this.jumpToGlobal(start);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1228,7 +1370,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.selectedSpeed.set(newSpeed);
 
     if (this.isPlaying() || this.isGenerating()) {
-      void this.jumpToSentence(this.currentSentenceIndex());
+      void this.jumpToGlobal(this.currentGlobalIndex());
     }
   }
 
@@ -1271,12 +1413,10 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   }
 
   jumpToBookmark(bm: StreamBookmark) {
-    if (!this.chapters().some(c => c.id === bm.chapterId)) return;
-    this.stop();
-    this.selectedChapterId.set(bm.chapterId);
-    this.currentSentenceIndex.set(bm.sentenceIndex);
+    const start = this.chapterStartIndex().get(bm.chapterId);
+    if (start === undefined) return;
     this.bookmarkDrawerOpen.set(false);
-    setTimeout(() => this.scrollToSentence(bm.sentenceIndex), 50);
+    void this.jumpToGlobal(start + bm.sentenceIndex);
   }
 
   deleteBookmark(bm: StreamBookmark) {
@@ -1288,19 +1428,6 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.bookmarkStatus.set(message);
     if (this.bookmarkStatusTimer) clearTimeout(this.bookmarkStatusTimer);
     this.bookmarkStatusTimer = setTimeout(() => this.bookmarkStatus.set(null), 2000);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Sentence interaction
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  onSentenceClick(sentence: PlayableSentence) {
-    if (!this.isReady()) {
-      // No session yet — just move the position marker
-      this.currentSentenceIndex.set(sentence.index);
-      return;
-    }
-    void this.jumpToSentence(sentence.index);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1344,9 +1471,6 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     }
   }
 
-  // Mutex for enqueue synchronization
-  private enqueueLock = Promise.resolve();
-
   private async generateAndPlay(startIndex: number) {
     const chapter = this.currentChapter();
     if (!chapter) return;
@@ -1374,7 +1498,6 @@ export class PlayViewComponent implements OnInit, OnDestroy {
 
     // Task queue for workers (thread-safe via single-threaded JS)
     const taskQueue: number[] = [];  // Sentence indices to generate
-    let generationComplete = false;
 
     // Initialize task queue with first batch
     const totalSentences = chapter.sentences.length;
@@ -1467,7 +1590,6 @@ export class PlayViewComponent implements OnInit, OnDestroy {
         // Worker done
         activeWorkers--;
         if (activeWorkers === 0) {
-          generationComplete = true;
           resolveAllDone!();
         }
       };
@@ -1490,18 +1612,18 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     }
   }
 
-  private scrollToSentence(index: number) {
+  private scrollToCurrent() {
     if (!this.textPane) return;
 
     const pane = this.textPane.nativeElement;
-    const sentenceEl = pane.querySelector(`[data-index="${index}"]`) as HTMLElement;
+    const el = pane.querySelector(`[data-index="${this.currentGlobalIndex()}"]`) as HTMLElement;
 
-    if (sentenceEl) {
+    if (el) {
       const paneRect = pane.getBoundingClientRect();
-      const sentenceRect = sentenceEl.getBoundingClientRect();
+      const elRect = el.getBoundingClientRect();
 
-      if (sentenceRect.top < paneRect.top || sentenceRect.bottom > paneRect.bottom) {
-        sentenceEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (elRect.top < paneRect.top || elRect.bottom > paneRect.bottom) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     }
   }
