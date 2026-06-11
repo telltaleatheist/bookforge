@@ -1383,6 +1383,10 @@ export interface ElectronAPI {
     status: () => Promise<{ success: boolean; state?: 'stopped' | 'starting' | 'running'; serviceMode?: boolean; error?: string }>;
     onState: (callback: (state: { state: 'stopped' | 'starting' | 'running'; serviceMode: boolean }) => void) => () => void;
   };
+  ttsApi: {
+    status: () => Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }>;
+    configure: (updates: { port?: number; host?: string }) => Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }>;
+  };
   parallelTts: {
     detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: HardwareRecommendation; error?: string }>;
     startConversion: (jobId: string, config: ParallelConversionConfig) => Promise<{ success: boolean; data?: ParallelConversionResult; error?: string }>;
@@ -2738,6 +2742,12 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('tts-service:state', listener);
       };
     },
+  },
+  ttsApi: {
+    status: () =>
+      ipcRenderer.invoke('tts-api:status'),
+    configure: (updates: { port?: number; host?: string }) =>
+      ipcRenderer.invoke('tts-api:configure', updates),
   },
   parallelTts: {
     detectRecommendedWorkerCount: () =>

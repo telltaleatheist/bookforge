@@ -9,11 +9,14 @@
  * Living in the main process means any window (main app or listen window) can
  * drive or observe a session, and renderer reloads don't orphan generation.
  *
- * All events go out on the single 'stream:event' channel:
- *   {kind:'chunk',   requestId, sentenceIndex, seq, data(pcm16 b64), duration, sampleRate}
- *   {kind:'done',    requestId, sentenceIndex, duration}   // sentence fully generated
- *   {kind:'failed',  requestId, sentenceIndex, error}
- *   {kind:'complete',requestId}                            // nothing left to generate
+ * All events go out through the session's sink. Window sessions broadcast on
+ * the 'stream:event' channel; external sessions (TTS API server) send to one
+ * WebSocket client. Event shapes:
+ *   {kind:'chunk',    requestId, sentenceIndex, seq, data(pcm16 b64), duration, sampleRate}
+ *   {kind:'done',     requestId, sentenceIndex, duration}   // sentence fully generated
+ *   {kind:'failed',   requestId, sentenceIndex, error}
+ *   {kind:'complete', requestId}                            // nothing left to generate
+ *   {kind:'cancelled',requestId}                            // stopped or preempted by a new start
  */
 
 import { BrowserWindow } from 'electron';
@@ -23,13 +26,16 @@ import {
   StreamChunk
 } from './xtts-worker-pool';
 
+/** Where a session's events go. Defaults to broadcasting to all windows. */
+export type StreamSink = (data: Record<string, unknown>) => void;
+
 // Generate until this much audio is buffered ahead of the playhead, then idle
 // until the playhead advances. ~2.1x realtime aggregate means the window
 // fills fast and workers spend most of the session idle (cool and quiet).
 const LOOKAHEAD_SECONDS = 45;
 
 interface SchedulerSession {
-  requestId: number;
+  requestId: string | number;
   sentences: string[];
   settings: PlaySettings;
   startIndex: number;
@@ -40,11 +46,12 @@ interface SchedulerSession {
   inFlight: Set<number>;
   stopped: boolean;
   completeSent: boolean;
+  sink: StreamSink;
 }
 
 let session: SchedulerSession | null = null;
 
-function broadcast(data: Record<string, unknown>): void {
+function broadcastToWindows(data: Record<string, unknown>): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send('stream:event', data);
@@ -61,7 +68,8 @@ export function start(
   sentences: string[],
   startIndex: number,
   settings: PlaySettings,
-  requestId: number
+  requestId: string | number,
+  sink: StreamSink = broadcastToWindows
 ): { success: boolean; error?: string } {
   if (!xttsWorkerPool.isSessionActive()) {
     return { success: false, error: 'TTS session not active' };
@@ -79,7 +87,8 @@ export function start(
     durations: new Map(),
     inFlight: new Set(),
     stopped: false,
-    completeSent: false
+    completeSent: false,
+    sink
   };
 
   console.log(`[StreamScheduler] Start req=${requestId} from sentence ${startIndex}/${sentences.length}`);
@@ -102,7 +111,16 @@ export function stop(): void {
     console.log(`[StreamScheduler] Stop req=${session.requestId}`);
     session.stopped = true;
     xttsWorkerPool.cancelStreaming();
+    if (!session.completeSent) {
+      session.sink({ kind: 'cancelled', requestId: session.requestId });
+    }
   }
+}
+
+/** requestId of the session currently generating, or null. Lets external
+ *  callers (TTS API server) verify ownership before stopping. */
+export function getActiveRequestId(): string | number | null {
+  return session && !session.stopped ? session.requestId : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,7 +155,7 @@ function pump(): void {
     s.inFlight.size === 0
   ) {
     s.completeSent = true;
-    broadcast({ kind: 'complete', requestId: s.requestId });
+    s.sink({ kind: 'complete', requestId: s.requestId });
   }
 }
 
@@ -153,7 +171,7 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
     void xttsWorkerPool
       .generateSentenceStream(text, s.settings, (chunk: StreamChunk) => {
         if (isStale()) return;
-        broadcast({
+        s.sink({
           kind: 'chunk',
           requestId,
           sentenceIndex,
@@ -168,10 +186,10 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
         s.inFlight.delete(sentenceIndex);
         if (result.success && !result.cancelled) {
           s.durations.set(sentenceIndex, result.duration || 0);
-          broadcast({ kind: 'done', requestId, sentenceIndex, duration: result.duration || 0 });
+          s.sink({ kind: 'done', requestId, sentenceIndex, duration: result.duration || 0 });
         } else if (!result.success) {
           console.error(`[StreamScheduler] Stream sentence ${sentenceIndex} failed:`, result.error);
-          broadcast({ kind: 'failed', requestId, sentenceIndex, error: result.error });
+          s.sink({ kind: 'failed', requestId, sentenceIndex, error: result.error });
         }
         pump();
       });
@@ -185,7 +203,7 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
       s.inFlight.delete(sentenceIndex);
       if (result.success && result.audio) {
         s.durations.set(sentenceIndex, result.audio.duration);
-        broadcast({
+        s.sink({
           kind: 'chunk',
           requestId,
           sentenceIndex,
@@ -194,10 +212,10 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
           duration: result.audio.duration,
           sampleRate: result.audio.sampleRate
         });
-        broadcast({ kind: 'done', requestId, sentenceIndex, duration: result.audio.duration });
+        s.sink({ kind: 'done', requestId, sentenceIndex, duration: result.audio.duration });
       } else {
         console.error(`[StreamScheduler] Sentence ${sentenceIndex} failed:`, result.error);
-        broadcast({ kind: 'failed', requestId, sentenceIndex, error: result.error });
+        s.sink({ kind: 'failed', requestId, sentenceIndex, error: result.error });
       }
       pump();
     });
@@ -206,5 +224,6 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
 export const streamScheduler = {
   start,
   reportPlayhead,
-  stop
+  stop,
+  getActiveRequestId
 };

@@ -4169,6 +4169,28 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── TTS API server: WebSocket access for external clients (browser extension) ──
+
+  ipcMain.handle('tts-api:status', async () => {
+    try {
+      const { ttsApiServer } = await import('./tts-api-server.js');
+      return { success: true, data: ttsApiServer.getStatus() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('tts-api:configure', async (_event, updates: { port?: number; host?: string }) => {
+    try {
+      const { ttsApiServer } = await import('./tts-api-server.js');
+      ttsApiServer.saveConfig(updates);
+      const status = await ttsApiServer.start(app.getPath('userData'));
+      return { success: true, data: status };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Stream scheduler: main-process generation orchestration for the Play tab.
   // The renderer sends the sentence list once; audio comes back as
   // 'stream:event' broadcasts (chunked pcm16 for the playhead sentence,
@@ -9715,6 +9737,16 @@ app.whenReady().then(async () => {
     mainWindow?.webContents.send('queue:remote-control', action);
   });
 
+  // TTS API server: WebSocket front door for external clients (browser
+  // extension). Always on — binds localhost-only unless configured for LAN.
+  try {
+    const { ttsApiServer } = await import('./tts-api-server.js');
+    const status = await ttsApiServer.start(app.getPath('userData'));
+    console.log(`[Startup] TTS API server on port ${status.port} (host ${status.host})`);
+  } catch (err) {
+    console.error('[Startup] TTS API server failed to start:', err);
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Window management: Cmd+W hides, Cmd+Q double-press to quit
   // ─────────────────────────────────────────────────────────────────────────────
@@ -9939,6 +9971,16 @@ app.on('before-quit', async (event) => {
   // Stop bookshelf server if running
   if (bookshelfServer.isRunning()) {
     await bookshelfServer.stop();
+  }
+
+  // Stop TTS API server if running
+  try {
+    const { ttsApiServer } = await import('./tts-api-server.js');
+    if (ttsApiServer.isRunning()) {
+      await ttsApiServer.stop();
+    }
+  } catch (err) {
+    console.error('[MAIN] Failed to stop TTS API server:', err);
   }
 
   // Terminate PDF worker thread

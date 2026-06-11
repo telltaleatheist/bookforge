@@ -134,9 +134,26 @@ export function getLastVoice(): string | null {
   return lastVoice;
 }
 
+// External observers of engine state (e.g. the TTS API server pushing state
+// to WebSocket clients). Windows are notified separately via broadcast().
+type EngineStateListener = (state: EngineState, isServiceMode: boolean) => void;
+const engineStateListeners = new Set<EngineStateListener>();
+
+export function onEngineState(listener: EngineStateListener): () => void {
+  engineStateListeners.add(listener);
+  return () => engineStateListeners.delete(listener);
+}
+
 /** Engine state goes to every window so all start/stop controls stay in sync. */
 function broadcastServiceState(): void {
   broadcast('tts-service:state', { state: getEngineState(), serviceMode });
+  for (const listener of engineStateListeners) {
+    try {
+      listener(getEngineState(), serviceMode);
+    } catch (err) {
+      console.error('[XTTS Pool] Engine state listener failed:', err);
+    }
+  }
 }
 
 function touchActivity(): void {
@@ -758,5 +775,6 @@ export const xttsWorkerPool = {
   getEngineState,
   isServiceMode,
   setServiceMode,
-  getLastVoice
+  getLastVoice,
+  onEngineState
 };
