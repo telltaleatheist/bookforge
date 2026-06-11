@@ -11,7 +11,6 @@ import { StudioBrowseComponent } from './components/studio-browse/studio-browse.
 import { StudioVersionsComponent } from './components/studio-versions/studio-versions.component';
 import { AddModalComponent } from './components/add-modal/add-modal.component';
 import { ContentEditorComponent } from './components/content-editor/content-editor.component';
-import { ProcessWizardComponent } from './components/process-wizard/process-wizard.component';
 import { LLWizardComponent } from '../language-learning/components/ll-wizard/ll-wizard.component';
 
 // Import existing audiobook components
@@ -50,7 +49,6 @@ import { SettingsService } from '../../core/services/settings.service';
     StudioListComponent,
     AddModalComponent,
     ContentEditorComponent,
-    ProcessWizardComponent,
     LLWizardComponent,
     MetadataEditorComponent,
     PlayViewComponent,
@@ -227,14 +225,6 @@ import { SettingsService } from '../../core/services/settings.service';
                 }
               </div>
 
-              <!-- Process tab: Standard vs Bilingual mode -->
-              @if (mainTab() === 'audiobook') {
-                <div class="sub-tabs">
-                  <button class="sub-tab" [class.active]="processMode() === 'standard'" (click)="processMode.set('standard')">Standard</button>
-                  <button class="sub-tab" [class.active]="processMode() === 'bilingual'" (click)="processMode.set('bilingual')">Bilingual</button>
-                </div>
-              }
-
               <!-- Listen tab: Play vs Stream preview -->
               @if (mainTab() === 'listen') {
                 <div class="sub-tabs">
@@ -325,43 +315,26 @@ import { SettingsService } from '../../core/services/settings.service';
                     <button class="btn-open-editor" (click)="openEditor()">Open Editor</button>
                   </div>
                 } @else if (currentEpubPath()) {
-                  @if (processMode() === 'standard') {
-                    <app-process-wizard
-                      [epubPath]="currentEpubPath()"
-                      [title]="selectedMetadata()?.title || ''"
-                      [author]="selectedMetadata()?.author || ''"
-                      [coverPath]="selectedItem()?.coverPath || ''"
-                      [year]="selectedMetadata()?.year || ''"
-                      [contributors]="selectedItem()?.contributors"
-                      [itemType]="selectedItem()?.type || 'book'"
-                      [bfpPath]="selectedItem()?.bfpPath || ''"
-                      [projectId]="selectedItem()?.id || ''"
-                      [projectDir]="getProjectDir()"
-                      [sourceLang]="selectedItem()?.sourceLang || 'en'"
-                      [textContent]="selectedItem()?.textContent || ''"
-                      [cachedSession]="cachedSession()"
-                      [refreshTrigger]="filesRefreshTrigger()"
-                      (queued)="onProcessQueued()"
-                    />
-                  } @else {
-                    <app-ll-wizard
-                      [epubPath]="currentEpubPath()"
-                      [originalEpubPath]="selectedItem()?.epubPath || ''"
-                      [title]="selectedMetadata()?.title || ''"
-                      [projectTitle]="selectedMetadata()?.title || ''"
-                      [author]="selectedMetadata()?.author || ''"
-                      [year]="selectedMetadata()?.year || ''"
-                      [coverPath]="selectedItem()?.coverPath || ''"
-                      [itemType]="selectedItem()?.type || 'book'"
-                      [bfpPath]="selectedItem()?.bfpPath || ''"
-                      [projectId]="selectedItem()?.id || ''"
-                      [projectDir]="getProjectDir()"
-                      [audiobookFolder]="getAudiobookFolder()"
-                      [initialSourceLang]="selectedItem()?.language || 'en'"
-                      [refreshTrigger]="filesRefreshTrigger()"
-                      (queued)="onProcessQueued()"
-                    />
-                  }
+                  <app-ll-wizard
+                    [epubPath]="currentEpubPath()"
+                    [originalEpubPath]="selectedItem()?.epubPath || ''"
+                    [title]="selectedMetadata()?.title || ''"
+                    [projectTitle]="selectedMetadata()?.title || ''"
+                    [author]="selectedMetadata()?.author || ''"
+                    [year]="selectedMetadata()?.year || ''"
+                    [coverPath]="selectedItem()?.coverPath || ''"
+                    [contributors]="selectedItem()?.contributors"
+                    [itemType]="selectedItem()?.type || 'book'"
+                    [bfpPath]="selectedItem()?.bfpPath || ''"
+                    [projectId]="selectedItem()?.id || ''"
+                    [projectDir]="getProjectDir()"
+                    [audiobookFolder]="getAudiobookFolder()"
+                    [initialSourceLang]="selectedItem()?.sourceLang || selectedItem()?.language || 'en'"
+                    [cachedSession]="cachedSession()"
+                    [outputFilename]="selectedMetadata()?.outputFilename || ''"
+                    [refreshTrigger]="filesRefreshTrigger()"
+                    (queued)="onProcessQueued()"
+                  />
                 } @else {
                   <div class="empty-state-panel">
                     <div class="icon">📄</div>
@@ -1361,7 +1334,6 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly llSubTab = signal<LanguageLearningSubTab>('process');
 
   // Four-tab book view modes.
-  readonly processMode = signal<'standard' | 'bilingual'>('standard');  // Process tab
   readonly listenMode = signal<'play' | 'stream'>('play');              // Listen tab
   readonly versionsPanel = signal<'none' | 'enhance' | 'chapters' | 'skipped'>('none'); // inline panel in Versions tab
 
@@ -1687,7 +1659,6 @@ export class StudioComponent implements OnInit, OnDestroy {
   selectItem(item: StudioItem): void {
     this.selectedItemId.set(item.id);
     this.mainTab.set('files');
-    this.processMode.set('standard');
     this.listenMode.set('play');
     this.versionsPanel.set('none');
     this.finalizingContent.set('idle');

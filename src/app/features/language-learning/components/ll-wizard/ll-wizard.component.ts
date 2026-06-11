@@ -1,14 +1,19 @@
 /**
- * LLWizard - Language Learning Pipeline Wizard v2
+ * The unified processing pipeline wizard (formerly LLWizard).
  *
- * A 5-step wizard for processing EPUBs through the language learning pipeline:
+ * One 5-step wizard for ALL audiobook production:
  * 1. AI Cleanup - Clean OCR/formatting OR simplify for learners (skippable)
- * 2. Translation - Select multiple target languages (skippable)
- * 3. TTS - Configure TTS for multiple languages with per-language rows (skippable)
- * 4. Assembly - Interleave source + target sentences (skippable)
+ * 2. Translation - mode switch: Whole book (single narration) vs
+ *    Sentence-aligned (language learning, multiple target languages) (skippable)
+ * 3. TTS - single voice (whole-book) or per-language rows (sentence-aligned) (skippable)
+ * 4. Assembly - M4B+VTT reassembly (whole-book) or bilingual interleave (skippable)
  * 5. Review - Summary before submission (required)
  *
- * Key principle: Each step has its own source dropdown with "Latest" as default.
+ * The translate mode drives the pipeline shape ("mono" vs "bilingual"), and each
+ * mode submits exactly the job types its predecessor wizard submitted — the merge
+ * is a UI consolidation, not a backend change.
+ *
+ * Key principle: Each step has its own source picker with "Latest" as default.
  * Pipeline-aware source selection means each step uses output of previous step if available.
  */
 
@@ -20,6 +25,7 @@ import { SettingsService } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { QueueService } from '../../../queue/services/queue.service';
+import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
 import { EpubResolverService } from '../../services/epub-resolver.service';
 import {
   SUPPORTED_LANGUAGES,
@@ -36,7 +42,7 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface SourceStage {
-  id: 'original' | 'exported' | 'cleaned' | 'simplified';
+  id: 'original' | 'exported' | 'cleaned' | 'simplified' | 'translated';
   label: string;
   completed: boolean;
   path: string;
@@ -276,6 +282,50 @@ interface SourceStage {
                 ></textarea>
                 <span class="hint">Appended to the AI prompt for both cleanup and simplify</span>
               </div>
+
+              <!-- Parallel Workers (cloud providers, whole-book pipeline) -->
+              @if (pipelineMode() === 'mono' && cleanupProvider() !== 'ollama' && itemType() === 'book') {
+                <div class="config-section">
+                  <label class="field-label">Parallel Workers</label>
+                  <div class="worker-options">
+                    @for (count of [1, 2, 4, 8]; track count) {
+                      <button class="worker-btn" [class.selected]="cleanupParallelWorkers() === count" (click)="cleanupParallelWorkers.set(count)">
+                        {{ count }}
+                      </button>
+                    }
+                  </div>
+                  <span class="hint">Concurrent API requests for Claude/OpenAI</span>
+                </div>
+              }
+
+              <!-- AI Prompt Editor -->
+              <div class="accordion" [class.open]="promptAccordionOpen()">
+                <button class="accordion-header" (click)="togglePromptAccordion()">
+                  <span class="accordion-title">AI Prompt</span>
+                  <span class="accordion-icon">{{ promptAccordionOpen() ? '▼' : '▶' }}</span>
+                </button>
+                @if (promptAccordionOpen()) {
+                  <div class="accordion-content">
+                    @if (loadingPrompt()) {
+                      <div class="hint">Loading prompt...</div>
+                    } @else {
+                      <textarea
+                        class="prompt-textarea"
+                        [value]="promptText()"
+                        (input)="onPromptChange($event)"
+                        placeholder="Enter the AI cleanup prompt..."
+                      ></textarea>
+                      @if (promptModified()) {
+                        <div class="prompt-footer">
+                          <button class="btn-save-prompt" [disabled]="savingPrompt()" (click)="savePrompt()">
+                            {{ savingPrompt() ? 'Saving...' : 'Save Prompt' }}
+                          </button>
+                        </div>
+                      }
+                    }
+                  </div>
+                }
+              </div>
             </div>
           }
 
@@ -285,7 +335,52 @@ interface SourceStage {
           @case ('translate') {
             <div class="step-panel scrollable">
               <h3>Translation</h3>
-              <p class="step-desc">Select target languages for bilingual audiobook. Multiple selections allowed.</p>
+              <p class="step-desc">
+                @if (translateMode() === 'whole-book') {
+                  Translate the whole book into another language before narration — or skip if the book is already in the language you want.
+                } @else {
+                  Select target languages for bilingual audiobook. Multiple selections allowed.
+                }
+              </p>
+
+              <!-- Translation Type (drives the pipeline shape) -->
+              <div class="config-section">
+                <label class="field-label">Translation Type</label>
+                <div class="provider-buttons">
+                  <button
+                    class="provider-btn"
+                    [class.selected]="translateMode() === 'whole-book'"
+                    (click)="translateMode.set('whole-book')"
+                  >
+                    <span class="provider-name">Whole Book</span>
+                    <span class="provider-status">Single narration</span>
+                  </button>
+                  <button
+                    class="provider-btn"
+                    [class.selected]="translateMode() === 'sentence'"
+                    (click)="translateMode.set('sentence')"
+                  >
+                    <span class="provider-name">Sentence-Aligned</span>
+                    <span class="provider-status">Language learning</span>
+                  </button>
+                </div>
+              </div>
+
+              @if (translateMode() === 'whole-book') {
+                <div class="toggle-section-inline">
+                  <button
+                    class="option-toggle"
+                    [class.active]="enableMonoTranslation()"
+                    (click)="toggleMonoTranslation()"
+                  >
+                    <span class="toggle-icon">🌐</span>
+                    <span class="toggle-label">Translate this book</span>
+                    <span class="toggle-sublabel">Whole-book translation before TTS</span>
+                  </button>
+                </div>
+              }
+
+              @if (translateMode() === 'sentence' || enableMonoTranslation()) {
 
               <!-- Source EPUB Selection -->
               <div class="config-section">
@@ -416,39 +511,65 @@ interface SourceStage {
                 <span class="value">{{ getLanguageName(detectedSourceLang()) }}</span>
               </div>
 
-              <!-- Target Language Multi-Select Grid -->
-              <div class="config-section">
-                <label class="field-label">Target Languages (select multiple)</label>
-                <div class="language-grid">
-                  @for (lang of supportedLanguages; track lang.code) {
-                    @if (lang.code !== detectedSourceLang()) {
-                      <button
-                        class="language-btn"
-                        [class.selected]="isTargetLangSelected(lang.code)"
-                        (click)="toggleTargetLang(lang.code)"
-                      >
-                        <span class="lang-flag" [style.background]="getFlagCss(lang.code)"></span>
-                        <span class="lang-code">{{ lang.code.toUpperCase() }}</span>
-                        <span class="lang-name">{{ lang.name }}</span>
-                        @if (isTargetLangSelected(lang.code)) {
-                          <span class="lang-check">✓</span>
-                        }
-                      </button>
+              @if (translateMode() === 'sentence') {
+                <!-- Target Language Multi-Select Grid -->
+                <div class="config-section">
+                  <label class="field-label">Target Languages (select multiple)</label>
+                  <div class="language-grid">
+                    @for (lang of supportedLanguages; track lang.code) {
+                      @if (lang.code !== detectedSourceLang()) {
+                        <button
+                          class="language-btn"
+                          [class.selected]="isTargetLangSelected(lang.code)"
+                          (click)="toggleTargetLang(lang.code)"
+                        >
+                          <span class="lang-flag" [style.background]="getFlagCss(lang.code)"></span>
+                          <span class="lang-code">{{ lang.code.toUpperCase() }}</span>
+                          <span class="lang-name">{{ lang.name }}</span>
+                          @if (isTargetLangSelected(lang.code)) {
+                            <span class="lang-check">✓</span>
+                          }
+                        </button>
+                      }
                     }
+                  </div>
+
+                  @if (targetLangs().size === 0) {
+                    <div class="hint">Select at least one target language, or skip this step to use existing translations.</div>
+                  } @else {
+                    <div class="selection-summary">
+                      Selected: {{ Array.from(targetLangs()).map(getLanguageName.bind(this)).join(', ') }}
+                    </div>
                   }
                 </div>
-
-                @if (targetLangs().size === 0) {
-                  <div class="hint">Select at least one target language, or skip this step to use existing translations.</div>
-                } @else {
-                  <div class="selection-summary">
-                    Selected: {{ Array.from(targetLangs()).map(getLanguageName.bind(this)).join(', ') }}
+              } @else {
+                <!-- Whole-book: single target language -->
+                <div class="config-section">
+                  <label class="field-label">Target Language</label>
+                  <div class="language-grid">
+                    @for (lang of supportedLanguages; track lang.code) {
+                      @if (lang.code !== detectedSourceLang()) {
+                        <button
+                          class="language-btn"
+                          [class.selected]="monoTargetLang() === lang.code"
+                          (click)="monoTargetLang.set(lang.code)"
+                        >
+                          <span class="lang-flag" [style.background]="getFlagCss(lang.code)"></span>
+                          <span class="lang-code">{{ lang.code.toUpperCase() }}</span>
+                          <span class="lang-name">{{ lang.name }}</span>
+                          @if (monoTargetLang() === lang.code) {
+                            <span class="lang-check">✓</span>
+                          }
+                        </button>
+                      }
+                    }
                   </div>
-                }
-              </div>
+                  <div class="hint">The whole book is translated to {{ getLanguageName(monoTargetLang()) }} and the translation is narrated.</div>
+                </div>
+              }
 
-              <!-- Existing Translations -->
-              @if (existingTranslationEpubs().length > 0) {
+              <!-- Existing Translations (sentence-aligned outputs) -->
+              @if (translateMode() === 'sentence' && existingTranslationEpubs().length > 0) {
                 <div class="config-section">
                   <label class="field-label">Existing Translations</label>
                   <div class="existing-translations">
@@ -464,6 +585,8 @@ interface SourceStage {
                   </div>
                 </div>
               }
+
+              }
             </div>
           }
 
@@ -473,7 +596,13 @@ interface SourceStage {
           @case ('tts') {
             <div class="step-panel scrollable">
               <h3>Text-to-Speech</h3>
-              <p class="step-desc">Configure voice synthesis for each language. Each row becomes a separate TTS job.</p>
+              <p class="step-desc">
+                @if (pipelineMode() === 'mono') {
+                  Configure the narration voice.
+                } @else {
+                  Configure voice synthesis for each language. Each row becomes a separate TTS job.
+                }
+              </p>
 
               <!-- Continue / New Toggle -->
               <div class="config-section">
@@ -587,6 +716,79 @@ interface SourceStage {
                 <span class="hint">Test mode processes only first N sentences</span>
               </div>
 
+              @if (pipelineMode() === 'mono') {
+                <!-- Source EPUB Selection -->
+                <div class="config-section">
+                  <label class="field-label">Source EPUB</label>
+                  <div class="source-stages">
+                    @for (stage of ttsSourceStages(); track stage.id) {
+                      <button
+                        class="stage-btn"
+                        [class.selected]="isStageSelected('tts', stage)"
+                        [class.completed]="stage.completed"
+                        [disabled]="!stage.completed && !isStageSelected('tts', stage)"
+                        (click)="selectStage('tts', stage)"
+                      >
+                        {{ stage.label }}
+                        @if (stage.completed) {
+                          <span class="stage-check">&#10003;</span>
+                        }
+                      </button>
+                    }
+                  </div>
+                  <span class="hint">"Latest" follows the pipeline: output of the last enabled step is narrated.</span>
+                </div>
+
+                <!-- Single Voice -->
+                <div class="config-section">
+                  <label class="field-label">Voice ({{ getLanguageName(monoTtsLanguage()) }})</label>
+                  <select
+                    class="select-input"
+                    [value]="monoTtsVoice()"
+                    (change)="monoTtsVoice.set($any($event.target).value)"
+                  >
+                    @for (voice of getVoicesForEngine(); track voice.value) {
+                      <option [value]="voice.value">{{ voice.label }}</option>
+                    }
+                  </select>
+                </div>
+
+                <!-- Speed -->
+                <div class="config-section">
+                  <label class="field-label">Speed: {{ monoTtsSpeed() }}x</label>
+                  <input
+                    type="range"
+                    class="full-width-slider"
+                    min="0.5"
+                    max="2"
+                    step="0.05"
+                    [value]="monoTtsSpeed()"
+                    (input)="monoTtsSpeed.set(+$any($event.target).value)"
+                  />
+                </div>
+
+                <!-- Advanced (XTTS sampling) -->
+                <div class="accordion" [class.open]="advancedTtsOpen()">
+                  <button class="accordion-header" (click)="advancedTtsOpen.set(!advancedTtsOpen())">
+                    <span class="accordion-title">Advanced</span>
+                    <span class="accordion-icon">{{ advancedTtsOpen() ? '▼' : '▶' }}</span>
+                  </button>
+                  @if (advancedTtsOpen()) {
+                    <div class="accordion-content">
+                      <div class="config-section">
+                        <label class="field-label">Temperature: {{ ttsTemperature() }}</label>
+                        <input type="range" class="full-width-slider" min="0.1" max="1.0" step="0.05"
+                          [value]="ttsTemperature()" (input)="ttsTemperature.set(+$any($event.target).value)" />
+                      </div>
+                      <div class="config-section">
+                        <label class="field-label">Top P: {{ ttsTopP() }}</label>
+                        <input type="range" class="full-width-slider" min="0.1" max="1.0" step="0.05"
+                          [value]="ttsTopP()" (input)="ttsTopP.set(+$any($event.target).value)" />
+                      </div>
+                    </div>
+                  }
+                </div>
+              } @else {
               <!-- Language Rows -->
               <div class="config-section">
                 <label class="field-label">Languages to Generate</label>
@@ -642,6 +844,7 @@ interface SourceStage {
                 </button>
               </div>
               }
+              }
             </div>
           }
 
@@ -650,6 +853,58 @@ interface SourceStage {
           <!-- ─────────────────────────────────────────────────────────────── -->
           @case ('assembly') {
             <div class="step-panel">
+              @if (pipelineMode() === 'mono') {
+                <h3>Assembly</h3>
+                <p class="step-desc">Assemble TTS output into a finished audiobook (M4B with chapters).</p>
+
+                @if (!isStepSkipped('tts')) {
+                  <!-- Mode A: TTS is enabled — assembly chains from TTS output -->
+                  <div class="review-card">
+                    <div class="review-card-content">
+                      <div class="review-row">
+                        <span class="review-label">Mode:</span>
+                        <span class="review-value">Assemble from TTS output</span>
+                      </div>
+                      <div class="review-row">
+                        <span class="review-label">Status:</span>
+                        <span class="review-value">Will run after TTS completes</span>
+                      </div>
+                      <div class="review-row">
+                        <span class="review-label">Title:</span>
+                        <span class="review-value">{{ title() || 'Untitled' }}</span>
+                      </div>
+                      <div class="review-row">
+                        <span class="review-label">Author:</span>
+                        <span class="review-value">{{ author() || 'Unknown' }}</span>
+                      </div>
+                    </div>
+                  </div>
+                } @else if (cachedSession(); as session) {
+                  <!-- Mode B: TTS skipped, cached session exists — standalone reassembly -->
+                  <div class="review-card">
+                    <div class="review-card-content">
+                      <div class="review-row">
+                        <span class="review-label">Mode:</span>
+                        <span class="review-value">Reassemble from cached session</span>
+                      </div>
+                      <div class="review-row">
+                        <span class="review-label">Progress:</span>
+                        <span class="review-value">{{ session.completedSentences }}/{{ session.totalSentences }} sentences</span>
+                      </div>
+                      @if (session.chapters?.length) {
+                        <div class="review-row">
+                          <span class="review-label">Chapters:</span>
+                          <span class="review-value">{{ session.chapters.length }}</span>
+                        </div>
+                      }
+                    </div>
+                  </div>
+                } @else {
+                  <div class="warning-banner">
+                    No cached TTS session found for this book. Enable TTS to chain assembly, or skip this step.
+                  </div>
+                }
+              } @else {
               <h3>Bilingual Assembly</h3>
               <p class="step-desc">Interleave source and target sentences into a bilingual audiobook.</p>
 
@@ -756,8 +1011,10 @@ interface SourceStage {
                   (input)="gapDuration.set(+$any($event.target).value)"
                 />
               </div>
+              }
 
-              <!-- Output Format -->
+              <!-- Output Format (shared by both pipelines) -->
+              @if (pipelineMode() === 'bilingual' || !isStepSkipped('tts') || cachedSession()) {
               <div class="config-section">
                 <label class="field-label">Output Format</label>
                 <div class="provider-buttons">
@@ -773,6 +1030,7 @@ interface SourceStage {
                   </button>
                 </div>
               </div>
+              }
 
               @if (generateVideo()) {
                 <div class="config-section">
@@ -800,7 +1058,7 @@ interface SourceStage {
                 </div>
               }
 
-              @if (!assemblySourceLang() || !assemblyTargetLang()) {
+              @if (pipelineMode() === 'bilingual' && (!assemblySourceLang() || !assemblyTargetLang())) {
                 <div class="warning-banner">
                   Select both source and target languages for assembly, or skip this step.
                 </div>
@@ -858,22 +1116,31 @@ interface SourceStage {
                 }
 
                 <!-- Translation Card -->
-                @if (!isStepSkipped('translate') && targetLangs().size > 0) {
+                @if (!isStepSkipped('translate') && (translateMode() === 'sentence' ? targetLangs().size > 0 : monoTranslationActive())) {
                   <div class="review-card">
                     <div class="review-card-header">
                       <span class="review-card-icon">🌐</span>
                       <span class="review-card-title">Translation</span>
-                      <span class="job-count">{{ targetLangs().size }} job{{ targetLangs().size > 1 ? 's' : '' }}</span>
+                      @if (translateMode() === 'sentence') {
+                        <span class="job-count">{{ targetLangs().size }} job{{ targetLangs().size > 1 ? 's' : '' }}</span>
+                      }
                     </div>
                     <div class="review-card-content">
                       <div class="review-row">
                         <span class="review-label">Source:</span>
                         <span class="review-value">{{ translateSourceEpub() === 'latest' ? 'Latest' : getFilenameFromPath(translateSourceEpub()) }}</span>
                       </div>
-                      <div class="review-row">
-                        <span class="review-label">Languages:</span>
-                        <span class="review-value">{{ Array.from(targetLangs()).map(getLanguageName.bind(this)).join(', ') }}</span>
-                      </div>
+                      @if (translateMode() === 'sentence') {
+                        <div class="review-row">
+                          <span class="review-label">Languages:</span>
+                          <span class="review-value">{{ Array.from(targetLangs()).map(getLanguageName.bind(this)).join(', ') }}</span>
+                        </div>
+                      } @else {
+                        <div class="review-row">
+                          <span class="review-label">Whole book:</span>
+                          <span class="review-value">{{ getLanguageName(detectedSourceLang()) }} → {{ getLanguageName(monoTargetLang()) }}</span>
+                        </div>
+                      }
                       <div class="review-row">
                         <span class="review-label">Provider:</span>
                         <span class="review-value">{{ translateProvider() }} / {{ translateModel() }}</span>
@@ -891,25 +1158,34 @@ interface SourceStage {
                 }
 
                 <!-- TTS Card -->
-                @if (!isStepSkipped('tts') && ttsLanguageRows().length > 0) {
+                @if (!isStepSkipped('tts') && (pipelineMode() === 'mono' || ttsLanguageRows().length > 0)) {
                   <div class="review-card">
                     <div class="review-card-header">
                       <span class="review-card-icon">🔊</span>
                       <span class="review-card-title">TTS</span>
-                      <span class="job-count">{{ ttsLanguageRows().length }} job{{ ttsLanguageRows().length > 1 ? 's' : '' }}</span>
+                      @if (pipelineMode() === 'bilingual') {
+                        <span class="job-count">{{ ttsLanguageRows().length }} job{{ ttsLanguageRows().length > 1 ? 's' : '' }}</span>
+                      }
                     </div>
                     <div class="review-card-content">
                       <div class="review-row">
                         <span class="review-label">Engine:</span>
                         <span class="review-value">{{ ttsEngine().toUpperCase() }} / {{ ttsDevice().toUpperCase() }}</span>
                       </div>
-                      @for (row of ttsLanguageRows(); track row.id) {
+                      @if (pipelineMode() === 'mono') {
                         <div class="review-row">
-                          <span class="review-label">{{ row.language.toUpperCase() }}:</span>
-                          <span class="review-value">{{ row.voice }} @ {{ row.speed }}x</span>
+                          <span class="review-label">{{ monoTtsLanguage().toUpperCase() }}:</span>
+                          <span class="review-value">{{ monoTtsVoice() }} @ {{ monoTtsSpeed() }}x</span>
                         </div>
+                      } @else {
+                        @for (row of ttsLanguageRows(); track row.id) {
+                          <div class="review-row">
+                            <span class="review-label">{{ row.language.toUpperCase() }}:</span>
+                            <span class="review-value">{{ row.voice }} @ {{ row.speed }}x</span>
+                          </div>
+                        }
                       }
-                      @if (ttsTestMode()) {
+                      @if (pipelineMode() === 'bilingual' && ttsTestMode()) {
                         <div class="review-row">
                           <span class="review-label">Test:</span>
                           <span class="review-value">First {{ ttsTestSentences() }} sentences</span>
@@ -928,25 +1204,36 @@ interface SourceStage {
                 }
 
                 <!-- Assembly Card -->
-                @if (!isStepSkipped('assembly') && assemblySourceLang() && assemblyTargetLang()) {
+                @if (!isStepSkipped('assembly') && (pipelineMode() === 'mono' ? (!isStepSkipped('tts') || cachedSession()) : (assemblySourceLang() && assemblyTargetLang()))) {
                   <div class="review-card">
                     <div class="review-card-header">
                       <span class="review-card-icon">🎵</span>
                       <span class="review-card-title">Assembly</span>
                     </div>
                     <div class="review-card-content">
-                      <div class="review-row">
-                        <span class="review-label">Pair:</span>
-                        <span class="review-value">{{ assemblySourceLang().toUpperCase() }} + {{ assemblyTargetLang().toUpperCase() }}</span>
-                      </div>
-                      <div class="review-row">
-                        <span class="review-label">Pattern:</span>
-                        <span class="review-value">{{ assemblyPattern() }}</span>
-                      </div>
-                      <div class="review-row">
-                        <span class="review-label">Timing:</span>
-                        <span class="review-value">{{ pauseDuration() }}s pause, {{ gapDuration() }}s gap</span>
-                      </div>
+                      @if (pipelineMode() === 'mono') {
+                        <div class="review-row">
+                          <span class="review-label">Output:</span>
+                          <span class="review-value">M4B + VTT{{ generateVideo() ? ' + Video (' + videoResolution() + ')' : '' }}</span>
+                        </div>
+                        <div class="review-row">
+                          <span class="review-label">Mode:</span>
+                          <span class="review-value">{{ !isStepSkipped('tts') ? 'Chained after TTS' : 'From cached session' }}</span>
+                        </div>
+                      } @else {
+                        <div class="review-row">
+                          <span class="review-label">Pair:</span>
+                          <span class="review-value">{{ assemblySourceLang().toUpperCase() }} + {{ assemblyTargetLang().toUpperCase() }}</span>
+                        </div>
+                        <div class="review-row">
+                          <span class="review-label">Pattern:</span>
+                          <span class="review-value">{{ assemblyPattern() }}</span>
+                        </div>
+                        <div class="review-row">
+                          <span class="review-label">Timing:</span>
+                          <span class="review-value">{{ pauseDuration() }}s pause, {{ gapDuration() }}s gap</span>
+                        </div>
+                      }
                     </div>
                   </div>
                 } @else {
@@ -1394,6 +1681,68 @@ interface SourceStage {
       font-size: 12px;
       color: var(--warning);
       text-align: center;
+    }
+
+    .accordion {
+      margin-top: 16px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .accordion-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--bg-elevated);
+      border: none;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .accordion-content {
+      padding: 12px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .prompt-textarea {
+      width: 100%;
+      min-height: 220px;
+      padding: 10px;
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-family: monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      resize: vertical;
+      box-sizing: border-box;
+    }
+
+    .prompt-footer {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+
+    .btn-save-prompt {
+      padding: 6px 14px;
+      background: var(--accent-primary);
+      border: none;
+      border-radius: 6px;
+      color: white;
+      font-size: 12px;
+      cursor: pointer;
+
+      &:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
     }
 
     .test-mode-config {
@@ -2027,6 +2376,11 @@ export class LLWizardComponent implements OnInit {
   readonly initialSourceLang = input<string>('en');
   readonly refreshTrigger = input<number>(0);  // bump to re-scan stages after a delete/reset
 
+  // Mono-pipeline inputs (whole-book mode)
+  readonly contributors = input<Array<{ first: string; last: string }> | undefined>(undefined);
+  readonly cachedSession = input<any>(null);       // Cached TTS session for standalone reassembly
+  readonly outputFilename = input<string>('');     // Saved manifest filename — respected over derived name
+
   readonly queued = output<void>();
   readonly back = output<void>();
 
@@ -2050,6 +2404,16 @@ export class LLWizardComponent implements OnInit {
   readonly testMode = signal(false);
   readonly testModeChunks = signal(5);
   readonly customInstructions = signal('');
+  readonly cleanupParallelWorkers = signal(4);  // Parallel workers for Claude/OpenAI (mono ocr-cleanup)
+
+  // AI prompt editor (edits the global cleanup prompt file)
+  readonly promptAccordionOpen = signal(false);
+  readonly loadingPrompt = signal(false);
+  readonly savingPrompt = signal(false);
+  readonly promptText = signal('');
+  readonly originalPromptText = signal('');
+  readonly promptModified = computed(() => this.promptText() !== this.originalPromptText());
+
   readonly hasExistingCleanup = computed(() => {
     return this.availableEpubs().some(e => e.filename === 'cleaned.epub' || e.filename === 'simplified.epub');
   });
@@ -2078,6 +2442,19 @@ export class LLWizardComponent implements OnInit {
     ];
   });
 
+  /** Stages relevant for mono TTS source: everything incl. whole-book translation output */
+  readonly ttsSourceStages = computed<SourceStage[]>(() => {
+    const epubs = this.availableEpubs();
+    const find = (name: string) => epubs.find(e => e.filename === name);
+    return [
+      { id: 'original', label: 'Original', completed: !!find('original.epub'), path: find('original.epub')?.path ?? '' },
+      { id: 'exported', label: 'Exported', completed: !!find('exported.epub'), path: find('exported.epub')?.path ?? '' },
+      { id: 'cleaned', label: 'AI Cleaned', completed: !!find('cleaned.epub'), path: find('cleaned.epub')?.path ?? '' },
+      { id: 'simplified', label: 'AI Simplified', completed: !!find('simplified.epub'), path: find('simplified.epub')?.path ?? '' },
+      { id: 'translated', label: 'Translated', completed: !!find('translated.epub'), path: find('translated.epub')?.path ?? '' },
+    ];
+  });
+
   /** Stage order tiebreak for mtime-based resolution (higher = preferred when mtimes are equal) */
   private static readonly STAGE_ORDER: Record<string, number> = {
     'original.epub': 0,
@@ -2102,10 +2479,32 @@ export class LLWizardComponent implements OnInit {
     return filtered[0];
   }
 
+  /** What the cleanup step will produce, if it's active in this pipeline run */
+  private cleanupWillProduce(): 'cleaned.epub' | 'simplified.epub' | null {
+    if (this._skippedSteps.has('cleanup')) return null;
+    if (this.simplifyForLearning()) return 'simplified.epub';
+    if (this.enableAiCleanup()) return 'cleaned.epub';
+    return null;
+  }
+
   /** Resolve which stage ID "latest" maps to for a given pipeline step */
-  private resolveLatestStageId(step: 'cleanup' | 'translate'): string {
+  private resolveLatestStageId(step: 'cleanup' | 'translate' | 'tts'): string {
     const epubs = this.availableEpubs();
     const has = (name: string) => epubs.some(e => e.filename === name);
+    if (step === 'tts') {
+      // Mono TTS input: pipeline intent first (earlier steps will produce files), then on-disk latest
+      if (this.monoTranslationActive()) return 'translated';
+      const willProduce = this.cleanupWillProduce();
+      if (willProduce) return willProduce.replace('.epub', '');
+      const exclude = new Set<string>();
+      for (const e of epubs) { if (e.isTranslated) exclude.add(e.filename); } // per-language EPUBs are bilingual outputs
+      const best = this.getMostRecentEpub(epubs, exclude);
+      if (best) return best.filename.replace('.epub', '');
+      for (const name of ['translated', 'simplified', 'cleaned', 'exported', 'original']) {
+        if (has(`${name}.epub`)) return name;
+      }
+      return '';
+    }
     if (step === 'cleanup') {
       // Cleanup input: most recently modified source file (not cleaned/simplified — we produce those)
       const sourceOnly = new Set(['cleaned.epub', 'simplified.epub', 'translated.epub']);
@@ -2130,9 +2529,15 @@ export class LLWizardComponent implements OnInit {
     return '';
   }
 
+  private sourceSignalFor(step: 'cleanup' | 'translate' | 'tts') {
+    if (step === 'cleanup') return this.cleanupSourceEpub;
+    if (step === 'translate') return this.translateSourceEpub;
+    return this.ttsSourceEpub;
+  }
+
   /** Check if a stage button should be highlighted as selected */
-  isStageSelected(step: 'cleanup' | 'translate', stage: SourceStage): boolean {
-    const source = step === 'cleanup' ? this.cleanupSourceEpub() : this.translateSourceEpub();
+  isStageSelected(step: 'cleanup' | 'translate' | 'tts', stage: SourceStage): boolean {
+    const source = this.sourceSignalFor(step)();
     if (source === 'latest') {
       return stage.id === this.resolveLatestStageId(step);
     }
@@ -2140,8 +2545,8 @@ export class LLWizardComponent implements OnInit {
   }
 
   /** Handle stage button click — clicking the auto-selected stage returns to 'latest' */
-  selectStage(step: 'cleanup' | 'translate', stage: SourceStage): void {
-    const signal = step === 'cleanup' ? this.cleanupSourceEpub : this.translateSourceEpub;
+  selectStage(step: 'cleanup' | 'translate' | 'tts', stage: SourceStage): void {
+    const signal = this.sourceSignalFor(step);
     const current = signal();
 
     // If clicking the currently selected stage, toggle back to 'latest'
@@ -2155,6 +2560,23 @@ export class LLWizardComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────
   // Step 2: Translation
   // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Translation mode — drives the shape of the whole pipeline:
+   * - 'whole-book': mono pipeline (single narration; optional full-book translation,
+   *   single TTS voice, M4B reassembly) — what the old process-wizard did.
+   * - 'sentence': bilingual pipeline (sentence-aligned per-language translation,
+   *   per-language TTS rows, interleaved assembly) — what the old LL wizard did.
+   */
+  readonly translateMode = signal<'whole-book' | 'sentence'>('whole-book');
+  readonly pipelineMode = computed<'mono' | 'bilingual'>(() =>
+    this.translateMode() === 'sentence' ? 'bilingual' : 'mono');
+
+  // Whole-book translation (mono pipeline)
+  readonly enableMonoTranslation = signal(false);
+  readonly monoTargetLang = signal<string>('en');
+  readonly monoTranslationActive = computed(() =>
+    this.translateMode() === 'whole-book' && this.enableMonoTranslation() && !!this.monoTargetLang());
 
   readonly translateSourceEpub = signal<string>('latest');
   readonly targetLangs = signal<Set<string>>(new Set());
@@ -2183,6 +2605,17 @@ export class LLWizardComponent implements OnInit {
   readonly ttsTestSentences = signal(10);
   readonly ttsLanguageRows = signal<TtsLanguageRow[]>([]);
   readonly continueTts = signal(false);
+
+  // Mono pipeline: single-voice TTS settings
+  readonly ttsSourceEpub = signal<string>('latest');
+  readonly monoTtsVoice = signal('ScarlettJohansson');
+  readonly monoTtsSpeed = signal(1.0);
+  readonly ttsTemperature = signal(0.7);
+  readonly ttsTopP = signal(0.9);
+  readonly advancedTtsOpen = signal(false);
+  /** Audio language follows the pipeline: translated target if translating, else the book's language */
+  readonly monoTtsLanguage = computed(() =>
+    this.monoTranslationActive() ? this.monoTargetLang() : this.detectedSourceLang());
   readonly partialTtsSessions = signal<{ language: string; completedSentences: number; totalSentences: number; sessionDir: string; sentencesDir: string }[]>([]);
 
   // Voice options
@@ -2361,10 +2794,11 @@ export class LLWizardComponent implements OnInit {
       if (dir) this.scanProjectEpubs();
     });
 
-    // Sync TTS language rows when target languages change
+    // Sync TTS language rows when target languages change (bilingual pipeline only)
     effect(() => {
       // Skip during initialization to avoid conflicts
       if (this.isInitializing) return;
+      if (this.pipelineMode() !== 'bilingual') return;
 
       const targets = this.targetLangs();
       const sourceLang = this.detectedSourceLang();
@@ -2810,6 +3244,14 @@ export class LLWizardComponent implements OnInit {
   // Translation
   // ─────────────────────────────────────────────────────────────────────────
 
+  toggleMonoTranslation(): void {
+    const on = !this.enableMonoTranslation();
+    this.enableMonoTranslation.set(on);
+    if (on) {
+      this._skippedSteps.delete('translate');
+    }
+  }
+
   isTargetLangSelected(code: string): boolean {
     return this.targetLangs().has(code);
   }
@@ -2867,8 +3309,9 @@ export class LLWizardComponent implements OnInit {
       this.ttsWorkers.set(1);
     }
 
-    // Update all rows to use new engine's default voice
+    // Update all rows (and the mono voice) to the new engine's default voice
     const defaultVoice = engine === 'orpheus' ? 'tara' : 'ScarlettJohansson';
+    this.monoTtsVoice.set(defaultVoice);
     this.ttsLanguageRows.update(rows =>
       rows.map(row => ({ ...row, voice: defaultVoice }))
     );
@@ -3012,6 +3455,51 @@ export class LLWizardComponent implements OnInit {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // AI Prompt Editor (edits the global cleanup prompt file)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async togglePromptAccordion(): Promise<void> {
+    const opening = !this.promptAccordionOpen();
+    this.promptAccordionOpen.set(opening);
+    if (opening && !this.promptText() && !this.loadingPrompt()) {
+      await this.loadPrompt();
+    }
+  }
+
+  async loadPrompt(): Promise<void> {
+    this.loadingPrompt.set(true);
+    try {
+      const result = await this.electronService.getAIPrompt();
+      if (result) {
+        this.promptText.set(result.prompt);
+        this.originalPromptText.set(result.prompt);
+      }
+    } catch (err) {
+      console.error('Failed to load prompt:', err);
+    } finally {
+      this.loadingPrompt.set(false);
+    }
+  }
+
+  onPromptChange(event: Event): void {
+    this.promptText.set((event.target as HTMLTextAreaElement).value);
+  }
+
+  async savePrompt(): Promise<void> {
+    this.savingPrompt.set(true);
+    try {
+      const success = await this.electronService.saveAIPrompt(this.promptText());
+      if (success) {
+        this.originalPromptText.set(this.promptText());
+      }
+    } catch (err) {
+      console.error('Failed to save prompt:', err);
+    } finally {
+      this.savingPrompt.set(false);
+    }
+  }
+
   toggleSimplify(): void {
     if (!this.simplifyForLearning()) {
       this.simplifyForLearning.set(true);
@@ -3033,12 +3521,16 @@ export class LLWizardComponent implements OnInit {
       return !!this.cleanupModel();
     }
     if (step === 'translate') {
-      if (this.targetLangs().size === 0) return true; // Can skip
+      const active = this.translateMode() === 'sentence'
+        ? this.targetLangs().size > 0
+        : this.enableMonoTranslation();
+      if (!active) return true; // Can skip
       const provider = this.translateProvider();
       if (provider === 'ollama') return this.ollamaConnected() && !!this.translateModel();
       return !!this.translateModel();
     }
     if (step === 'tts') {
+      if (this.pipelineMode() === 'mono') return true; // single voice always configured
       return this.ttsLanguageRows().length > 0;
     }
     if (step === 'assembly') {
@@ -3077,15 +3569,19 @@ export class LLWizardComponent implements OnInit {
         // Scan for partial TTS sessions (for Continue button)
         this.scanForPartialTtsSessions();
 
-        if (this.ttsLanguageRows().length > 0) {
-          // TTS has languages configured, remove from skipped
+        if (this.pipelineMode() === 'mono' || this.ttsLanguageRows().length > 0) {
+          // TTS is configured, remove from skipped
           this._skippedSteps.delete('tts');
         }
       }
 
       // Check if assembly is configured when entering the step
       if (nextStep === 'assembly') {
-        if (this.assemblySourceLang() && this.assemblyTargetLang()) {
+        if (this.pipelineMode() === 'mono') {
+          if (!this._skippedSteps.has('tts') || this.cachedSession()) {
+            this._skippedSteps.delete('assembly');
+          }
+        } else if (this.assemblySourceLang() && this.assemblyTargetLang()) {
           // Assembly has both languages configured, remove from skipped
           this._skippedSteps.delete('assembly');
         }
@@ -3102,22 +3598,34 @@ export class LLWizardComponent implements OnInit {
           this._skippedSteps.delete('cleanup');
         }
         // Check translation
-        if (this.targetLangs().size > 0 && this.completedSteps.has('translate')) {
+        const translationConfigured = this.translateMode() === 'sentence'
+          ? this.targetLangs().size > 0
+          : this.monoTranslationActive();
+        if (translationConfigured && this.completedSteps.has('translate')) {
           this._skippedSteps.delete('translate');
         }
         // Check TTS — don't un-skip if user explicitly skipped it
-        if (this.ttsLanguageRows().length > 0 && this.completedSteps.has('tts')) {
+        if ((this.pipelineMode() === 'mono' || this.ttsLanguageRows().length > 0) && this.completedSteps.has('tts')) {
           this._skippedSteps.delete('tts');
         }
         // Check assembly
-        if (this.assemblySourceLang() && this.assemblyTargetLang() && this.completedSteps.has('assembly')) {
+        const assemblyConfigured = this.pipelineMode() === 'mono'
+          ? (!this._skippedSteps.has('tts') || !!this.cachedSession())
+          : !!(this.assemblySourceLang() && this.assemblyTargetLang());
+        if (assemblyConfigured && this.completedSteps.has('assembly')) {
           this._skippedSteps.delete('assembly');
         }
       }
 
-      // Auto-skip assembly if no source/target
-      if (step === 'assembly' && (!this.assemblySourceLang() || !this.assemblyTargetLang())) {
-        this._skippedSteps.add('assembly');
+      // Auto-skip assembly if it has nothing to work with
+      if (step === 'assembly') {
+        if (this.pipelineMode() === 'mono') {
+          if (this._skippedSteps.has('tts') && !this.cachedSession()) {
+            this._skippedSteps.add('assembly');
+          }
+        } else if (!this.assemblySourceLang() || !this.assemblyTargetLang()) {
+          this._skippedSteps.add('assembly');
+        }
       }
 
       this.currentStep.set(nextStep);
@@ -3141,6 +3649,19 @@ export class LLWizardComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────
 
   getTotalJobCount(): number {
+    if (this.pipelineMode() === 'mono') {
+      let count = 0;
+      // Mono cleanup is a single job (handles cleanup and/or simplify internally)
+      if (!this._skippedSteps.has('cleanup') && (this.enableAiCleanup() || this.simplifyForLearning())) count += 1;
+      if (!this._skippedSteps.has('translate') && this.monoTranslationActive()) count += 1;
+      const hasTts = !this._skippedSteps.has('tts');
+      if (hasTts) count += 1;
+      const hasAssembly = !this._skippedSteps.has('assembly') && (hasTts || !!this.cachedSession());
+      if (hasAssembly) count += 1;
+      if (hasAssembly && this.generateVideo()) count += 1;
+      return count;
+    }
+
     let count = 0;
 
     // Cleanup + Simplify jobs (independent, can both be enabled)
@@ -3168,6 +3689,14 @@ export class LLWizardComponent implements OnInit {
   }
 
   getReviewWarnings(): string[] {
+    if (this.pipelineMode() === 'mono') {
+      const warnings: string[] = [];
+      if (!this._skippedSteps.has('assembly') && this._skippedSteps.has('tts') && !this.cachedSession()) {
+        warnings.push('Assembly enabled but there is no TTS job or cached session to assemble from');
+      }
+      return warnings;
+    }
+
     const warnings: string[] = [];
 
     // Check if TTS references a language that won't exist
@@ -3218,6 +3747,10 @@ export class LLWizardComponent implements OnInit {
     if (!projectDir) {
       console.error('[LLWizard] No project directory available');
       return;
+    }
+
+    if (this.pipelineMode() === 'mono') {
+      return this.addMonoJobsToQueue(projectDir);
     }
 
     this.addingToQueue.set(true);
@@ -3668,11 +4201,362 @@ export class LLWizardComponent implements OnInit {
   }
 
   /**
+   * Mono (whole-book) pipeline submission — submits the same job set the old
+   * standalone process-wizard submitted: master 'audiobook' job, ocr-cleanup
+   * (books) / bilingual-cleanup (articles), whole-book bilingual-translation
+   * (monoTranslation flag), single tts-conversion, reassembly (chained or from
+   * cached session), and optional monolingual video-assembly.
+   */
+  private async addMonoJobsToQueue(projectDir: string): Promise<void> {
+    this.addingToQueue.set(true);
+
+    try {
+      const workflowId = this.generateWorkflowId();
+      const aiConfig = this.settingsService.getAIConfig();
+      const isArticle = this.itemType() === 'article';
+      const bfpPath = this.bfpPath() || projectDir;
+      const outputDir = this.libraryService.audiobooksPath() || '';
+      const cleanupSource = this.resolveLatestSource('cleanup');
+
+      // Master job groups the pipeline in the queue UI
+      const masterJob = await this.queueService.addJob({
+        type: 'audiobook',
+        epubPath: cleanupSource,
+        projectDir: isArticle ? projectDir : undefined,
+        metadata: { title: this.title(), author: this.author() },
+        config: { type: 'audiobook' },
+        workflowId,
+      });
+      const masterJobId = masterJob.id;
+
+      // 1. AI Cleanup (single job; handles cleanup and/or simplify internally)
+      if (!this._skippedSteps.has('cleanup') && (this.enableAiCleanup() || this.simplifyForLearning())) {
+        if (isArticle) {
+          await this.queueService.addJob({
+            type: 'bilingual-cleanup',
+            epubPath: cleanupSource,
+            projectDir,
+            metadata: { title: 'AI Cleanup' },
+            config: {
+              type: 'bilingual-cleanup',
+              projectId: this.projectId(),
+              projectDir,
+              sourceLang: this.detectedSourceLang(),
+              aiProvider: this.cleanupProvider(),
+              aiModel: this.cleanupModel(),
+              ollamaBaseUrl: aiConfig.ollama?.baseUrl,
+              claudeApiKey: aiConfig.claude?.apiKey,
+              openaiApiKey: aiConfig.openai?.apiKey,
+              testMode: this.testMode(),
+              testModeChunks: this.testModeChunks(),
+              customInstructions: this.customInstructions() || undefined,
+              simplifyForLearning: this.simplifyForLearning(),
+            },
+            workflowId,
+            parentJobId: masterJobId,
+          });
+        } else {
+          const cleanupConfig: Partial<OcrCleanupConfig> = {
+            type: 'ocr-cleanup',
+            aiProvider: this.cleanupProvider(),
+            aiModel: this.cleanupModel(),
+            ollamaBaseUrl: aiConfig.ollama?.baseUrl,
+            claudeApiKey: aiConfig.claude?.apiKey,
+            openaiApiKey: aiConfig.openai?.apiKey,
+            enableAiCleanup: this.enableAiCleanup(),
+            simplifyForLearning: this.simplifyForLearning(),
+            simplifyMode: 'plain' as const,
+            testMode: this.testMode(),
+            testModeChunks: this.testMode() ? this.testModeChunks() : undefined,
+            cleanupPrompt: this.promptModified() ? this.promptText() : undefined,  // Only override when user customized
+            customInstructions: this.customInstructions() || undefined,
+            useParallel: this.cleanupProvider() !== 'ollama',
+            parallelWorkers: this.cleanupParallelWorkers(),
+          };
+
+          await this.queueService.addJob({
+            type: 'ocr-cleanup',
+            epubPath: cleanupSource,
+            bfpPath,
+            metadata: { title: 'AI Cleanup' },
+            config: cleanupConfig,
+            workflowId,
+            parentJobId: masterJobId,
+          });
+        }
+      }
+
+      // 2. Whole-book translation
+      if (!this._skippedSteps.has('translate') && this.monoTranslationActive()) {
+        const willProduce = this.cleanupWillProduce();
+        const translateEpubPath = willProduce
+          ? `${projectDir}/stages/01-cleanup/${willProduce}`
+          : this.resolveLatestSource('translate');
+
+        await this.queueService.addJob({
+          type: 'bilingual-translation',
+          epubPath: translateEpubPath,
+          bfpPath: isArticle ? undefined : bfpPath,
+          projectDir: isArticle ? projectDir : undefined,
+          metadata: { title: 'Translation' },
+          config: {
+            type: 'bilingual-translation',
+            projectId: isArticle ? this.projectId() : undefined,
+            projectDir: isArticle ? projectDir : undefined,
+            sourceLang: this.detectedSourceLang(),
+            targetLang: this.monoTargetLang(),
+            aiProvider: this.translateProvider(),
+            aiModel: this.translateModel(),
+            ollamaBaseUrl: aiConfig.ollama?.baseUrl,
+            claudeApiKey: aiConfig.claude?.apiKey,
+            openaiApiKey: aiConfig.openai?.apiKey,
+            monoTranslation: true,  // Full-book translation (not bilingual interleave)
+            customInstructions: this.translateCustomInstructions() || undefined,
+          },
+          workflowId,
+          parentJobId: masterJobId,
+        });
+      }
+
+      // 3. TTS (single voice)
+      if (!this._skippedSteps.has('tts')) {
+        const skipAssembly = !this._skippedSteps.has('assembly'); // e2a produces sentences only; we reassemble ourselves
+        const partial = this.partialTtsSessions()[0];
+
+        if (this.continueTts() && partial) {
+          const electron = window.electron as any;
+          const resumeCheck = await electron.parallelTts.checkResumeFromDir(partial.sessionDir);
+          const resumeData = resumeCheck?.data;
+          if (!resumeData?.success) {
+            throw new Error('Failed to get resume info for partial session');
+          }
+
+          await this.queueService.addJob({
+            type: 'tts-conversion',
+            epubPath: resumeData.sourceEpubPath || '',
+            bfpPath,
+            metadata: {
+              title: 'TTS (Continue)',
+              bookTitle: this.title(),
+              author: this.author(),
+              year: this.year() || undefined,
+              coverPath: this.coverPath() || undefined,
+              outputFilename: this.generateOutputFilename(),
+            },
+            config: {
+              type: 'tts-conversion',
+              useParallel: true,
+              parallelMode: 'sentences',
+              parallelWorkers: this.ttsEngine() === 'xtts' ? this.ttsWorkers() : 1,
+              outputDir,
+              skipAssembly,
+            },
+            resumeInfo: {
+              success: true,
+              sessionId: resumeData.sessionId,
+              sessionDir: resumeData.sessionDir,
+              processDir: resumeData.processDir || partial.sessionDir,
+              totalSentences: resumeData.totalSentences,
+              totalChapters: resumeData.totalChapters,
+              completedSentences: resumeData.completedSentences,
+              missingSentences: resumeData.missingSentences,
+              missingRanges: resumeData.missingRanges,
+              chapters: resumeData.chapters,
+            },
+            workflowId,
+            parentJobId: masterJobId,
+          });
+        } else {
+          const ttsConfig: Partial<TtsConversionConfig> = {
+            type: 'tts-conversion',
+            device: this.ttsDevice(),
+            language: this.monoTtsLanguage(),
+            ttsEngine: this.ttsEngine(),
+            fineTuned: this.monoTtsVoice(),
+            temperature: this.ttsTemperature(),
+            topP: this.ttsTopP(),
+            topK: 50,
+            repetitionPenalty: 1.0,
+            speed: this.monoTtsSpeed(),
+            enableTextSplitting: true,
+            useParallel: true,
+            parallelMode: 'sentences',
+            parallelWorkers: this.ttsEngine() === 'xtts' ? this.ttsWorkers() : 1,
+            testMode: this.ttsTestMode(),
+            testSentences: this.ttsTestSentences(),
+            outputDir,
+            skipAssembly,
+          };
+
+          await this.queueService.addJob({
+            type: 'tts-conversion',
+            epubPath: this.resolveLatestSource('tts'),
+            projectDir: isArticle ? projectDir : undefined,
+            bfpPath: isArticle ? undefined : bfpPath,
+            metadata: {
+              title: 'TTS',
+              bookTitle: this.title(),
+              author: this.author(),
+              year: this.year() || undefined,
+              coverPath: this.coverPath() || undefined,
+              outputFilename: this.generateOutputFilename(),
+            },
+            config: ttsConfig,
+            workflowId,
+            parentJobId: masterJobId,
+          });
+        }
+      }
+
+      // 4. Assembly (reassembly into M4B + VTT)
+      if (!this._skippedSteps.has('assembly')) {
+        const audiobookDir = `${bfpPath.replace(/\\/g, '/')}/output`;
+
+        if (!this._skippedSteps.has('tts')) {
+          // MODE A: TTS + Assembly chained — session data discovered at runtime by queue service
+          await this.queueService.addJob({
+            type: 'reassembly',
+            bfpPath,
+            config: {
+              type: 'reassembly',
+              sessionId: '',   // filled at runtime via session discovery
+              sessionDir: '',
+              processDir: '',
+              outputDir: audiobookDir,
+              metadata: {
+                title: this.title() || '',
+                author: this.author() || '',
+                coverPath: this.coverPath() || undefined,
+                year: this.year() || undefined,
+                outputFilename: this.generateOutputFilename(),
+              },
+              excludedChapters: [],
+            },
+            metadata: {
+              title: this.title(),
+              author: this.author(),
+              year: this.year() || undefined,
+            },
+            workflowId,
+            parentJobId: masterJobId,
+          });
+        } else if (this.cachedSession()) {
+          // MODE B: TTS skipped, standalone reassembly from cached session
+          const session = this.cachedSession();
+          const totalChapters = session.chapters?.filter((ch: any) => !ch.excluded)?.length || 0;
+
+          const reassemblyConfig: ReassemblyJobConfig = {
+            type: 'reassembly',
+            sessionId: session.sessionId,
+            sessionDir: session.sessionDir,
+            processDir: session.processDir,
+            outputDir: audiobookDir,
+            totalChapters,
+            metadata: {
+              title: this.title() || session.metadata?.title || '',
+              author: this.author() || session.metadata?.author || '',
+              year: this.year() || session.metadata?.year,
+              coverPath: this.coverPath() || session.metadata?.coverPath,
+              outputFilename: this.generateOutputFilename(),
+            },
+            excludedChapters: [],
+          };
+
+          await this.queueService.addJob({
+            type: 'reassembly',
+            epubPath: session.processDir,
+            bfpPath,
+            config: reassemblyConfig,
+            metadata: { title: reassemblyConfig.metadata.title, author: reassemblyConfig.metadata.author, year: reassemblyConfig.metadata.year },
+            workflowId,
+            parentJobId: masterJobId,
+          });
+        }
+      }
+
+      // 5. Video Assembly (optional, after audio assembly)
+      if (this.generateVideo() && !this._skippedSteps.has('assembly')) {
+        let videoOutputFilename = this.title() || 'audiobook';
+        const videoAuthor = this.author() || '';
+        if (videoAuthor && videoAuthor !== 'Unknown' && !videoOutputFilename.includes(videoAuthor)) {
+          videoOutputFilename += `. ${videoAuthor}`;
+        }
+
+        await this.queueService.addJob({
+          type: 'video-assembly',
+          bfpPath,
+          metadata: { title: 'Video' },
+          config: {
+            type: 'video-assembly',
+            projectId: bfpPath,
+            bfpPath,
+            mode: 'monolingual',
+            m4bPath: `${bfpPath}/output/audiobook.m4b`,
+            vttPath: `${bfpPath}/output/audiobook.vtt`,
+            title: this.title(),
+            sourceLang: this.monoTtsLanguage(),
+            resolution: this.videoResolution(),
+            outputFilename: videoOutputFilename,
+          },
+          workflowId,
+          parentJobId: masterJobId,
+        });
+      }
+
+      console.log('[PipelineWizard] Mono jobs added to queue:', {
+        workflowId,
+        masterJobId,
+        isArticle,
+        cleanup: !this._skippedSteps.has('cleanup') && (this.enableAiCleanup() || this.simplifyForLearning()),
+        translate: !this._skippedSteps.has('translate') && this.monoTranslationActive(),
+        tts: !this._skippedSteps.has('tts'),
+        assembly: !this._skippedSteps.has('assembly'),
+        video: this.generateVideo(),
+        assemblyMode: !this._skippedSteps.has('assembly')
+          ? (!this._skippedSteps.has('tts') ? 'chained' : (this.cachedSession() ? 'standalone' : 'none'))
+          : 'skipped',
+      });
+
+      this.addedToQueue.set(true);
+      this.queued.emit();
+    } catch (err) {
+      console.error('[PipelineWizard] Failed to add mono jobs to queue:', err);
+    } finally {
+      this.addingToQueue.set(false);
+    }
+  }
+
+  /**
+   * M4B filename: respects the manifest's saved outputFilename when present,
+   * otherwise derives "Title. LastName, FirstName. (Year).m4b".
+   */
+  private generateOutputFilename(): string {
+    const saved = this.outputFilename().trim();
+    if (saved) return saved;
+
+    let name = this.title() || 'Audiobook';
+
+    let authorPart = '';
+    const contribs = this.contributors();
+    if (contribs && contribs.length > 0) {
+      const c = contribs[0];
+      if (c.last && c.first) authorPart = `${c.last}, ${c.first}`;
+      else authorPart = c.last || c.first || '';
+    } else if (this.author()) {
+      const parts = this.author().trim().split(/\s+/);
+      authorPart = parts.length >= 2 ? `${parts.pop()}, ${parts.join(' ')}` : this.author();
+    }
+
+    if (authorPart) name += `. ${authorPart}`;
+    if (this.year()) name += `. (${this.year()})`;
+    return `${name}.m4b`;
+  }
+
+  /**
    * Resolve "latest" source EPUB based on pipeline stage
    */
-  private resolveLatestSource(stage: 'cleanup' | 'translate'): string {
-    const sourceSignal = stage === 'cleanup' ? this.cleanupSourceEpub : this.translateSourceEpub;
-    const source = sourceSignal();
+  private resolveLatestSource(stage: 'cleanup' | 'translate' | 'tts'): string {
+    const source = this.sourceSignalFor(stage)();
 
     if (source !== 'latest') {
       return source;
@@ -3680,6 +4564,27 @@ export class LLWizardComponent implements OnInit {
 
     const epubs = this.availableEpubs();
     const projectDir = this.effectiveProjectDir();
+
+    if (stage === 'tts') {
+      // Mono TTS input: pipeline intent first — earlier steps in this run will
+      // produce files that don't exist on disk yet
+      if (this.monoTranslationActive()) {
+        return `${projectDir}/stages/02-translate/translated.epub`;
+      }
+      const willProduce = this.cleanupWillProduce();
+      if (willProduce && !epubs.some(e => e.filename === willProduce)) {
+        return `${projectDir}/stages/01-cleanup/${willProduce}`;
+      }
+      const exclude = new Set<string>();
+      for (const e of epubs) { if (e.isTranslated) exclude.add(e.filename); }
+      const best = this.getMostRecentEpub(epubs, exclude);
+      if (best) return best.path;
+      for (const name of ['translated.epub', 'simplified.epub', 'cleaned.epub', 'exported.epub', 'original.epub']) {
+        const found = epubs.find(e => e.filename === name);
+        if (found) return found.path;
+      }
+      return `${projectDir}/source/original.epub`;
+    }
 
     if (stage === 'cleanup') {
       // Cleanup input: most recently modified source file
