@@ -31,18 +31,40 @@ export interface AudioChunk {
 }
 
 interface XTTSResponse {
-  type: 'ready' | 'status' | 'loaded' | 'audio' | 'error' | 'stopped';
+  type: 'ready' | 'status' | 'loaded' | 'audio' | 'chunk' | 'done' | 'error' | 'stopped';
   voices?: string[];
   voice?: string;
   message?: string;
   data?: string;
   duration?: number;
   sampleRate?: number;
+  seq?: number;
+  format?: string;
+  chunks?: number;
+  cancelled?: boolean;
+}
+
+export interface StreamChunk {
+  seq: number;
+  data: string;  // Base64 PCM16 (24kHz mono)
+  duration: number;
+  sampleRate: number;
+}
+
+export interface StreamResult {
+  success: boolean;
+  duration?: number;
+  cancelled?: boolean;
+  error?: string;
 }
 
 interface PendingRequest {
   resolve: (result: { success: boolean; audio?: AudioChunk; error?: string }) => void;
   sentenceIndex: number;
+  /** Set for streaming requests: receives chunks as they generate */
+  onChunk?: (chunk: StreamChunk) => void;
+  /** Set for streaming requests: resolves on the final 'done' message */
+  resolveStream?: (result: StreamResult) => void;
 }
 
 interface Worker {
@@ -58,7 +80,13 @@ interface Worker {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const E2A_PATH = getDefaultE2aPath();
-const NUM_WORKERS = 3;  // Number of parallel workers
+
+// XTTS GPT decode is sequential and gains nothing past ~4 threads, while
+// pinned workers barely contend with each other (M1 Ultra bench, June 2026:
+// 4 workers x 4 threads -> RTF ~1.9 each, ~2.1x realtime aggregate; the old
+// 3 unpinned workers oversubscribed the cores to ~0.4x realtime).
+const NUM_WORKERS = 4;
+const THREADS_PER_WORKER = 4;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // State
@@ -67,7 +95,6 @@ const NUM_WORKERS = 3;  // Number of parallel workers
 let workers: Worker[] = [];
 let mainWindow: BrowserWindow | null = null;
 let currentVoice: string | null = null;
-let nextWorkerIndex = 0;
 let discoveredVoices: string[] = [];
 
 // Idle shutdown: kill the pool if nothing was generated for this long
@@ -177,7 +204,13 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
 
       const process = spawn(getCondaPath(), condaArgs, {
         cwd: E2A_PATH,
-        env: { ...global.process.env, PYTHONUNBUFFERED: '1' },
+        env: {
+          ...global.process.env,
+          PYTHONUNBUFFERED: '1',
+          XTTS_THREADS: String(THREADS_PER_WORKER),
+          OMP_NUM_THREADS: String(THREADS_PER_WORKER),
+          MKL_NUM_THREADS: String(THREADS_PER_WORKER)
+        },
         shell: true,
         stdio: ['pipe', 'pipe', 'pipe']
       });
@@ -244,7 +277,14 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
         workers = workers.filter(w => w.id !== id);
 
         if (worker.pendingRequest) {
-          worker.pendingRequest.resolve({ success: false, error: 'Worker died' });
+          if (worker.pendingRequest.resolveStream) {
+            worker.pendingRequest.resolveStream({ success: false, error: 'Worker died' });
+          } else {
+            worker.pendingRequest.resolve({ success: false, error: 'Worker died' });
+          }
+        }
+        if (workers.length === 0) {
+          drainWorkerWaiters();
         }
       });
 
@@ -315,6 +355,9 @@ async function loadVoiceOnWorker(worker: Worker, voice: string): Promise<{ succe
           resolved = true;
           clearTimeout(timeout);
           worker.pendingRequest = originalPending;
+          if (!worker.pendingRequest) {
+            releaseWorkerSlot();
+          }
           if (result.success || result.audio) {
             worker.currentVoice = voice;
             resolve({ success: true });
@@ -330,6 +373,65 @@ async function loadVoiceOnWorker(worker: Worker, voice: string): Promise<{ succe
   });
 }
 
+// FIFO queue of callers waiting for a free worker. A waiter MUST set
+// worker.pendingRequest synchronously when invoked, so only one waiter is
+// released per freed worker (no polling race).
+const workerWaiters: Array<(worker: Worker | null) => void> = [];
+
+function findFreeWorker(): Worker | undefined {
+  return workers.find(w => w.isReady && !w.pendingRequest);
+}
+
+/** Called whenever a worker's pendingRequest is cleared. */
+function releaseWorkerSlot(): void {
+  const worker = findFreeWorker();
+  if (!worker) return;
+  const waiter = workerWaiters.shift();
+  if (waiter) {
+    waiter(worker);
+  }
+}
+
+/**
+ * Run `job` on a free worker, waiting FIFO if all are busy. The job MUST set
+ * worker.pendingRequest synchronously when invoked - that reservation is what
+ * prevents two callers from claiming the same worker. There must be NO await
+ * between picking a free worker and running the job (an async gap here once
+ * let 4 concurrent dispatches pile onto one worker while 3 sat idle).
+ * Priority callers (the streamed playhead sentence) jump the queue so seeks
+ * aren't stuck behind stale lookahead jobs.
+ */
+function runOnFreeWorker<T>(
+  job: (worker: Worker) => Promise<T>,
+  onNoWorkers: () => T,
+  priority = false
+): Promise<T> {
+  const worker = findFreeWorker();
+  if (worker) return job(worker);
+  if (workers.length === 0) return Promise.resolve(onNoWorkers());
+  return new Promise<T>(resolve => {
+    const waiter = (w: Worker | null) => {
+      if (!w) {
+        resolve(onNoWorkers());
+        return;
+      }
+      void job(w).then(resolve);
+    };
+    if (priority) {
+      workerWaiters.unshift(waiter);
+    } else {
+      workerWaiters.push(waiter);
+    }
+  });
+}
+
+/** Wake all waiters with null (session ending / all workers gone). */
+function drainWorkerWaiters(): void {
+  while (workerWaiters.length > 0) {
+    workerWaiters.shift()!(null);
+  }
+}
+
 /**
  * Generate audio for a sentence using the next available worker
  */
@@ -339,33 +441,10 @@ export async function generateSentence(
   settings: PlaySettings
 ): Promise<{ success: boolean; audio?: AudioChunk; error?: string }> {
   touchActivity();
-  const availableWorkers = workers.filter(w => w.isReady && !w.pendingRequest);
-
-  if (availableWorkers.length === 0) {
-    // All workers busy - wait for one to become available
-    const worker = workers[nextWorkerIndex % workers.length];
-    nextWorkerIndex++;
-
-    // Wait for current request to complete
-    if (worker.pendingRequest) {
-      await new Promise<void>(resolve => {
-        const checkInterval = setInterval(() => {
-          if (!worker.pendingRequest) {
-            clearInterval(checkInterval);
-            resolve();
-          }
-        }, 50);
-      });
-    }
-
-    return generateOnWorker(worker, text, sentenceIndex, settings);
-  }
-
-  // Use round-robin for available workers
-  const worker = availableWorkers[nextWorkerIndex % availableWorkers.length];
-  nextWorkerIndex++;
-
-  return generateOnWorker(worker, text, sentenceIndex, settings);
+  return runOnFreeWorker<{ success: boolean; audio?: AudioChunk; error?: string }>(
+    worker => generateOnWorker(worker, text, sentenceIndex, settings),
+    () => ({ success: false, error: 'No workers available' })
+  );
 }
 
 async function generateOnWorker(
@@ -374,9 +453,14 @@ async function generateOnWorker(
   sentenceIndex: number,
   settings: PlaySettings
 ): Promise<{ success: boolean; audio?: AudioChunk; error?: string }> {
+  if (worker.pendingRequest) {
+    console.error(`[XTTS Pool ${worker.id}] BUG: dispatch to a busy worker - request would be clobbered`);
+    return Promise.resolve({ success: false, error: 'Worker already busy (dispatch bug)' });
+  }
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
       worker.pendingRequest = null;
+      releaseWorkerSlot();
       resolve({ success: false, error: 'Generation timeout' });
     }, 60000);
 
@@ -384,6 +468,7 @@ async function generateOnWorker(
       resolve: (result) => {
         clearTimeout(timeout);
         worker.pendingRequest = null;
+        releaseWorkerSlot();
         resolve(result);
       },
       sentenceIndex
@@ -397,9 +482,82 @@ async function generateOnWorker(
       temperature: settings.temperature || 0.65,
       top_p: settings.topP || 0.85,
       repetition_penalty: settings.repetitionPenalty || 2.0,
+      stream: false
+    });
+  });
+}
+
+/**
+ * Generate a sentence with chunked streaming on the first free worker.
+ * Chunks arrive via onChunk as they generate (~1s of audio each, first one
+ * in ~2-3s); resolves when the sentence finishes or is cancelled.
+ */
+export async function generateSentenceStream(
+  text: string,
+  settings: PlaySettings,
+  onChunk: (chunk: StreamChunk) => void
+): Promise<StreamResult> {
+  touchActivity();
+  return runOnFreeWorker<StreamResult>(
+    worker => streamOnWorker(worker, text, settings, onChunk),
+    () => ({ success: false, error: 'No workers available' }),
+    true
+  );
+}
+
+function streamOnWorker(
+  worker: Worker,
+  text: string,
+  settings: PlaySettings,
+  onChunk: (chunk: StreamChunk) => void
+): Promise<StreamResult> {
+  if (worker.pendingRequest) {
+    console.error(`[XTTS Pool ${worker.id}] BUG: stream dispatch to a busy worker - request would be clobbered`);
+    return Promise.resolve({ success: false, error: 'Worker already busy (dispatch bug)' });
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      worker.pendingRequest = null;
+      releaseWorkerSlot();
+      resolve({ success: false, error: 'Streaming generation timeout' });
+    }, 120000);
+
+    worker.pendingRequest = {
+      resolve: () => { /* batch path unused for stream requests */ },
+      sentenceIndex: -2,
+      onChunk,
+      resolveStream: (result) => {
+        clearTimeout(timeout);
+        worker.pendingRequest = null;
+        releaseWorkerSlot();
+        resolve(result);
+      }
+    };
+
+    sendToWorker(worker, {
+      action: 'generate',
+      text,
+      language: 'en',
+      speed: settings.speed,
+      temperature: settings.temperature || 0.65,
+      top_p: settings.topP || 0.85,
+      repetition_penalty: settings.repetitionPenalty || 2.0,
       stream: true
     });
   });
+}
+
+/**
+ * Cancel any in-flight streaming generation (checked between chunks in the
+ * Python worker). Batch generations cannot be interrupted; callers drop
+ * stale results instead.
+ */
+export function cancelStreaming(): void {
+  for (const worker of workers) {
+    if (worker.pendingRequest?.resolveStream) {
+      sendToWorker(worker, { action: 'cancel' });
+    }
+  }
 }
 
 /**
@@ -419,6 +577,7 @@ export function stop(): void {
 export async function endSession(): Promise<void> {
   console.log('[XTTS Pool] Ending session...');
   stopIdleWatch();
+  drainWorkerWaiters();
   const hadWorkers = workers.length > 0;
 
   for (const worker of workers) {
@@ -435,7 +594,6 @@ export async function endSession(): Promise<void> {
 
   workers = [];
   currentVoice = null;
-  nextWorkerIndex = 0;
   discoveredVoices = [];
 
   if (hadWorkers) {
@@ -484,33 +642,42 @@ function sendToWorker(worker: Worker, command: Record<string, unknown>): void {
 }
 
 function handleWorkerResponse(worker: Worker, response: XTTSResponse): void {
-  console.log(`[XTTS Pool ${worker.id}] Response:`, response.type, response.message || '');
+  if (response.type !== 'chunk') {
+    console.log(`[XTTS Pool ${worker.id}] Response:`, response.type, response.message || '');
+  }
 
   if (response.type === 'loaded' && worker.pendingRequest?.sentenceIndex === -1) {
     // Voice load complete
     worker.pendingRequest?.resolve({ success: true });
+  } else if (response.type === 'chunk' && response.data && worker.pendingRequest?.onChunk) {
+    worker.pendingRequest.onChunk({
+      seq: response.seq ?? 0,
+      data: response.data,
+      duration: response.duration || 0,
+      sampleRate: response.sampleRate || 24000
+    });
+  } else if (response.type === 'done' && worker.pendingRequest?.resolveStream) {
+    worker.pendingRequest.resolveStream({
+      success: true,
+      duration: response.duration || 0,
+      cancelled: response.cancelled === true
+    });
   } else if (response.type === 'audio' && response.data && worker.pendingRequest) {
     const audio: AudioChunk = {
       data: response.data,
       duration: response.duration || 0,
       sampleRate: response.sampleRate || 24000
     };
-    // Save sentenceIndex before resolve (which clears pendingRequest)
-    const sentenceIndex = worker.pendingRequest.sentenceIndex;
     worker.pendingRequest.resolve({ success: true, audio });
-
-    // Send IPC event
-    if (mainWindow && sentenceIndex >= 0) {
-      mainWindow.webContents.send('play:audio-generated', {
-        sentenceIndex,
-        audio
-      });
-    }
-  } else if (response.type === 'audio' && response.data && !worker.pendingRequest) {
-    // Audio arrived but request was cancelled - just ignore
-    console.log(`[XTTS Pool ${worker.id}] Ignoring orphaned audio response`);
+  } else if ((response.type === 'audio' || response.type === 'chunk' || response.type === 'done') && !worker.pendingRequest) {
+    // Result arrived but request was cancelled/timed out - just ignore
+    console.log(`[XTTS Pool ${worker.id}] Ignoring orphaned ${response.type} response`);
   } else if (response.type === 'error' && worker.pendingRequest) {
-    worker.pendingRequest.resolve({ success: false, error: response.message });
+    if (worker.pendingRequest.resolveStream) {
+      worker.pendingRequest.resolveStream({ success: false, error: response.message });
+    } else {
+      worker.pendingRequest.resolve({ success: false, error: response.message });
+    }
   }
 }
 
@@ -523,6 +690,8 @@ export const xttsWorkerPool = {
   startSession,
   loadVoice,
   generateSentence,
+  generateSentenceStream,
+  cancelStreaming,
   stop,
   endSession,
   isSessionActive,

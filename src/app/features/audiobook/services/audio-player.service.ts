@@ -1,23 +1,56 @@
 import { Injectable, signal, computed } from '@angular/core';
-import { AudioChunk, PlaybackState } from '../models/play.types';
+import { PlaybackState } from '../models/play.types';
 
 /**
- * AudioPlayerService - Web Audio API playback for TTS audio
+ * AudioPlayerService - gapless Web Audio playback for streamed TTS audio
  *
- * Handles decoding base64 WAV audio, buffering, and smooth playback
- * with support for seeking to specific sentences.
+ * Ingests base64 PCM16 chunks from the main-process stream scheduler
+ * ('chunk' events: pieces of the streamed playhead sentence, or whole
+ * lookahead sentences) and schedules them sample-accurately on the
+ * AudioContext timeline - no onended chaining, no inter-sentence gaps.
+ *
+ * Buffering policy (seconds-based, not sentence counts):
+ * - Start once the first sentence is fully generated (its chunks are already
+ *   decoded and scheduled, so playback begins the instant 'done' arrives), or
+ *   earlier if chunks are arriving faster than realtime (GPU machines).
+ * - After an underrun, rebuild REBUILD_SECONDS of headroom before resuming so
+ *   a slow stretch doesn't degrade into a gap after every sentence.
  */
 @Injectable({
   providedIn: 'root'
 })
 export class AudioPlayerService {
-  // Audio context and state
   private audioContext: AudioContext | null = null;
-  private currentSource: AudioBufferSourceNode | null = null;
-  private audioQueue: Array<{ buffer: AudioBuffer; sentenceIndex: number; duration: number }> = [];
-  private currentQueueIndex = 0;
-  private startTime = 0;
-  private pauseTime = 0;
+
+  // ── Assembly state (ordered segments built from out-of-order events) ──
+  private segments: Array<{ sentenceIndex: number; buffer: AudioBuffer }> = [];
+  private pendingSentences = new Map<number, {
+    chunks: AudioBuffer[];
+    appendedCount: number;
+    done: boolean;
+  }>();
+  private expectedNext = 0;     // next sentence index to release into segments
+  private startIndex = 0;       // first sentence of this stream
+  private generationDone = false;
+  private streamStartedAt = 0;  // performance.now() when beginStream was called
+  private bufferedAudioSec = 0; // total audio received this stream (for rate estimate)
+
+  // ── Scheduling state ──
+  private nextSegmentToSchedule = 0;
+  private scheduledThrough = 0;   // context time when the last scheduled segment ends
+  private chainAnchored = false;  // false -> next schedule re-anchors at currentTime
+  private activeSources: Array<{
+    source: AudioBufferSourceNode;
+    sentenceIndex: number;
+    startAt: number;
+    endAt: number;
+  }> = [];
+
+  private started = false;       // has playback begun for this stream
+  private wantToPlay = false;    // user intent: resume automatically when buffered
+
+  private static readonly REBUILD_SECONDS = 8;
+  private static readonly SCHEDULE_AHEAD_SECONDS = 60;
 
   // Reactive state
   readonly playbackState = signal<PlaybackState>('idle');
@@ -34,12 +67,8 @@ export class AudioPlayerService {
   private onSentenceChangeCallback?: (index: number) => void;
   private onPlaybackEndCallback?: () => void;
 
-  // User intent - when true, auto-resume after buffering; when false, stay paused
-  private wantToPlay = false;
-
   constructor() {
-    // Update current time periodically
-    setInterval(() => this.updateCurrentTime(), 100);
+    setInterval(() => this.tick(), 200);
   }
 
   /**
@@ -49,302 +78,364 @@ export class AudioPlayerService {
     if (!this.audioContext) {
       this.audioContext = new AudioContext();
     }
-
     if (this.audioContext.state === 'suspended') {
       await this.audioContext.resume();
     }
   }
 
-  /**
-   * Set callback for sentence changes
-   */
   onSentenceChange(callback: (index: number) => void): void {
     this.onSentenceChangeCallback = callback;
   }
 
-  /**
-   * Set callback for playback end
-   */
   onPlaybackEnd(callback: () => void): void {
     this.onPlaybackEndCallback = callback;
   }
 
-  /**
-   * Decode and enqueue an audio chunk
-   */
-  async enqueueAudio(chunk: AudioChunk, sentenceIndex: number): Promise<void> {
-    console.log('[AudioPlayer] Enqueueing audio for sentence', sentenceIndex, 'duration:', chunk.duration);
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Stream ingestion (called from stream:event handlers)
+  // ─────────────────────────────────────────────────────────────────────────────
 
-    if (!this.audioContext) {
-      await this.initialize();
-    }
-
-    try {
-      // Decode base64 WAV to AudioBuffer
-      const buffer = await this.decodeBase64Wav(chunk.data);
-      console.log('[AudioPlayer] Decoded buffer, duration:', buffer.duration);
-
-      // Add to queue
-      this.audioQueue.push({
-        buffer,
-        sentenceIndex,
-        duration: buffer.duration
-      });
-
-      // Update total duration
-      this.updateTotalDuration();
-      console.log('[AudioPlayer] Queue length:', this.audioQueue.length, 'current index:', this.currentQueueIndex);
-
-      // If we're waiting for audio and user wants to play, start playing
-      if (this.playbackState() === 'buffering' && this.audioQueue.length > this.currentQueueIndex && this.wantToPlay) {
-        console.log('[AudioPlayer] Starting playback from buffering state');
-        this.playFromQueue();
-      }
-    } catch (error) {
-      console.error('[AudioPlayer] Failed to decode audio:', error);
-    }
+  /** Reset assembly state for a new stream starting at the given sentence. */
+  beginStream(startIndex: number): void {
+    this.resetPlayback();
+    this.segments = [];
+    this.pendingSentences.clear();
+    this.expectedNext = startIndex;
+    this.startIndex = startIndex;
+    this.generationDone = false;
+    this.started = false;
+    this.streamStartedAt = performance.now();
+    this.bufferedAudioSec = 0;
+    this.wantToPlay = true;
+    this.playbackState.set('buffering');
   }
 
-  /**
-   * Start playback
-   */
-  play(): void {
-    if (!this.audioContext) {
-      console.warn('[AudioPlayer] Audio context not initialized');
+  /** Ingest one PCM16 chunk (piece of streamed sentence, or whole sentence). */
+  addChunk(sentenceIndex: number, base64Pcm: string, sampleRate: number): void {
+    if (!this.audioContext) return;
+    const buffer = this.decodePcm16(base64Pcm, sampleRate);
+    if (!buffer) return;
+
+    this.bufferedAudioSec += buffer.duration;
+
+    let pending = this.pendingSentences.get(sentenceIndex);
+    if (!pending) {
+      pending = { chunks: [], appendedCount: 0, done: false };
+      this.pendingSentences.set(sentenceIndex, pending);
+    }
+    pending.chunks.push(buffer);
+
+    // The expected sentence releases chunks immediately (live streaming);
+    // later sentences are held until everything before them is complete.
+    this.flushReadySentences();
+    this.maybeStartOrResume();
+  }
+
+  /** A sentence finished generating - release it (and any complete followers). */
+  markSentenceDone(sentenceIndex: number): void {
+    const pending = this.pendingSentences.get(sentenceIndex);
+    if (pending) {
+      pending.done = true;
+    } else {
+      // Done with no chunks (shouldn't happen) - record as empty so ordering advances
+      this.pendingSentences.set(sentenceIndex, { chunks: [], appendedCount: 0, done: true });
+    }
+    this.flushReadySentences();
+    this.maybeStartOrResume();
+  }
+
+  /** A sentence failed - skip it so playback ordering can continue. */
+  markSentenceFailed(sentenceIndex: number): void {
+    this.pendingSentences.set(sentenceIndex, { chunks: [], appendedCount: 0, done: true });
+    this.flushReadySentences();
+    this.maybeStartOrResume();
+  }
+
+  /** Nothing left to generate for this stream. */
+  generationComplete(): void {
+    this.generationDone = true;
+
+    // Nothing buffered and nothing coming -> the stream is over
+    if (
+      this.playbackState() === 'buffering' &&
+      this.nextSegmentToSchedule >= this.segments.length &&
+      this.pendingSentences.size === 0
+    ) {
+      this.playbackState.set('idle');
+      this.onPlaybackEndCallback?.();
       return;
     }
 
+    this.maybeStartOrResume();
+    this.tick();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Transport
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  play(): void {
+    if (!this.audioContext) return;
     this.wantToPlay = true;
 
     if (this.playbackState() === 'paused') {
-      // Resume from pause
-      this.resumeFromPause();
-    } else if (this.playbackState() === 'idle' || this.playbackState() === 'buffering') {
-      // Start from beginning or continue buffering
-      this.playFromQueue();
+      if (this.started) {
+        void this.audioContext.resume();
+        this.playbackState.set('playing');
+        this.scheduleSegments();
+      } else {
+        this.playbackState.set('buffering');
+        this.maybeStartOrResume();
+      }
     }
   }
 
-  /**
-   * Pause playback
-   */
   pause(): void {
     this.wantToPlay = false;
-
-    if (this.currentSource && this.playbackState() === 'playing') {
-      this.pauseTime = this.audioContext!.currentTime - this.startTime;
-      this.currentSource.stop();
-      this.currentSource = null;
-      this.playbackState.set('paused');
-    } else if (this.playbackState() === 'buffering') {
-      // Pause while waiting for audio - don't auto-resume when audio arrives
+    if (this.playbackState() === 'playing') {
+      void this.audioContext?.suspend();
+    }
+    if (this.playbackState() === 'playing' || this.playbackState() === 'buffering') {
       this.playbackState.set('paused');
     }
   }
 
-  /**
-   * Stop playback and reset
-   */
+  /** Stop playback and discard all audio (seeks restart the stream). */
   stop(): void {
     this.wantToPlay = false;
-
-    if (this.currentSource) {
-      this.currentSource.stop();
-      this.currentSource = null;
-    }
-
+    this.resetPlayback();
     this.playbackState.set('idle');
     this.currentSentenceIndex.set(-1);
     this.currentTime.set(0);
-    this.currentQueueIndex = 0;
-    this.pauseTime = 0;
-    this.startTime = 0;
   }
 
-  /**
-   * Seek to a specific sentence
-   */
-  seekToSentence(sentenceIndex: number): void {
-    // Find the queue index for this sentence
-    const queueIndex = this.audioQueue.findIndex(item => item.sentenceIndex === sentenceIndex);
-
-    if (queueIndex === -1) {
-      console.warn('[AudioPlayer] Sentence not in queue:', sentenceIndex);
-      return;
-    }
-
-    // Stop current playback
-    if (this.currentSource) {
-      this.currentSource.stop();
-      this.currentSource = null;
-    }
-
-    // Update state
-    this.currentQueueIndex = queueIndex;
-    this.pauseTime = 0;
-    this.currentSentenceIndex.set(sentenceIndex);
-
-    // Calculate new current time
-    let time = 0;
-    for (let i = 0; i < queueIndex; i++) {
-      time += this.audioQueue[i].duration;
-    }
-    this.currentTime.set(time);
-
-    // Resume playback if we were playing
-    if (this.playbackState() === 'playing' || this.playbackState() === 'paused') {
-      this.playFromQueue();
-    }
-  }
-
-  /**
-   * Clear the audio queue
-   */
   clearQueue(): void {
-    console.log('[AudioPlayer] Clearing queue, had', this.audioQueue.length, 'items');
     this.stop();
-    this.audioQueue = [];
+    this.segments = [];
+    this.pendingSentences.clear();
     this.totalDuration.set(0);
   }
 
-  /**
-   * Get current queue length
-   */
-  getQueueLength(): number {
-    return this.audioQueue.length;
+  hasBufferedAudio(): boolean {
+    return this.segments.length > 0;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Private: assembly
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private decodePcm16(base64Data: string, sampleRate: number): AudioBuffer | null {
+    try {
+      const binary = atob(base64Data);
+      const sampleCount = binary.length / 2;
+      if (sampleCount < 1) return null;
+
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const int16 = new Int16Array(bytes.buffer, 0, sampleCount);
+
+      const buffer = this.audioContext!.createBuffer(1, sampleCount, sampleRate);
+      const channel = buffer.getChannelData(0);
+      for (let i = 0; i < sampleCount; i++) {
+        channel[i] = int16[i] / 32768;
+      }
+      return buffer;
+    } catch (error) {
+      console.error('[AudioPlayer] Failed to decode PCM16 chunk:', error);
+      return null;
+    }
+  }
+
+  /** Move chunks into the ordered segment list, strictly in sentence order. */
+  private flushReadySentences(): void {
+    let advanced = true;
+    while (advanced) {
+      advanced = false;
+      const pending = this.pendingSentences.get(this.expectedNext);
+      if (!pending) break;
+
+      // Release any not-yet-appended chunks of the expected sentence
+      while (pending.appendedCount < pending.chunks.length) {
+        this.segments.push({
+          sentenceIndex: this.expectedNext,
+          buffer: pending.chunks[pending.appendedCount]
+        });
+        pending.appendedCount++;
+      }
+
+      if (pending.done) {
+        this.pendingSentences.delete(this.expectedNext);
+        this.expectedNext++;
+        advanced = true;
+      }
+    }
+
+    this.totalDuration.set(this.segments.reduce((sum, s) => sum + s.buffer.duration, 0));
+
+    if (this.playbackState() === 'playing') {
+      this.scheduleSegments();
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Private: scheduling
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /** Seconds of decoded audio not yet played (scheduled remainder + unscheduled). */
+  private bufferedAheadSeconds(): number {
+    if (!this.audioContext) return 0;
+    let total = 0;
+    if (this.chainAnchored) {
+      total += Math.max(0, this.scheduledThrough - this.audioContext.currentTime);
+    }
+    for (let i = this.nextSegmentToSchedule; i < this.segments.length; i++) {
+      total += this.segments[i].buffer.duration;
+    }
+    return total;
+  }
+
+  /** Estimated generation speed (audio seconds per wall second) for this stream. */
+  private generationRate(): number {
+    const elapsed = (performance.now() - this.streamStartedAt) / 1000;
+    return elapsed > 1 ? this.bufferedAudioSec / elapsed : 0;
   }
 
   /**
-   * Check if sentence is already queued
+   * Decide whether to begin (or resume after underrun). Initial start waits
+   * for the first sentence to be complete - on CPU chunks arrive slower than
+   * realtime, so starting on the first chunk would stutter mid-sentence -
+   * unless generation is measurably faster than realtime (GPU).
    */
-  isSentenceQueued(sentenceIndex: number): boolean {
-    return this.audioQueue.some(item => item.sentenceIndex === sentenceIndex);
+  private maybeStartOrResume(): void {
+    if (!this.wantToPlay || !this.audioContext) return;
+    if (this.playbackState() !== 'buffering') return;
+    if (this.nextSegmentToSchedule >= this.segments.length) return;
+
+    const buffered = this.bufferedAheadSeconds();
+
+    let ready: boolean;
+    if (!this.started) {
+      const firstSentenceComplete = this.expectedNext > this.startIndex;
+      const outpacingPlayback = this.generationRate() > 1.1 && buffered >= 1.0;
+      ready = firstSentenceComplete || outpacingPlayback || this.generationDone;
+    } else {
+      // Mid-stream underrun: rebuild real headroom before resuming
+      ready = buffered >= AudioPlayerService.REBUILD_SECONDS || this.generationDone;
+    }
+
+    if (!ready) return;
+
+    this.started = true;
+    this.playbackState.set('playing');
+    void this.audioContext.resume();
+    this.scheduleSegments();
   }
 
-  /**
-   * Signal that generation is complete - if we're buffering with no more audio, we're done
-   */
-  generationComplete(): void {
-    console.log('[AudioPlayer] Generation complete, state:', this.playbackState(), 'queueIndex:', this.currentQueueIndex, 'queueLength:', this.audioQueue.length);
-    if (this.playbackState() === 'buffering' && this.currentQueueIndex >= this.audioQueue.length) {
-      console.log('[AudioPlayer] No more audio, playback ended');
+  /** Schedule pending segments back-to-back on the context timeline. */
+  private scheduleSegments(): void {
+    const ctx = this.audioContext;
+    if (!ctx) return;
+
+    while (this.nextSegmentToSchedule < this.segments.length) {
+      if (!this.chainAnchored) {
+        // (Re)anchor the chain slightly in the future
+        this.scheduledThrough = ctx.currentTime + 0.06;
+        this.chainAnchored = true;
+      } else if (this.scheduledThrough - ctx.currentTime > AudioPlayerService.SCHEDULE_AHEAD_SECONDS) {
+        break;
+      }
+
+      const segment = this.segments[this.nextSegmentToSchedule];
+      const source = ctx.createBufferSource();
+      source.buffer = segment.buffer;
+      source.connect(ctx.destination);
+
+      const startAt = this.scheduledThrough;
+      const endAt = startAt + segment.buffer.duration;
+      source.start(startAt);
+
+      this.activeSources.push({
+        source,
+        sentenceIndex: segment.sentenceIndex,
+        startAt,
+        endAt
+      });
+
+      this.scheduledThrough = endAt;
+      this.nextSegmentToSchedule++;
+    }
+  }
+
+  private resetPlayback(): void {
+    for (const active of this.activeSources) {
+      try {
+        active.source.stop();
+        active.source.disconnect();
+      } catch { /* already stopped */ }
+    }
+    this.activeSources = [];
+    this.nextSegmentToSchedule = 0;
+    this.scheduledThrough = 0;
+    this.chainAnchored = false;
+    this.started = false;
+    // Leave the context running; suspended contexts are resumed on next play
+    if (this.audioContext?.state === 'suspended') {
+      void this.audioContext.resume();
+    }
+  }
+
+  /** Periodic: track the playing sentence, detect underrun / end of stream. */
+  private tick(): void {
+    const ctx = this.audioContext;
+    if (!ctx || this.playbackState() !== 'playing') return;
+
+    const now = ctx.currentTime;
+
+    // Drop sources that already finished
+    while (this.activeSources.length > 0 && this.activeSources[0].endAt <= now) {
+      this.activeSources.shift();
+    }
+
+    // Current sentence = the segment whose window contains the clock
+    const current = this.activeSources.find(a => a.startAt <= now && now < a.endAt);
+    if (current && current.sentenceIndex !== this.currentSentenceIndex()) {
+      this.currentSentenceIndex.set(current.sentenceIndex);
+      this.onSentenceChangeCallback?.(current.sentenceIndex);
+    }
+    this.currentTime.set(now);
+
+    this.scheduleSegments();
+
+    // Out of scheduled audio?
+    const exhausted =
+      this.nextSegmentToSchedule >= this.segments.length &&
+      now >= this.scheduledThrough - 0.05;
+
+    if (!exhausted) return;
+
+    const nothingPending = this.pendingSentences.size === 0;
+    if (this.generationDone && nothingPending) {
+      console.log('[AudioPlayer] Stream finished');
       this.playbackState.set('idle');
       this.onPlaybackEndCallback?.();
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Private methods
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Decode base64 WAV to AudioBuffer
-   */
-  private async decodeBase64Wav(base64Data: string): Promise<AudioBuffer> {
-    // Convert base64 to ArrayBuffer
-    const binaryString = atob(base64Data);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-
-    // Decode WAV
-    return await this.audioContext!.decodeAudioData(bytes.buffer);
-  }
-
-  /**
-   * Play next item from queue
-   */
-  private playFromQueue(): void {
-    const queueSentences = this.audioQueue.map(item => item.sentenceIndex);
-    console.log('[AudioPlayer] playFromQueue called, queueIndex:', this.currentQueueIndex,
-      'queueLength:', this.audioQueue.length, 'sentences in queue:', queueSentences);
-
-    if (!this.audioContext) {
-      console.error('[AudioPlayer] No audio context!');
-      return;
-    }
-
-    if (this.currentQueueIndex >= this.audioQueue.length) {
-      console.log('[AudioPlayer] Queue exhausted, waiting for more audio (buffering)');
-      // No more audio in queue - wait for more (buffering state)
-      // The component will call onPlaybackEnd when generation is truly complete
+    } else {
+      console.log('[AudioPlayer] Underrun - buffering until',
+        AudioPlayerService.REBUILD_SECONDS, 's of headroom');
+      this.chainAnchored = false;
       this.playbackState.set('buffering');
-      return;
+      void ctx.suspend();
     }
-
-    const queueItem = this.audioQueue[this.currentQueueIndex];
-    console.log('[AudioPlayer] Playing sentence', queueItem.sentenceIndex, 'duration:', queueItem.duration);
-
-    // Create source node
-    this.currentSource = this.audioContext.createBufferSource();
-    this.currentSource.buffer = queueItem.buffer;
-    this.currentSource.connect(this.audioContext.destination);
-
-    // Set up end handler
-    this.currentSource.onended = () => {
-      console.log('[AudioPlayer] Sentence ended, state:', this.playbackState());
-      if (this.playbackState() === 'playing') {
-        this.currentQueueIndex++;
-        this.pauseTime = 0;
-        this.playFromQueue();
-      }
-    };
-
-    // Start playback
-    this.startTime = this.audioContext.currentTime - this.pauseTime;
-    console.log('[AudioPlayer] Starting playback at', this.startTime);
-    this.currentSource.start(0, this.pauseTime);
-    this.playbackState.set('playing');
-
-    // Update sentence index
-    this.currentSentenceIndex.set(queueItem.sentenceIndex);
-    this.onSentenceChangeCallback?.(queueItem.sentenceIndex);
-  }
-
-  /**
-   * Resume from paused state
-   */
-  private resumeFromPause(): void {
-    this.playFromQueue();
-  }
-
-  /**
-   * Update current playback time
-   */
-  private updateCurrentTime(): void {
-    if (this.playbackState() !== 'playing' || !this.audioContext) return;
-
-    // Calculate time based on queue position and current playback
-    let time = 0;
-    for (let i = 0; i < this.currentQueueIndex; i++) {
-      time += this.audioQueue[i].duration;
-    }
-
-    // Add current playback position
-    if (this.currentSource && this.startTime > 0) {
-      time += this.audioContext.currentTime - this.startTime;
-    }
-
-    this.currentTime.set(time);
-  }
-
-  /**
-   * Update total duration from queue
-   */
-  private updateTotalDuration(): void {
-    const total = this.audioQueue.reduce((sum, item) => sum + item.duration, 0);
-    this.totalDuration.set(total);
   }
 
   /**
    * Cleanup on destroy
    */
   destroy(): void {
-    this.stop();
     this.clearQueue();
     if (this.audioContext) {
-      this.audioContext.close();
+      void this.audioContext.close();
       this.audioContext = null;
     }
   }

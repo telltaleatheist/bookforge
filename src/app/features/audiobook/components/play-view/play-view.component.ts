@@ -13,7 +13,7 @@ import {
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { ElectronService } from '../../../../core/services/electron.service';
+import { ElectronService, StreamSchedulerEvent } from '../../../../core/services/electron.service';
 import { EpubService } from '../../services/epub.service';
 import { PlayTextService } from '../../services/play-text.service';
 import { AudioPlayerService } from '../../services/audio-player.service';
@@ -1143,7 +1143,9 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   });
 
   // Private
-  private generateAbortController?: AbortController;
+  /** Monotonic id for stream sessions; events from older sessions are ignored */
+  private streamRequestId = 0;
+  private unsubscribeStreamEvents?: () => void;
   private unsubscribeSessionEnd?: () => void;
   private bookmarkStatusTimer?: ReturnType<typeof setTimeout>;
 
@@ -1154,11 +1156,13 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       this.playbackState.set(state);
     });
 
-    // Sync sentence index from audio player
+    // Sync sentence index from audio player; report playhead to the
+    // scheduler so the generation lookahead window advances
     effect(() => {
       const index = this.audioPlayer.currentSentenceIndex();
       if (index >= 0) {
         this.currentSentenceIndex.set(index);
+        this.electronService.streamReportPlayhead(index);
         this.scrollToCurrent();
       }
     });
@@ -1169,22 +1173,20 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.loadBookmarks();
     void this.reattachToRunningSession();
 
+    // Audio events from the main-process stream scheduler
+    this.unsubscribeStreamEvents = this.electronService.onStreamEvent(
+      (event) => this.handleStreamEvent(event)
+    );
+
     // Handle session end from main process
     this.unsubscribeSessionEnd = this.electronService.onPlaySessionEnded(() => {
       this.sessionState.set('inactive');
       this.stop();
     });
 
-    // Audio player callbacks
+    // Fires only when generation is complete AND all audio has played -
+    // i.e. the end of the chapter. Auto-advance to the next one.
     this.audioPlayer.onPlaybackEnd(() => {
-      // Check if there are more sentences to generate
-      const chapter = this.currentChapter();
-      if (chapter && this.currentSentenceIndex() < chapter.sentences.length - 1) {
-        // Continue playing - the generation loop should still be running
-        return;
-      }
-
-      // Auto-advance to next chapter
       const index = this.currentChapterIndex();
       if (index < this.chapters().length - 1) {
         this.stop();
@@ -1197,7 +1199,8 @@ export class PlayViewComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     this.unsubscribeSessionEnd?.();
-    this.generateAbortController?.abort();
+    this.unsubscribeStreamEvents?.();
+    this.stopStreaming();
     this.audioPlayer.destroy();
     if (this.bookmarkStatusTimer) clearTimeout(this.bookmarkStatusTimer);
   }
@@ -1310,7 +1313,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     }
 
     // If generation is already running and we have audio, just play
-    if (this.isGenerating() && this.audioPlayer.getQueueLength() > 0) {
+    if (this.isGenerating() && this.audioPlayer.hasBufferedAudio()) {
       this.audioPlayer.play();
       return;
     }
@@ -1318,11 +1321,9 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     // Start fresh from the current position (sentence clicks / skips set it)
     const total = this.currentChapter()!.sentences.length;
     const startIndex = Math.min(this.currentSentenceIndex(), Math.max(total - 1, 0));
-    this.audioPlayer.clearQueue();
     this.currentSentenceIndex.set(startIndex);
 
-    // Start generating audio in background
-    this.generateAndPlay(startIndex);
+    void this.startStreaming(startIndex);
   }
 
   pause() {
@@ -1331,10 +1332,8 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   }
 
   stop() {
-    this.generateAbortController?.abort();
-    this.audioPlayer.stop();
+    this.stopStreaming();
     this.audioPlayer.clearQueue();
-    this.isGenerating.set(false);
     this.currentSentenceIndex.set(0);
   }
 
@@ -1345,10 +1344,8 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     const cue = cues[Math.max(0, Math.min(globalIndex, cues.length - 1))];
 
     const wasActive = this.isPlaying() || this.isGenerating() || this.playbackState() === 'paused';
-    this.generateAbortController?.abort();
-    this.audioPlayer.stop();
+    this.stopStreaming();
     this.audioPlayer.clearQueue();
-    this.isGenerating.set(false);
 
     this.selectedChapterId.set(cue.chapterId);
     this.currentSentenceIndex.set(cue.localIndex);
@@ -1356,7 +1353,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
 
     if (wasActive && this.isReady()) {
       await this.audioPlayer.initialize();
-      this.generateAndPlay(cue.localIndex);
+      void this.startStreaming(cue.localIndex);
     }
   }
 
@@ -1519,145 +1516,62 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     }
   }
 
-  private async generateAndPlay(startIndex: number) {
+  /**
+   * Start main-process generation from the given sentence. The scheduler
+   * streams the first sentence chunk-by-chunk and batches lookahead across
+   * the worker pool; audio comes back via stream:event broadcasts.
+   */
+  private async startStreaming(startIndex: number) {
     const chapter = this.currentChapter();
     if (!chapter) return;
 
-    this.generateAbortController = new AbortController();
-    const signal = this.generateAbortController.signal;
-
+    const requestId = ++this.streamRequestId;
     const settings: PlaySettings = {
       voice: this.selectedVoice(),
       speed: this.selectedSpeed()
     };
 
     this.isGenerating.set(true);
-    this.playbackState.set('buffering');
+    this.audioPlayer.beginStream(startIndex);
 
-    // Generation settings
-    const NUM_WORKERS = 3;  // Number of parallel workers
-    const BUFFER_AHEAD = 10;  // Generate this many sentences ahead of playback
-    const BUFFER_BEFORE_PLAY = 4;  // Start playback after this many sentences buffered
+    const sentences = chapter.sentences.map(s => s.text);
+    const result = await this.electronService.streamStart(sentences, startIndex, settings, requestId);
 
-    // Completed audio storage (may complete out of order, enqueue in order)
-    const completedAudio: Map<number, { data: string; duration: number; sampleRate: number } | null> = new Map();
-    let nextToEnqueue = startIndex;  // Next sentence to add to audio queue (in order)
-    let playbackStarted = false;
-
-    // Task queue for workers (thread-safe via single-threaded JS)
-    const taskQueue: number[] = [];  // Sentence indices to generate
-
-    // Initialize task queue with first batch
-    const totalSentences = chapter.sentences.length;
-    for (let i = startIndex; i < Math.min(startIndex + BUFFER_AHEAD + NUM_WORKERS, totalSentences); i++) {
-      taskQueue.push(i);
+    if (!result.success) {
+      console.error('[PlayView] Failed to start stream:', result.error);
+      if (requestId === this.streamRequestId) {
+        this.isGenerating.set(false);
+        this.audioPlayer.stop();
+      }
     }
-    let highestQueued = taskQueue.length > 0 ? taskQueue[taskQueue.length - 1] : startIndex - 1;
+  }
 
-    // Get next task from queue (returns undefined if empty)
-    const getNextTask = (): number | undefined => {
-      return taskQueue.shift();
-    };
+  private handleStreamEvent(event: StreamSchedulerEvent) {
+    if (event.requestId !== this.streamRequestId) return;  // stale session
 
-    // Add more tasks as playback progresses
-    const maybeAddMoreTasks = () => {
-      // Keep BUFFER_AHEAD sentences queued ahead of what's been enqueued
-      while (highestQueued < totalSentences - 1 && highestQueued < nextToEnqueue + BUFFER_AHEAD + NUM_WORKERS) {
-        highestQueued++;
-        taskQueue.push(highestQueued);
-      }
-    };
-
-    // Enqueue completed audio in order
-    const enqueueInOrder = async () => {
-      while (completedAudio.has(nextToEnqueue)) {
-        const audio = completedAudio.get(nextToEnqueue);
-        completedAudio.delete(nextToEnqueue);
-
-        if (audio) {
-          await this.audioPlayer.enqueueAudio(audio, nextToEnqueue);
-          console.log('[PlayView] Enqueued sentence', nextToEnqueue, 'queue size:', this.audioPlayer.getQueueLength());
-        } else {
-          console.warn('[PlayView] Skipping failed sentence', nextToEnqueue);
-        }
-
-        nextToEnqueue++;
-
-        // Add more tasks as we progress
-        maybeAddMoreTasks();
-
-        // Start playback once we have enough buffered
-        if (!playbackStarted && this.audioPlayer.getQueueLength() >= BUFFER_BEFORE_PLAY) {
-          console.log('[PlayView] Starting playback with', this.audioPlayer.getQueueLength(), 'sentences buffered');
-          this.audioPlayer.play();
-          playbackStarted = true;
-        }
-      }
-    };
-
-    try {
-      console.log('[PlayView] Starting generation from sentence', startIndex,
-        'total:', totalSentences, 'workers:', NUM_WORKERS);
-
-      let activeWorkers = 0;
-      let resolveAllDone: () => void;
-      const allDonePromise = new Promise<void>(resolve => { resolveAllDone = resolve; });
-
-      // Worker function: get task, generate, repeat until no more tasks
-      const worker = async (workerId: number) => {
-        while (!signal.aborted) {
-          const sentenceIndex = getNextTask();
-          if (sentenceIndex === undefined) {
-            // No more tasks
-            break;
-          }
-
-          const sentence = chapter.sentences[sentenceIndex];
-          console.log(`[PlayView W${workerId}] Generating sentence`, sentenceIndex);
-
-          const result = await this.electronService.playGenerateSentence(
-            sentence.text,
-            sentence.index,
-            settings
-          );
-
-          if (signal.aborted) break;
-
-          if (result.success && result.audio) {
-            console.log(`[PlayView W${workerId}] Got audio for sentence`, sentenceIndex, 'duration:', result.audio.duration?.toFixed(2) + 's');
-            completedAudio.set(sentenceIndex, result.audio);
-          } else {
-            console.error(`[PlayView W${workerId}] Failed sentence`, sentenceIndex, result.error);
-            completedAudio.set(sentenceIndex, null);
-          }
-
-          // Enqueue any completed audio in order
-          await enqueueInOrder();
-        }
-
-        // Worker done
-        activeWorkers--;
-        if (activeWorkers === 0) {
-          resolveAllDone!();
-        }
-      };
-
-      // Start workers
-      for (let i = 0; i < NUM_WORKERS; i++) {
-        activeWorkers++;
-        worker(i);  // Don't await - run in parallel
-      }
-
-      // Wait for all workers to complete
-      await allDonePromise;
-
-      // Final enqueue pass
-      await enqueueInOrder();
-
-    } finally {
-      this.isGenerating.set(false);
-      this.audioPlayer.generationComplete();
+    switch (event.kind) {
+      case 'chunk':
+        this.audioPlayer.addChunk(event.sentenceIndex!, event.data!, event.sampleRate ?? 24000);
+        break;
+      case 'done':
+        this.audioPlayer.markSentenceDone(event.sentenceIndex!);
+        break;
+      case 'failed':
+        console.warn('[PlayView] Sentence failed:', event.sentenceIndex, event.error);
+        this.audioPlayer.markSentenceFailed(event.sentenceIndex!);
+        break;
+      case 'complete':
+        this.isGenerating.set(false);
+        this.audioPlayer.generationComplete();
+        break;
     }
+  }
+
+  /** Invalidate the current stream session (events become stale) and stop generation. */
+  private stopStreaming() {
+    this.streamRequestId++;
+    this.isGenerating.set(false);
+    void this.electronService.streamStop();
   }
 
   private scrollToCurrent() {

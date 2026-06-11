@@ -18,6 +18,21 @@ interface MatchingSpansResult {
   pattern: string;
 }
 
+// Event from the main-process stream scheduler ('stream:event' channel).
+// 'chunk' carries base64 PCM16 audio (a piece of the streamed playhead
+// sentence, or a whole lookahead sentence); 'done' marks a sentence fully
+// generated; 'complete' means nothing is left to generate for this request.
+export interface StreamSchedulerEvent {
+  kind: 'chunk' | 'done' | 'failed' | 'complete';
+  requestId: number;
+  sentenceIndex?: number;
+  seq?: number;
+  data?: string;
+  duration?: number;
+  sampleRate?: number;
+  error?: string;
+}
+
 // Chapter structure for TOC extraction and chapter marking
 export interface Chapter {
   id: string;
@@ -2190,42 +2205,6 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async playGenerateSentence(
-    text: string,
-    sentenceIndex: number,
-    settings: {
-      voice: string;
-      speed: number;
-      temperature?: number;
-      topP?: number;
-      repetitionPenalty?: number;
-    }
-  ): Promise<{
-    success: boolean;
-    audio?: {
-      data: string;
-      duration: number;
-      sampleRate: number;
-    };
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      const result = await (window as any).electron.play.generateSentence(text, sentenceIndex, settings);
-      if (result.success && result.data) {
-        return { success: true, audio: result.data };
-      }
-      return { success: false, error: result.error };
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async playStop(): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.play.stop();
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
   async playEndSession(): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.play.endSession();
@@ -2253,13 +2232,6 @@ export class ElectronService {
       return { success: false, error: result.error };
     }
     return { success: false, error: 'Not running in Electron' };
-  }
-
-  onPlayAudioGenerated(callback: (event: { sentenceIndex: number; audio: { data: string; duration: number; sampleRate: number } }) => void): () => void {
-    if (this.isElectron) {
-      return (window as any).electron.play.onAudioGenerated(callback);
-    }
-    return () => {};
   }
 
   onPlayStatus(callback: (status: { message: string }) => void): () => void {
@@ -2293,6 +2265,43 @@ export class ElectronService {
   onSetListenMode(callback: (mode: 'play' | 'stream') => void): () => void {
     if (this.isElectron) {
       return (window as any).electron.play.onSetListenMode(callback);
+    }
+    return () => {};
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Stream Scheduler (main-process TTS generation orchestration)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async streamStart(
+    sentences: string[],
+    startIndex: number,
+    settings: { voice: string; speed: number; temperature?: number; topP?: number; repetitionPenalty?: number },
+    requestId: number
+  ): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.play.streamStart(sentences, startIndex, settings, requestId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async streamStop(): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.play.streamStop();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Fire-and-forget playback position report; drives the generation lookahead window. */
+  streamReportPlayhead(sentenceIndex: number): void {
+    if (this.isElectron) {
+      void (window as any).electron.play.streamPlayhead(sentenceIndex);
+    }
+  }
+
+  onStreamEvent(callback: (event: StreamSchedulerEvent) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.play.onStreamEvent(callback);
     }
     return () => {};
   }

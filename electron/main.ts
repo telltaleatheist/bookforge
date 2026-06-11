@@ -4098,41 +4098,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('play:generate-sentence', async (
-    _event,
-    text: string,
-    sentenceIndex: number,
-    settings: {
-      voice: string;
-      speed: number;
-      temperature?: number;
-      topP?: number;
-      repetitionPenalty?: number;
-    }
-  ) => {
-    try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      const result = await xttsWorkerPool.generateSentence(text, sentenceIndex, settings);
-      return {
-        success: result.success,
-        data: result.audio,
-        error: result.error
-      };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('play:stop', async () => {
-    try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      xttsWorkerPool.stop();
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
   ipcMain.handle('play:end-session', async () => {
     try {
       const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
@@ -4148,6 +4113,45 @@ function setupIpcHandlers(): void {
       const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
       const active = xttsWorkerPool.isSessionActive();
       return { success: true, data: { active } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Stream scheduler: main-process generation orchestration for the Play tab.
+  // The renderer sends the sentence list once; audio comes back as
+  // 'stream:event' broadcasts (chunked pcm16 for the playhead sentence,
+  // whole sentences for lookahead).
+  ipcMain.handle('stream:start', async (
+    _event,
+    sentences: string[],
+    startIndex: number,
+    settings: { voice: string; speed: number; temperature?: number; topP?: number; repetitionPenalty?: number },
+    requestId: number
+  ) => {
+    try {
+      const { streamScheduler } = await import('./stream-scheduler.js');
+      return streamScheduler.start(sentences, startIndex, settings, requestId);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('stream:stop', async () => {
+    try {
+      const { streamScheduler } = await import('./stream-scheduler.js');
+      streamScheduler.stop();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('stream:playhead', async (_event, sentenceIndex: number) => {
+    try {
+      const { streamScheduler } = await import('./stream-scheduler.js');
+      streamScheduler.reportPlayhead(sentenceIndex);
+      return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

@@ -1,6 +1,62 @@
 # XTTS Streaming Rework Plan
 
-Status: evaluation complete, implementation not started (June 2026).
+Status: **IMPLEMENTED June 11 2026** (Phases 0-3 + cleanup; Phase 4 disk cache
+deferred). What shipped:
+
+- `electron/scripts/xtts_stream.py` — thread pinning via `XTTS_THREADS`, raw
+  PCM16 protocol (no WAV framing), `inference_stream()` chunked generation
+  with between-chunk `cancel`, gc every 50 generations instead of per sentence.
+- `electron/xtts-worker-pool.ts` — 4 workers x 4 threads (pinned via env),
+  chunk/done response routing, `generateSentenceStream()` (priority worker
+  acquisition), FIFO worker-wait queue replacing the polling race.
+- `electron/stream-scheduler.ts` (NEW) — main-process orchestration: streams
+  the playhead sentence, batches lookahead, 45s seconds-based window driven by
+  renderer playhead reports, requestId staleness, broadcasts `stream:event`
+  to all windows (listen-window friendly).
+- `audio-player.service.ts` — rewritten: PCM16 ingestion, sample-accurate
+  back-to-back `source.start(when)` scheduling (no onended chaining), starts
+  when first sentence completes (or sooner if generation outpaces realtime,
+  e.g. CUDA), 8s headroom rebuild after underrun.
+- `play-view.component.ts` — generation loops replaced by scheduler IPC.
+- Deleted dead `xtts-streaming-bridge.ts` and the legacy per-sentence
+  `play:generate-sentence` IPC path.
+- Protocol verified end-to-end against the live worker (batch, stream,
+  cancel, post-cancel health): first streamed chunk at **1.6s**.
+- **Post-ship fix (June 11):** first real-world run played ~10 sentences in
+  5 minutes then stalled. Cause: `acquireWorker()` had an `await` between
+  finding a free worker and reserving it, so the scheduler's synchronous
+  4-dispatch loop piled all 4 requests onto worker 0 (responses cross-routed,
+  workers 1-3 idle). Fixed with `runOnFreeWorker()` — reservation is now
+  synchronous, waiters are handed workers synchronously, and a busy-worker
+  dispatch guard logs `BUG:` if it ever regresses. Verified with a node
+  integration harness (`/tmp/test_scheduler_e2e.js`, mocked electron module,
+  real scheduler + pool + 4 python workers): 15/15 sentences, first chunk
+  1.9s, 54.6s audio in 29.4s wall = **1.86x realtime aggregate**.
+
+## Phase 0 results (measured on the M1 Ultra, June 11 2026)
+
+- **`inference_stream()` was broken by a version mismatch, now FIXED**: env had
+  coqui-tts 0.27.2 + transformers 4.57.6; streaming support for transformers
+  ≥ 4.57 landed in coqui-tts 0.27.3. Upgraded env to **0.27.5** (matches e2a's
+  own requirements.txt pin; only coqui-tts + new dep ko-speech-tools changed,
+  torch/transformers untouched; pre-existing pip-check conflicts unrelated).
+  Streaming now works: **first chunk at 2.9s**, ~0.93s audio per chunk.
+- Streaming costs ~37% more compute than batch inference (RTF 3.75 vs 2.74 at
+  16 threads) → use it for the playhead/first sentence only, not for lookahead.
+- **Thread scaling is flat-to-negative**: RTF 2.74 @ 16 threads, 2.65 @ 8,
+  2.47 @ 4. XTTS GPT decode is sequential; 4 threads per worker is optimal.
+- **Multi-worker contention is negligible when pinned**: 4 simultaneous
+  workers × 4 threads each → RTF ~1.9 PER WORKER (better than solo, likely
+  scheduler/bandwidth effects). Aggregate ≈ **2.1× realtime** — comfortably
+  gapless. (2 × 8 threads gave only 0.70× aggregate; more workers with fewer
+  threads wins decisively.)
+- Hardware: M1 Ultra, 16 P-cores + 4 E-cores.
+- **Recommended pool config: 4 workers × 4 threads (`torch.set_num_threads(4)`
+  + `OMP_NUM_THREADS=4`), streaming on the playhead sentence, batch inference
+  for lookahead.**
+- Bench scripts: `/tmp/xtts_stream_test.py`, `/tmp/xtts_bench.py` (recreate from
+  git history of this plan if needed).
+
 Context: streaming UI is moving to a dedicated player window in parallel work —
 this plan deliberately moves all scheduling logic OUT of the renderer component
 so the window move doesn't conflict with it.

@@ -552,17 +552,6 @@ export interface PlaySettings {
   repetitionPenalty?: number;
 }
 
-export interface PlayAudioChunk {
-  data: string;  // Base64 WAV
-  duration: number;
-  sampleRate: number;
-}
-
-export interface PlayAudioGeneratedEvent {
-  sentenceIndex: number;
-  audio: PlayAudioChunk;
-}
-
 export interface TtsJobConfig {
   device: 'gpu' | 'mps' | 'cpu';
   language: string;
@@ -1370,21 +1359,18 @@ export interface ElectronAPI {
   play: {
     startSession: () => Promise<{ success: boolean; data?: { voices: string[] }; error?: string }>;
     loadVoice: (voice: string) => Promise<{ success: boolean; error?: string }>;
-    generateSentence: (
-      text: string,
-      sentenceIndex: number,
-      settings: PlaySettings
-    ) => Promise<{ success: boolean; data?: PlayAudioChunk; error?: string }>;
-    stop: () => Promise<{ success: boolean; error?: string }>;
     endSession: () => Promise<{ success: boolean; error?: string }>;
     isSessionActive: () => Promise<{ success: boolean; data?: { active: boolean }; error?: string }>;
     getVoices: () => Promise<{ success: boolean; data?: { voices: string[] }; error?: string }>;
-    onAudioGenerated: (callback: (event: PlayAudioGeneratedEvent) => void) => () => void;
     onStatus: (callback: (status: { message: string }) => void) => () => void;
     onSessionEnded: (callback: (data: { code: number }) => void) => () => void;
     onSessionStarted: (callback: () => void) => () => void;
     openListenWindow: (projectPath: string, mode?: 'play' | 'stream') => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
     onSetListenMode: (callback: (mode: 'play' | 'stream') => void) => () => void;
+    streamStart: (sentences: string[], startIndex: number, settings: PlaySettings, requestId: number) => Promise<{ success: boolean; error?: string }>;
+    streamStop: () => Promise<{ success: boolean; error?: string }>;
+    streamPlayhead: (sentenceIndex: number) => Promise<{ success: boolean; error?: string }>;
+    onStreamEvent: (callback: (event: Record<string, unknown>) => void) => () => void;
   };
   parallelTts: {
     detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: HardwareRecommendation; error?: string }>;
@@ -2677,29 +2663,12 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('play:start-session'),
     loadVoice: (voice: string) =>
       ipcRenderer.invoke('play:load-voice', voice),
-    generateSentence: (
-      text: string,
-      sentenceIndex: number,
-      settings: PlaySettings
-    ) =>
-      ipcRenderer.invoke('play:generate-sentence', text, sentenceIndex, settings),
-    stop: () =>
-      ipcRenderer.invoke('play:stop'),
     endSession: () =>
       ipcRenderer.invoke('play:end-session'),
     isSessionActive: () =>
       ipcRenderer.invoke('play:is-session-active'),
     getVoices: () =>
       ipcRenderer.invoke('play:get-voices'),
-    onAudioGenerated: (callback: (event: PlayAudioGeneratedEvent) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: PlayAudioGeneratedEvent) => {
-        callback(data);
-      };
-      ipcRenderer.on('play:audio-generated', listener);
-      return () => {
-        ipcRenderer.removeListener('play:audio-generated', listener);
-      };
-    },
     onStatus: (callback: (status: { message: string }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, status: { message: string }) => {
         callback(status);
@@ -2732,6 +2701,20 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('listen:set-mode', listener);
       return () => {
         ipcRenderer.removeListener('listen:set-mode', listener);
+      };
+    },
+    // Stream scheduler (main-process generation orchestration)
+    streamStart: (sentences: string[], startIndex: number, settings: PlaySettings, requestId: number) =>
+      ipcRenderer.invoke('stream:start', sentences, startIndex, settings, requestId),
+    streamStop: () =>
+      ipcRenderer.invoke('stream:stop'),
+    streamPlayhead: (sentenceIndex: number) =>
+      ipcRenderer.invoke('stream:playhead', sentenceIndex),
+    onStreamEvent: (callback: (event: Record<string, unknown>) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: Record<string, unknown>) => callback(data);
+      ipcRenderer.on('stream:event', listener);
+      return () => {
+        ipcRenderer.removeListener('stream:event', listener);
       };
     },
   },
