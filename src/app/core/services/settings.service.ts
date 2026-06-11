@@ -174,6 +174,13 @@ export class SettingsService {
         fields: [], // Bookshelf Server section has custom UI
       },
       {
+        id: 'tts-api',
+        name: 'TTS API',
+        description: 'Stream text-to-speech to external clients (browser extension)',
+        icon: '🔊',
+        fields: [], // TTS API section has custom UI
+      },
+      {
         id: 'tools',
         name: 'External Tools',
         description: 'Configure paths to external tools (conda, ffmpeg, etc.)',

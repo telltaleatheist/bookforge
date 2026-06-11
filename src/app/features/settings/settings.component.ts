@@ -484,6 +484,109 @@ import {
                   </p>
                 </div>
               </div>
+            } @else if (section.id === 'tts-api') {
+              <!-- TTS API Server Section -->
+              <div class="bookshelf-section">
+                <!-- Server Status -->
+                <div class="server-status-card" [class.running]="ttsApiStatus()?.running">
+                  <div class="status-indicator">
+                    <span class="status-dot"></span>
+                    <span class="status-text">
+                      {{ ttsApiStatus()?.running ? 'Running' : 'Stopped' }}
+                    </span>
+                  </div>
+                  @if (ttsApiStatus()?.running) {
+                    <div class="server-addresses">
+                      <h4>WebSocket URLs</h4>
+                      @for (address of ttsApiStatus()?.addresses || []; track address) {
+                        <span class="server-address">{{ address }}</span>
+                      }
+                    </div>
+                  }
+                </div>
+
+                <!-- Configuration -->
+                <div class="settings-group">
+                  <h4>Configuration</h4>
+
+                  <!-- Access Token -->
+                  <div class="field-row">
+                    <div class="field-info">
+                      <label class="field-label">Access Token</label>
+                      <p class="field-description">Paste this into the browser extension. Every connection must present it.</p>
+                    </div>
+                    <div class="field-control">
+                      <div class="path-input-group">
+                        <input
+                          type="text"
+                          class="text-input token-input"
+                          readonly
+                          [value]="ttsApiTokenVisible() ? (ttsApiStatus()?.token || '') : '••••••••••••••••'"
+                        />
+                        <desktop-button variant="ghost" size="sm" (click)="ttsApiTokenVisible.set(!ttsApiTokenVisible())">
+                          {{ ttsApiTokenVisible() ? 'Hide' : 'Show' }}
+                        </desktop-button>
+                        <desktop-button variant="ghost" size="sm" (click)="copyTtsApiToken()">
+                          {{ ttsApiCopied() ? 'Copied!' : 'Copy' }}
+                        </desktop-button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Port -->
+                  <div class="field-row">
+                    <div class="field-info">
+                      <label class="field-label">Port</label>
+                      <p class="field-description">WebSocket port (default: 8766). Changing it restarts the server.</p>
+                    </div>
+                    <div class="field-control">
+                      <input
+                        type="number"
+                        class="number-input"
+                        [value]="ttsApiStatus()?.port ?? 8766"
+                        min="1"
+                        max="65535"
+                        (change)="updateTtsApiPort(+$any($event.target).value)"
+                        [disabled]="ttsApiLoading()"
+                      />
+                    </div>
+                  </div>
+
+                  <!-- LAN Access -->
+                  <div class="field-row">
+                    <div class="field-info">
+                      <label class="field-label">Allow LAN Access</label>
+                      <p class="field-description">Accept connections from other machines on your network. Off = this computer only.</p>
+                    </div>
+                    <div class="field-control">
+                      <label class="toggle">
+                        <input
+                          type="checkbox"
+                          [checked]="ttsApiStatus()?.host === '0.0.0.0'"
+                          (change)="toggleTtsApiLan($any($event.target).checked)"
+                          [disabled]="ttsApiLoading()"
+                        />
+                        <span class="toggle-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                @if (ttsApiError(); as error) {
+                  <div class="status-message error">
+                    {{ error }}
+                  </div>
+                }
+
+                <!-- Help text -->
+                <div class="help-text">
+                  <p>
+                    Lets external clients — like the BookForge browser extension — stream
+                    text-to-speech from the TTS engine. Starts automatically with BookForge.
+                    Protocol reference: docs/TTS_API.md in the repository.
+                  </p>
+                </div>
+              </div>
             } @else if (section.id === 'tools') {
               <!-- External Tools Section -->
               <div class="tools-section">
@@ -1264,6 +1367,11 @@ import {
       width: 300px;
     }
 
+    .token-input {
+      width: 280px;
+      font-family: monospace;
+    }
+
     .library-path-input {
       width: 400px;
     }
@@ -1909,6 +2017,14 @@ export class SettingsComponent implements OnInit {
   readonly bookshelfLoading = signal(false);
   readonly bookshelfError = signal<string | null>(null);
 
+  // TTS API Server section state (config lives main-process side in tts-api.json)
+  readonly ttsApiStatus = signal<{ running: boolean; port: number; host: string; token: string; addresses: string[] } | null>(null);
+  readonly ttsApiLoading = signal(false);
+  readonly ttsApiError = signal<string | null>(null);
+  readonly ttsApiTokenVisible = signal(false);
+  readonly ttsApiCopied = signal(false);
+  private ttsApiCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
   // Tools section state
   readonly toolPathsConfig = signal<Record<string, string | undefined>>({});
   readonly toolPathsStatus = signal<Record<string, { configured: boolean; detected: boolean; path: string }>>({});
@@ -1948,6 +2064,8 @@ export class SettingsComponent implements OnInit {
     this.refreshCacheSize();
     // Check bookshelf server status
     this.refreshBookshelfStatus();
+    // Check TTS API server status
+    this.refreshTtsApiStatus();
     // Load tool paths
     this.refreshToolPaths();
     // Detect WSL on Windows
@@ -2370,6 +2488,58 @@ export class SettingsComponent implements OnInit {
     } finally {
       this.bookshelfLoading.set(false);
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // TTS API Server Methods
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async refreshTtsApiStatus(): Promise<void> {
+    try {
+      const result = await this.electronService.ttsApiStatus();
+      if (result.success && result.data) {
+        this.ttsApiStatus.set(result.data);
+      }
+    } catch (err) {
+      console.error('Failed to get TTS API server status:', err);
+    }
+  }
+
+  async updateTtsApiPort(port: number): Promise<void> {
+    if (port >= 1 && port <= 65535) {
+      await this.configureTtsApi({ port });
+    }
+  }
+
+  async toggleTtsApiLan(enabled: boolean): Promise<void> {
+    await this.configureTtsApi({ host: enabled ? '0.0.0.0' : '127.0.0.1' });
+  }
+
+  private async configureTtsApi(updates: { port?: number; host?: string }): Promise<void> {
+    this.ttsApiLoading.set(true);
+    this.ttsApiError.set(null);
+
+    try {
+      const result = await this.electronService.ttsApiConfigure(updates);
+      if (result.success && result.data) {
+        this.ttsApiStatus.set(result.data);
+      } else {
+        this.ttsApiError.set(result.error || 'Failed to apply TTS API settings');
+      }
+    } catch (err) {
+      this.ttsApiError.set(err instanceof Error ? err.message : 'Failed to apply TTS API settings');
+    } finally {
+      this.ttsApiLoading.set(false);
+    }
+  }
+
+  copyTtsApiToken(): void {
+    const token = this.ttsApiStatus()?.token;
+    if (!token) return;
+    navigator.clipboard.writeText(token);
+    this.ttsApiCopied.set(true);
+    if (this.ttsApiCopiedTimer) clearTimeout(this.ttsApiCopiedTimer);
+    this.ttsApiCopiedTimer = setTimeout(() => this.ttsApiCopied.set(false), 2000);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

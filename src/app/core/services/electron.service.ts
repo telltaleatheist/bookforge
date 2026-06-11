@@ -2377,6 +2377,24 @@ export class ElectronService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // TTS API Server (WebSocket access for external clients, e.g. browser extension)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async ttsApiStatus(): Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ttsApi.status();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ttsApiConfigure(updates: { port?: number; host?: string }): Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ttsApi.configure(updates);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // Ebook Library
   // ─────────────────────────────────────────────────────────────────────────────
 
