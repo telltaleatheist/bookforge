@@ -336,21 +336,27 @@ interface SourceStage {
             <div class="step-panel scrollable">
               <h3>Translation</h3>
               <p class="step-desc">
-                @if (translateMode() === 'whole-book') {
-                  Translate the whole book into another language before narration — or skip if the book is already in the language you want.
-                } @else {
-                  Select target languages for bilingual audiobook. Multiple selections allowed.
+                @switch (translateMode()) {
+                  @case ('whole-book') {
+                    Translate the whole book into another language before narration.
+                  }
+                  @case ('sentence') {
+                    Select target languages for a bilingual audiobook. Multiple selections allowed.
+                  }
+                  @default {
+                    Pick a translation type to translate this book — or just hit Next to continue without translation.
+                  }
                 }
               </p>
 
-              <!-- Translation Type (drives the pipeline shape) -->
+              <!-- Translation Type — selecting one opts into translation and drives the pipeline shape -->
               <div class="config-section">
                 <label class="field-label">Translation Type</label>
                 <div class="provider-buttons">
                   <button
                     class="provider-btn"
                     [class.selected]="translateMode() === 'whole-book'"
-                    (click)="translateMode.set('whole-book')"
+                    (click)="selectTranslateMode('whole-book')"
                   >
                     <span class="provider-name">Whole Book</span>
                     <span class="provider-status">Single narration</span>
@@ -358,29 +364,15 @@ interface SourceStage {
                   <button
                     class="provider-btn"
                     [class.selected]="translateMode() === 'sentence'"
-                    (click)="translateMode.set('sentence')"
+                    (click)="selectTranslateMode('sentence')"
                   >
-                    <span class="provider-name">Sentence-Aligned</span>
-                    <span class="provider-status">Language learning</span>
+                    <span class="provider-name">Language Learning</span>
+                    <span class="provider-status">Sentence-aligned</span>
                   </button>
                 </div>
               </div>
 
-              @if (translateMode() === 'whole-book') {
-                <div class="toggle-section-inline">
-                  <button
-                    class="option-toggle"
-                    [class.active]="enableMonoTranslation()"
-                    (click)="toggleMonoTranslation()"
-                  >
-                    <span class="toggle-icon">🌐</span>
-                    <span class="toggle-label">Translate this book</span>
-                    <span class="toggle-sublabel">Whole-book translation before TTS</span>
-                  </button>
-                </div>
-              }
-
-              @if (translateMode() === 'sentence' || enableMonoTranslation()) {
+              @if (translateMode()) {
 
               <!-- Source EPUB Selection -->
               <div class="config-section">
@@ -2562,21 +2554,21 @@ export class LLWizardComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Translation mode — drives the shape of the whole pipeline:
-   * - 'whole-book': mono pipeline (single narration; optional full-book translation,
-   *   single TTS voice, M4B reassembly) — what the old process-wizard did.
-   * - 'sentence': bilingual pipeline (sentence-aligned per-language translation,
-   *   per-language TTS rows, interleaved assembly) — what the old LL wizard did.
+   * Translation mode — selecting one IS the opt-in to translation; null means
+   * "don't translate" (hit Next without picking). It also drives the pipeline shape:
+   * - 'whole-book': mono pipeline (full-book translation, single TTS voice,
+   *   M4B reassembly) — what the old process-wizard did.
+   * - 'sentence': bilingual / language-learning pipeline (sentence-aligned
+   *   per-language translation, per-language TTS rows, interleaved assembly).
    */
-  readonly translateMode = signal<'whole-book' | 'sentence'>('whole-book');
+  readonly translateMode = signal<'whole-book' | 'sentence' | null>(null);
   readonly pipelineMode = computed<'mono' | 'bilingual'>(() =>
     this.translateMode() === 'sentence' ? 'bilingual' : 'mono');
 
   // Whole-book translation (mono pipeline)
-  readonly enableMonoTranslation = signal(false);
   readonly monoTargetLang = signal<string>('en');
   readonly monoTranslationActive = computed(() =>
-    this.translateMode() === 'whole-book' && this.enableMonoTranslation() && !!this.monoTargetLang());
+    this.translateMode() === 'whole-book' && !!this.monoTargetLang());
 
   readonly translateSourceEpub = signal<string>('latest');
   readonly targetLangs = signal<Set<string>>(new Set());
@@ -3244,10 +3236,12 @@ export class LLWizardComponent implements OnInit {
   // Translation
   // ─────────────────────────────────────────────────────────────────────────
 
-  toggleMonoTranslation(): void {
-    const on = !this.enableMonoTranslation();
-    this.enableMonoTranslation.set(on);
-    if (on) {
+  /** Picking a mode opts into translation; re-clicking it deselects (= no translation) */
+  selectTranslateMode(mode: 'whole-book' | 'sentence'): void {
+    if (this.translateMode() === mode) {
+      this.translateMode.set(null);
+    } else {
+      this.translateMode.set(mode);
       this._skippedSteps.delete('translate');
     }
   }
@@ -3523,7 +3517,7 @@ export class LLWizardComponent implements OnInit {
     if (step === 'translate') {
       const active = this.translateMode() === 'sentence'
         ? this.targetLangs().size > 0
-        : this.enableMonoTranslation();
+        : this.translateMode() === 'whole-book';
       if (!active) return true; // Can skip
       const provider = this.translateProvider();
       if (provider === 'ollama') return this.ollamaConnected() && !!this.translateModel();
