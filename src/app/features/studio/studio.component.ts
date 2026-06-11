@@ -9,6 +9,7 @@ import { StudioItem, MainTab, AudiobookSubTab, LanguageLearningSubTab, ProcessSt
 import { StudioListComponent } from './components/studio-list/studio-list.component';
 import { StudioBrowseComponent } from './components/studio-browse/studio-browse.component';
 import { StudioVersionsComponent } from './components/studio-versions/studio-versions.component';
+import { StudioInsightsComponent } from './components/studio-insights/studio-insights.component';
 import { AddModalComponent } from './components/add-modal/add-modal.component';
 import { ContentEditorComponent } from './components/content-editor/content-editor.component';
 import { LLWizardComponent } from '../language-learning/components/ll-wizard/ll-wizard.component';
@@ -34,10 +35,9 @@ import { SettingsService } from '../../core/services/settings.service';
 /**
  * StudioComponent - Unified workspace for books and articles
  *
- * Navigation Structure:
- * - Main Tabs: Metadata | Content (articles) | Audiobook | Language Learning
- * - Audiobook Sub-tabs: Process | Stream | Play | Review | Skipped | Enhance | Chapters
- * - Language Learning Sub-tabs: Process | Play | Review
+ * Two views: Browse (cover grid) and Workspace (list + book tabs).
+ * Book tabs: Versions | Content (articles) | Process (unified pipeline wizard) |
+ * Listen (play/stream) | Insights (content analysis).
  */
 @Component({
   selector: 'app-studio',
@@ -59,7 +59,8 @@ import { SettingsService } from '../../core/services/settings.service';
     AudiobookPlayerComponent,
     VersionPickerDialogComponent,
     StudioBrowseComponent,
-    StudioVersionsComponent
+    StudioVersionsComponent,
+    StudioInsightsComponent
   ],
   template: `
     <div class="studio-container"
@@ -204,6 +205,13 @@ import { SettingsService } from '../../core/services/settings.service';
                   (click)="setMainTab('listen')"
                 >
                   Listen
+                </button>
+                <button
+                  class="main-tab"
+                  [class.active]="mainTab() === 'insights'"
+                  (click)="setMainTab('insights')"
+                >
+                  Insights
                 </button>
 
                 <!-- Finalize button for articles on Content tab only -->
@@ -380,6 +388,17 @@ import { SettingsService } from '../../core/services/settings.service';
                     </div>
                   }
                 }
+              }
+
+              <!-- Insights Tab (content analysis) -->
+              @if (mainTab() === 'insights') {
+                <app-studio-insights
+                  [bfpPath]="selectedItem()?.bfpPath || ''"
+                  [item]="selectedItem()"
+                  [refreshTrigger]="filesRefreshTrigger()"
+                  (viewReport)="openEditor()"
+                  (queued)="onProcessQueued()"
+                />
               }
             </div>
           } @else {
