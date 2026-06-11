@@ -1,4 +1,4 @@
-import { Component, OnInit, inject, computed, signal } from '@angular/core';
+import { Component, OnInit, inject, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterOutlet } from '@angular/router';
 import {
@@ -9,7 +9,6 @@ import {
 import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.component';
 import { OnboardingComponent } from './components/onboarding/onboarding.component';
 import { LibraryService } from './core/services/library.service';
-import { ElectronService } from './core/services/electron.service';
 
 @Component({
   selector: 'app-root',
@@ -38,17 +37,6 @@ import { ElectronService } from './core/services/electron.service';
         <!-- Titlebar Left (for macOS-style placement) -->
         <ng-container titlebar-left>
           <div class="titlebar-spacer"></div>
-          @if (ttsEngineRunning() && !isStandaloneWindow()) {
-            <button
-              class="tts-pill"
-              (click)="stopTtsEngine()"
-              title="The stream TTS engine is running (~5 GB RAM). Click to shut it down."
-            >
-              <span class="tts-dot"></span>
-              TTS engine
-              <span class="tts-off">⏻</span>
-            </button>
-          }
         </ng-container>
 
         <!-- Main content area with nav rail -->
@@ -92,42 +80,6 @@ import { ElectronService } from './core/services/electron.service';
       width: 70px; // Space for traffic lights on macOS
     }
 
-    .tts-pill {
-      -webkit-app-region: no-drag;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 3px 10px;
-      border: 1px solid color-mix(in srgb, var(--accent-primary, #06b6d4) 50%, transparent);
-      border-radius: 12px;
-      background: color-mix(in srgb, var(--accent-primary, #06b6d4) 12%, transparent);
-      color: var(--text-primary);
-      font-size: 11px;
-      cursor: pointer;
-      transition: background 0.15s;
-
-      &:hover {
-        background: color-mix(in srgb, var(--accent-primary, #06b6d4) 25%, transparent);
-      }
-    }
-
-    .tts-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--accent-primary, #06b6d4);
-      animation: ttsPulse 1.6s ease-in-out infinite;
-    }
-
-    .tts-off {
-      opacity: 0.7;
-    }
-
-    @keyframes ttsPulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.35; }
-    }
-
     .app-layout {
       display: flex;
       flex: 1;
@@ -157,10 +109,6 @@ export class App implements OnInit {
   readonly themeService = inject(DesktopThemeService);
   readonly libraryService = inject(LibraryService);
   private readonly router = inject(Router);
-  private readonly electronService = inject(ElectronService);
-
-  /** Global truth pill: the stream TTS engine is running somewhere */
-  readonly ttsEngineRunning = signal(false);
 
   // Hide nav rail for standalone popup windows (alignment, editor, etc.)
   // App uses hash routing, so the route is in the hash fragment, not pathname
@@ -194,27 +142,6 @@ export class App implements OnInit {
 
   ngOnInit() {
     this.themeService.initializeTheme();
-
-    // TTS engine status pill: event-driven, with an initial check and a slow
-    // polling fallback in case an event is ever missed.
-    void this.refreshTtsStatus();
-    this.electronService.onPlaySessionStarted(() => this.ttsEngineRunning.set(true));
-    this.electronService.onPlaySessionEnded(() => this.ttsEngineRunning.set(false));
-    setInterval(() => void this.refreshTtsStatus(), 30_000);
-  }
-
-  private async refreshTtsStatus(): Promise<void> {
-    try {
-      const result = await this.electronService.playIsSessionActive();
-      if (result.success) {
-        this.ttsEngineRunning.set(!!result.active);
-      }
-    } catch { /* not in electron */ }
-  }
-
-  async stopTtsEngine(): Promise<void> {
-    await this.electronService.playEndSession();
-    this.ttsEngineRunning.set(false);
   }
 
   onOnboardingComplete(): void {

@@ -1365,12 +1365,23 @@ export interface ElectronAPI {
     onStatus: (callback: (status: { message: string }) => void) => () => void;
     onSessionEnded: (callback: (data: { code: number }) => void) => () => void;
     onSessionStarted: (callback: () => void) => () => void;
-    openListenWindow: (projectPath: string, mode?: 'play' | 'stream') => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
-    onSetListenMode: (callback: (mode: 'play' | 'stream') => void) => () => void;
+    openListenWindow: (projectPath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
+    listListenSources: (projectPath: string) => Promise<{
+      success: boolean;
+      epubs?: Array<{ kind: string; lang?: string; path: string; mtimeMs: number }>;
+      m4bs?: Array<{ fileName: string; mtimeMs: number }>;
+      error?: string;
+    }>;
     streamStart: (sentences: string[], startIndex: number, settings: PlaySettings, requestId: number) => Promise<{ success: boolean; error?: string }>;
     streamStop: () => Promise<{ success: boolean; error?: string }>;
     streamPlayhead: (sentenceIndex: number) => Promise<{ success: boolean; error?: string }>;
     onStreamEvent: (callback: (event: Record<string, unknown>) => void) => () => void;
+  };
+  ttsService: {
+    start: (voice?: string) => Promise<{ success: boolean; voices?: string[]; error?: string }>;
+    stop: () => Promise<{ success: boolean; error?: string }>;
+    status: () => Promise<{ success: boolean; state?: 'stopped' | 'starting' | 'running'; serviceMode?: boolean; error?: string }>;
+    onState: (callback: (state: { state: 'stopped' | 'starting' | 'running'; serviceMode: boolean }) => void) => () => void;
   };
   parallelTts: {
     detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: HardwareRecommendation; error?: string }>;
@@ -2694,15 +2705,10 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('play:session-started', listener);
       };
     },
-    openListenWindow: (projectPath: string, mode?: 'play' | 'stream') =>
-      ipcRenderer.invoke('listen:open-window', projectPath, mode),
-    onSetListenMode: (callback: (mode: 'play' | 'stream') => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, mode: 'play' | 'stream') => callback(mode);
-      ipcRenderer.on('listen:set-mode', listener);
-      return () => {
-        ipcRenderer.removeListener('listen:set-mode', listener);
-      };
-    },
+    openListenWindow: (projectPath: string) =>
+      ipcRenderer.invoke('listen:open-window', projectPath),
+    listListenSources: (projectPath: string) =>
+      ipcRenderer.invoke('listen:list-sources', projectPath),
     // Stream scheduler (main-process generation orchestration)
     streamStart: (sentences: string[], startIndex: number, settings: PlaySettings, requestId: number) =>
       ipcRenderer.invoke('stream:start', sentences, startIndex, settings, requestId),
@@ -2715,6 +2721,21 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('stream:event', listener);
       return () => {
         ipcRenderer.removeListener('stream:event', listener);
+      };
+    },
+  },
+  ttsService: {
+    start: (voice?: string) =>
+      ipcRenderer.invoke('tts-service:start', voice),
+    stop: () =>
+      ipcRenderer.invoke('tts-service:stop'),
+    status: () =>
+      ipcRenderer.invoke('tts-service:status'),
+    onState: (callback: (state: { state: 'stopped' | 'starting' | 'running'; serviceMode: boolean }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { state: 'stopped' | 'starting' | 'running'; serviceMode: boolean }) => callback(data);
+      ipcRenderer.on('tts-service:state', listener);
+      return () => {
+        ipcRenderer.removeListener('tts-service:state', listener);
       };
     },
   },

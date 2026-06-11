@@ -195,17 +195,20 @@ import { SettingsService } from '../../core/services/settings.service';
                 </button>
                 <button
                   class="main-tab"
-                  [class.active]="mainTab() === 'listen'"
-                  (click)="setMainTab('listen')"
-                >
-                  Listen
-                </button>
-                <button
-                  class="main-tab"
                   [class.active]="mainTab() === 'insights'"
                   (click)="setMainTab('insights')"
                 >
                   Insights
+                </button>
+
+                <!-- Listen opens the dedicated player window (keep working while you listen) -->
+                <button
+                  class="btn-listen"
+                  [disabled]="!canListen()"
+                  [title]="canListen() ? 'Open the player in its own window' : 'Nothing to listen to yet — needs an EPUB or a finished audiobook'"
+                  (click)="openListen()"
+                >
+                  <span class="listen-glyph">▶</span> Listen
                 </button>
 
                 <!-- Finalize button for articles on Content tab only -->
@@ -281,7 +284,7 @@ import { SettingsService } from '../../core/services/settings.service';
                       (edit)="openEditorWithFile($event)"
                       (exportDoc)="exportEpub($event)"
                       (exportAudio)="exportM4b()"
-                      (listen)="goToPlay()"
+                      (listen)="openListen()"
                       (enhance)="versionsPanel.set('enhance')"
                       (fixChapters)="versionsPanel.set('chapters')"
                       (skipped)="versionsPanel.set('skipped')"
@@ -339,40 +342,6 @@ import { SettingsService } from '../../core/services/settings.service';
                     }
                   </div>
                 }
-              }
-
-              <!-- Listen Tab: launcher for the dedicated player window -->
-              @if (mainTab() === 'listen') {
-                <div class="listen-launcher">
-                  <button
-                    class="launch-card"
-                    [class.disabled]="!hasMonoAudio() && !hasBilingualAudio()"
-                    [disabled]="!hasMonoAudio() && !hasBilingualAudio()"
-                    (click)="openListen('play')"
-                  >
-                    <span class="launch-icon">🎧</span>
-                    <span class="launch-title">Play audiobook</span>
-                    <span class="launch-desc">
-                      @if (hasMonoAudio()) { Finished M4B }
-                      @else if (hasBilingualAudio()) { Bilingual: {{ bilingualPairKeys().length }} pair{{ bilingualPairKeys().length > 1 ? 's' : '' }} }
-                      @else { No audiobook yet — run Process first }
-                    </span>
-                  </button>
-                  <button
-                    class="launch-card"
-                    [class.disabled]="!currentEpubPath()"
-                    [disabled]="!currentEpubPath()"
-                    (click)="openListen('stream')"
-                  >
-                    <span class="launch-icon">🎙️</span>
-                    <span class="launch-title">Stream (preview)</span>
-                    <span class="launch-desc">
-                      @if (currentEpubPath()) { Live TTS — listen before producing }
-                      @else { No EPUB available }
-                    </span>
-                  </button>
-                </div>
-                <p class="listen-hint">The player opens in its own window, so you can keep working while you listen. Closing the window shuts the streaming engine down.</p>
               }
 
               <!-- Insights Tab (content analysis) -->
@@ -525,7 +494,9 @@ import { SettingsService } from '../../core/services/settings.service';
 
     /* Browse/Workspace content fills the area below the top bar */
     desktop-split-pane { flex: 1; min-height: 0; animation: viewFade 0.2s ease both; }
-    app-studio-browse { flex: 1; min-height: 0; display: block; animation: viewFade 0.2s ease both; }
+    /* Opacity-only fade: a lingering transform (from fill-mode: both) would make
+       this a containing block for the browse context menu's position:fixed. */
+    app-studio-browse { flex: 1; min-height: 0; display: block; animation: viewFadeOpacity 0.2s ease both; }
 
     /* Tab content fades in when switching tabs (each @if block recreates its root) */
     .tab-content > * { animation: tabFade 0.16s ease both; }
@@ -533,6 +504,10 @@ import { SettingsService } from '../../core/services/settings.service';
     @keyframes viewFade {
       from { opacity: 0; transform: translateY(6px); }
       to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes viewFadeOpacity {
+      from { opacity: 0; }
+      to   { opacity: 1; }
     }
     @keyframes tabFade {
       from { opacity: 0; transform: translateY(4px); }
@@ -569,6 +544,43 @@ import { SettingsService } from '../../core/services/settings.service';
       color: #fff;
     }
     .topbar-search { flex: 1; position: relative; max-width: 420px; }
+    .topbar-search .search-input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 28px 6px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-size: 0.82rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .topbar-search .search-input:focus {
+      border-color: var(--accent-primary, #06b6d4);
+    }
+    .topbar-search .search-input::placeholder {
+      color: var(--text-muted, var(--text-secondary));
+    }
+    .topbar-search .search-clear {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 18px;
+      height: 18px;
+      border: none;
+      background: none;
+      color: var(--text-muted, var(--text-secondary));
+      font-size: 1rem;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+    .topbar-search .search-clear:hover { color: var(--text-primary); }
     .topbar-actions {
       display: flex;
       align-items: center;
@@ -946,8 +958,40 @@ import { SettingsService } from '../../core/services/settings.service';
       to { opacity: 1; transform: translateY(0); }
     }
 
-    .btn-finalize {
+    .btn-listen {
       margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 18px;
+      background: var(--accent-primary, #06b6d4);
+      border: none;
+      border-radius: 16px;
+      color: white;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+
+      .listen-glyph { font-size: 10px; }
+
+      &:hover:not(:disabled) {
+        background: #0891b2;
+        transform: translateY(-1px);
+        box-shadow: 0 3px 10px color-mix(in srgb, var(--accent-primary, #06b6d4) 35%, transparent);
+      }
+
+      &:disabled {
+        background: var(--bg-elevated);
+        color: var(--text-secondary);
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+    }
+
+    .btn-finalize {
+      margin-left: 8px;
       padding: 6px 16px;
       background: #06b6d4;
       border: none;
@@ -989,49 +1033,6 @@ import { SettingsService } from '../../core/services/settings.service';
         display: flex;
         flex-direction: column;
       }
-    }
-
-    .listen-launcher {
-      display: flex;
-      gap: 16px;
-      padding: 24px 8px 8px;
-      max-width: 640px;
-    }
-
-    .launch-card {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 8px;
-      padding: 28px 16px;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default, rgba(255,255,255,0.1));
-      border-radius: 12px;
-      cursor: pointer;
-      transition: all 0.15s;
-      color: var(--text-primary);
-
-      &:hover:not(.disabled) {
-        border-color: var(--accent-primary, #06b6d4);
-        background: color-mix(in srgb, var(--accent-primary, #06b6d4) 6%, var(--bg-elevated));
-      }
-
-      &.disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-    }
-
-    .launch-icon { font-size: 2rem; }
-    .launch-title { font-size: 0.95rem; font-weight: 600; }
-    .launch-desc { font-size: 0.76rem; color: var(--text-secondary); text-align: center; }
-
-    .listen-hint {
-      padding: 0 8px;
-      font-size: 0.76rem;
-      color: var(--text-secondary);
-      max-width: 640px;
     }
 
     .bilingual-pair-picker {
@@ -1471,12 +1472,10 @@ export class StudioComponent implements OnInit, OnDestroy {
     return !!item.bilingualAudioPath && !!item.bilingualVttPath;
   });
 
-  // Available bilingual language pairs (shown on the Listen launcher)
-  readonly bilingualPairKeys = computed(() => {
-    const item = this.selectedItem();
-    if (!item?.bilingualOutputs) return [];
-    return Object.keys(item.bilingualOutputs);
-  });
+  // The Listen window can play an M4B or stream any EPUB — enabled if either exists
+  readonly canListen = computed(() =>
+    !!this.currentEpubPath() || this.hasMonoAudio() || this.hasBilingualAudio()
+  );
 
   // Determine if current tab should use full height (no padding)
   readonly isFullHeightTab = computed(() => {
@@ -1569,18 +1568,10 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   /** Open the dedicated player window for the selected book */
-  openListen(mode: 'play' | 'stream'): void {
+  openListen(): void {
     const item = this.selectedItem();
     if (!item?.bfpPath) return;
-    void this.electronService.openListenWindow(item.bfpPath, mode);
-  }
-
-  goToStream(): void {
-    this.openListen('stream');
-  }
-
-  goToPlay(): void {
-    this.openListen('play');
+    void this.electronService.openListenWindow(item.bfpPath);
   }
 
   handleSubTabClick(
@@ -1621,7 +1612,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   playItem(item: StudioItem): void {
     this.selectedItemId.set(item.id);
     if (item.bfpPath) {
-      void this.electronService.openListenWindow(item.bfpPath, 'play');
+      void this.electronService.openListenWindow(item.bfpPath);
     }
   }
 

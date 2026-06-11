@@ -14,6 +14,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { ElectronService, StreamSchedulerEvent } from '../../../../core/services/electron.service';
+import { TtsServerService } from '../../../../core/services/tts-server.service';
 import { EpubService } from '../../services/epub.service';
 import { PlayTextService } from '../../services/play-text.service';
 import { AudioPlayerService } from '../../services/audio-player.service';
@@ -117,9 +118,19 @@ interface StreamCue {
                 <option [value]="voice.id">{{ voice.name }}</option>
               }
             </select>
-            @if (isReady()) {
-              <button class="btn-header-icon" (click)="endSession()" title="End TTS session">⏻</button>
-            }
+            <button
+              class="btn-server"
+              [class.running]="ttsServer.state() === 'running'"
+              [disabled]="ttsServer.state() === 'starting'"
+              (click)="toggleServer()"
+              [title]="ttsServer.state() === 'running' ? 'Shut down the TTS server' : 'Start the TTS server and keep it running (survives closing this window)'"
+            >
+              @switch (ttsServer.state()) {
+                @case ('running') { ⏻ Quit server }
+                @case ('starting') { Starting… }
+                @default { ⏻ Start server }
+              }
+            </button>
           </div>
         </div>
 
@@ -220,15 +231,9 @@ interface StreamCue {
         <div class="controls-row">
           <div class="transport-group">
             <button class="bar-btn" (click)="skipSentence(-1)" [disabled]="currentGlobalIndex() === 0" title="Previous sentence">⏮</button>
-            @if (!isReady()) {
-              <button class="start-btn" (click)="startSession()" [disabled]="chaptersLoading()">
-                Start TTS Engine
-              </button>
-            } @else {
-              <button class="bar-btn bar-btn-play" (click)="isPlaying() ? pause() : play()" [title]="isPlaying() ? 'Pause' : 'Play'">
-                <span class="play-icon">{{ isPlaying() ? '⏸' : '▶' }}</span>
-              </button>
-            }
+            <button class="bar-btn bar-btn-play" (click)="isPlaying() ? pause() : onPlayClicked()" [disabled]="chaptersLoading()" [title]="isPlaying() ? 'Pause' : 'Play'">
+              <span class="play-icon">{{ isPlaying() ? '⏸' : '▶' }}</span>
+            </button>
             <button class="bar-btn" (click)="skipSentence(1)" [disabled]="currentGlobalIndex() >= allCues().length - 1" title="Next sentence">⏭</button>
           </div>
           <div class="speed-group">
@@ -258,7 +263,7 @@ interface StreamCue {
               @for (chapter of chapters(); track chapter.id; let i = $index) {
                 <button
                   class="chapter-item"
-                  [class.active]="chapter.id === selectedChapterId()"
+                  [class.active]="chapter.id === currentChapter()?.id"
                   (click)="onChapterSelect(chapter.id)"
                 >
                   <span class="chapter-order">{{ i + 1 }}</span>
@@ -451,6 +456,35 @@ interface StreamCue {
       background: var(--accent, var(--accent-primary));
       border-color: var(--accent, var(--accent-primary));
       color: white;
+    }
+
+    .btn-server {
+      padding: 5px 12px;
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      background: var(--bg-surface, var(--surface-1));
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+
+    .btn-server:hover:not(:disabled) {
+      background: var(--bg-hover, var(--surface-2));
+      color: var(--text-primary);
+    }
+
+    .btn-server.running {
+      border-color: color-mix(in srgb, #22c55e 50%, transparent);
+      background: color-mix(in srgb, #22c55e 10%, transparent);
+      color: #22c55e;
+    }
+
+    .btn-server:disabled {
+      opacity: 0.6;
+      cursor: wait;
     }
 
     .voice-select {
@@ -880,26 +914,6 @@ interface StreamCue {
       filter: brightness(1.1);
     }
 
-    .start-btn {
-      padding: 8px 18px;
-      border: none;
-      border-radius: 18px;
-      background: var(--accent, var(--accent-primary));
-      color: white;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    .start-btn:hover:not(:disabled) {
-      filter: brightness(1.1);
-    }
-
-    .start-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
     .speed-group {
       position: absolute;
       right: 0;
@@ -1039,6 +1053,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   private readonly epubService = inject(EpubService);
   private readonly playTextService = inject(PlayTextService);
   private readonly audioPlayer = inject(AudioPlayerService);
+  readonly ttsServer = inject(TtsServerService);
 
   // View refs
   @ViewChild('textPane') textPane!: ElementRef<HTMLDivElement>;
@@ -1060,13 +1075,15 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   // Chapter state
   readonly chaptersLoading = signal(false);
   readonly chapters = signal<PlayableChapter[]>([]);
-  readonly selectedChapterId = signal<string>('');
-  readonly currentChapter = computed(() =>
-    this.chapters().find(c => c.id === this.selectedChapterId()) || null
-  );
-  readonly currentChapterIndex = computed(() =>
-    this.chapters().findIndex(c => c.id === this.selectedChapterId())
-  );
+  // Chapters are a display concept only — the stream is the whole book in one
+  // global index space, so the current chapter is derived from the playhead.
+  readonly currentCue = computed(() => this.allCues()[this.currentGlobalIndex()] ?? null);
+  readonly currentChapter = computed(() => {
+    const chapters = this.chapters();
+    const cue = this.currentCue();
+    if (!cue) return chapters[0] ?? null;
+    return chapters.find(c => c.id === cue.chapterId) ?? null;
+  });
 
   // Playback state
   readonly playbackState = signal<PlaybackState>('idle');
@@ -1076,7 +1093,8 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   readonly isGenerating = signal(false);
   readonly selectedVoice = signal<string>('ScarlettJohansson');
   readonly selectedSpeed = signal<number>(1.25);
-  readonly currentSentenceIndex = signal<number>(0);  // within current chapter
+  /** Playhead position in the whole-book sentence space (same space the stream uses) */
+  readonly currentGlobalIndex = signal<number>(0);
 
   // Player chrome state
   readonly chapterDrawerOpen = signal(false);
@@ -1131,11 +1149,6 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     return map;
   });
 
-  readonly currentGlobalIndex = computed(() => {
-    const start = this.chapterStartIndex().get(this.selectedChapterId()) ?? 0;
-    return start + this.currentSentenceIndex();
-  });
-
   readonly progressPercent = computed(() => {
     const total = this.allCues().length;
     if (total === 0) return 0;
@@ -1156,14 +1169,26 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       this.playbackState.set(state);
     });
 
-    // Sync sentence index from audio player; report playhead to the
-    // scheduler so the generation lookahead window advances
+    // Sync the global sentence index from the audio player; report the
+    // playhead to the scheduler so the generation lookahead window advances
     effect(() => {
       const index = this.audioPlayer.currentSentenceIndex();
       if (index >= 0) {
-        this.currentSentenceIndex.set(index);
+        this.currentGlobalIndex.set(index);
         this.electronService.streamReportPlayhead(index);
         this.scrollToCurrent();
+      }
+    });
+
+    // Mirror the global engine state (single source of truth in the main
+    // process). Covers engines started/stopped from any window — nav rail,
+    // another listen window — and re-attachment after a renderer reload.
+    effect(() => {
+      const state = this.ttsServer.state();
+      if (state === 'running' && this.sessionState() === 'inactive') {
+        this.sessionState.set('ready');
+      } else if (state === 'stopped' && this.sessionState() === 'ready') {
+        this.sessionState.set('inactive');
       }
     });
   }
@@ -1171,7 +1196,6 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   ngOnInit() {
     this.loadChapters();
     this.loadBookmarks();
-    void this.reattachToRunningSession();
 
     // Audio events from the main-process stream scheduler
     this.unsubscribeStreamEvents = this.electronService.onStreamEvent(
@@ -1184,17 +1208,9 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       this.stop();
     });
 
-    // Fires only when generation is complete AND all audio has played -
-    // i.e. the end of the chapter. Auto-advance to the next one.
-    this.audioPlayer.onPlaybackEnd(() => {
-      const index = this.currentChapterIndex();
-      if (index < this.chapters().length - 1) {
-        this.stop();
-        this.selectedChapterId.set(this.chapters()[index + 1].id);
-        this.currentSentenceIndex.set(0);
-        setTimeout(() => this.play(), 300);
-      }
-    });
+    // No onPlaybackEnd handler: the whole book streams as one session, so
+    // playback flows across chapter boundaries on its own. When the book
+    // ends, the playhead stays put so a bookmark can still be added.
   }
 
   ngOnDestroy() {
@@ -1259,21 +1275,6 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     }
   }
 
-  /**
-   * The TTS engine lives in the main process and survives renderer reloads
-   * (dev hot-reload, view switches). If one is already running, re-attach to
-   * it instead of stranding it in the background.
-   */
-  private async reattachToRunningSession() {
-    try {
-      const result = await this.electronService.playIsSessionActive();
-      if (result.success && result.active && this.sessionState() === 'inactive') {
-        console.log('[PlayView] Re-attached to running TTS session');
-        this.sessionState.set('ready');
-      }
-    } catch { /* no session to re-attach to */ }
-  }
-
   /** Cancel a startup (or voice switch) in progress and shut the engine down. */
   async cancelStartup() {
     this.startAttempt++;  // invalidate whatever is in flight
@@ -1291,18 +1292,35 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.sessionState.set('inactive');
   }
 
-  async endSession() {
-    this.stop();
-    await this.electronService.playEndSession();
-    this.sessionState.set('inactive');
+  /**
+   * Start/stop the TTS server (separate from play/pause). Starting from here
+   * pins the engine as a resident service — it survives closing this window.
+   */
+  async toggleServer() {
+    if (this.ttsServer.state() === 'running') {
+      this.stop();
+      this.sessionState.set('inactive');
+      await this.ttsServer.stop();
+    } else if (this.ttsServer.state() === 'stopped') {
+      await this.ttsServer.start(this.selectedVoice());
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Playback controls
   // ─────────────────────────────────────────────────────────────────────────────
 
+  /** Play button: if the engine isn't running yet, start it first (modal flow). */
+  async onPlayClicked() {
+    if (!this.isReady()) {
+      await this.startSession();
+      if (!this.isReady()) return;  // failed or cancelled
+    }
+    await this.play();
+  }
+
   async play() {
-    if (!this.isReady() || !this.currentChapter()) return;
+    if (!this.isReady() || this.allCues().length === 0) return;
 
     await this.audioPlayer.initialize();
 
@@ -1319,9 +1337,9 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     }
 
     // Start fresh from the current position (sentence clicks / skips set it)
-    const total = this.currentChapter()!.sentences.length;
-    const startIndex = Math.min(this.currentSentenceIndex(), Math.max(total - 1, 0));
-    this.currentSentenceIndex.set(startIndex);
+    const total = this.allCues().length;
+    const startIndex = Math.min(this.currentGlobalIndex(), total - 1);
+    this.currentGlobalIndex.set(startIndex);
 
     void this.startStreaming(startIndex);
   }
@@ -1334,26 +1352,25 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   stop() {
     this.stopStreaming();
     this.audioPlayer.clearQueue();
-    this.currentSentenceIndex.set(0);
+    this.currentGlobalIndex.set(0);
   }
 
   /** Move to a global position; if audio was active, regenerate from there. */
   private async jumpToGlobal(globalIndex: number) {
     const cues = this.allCues();
     if (cues.length === 0) return;
-    const cue = cues[Math.max(0, Math.min(globalIndex, cues.length - 1))];
+    const target = Math.max(0, Math.min(globalIndex, cues.length - 1));
 
     const wasActive = this.isPlaying() || this.isGenerating() || this.playbackState() === 'paused';
     this.stopStreaming();
     this.audioPlayer.clearQueue();
 
-    this.selectedChapterId.set(cue.chapterId);
-    this.currentSentenceIndex.set(cue.localIndex);
+    this.currentGlobalIndex.set(target);
     this.scrollToCurrent();
 
     if (wasActive && this.isReady()) {
       await this.audioPlayer.initialize();
-      void this.startStreaming(cue.localIndex);
+      void this.startStreaming(target);
     }
   }
 
@@ -1443,13 +1460,12 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   }
 
   addBookmark() {
-    const chapter = this.currentChapter();
-    if (!chapter) return;
-    const index = this.currentSentenceIndex();
+    const cue = this.currentCue();
+    if (!cue) return;
     const bookmark: StreamBookmark = {
-      name: `${chapter.title} · sentence ${index + 1}`,
-      chapterId: chapter.id,
-      sentenceIndex: index,
+      name: `${cue.chapterTitle} · sentence ${cue.localIndex + 1}`,
+      chapterId: cue.chapterId,
+      sentenceIndex: cue.localIndex,
       createdAt: Date.now(),
     };
     this.bookmarks.update(list => [bookmark, ...list]);
@@ -1505,10 +1521,6 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       }
 
       this.chapters.set(chapters);
-
-      if (chapters.length > 0) {
-        this.selectedChapterId.set(chapters[0].id);
-      }
     } catch (error) {
       console.error('Failed to load chapters:', error);
     } finally {
@@ -1517,13 +1529,17 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Start main-process generation from the given sentence. The scheduler
-   * streams the first sentence chunk-by-chunk and batches lookahead across
-   * the worker pool; audio comes back via stream:event broadcasts.
+   * Start main-process generation from the given global sentence index. The
+   * whole book is one stream — chapters are display-only — so the scheduler's
+   * lookahead window flows across chapter boundaries with no gap. It only
+   * generates ~45s ahead of the playhead, so a seek doesn't waste work on
+   * text that won't be heard. The scheduler streams the first sentence
+   * chunk-by-chunk and batches lookahead across the worker pool; audio comes
+   * back via stream:event broadcasts.
    */
   private async startStreaming(startIndex: number) {
-    const chapter = this.currentChapter();
-    if (!chapter) return;
+    const cues = this.allCues();
+    if (cues.length === 0) return;
 
     const requestId = ++this.streamRequestId;
     const settings: PlaySettings = {
@@ -1531,10 +1547,20 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       speed: this.selectedSpeed()
     };
 
+    // Workers generate with whatever voice is loaded, not the one in settings.
+    // No-ops when it already matches; covers engines started elsewhere (nav
+    // rail service start) that were warmed with a different voice.
+    const voiceResult = await this.electronService.playLoadVoice(settings.voice);
+    if (!voiceResult.success) {
+      console.error('[PlayView] Voice load failed:', voiceResult.error);
+      return;
+    }
+    if (requestId !== this.streamRequestId) return;  // superseded while loading
+
     this.isGenerating.set(true);
     this.audioPlayer.beginStream(startIndex);
 
-    const sentences = chapter.sentences.map(s => s.text);
+    const sentences = cues.map(c => c.text);
     const result = await this.electronService.streamStart(sentences, startIndex, settings, requestId);
 
     if (!result.success) {

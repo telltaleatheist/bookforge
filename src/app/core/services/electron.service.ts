@@ -2255,16 +2255,54 @@ export class ElectronService {
     return () => {};
   }
 
-  async openListenWindow(projectPath: string, mode?: 'play' | 'stream'): Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }> {
+  async openListenWindow(projectPath: string): Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.play.openListenWindow(projectPath, mode);
+      return (window as any).electron.play.openListenWindow(projectPath);
     }
     return { success: false, error: 'Not running in Electron' };
   }
 
-  onSetListenMode(callback: (mode: 'play' | 'stream') => void): () => void {
+  async listListenSources(projectPath: string): Promise<{
+    success: boolean;
+    epubs?: Array<{ kind: string; lang?: string; path: string; mtimeMs: number }>;
+    m4bs?: Array<{ fileName: string; mtimeMs: number }>;
+    error?: string;
+  }> {
     if (this.isElectron) {
-      return (window as any).electron.play.onSetListenMode(callback);
+      return (window as any).electron.play.listListenSources(projectPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // TTS service (engine pinned as a resident service; main process is the
+  // single source of truth, state broadcasts keep every window in sync)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async ttsServiceStart(voice?: string): Promise<{ success: boolean; voices?: string[]; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ttsService.start(voice);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ttsServiceStop(): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ttsService.stop();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ttsServiceStatus(): Promise<{ success: boolean; state?: 'stopped' | 'starting' | 'running'; serviceMode?: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ttsService.status();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  onTtsServiceState(callback: (state: { state: 'stopped' | 'starting' | 'running'; serviceMode: boolean }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.ttsService.onState(callback);
     }
     return () => {};
   }

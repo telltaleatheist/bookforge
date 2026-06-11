@@ -102,6 +102,43 @@ const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 let lastActivityAt = 0;
 let idleTimer: NodeJS.Timeout | null = null;
 
+// Service mode: the user explicitly started the engine as a resident service
+// (nav rail / play-screen "Start server"). Pins the pool alive — no idle
+// shutdown, no shutdown when the last listen window closes. Cleared whenever
+// the engine actually stops, so no window can ever show a running service
+// that is dead.
+let serviceMode = false;
+let startingSession = false;
+let startSessionPromise: Promise<{ success: boolean; voices?: string[]; error?: string }> | null = null;
+// Last voice the user listened with — used to warm the service on start
+let lastVoice: string | null = null;
+
+export type EngineState = 'stopped' | 'starting' | 'running';
+
+export function getEngineState(): EngineState {
+  if (startingSession) return 'starting';
+  return isSessionActive() ? 'running' : 'stopped';
+}
+
+export function isServiceMode(): boolean {
+  return serviceMode;
+}
+
+export function setServiceMode(on: boolean): void {
+  if (serviceMode === on) return;
+  serviceMode = on;
+  broadcastServiceState();
+}
+
+export function getLastVoice(): string | null {
+  return lastVoice;
+}
+
+/** Engine state goes to every window so all start/stop controls stay in sync. */
+function broadcastServiceState(): void {
+  broadcast('tts-service:state', { state: getEngineState(), serviceMode });
+}
+
 function touchActivity(): void {
   lastActivityAt = Date.now();
 }
@@ -110,7 +147,7 @@ function startIdleWatch(): void {
   stopIdleWatch();
   touchActivity();
   idleTimer = setInterval(() => {
-    if (isSessionActive() && Date.now() - lastActivityAt > IDLE_TIMEOUT_MS) {
+    if (!serviceMode && isSessionActive() && Date.now() - lastActivityAt > IDLE_TIMEOUT_MS) {
       console.log(`[XTTS Pool] Idle for ${Math.round(IDLE_TIMEOUT_MS / 60000)} min — shutting down`);
       void endSession();
     }
@@ -143,12 +180,25 @@ export function setMainWindow(window: BrowserWindow | null): void {
 }
 
 /**
- * Start the worker pool
+ * Start the worker pool. Concurrent callers (e.g. nav-rail service start and
+ * a play button pressed in another window) share the same in-flight startup.
  */
 export async function startSession(): Promise<{ success: boolean; voices?: string[]; error?: string }> {
-  if (workers.length > 0) {
+  if (workers.length > 0 && !startingSession) {
     return { success: true, voices: getAvailableVoices() };
   }
+  if (startSessionPromise) {
+    return startSessionPromise;
+  }
+  startSessionPromise = doStartSession().finally(() => {
+    startSessionPromise = null;
+  });
+  return startSessionPromise;
+}
+
+async function doStartSession(): Promise<{ success: boolean; voices?: string[]; error?: string }> {
+  startingSession = true;
+  broadcastServiceState();
 
   console.log(`[XTTS Pool] Starting ${NUM_WORKERS} workers...`);
 
@@ -164,15 +214,19 @@ export async function startSession(): Promise<{ success: boolean; voices?: strin
     if (allSuccess) {
       console.log('[XTTS Pool] All workers started successfully');
       startIdleWatch();
+      startingSession = false;
       broadcast('play:session-started');
+      broadcastServiceState();
       return { success: true, voices: getAvailableVoices() };
     } else {
       const errors = results.filter(r => !r.success).map(r => r.error);
+      startingSession = false;
       await endSession();
       return { success: false, error: errors.join(', ') };
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
+    startingSession = false;
     await endSession();
     return { success: false, error: message };
   }
@@ -329,6 +383,7 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
   const allSuccess = results.every(r => r.success);
   if (allSuccess) {
     currentVoice = voice;
+    lastVoice = voice;
     return { success: true };
   } else {
     const errors = results.filter(r => !r.success).map(r => r.error);
@@ -595,10 +650,12 @@ export async function endSession(): Promise<void> {
   workers = [];
   currentVoice = null;
   discoveredVoices = [];
+  serviceMode = false;  // engine off ⇒ service off
 
   if (hadWorkers) {
     broadcast('play:session-ended', { code: 0 });
   }
+  broadcastServiceState();
 }
 
 /**
@@ -697,5 +754,9 @@ export const xttsWorkerPool = {
   isSessionActive,
   getAvailableVoices,
   getCurrentVoice,
-  getWorkerCount
+  getWorkerCount,
+  getEngineState,
+  isServiceMode,
+  setServiceMode,
+  getLastVoice
 };

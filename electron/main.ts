@@ -4118,6 +4118,57 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── TTS service: the engine pinned as a resident service ──
+  // Unlike the implicit play-button start, service mode survives listen-window
+  // close and idle timeout, so external clients (e.g. a browser extension) can
+  // rely on it. State changes broadcast on 'tts-service:state' to all windows;
+  // the main process is the single source of truth.
+
+  ipcMain.handle('tts-service:start', async (_event, voice?: string) => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      xttsWorkerPool.setServiceMode(true);
+      const result = await xttsWorkerPool.startSession();
+      if (!result.success) {
+        xttsWorkerPool.setServiceMode(false);
+        return { success: false, error: result.error };
+      }
+      // Warm a voice so the first request speaks within seconds
+      const warmVoice = voice || xttsWorkerPool.getCurrentVoice() || xttsWorkerPool.getLastVoice() || 'ScarlettJohansson';
+      const loaded = await xttsWorkerPool.loadVoice(warmVoice);
+      if (!loaded.success) {
+        console.warn('[MAIN] TTS service: voice warm-up failed:', loaded.error);
+      }
+      return { success: true, voices: result.voices };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('tts-service:stop', async () => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      xttsWorkerPool.setServiceMode(false);
+      await xttsWorkerPool.endSession();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('tts-service:status', async () => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      return {
+        success: true,
+        state: xttsWorkerPool.getEngineState(),
+        serviceMode: xttsWorkerPool.isServiceMode()
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Stream scheduler: main-process generation orchestration for the Play tab.
   // The renderer sends the sentence list once; audio comes back as
   // 'stream:event' broadcasts (chunked pcm16 for the playhead sentence,
@@ -8988,14 +9039,58 @@ function setupIpcHandlers(): void {
   // is only ever running while a player window is open.
   const listenWindows = new Map<string, BrowserWindow>();
 
-  ipcMain.handle('listen:open-window', async (_event, projectPath: string, mode?: 'play' | 'stream') => {
+  // Everything listenable for a project, scanned from the canonical locations.
+  // M4Bs play directly; EPUBs stream via live TTS. The renderer derives the
+  // player from what the user picks, so there is no separate play/stream mode.
+  ipcMain.handle('listen:list-sources', async (_event, projectPath: string) => {
+    const statMtime = async (p: string): Promise<number | null> => {
+      try {
+        return (await fs.stat(p)).mtimeMs;
+      } catch {
+        return null;
+      }
+    };
+
+    const epubs: Array<{ kind: string; lang?: string; path: string; mtimeMs: number }> = [];
+    const addEpub = async (kind: string, relPath: string, lang?: string) => {
+      const abs = path.join(projectPath, relPath);
+      const mtimeMs = await statMtime(abs);
+      if (mtimeMs !== null) epubs.push({ kind, lang, path: abs, mtimeMs });
+    };
+
+    await addEpub('translated', path.join('stages', '02-translate', 'translated.epub'));
+    // LL pipeline: per-language EPUBs (de.epub, ko.epub, ...)
+    try {
+      const translateDir = path.join(projectPath, 'stages', '02-translate');
+      for (const name of await fs.readdir(translateDir)) {
+        const m = name.match(/^([a-z]{2,3})\.epub$/);
+        if (m) await addEpub('translated', path.join('stages', '02-translate', name), m[1]);
+      }
+    } catch { /* no translate stage */ }
+    await addEpub('simplified', path.join('stages', '01-cleanup', 'simplified.epub'));
+    await addEpub('cleaned', path.join('stages', '01-cleanup', 'cleaned.epub'));
+    await addEpub('exported', path.join('source', 'exported.epub'));
+    await addEpub('original', path.join('source', 'original.epub'));
+
+    // M4B mtimes keyed by filename — the renderer pairs them with the manifest's
+    // audio entries and flags audiobooks older than the newest EPUB as stale.
+    const m4bs: Array<{ fileName: string; mtimeMs: number }> = [];
+    try {
+      const outputDir = path.join(projectPath, 'output');
+      for (const name of await fs.readdir(outputDir)) {
+        if (!name.endsWith('.m4b')) continue;
+        const mtimeMs = await statMtime(path.join(outputDir, name));
+        if (mtimeMs !== null) m4bs.push({ fileName: name, mtimeMs });
+      }
+    } catch { /* no output yet */ }
+
+    return { success: true, epubs, m4bs };
+  });
+
+  ipcMain.handle('listen:open-window', async (_event, projectPath: string) => {
     const existing = listenWindows.get(projectPath);
     if (existing && !existing.isDestroyed()) {
       existing.focus();
-      // Re-route the open window to the requested mode
-      if (mode) {
-        existing.webContents.send('listen:set-mode', mode);
-      }
       return { success: true, alreadyOpen: true };
     }
 
@@ -9022,12 +9117,13 @@ function setupIpcHandlers(): void {
 
     listenWindow.on('closed', () => {
       listenWindows.delete(projectPath);
-      // Last listen window gone → the stream engine has no possible consumer
+      // Last listen window gone → the stream engine has no possible consumer.
+      // Exception: service mode pins the engine alive for external clients.
       if (listenWindows.size === 0) {
         void (async () => {
           try {
             const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-            if (xttsWorkerPool.isSessionActive()) {
+            if (xttsWorkerPool.isSessionActive() && !xttsWorkerPool.isServiceMode()) {
               console.log('[MAIN] Last listen window closed — ending stream TTS session');
               await xttsWorkerPool.endSession();
             }
@@ -9043,14 +9139,13 @@ function setupIpcHandlers(): void {
     });
 
     const encodedPath = encodeURIComponent(projectPath);
-    const modeParam = mode ? `&mode=${mode}` : '';
     if (isDev) {
-      listenWindow.loadURL(`http://localhost:4250/#/listen?project=${encodedPath}${modeParam}`);
+      listenWindow.loadURL(`http://localhost:4250/#/listen?project=${encodedPath}`);
     } else {
       const appPath = app.getAppPath();
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       listenWindow.loadFile(indexPath, {
-        hash: `/listen?project=${encodedPath}${modeParam}`
+        hash: `/listen?project=${encodedPath}`
       });
     }
 
@@ -9707,7 +9802,11 @@ app.whenReady().then(async () => {
       label: 'File',
       submenu: [
         isMac
-          ? { label: 'Close Window', accelerator: 'CmdOrCtrl+W', click: () => mainWindow?.hide() }
+          ? { label: 'Close Window', accelerator: 'CmdOrCtrl+W', click: (_item, focusedWindow) => {
+              // Hide the main window (keeps the app alive); close any other focused window (e.g. the Listen/player window).
+              if (focusedWindow && focusedWindow !== mainWindow) focusedWindow.close();
+              else mainWindow?.hide();
+            } }
           : { label: 'Quit', accelerator: 'CmdOrCtrl+Q', click: handleQuit }
       ]
     },

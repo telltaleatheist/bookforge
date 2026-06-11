@@ -2,6 +2,7 @@ import { Component, inject, input, computed, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, NavigationEnd } from '@angular/router';
 import { filter } from 'rxjs/operators';
+import { TtsServerService } from '../../core/services/tts-server.service';
 
 // Global log capture
 const capturedLogs: string[] = [];
@@ -61,6 +62,25 @@ export interface NavRailItem {
         }
       </div>
       <div class="nav-footer">
+        <button
+          class="service-btn"
+          [class.running]="ttsServer.state() === 'running'"
+          [class.starting]="ttsServer.state() === 'starting'"
+          (click)="toggleTtsServer()"
+          [title]="ttsServerTitle()"
+        >
+          <span class="nav-icon">🎙️</span>
+          <span class="nav-label">
+            @switch (ttsServer.state()) {
+              @case ('running') { TTS On }
+              @case ('starting') { Starting… }
+              @default { TTS Server }
+            }
+          </span>
+          @if (ttsServer.state() === 'running') {
+            <span class="service-dot"></span>
+          }
+        </button>
         <button class="debug-btn" (click)="saveLogs()" title="Save debug logs">
           <span class="nav-icon">🐛</span>
           <span class="nav-label">Logs</span>
@@ -161,6 +181,64 @@ export interface NavRailItem {
       align-items: center;
     }
 
+    .service-btn {
+      position: relative;
+      width: 88px;
+      height: 52px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      background: transparent;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      transition: all 0.15s ease;
+
+      &:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+
+      &.running {
+        background: color-mix(in srgb, #22c55e 14%, transparent);
+        color: #22c55e;
+      }
+
+      &.starting {
+        color: var(--accent-primary);
+        animation: servicePulse 1.4s ease-in-out infinite;
+      }
+
+      .nav-icon {
+        font-size: 1.25rem;
+      }
+
+      .nav-label {
+        font-size: 0.625rem;
+        font-weight: 500;
+        text-transform: uppercase;
+      }
+    }
+
+    .service-dot {
+      position: absolute;
+      top: 6px;
+      right: 10px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+      animation: servicePulse 1.6s ease-in-out infinite;
+    }
+
+    @keyframes servicePulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
     .debug-btn {
       width: 88px;
       height: 52px;
@@ -195,6 +273,7 @@ export interface NavRailItem {
 })
 export class NavRailComponent {
   private readonly router = inject(Router);
+  readonly ttsServer = inject(TtsServerService);
 
   // Navigation items are provided by the host (see app.ts navItems).
   readonly items = input<NavRailItem[]>([]);
@@ -218,6 +297,18 @@ export class NavRailComponent {
     const current = this.currentRoute();
     // Check if current route starts with the nav item route
     return current === route || current.startsWith(route + '/');
+  }
+
+  toggleTtsServer(): void {
+    void this.ttsServer.toggle();
+  }
+
+  ttsServerTitle(): string {
+    switch (this.ttsServer.state()) {
+      case 'running': return 'TTS server is running (~5 GB RAM/worker). Click to shut it down.';
+      case 'starting': return 'TTS server is starting (loading models). Click to cancel.';
+      default: return 'Start the TTS server: instant streaming playback, and external clients (e.g. a browser extension) can connect.';
+    }
   }
 
   navigate(route: string): void {

@@ -103,13 +103,13 @@ export interface StudioItem {
 
 /**
  * Main tabs: top-level navigation
- * Editor is now a button that opens a new window, not a tab.
+ * Editor and Listen are buttons that open their own windows, not tabs.
  */
-// Four-tab book view. Internal values kept for continuity:
+// Three-tab book view. Internal values kept for continuity:
 //   'files' = Versions tab, 'audiobook' = Process tab (unified pipeline wizard),
-//   'listen' = Listen tab, 'insights' = content analysis.
+//   'insights' = content analysis.
 //   'language-learning' is legacy/unused from the UI.
-export type MainTab = 'files' | 'content' | 'audiobook' | 'language-learning' | 'listen' | 'insights';
+export type MainTab = 'files' | 'content' | 'audiobook' | 'language-learning' | 'insights';
 
 /**
  * Sub-tabs under Audiobook main tab
