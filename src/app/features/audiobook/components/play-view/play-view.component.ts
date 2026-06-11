@@ -1167,6 +1167,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   ngOnInit() {
     this.loadChapters();
     this.loadBookmarks();
+    void this.reattachToRunningSession();
 
     // Handle session end from main process
     this.unsubscribeSessionEnd = this.electronService.onPlaySessionEnded(() => {
@@ -1253,6 +1254,21 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       this.loadingMessage.set('Failed to start TTS engine');
       this.sessionState.set('error');
     }
+  }
+
+  /**
+   * The TTS engine lives in the main process and survives renderer reloads
+   * (dev hot-reload, view switches). If one is already running, re-attach to
+   * it instead of stranding it in the background.
+   */
+  private async reattachToRunningSession() {
+    try {
+      const result = await this.electronService.playIsSessionActive();
+      if (result.success && result.active && this.sessionState() === 'inactive') {
+        console.log('[PlayView] Re-attached to running TTS session');
+        this.sessionState.set('ready');
+      }
+    } catch { /* no session to re-attach to */ }
   }
 
   /** Cancel a startup (or voice switch) in progress and shut the engine down. */

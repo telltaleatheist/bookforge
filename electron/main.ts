@@ -9748,6 +9748,16 @@ app.on('before-quit', async (event) => {
     console.error('[MAIN] Failed to kill TTS workers:', err);
   }
 
+  // Kill the stream-preview XTTS worker pool (otherwise its Python process outlives the app)
+  try {
+    const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+    if (xttsWorkerPool.isSessionActive()) {
+      await xttsWorkerPool.endSession();
+    }
+  } catch (err) {
+    console.error('[MAIN] Failed to end stream TTS session:', err);
+  }
+
   // Stop bookshelf server if running
   if (bookshelfServer.isRunning()) {
     await bookshelfServer.stop();
