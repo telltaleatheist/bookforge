@@ -64,6 +64,7 @@ interface VersionRow {
                 } @else {
                   @if (v.editable) { <button class="act" (click)="edit.emit(v.path)">Edit</button> }
                   @if (isEpub(v) && epubCount() > 1) { <button class="act" (click)="compareSource.set(v)">Compare…</button> }
+                  @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
                   <button class="act" (click)="exportDoc.emit(v.path)">Export…</button>
                   @if (deletable(v)) { <button class="act danger" (click)="remove(v)">Delete</button> }
                 }
@@ -88,7 +89,6 @@ interface VersionRow {
                 @if (a.mono) {
                   @if (item()?.audiobookPath) { <button class="act" (click)="enhance.emit()">Enhance</button> }
                   @if (item()?.vttPath) { <button class="act" (click)="fixChapters.emit()">Fix Chapters</button> }
-                  @if (item()?.skippedChunksPath) { <button class="act" (click)="skipped.emit()">Skipped</button> }
                 }
               </div>
             </div>
@@ -180,6 +180,12 @@ export class StudioVersionsComponent {
   }
 
   isEpub(v: VersionRow): boolean { return (v.extension || '').toLowerCase() === 'epub'; }
+
+  /** The skipped-sentences report belongs to the cleanup output it was produced with. */
+  hasSkippedReport(v: VersionRow): boolean {
+    return !!this.item()?.skippedChunksPath && (v.type === 'cleaned' || v.type === 'simplified');
+  }
+
   deletable(v: VersionRow): boolean { return !['original', 'exported', 'analysis'].includes(v.type); }
 
   async load(): Promise<void> {
