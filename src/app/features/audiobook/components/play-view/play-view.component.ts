@@ -60,6 +60,10 @@ interface StreamCue {
               <desktop-button variant="secondary" (click)="dismissError()">
                 Dismiss
               </desktop-button>
+            } @else {
+              <desktop-button variant="secondary" (click)="cancelStartup()">
+                Cancel
+              </desktop-button>
             }
           </div>
         </div>
@@ -1201,7 +1205,11 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   // Session management
   // ─────────────────────────────────────────────────────────────────────────────
 
+  // Bumped to invalidate an in-flight startup (or voice switch) when the user cancels
+  private startAttempt = 0;
+
   async startSession() {
+    const attempt = ++this.startAttempt;
     this.showLoadingModal.set(true);
     this.loadingTitle.set('Starting TTS Engine');
     this.loadingMessage.set('Initializing...');
@@ -1213,6 +1221,11 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       this.loadingMessage.set('Starting Python process...');
       const startResult = await this.electronService.playStartSession();
 
+      if (attempt !== this.startAttempt) {
+        // Cancelled while starting — make sure any late-spawned process dies
+        void this.electronService.playEndSession();
+        return;
+      }
       if (!startResult.success) {
         throw new Error(startResult.error || 'Failed to start session');
       }
@@ -1221,6 +1234,10 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       this.loadingMessage.set('Loading voice model (this may take a minute)...');
       const voiceResult = await this.electronService.playLoadVoice(this.selectedVoice());
 
+      if (attempt !== this.startAttempt) {
+        void this.electronService.playEndSession();
+        return;
+      }
       if (!voiceResult.success) {
         throw new Error(voiceResult.error || 'Failed to load voice');
       }
@@ -1230,11 +1247,23 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       this.showLoadingModal.set(false);
 
     } catch (error) {
+      if (attempt !== this.startAttempt) return; // cancelled — already handled
       const message = error instanceof Error ? error.message : 'Unknown error';
       this.loadingError.set(message);
       this.loadingMessage.set('Failed to start TTS engine');
       this.sessionState.set('error');
     }
+  }
+
+  /** Cancel a startup (or voice switch) in progress and shut the engine down. */
+  async cancelStartup() {
+    this.startAttempt++;  // invalidate whatever is in flight
+    this.showLoadingModal.set(false);
+    this.loadingError.set(null);
+    this.sessionState.set('inactive');
+    try {
+      await this.electronService.playEndSession();
+    } catch { /* nothing was running yet */ }
   }
 
   dismissError() {
@@ -1347,12 +1376,15 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.selectedVoice.set(voice);
 
     if (this.isReady()) {
+      const attempt = ++this.startAttempt;
       this.showLoadingModal.set(true);
       this.loadingTitle.set('Switching Voice');
       this.loadingMessage.set(`Loading ${voice}...`);
       this.loadingError.set(null);
 
       const result = await this.electronService.playLoadVoice(voice);
+
+      if (attempt !== this.startAttempt) return; // cancelled — session was shut down
 
       if (result.success) {
         this.showLoadingModal.set(false);
