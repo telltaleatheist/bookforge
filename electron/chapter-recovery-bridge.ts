@@ -15,6 +15,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import * as cheerio from 'cheerio';
+import { getFfmpegPath } from './tool-paths';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -399,7 +400,7 @@ export async function applyChaptersToM4b(
     // Run ffmpeg to add chapters
     // ffmpeg -i input.m4b -i chapters.txt -map_metadata 1 -codec copy output.m4b
     return new Promise((resolve) => {
-      const ffmpeg = spawn('ffmpeg', [
+      const ffmpeg = spawn(getFfmpegPath(), [
         '-y',  // Overwrite output
         '-i', m4bPath,
         '-i', metadataPath,

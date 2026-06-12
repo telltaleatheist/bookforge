@@ -3070,17 +3070,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Compute word-level diff using system diff command (much more efficient than JS LCS)
-  ipcMain.handle('diff:compute-system-diff', async (_event, originalText: string, cleanedText: string) => {
-    try {
-      const { computeSystemDiff } = await import('./epub-processor.js');
-      const segments = await computeSystemDiff(originalText, cleanedText);
-      return { success: true, data: segments };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
   // Generate a cache key based on file paths and modification times
   const getDiffCacheKey = async (originalPath: string, cleanedPath: string): Promise<string> => {
     try {
@@ -9580,6 +9569,26 @@ app.whenReady().then(async () => {
   if (mainWindow) {
     pdfWorkerProxy.setDefaultSender(mainWindow.webContents);
   }
+
+  // First-run unpack of the bundled Python env (packaged builds only — dev
+  // builds ship no tarball and this returns immediately). Runs in the
+  // background so the window isn't blocked; e2a spawns resolve the bundled
+  // env as soon as the unpack finishes.
+  void (async () => {
+    try {
+      const { ensureBundledEnv, ensureBundledE2a } = await import('./e2a-env-bootstrap.js');
+      const e2aDir = await ensureBundledE2a((message) => logger.info(message));
+      if (e2aDir) {
+        logger.info('Bundled e2a code ready', { e2aDir });
+      }
+      const envDir = await ensureBundledEnv((message) => logger.info(message));
+      if (envDir) {
+        logger.info('Bundled Python env ready', { envDir });
+      }
+    } catch (err) {
+      logger.error('Bundled runtime setup failed', { error: (err as Error).message });
+    }
+  })();
 
   // Initialize plugin system
   const registry = getPluginRegistry();

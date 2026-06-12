@@ -10,7 +10,7 @@ import { BrowserWindow, app } from 'electron';
 import * as path from 'path';
 import * as readline from 'readline';
 import * as fs from 'fs';
-import { getDefaultE2aPath, getCondaRunArgs, getCondaPath, buildCondaSpawnEnv } from './e2a-paths';
+import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -95,10 +95,12 @@ export async function startSession(): Promise<{ success: boolean; voices?: strin
       console.log('[XTTS] Script path:', scriptPath);
       console.log('[XTTS] Script exists:', fs.existsSync(scriptPath));
 
-      // Spawn Python process using conda environment
-      // getCondaRunArgs() handles prefix vs named env detection
-      const condaArgs = [...getCondaRunArgs(E2A_PATH), scriptPath];
-      pythonProcess = spawn(getCondaPath(), condaArgs, {
+      // Spawn Python via the resolved env (bundled relocatable python or conda run).
+      // shell: true — escape the command and args so paths with spaces survive
+      // (a packaged app's bundled python lives under "Application Support").
+      const py = getPythonInvocation(E2A_PATH);
+      const condaArgs = shellEscapeArgs([...py.args, scriptPath]);
+      pythonProcess = spawn(shellEscapeArgs([py.command])[0], condaArgs, {
         cwd: E2A_PATH,
         env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1' }),
         shell: true,

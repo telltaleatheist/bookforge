@@ -1226,12 +1226,6 @@ export interface ElectronAPI {
       };
       error?: string;
     }>;
-    // Compute diff using system diff command (efficient, runs in main process)
-    computeSystemDiff: (originalText: string, cleanedText: string) => Promise<{
-      success: boolean;
-      data?: Array<{ text: string; type: 'unchanged' | 'added' | 'removed' }>;
-      error?: string;
-    }>;
     onLoadProgress: (callback: (progress: DiffLoadProgress) => void) => () => void;
     // Cache operations
     saveCache: (originalPath: string, cleanedPath: string, chapterId: string, cacheData: unknown) => Promise<{
@@ -2590,9 +2584,6 @@ const electronAPI: ElectronAPI = {
     // Memory-efficient: load a single chapter's text on demand
     getChapter: (originalPath: string, cleanedPath: string, chapterId: string) =>
       ipcRenderer.invoke('diff:get-chapter', originalPath, cleanedPath, chapterId),
-    // Compute diff using system diff command (efficient, runs in main process)
-    computeSystemDiff: (originalText: string, cleanedText: string) =>
-      ipcRenderer.invoke('diff:compute-system-diff', originalText, cleanedText),
     onLoadProgress: (callback: (progress: DiffLoadProgress) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, progress: DiffLoadProgress) => callback(progress);
       ipcRenderer.on('diff:load-progress', handler);

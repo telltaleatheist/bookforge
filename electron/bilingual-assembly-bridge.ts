@@ -21,8 +21,7 @@ function appendCapped(buf: string, chunk: string): string {
   return buf;
 }
 import {
-  getCondaRunArgs,
-  getCondaPath,
+  getPythonInvocation,
   getDefaultE2aPath,
   shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
@@ -281,12 +280,11 @@ export async function runBilingualAssembly(
         shell: false,
       });
     } else {
-      // Native mode: use local conda environment
-      const condaPath = getCondaPath();
-      const condaRunArgs = getCondaRunArgs();
+      // Native mode: bundled relocatable python or local conda environment
+      const py = getPythonInvocation();
 
       const args = [
-        ...condaRunArgs,
+        ...py.args,
         scriptPath,
         '--mode', 'dual',
         '--source-dir', config.sourceSentencesDir,
@@ -299,9 +297,9 @@ export async function runBilingualAssembly(
         '--format', config.audioFormat ?? 'flac'
       ];
 
-      console.log(`[BILINGUAL-ASSEMBLY] Running: ${condaPath} ${args.join(' ')}`);
+      console.log(`[BILINGUAL-ASSEMBLY] Running: ${py.command} ${args.join(' ')}`);
 
-      proc = spawn(condaPath, args, {
+      proc = spawn(py.command, args, {
         cwd: e2aPath,
         env: buildCondaSpawnEnv()
       });
