@@ -113,6 +113,18 @@ import {
                   </div>
                 }
 
+                <div class="save-section">
+                  <desktop-button variant="primary" size="md" (click)="saveLibrary()" [disabled]="!libraryDirty() || librarySaving()">
+                    {{ librarySaving() ? 'Saving…' : (libraryDirty() ? 'Save Changes' : 'Saved') }}
+                  </desktop-button>
+                  @if (libraryDirty()) {
+                    <desktop-button variant="ghost" size="md" (click)="discardLibrary()" [disabled]="librarySaving()">
+                      Discard
+                    </desktop-button>
+                    <span class="unsaved-hint">You have unsaved changes</span>
+                  }
+                </div>
+
                 <div class="help-text">
                   <p>
                     <strong>Note:</strong> Changing the library location does not move existing files.
@@ -379,6 +391,18 @@ import {
                     }
                   }
                 </div>
+
+                <div class="save-section">
+                  <desktop-button variant="primary" size="md" (click)="saveAi()" [disabled]="!aiDirty() || aiSaving()">
+                    {{ aiSaving() ? 'Saving…' : (aiDirty() ? 'Save Changes' : 'Saved') }}
+                  </desktop-button>
+                  @if (aiDirty()) {
+                    <desktop-button variant="ghost" size="md" (click)="discardAi()" [disabled]="aiSaving()">
+                      Discard
+                    </desktop-button>
+                    <span class="unsaved-hint">You have unsaved changes</span>
+                  }
+                </div>
               </div>
             } @else if (section.id === 'bookshelf') {
               <!-- Bookshelf Server Section -->
@@ -445,6 +469,18 @@ import {
                       </div>
                     </div>
                   </div>
+                </div>
+
+                <div class="save-section">
+                  <desktop-button variant="primary" size="md" (click)="saveBookshelf()" [disabled]="!bookshelfDirty() || bookshelfSaving()">
+                    {{ bookshelfSaving() ? 'Saving…' : (bookshelfDirty() ? 'Save Changes' : 'Saved') }}
+                  </desktop-button>
+                  @if (bookshelfDirty()) {
+                    <desktop-button variant="ghost" size="md" (click)="discardBookshelf()" [disabled]="bookshelfSaving()">
+                      Discard
+                    </desktop-button>
+                    <span class="unsaved-hint">You have unsaved changes</span>
+                  }
                 </div>
 
                 <!-- Control Buttons -->
@@ -543,11 +579,11 @@ import {
                       <input
                         type="number"
                         class="number-input"
-                        [value]="ttsApiStatus()?.port ?? 8766"
+                        [value]="ttsApiViewPort()"
                         min="1"
                         max="65535"
                         (change)="updateTtsApiPort(+$any($event.target).value)"
-                        [disabled]="ttsApiLoading()"
+                        [disabled]="ttsApiSaving()"
                       />
                     </div>
                   </div>
@@ -562,9 +598,9 @@ import {
                       <label class="toggle">
                         <input
                           type="checkbox"
-                          [checked]="ttsApiStatus()?.host === '0.0.0.0'"
+                          [checked]="ttsApiViewHost() === '0.0.0.0'"
                           (change)="toggleTtsApiLan($any($event.target).checked)"
-                          [disabled]="ttsApiLoading()"
+                          [disabled]="ttsApiSaving()"
                         />
                         <span class="toggle-slider"></span>
                       </label>
@@ -595,14 +631,26 @@ import {
                       <input
                         type="number"
                         class="number-input"
-                        [value]="ttsWorkerConfig()?.cpuWorkers ?? 4"
+                        [value]="ttsWorkersView()"
                         [min]="ttsWorkerConfig()?.minWorkers ?? 1"
                         [max]="ttsWorkerConfig()?.maxWorkers ?? 8"
                         (change)="updateTtsWorkers(+$any($event.target).value)"
-                        [disabled]="ttsWorkersSaving()"
+                        [disabled]="ttsApiSaving()"
                       />
                     </div>
                   </div>
+                </div>
+
+                <div class="save-section">
+                  <desktop-button variant="primary" size="md" (click)="saveTtsServer()" [disabled]="!ttsServerDirty() || ttsApiSaving()">
+                    {{ ttsApiSaving() ? 'Saving…' : (ttsServerDirty() ? 'Save Changes' : 'Saved') }}
+                  </desktop-button>
+                  @if (ttsServerDirty()) {
+                    <desktop-button variant="ghost" size="md" (click)="discardTtsServer()" [disabled]="ttsApiSaving()">
+                      Discard
+                    </desktop-button>
+                    <span class="unsaved-hint">Saving restarts the server; worker changes apply on next engine start</span>
+                  }
                 </div>
 
                 @if (ttsApiError(); as error) {
@@ -999,6 +1047,18 @@ import {
                     }
                   </div>
                 }
+
+                <div class="save-section">
+                  <desktop-button variant="primary" size="md" (click)="saveTools()" [disabled]="!toolPathsDirty() || toolPathsSaving()">
+                    {{ toolPathsSaving() ? 'Saving…' : (toolPathsDirty() ? 'Save Changes' : 'Saved') }}
+                  </desktop-button>
+                  @if (toolPathsDirty()) {
+                    <desktop-button variant="ghost" size="md" (click)="discardTools()" [disabled]="toolPathsSaving()">
+                      Discard
+                    </desktop-button>
+                    <span class="unsaved-hint">You have unsaved changes</span>
+                  }
+                </div>
 
                 @if (toolPathsSaveStatus(); as status) {
                   <div class="status-message" [class.success]="status.success" [class.error]="!status.success">
@@ -1999,7 +2059,15 @@ export class SettingsComponent implements OnInit {
   readonly selectedSection = signal('library');
 
   // Library section state
-  readonly currentLibraryPath = computed(() => this.libraryService.libraryPath() || '~/Documents/BookForge');
+  readonly savedLibraryPath = computed(() => this.libraryService.libraryPath() || '~/Documents/BookForge');
+  // Draft path chosen via Browse but not yet applied (null = in sync with saved)
+  readonly libraryDraftPath = signal<string | null>(null);
+  readonly currentLibraryPath = computed(() => this.libraryDraftPath() ?? this.savedLibraryPath());
+  readonly libraryDirty = computed(() => {
+    const draft = this.libraryDraftPath();
+    return draft !== null && draft !== this.savedLibraryPath();
+  });
+  readonly librarySaving = signal(false);
   readonly libraryChangeStatus = signal<{ success: boolean; message: string } | null>(null);
 
   // Storage section state
@@ -2007,8 +2075,16 @@ export class SettingsComponent implements OnInit {
   readonly cacheLoading = signal(false);
   readonly clearCacheStatus = signal<{ success: boolean; message: string } | null>(null);
 
-  // AI section state
-  readonly aiConfig = computed(() => this.settingsService.getAIConfig());
+  // AI section state — edits go into aiDraft and only persist on Save.
+  readonly savedAiConfig = computed(() => this.settingsService.getAIConfig());
+  readonly aiDraft = signal<AIConfig | null>(null);
+  // What the UI displays/edits: the draft if dirty, else the saved config.
+  readonly aiConfig = computed(() => this.aiDraft() ?? this.savedAiConfig());
+  readonly aiDirty = computed(() => {
+    const draft = this.aiDraft();
+    return draft !== null && JSON.stringify(draft) !== JSON.stringify(this.savedAiConfig());
+  });
+  readonly aiSaving = signal(false);
   readonly ollamaStatus = signal<ProviderStatus | null>(null);
   readonly ollamaChecking = signal(false);
 
@@ -2044,29 +2120,69 @@ export class SettingsComponent implements OnInit {
     return fetched.length > 0 ? fetched : this.defaultOpenaiModels;
   });
 
-  // Bookshelf Server section state
-  readonly bookshelfConfig = computed(() => this.settingsService.getBookshelfConfig());
+  // Bookshelf Server section state — edits buffered in bookshelfDraft until Save.
+  readonly savedBookshelfConfig = computed(() => this.settingsService.getBookshelfConfig());
+  readonly bookshelfDraft = signal<{ port?: number; externalAudiobooksDir?: string } | null>(null);
+  readonly bookshelfConfig = computed(() => {
+    const saved = this.savedBookshelfConfig();
+    const draft = this.bookshelfDraft();
+    return draft ? { ...saved, ...draft } : saved;
+  });
+  readonly bookshelfDirty = computed(() => {
+    const draft = this.bookshelfDraft();
+    if (!draft) return false;
+    const saved = this.savedBookshelfConfig();
+    return JSON.stringify({ ...saved, ...draft }) !== JSON.stringify(saved);
+  });
   readonly bookshelfStatus = signal<{ running: boolean; port: number; addresses: string[] } | null>(null);
   readonly bookshelfLoading = signal(false);
+  readonly bookshelfSaving = signal(false);
   readonly bookshelfError = signal<string | null>(null);
 
-  // TTS API Server section state (config lives main-process side in tts-api.json)
+  // TTS Server section state. Port/host live main-process side in tts-api.json;
+  // worker count in tts-stream.json. Edits buffer in drafts until Save.
   readonly ttsApiStatus = signal<{ running: boolean; port: number; host: string; token: string; addresses: string[] } | null>(null);
-  readonly ttsApiLoading = signal(false);
+  readonly ttsApiDraft = signal<{ port?: number; host?: string } | null>(null);
+  readonly ttsApiSaving = signal(false);
   readonly ttsApiError = signal<string | null>(null);
   readonly ttsApiTokenVisible = signal(false);
   readonly ttsApiCopied = signal(false);
   private ttsApiCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+  // Effective port/host shown in the form (draft overlay over server status)
+  readonly ttsApiViewPort = computed(() => this.ttsApiDraft()?.port ?? this.ttsApiStatus()?.port ?? 8766);
+  readonly ttsApiViewHost = computed(() => this.ttsApiDraft()?.host ?? this.ttsApiStatus()?.host ?? '127.0.0.1');
 
   // Stream engine worker count (persisted main-process side in tts-stream.json)
   readonly ttsWorkerConfig = signal<{ cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number } | null>(null);
-  readonly ttsWorkersSaving = signal(false);
+  readonly ttsWorkersDraft = signal<number | null>(null);
+  readonly ttsWorkersView = computed(() => this.ttsWorkersDraft() ?? this.ttsWorkerConfig()?.cpuWorkers ?? 4);
 
-  // Tools section state
+  // Combined dirty flag for the TTS Server section's Save button
+  readonly ttsServerDirty = computed(() => {
+    const status = this.ttsApiStatus();
+    const apiDraft = this.ttsApiDraft();
+    const apiChanged = !!apiDraft && (
+      (apiDraft.port !== undefined && apiDraft.port !== status?.port) ||
+      (apiDraft.host !== undefined && apiDraft.host !== status?.host)
+    );
+    const workersDraft = this.ttsWorkersDraft();
+    const workersChanged = workersDraft !== null && workersDraft !== this.ttsWorkerConfig()?.cpuWorkers;
+    return apiChanged || workersChanged;
+  });
+
+  // Tools section state. toolPathsConfig is the saved config; pending edits go
+  // into toolPathsDraft (keyed overrides) and only persist on Save.
   readonly toolPathsConfig = signal<Record<string, string | undefined>>({});
+  readonly toolPathsDraft = signal<Record<string, string | undefined>>({});
   readonly toolPathsStatus = signal<Record<string, { configured: boolean; detected: boolean; path: string }>>({});
   readonly toolPathsLoading = signal(false);
+  readonly toolPathsSaving = signal(false);
   readonly toolPathsSaveStatus = signal<{ success: boolean; message: string } | null>(null);
+  readonly toolPathsDirty = computed(() => {
+    const draft = this.toolPathsDraft();
+    const saved = this.toolPathsConfig();
+    return Object.keys(draft).some(k => (draft[k] || '') !== (saved[k] || ''));
+  });
 
   // WSL2 state (Windows only, for Orpheus TTS)
   readonly wslAvailable = signal<{
@@ -2244,16 +2360,26 @@ export class SettingsComponent implements OnInit {
   async browseForLibraryFolder(): Promise<void> {
     const result = await this.electronService.openFolderDialog();
     if (result.success && result.folderPath) {
+      // Stage the choice as a draft; nothing changes until the user clicks Save.
       this.libraryChangeStatus.set(null);
+      this.libraryDraftPath.set(result.folderPath);
+    }
+  }
 
-      // Set the new library path
-      const setResult = await this.libraryService.setLibraryPath(result.folderPath);
+  async saveLibrary(): Promise<void> {
+    const newPath = this.libraryDraftPath();
+    if (newPath === null || !this.libraryDirty()) return;
+
+    this.librarySaving.set(true);
+    this.libraryChangeStatus.set(null);
+    try {
+      const setResult = await this.libraryService.setLibraryPath(newPath);
       if (setResult.success) {
+        this.libraryDraftPath.set(null);
         this.libraryChangeStatus.set({
           success: true,
-          message: `Library location updated to: ${result.folderPath}`
+          message: `Library location updated to: ${newPath}`
         });
-        // Clear status after 5 seconds
         setTimeout(() => this.libraryChangeStatus.set(null), 5000);
       } else {
         this.libraryChangeStatus.set({
@@ -2261,45 +2387,52 @@ export class SettingsComponent implements OnInit {
           message: setResult.error || 'Failed to update library location'
         });
       }
+    } catch (err) {
+      this.libraryChangeStatus.set({
+        success: false,
+        message: err instanceof Error ? err.message : 'Failed to update library location'
+      });
+    } finally {
+      this.librarySaving.set(false);
     }
+  }
+
+  discardLibrary(): void {
+    this.libraryDraftPath.set(null);
+    this.libraryChangeStatus.set(null);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
   // AI Configuration Methods
   // ─────────────────────────────────────────────────────────────────────────────
 
-  setAIProvider(provider: AIProvider): void {
-    const config = this.settingsService.getAIConfig();
-    this.settingsService.setAIConfig({ ...config, provider });
+  /** Apply an edit to the in-progress AI draft (seeded from the saved config). */
+  private patchAiDraft(updater: (config: AIConfig) => AIConfig): void {
+    const base = this.aiDraft() ?? this.savedAiConfig();
+    // Deep-clone so we never mutate the saved object
+    const clone: AIConfig = JSON.parse(JSON.stringify(base));
+    this.aiDraft.set(updater(clone));
+  }
 
-    // Check Ollama connection when selecting it
+  setAIProvider(provider: AIProvider): void {
+    this.patchAiDraft(config => ({ ...config, provider }));
+
+    // Check Ollama connection when selecting it (read-only probe, safe pre-save)
     if (provider === 'ollama') {
       this.checkOllamaConnection();
     }
   }
 
   updateOllamaUrl(url: string): void {
-    const config = this.settingsService.getAIConfig();
-    this.settingsService.setAIConfig({
-      ...config,
-      ollama: { ...config.ollama, baseUrl: url }
-    });
+    this.patchAiDraft(config => ({ ...config, ollama: { ...config.ollama, baseUrl: url } }));
   }
 
   updateOllamaModel(model: string): void {
-    const config = this.settingsService.getAIConfig();
-    this.settingsService.setAIConfig({
-      ...config,
-      ollama: { ...config.ollama, model }
-    });
+    this.patchAiDraft(config => ({ ...config, ollama: { ...config.ollama, model } }));
   }
 
   updateClaudeApiKey(apiKey: string): void {
-    const config = this.settingsService.getAIConfig();
-    this.settingsService.setAIConfig({
-      ...config,
-      claude: { ...config.claude, apiKey }
-    });
+    this.patchAiDraft(config => ({ ...config, claude: { ...config.claude, apiKey } }));
     // Fetch Claude models when API key is provided
     if (apiKey && apiKey.startsWith('sk-ant-')) {
       this.fetchClaudeModels(apiKey);
@@ -2309,19 +2442,11 @@ export class SettingsComponent implements OnInit {
   }
 
   updateClaudeModel(model: string): void {
-    const config = this.settingsService.getAIConfig();
-    this.settingsService.setAIConfig({
-      ...config,
-      claude: { ...config.claude, model }
-    });
+    this.patchAiDraft(config => ({ ...config, claude: { ...config.claude, model } }));
   }
 
   updateOpenAIApiKey(apiKey: string): void {
-    const config = this.settingsService.getAIConfig();
-    this.settingsService.setAIConfig({
-      ...config,
-      openai: { ...config.openai, apiKey }
-    });
+    this.patchAiDraft(config => ({ ...config, openai: { ...config.openai, apiKey } }));
     // Fetch OpenAI models when API key is provided
     if (apiKey && apiKey.startsWith('sk-')) {
       this.fetchOpenAIModels(apiKey);
@@ -2331,11 +2456,23 @@ export class SettingsComponent implements OnInit {
   }
 
   updateOpenAIModel(model: string): void {
-    const config = this.settingsService.getAIConfig();
-    this.settingsService.setAIConfig({
-      ...config,
-      openai: { ...config.openai, model }
-    });
+    this.patchAiDraft(config => ({ ...config, openai: { ...config.openai, model } }));
+  }
+
+  async saveAi(): Promise<void> {
+    const draft = this.aiDraft();
+    if (!draft || !this.aiDirty()) return;
+    this.aiSaving.set(true);
+    try {
+      this.settingsService.setAIConfig(draft);
+      this.aiDraft.set(null);
+    } finally {
+      this.aiSaving.set(false);
+    }
+  }
+
+  discardAi(): void {
+    this.aiDraft.set(null);
   }
 
   async checkOllamaConnection(): Promise<void> {
@@ -2433,7 +2570,7 @@ export class SettingsComponent implements OnInit {
   }
 
   async startBookshelf(): Promise<void> {
-    const config = this.bookshelfConfig();
+    const config = this.savedBookshelfConfig();
 
     this.bookshelfLoading.set(true);
     this.bookshelfError.set(null);
@@ -2476,31 +2613,60 @@ export class SettingsComponent implements OnInit {
     }
   }
 
-  async updateBookshelfPort(port: number): Promise<void> {
+  /** Stage a bookshelf field edit into the draft (persists on Save). */
+  private patchBookshelfDraft(updates: { port?: number; externalAudiobooksDir?: string }): void {
+    this.bookshelfDraft.set({ ...(this.bookshelfDraft() ?? {}), ...updates });
+  }
+
+  updateBookshelfPort(port: number): void {
     if (port >= 1 && port <= 65535) {
-      this.settingsService.updateBookshelfConfig({ port });
-      if (this.bookshelfStatus()?.running) {
-        await this.restartBookshelf();
-      }
+      this.patchBookshelfDraft({ port });
     }
   }
 
   updateExternalAudiobooksDir(dirPath: string): void {
-    const value = dirPath || undefined;
-    this.settingsService.updateBookshelfConfig({ externalAudiobooksDir: value });
-    this.electronService.bookshelfUpdateConfig({ externalAudiobooksDir: value });
+    this.patchBookshelfDraft({ externalAudiobooksDir: dirPath || undefined });
   }
 
   async browseExternalAudiobooksDir(): Promise<void> {
     const result = await this.electronService.openFolderDialog();
     if (result.success && result.folderPath) {
-      this.settingsService.updateBookshelfConfig({ externalAudiobooksDir: result.folderPath });
-      this.electronService.bookshelfUpdateConfig({ externalAudiobooksDir: result.folderPath });
+      this.patchBookshelfDraft({ externalAudiobooksDir: result.folderPath });
     }
   }
 
+  async saveBookshelf(): Promise<void> {
+    const draft = this.bookshelfDraft();
+    if (!draft || !this.bookshelfDirty()) return;
+
+    this.bookshelfSaving.set(true);
+    this.bookshelfError.set(null);
+    try {
+      const portChanged = draft.port !== undefined && draft.port !== this.savedBookshelfConfig().port;
+      this.settingsService.updateBookshelfConfig(draft);
+      // Push the external-folder change to a running server so it takes effect live
+      if ('externalAudiobooksDir' in draft) {
+        await this.electronService.bookshelfUpdateConfig({ externalAudiobooksDir: draft.externalAudiobooksDir });
+      }
+      this.bookshelfDraft.set(null);
+      // A port change only takes effect on restart; do it if the server is up
+      if (portChanged && this.bookshelfStatus()?.running) {
+        await this.restartBookshelf();
+      }
+    } catch (err) {
+      this.bookshelfError.set(err instanceof Error ? err.message : 'Failed to save bookshelf settings');
+    } finally {
+      this.bookshelfSaving.set(false);
+    }
+  }
+
+  discardBookshelf(): void {
+    this.bookshelfDraft.set(null);
+    this.bookshelfError.set(null);
+  }
+
   private async restartBookshelf(): Promise<void> {
-    const config = this.bookshelfConfig();
+    const config = this.savedBookshelfConfig();
 
     this.bookshelfLoading.set(true);
     this.bookshelfError.set(null);
@@ -2543,32 +2709,58 @@ export class SettingsComponent implements OnInit {
     }
   }
 
-  async updateTtsApiPort(port: number): Promise<void> {
+  updateTtsApiPort(port: number): void {
     if (port >= 1 && port <= 65535) {
-      await this.configureTtsApi({ port });
+      this.ttsApiDraft.set({ ...(this.ttsApiDraft() ?? {}), port });
     }
   }
 
-  async toggleTtsApiLan(enabled: boolean): Promise<void> {
-    await this.configureTtsApi({ host: enabled ? '0.0.0.0' : '127.0.0.1' });
+  toggleTtsApiLan(enabled: boolean): void {
+    this.ttsApiDraft.set({ ...(this.ttsApiDraft() ?? {}), host: enabled ? '0.0.0.0' : '127.0.0.1' });
   }
 
-  private async configureTtsApi(updates: { port?: number; host?: string }): Promise<void> {
-    this.ttsApiLoading.set(true);
+  /** Persist all TTS Server edits: restart the WS server and/or set worker count. */
+  async saveTtsServer(): Promise<void> {
+    if (!this.ttsServerDirty()) return;
+    this.ttsApiSaving.set(true);
     this.ttsApiError.set(null);
 
     try {
-      const result = await this.electronService.ttsApiConfigure(updates);
-      if (result.success && result.data) {
-        this.ttsApiStatus.set(result.data);
-      } else {
-        this.ttsApiError.set(result.error || 'Failed to apply TTS API settings');
+      // Port / host → restarts the WebSocket server
+      const apiDraft = this.ttsApiDraft();
+      if (apiDraft && (apiDraft.port !== undefined || apiDraft.host !== undefined)) {
+        const result = await this.electronService.ttsApiConfigure(apiDraft);
+        if (result.success && result.data) {
+          this.ttsApiStatus.set(result.data);
+          this.ttsApiDraft.set(null);
+        } else {
+          this.ttsApiError.set(result.error || 'Failed to apply TTS server settings');
+          return;
+        }
+      }
+
+      // Worker count → applies on next engine start
+      const workers = this.ttsWorkersDraft();
+      if (workers !== null && workers !== this.ttsWorkerConfig()?.cpuWorkers) {
+        const result = await this.electronService.ttsStreamSetWorkers(workers);
+        if (result.success && result.data) {
+          this.ttsWorkerConfig.set(result.data);
+          this.ttsWorkersDraft.set(null);
+        } else {
+          this.ttsApiError.set(result.error || 'Failed to save worker count');
+        }
       }
     } catch (err) {
-      this.ttsApiError.set(err instanceof Error ? err.message : 'Failed to apply TTS API settings');
+      this.ttsApiError.set(err instanceof Error ? err.message : 'Failed to save TTS server settings');
     } finally {
-      this.ttsApiLoading.set(false);
+      this.ttsApiSaving.set(false);
     }
+  }
+
+  discardTtsServer(): void {
+    this.ttsApiDraft.set(null);
+    this.ttsWorkersDraft.set(null);
+    this.ttsApiError.set(null);
   }
 
   copyTtsApiToken(): void {
@@ -2591,24 +2783,12 @@ export class SettingsComponent implements OnInit {
     }
   }
 
-  async updateTtsWorkers(count: number): Promise<void> {
+  updateTtsWorkers(count: number): void {
     const cfg = this.ttsWorkerConfig();
     const min = cfg?.minWorkers ?? 1;
     const max = cfg?.maxWorkers ?? 8;
     if (!Number.isFinite(count) || count < min || count > max) return;
-    this.ttsWorkersSaving.set(true);
-    try {
-      const result = await this.electronService.ttsStreamSetWorkers(count);
-      if (result.success && result.data) {
-        this.ttsWorkerConfig.set(result.data);
-      } else {
-        this.ttsApiError.set(result.error || 'Failed to save worker count');
-      }
-    } catch (err) {
-      this.ttsApiError.set(err instanceof Error ? err.message : 'Failed to save worker count');
-    } finally {
-      this.ttsWorkersSaving.set(false);
-    }
+    this.ttsWorkersDraft.set(count);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -2636,23 +2816,10 @@ export class SettingsComponent implements OnInit {
     }
   }
 
-  async updateToolPath(key: string, value: string): Promise<void> {
+  /** Stage a tool-path edit into the draft; persists on Save. */
+  updateToolPath(key: string, value: string): void {
     this.toolPathsSaveStatus.set(null);
-    try {
-      const result = await this.electronService.toolPathsUpdateConfig({ [key]: value || undefined });
-      if (result.success && result.data) {
-        this.toolPathsConfig.set(result.data);
-        // Refresh status to show updated detection
-        await this.refreshToolPaths();
-        this.toolPathsSaveStatus.set({ success: true, message: 'Saved' });
-        setTimeout(() => this.toolPathsSaveStatus.set(null), 2000);
-      }
-    } catch (err) {
-      this.toolPathsSaveStatus.set({
-        success: false,
-        message: err instanceof Error ? err.message : 'Failed to save'
-      });
-    }
+    this.toolPathsDraft.set({ ...this.toolPathsDraft(), [key]: value || undefined });
   }
 
   async browseForToolPath(key: string): Promise<void> {
@@ -2674,13 +2841,44 @@ export class SettingsComponent implements OnInit {
           : `${result.folderPath}/ffmpeg`;
       }
 
-      await this.updateToolPath(key, finalPath);
+      this.updateToolPath(key, finalPath);
     }
   }
 
+  async saveTools(): Promise<void> {
+    if (!this.toolPathsDirty()) return;
+    this.toolPathsSaving.set(true);
+    this.toolPathsSaveStatus.set(null);
+    try {
+      const result = await this.electronService.toolPathsUpdateConfig(this.toolPathsDraft());
+      if (result.success && result.data) {
+        this.toolPathsConfig.set(result.data);
+        this.toolPathsDraft.set({});
+        await this.refreshToolPaths();
+        this.toolPathsSaveStatus.set({ success: true, message: 'Saved' });
+        setTimeout(() => this.toolPathsSaveStatus.set(null), 2000);
+      } else {
+        this.toolPathsSaveStatus.set({ success: false, message: result.error || 'Failed to save' });
+      }
+    } catch (err) {
+      this.toolPathsSaveStatus.set({
+        success: false,
+        message: err instanceof Error ? err.message : 'Failed to save'
+      });
+    } finally {
+      this.toolPathsSaving.set(false);
+    }
+  }
+
+  discardTools(): void {
+    this.toolPathsDraft.set({});
+    this.toolPathsSaveStatus.set(null);
+  }
+
   getToolPathValue(key: string): string {
-    const config = this.toolPathsConfig();
-    return config[key] || '';
+    const draft = this.toolPathsDraft();
+    if (key in draft) return draft[key] || '';
+    return this.toolPathsConfig()[key] || '';
   }
 
   getToolStatus(key: string): { configured: boolean; detected: boolean; path: string } | undefined {
@@ -2713,11 +2911,11 @@ export class SettingsComponent implements OnInit {
     this.wslSetupStatus.set(null);
 
     try {
-      const config = this.toolPathsConfig();
+      // Verify against what's shown (draft overlay), not just the saved config
       const result = await this.electronService.wslCheckOrpheusSetup({
-        distro: config['wslDistro'] || undefined,
-        condaPath: config['wslCondaPath'] || undefined,
-        e2aPath: config['wslE2aPath'] || undefined,
+        distro: this.getToolPathValue('wslDistro') || undefined,
+        condaPath: this.getToolPathValue('wslCondaPath') || undefined,
+        e2aPath: this.getToolPathValue('wslE2aPath') || undefined,
       });
 
       if (result.success && result.data) {
@@ -2737,24 +2935,20 @@ export class SettingsComponent implements OnInit {
     }
   }
 
-  async toggleWsl2ForOrpheus(enabled: boolean): Promise<void> {
-    await this.updateToolPath('useWsl2ForOrpheus', enabled ? 'true' : '');
+  toggleWsl2ForOrpheus(enabled: boolean): void {
+    this.updateToolPath('useWsl2ForOrpheus', enabled ? 'true' : '');
   }
 
-  async selectWslDistro(distro: string): Promise<void> {
-    await this.updateToolPath('wslDistro', distro);
+  selectWslDistro(distro: string): void {
+    this.updateToolPath('wslDistro', distro);
   }
 
   async saveWslSettings(): Promise<void> {
     this.wslSaving.set(true);
-    // Settings are already saved on change, but this provides user confirmation
-    // and ensures config is reloaded
     try {
-      await this.refreshToolPaths();
-      // Brief delay to show "Saved!" feedback
-      setTimeout(() => {
-        this.wslSaving.set(false);
-      }, 1500);
+      // WSL fields are part of the tool-paths draft; commit them all
+      await this.saveTools();
+      setTimeout(() => this.wslSaving.set(false), 1500);
     } catch (err) {
       console.error('Failed to save WSL settings:', err);
       this.wslSaving.set(false);
