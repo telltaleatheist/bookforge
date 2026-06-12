@@ -26,7 +26,12 @@ if (window.__bfrInjected) {
 const SELECTOR = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, dd, figcaption';
 const EXCLUDE =
   'nav, header, footer, aside, form, [role="navigation"], [aria-hidden="true"], [contenteditable], #bfr-root';
-const RESCAN_DEBOUNCE_MS = 1500;
+const RESCAN_DEBOUNCE_MS = 1200;
+// Busy SPAs (analytics, lazy images, intersection observers) mutate the DOM
+// continuously, which would keep resetting a pure trailing debounce so a rescan
+// never fires. Cap the deferral: once mutations started, rescan within this long
+// no matter how much churn keeps coming.
+const RESCAN_MAX_WAIT_MS = 4000;
 const SPEED_MIN = 0.5;
 const SPEED_MAX = 4;
 const SPEED_STEP = 0.25;
@@ -48,6 +53,7 @@ let blocks: { id: string; el: HTMLElement }[] = [];
 let blockElToId = new Map<HTMLElement, string>(); // O(1) hover hit-testing
 let lastUi: UiState | null = null;
 let rescanTimer: number | null = null;
+let rescanFirstScheduled = 0; // when the current pending rescan was first requested
 let watchdog: number | null = null;
 let observer: MutationObserver | null = null;
 
@@ -141,8 +147,13 @@ function rescan(): void {
 
 function scheduleRescan(): void {
   if (dead) return;
-  if (rescanTimer !== null) clearTimeout(rescanTimer);
-  rescanTimer = setTimeout(() => { rescanTimer = null; rescan(); }, RESCAN_DEBOUNCE_MS) as unknown as number;
+  const now = Date.now();
+  if (rescanTimer === null) rescanFirstScheduled = now;
+  else clearTimeout(rescanTimer);
+  // Trailing debounce, but never wait longer than RESCAN_MAX_WAIT_MS from the
+  // first request — so constant DOM churn can't starve the rescan indefinitely.
+  const wait = Math.min(RESCAN_DEBOUNCE_MS, Math.max(0, rescanFirstScheduled + RESCAN_MAX_WAIT_MS - now));
+  rescanTimer = setTimeout(() => { rescanTimer = null; rescan(); }, wait) as unknown as number;
 }
 
 function positionHover(el: HTMLElement): void {
@@ -186,11 +197,42 @@ function detectedBlockAt(node: HTMLElement | null): { id: string; el: HTMLElemen
   return null;
 }
 
+/**
+ * True if a node at/above `node` would qualify as a readable block, applying the
+ * same predicate as detectBlocks() (selector match, not excluded, enough text).
+ * Used as a cheap per-hover check so we can refresh blocks the instant the user
+ * points at text the last rescan hadn't captured yet — without paying for a full
+ * scan on every mouse move.
+ */
+function looksLikeBlock(node: HTMLElement | null): boolean {
+  let el = node;
+  while (el && el !== document.body) {
+    if (!root.contains(el) && el.matches(SELECTOR) && !el.closest(EXCLUDE)) {
+      const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+      const min = /^H[1-6]$/.test(el.tagName) ? 12 : 60;
+      if (text.length >= min) return true;
+    }
+    el = el.parentElement;
+  }
+  return false;
+}
+
+/**
+ * Block at/above a node, refreshing the block set first if the node looks like
+ * readable text the current scan missed (late-rendered SPA content). Keeps hover
+ * and click responsive without waiting on the debounced rescan.
+ */
+function resolveBlockAt(node: HTMLElement | null): { id: string; el: HTMLElement } | null {
+  let hit = detectedBlockAt(node);
+  if (!hit && looksLikeBlock(node)) { rescan(); hit = detectedBlockAt(node); }
+  return hit;
+}
+
 function onPointerOver(e: MouseEvent): void {
   if (dead || !uiVisible) return;
   const target = e.target as HTMLElement | null;
   if (!target || root.contains(target)) return; // over our own UI ⇒ keep showing
-  const hit = detectedBlockAt(target);
+  const hit = resolveBlockAt(target);
   if (hit) { cancelHideHover(); showHoverFor(hit.id, hit.el); }
   else scheduleHideHover();
 }
@@ -302,7 +344,7 @@ function onDocClick(e: MouseEvent): void {
   if (target.closest('a, button, input, textarea, select, label, summary, [contenteditable], [role="button"], [role="link"]')) return;
   const sel = window.getSelection();
   if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
-  const hit = detectedBlockAt(target);
+  const hit = resolveBlockAt(target);
   if (!hit || excluded.has(hit.id)) return;
 
   const caret = caretRangeAt(e.clientX, e.clientY);
