@@ -4191,6 +4191,26 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── Stream engine config: worker count, shared by all streaming clients ──
+
+  ipcMain.handle('tts-stream:get-worker-config', async () => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      return { success: true, data: xttsWorkerPool.getStreamWorkerConfig() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('tts-stream:set-workers', async (_event, count: number) => {
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      return { success: true, data: xttsWorkerPool.setStreamCpuWorkers(count) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Stream scheduler: main-process generation orchestration for the Play tab.
   // The renderer sends the sentence list once; audio comes back as
   // 'stream:event' broadcasts (chunked pcm16 for the playhead sentence,

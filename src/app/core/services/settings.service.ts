@@ -175,10 +175,10 @@ export class SettingsService {
       },
       {
         id: 'tts-api',
-        name: 'TTS API',
-        description: 'Stream text-to-speech to external clients (browser extension)',
+        name: 'TTS Server',
+        description: 'Streaming engine workers and external client API (browser extension)',
         icon: '🔊',
-        fields: [], // TTS API section has custom UI
+        fields: [], // TTS Server section has custom UI
       },
       {
         id: 'tools',

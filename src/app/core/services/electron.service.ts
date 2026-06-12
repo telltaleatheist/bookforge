@@ -2394,6 +2394,20 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  async ttsStreamWorkerConfig(): Promise<{ success: boolean; data?: { cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ttsStream.getWorkerConfig();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async ttsStreamSetWorkers(count: number): Promise<{ success: boolean; data?: { cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.ttsStream.setWorkers(count);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Ebook Library
   // ─────────────────────────────────────────────────────────────────────────────

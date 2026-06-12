@@ -11,7 +11,7 @@ This document is a complete, self-contained spec for building a **Chrome extensi
 
 ## The server
 
-BookForge (an Electron desktop app) runs a WebSocket server that fronts a pool of 4 XTTS (neural TTS) worker processes.
+BookForge (an Electron desktop app) runs a WebSocket server that fronts a pool of XTTS (neural TTS) worker processes (worker count is user-configurable, default 4 on CPU).
 
 | Property | Value |
 |---|---|
@@ -124,7 +124,7 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 
 ### Audio assembly rules (important)
 
-Four workers generate in parallel, so **sentences complete out of order**:
+Multiple workers generate in parallel (4 by default), so **sentences complete out of order**:
 
 - Sentence **0** (the playhead sentence) streams in multiple small chunks (`seq` 0,1,2,… ~1 s of audio each) so playback can start fast. Chunks *within* one sentence always arrive in `seq` order.
 - All other sentences arrive as a **single chunk** (`seq: 0`) each, in whatever order workers finish.
@@ -149,7 +149,7 @@ Multiple WebSocket connections are fine; audio events are routed only to the con
 
 ### Engine lifecycle notes
 
-- `speak` on a cold engine **auto-starts it** (4 Python processes, ~5 GB RAM each, ~60 s to ready on the user's M1 Ultra). Show "starting TTS engine…" while `state` is `starting`.
+- `speak` on a cold engine **auto-starts it** (N Python processes — 4 by default, configurable in BookForge → Settings → TTS Server — ~5 GB RAM each, ~60 s to ready on the user's M1 Ultra). Show "starting TTS engine…" while `state` is `starting`. With fewer workers, generation is slower than the default ~2× realtime, so buffering pauses mid-playback are more likely — the extension shouldn't assume generation outruns playback.
 - The engine idles out after **10 minutes** without generation (unless the user pinned it as a service inside BookForge). A `speak` after idle-out just cold-starts again — handle it with the same spinner.
 - Voice switching is valid per-`speak` via `settings.voice` but reloads models on all workers (takes a while); the extension should default to *omitting* `voice` so it uses whatever is already loaded, and offer voice choice in options. Voice names come from the `hello`/`status` reply (e.g. `ScarlettJohansson`, `DavidAttenborough`, `MorganFreeman`, `NeilGaiman`, `RayPorter`, `RosamundPike` — but always use the list from the server, it's discovered at runtime).
 

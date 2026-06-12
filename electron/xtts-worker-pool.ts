@@ -95,6 +95,66 @@ const CPU_NUM_WORKERS = 4;
 const CUDA_NUM_WORKERS = 1;
 const THREADS_PER_WORKER = 4;
 
+// User override for the CPU worker count (Settings → TTS Server). Persisted in
+// userData/tts-stream.json. CUDA always runs 1 worker — the GPU serializes
+// autoregressive decode, so extra workers only cost VRAM. Changes apply the
+// next time the engine starts; a running pool is never resized.
+const MIN_CPU_WORKERS = 1;
+const MAX_CPU_WORKERS = 8;
+let configuredCpuWorkers: number | null = null;
+
+function streamConfigPath(): string {
+  return path.join(app.getPath('userData'), 'tts-stream.json');
+}
+
+function clampCpuWorkers(n: number): number {
+  return Math.min(MAX_CPU_WORKERS, Math.max(MIN_CPU_WORKERS, Math.round(n)));
+}
+
+function cpuWorkerCount(): number {
+  if (configuredCpuWorkers === null) {
+    let n = CPU_NUM_WORKERS;
+    try {
+      const cfg = JSON.parse(fs.readFileSync(streamConfigPath(), 'utf-8'));
+      if (typeof cfg.cpuWorkers === 'number') n = cfg.cpuWorkers;
+    } catch {
+      // No config yet — default topology
+    }
+    configuredCpuWorkers = clampCpuWorkers(n);
+  }
+  return configuredCpuWorkers;
+}
+
+export interface StreamWorkerConfig {
+  /** Configured worker count for CPU mode (the only tunable) */
+  cpuWorkers: number;
+  defaultCpuWorkers: number;
+  minWorkers: number;
+  maxWorkers: number;
+  /** null until the first engine start probes torch (non-mac) */
+  device: 'cpu' | 'cuda' | null;
+  /** Workers currently alive — 0 when the engine is stopped */
+  activeWorkers: number;
+}
+
+export function getStreamWorkerConfig(): StreamWorkerConfig {
+  return {
+    cpuWorkers: cpuWorkerCount(),
+    defaultCpuWorkers: CPU_NUM_WORKERS,
+    minWorkers: MIN_CPU_WORKERS,
+    maxWorkers: MAX_CPU_WORKERS,
+    device: detectedDevice,
+    activeWorkers: workers.filter(w => w.isReady).length
+  };
+}
+
+export function setStreamCpuWorkers(n: number): StreamWorkerConfig {
+  configuredCpuWorkers = clampCpuWorkers(n);
+  fs.writeFileSync(streamConfigPath(), JSON.stringify({ cpuWorkers: configuredCpuWorkers }, null, 2));
+  console.log(`[XTTS Pool] CPU worker count set to ${configuredCpuWorkers} (applies on next engine start)`);
+  return getStreamWorkerConfig();
+}
+
 // Device the Python workers run XTTS on, reported in the first worker's
 // 'ready' message (torch.cuda.is_available() in xtts_stream.py). macOS never
 // has CUDA and deliberately runs XTTS on CPU (MPS gives no speedup), so only
@@ -104,7 +164,7 @@ let detectedDevice: 'cuda' | 'cpu' | null =
   process.platform === 'darwin' ? 'cpu' : null;
 
 function targetWorkerCount(): number {
-  return detectedDevice === 'cuda' ? CUDA_NUM_WORKERS : CPU_NUM_WORKERS;
+  return detectedDevice === 'cuda' ? CUDA_NUM_WORKERS : cpuWorkerCount();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -854,5 +914,7 @@ export const xttsWorkerPool = {
   isServiceMode,
   setServiceMode,
   getLastVoice,
-  onEngineState
+  onEngineState,
+  getStreamWorkerConfig,
+  setStreamCpuWorkers
 };

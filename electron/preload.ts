@@ -1387,6 +1387,10 @@ export interface ElectronAPI {
     status: () => Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }>;
     configure: (updates: { port?: number; host?: string }) => Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }>;
   };
+  ttsStream: {
+    getWorkerConfig: () => Promise<{ success: boolean; data?: { cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number }; error?: string }>;
+    setWorkers: (count: number) => Promise<{ success: boolean; data?: { cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number }; error?: string }>;
+  };
   parallelTts: {
     detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: HardwareRecommendation; error?: string }>;
     startConversion: (jobId: string, config: ParallelConversionConfig) => Promise<{ success: boolean; data?: ParallelConversionResult; error?: string }>;
@@ -2748,6 +2752,12 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('tts-api:status'),
     configure: (updates: { port?: number; host?: string }) =>
       ipcRenderer.invoke('tts-api:configure', updates),
+  },
+  ttsStream: {
+    getWorkerConfig: () =>
+      ipcRenderer.invoke('tts-stream:get-worker-config'),
+    setWorkers: (count: number) =>
+      ipcRenderer.invoke('tts-stream:set-workers', count),
   },
   parallelTts: {
     detectRecommendedWorkerCount: () =>
