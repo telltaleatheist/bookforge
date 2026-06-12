@@ -98,9 +98,6 @@ interface LegacyAudiobookProject {
       temperature: number;
       speed: number;
     };
-    enhancementStatus?: string;
-    enhancementProgress?: number;
-    enhancementError?: string;
   };
   createdAt: string;
   modifiedAt: string;

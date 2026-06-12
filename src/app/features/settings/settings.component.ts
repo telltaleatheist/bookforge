@@ -134,7 +134,7 @@ import {
                   <p style="margin-top: 8px;">
                     <strong>Current structure:</strong><br/>
                     {{ currentLibraryPath() }}/projects/ - Project files, audiobook output<br/>
-                    {{ currentLibraryPath() }}/cache/ - Page render cache
+                    ~/Documents/BookForge/cache/ - Page render cache (machine-local, not synced)
                   </p>
                 </div>
               </div>
@@ -144,7 +144,7 @@ import {
                 <div class="storage-item">
                   <div class="storage-info">
                     <h3>Page Render Cache</h3>
-                    <p>Cached page images for faster loading. Located in ~/Documents/BookForge/cache/</p>
+                    <p>Cached page images for faster loading. Located in ~/Documents/BookForge/cache/. Caches for documents not opened in 30 days are cleared automatically at startup.</p>
                     <div class="storage-size">
                       @if (cacheLoading()) {
                         <span class="size-loading">Calculating...</span>
@@ -776,129 +776,6 @@ import {
                       </desktop-button>
                     </div>
                   </div>
-                </div>
-
-                <!-- DeepFilter Conda Env (deprecated) -->
-                <div class="tool-row deprecated">
-                  <div class="tool-info">
-                    <h4>DeepFilterNet Environment <span class="deprecated-badge">Deprecated</span></h4>
-                    <p class="tool-description">Use Resemble Enhance instead for better quality</p>
-                    @if (getToolStatus('deepFilterEnv'); as status) {
-                      <div class="tool-status detected">
-                        @if (status.configured) {
-                          <span class="status-badge configured">Configured</span>
-                        } @else {
-                          <span class="status-badge detected">Default</span>
-                        }
-                        <span class="tool-path">{{ status.path }}</span>
-                      </div>
-                    }
-                  </div>
-                  <div class="tool-control">
-                    <input
-                      type="text"
-                      class="text-input"
-                      [value]="getToolPathValue('deepFilterCondaEnv')"
-                      placeholder="ebook2audiobook"
-                      (change)="updateToolPath('deepFilterCondaEnv', $any($event.target).value)"
-                    />
-                  </div>
-                </div>
-
-                <!-- Resemble Enhance Section -->
-                <div class="resemble-section">
-                  <h3 class="section-title">Resemble Enhance</h3>
-                  <p class="section-description">
-                    Audio enhancement for removing reverb and echo from TTS output. Works especially well with Orpheus TTS.
-                  </p>
-
-                  <!-- Resemble Conda Env -->
-                  <div class="tool-row">
-                    <div class="tool-info">
-                      <h4>Conda Environment</h4>
-                      <p class="tool-description">Conda environment with resemble-enhance installed</p>
-                      @if (getToolStatus('resembleEnv'); as status) {
-                        <div class="tool-status detected">
-                          @if (status.configured) {
-                            <span class="status-badge configured">Configured</span>
-                          } @else {
-                            <span class="status-badge detected">Default</span>
-                          }
-                          <span class="tool-path">{{ status.path }}</span>
-                        </div>
-                      }
-                    </div>
-                    <div class="tool-control">
-                      <input
-                        type="text"
-                        class="text-input"
-                        [value]="getToolPathValue('resembleCondaEnv')"
-                        placeholder="resemble"
-                        (change)="updateToolPath('resembleCondaEnv', $any($event.target).value)"
-                      />
-                    </div>
-                  </div>
-
-                  <!-- Resemble Device -->
-                  <div class="tool-row">
-                    <div class="tool-info">
-                      <h4>Processing Device</h4>
-                      <p class="tool-description">GPU accelerates processing (~10x faster than CPU)</p>
-                      @if (getToolStatus('resembleDevice'); as status) {
-                        <div class="tool-status detected">
-                          <span class="status-badge detected">{{ status.path | uppercase }}</span>
-                        </div>
-                      }
-                    </div>
-                    <div class="tool-control">
-                      <select
-                        class="text-input"
-                        [value]="getToolPathValue('resembleDevice') || 'auto'"
-                        (change)="updateToolPath('resembleDevice', $any($event.target).value)"
-                      >
-                        <option value="auto">Auto-detect</option>
-                        <option value="cuda">CUDA (NVIDIA GPU)</option>
-                        <option value="mps">MPS (Apple Silicon)</option>
-                        <option value="cpu">CPU</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <!-- WSL2 for Resemble (Windows only) -->
-                  @if (isWindows()) {
-                    <div class="tool-row">
-                      <div class="tool-info">
-                        <h4>Use WSL2 for Resemble</h4>
-                        <p class="tool-description">Run Resemble Enhance in WSL2 (recommended on Windows)</p>
-                      </div>
-                      <div class="tool-control">
-                        <input
-                          type="checkbox"
-                          class="toggle-input"
-                          [checked]="getToolPathValue('useWsl2ForResemble') !== 'false'"
-                          (change)="updateToolPath('useWsl2ForResemble', $any($event.target).checked ? 'true' : 'false')"
-                        />
-                      </div>
-                    </div>
-
-                    @if (getToolPathValue('useWsl2ForResemble') !== 'false') {
-                      <div class="tool-row">
-                        <div class="tool-info">
-                          <h4>WSL Conda Environment</h4>
-                          <p class="tool-description">Conda environment name for Resemble in WSL</p>
-                        </div>
-                        <div class="tool-control">
-                          <input
-                            type="text"
-                            class="text-input"
-                            [value]="getToolPathValue('wslResembleCondaEnv')"
-                            placeholder="resemble"
-                            (change)="updateToolPath('wslResembleCondaEnv', $any($event.target).value)"
-                          />
-                        </div>
-                      </div>
-                    }
-                  }
                 </div>
 
                 <!-- WSL2 Settings (Windows only, for Orpheus TTS) -->
@@ -2012,45 +1889,6 @@ import {
       cursor: pointer;
     }
 
-    /* Resemble Enhance Section Styles */
-    .resemble-section {
-      margin-top: var(--ui-spacing-xl);
-      padding-top: var(--ui-spacing-xl);
-      border-top: 1px solid var(--border);
-    }
-
-    .section-title {
-      margin: 0 0 var(--ui-spacing-sm) 0;
-      font-size: var(--ui-font-base);
-      font-weight: $font-weight-semibold;
-      color: var(--text-primary);
-    }
-
-    .section-description {
-      margin: 0 0 var(--ui-spacing-lg) 0;
-      font-size: var(--ui-font-sm);
-      color: var(--text-tertiary);
-    }
-
-    /* Deprecated styling */
-    .tool-row.deprecated {
-      opacity: 0.6;
-
-      h4 {
-        display: flex;
-        align-items: center;
-        gap: var(--ui-spacing-sm);
-      }
-    }
-
-    .deprecated-badge {
-      font-size: var(--ui-font-xs);
-      font-weight: $font-weight-medium;
-      padding: 2px 6px;
-      border-radius: 4px;
-      background: var(--warning-bg, #fef3cd);
-      color: var(--warning, #856404);
-    }
   `]
 })
 export class SettingsComponent implements OnInit {

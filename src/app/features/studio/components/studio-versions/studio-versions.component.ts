@@ -17,7 +17,7 @@ interface VersionRow {
  * book's document versions (Original / Edited / Cleaned / Simplified /
  * Translated) plus its audio outputs. Every action lives on the row of the
  * thing it acts on: Edit, Compare (any two EPUB versions via the embedded
- * diff-view), Export, Delete; audio rows get Listen / Enhance / Fix Chapters /
+ * diff-view), Export, Delete; audio rows get Listen / Fix Chapters /
  * Skipped. No raw paths shown.
  */
 @Component({
@@ -88,7 +88,6 @@ interface VersionRow {
                 <button class="act primary" (click)="listen.emit()">Listen</button>
                 <button class="act" (click)="exportAudio.emit()">Export…</button>
                 @if (a.mono) {
-                  @if (item()?.audiobookPath) { <button class="act" (click)="enhance.emit()">Enhance</button> }
                   @if (item()?.vttPath) { <button class="act" (click)="fixChapters.emit()">Fix Chapters</button> }
                 }
               </div>
@@ -153,7 +152,6 @@ export class StudioVersionsComponent {
   readonly exportDoc = output<string>();    // version path -> export EPUB/PDF
   readonly exportAudio = output<void>();    // export the M4B
   readonly listen = output<void>();
-  readonly enhance = output<void>();
   readonly fixChapters = output<void>();
   readonly skipped = output<void>();
   readonly changed = output<void>();        // after delete -> tell Studio to refresh

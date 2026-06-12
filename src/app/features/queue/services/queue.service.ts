@@ -18,7 +18,6 @@ import {
   TtsConversionConfig,
   TranslationJobConfig,
   ReassemblyJobConfig,
-  ResembleEnhanceJobConfig,
   BilingualCleanupJobConfig,
   BilingualTranslationJobConfig,
   BilingualAssemblyJobConfig,
@@ -137,15 +136,6 @@ declare global {
           excludedChapters: number[];
         }) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
-      };
-      resemble?: {
-        runForQueue: (jobId: string, config: {
-          inputPath: string;
-          outputPath?: string;
-          projectId?: string;
-          bfpPath?: string;
-          replaceOriginal?: boolean;
-        }) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
       };
       languageLearning?: {
         runJob: (jobId: string, config: {
@@ -1787,7 +1777,6 @@ export class QueueService {
       case 'video-assembly':    return 0.10;  // ~10% of TTS duration
       case 'ocr-cleanup':       return 0.50;  // Comparable to TTS (depends on model)
       case 'tts-conversion':    return 1.00;  // Baseline
-      case 'resemble-enhance':  return 0.30;  // ~30% of TTS duration
       default:                  return 0.20;  // Conservative default
     }
   }
@@ -2943,37 +2932,6 @@ export class QueueService {
 
         // Finish job (standalone-aware: won't advance queue for standalone jobs)
         await this.finishJob(job.id);
-      } else if (job.type === 'resemble-enhance') {
-        // Resemble Enhance job - audio enhancement/denoising
-        const config = job.config as ResembleEnhanceJobConfig | undefined;
-        if (!config) {
-          throw new Error('Resemble Enhance configuration required');
-        }
-
-        console.log('[QUEUE] Starting resemble-enhance job:', {
-          inputPath: config.inputPath,
-          outputPath: config.outputPath,
-          projectId: config.projectId,
-          replaceOriginal: config.replaceOriginal
-        });
-
-        // Call the resemble API
-        if (!electron.resemble) {
-          throw new Error('Resemble Enhance not available');
-        }
-
-        const result = await electron.resemble.runForQueue(job.id, {
-          inputPath: config.inputPath,
-          outputPath: config.outputPath,
-          projectId: config.projectId,
-          bfpPath: config.bfpPath || job.bfpPath,
-          replaceOriginal: config.replaceOriginal
-        });
-        if (!result.success) {
-          throw new Error(result.error || 'Resemble Enhance failed');
-        }
-
-        // The job completion will be handled by the onComplete callback
       } else if (job.type === 'bilingual-cleanup') {
         // Language Learning Cleanup job
         const config = job.config as BilingualCleanupJobConfig | undefined;
@@ -3668,7 +3626,7 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | ResembleEnhanceJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | undefined {
+  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | undefined {
     if (request.type === 'ocr-cleanup') {
       const config = request.config as Partial<OcrCleanupConfig>;
       if (!config?.aiProvider || !config?.aiModel) {
@@ -3760,19 +3718,6 @@ export class QueueService {
         totalChapters: config.totalChapters,
         metadata: config.metadata || { title: 'Unknown', author: 'Unknown' },
         excludedChapters: config.excludedChapters || []
-      };
-    } else if (request.type === 'resemble-enhance') {
-      const config = request.config as Partial<ResembleEnhanceJobConfig>;
-      if (!config?.inputPath) {
-        return undefined; // Input path is required
-      }
-      return {
-        type: 'resemble-enhance',
-        inputPath: config.inputPath,
-        outputPath: config.outputPath,
-        projectId: config.projectId,
-        bfpPath: config.bfpPath,
-        replaceOriginal: config.replaceOriginal ?? true
       };
     } else if (request.type === 'bilingual-cleanup') {
       const config = request.config as Partial<BilingualCleanupJobConfig>;

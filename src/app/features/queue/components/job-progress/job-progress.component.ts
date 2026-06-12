@@ -61,9 +61,6 @@ interface ETAState {
               } @else if (currentJob.type === 'reassembly') {
                 <span class="type-icon">&#128295;</span>
                 <span>Reassembly</span>
-              } @else if (currentJob.type === 'resemble-enhance') {
-                <span class="type-icon">&#10024;</span>
-                <span>Audio Enhancement</span>
               } @else if (currentJob.type === 'bilingual-cleanup') {
                 <span class="type-icon">&#128221;</span>
                 <span>Bilingual Cleanup</span>
@@ -236,7 +233,7 @@ interface ETAState {
           }
         } @else {
           <!-- Single-job progress view -->
-          @if (currentJob.progressMessage && currentJob.type !== 'resemble-enhance') {
+          @if (currentJob.progressMessage) {
             <div class="progress-message">{{ currentJob.progressMessage }}</div>
           }
 
@@ -1205,38 +1202,6 @@ export class JobProgressComponent implements OnDestroy {
       return 'Complete';
     }
 
-    // For resemble-enhance jobs, parse ETA from progressMessage or use percentage-based
-    if (j.type === 'resemble-enhance') {
-      // Try to extract remaining time from message like "Enhancing: 13% (57:54 remaining)"
-      const message = j.progressMessage || '';
-      const remainingMatch = message.match(/\(([^)]+)\s+remaining\)/);
-      if (remainingMatch && remainingMatch[1]) {
-        // Parse mm:ss or hh:mm:ss format to seconds and reformat consistently
-        const timeParts = remainingMatch[1].split(':').map(Number);
-        let seconds = 0;
-        if (timeParts.length === 2) {
-          seconds = timeParts[0] * 60 + timeParts[1];
-        } else if (timeParts.length === 3) {
-          seconds = timeParts[0] * 3600 + timeParts[1] * 60 + timeParts[2];
-        }
-        if (seconds > 0) {
-          return this.formatDuration(seconds);
-        }
-        return remainingMatch[1];
-      }
-      // Fall back to percentage-based ETA
-      const elapsed = this.elapsedSeconds();
-      if (progress > 2 && elapsed > 10) {
-        // Simple linear estimate: (elapsed / progress) * remaining_progress
-        const totalEstimate = elapsed / (progress / 100);
-        const remaining = totalEstimate - elapsed;
-        if (remaining > 0) {
-          return this.formatDuration(Math.round(remaining));
-        }
-      }
-      return 'Calculating...';
-    }
-
     // If first work hasn't completed yet, show appropriate loading status
     if (!this.etaState.firstWorkTime) {
       // Reassembly doesn't load models - show different message
@@ -1346,37 +1311,6 @@ export class JobProgressComponent implements OnDestroy {
       const elapsed = Math.floor((Date.now() - this.masterEtaLastUpdateTime) / 1000);
       const countdown = Math.max(0, job.estimatedSecondsRemaining - elapsed);
       return this.formatDuration(countdown);
-    }
-
-    // For resemble-enhance jobs, parse ETA from progressMessage
-    if (job.type === 'resemble-enhance') {
-      const message = job.progressMessage || '';
-      // Extract time from "Enhancing: 13% (57:54 remaining)"
-      const remainingMatch = message.match(/\(([^)]+)\s+remaining\)/);
-      if (remainingMatch && remainingMatch[1]) {
-        // Parse mm:ss or hh:mm:ss format to seconds and reformat consistently
-        const timeParts = remainingMatch[1].split(':').map(Number);
-        let seconds = 0;
-        if (timeParts.length === 2) {
-          seconds = timeParts[0] * 60 + timeParts[1];
-        } else if (timeParts.length === 3) {
-          seconds = timeParts[0] * 3600 + timeParts[1] * 60 + timeParts[2];
-        }
-        if (seconds > 0) {
-          return this.formatDuration(seconds);
-        }
-        return remainingMatch[1];
-      }
-      // Fall back to percentage-based ETA
-      const elapsed = this.elapsedSeconds();
-      if (progress > 2 && elapsed > 10) {
-        const totalEstimate = elapsed / (progress / 100);
-        const remaining = totalEstimate - elapsed;
-        if (remaining > 0) {
-          return this.formatDuration(Math.round(remaining));
-        }
-      }
-      return 'Calculating...';
     }
 
     // For OCR cleanup and TTS jobs with chunk data, calculate ETA directly
@@ -1513,7 +1447,6 @@ export class JobProgressComponent implements OnDestroy {
       case 'translation': return 'Translation';
       case 'tts-conversion': return 'TTS';
       case 'reassembly': return 'Reassembly';
-      case 'resemble-enhance': return 'Audio Enhancement';
       case 'bilingual-cleanup': return 'AI Cleanup';
       case 'bilingual-translation': return 'Translation';
       case 'bilingual-assembly': return 'Assembly';

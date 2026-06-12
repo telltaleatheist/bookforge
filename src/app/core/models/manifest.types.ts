@@ -220,9 +220,6 @@ export interface ManifestOutputs {
   // Bilingual audiobooks keyed by "sourceLang-targetLang" (e.g., "en-de")
   bilingualAudiobooks?: Record<string, AudiobookOutput>;
 
-  // Enhanced audiobook (post Resemble Enhance)
-  enhancedAudiobook?: AudiobookOutput;
-
   // Playback position bookmarks keyed by output identifier: "audiobook", "en-de", etc.
   bookmarks?: Record<string, BookmarkState>;
 

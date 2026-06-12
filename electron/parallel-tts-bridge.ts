@@ -64,7 +64,6 @@ function writeWorkerLog(line: string): void {
 }
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import * as manifestService from './manifest-service';
-import { checkResembleAvailable, enhanceFile, initResembleBridge } from './resemble-bridge';
 
 /**
  * Kill a process and all its children (process tree)
@@ -2629,12 +2628,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         if (config.metadata && finalPath && config.outputDir) {
           try {
             console.log('[PARALLEL-TTS] Calling applyMetadataWithM4bTool...');
-            let processedPath = await applyMetadataWithM4bTool(finalPath, config.metadata, config.outputDir, config.bfpPath);
+            const processedPath = await applyMetadataWithM4bTool(finalPath, config.metadata, config.outputDir, config.bfpPath);
             console.log('[PARALLEL-TTS] After metadata, path:', processedPath);
-
-            // Run Resemble Enhance for Orpheus TTS output (removes reverb)
-            processedPath = await runResembleEnhance(processedPath, settings.ttsEngine, session.jobId);
-            console.log('[PARALLEL-TTS] Final processed path:', processedPath);
             resolve(await finalizeOutputPath(processedPath, session));
           } catch (metaErr) {
             console.error('[PARALLEL-TTS] Metadata processing failed, using original file:', metaErr);
@@ -2645,15 +2640,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
             console.error('[PARALLEL-TTS] Cannot apply metadata/rename - outputDir is empty');
           }
           console.log('[PARALLEL-TTS] Skipping metadata - config.metadata is:', config.metadata);
-
-          // Still run Resemble Enhance for Orpheus even without metadata
-          let resultPath = finalPath;
-          try {
-            resultPath = await runResembleEnhance(finalPath, settings.ttsEngine, session.jobId);
-          } catch (err) {
-            console.error('[PARALLEL-TTS] Resemble Enhance failed:', err);
-          }
-          resolve(await finalizeOutputPath(resultPath, session));
+          resolve(await finalizeOutputPath(finalPath, session));
         }
       } else {
         // Even if e2a exited with error, the m4b file might have been created
@@ -2680,10 +2667,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
             if (config.metadata && config.outputDir) {
               try {
                 console.log('[PARALLEL-TTS] Attempting post-processing despite assembly error...');
-                let processedPath = await applyMetadataWithM4bTool(foundPath, config.metadata, config.outputDir, config.bfpPath);
-
-                // Run Resemble Enhance for Orpheus
-                processedPath = await runResembleEnhance(processedPath, settings.ttsEngine, session.jobId);
+                const processedPath = await applyMetadataWithM4bTool(foundPath, config.metadata, config.outputDir, config.bfpPath);
                 console.log('[PARALLEL-TTS] Post-processing succeeded:', processedPath);
                 resolve(await finalizeOutputPath(processedPath, session));
                 return;
@@ -2694,13 +2678,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
               }
             }
 
-            // Still run Resemble Enhance for Orpheus even without metadata
-            try {
-              const enhancedPath = await runResembleEnhance(foundPath, settings.ttsEngine, session.jobId);
-              resolve(await finalizeOutputPath(enhancedPath, session));
-            } catch (err) {
-              resolve(await finalizeOutputPath(foundPath, session));
-            }
+            resolve(await finalizeOutputPath(foundPath, session));
             return;
           }
         } catch (findErr) {
@@ -2936,81 +2914,6 @@ async function getUniqueFilePath(filePath: string): Promise<string> {
       // File doesn't exist, we can use this path
       return uniquePath;
     }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Resemble Enhance Post-Processing (for Orpheus TTS)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Run Resemble Enhance on the audiobook file to remove reverb/echo
- * Only runs automatically for Orpheus TTS output (which has baked-in reverb)
- *
- * @param inputPath - Path to the M4B file to enhance
- * @param ttsEngine - The TTS engine used (only 'orpheus' triggers auto-enhance)
- * @param jobId - Job ID for progress reporting
- * @returns The path to the enhanced file (same as input, file is modified in-place)
- */
-async function runResembleEnhance(
-  inputPath: string,
-  ttsEngine: string,
-  jobId: string
-): Promise<string> {
-  // DISABLED: Auto-enhancement takes ~19 hours for 8-hour book on CPU
-  // Use Post-Processing tab to enhance manually when convenient
-  console.log('[PARALLEL-TTS] Auto-enhancement disabled - use Post-Processing tab');
-  return inputPath;
-
-  // Only run for Orpheus TTS
-  if (ttsEngine !== 'orpheus') {
-    console.log('[PARALLEL-TTS] Skipping Resemble Enhance - not using Orpheus TTS');
-    return inputPath;
-  }
-
-  // Check if Resemble Enhance is available
-  const available = await checkResembleAvailable();
-  if (!available.available) {
-    console.log('[PARALLEL-TTS] Resemble Enhance not available, skipping post-processing');
-    console.log('[PARALLEL-TTS] Setup instructions in AUDIO_ENHANCEMENT.md');
-    return inputPath;
-  }
-
-  console.log('[PARALLEL-TTS] Running Resemble Enhance on Orpheus output...');
-
-  // Initialize the bridge with mainWindow for progress updates
-  if (mainWindow) {
-    initResembleBridge(mainWindow!);
-
-    // Emit enhancing phase progress
-    const progress: AggregatedProgress = {
-      phase: 'enhancing',
-      totalSentences: 0,
-      completedSentences: 0,
-      completedInSession: 0,
-      percentage: 98,
-      activeWorkers: 0,
-      workers: [],
-      estimatedRemaining: 300, // Estimate 5 minutes for enhancement
-      message: 'Enhancing audio quality (removing reverb)...'
-    };
-    mainWindow!.webContents.send('parallel-tts:progress', { jobId, progress });
-  }
-
-  try {
-    const result = await enhanceFile(inputPath);
-    if (result.success) {
-      console.log('[PARALLEL-TTS] Resemble Enhance completed successfully');
-      return result.outputPath || inputPath;
-    } else {
-      console.error('[PARALLEL-TTS] Resemble Enhance failed:', result.error);
-      // Non-fatal - return original file
-      return inputPath;
-    }
-  } catch (err) {
-    console.error('[PARALLEL-TTS] Resemble Enhance error:', err);
-    // Non-fatal - return original file
-    return inputPath;
   }
 }
 

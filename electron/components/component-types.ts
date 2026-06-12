@@ -2,7 +2,7 @@
  * Optional Component System — shared contract
  *
  * BookForge ships a small XTTS-only core. Heavy or platform-specific pieces
- * (Calibre, Orpheus, Tesseract, Resemble Enhance) are OPTIONAL COMPONENTS that
+ * (Calibre, Orpheus, Tesseract) are OPTIONAL COMPONENTS that
  * the app detects-compatibility-for, downloads, installs, verifies, and removes
  * at runtime.
  *
@@ -111,7 +111,7 @@ export interface DetectSpec {
 }
 
 export interface OptionalComponent {
-  id: string;                  // 'calibre' | 'orpheus' | 'tesseract' | 'resemble'
+  id: string;                  // 'calibre' | 'orpheus' | 'tesseract'
   name: string;                // display name
   description: string;         // one or two lines for the UI
   kind: ComponentKind;

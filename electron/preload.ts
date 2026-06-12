@@ -714,32 +714,6 @@ export interface E2aSessionScanResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DeepFilterNet Types
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface AudioFileInfo {
-  name: string;
-  path: string;
-  size: number;
-  modifiedAt: Date;
-  format: string;
-}
-
-export interface DenoiseProgress {
-  phase: 'starting' | 'converting' | 'denoising' | 'finalizing' | 'complete' | 'error';
-  percentage: number;
-  message: string;
-  error?: string;
-}
-
-export interface EnhanceProgress {
-  phase: 'starting' | 'converting' | 'enhancing' | 'finalizing' | 'complete' | 'error';
-  percentage: number;
-  message: string;
-  error?: string;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Bookshelf Server Types
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1471,29 +1445,6 @@ export interface ElectronAPI {
     isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
     getBfpSession: (bfpPath: string) => Promise<{ success: boolean; data?: E2aSession | null; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => () => void;
-  };
-  deepfilter: {
-    checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; error?: string }; error?: string }>;
-    listFiles: (audiobooksDir: string) => Promise<{ success: boolean; data?: AudioFileInfo[]; error?: string }>;
-    denoise: (filePath: string) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
-    cancel: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
-    onProgress: (callback: (progress: DenoiseProgress) => void) => () => void;
-  };
-  resemble: {
-    checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; device?: string; usingWsl?: boolean; error?: string }; error?: string }>;
-    listFiles: (audiobooksDir: string) => Promise<{ success: boolean; data?: AudioFileInfo[]; error?: string }>;
-    pickFiles: () => Promise<{ success: boolean; data?: AudioFileInfo[]; error?: string }>;
-    enhance: (filePath: string) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
-    cancel: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
-    onProgress: (callback: (progress: EnhanceProgress) => void) => () => void;
-    // Queue-based enhancement
-    runForQueue: (jobId: string, config: {
-      inputPath: string;
-      outputPath?: string;
-      projectId?: string;
-      bfpPath?: string;
-      replaceOriginal?: boolean;
-    }) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
   };
   chapterRecovery: {
     detectChapters: (epubPath: string, vttPath: string) => Promise<{
@@ -2979,55 +2930,6 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('reassembly:progress', listener);
       };
     },
-  },
-  deepfilter: {
-    checkAvailable: () =>
-      ipcRenderer.invoke('deepfilter:check-available'),
-    listFiles: (audiobooksDir: string) =>
-      ipcRenderer.invoke('deepfilter:list-files', audiobooksDir),
-    denoise: (filePath: string) =>
-      ipcRenderer.invoke('deepfilter:denoise', filePath),
-    cancel: () =>
-      ipcRenderer.invoke('deepfilter:cancel'),
-    onProgress: (callback: (progress: DenoiseProgress) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, progress: DenoiseProgress) => {
-        callback(progress);
-      };
-      ipcRenderer.on('deepfilter:progress', listener);
-      return () => {
-        ipcRenderer.removeListener('deepfilter:progress', listener);
-      };
-    },
-  },
-  resemble: {
-    checkAvailable: () =>
-      ipcRenderer.invoke('resemble:check-available'),
-    listFiles: (audiobooksDir: string) =>
-      ipcRenderer.invoke('resemble:list-files', audiobooksDir),
-    pickFiles: () =>
-      ipcRenderer.invoke('resemble:pick-files'),
-    enhance: (filePath: string) =>
-      ipcRenderer.invoke('resemble:enhance', filePath),
-    cancel: () =>
-      ipcRenderer.invoke('resemble:cancel'),
-    onProgress: (callback: (progress: EnhanceProgress) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, progress: EnhanceProgress) => {
-        callback(progress);
-      };
-      ipcRenderer.on('resemble:progress', listener);
-      return () => {
-        ipcRenderer.removeListener('resemble:progress', listener);
-      };
-    },
-    // Queue-based enhancement
-    runForQueue: (jobId: string, config: {
-      inputPath: string;
-      outputPath?: string;
-      projectId?: string;
-      bfpPath?: string;
-      replaceOriginal?: boolean;
-    }) =>
-      ipcRenderer.invoke('queue:run-resemble-enhance', jobId, config),
   },
   chapterRecovery: {
     detectChapters: (epubPath: string, vttPath: string) =>

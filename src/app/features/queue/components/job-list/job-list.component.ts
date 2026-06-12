@@ -326,11 +326,6 @@ interface DragState {
         color: var(--accent-hover);
       }
 
-      &.resemble-enhance {
-        background: var(--accent-subtle);
-        color: var(--accent);
-      }
-
       &.bilingual-cleanup,
       &.bilingual-translation {
         background: color-mix(in srgb, var(--info) 15%, transparent);
@@ -573,8 +568,6 @@ export class JobListComponent {
         return 'TTS';
       case 'reassembly':
         return 'Reassembly';
-      case 'resemble-enhance':
-        return 'Enhance';
       case 'bilingual-cleanup':
         return 'Bilingual Cleanup';
       case 'bilingual-translation':

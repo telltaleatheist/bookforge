@@ -114,7 +114,7 @@ export type MainTab = 'files' | 'content' | 'audiobook' | 'language-learning' | 
 /**
  * Sub-tabs under Audiobook main tab
  */
-export type AudiobookSubTab = 'process' | 'stream' | 'play' | 'review' | 'skipped' | 'enhance' | 'chapters';
+export type AudiobookSubTab = 'process' | 'stream' | 'play' | 'review' | 'skipped' | 'chapters';
 
 /**
  * Sub-tabs under Language Learning main tab
@@ -134,7 +134,6 @@ export type StudioWorkflowState =
   | 'play'       // Play existing audiobook with VTT sync
   | 'diff'       // Review changes (after cleanup)
   | 'skipped'    // Skipped chunks review
-  | 'enhance'    // Audio post-processing
   | 'chapters'   // Chapter recovery
   | 'analytics'  // Processing analytics
   | 'bilingual'; // Bilingual sentence cache management

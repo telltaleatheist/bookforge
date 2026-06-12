@@ -149,7 +149,6 @@ export interface BilingualAssemblyStage {
 export interface ManifestOutputs {
   audiobook?: AudiobookOutput;
   bilingualAudiobooks?: Record<string, AudiobookOutput>;
-  enhancedAudiobook?: AudiobookOutput;
 }
 
 export interface AudiobookOutput {

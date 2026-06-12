@@ -89,9 +89,6 @@ import { QueueService } from '../../services/queue.service';
           } @else if (selectedJob.type === 'reassembly') {
             <span class="type-icon">&#128295;</span>
             <span class="type-label">Reassembly</span>
-          } @else if (selectedJob.type === 'resemble-enhance') {
-            <span class="type-icon">&#10024;</span>
-            <span class="type-label">Audio Enhancement</span>
           }
         </div>
 

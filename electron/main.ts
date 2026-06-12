@@ -267,6 +267,9 @@ function registerPageProtocol(): void {
       (registerPageProtocol as any).logged++;
     }
 
+    // Cache holds JPEGs (new) and PNGs (pre-June-2026)
+    const contentType = filePath.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+
     try {
       // Use async readFile — libuv retries on EINTR automatically,
       // unlike readFileSync which throws on interrupted system calls
@@ -274,7 +277,7 @@ function registerPageProtocol(): void {
       const data = await fs.readFile(filePath);
       return new Response(data, {
         headers: {
-          'Content-Type': 'image/png',
+          'Content-Type': contentType,
           'Cache-Control': 'max-age=31536000' // Cache for 1 year
         }
       });
@@ -285,7 +288,7 @@ function registerPageProtocol(): void {
           const data = await fs.readFile(filePath);
           return new Response(data, {
             headers: {
-              'Content-Type': 'image/png',
+              'Content-Type': contentType,
               'Cache-Control': 'max-age=31536000'
             }
           });
@@ -609,7 +612,9 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('pdf:render-pages', async (event, pdfPath: string, pageNumbers: number[], quality: 'preview' | 'full' = 'preview') => {
     try {
-      const result = await pdfWorkerProxy.call('renderPages', [pdfPath, pageNumbers, quality], event.sender);
+      // Split across the render pool — each pool worker has its own mupdf
+      // WASM instance, so the batch renders in parallel.
+      const result = await pdfWorkerProxy.callRenderPages(pdfPath, pageNumbers, quality, event.sender);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -618,7 +623,8 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('pdf:close-render-doc', async () => {
     try {
-      await pdfWorkerProxy.call('closeRenderDoc', []);
+      // Every worker (main + render pool) holds its own cached doc handle
+      await pdfWorkerProxy.broadcast('closeRenderDoc', []);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -627,7 +633,7 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('pdf:close', async () => {
     try {
-      await pdfWorkerProxy.call('close', []);
+      await pdfWorkerProxy.broadcast('close', []);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -7347,242 +7353,6 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Resemble Enhance Post-Processing (replaces DeepFilterNet)
-  // Better for TTS artifacts like reverb/echo in Orpheus output
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  ipcMain.handle('resemble:check-available', async () => {
-    try {
-      const { checkResembleAvailable } = await import('./resemble-bridge.js');
-      const result = await checkResembleAvailable();
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('resemble:list-files', async (_event, audiobooksDir: string) => {
-    try {
-      const { listAudioFiles } = await import('./resemble-bridge.js');
-      const files = await listAudioFiles(audiobooksDir);
-      return { success: true, data: files };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('resemble:enhance', async (_event, filePath: string) => {
-    try {
-      const { enhanceFile, initResembleBridge } = await import('./resemble-bridge.js');
-      if (mainWindow) {
-        initResembleBridge(mainWindow);
-      }
-      const result = await enhanceFile(filePath);
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('resemble:cancel', async () => {
-    try {
-      const { cancelEnhance } = await import('./resemble-bridge.js');
-      const cancelled = cancelEnhance();
-      return { success: true, data: cancelled };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Open audio file picker for enhancement
-  ipcMain.handle('resemble:pick-files', async () => {
-    if (!mainWindow) return { success: false, error: 'No window' };
-
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Select Audio Files to Enhance',
-      properties: ['openFile', 'multiSelections'],
-      filters: [
-        { name: 'Audio Files', extensions: ['m4b', 'm4a', 'mp3', 'wav', 'flac', 'ogg', 'opus'] },
-        { name: 'All Files', extensions: ['*'] }
-      ]
-    });
-
-    if (result.canceled || result.filePaths.length === 0) {
-      return { success: false, error: 'No files selected' };
-    }
-
-    // Get file info for each selected file
-    const fs = await import('fs');
-    const path = await import('path');
-    const files = result.filePaths.map(filePath => {
-      const stats = fs.statSync(filePath);
-      return {
-        name: path.basename(filePath),
-        path: filePath,
-        size: stats.size,
-        modifiedAt: stats.mtime,
-        format: path.extname(filePath).slice(1).toUpperCase()
-      };
-    });
-
-    return { success: true, data: files };
-  });
-
-  // Queue-based resemble enhancement
-  ipcMain.handle('queue:run-resemble-enhance', async (_event, jobId: string, config: {
-    inputPath: string;
-    outputPath?: string;
-    projectId?: string;
-    bfpPath?: string;
-    replaceOriginal?: boolean;
-  }) => {
-    try {
-      const fs = await import('fs');
-      const pathModule = await import('path');
-
-      // Normalize input path for Windows (may have mixed separators)
-      const normalizedInputPath = config.inputPath.replace(/\//g, pathModule.sep);
-
-      // Check if input file exists
-      if (!fs.existsSync(normalizedInputPath)) {
-        const error = `Input file not found: ${normalizedInputPath}`;
-        console.error('[RESEMBLE-QUEUE]', error);
-        if (mainWindow) {
-          mainWindow.webContents.send('queue:job-complete', {
-            jobId,
-            success: false,
-            error
-          });
-        }
-        return { success: false, error };
-      }
-
-      const { enhanceFileForQueue, initResembleBridge } = await import('./resemble-bridge.js');
-      if (mainWindow) {
-        initResembleBridge(mainWindow);
-      }
-
-      // Determine output path (normalize for Windows)
-      let outputPath = config.outputPath?.replace(/\//g, pathModule.sep);
-      if (config.replaceOriginal === true || (!config.outputPath && !config.bfpPath)) {
-        // Replace original mode
-        outputPath = undefined;
-      }
-
-      const result = await enhanceFileForQueue(
-        jobId,
-        normalizedInputPath,
-        outputPath,
-        config.projectId,
-        (progress) => {
-          // Emit queue progress
-          if (mainWindow) {
-            mainWindow.webContents.send('queue:progress', progress);
-          }
-        }
-      );
-
-      // Emit job completion
-      console.log(`[RESEMBLE-QUEUE] Job ${jobId}: Sending queue:job-complete event, success=${result.success}`);
-      if (mainWindow) {
-        mainWindow.webContents.send('queue:job-complete', {
-          jobId,
-          success: result.success,
-          outputPath: result.outputPath,
-          error: result.error
-        });
-        console.log(`[RESEMBLE-QUEUE] Job ${jobId}: queue:job-complete event sent`);
-      } else {
-        console.error(`[RESEMBLE-QUEUE] Job ${jobId}: mainWindow is null, cannot send queue:job-complete`);
-      }
-
-      // Update project state if bfpPath provided
-      if (config.bfpPath && result.success) {
-        try {
-          const fs = await import('fs');
-          const path = await import('path');
-
-          // Read existing project file
-          const projectData = JSON.parse(fs.readFileSync(config.bfpPath, 'utf-8'));
-
-          // Update audiobook state
-          if (!projectData.audiobookState) {
-            projectData.audiobookState = {};
-          }
-          projectData.audiobookState.enhancementStatus = 'complete';
-          projectData.audiobookState.enhancedAt = new Date().toISOString();
-          projectData.audiobookState.enhancementJobId = jobId;
-
-          // Save updated project file
-          fs.writeFileSync(config.bfpPath, JSON.stringify(projectData, null, 2));
-          console.log(`[RESEMBLE-QUEUE] Updated project state for ${config.bfpPath}`);
-        } catch (err) {
-          console.error('[RESEMBLE-QUEUE] Failed to update project state:', err);
-        }
-      }
-
-      return { success: result.success, data: result, error: result.error };
-    } catch (err) {
-      // Emit error completion
-      if (mainWindow) {
-        mainWindow.webContents.send('queue:job-complete', {
-          jobId,
-          success: false,
-          error: (err as Error).message
-        });
-      }
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // DeepFilterNet Post-Processing (deprecated - use Resemble Enhance instead)
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  ipcMain.handle('deepfilter:check-available', async () => {
-    try {
-      const { checkDeepFilterAvailable } = await import('./deepfilter-bridge.js');
-      const result = await checkDeepFilterAvailable();
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('deepfilter:list-files', async (_event, audiobooksDir: string) => {
-    try {
-      const { listAudioFiles } = await import('./deepfilter-bridge.js');
-      const files = await listAudioFiles(audiobooksDir);
-      return { success: true, data: files };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('deepfilter:denoise', async (_event, filePath: string) => {
-    try {
-      const { denoiseFile, initDeepFilterBridge } = await import('./deepfilter-bridge.js');
-      if (mainWindow) {
-        initDeepFilterBridge(mainWindow);
-      }
-      const result = await denoiseFile(filePath);
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('deepfilter:cancel', async () => {
-    try {
-      const { cancelDenoise } = await import('./deepfilter-bridge.js');
-      const cancelled = cancelDenoise();
-      return { success: true, data: cancelled };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
   // Chapter Recovery handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -9762,6 +9532,25 @@ app.whenReady().then(async () => {
   } catch (err) {
     logger.warn('Failed to cleanup manifest staging dir', { error: (err as Error).message });
   }
+
+  // Evict page render caches for documents not opened in 30 days.
+  // Delayed so the sweep's disk I/O doesn't compete with app launch.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const { evictStaleRenderCache } = await import('./render-cache.js');
+        const { evicted, freedBytes } = await evictStaleRenderCache();
+        if (evicted > 0) {
+          logger.info('Evicted stale render caches', {
+            documents: evicted,
+            freedMB: Math.round(freedBytes / 1024 / 1024),
+          });
+        }
+      } catch (err) {
+        logger.warn('Render cache eviction failed', { error: (err as Error).message });
+      }
+    })();
+  }, 15_000);
 
   // Register the protocol handlers
   registerPageProtocol();

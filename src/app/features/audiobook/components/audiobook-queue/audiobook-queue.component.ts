@@ -35,10 +35,6 @@ export interface QueueItem {
   linkedAudioPath?: string;  // Manually linked audio file path (when auto-detection fails)
   linkedAudioPathValid?: boolean;  // True if linkedAudioPath exists on current system (for cross-platform)
   skippedChunksPath?: string;  // Path to JSON file with skipped chunks from AI cleanup
-  // Enhancement state (Resemble Enhance)
-  enhancementStatus?: 'none' | 'pending' | 'processing' | 'complete' | 'error';
-  enhancementJobId?: string;
-  enhancedAt?: string;
 }
 
 @Component({

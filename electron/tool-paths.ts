@@ -30,30 +30,6 @@ export interface ToolPathsConfig {
   // FFmpeg
   ffmpegPath?: string;
 
-  // DeepFilterNet (deprecated - use Resemble Enhance instead)
-  deepFilterCondaEnv?: string;  // Conda environment name for DeepFilterNet
-
-  // Resemble Enhance (audio enhancement for removing reverb/echo from TTS output)
-  resembleCondaEnv?: string;    // Conda environment name for Resemble Enhance (default: 'resemble')
-  resembleDevice?: 'auto' | 'cuda' | 'mps' | 'cpu';  // Device for Resemble Enhance (default: 'auto')
-  resembleEngine?: 'resemble' | 'ffmpeg';  // Which engine to use for enhancement (default: 'resemble')
-  resembleDenoiseOnly?: boolean; // Only denoise, skip neural enhancement (avoids "underwater" artifacts)
-  resemblePasses?: number;      // Number of denoise passes (default: 1, only used when resembleDenoiseOnly=true)
-  resembleLambd?: number;       // Denoise strength 0.0-1.0 (default: 1.0 = max denoise)
-  resembleTau?: number;         // CFM prior temperature 0.0-1.0 (default: 0.5, lower = more conservative)
-  resembleNfe?: number;         // Number of function evaluations (default: 64, more = higher quality)
-  resembleSolver?: 'midpoint' | 'rk4' | 'euler';  // Numerical solver (default: midpoint)
-
-  // FFmpeg afftdn settings (used when resembleEngine='ffmpeg')
-  ffmpegNoiseReduction?: number;  // Noise reduction in dB (0.01-97, default: 20)
-  ffmpegNoiseFloor?: number;      // Noise floor in dB (-80 to -20, default: -40)
-  ffmpegResidualFloor?: number;   // Residual floor in dB (-80 to -20, default: -38)
-  ffmpegAdaptivity?: number;      // Adaptivity factor (0-1, default: 0.5)
-  ffmpegTrackNoise?: boolean;     // Dynamically track noise profile (default: true)
-
-  useWsl2ForResemble?: boolean; // Use WSL2 for Resemble Enhance on Windows (default: true on Windows)
-  wslResembleCondaEnv?: string; // Conda env name for Resemble in WSL (default: 'resemble')
-
   // WSL2 Configuration (Windows only)
   useWsl2ForAllTts?: boolean;     // Use WSL2 for ALL TTS engines (not just Orpheus)
   useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus (legacy, superseded by useWsl2ForAllTts)
@@ -380,119 +356,6 @@ export function getE2aPath(): string {
   return path.join(homeDir, 'Projects', 'ebook2audiobook');
 }
 
-/**
- * Get DeepFilterNet conda environment name
- * Priority: config > fallback to 'ebook2audiobook'
- */
-export function getDeepFilterCondaEnv(): string {
-  loadConfig();
-  return state.config.deepFilterCondaEnv || 'ebook2audiobook';
-}
-
-/**
- * Get Resemble Enhance conda environment name
- * Priority: config > fallback to 'resemble'
- * See AUDIO_ENHANCEMENT.md for setup instructions
- */
-export function getResembleCondaEnv(): string {
-  loadConfig();
-  return state.config.resembleCondaEnv || 'resemble';
-}
-
-/**
- * Get Resemble Enhance device for inference
- * Priority: config > auto-detect based on platform
- *
- * Auto-detection:
- * - Windows: 'cuda' (NVIDIA GPU with CUDA)
- * - macOS: 'mps' (Apple Silicon Metal Performance Shaders)
- * - Linux: 'cuda' (NVIDIA GPU with CUDA)
- *
- * Falls back to 'cpu' if GPU is not available (handled by resemble-enhance itself)
- */
-export function getResembleDevice(): 'cuda' | 'mps' | 'cpu' {
-  loadConfig();
-
-  const configured = state.config.resembleDevice;
-
-  // If explicitly configured (not 'auto'), use that
-  if (configured && configured !== 'auto') {
-    return configured;
-  }
-
-  // Auto-detect based on platform
-  const platform = os.platform();
-
-  if (platform === 'darwin') {
-    // macOS: Use MPS (Metal Performance Shaders) for Apple Silicon
-    // Note: MPS may need PYTORCH_ENABLE_MPS_FALLBACK=1 for some ops
-    return 'mps';
-  } else if (platform === 'win32' || platform === 'linux') {
-    // Windows/Linux: Use CUDA for NVIDIA GPUs
-    return 'cuda';
-  }
-
-  // Fallback to CPU for unknown platforms
-  return 'cpu';
-}
-
-/**
- * Get Resemble Enhance CLI arguments from config.
- * Returns extra args to append to the resemble-enhance command.
- */
-export function getResembleExtraArgs(): string[] {
-  loadConfig();
-  const args: string[] = [];
-
-  if (state.config.resembleDenoiseOnly) {
-    args.push('--denoise_only');
-  }
-  if (state.config.resembleLambd !== undefined) {
-    args.push('--lambd', String(state.config.resembleLambd));
-  }
-  if (state.config.resembleTau !== undefined) {
-    args.push('--tau', String(state.config.resembleTau));
-  }
-  if (state.config.resembleNfe !== undefined) {
-    args.push('--nfe', String(state.config.resembleNfe));
-  }
-  if (state.config.resembleSolver) {
-    args.push('--solver', state.config.resembleSolver);
-  }
-  return args;
-}
-
-/**
- * Get number of denoise passes from config.
- * Only relevant when resembleDenoiseOnly is true.
- */
-export function getResemblePasses(): number {
-  loadConfig();
-  return state.config.resemblePasses ?? 1;
-}
-
-/**
- * Get which enhancement engine to use: 'resemble' (neural) or 'ffmpeg' (afftdn filter).
- */
-export function getEnhanceEngine(): 'resemble' | 'ffmpeg' {
-  loadConfig();
-  return state.config.resembleEngine ?? 'resemble';
-}
-
-/**
- * Build FFmpeg afftdn filter string from config.
- * Returns a filter like "afftdn=nr=20:nf=-40:rf=-38:ad=0.5:tn=1"
- */
-export function getFfmpegDenoiseFilter(): string {
-  loadConfig();
-  const nr = state.config.ffmpegNoiseReduction ?? 20;
-  const nf = state.config.ffmpegNoiseFloor ?? -40;
-  const rf = state.config.ffmpegResidualFloor ?? -38;
-  const ad = state.config.ffmpegAdaptivity ?? 0.5;
-  const tn = state.config.ffmpegTrackNoise !== false ? 1 : 0;
-  return `afftdn=nr=${nr}:nf=${nf}:rf=${rf}:ad=${ad}:tn=${tn}`;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Detection Status (for UI)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -528,21 +391,6 @@ export function getToolStatus(): Record<string, ToolStatus> {
       configured: !!state.config.e2aPath,
       detected: fs.existsSync(e2aPath),
       path: e2aPath,
-    },
-    deepFilterEnv: {
-      configured: !!state.config.deepFilterCondaEnv,
-      detected: true,  // Can't easily check if env exists
-      path: getDeepFilterCondaEnv(),
-    },
-    resembleEnv: {
-      configured: !!state.config.resembleCondaEnv,
-      detected: true,  // Can't easily check if env exists
-      path: getResembleCondaEnv(),
-    },
-    resembleDevice: {
-      configured: !!state.config.resembleDevice && state.config.resembleDevice !== 'auto',
-      detected: true,
-      path: getResembleDevice(),  // Returns the resolved device (cuda/mps/cpu)
     },
   };
 }
@@ -788,32 +636,6 @@ export function getWslOrpheusCondaEnv(): string {
 }
 
 /**
- * Check if WSL2 should be used for Resemble Enhance
- * On Windows, defaults to true (Resemble works better on Linux)
- */
-export function shouldUseWsl2ForResemble(): boolean {
-  if (os.platform() !== 'win32') {
-    return false;
-  }
-  loadConfig();
-  // Default to true on Windows since Resemble is designed for Linux
-  const value = state.config.useWsl2ForResemble as unknown;
-  // If not explicitly set, default to true on Windows
-  if (value === undefined) {
-    return true;
-  }
-  return value === true || value === 'true';
-}
-
-/**
- * Get WSL Resemble conda environment name from config
- */
-export function getWslResembleCondaEnv(): string {
-  loadConfig();
-  return state.config.wslResembleCondaEnv || 'resemble';
-}
-
-/**
  * Convert a WSL path to a Windows UNC path that Node.js can access
  * e.g., /home/user/file.txt -> \\wsl$\Ubuntu\home\user\file.txt
  */
@@ -855,13 +677,6 @@ export const toolPaths = {
   getCondaPath,
   getFfmpegPath,
   getE2aPath,
-  getDeepFilterCondaEnv,
-  getResembleCondaEnv,
-  getResembleDevice,
-  getResembleExtraArgs,
-  getResemblePasses,
-  getEnhanceEngine,
-  getFfmpegDenoiseFilter,
   getToolStatus,
   // WSL2 functions
   detectWslAvailability,
@@ -872,8 +687,6 @@ export const toolPaths = {
   getWslCondaPath,
   getWslE2aPath,
   getWslOrpheusCondaEnv,
-  shouldUseWsl2ForResemble,
-  getWslResembleCondaEnv,
   wslPathToWindows,
   windowsToWslPath,
 };

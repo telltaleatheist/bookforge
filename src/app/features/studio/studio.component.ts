@@ -19,7 +19,6 @@ import { LLWizardComponent } from '../language-learning/components/ll-wizard/ll-
 import { MetadataEditorComponent, EpubMetadata } from '../audiobook/components/metadata-editor/metadata-editor.component';
 import { TTSSettings } from './models/tts.types';
 import { SkippedChunksPanelComponent } from '../audiobook/components/skipped-chunks-panel/skipped-chunks-panel.component';
-import { PostProcessingPanelComponent } from '../audiobook/components/post-processing-panel/post-processing-panel.component';
 import { ChapterRecoveryComponent } from '../audiobook/components/chapter-recovery/chapter-recovery.component';
 import { VersionPickerDialogComponent, VersionPickerDialogData } from './components/version-picker-dialog/version-picker-dialog.component';
 import { DiffRequest } from './components/project-files/project-files.component';
@@ -50,7 +49,6 @@ import { SettingsService } from '../../core/services/settings.service';
     LLWizardComponent,
     MetadataEditorComponent,
     SkippedChunksPanelComponent,
-    PostProcessingPanelComponent,
     ChapterRecoveryComponent,
     VersionPickerDialogComponent,
     StudioBrowseComponent,
@@ -270,14 +268,7 @@ import { SettingsService } from '../../core/services/settings.service';
               @if (mainTab() === 'files') {
                 @if (versionsPanel() !== 'none') {
                   <button class="panel-back-btn" (click)="versionsPanel.set('none')">← Back to versions</button>
-                  @if (versionsPanel() === 'enhance') {
-                    <app-post-processing-panel
-                      [audioFilePath]="selectedItem()?.audiobookPath || ''"
-                      [bfpPath]="selectedItem()?.bfpPath || ''"
-                      [bookTitle]="selectedMetadata()?.title || ''"
-                      [bookAuthor]="selectedMetadata()?.author || ''"
-                    />
-                  } @else if (versionsPanel() === 'chapters') {
+                  @if (versionsPanel() === 'chapters') {
                     @if (selectedItem()?.audiobookPath && selectedItem()?.vttPath) {
                       <app-chapter-recovery
                         [epubPath]="currentEpubPath()"
@@ -311,7 +302,6 @@ import { SettingsService } from '../../core/services/settings.service';
                       (exportDoc)="exportEpub($event)"
                       (exportAudio)="exportM4b()"
                       (listen)="openListen()"
-                      (enhance)="versionsPanel.set('enhance')"
                       (fixChapters)="versionsPanel.set('chapters')"
                       (skipped)="versionsPanel.set('skipped')"
                       (changed)="onFileChanged()"
@@ -1440,7 +1430,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly llSubTab = signal<LanguageLearningSubTab>('process');
 
   // Four-tab book view modes.
-  readonly versionsPanel = signal<'none' | 'enhance' | 'chapters' | 'skipped'>('none'); // inline panel in Versions tab
+  readonly versionsPanel = signal<'none' | 'chapters' | 'skipped'>('none'); // inline panel in Versions tab
   readonly versionsComparing = signal(false); // a version Compare is open — go full-height, hide metadata editor
 
   readonly processStep = signal<ProcessStep>('cleanup');
