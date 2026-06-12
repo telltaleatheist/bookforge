@@ -38,6 +38,9 @@ export interface PlaybackStatus {
    *  sentence at `sentenceIndex` as it's read (empty until the 'speaking' event) */
   sentences: string[];
   rate: number;
+  /** the user has paused — true even before playback starts (so a pause during
+   *  buffering shows Play, while generation keeps filling the buffer) */
+  paused: boolean;
   error?: string;
   note?: string;
 }

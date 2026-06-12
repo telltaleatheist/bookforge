@@ -85,7 +85,12 @@ const RESUME_MIN_SECONDS = 1.5;
 // session generating upcoming blocks into the cache — in playback order — until this
 // many seconds of audio sit ready ahead of the current block. Crossing a block
 // boundary then plays from cache instead of stalling while the next block generates.
-const PREFETCH_LOOKAHEAD_SECONDS = 45;
+//
+// Sized to buffer a whole short article ahead (~2000s ≈ 5000 spoken words). Cached
+// audio is PCM16 mono @ 24 kHz = 48 KB/s, so 2000s ≈ 96 MB — held in the LRU cache
+// below, which is itself capped at CACHE_LIMIT_BYTES (256 MB) and evicts oldest
+// blocks first, so a longer page just keeps a rolling ~5000-word window in memory.
+const PREFETCH_LOOKAHEAD_SECONDS = 2000;
 const SEEK_STEP_GRACE = 0.05;
 const STATUS_INTERVAL_MS = 300;
 // A blob reload at a sentence boundary briefly ends/pauses the <audio> element.
@@ -504,7 +509,11 @@ function concludeCurrent(): void {
   startCurrent();
 }
 
-/** Stop everything (page ✕): drop current + upcoming, go idle. */
+/** Stop everything (Stop button / page ✕ / tab navigation / tab close): cancel
+ *  generation, drop the queue, go idle, and purge the read-ahead cache. The cache
+ *  can hold up to CACHE_LIMIT_BYTES of generated audio; freeing it here means
+ *  leaving a page (or hitting Stop) releases that memory promptly instead of
+ *  waiting on LRU eviction or the offscreen document's idle teardown. */
 function stopAll(): void {
   cancelGeneration();
   dropPrefetch();
@@ -512,8 +521,15 @@ function stopAll(): void {
   current = null;
   upcoming = [];
   resetPlayer();
+  purgeCache();
   stopStatusTicker();
   broadcast();
+}
+
+/** Drop all cached audio and reset the LRU counter. */
+function purgeCache(): void {
+  cache.clear();
+  lruCounter = 0;
 }
 
 function cancelGeneration(): void {
@@ -975,6 +991,7 @@ function currentStatus(): PlaybackStatus {
     sentenceCount: s ? s.sentences.length : 0,
     sentences: s ? s.sentences : [],
     rate,
+    paused: !!s && userPaused,
     error: errorMsg ?? undefined,
     note: s?.note ?? undefined
   };

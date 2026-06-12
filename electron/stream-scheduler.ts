@@ -30,9 +30,13 @@ import {
 export type StreamSink = (data: Record<string, unknown>) => void;
 
 // Generate until this much audio is buffered ahead of the playhead, then idle
-// until the playhead advances. ~2.1x realtime aggregate means the window
-// fills fast and workers spend most of the session idle (cool and quiet).
-const LOOKAHEAD_SECONDS = 45;
+// until the playhead advances. Sized to fully buffer a short article up front
+// (~2000s ≈ 5000 spoken words) so a whole page can play through without underruns;
+// the worker pool generates flat-out until the window is full, then idles. For the
+// common per-block path each request is a single paragraph that finishes well
+// inside this window; the large cap only matters when one request is a long
+// selection. Memory is the client's concern — see PREFETCH_LOOKAHEAD_SECONDS.
+const LOOKAHEAD_SECONDS = 2000;
 
 interface SchedulerSession {
   requestId: string | number;

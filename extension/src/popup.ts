@@ -17,6 +17,7 @@ const statusText = $('statusText');
 const serverBtn = $('server') as HTMLButtonElement;
 const toggleUiBtn = $('toggleUi') as HTMLButtonElement;
 const playPauseBtn = $('playPause') as HTMLButtonElement;
+const stopBtn = $('stopBtn') as HTMLButtonElement;
 const skipBtn = $('skip') as HTMLButtonElement;
 const clearBtn = $('clear') as HTMLButtonElement;
 const queueEl = $('queue') as HTMLOListElement;
@@ -68,7 +69,8 @@ function render(): void {
     serverBtn.disabled = false;
   }
 
-  setPlayPause(snapshot?.playback.state ?? 'idle', !!snapshot?.current);
+  setPlayPause(snapshot?.playback.state ?? 'idle', !!snapshot?.playback.paused, !!snapshot?.current);
+  stopBtn.disabled = !snapshot?.current;
   skipBtn.disabled = !snapshot?.upcoming.length;
   clearBtn.disabled = !snapshot?.upcoming.length;
 
@@ -118,11 +120,15 @@ function renderEngine(): void {
   if (config) {
     workersEl.min = String(config.minWorkers);
     workersEl.max = String(config.maxWorkers);
-    // Don't stomp a value the user is editing.
-    if (document.activeElement !== workersEl) workersEl.value = String(config.cpuWorkers);
+    // On CUDA the count is fixed at 1 (the GPU serializes decode), so show the
+    // effective count, not the editable CPU pref. Don't stomp a value being typed.
+    if (document.activeElement !== workersEl) {
+      workersEl.value = String(cuda ? config.deviceWorkers : config.cpuWorkers);
+    }
   }
+  // CUDA has no tunable worker count — disable the field and the restart-to-apply.
   workersEl.disabled = !config || cuda;
-  applyEngineBtn.disabled = !connected || !config || restarting;
+  applyEngineBtn.disabled = !connected || !config || restarting || cuda;
   voiceEl.disabled = !connected;
 
   if (restarting) {
@@ -170,25 +176,25 @@ applyEngineBtn.addEventListener('click', () => {
 const LOADING_STATES = new Set<PlaybackStatus['state']>(['connecting', 'starting-engine', 'buffering']);
 
 /**
- * Same rule as the on-page bar: playing ⇒ Pause (enabled); a loading/buffering
- * state ⇒ a disabled spinner; otherwise ⇒ Play. Keyed by mode so the spinner isn't
- * rebuilt (and its animation restarted) on every snapshot.
+ * Same rule as the on-page bar: playing ⇒ Pause; loading/buffering ⇒ Pause with a
+ * spinner (clicking pauses but keeps buffering); a user pause or stopped ⇒ Play.
+ * Stop is a separate button. Keyed by mode so the spinner isn't rebuilt (and its
+ * animation restarted) on every snapshot.
  */
-function setPlayPause(state: PlaybackStatus['state'], hasCurrent: boolean): void {
+function setPlayPause(state: PlaybackStatus['state'], paused: boolean, hasCurrent: boolean): void {
   const loading = LOADING_STATES.has(state);
-  const mode = loading ? 'loading' : state === 'playing' ? 'pause' : 'play';
+  const mode = paused ? 'play' : loading ? 'loading' : state === 'playing' ? 'pause' : 'play';
   if (playPauseBtn.dataset.mode !== mode) {
     playPauseBtn.dataset.mode = mode;
     if (loading) {
       playPauseBtn.textContent = '';
       const sp = document.createElement('span');
       sp.className = 'spinner';
-      playPauseBtn.append(sp, document.createTextNode(' Stop'));
+      playPauseBtn.append(sp, document.createTextNode(' Pause'));
     } else {
       playPauseBtn.textContent = mode === 'pause' ? 'Pause' : 'Play';
     }
   }
-  // Stays clickable while loading so you can abort a stuck buffer (→ stop).
   playPauseBtn.disabled = !hasCurrent;
 }
 
@@ -275,10 +281,8 @@ toggleUiBtn.addEventListener('click', async () => {
   window.close();
 });
 
-playPauseBtn.addEventListener('click', () => {
-  const op = playPauseBtn.dataset.mode === 'loading' ? 'stop' : 'toggle-pause';
-  send({ target: 'background', cmd: 'transport', op });
-});
+playPauseBtn.addEventListener('click', () => send({ target: 'background', cmd: 'transport', op: 'toggle-pause' }));
+stopBtn.addEventListener('click', () => send({ target: 'background', cmd: 'transport', op: 'stop' }));
 skipBtn.addEventListener('click', () => send({ target: 'background', cmd: 'queue', op: 'skip' }));
 clearBtn.addEventListener('click', () => send({ target: 'background', cmd: 'queue', op: 'clear' }));
 $('openOptions').addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });

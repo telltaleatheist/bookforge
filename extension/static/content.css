@@ -127,9 +127,11 @@
 /* Glyph swaps (⏸ / ▶ / ■) have different widths — pin so neighbors don't shift. */
 #bfr-bar .bfr-playpause { flex: 0 0 auto; width: 38px; padding-left: 0; padding-right: 0; text-align: center; }
 
-/* Buffering: a clickable stop square (■) with a spinner ring rotating over it. */
+/* Buffering: the ⏸ glyph with a spinner ring rotating over it (clicking pauses). */
 .bfr-ctl.bfr-loading { position: relative; opacity: 1; }
-.bfr-ctl.bfr-loading .bfr-stop-glyph { font-size: 10px; line-height: 1; }
+.bfr-ctl.bfr-loading .bfr-pp-glyph { font-size: 11px; line-height: 1; opacity: 0.85; }
+/* Dedicated stop button (cancels buffering/generation). */
+#bfr-bar .bfr-stop { flex: 0 0 auto; color: #ef6b6b; font-size: 11px; }
 .bfr-ctl.bfr-loading .bfr-spinner {
   position: absolute;
   top: 50%;

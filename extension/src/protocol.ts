@@ -36,6 +36,9 @@ export interface ServerConfig {
   maxWorkers: number;
   /** null until the engine first probes torch (non-mac); mac is always 'cpu' */
   device: 'cpu' | 'cuda' | null;
+  /** workers the active device will actually run: cpuWorkers on CPU, 1 on CUDA
+   *  (the GPU serializes autoregressive decode). The knob is moot on CUDA. */
+  deviceWorkers: number;
   /** workers currently alive — 0 when the engine is stopped */
   activeWorkers: number;
 }

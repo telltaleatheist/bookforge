@@ -133,6 +133,8 @@ export interface StreamWorkerConfig {
   maxWorkers: number;
   /** null until the first engine start probes torch (non-mac) */
   device: 'cpu' | 'cuda' | null;
+  /** Workers the active device will actually run (cpuWorkers on CPU, 1 on CUDA) */
+  deviceWorkers: number;
   /** Workers currently alive — 0 when the engine is stopped */
   activeWorkers: number;
 }
@@ -144,6 +146,7 @@ export function getStreamWorkerConfig(): StreamWorkerConfig {
     minWorkers: MIN_CPU_WORKERS,
     maxWorkers: MAX_CPU_WORKERS,
     device: detectedDevice,
+    deviceWorkers: targetWorkerCount(),
     activeWorkers: workers.filter(w => w.isReady).length
   };
 }

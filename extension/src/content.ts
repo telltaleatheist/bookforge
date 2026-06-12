@@ -35,8 +35,9 @@ const RESCAN_MAX_WAIT_MS = 4000;
 const SPEED_MIN = 0.5;
 const SPEED_MAX = 4;
 const SPEED_STEP = 0.25;
-// Seconds of read-ahead audio that counts as a "full" buffer — mirrors offscreen's
-// PREFETCH_LOOKAHEAD_SECONDS. The buffer-health ring fills green up to this much.
+// Seconds of within-item read-ahead audio that counts as a "healthy" buffer for the
+// ring display. This is just the health-meter scale (the cross-block prefetch goes
+// much deeper); 45s of headroom on the current block already means no underrun risk.
 const PREBUFFER_TARGET = 45;
 
 const idMap = new WeakMap<HTMLElement, string>();
@@ -450,6 +451,7 @@ function selectionAction(cmd: 'play' | 'enqueue'): void {
 interface BarEls {
   rewind: HTMLButtonElement;
   playPause: HTMLButtonElement;
+  stop: HTMLButtonElement;
   forward: HTMLButtonElement;
   skip: HTMLButtonElement;
   label: HTMLSpanElement;
@@ -468,12 +470,14 @@ function buildBar(): void {
   bar.style.display = 'none';
 
   const rewind = ctl('« 5', () => send({ target: 'background', cmd: 'transport', op: 'seek', delta: -5 }));
-  // Play/pause doubles as a Stop button while buffering (mode set by setPlayPause).
-  const playPause = ctl('⏸', () => {
-    const op = playPause.dataset.mode === 'loading' ? 'stop' : 'toggle-pause';
-    send({ target: 'background', cmd: 'transport', op });
-  });
+  // Always play/pause — even while buffering, pausing just holds playback while the
+  // buffer keeps filling. Stop (below) is the way to abort generation entirely.
+  const playPause = ctl('⏸', () => send({ target: 'background', cmd: 'transport', op: 'toggle-pause' }));
   playPause.classList.add('bfr-playpause'); // fixed width so glyph swaps don't shift neighbors
+  // Dedicated stop: cancels generation and clears the queue (the bar hides on idle).
+  const stopBtn = ctl('■', () => send({ target: 'background', cmd: 'transport', op: 'stop' }));
+  stopBtn.classList.add('bfr-stop');
+  stopBtn.title = 'Stop (cancel buffering)';
   const forward = ctl('5 »', () => send({ target: 'background', cmd: 'transport', op: 'seek', delta: 5 }));
   const skip = ctl('⏭', () => send({ target: 'background', cmd: 'queue', op: 'skip' }));
   skip.title = 'Next in queue';
@@ -518,8 +522,8 @@ function buildBar(): void {
   const close = ctl('✕', () => { send({ target: 'background', cmd: 'transport', op: 'stop' }); hideBar(); });
   close.classList.add('bfr-close');
 
-  for (const el of [rewind, playPause, forward, skip, label, buffer, sentence, speed, speedVal, status, close]) bar.appendChild(el);
-  barEls = { rewind, playPause, forward, skip, label, buffer, bufferRing, sentence, speed, speedVal, status, close };
+  for (const el of [rewind, playPause, stopBtn, forward, skip, label, buffer, sentence, speed, speedVal, status, close]) bar.appendChild(el);
+  barEls = { rewind, playPause, stop: stopBtn, forward, skip, label, buffer, bufferRing, sentence, speed, speedVal, status, close };
   root.appendChild(bar);
 }
 
@@ -539,7 +543,7 @@ function renderBar(ui: UiState): void {
   barEls.label.textContent = ui.currentLabel ? `“${ui.currentLabel}”` : '';
   barEls.sentence.textContent =
     p.sentenceCount > 0 && p.sentenceIndex >= 0 ? `${p.sentenceIndex + 1}/${p.sentenceCount}` : '';
-  setPlayPause(barEls.playPause, p.state);
+  setPlayPause(barEls.playPause, p);
   const headroom = Math.max(0, p.buffered - p.position);
   // Once the whole clip is generated (totalKnown) there's nothing left to buffer —
   // a short item that's fully ready reads as a full ring even if its tail is < 45s.
@@ -569,23 +573,25 @@ function speedLabel(rate: number): string {
 const LOADING_STATES = new Set<PlaybackStatus['state']>(['connecting', 'starting-engine', 'buffering']);
 
 /**
- * Drive the play/pause button per the rule: playing ⇒ ⏸; anything stopped/paused ⇒
- * ▶; while loading/buffering ⇒ a stop square (■) with a spinner ring over it, which
- * stays clickable so you can abort a stuck buffer. Keyed by mode so the spinner's
+ * Drive the play/pause button: playing ⇒ ⏸; stopped/ended ⇒ ▶; while
+ * loading/buffering ⇒ ⏸ with a spinner ring over it (clicking pauses but keeps the
+ * buffer filling). A user pause wins over a loading state — it shows ▶ so you can
+ * resume, even while generation continues ahead. Keyed by mode so the spinner's
  * animation isn't restarted on every 300 ms render tick.
  */
-function setPlayPause(btn: HTMLButtonElement, state: PlaybackStatus['state']): void {
-  const mode = LOADING_STATES.has(state) ? 'loading' : state === 'playing' ? 'pause' : 'play';
+function setPlayPause(btn: HTMLButtonElement, p: PlaybackStatus): void {
+  const loading = LOADING_STATES.has(p.state);
+  const mode = p.paused ? 'play' : loading ? 'loading' : p.state === 'playing' ? 'pause' : 'play';
   if (btn.dataset.mode === mode) return;
   btn.dataset.mode = mode;
   btn.classList.toggle('bfr-loading', mode === 'loading');
   btn.disabled = false;
   if (mode === 'loading') {
-    btn.title = 'Stop';
+    btn.title = 'Pause (keeps buffering)';
     btn.textContent = '';
     const glyph = document.createElement('span');
-    glyph.className = 'bfr-stop-glyph';
-    glyph.textContent = '■';
+    glyph.className = 'bfr-pp-glyph';
+    glyph.textContent = '⏸';
     const sp = document.createElement('span');
     sp.className = 'bfr-spinner';
     btn.append(glyph, sp);

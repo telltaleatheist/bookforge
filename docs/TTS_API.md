@@ -83,10 +83,11 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 {"type": "hello", "version": 1, "state": "stopped|starting|running",
  "serviceMode": false, "voices": ["ScarlettJohansson", "..."], "currentVoice": null,
  "config": {"cpuWorkers": 4, "defaultCpuWorkers": 4, "minWorkers": 1, "maxWorkers": 8,
-            "device": "cpu", "activeWorkers": 0}}
+            "device": "cpu", "deviceWorkers": 4, "activeWorkers": 0}}
 // Reply to hello. voices is [] while the engine is cold (it's discovered on engine start).
 // config.device is null until a non-mac engine first probes torch; activeWorkers is 0
-// while stopped. cpuWorkers is ignored on CUDA (the GPU always runs one worker).
+// while stopped. deviceWorkers is what the active device will actually run — cpuWorkers
+// on CPU, 1 on CUDA (the GPU serializes decode, so the worker count is moot there).
 
 {"type": "status", ...same fields as hello minus version}   // reply to status / engine.start / engine.restart
 
