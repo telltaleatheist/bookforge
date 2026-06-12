@@ -339,8 +339,8 @@ export class TtsApiServer {
       return;
     }
 
-    const { splitIntoSentences } = await import('./bilingual-processor.js');
-    const sentences = splitIntoSentences(text, 'en');
+    const { splitForTts } = await import('./bilingual-processor.js');
+    const sentences = splitForTts(text, 'en');
     if (sentences.length === 0) {
       this.send(ws, { type: 'error', requestId, message: 'no sentences found in text' });
       return;

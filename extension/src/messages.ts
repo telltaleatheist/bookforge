@@ -34,6 +34,9 @@ export interface PlaybackStatus {
   totalKnown: boolean;
   sentenceIndex: number;
   sentenceCount: number;
+  /** the server's segmentation of the current item, so the page can highlight the
+   *  sentence at `sentenceIndex` as it's read (empty until the 'speaking' event) */
+  sentences: string[];
   rate: number;
   error?: string;
   note?: string;
@@ -63,6 +66,8 @@ export interface QueueSnapshot {
   current: QueueItem | null;
   upcoming: QueueItem[];
   playback: PlaybackStatus;
+  /** why the socket isn't connected (no token / bad token / unreachable) */
+  connectionError?: string;
 }
 
 /** Per-tab projection of the snapshot, sent down to a content script. */
@@ -86,6 +91,22 @@ export interface BlockCmd {
   text: string;
   label: string;
   source: ItemSource;
+}
+
+/** "Play from here to the end of the page": an ordered run of blocks (the start
+ *  block, or a partial start when the user clicks mid-paragraph, then the rest). */
+export interface PlayFromCmd {
+  target: 'background';
+  cmd: 'play-from';
+  source: ItemSource;
+  items: { blockId: string; text: string; label: string }[];
+}
+
+/** Drop a block from the running queue (the user excluded it, e.g. an ad). */
+export interface ExcludeBlockCmd {
+  target: 'background';
+  cmd: 'exclude-block';
+  blockId: string;
 }
 
 export type TransportOp = 'toggle-pause' | 'seek' | 'rate' | 'stop';
@@ -126,6 +147,13 @@ export interface PlayItemCmd {
   item: QueueItem;
 }
 
+/** Replace the queue with this ordered run and start playing the first item. */
+export interface PlaySequenceCmd {
+  target: 'offscreen';
+  cmd: 'play-sequence';
+  items: QueueItem[];
+}
+
 export interface EngineOffscreenCmd { target: 'offscreen'; cmd: 'engine'; op: 'start' | 'stop'; }
 export interface QueueOffscreenCmd { target: 'offscreen'; cmd: 'queue'; op: 'remove' | 'clear' | 'skip'; id?: string; }
 export interface SyncOffscreenCmd { target: 'offscreen'; cmd: 'sync'; }
@@ -146,6 +174,14 @@ export interface UiMsg {
   ui: UiState;
 }
 
+// ─── background → popup ───────────────────────────────────────────────────────
+
+export interface PopupSnapshotMsg {
+  target: 'popup';
+  cmd: 'snapshot';
+  snapshot: QueueSnapshot;
+}
+
 export interface ToggleUiMsg {
   target: 'content';
   cmd: 'toggle-ui';
@@ -155,17 +191,21 @@ export interface ToggleUiMsg {
 
 export type RuntimeMessage =
   | BlockCmd
+  | PlayFromCmd
+  | ExcludeBlockCmd
   | TransportCmd
   | EngineCmd
   | QueueOpCmd
   | SyncCmd
   | PlayItemCmd
+  | PlaySequenceCmd
   | EngineOffscreenCmd
   | QueueOffscreenCmd
   | SyncOffscreenCmd
   | SnapshotMsg
   | UiMsg
-  | ToggleUiMsg;
+  | ToggleUiMsg
+  | PopupSnapshotMsg;
 
 // ─── persisted settings (chrome.storage.local) ────────────────────────────────
 
@@ -178,10 +218,16 @@ export interface Settings {
   rate: number;
 }
 
+// Injected by build.mjs (esbuild `define`) from the app's tts-api.json. Declared
+// here so tsc is happy; the bundler replaces the identifiers with literals.
+declare const __BFR_TOKEN__: string;
+declare const __BFR_HOST__: string;
+declare const __BFR_PORT__: number;
+
 export const DEFAULT_SETTINGS: Settings = {
-  host: '127.0.0.1',
-  port: 8766,
-  token: '',
+  host: typeof __BFR_HOST__ === 'string' ? __BFR_HOST__ : '127.0.0.1',
+  port: typeof __BFR_PORT__ === 'number' ? __BFR_PORT__ : 8766,
+  token: typeof __BFR_TOKEN__ === 'string' ? __BFR_TOKEN__ : '',
   voice: '',
   rate: 1
 };

@@ -12,15 +12,24 @@
 import {
   RuntimeMessage,
   BlockCmd,
+  PlayFromCmd,
+  ExcludeBlockCmd,
   TransportCmd,
   EngineCmd,
   QueueOpCmd,
   QueueItem,
   QueueSnapshot,
-  UiState
+  UiState,
+  loadSettings
 } from './messages';
 
 let activeTabId: number | null = null;
+let latestSnapshot: QueueSnapshot | null = null;
+
+/** Push the snapshot straight to the popup (if one is open). */
+function pushToPopup(snapshot: QueueSnapshot): void {
+  chrome.runtime.sendMessage({ target: 'popup', cmd: 'snapshot', snapshot }).catch(() => { /* no popup open */ });
+}
 
 // ─── Offscreen document lifecycle ─────────────────────────────────────────────
 
@@ -65,8 +74,14 @@ async function sendToOffscreen(msg: RuntimeMessage): Promise<void> {
 
 // ─── Message relay ────────────────────────────────────────────────────────────
 
-chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender) => {
+chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse) => {
   if (!raw || (raw as { target?: string }).target !== 'background') return;
+
+  // Offscreen can't read chrome.storage; it asks us for settings.
+  if ((raw as { cmd?: string }).cmd === 'get-settings') {
+    loadSettings().then(sendResponse);
+    return true; // keep the channel open for the async response
+  }
 
   switch (raw.cmd) {
     // content → offscreen: build a QueueItem with this tab's id baked in
@@ -89,6 +104,34 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender) => {
       return;
     }
 
+    // content → offscreen: play a whole run of blocks (this block → end of page)
+    case 'play-from': {
+      const tabId = sender.tab?.id;
+      if (tabId === undefined) return;
+      activeTabId = tabId;
+      const c = raw as PlayFromCmd;
+      const items: QueueItem[] = c.items.map((it) => ({
+        id: `${tabId}:${it.blockId}`,
+        label: it.label,
+        text: it.text,
+        source: c.source,
+        tabId,
+        blockId: it.blockId
+      }));
+      console.log('[BFR] play-from', items.length, 'blocks from tab', tabId);
+      void sendToOffscreen({ target: 'offscreen', cmd: 'play-sequence', items });
+      return;
+    }
+
+    // content → offscreen: drop an excluded block from the running queue
+    case 'exclude-block': {
+      const tabId = sender.tab?.id;
+      if (tabId === undefined) return;
+      const c = raw as ExcludeBlockCmd;
+      void sendToOffscreen({ target: 'offscreen', cmd: 'queue', op: 'remove', id: `${tabId}:${c.blockId}` });
+      return;
+    }
+
     // popup/content → offscreen: control verbs forwarded as-is
     case 'transport':
       if (sender.tab?.id !== undefined) activeTabId = sender.tab.id;
@@ -104,13 +147,19 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender) => {
     }
     case 'sync':
       if (sender.tab?.id !== undefined) activeTabId = sender.tab.id;
+      // Give the popup whatever we last knew, instantly, then refresh.
+      if (latestSnapshot) pushToPopup(latestSnapshot);
       void sendToOffscreen({ target: 'offscreen', cmd: 'sync' });
       return;
 
-    // offscreen → content: project the snapshot for the active tab
-    case 'snapshot':
-      relaySnapshot((raw as { snapshot: QueueSnapshot }).snapshot);
+    // offscreen → content (per-tab) + popup (full)
+    case 'snapshot': {
+      const snapshot = (raw as { snapshot: QueueSnapshot }).snapshot;
+      latestSnapshot = snapshot;
+      relaySnapshot(snapshot);
+      pushToPopup(snapshot);
       return;
+    }
   }
 });
 

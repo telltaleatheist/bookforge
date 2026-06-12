@@ -114,31 +114,90 @@ export function getEnvPathForEngine(ttsEngine?: string, e2aPath?: string): strin
   return path.join(basePath, 'python_env');
 }
 
+// The named conda environment used when an install ships no prefix env folder.
+const NAMED_ENV = 'ebook2audiobook';
+
+/**
+ * Directories where conda keeps its named environments, best-effort: derived from the
+ * resolved conda executable's base, the user's ~/.conda, and CONDA_ENVS_DIRS/PATH.
+ * Empty when we can't locate a real conda install (e.g. conda is only a bare command
+ * on PATH), which the caller treats as "can't verify" rather than "doesn't exist".
+ */
+function condaEnvsDirs(): string[] {
+  const dirs: string[] = [];
+  const condaExe = getCondaPath();
+  // .../base/bin/conda  ·  .../base/condabin/conda(.bat)  ·  ...\Scripts\conda.exe
+  // → strip the executable and its bin/Scripts/condabin dir to get the conda base.
+  if (condaExe && condaExe !== 'conda' && fs.existsSync(condaExe)) {
+    dirs.push(path.join(path.dirname(path.dirname(condaExe)), 'envs'));
+  }
+  dirs.push(path.join(os.homedir(), '.conda', 'envs'));
+  const envVar = process.env.CONDA_ENVS_DIRS || process.env.CONDA_ENVS_PATH;
+  if (envVar) for (const d of envVar.split(path.delimiter)) if (d.trim()) dirs.push(d.trim());
+  return dirs;
+}
+
+/** Whether a conda env named `name` exists in any known envs directory. */
+function condaNamedEnvExists(name: string): boolean {
+  return condaEnvsDirs().some((d) => fs.existsSync(path.join(d, name)));
+}
+
+/**
+ * Resolve the conda environment for a TTS engine — with NO silent fallback.
+ *
+ * Two supported install layouts: a prefix env folder shipped inside the e2a install
+ * (./python_env, ./orpheus_env), or a named conda env ("ebook2audiobook"). The prefix
+ * env wins when present; otherwise we use the named env *but only after confirming it
+ * exists*. If neither can be found, we throw a clear error rather than handing conda a
+ * name/path that will fail cryptically deep in the worker spawn.
+ */
+function resolveCondaEnv(
+  e2aPath?: string,
+  ttsEngine?: string
+): { kind: 'prefix'; path: string } | { kind: 'named'; name: string } {
+  const basePath = e2aPath || getDefaultE2aPath();
+  const envPath = getEnvPathForEngine(ttsEngine, basePath);
+
+  if (fs.existsSync(envPath)) return { kind: 'prefix', path: envPath };
+
+  // No prefix env shipped with this install — use the named conda env.
+  const dirs = condaEnvsDirs();
+  if (dirs.length === 0) {
+    // Couldn't locate a real conda install to check against. Proceed with the named
+    // env; conda's own resolution surfaces a clear error if it's actually missing.
+    console.warn(`[E2A-PATHS] Using named conda env '${NAMED_ENV}' — could not locate conda to verify it (no prefix env at ${envPath})`);
+    return { kind: 'named', name: NAMED_ENV };
+  }
+  if (condaNamedEnvExists(NAMED_ENV)) {
+    console.log(`[E2A-PATHS] Using named conda env '${NAMED_ENV}' (no prefix env at ${envPath})`);
+    return { kind: 'named', name: NAMED_ENV };
+  }
+  throw new Error(
+    `No ebook2audiobook conda environment found. Looked for a prefix env at "${envPath}" ` +
+    `and a named env "${NAMED_ENV}" under: ${dirs.join(', ')}. ` +
+    `Create the env or set the correct e2a / conda paths in Settings.`
+  );
+}
+
 /**
  * Get the conda run arguments for executing Python in the ebook2audiobook environment.
  *
- * ebook2audiobook uses a prefix-based conda environment (./python_env folder in the project)
- * rather than a named environment. This function returns the correct args for conda run.
+ * Returns args for either a prefix env (./python_env) or the named env, per the
+ * detected install layout (see resolveCondaEnv). Throws if neither env exists.
  *
  * Note: For Orpheus TTS on Windows, WSL2 with orpheus_tts conda env is preferred for
- * CUDA graph performance. This function is for fallback/legacy Windows native execution.
+ * CUDA graph performance. This function is for legacy Windows native execution.
  *
  * @param e2aPath - Optional base e2a path (defaults to auto-detected path)
  * @param ttsEngine - Optional TTS engine name to determine which environment to use
  */
 export function getCondaRunArgs(e2aPath?: string, ttsEngine?: string): string[] {
-  const basePath = e2aPath || getDefaultE2aPath();
-  const envPath = getEnvPathForEngine(ttsEngine, basePath);
-
-  // Check if the environment exists (prefix-based environment)
-  if (fs.existsSync(envPath)) {
-    console.log(`[E2A-PATHS] Using conda env: ${envPath} for engine: ${ttsEngine || 'default'}`);
-    return ['run', '--no-capture-output', '-p', envPath, 'python'];
+  const env = resolveCondaEnv(e2aPath, ttsEngine);
+  if (env.kind === 'prefix') {
+    console.log(`[E2A-PATHS] Using conda env: ${env.path} for engine: ${ttsEngine || 'default'}`);
+    return ['run', '--no-capture-output', '-p', env.path, 'python'];
   }
-
-  // Fallback to named environment (legacy or custom setup)
-  console.log('[E2A-PATHS] Falling back to named environment: ebook2audiobook');
-  return ['run', '--no-capture-output', '-n', 'ebook2audiobook', 'python'];
+  return ['run', '--no-capture-output', '-n', env.name, 'python'];
 }
 
 /**
@@ -160,23 +219,14 @@ export function getPythonCommand(): { command: string; args: string[] } {
  */
 export function getCondaActivation(e2aPath?: string, ttsEngine?: string): string {
   const platform = os.platform();
-  const basePath = e2aPath || getDefaultE2aPath();
-  const envPath = getEnvPathForEngine(ttsEngine, basePath);
-
-  // Check if the environment exists (prefix-based environment)
-  const hasLocalEnv = fs.existsSync(envPath);
+  const env = resolveCondaEnv(e2aPath, ttsEngine);
+  // Prefix env → activate by path (quoted); named env → activate by name.
+  const target = env.kind === 'prefix' ? `"${env.path}"` : env.name;
 
   if (platform === 'win32') {
-    if (hasLocalEnv) {
-      return `conda activate "${envPath}" && `;
-    }
-    return 'conda activate ebook2audiobook && ';
-  } else {
-    if (hasLocalEnv) {
-      return `source $(conda info --base)/etc/profile.d/conda.sh && conda activate "${envPath}" && `;
-    }
-    return 'source $(conda info --base)/etc/profile.d/conda.sh && conda activate ebook2audiobook && ';
+    return `conda activate ${target} && `;
   }
+  return `source $(conda info --base)/etc/profile.d/conda.sh && conda activate ${target} && `;
 }
 
 /**

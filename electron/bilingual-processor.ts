@@ -633,6 +633,52 @@ export function splitIntoSentences(
 }
 
 /**
+ * XTTS truncates any single inference longer than ~250 characters (its per-call
+ * char limit for English). The normal audiobook pipeline runs through e2a, which
+ * caps sentence length itself; the streaming TTS API path feeds sentences straight
+ * to the worker pool, so it must cap them here or long sentences get cut off.
+ */
+const TTS_MAX_CHARS = 240;
+
+/**
+ * Sentence-split for the streaming TTS path, then break any sentence that exceeds
+ * the engine's per-inference char limit at clause boundaries (then word boundaries
+ * as a last resort), re-packing small pieces to keep the segment count low. Unlike
+ * splitIntoSentences this is safe to sub-split because there's no translation
+ * alignment to preserve — each segment is just one TTS inference.
+ */
+export function splitForTts(text: string, locale: string = 'en', maxChars: number = TTS_MAX_CHARS): string[] {
+  const out: string[] = [];
+  for (const sentence of splitIntoSentences(text, locale)) {
+    if (sentence.length <= maxChars) { out.push(sentence); continue; }
+    out.push(...capSegment(sentence, maxChars));
+  }
+  return out;
+}
+
+function capSegment(sentence: string, maxChars: number): string[] {
+  // Prefer clause boundaries (punctuation stays attached to the left piece); split
+  // an over-long clause on whitespace; then re-pack adjacent pieces up to the cap.
+  const pieces: string[] = [];
+  for (const clause of sentence.split(/(?<=[,;:—–])\s+/)) {
+    if (clause.length <= maxChars) { pieces.push(clause); continue; }
+    let buf = '';
+    for (const word of clause.split(/\s+/)) {
+      if (buf && buf.length + 1 + word.length > maxChars) { pieces.push(buf); buf = word; }
+      else buf = buf ? `${buf} ${word}` : word;
+    }
+    if (buf) pieces.push(buf);
+  }
+  const packed: string[] = [];
+  for (const piece of pieces) {
+    const last = packed[packed.length - 1];
+    if (last && last.length + 1 + piece.length <= maxChars) packed[packed.length - 1] = `${last} ${piece}`;
+    else packed.push(piece);
+  }
+  return packed;
+}
+
+/**
  * Split text into sentences and track which indices start a new paragraph.
  * Returns { sentences, paragraphBreaks } where paragraphBreaks contains the
  * indices of sentences that begin a new paragraph.

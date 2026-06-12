@@ -8,7 +8,7 @@
  * refreshes engine state (and connects if needed).
  */
 
-import { QueueSnapshot, RuntimeMessage, SNAPSHOT_KEY } from './messages';
+import { PlaybackStatus, QueueSnapshot, RuntimeMessage } from './messages';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -36,7 +36,8 @@ function render(): void {
   // Connection / engine indicator
   if (!connected) {
     dot.className = 'dot off';
-    statusText.textContent = 'BookForge not running';
+    // snapshot present but not connected ⇒ mid-connect; null ⇒ still waiting on the player
+    statusText.textContent = snapshot ? (snapshot.connectionError ?? 'Connecting…') : 'Checking…';
   } else if (engine === 'running') {
     dot.className = 'dot on';
     statusText.textContent = 'TTS server running';
@@ -63,14 +64,36 @@ function render(): void {
     serverBtn.disabled = false;
   }
 
-  const playing = snapshot?.playback.state === 'playing';
-  playPauseBtn.textContent = playing ? 'Pause' : 'Play';
-  const hasCurrent = !!snapshot?.current;
-  playPauseBtn.disabled = !hasCurrent;
+  setPlayPause(snapshot?.playback.state ?? 'idle', !!snapshot?.current);
   skipBtn.disabled = !snapshot?.upcoming.length;
   clearBtn.disabled = !snapshot?.upcoming.length;
 
   renderQueue();
+}
+
+const LOADING_STATES = new Set<PlaybackStatus['state']>(['connecting', 'starting-engine', 'buffering']);
+
+/**
+ * Same rule as the on-page bar: playing ⇒ Pause (enabled); a loading/buffering
+ * state ⇒ a disabled spinner; otherwise ⇒ Play. Keyed by mode so the spinner isn't
+ * rebuilt (and its animation restarted) on every snapshot.
+ */
+function setPlayPause(state: PlaybackStatus['state'], hasCurrent: boolean): void {
+  const loading = LOADING_STATES.has(state);
+  const mode = loading ? 'loading' : state === 'playing' ? 'pause' : 'play';
+  if (playPauseBtn.dataset.mode !== mode) {
+    playPauseBtn.dataset.mode = mode;
+    if (loading) {
+      playPauseBtn.textContent = '';
+      const sp = document.createElement('span');
+      sp.className = 'spinner';
+      playPauseBtn.append(sp, document.createTextNode(' Stop'));
+    } else {
+      playPauseBtn.textContent = mode === 'pause' ? 'Pause' : 'Play';
+    }
+  }
+  // Stays clickable while loading so you can abort a stuck buffer (→ stop).
+  playPauseBtn.disabled = !hasCurrent;
 }
 
 function renderQueue(): void {
@@ -78,12 +101,22 @@ function renderQueue(): void {
   if (!snapshot || (!snapshot.current && snapshot.upcoming.length === 0)) {
     const li = document.createElement('li');
     li.className = 'empty';
-    li.textContent = 'Queue is empty. Use ▶ / ＋ on a page, or select text.';
+    li.textContent = 'Nothing playing. Hover a paragraph and press ▶ (or click a word) to read from there.';
     queueEl.appendChild(li);
     return;
   }
   if (snapshot.current) queueEl.appendChild(itemRow(snapshot.current.id, snapshot.current.label, true));
-  for (const item of snapshot.upcoming) queueEl.appendChild(itemRow(item.id, item.label, false));
+  // A "play to end of page" run can queue hundreds of paragraphs — show a window
+  // and summarize the rest instead of rendering them all every snapshot.
+  const MAX_ROWS = 25;
+  for (const item of snapshot.upcoming.slice(0, MAX_ROWS)) queueEl.appendChild(itemRow(item.id, item.label, false));
+  const extra = snapshot.upcoming.length - MAX_ROWS;
+  if (extra > 0) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = `+${extra} more queued`;
+    queueEl.appendChild(li);
+  }
 }
 
 function itemRow(id: string, label: string, isCurrent: boolean): HTMLLIElement {
@@ -146,7 +179,10 @@ toggleUiBtn.addEventListener('click', async () => {
   window.close();
 });
 
-playPauseBtn.addEventListener('click', () => send({ target: 'background', cmd: 'transport', op: 'toggle-pause' }));
+playPauseBtn.addEventListener('click', () => {
+  const op = playPauseBtn.dataset.mode === 'loading' ? 'stop' : 'toggle-pause';
+  send({ target: 'background', cmd: 'transport', op });
+});
 skipBtn.addEventListener('click', () => send({ target: 'background', cmd: 'queue', op: 'skip' }));
 clearBtn.addEventListener('click', () => send({ target: 'background', cmd: 'queue', op: 'clear' }));
 $('openOptions').addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
@@ -158,18 +194,13 @@ async function activeTab(): Promise<chrome.tabs.Tab | undefined> {
 
 // ─── Live snapshot ────────────────────────────────────────────────────────────
 
-async function load(): Promise<void> {
-  const stored = await chrome.storage.session.get(SNAPSHOT_KEY);
-  snapshot = (stored[SNAPSHOT_KEY] as QueueSnapshot) ?? null;
-  render();
-  send({ target: 'background', cmd: 'sync' }); // refresh engine state
-}
-
-chrome.storage.session.onChanged.addListener((changes) => {
-  if (changes[SNAPSHOT_KEY]) {
-    snapshot = changes[SNAPSHOT_KEY].newValue as QueueSnapshot;
-    render();
-  }
+// Live updates are pushed from background (reliable across contexts).
+chrome.runtime.onMessage.addListener((raw: RuntimeMessage) => {
+  if (!raw || (raw as { target?: string }).target !== 'popup') return;
+  if (raw.cmd === 'snapshot') { snapshot = raw.snapshot; render(); }
 });
 
-void load();
+// Ask background for current state; it replies via a 'snapshot' push (and the
+// offscreen player broadcasts a fresh one right after).
+render();
+send({ target: 'background', cmd: 'sync' });

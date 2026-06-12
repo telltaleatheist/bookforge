@@ -7,5 +7,13 @@
   "action": { "default_title": "BookForge Reader", "default_popup": "popup.html" },
   "background": { "service_worker": "background.js" },
   "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
   "permissions": ["activeTab", "scripting", "offscreen", "storage"]
 }

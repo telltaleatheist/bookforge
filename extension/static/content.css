@@ -15,7 +15,8 @@
 
 #bfr-root * { box-sizing: border-box; }
 
-/* Per-block button group (play ▶ over enqueue ＋) */
+/* Hover control: ▶ play-from-here over − exclude. Shown only while hovering a
+   block (toggled via inline display), so the page stays uncluttered. */
 .bfr-group {
   position: absolute;
   display: flex;
@@ -25,42 +26,53 @@
 }
 
 .bfr-play,
-.bfr-add {
+.bfr-minus {
   width: 24px;
   height: 24px;
   padding: 0;
   border: none;
   border-radius: 50%;
   color: #fff;
-  font: 11px/24px system-ui, sans-serif;
+  font: 12px/24px system-ui, sans-serif;
   text-align: center;
   cursor: pointer;
-  opacity: 0.5;
+  opacity: 0.95;
   transition: opacity 0.12s ease, transform 0.12s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 
 .bfr-play { background: #4f7cff; }
-.bfr-add { background: #5a6270; font-size: 13px; }
-
-.bfr-group:hover .bfr-play,
-.bfr-group:hover .bfr-add { opacity: 0.95; }
+.bfr-minus { background: #5a6270; font-size: 16px; }
+.bfr-minus.bfr-restore { background: #1a9d4b; }
 
 .bfr-play:hover,
-.bfr-add:hover { opacity: 1; transform: scale(1.1); }
+.bfr-minus:hover { opacity: 1; transform: scale(1.1); }
 
-.bfr-play[data-state="connecting"] { opacity: 1; background: #6a7280; animation: bfr-pulse 1s ease-in-out infinite; }
-.bfr-play[data-state="loading"]    { opacity: 1; background: #f0a020; animation: bfr-pulse 1s ease-in-out infinite; }
-.bfr-play[data-state="playing"]    { opacity: 1; background: #1a9d4b; }
-.bfr-play[data-state="paused"]     { opacity: 1; background: #6a7280; }
-.bfr-play[data-state="done"]       { opacity: 0.85; background: #1a9d4b; }
-.bfr-play[data-state="error"]      { opacity: 1; background: #d23b3b; }
+/* Reading-sentence highlight: overlay rects, never touches the page DOM */
+.bfr-hl-layer,
+.bfr-excluded-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.bfr-hl {
+  position: absolute;
+  background: rgba(79, 124, 255, 0.28);
+  border-radius: 2px;
+  pointer-events: none;
+}
 
-.bfr-add[data-state="queued"] { opacity: 1; background: #1a9d4b; }
-
-@keyframes bfr-pulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.18); }
+/* Excluded blocks (skipped during continuous reading) */
+.bfr-excluded {
+  position: absolute;
+  background: rgba(120, 130, 145, 0.16);
+  outline: 1.5px dashed rgba(210, 59, 59, 0.55);
+  outline-offset: -1px;
+  border-radius: 3px;
+  pointer-events: none;
 }
 
 /* Floating control shown on text selection */
@@ -76,7 +88,10 @@
   z-index: 2147483647;
 }
 
-/* Transport bar */
+/* Transport bar.
+   FIXED width (not content-sized) so the centered bar never re-centers — combined
+   with stable-footprint children below, no control moves as content changes. Height
+   is free to grow downward if a future second row of info is added. */
 #bfr-bar {
   position: fixed;
   bottom: 22px;
@@ -93,7 +108,7 @@
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
   z-index: 2147483647;
   pointer-events: auto;
-  max-width: 92vw;
+  width: min(680px, 92vw);
 }
 
 .bfr-ctl {
@@ -109,20 +124,54 @@
 
 .bfr-ctl:hover:not(:disabled) { background: #44506a; }
 .bfr-ctl:disabled { opacity: 0.4; cursor: default; }
+/* Glyph swaps (⏸ / ▶ / ■) have different widths — pin so neighbors don't shift. */
+#bfr-bar .bfr-playpause { flex: 0 0 auto; width: 38px; padding-left: 0; padding-right: 0; text-align: center; }
+
+/* Buffering: a clickable stop square (■) with a spinner ring rotating over it. */
+.bfr-ctl.bfr-loading { position: relative; opacity: 1; }
+.bfr-ctl.bfr-loading .bfr-stop-glyph { font-size: 10px; line-height: 1; }
+.bfr-ctl.bfr-loading .bfr-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border: 2px solid rgba(242, 243, 245, 0.35);
+  border-top-color: #f2f3f5;
+  border-radius: 50%;
+  animation: bfr-spin 0.7s linear infinite;
+  pointer-events: none;
+}
+@keyframes bfr-spin { to { transform: rotate(360deg); } }
 #bfr-bar .bfr-close { background: transparent; font-size: 15px; }
 
-#bfr-bar .bfr-label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; font-style: italic; }
-#bfr-bar .bfr-time { font-variant-numeric: tabular-nums; opacity: 0.9; white-space: nowrap; }
-#bfr-bar .bfr-sentence { font-variant-numeric: tabular-nums; opacity: 0.6; white-space: nowrap; }
+/* The two variable-length text fields (title + status) absorb all the bar's slack.
+   flex-basis:0 means their width is a fixed share of the leftover space, NOT their
+   content — so the text inside can change length without moving anything. Everything
+   between and after them is fixed-width, so every control sits at a constant x. */
+#bfr-bar .bfr-label { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; font-style: italic; }
+#bfr-bar .bfr-status { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.85; }
+
+#bfr-bar .bfr-time { flex: 0 0 auto; width: 104px; text-align: right; font-variant-numeric: tabular-nums; opacity: 0.9; white-space: nowrap; overflow: hidden; }
+#bfr-bar .bfr-sentence { flex: 0 0 auto; width: 46px; text-align: center; font-variant-numeric: tabular-nums; opacity: 0.6; white-space: nowrap; overflow: hidden; }
 
 #bfr-bar .bfr-speed {
-  background: #333a47;
-  color: #f2f3f5;
-  border: none;
-  border-radius: 7px;
-  padding: 4px 6px;
-  font: inherit;
+  flex: 0 0 auto;
+  width: 88px;
+  height: 4px;
   cursor: pointer;
+  accent-color: #4f7cff;
+  vertical-align: middle;
+}
+#bfr-bar .bfr-speed-val {
+  flex: 0 0 auto;
+  width: 44px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-#bfr-bar .bfr-status { opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+#bfr-bar .bfr-close { flex: 0 0 auto; }

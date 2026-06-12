@@ -18,6 +18,13 @@
       }
       button:hover:not(:disabled) { background: #44506a; }
       button:disabled { opacity: 0.5; cursor: default; }
+      button[data-mode="loading"]:disabled { opacity: 1; }
+      .spinner {
+        display: inline-block; width: 11px; height: 11px; vertical-align: -1px;
+        border: 2px solid #ffffff55; border-top-color: #fff; border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
       button.primary { background: #4f7cff; border-color: transparent; }
       button.danger { background: #b63b3b; border-color: transparent; }
       .row { display: flex; gap: 8px; margin-bottom: 8px; }
@@ -51,7 +58,7 @@
       <button id="server" class="primary">Start TTS server</button>
     </div>
     <div class="row">
-      <button id="toggleUi">Show controls on page</button>
+      <button id="toggleUi">Toggle controls on this page</button>
     </div>
     <div class="row">
       <button id="playPause">Play / Pause</button>
