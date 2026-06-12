@@ -2423,9 +2423,9 @@ export class ElectronService {
   }
 
   /** Fire-and-forget playback position report; drives the generation lookahead window. */
-  streamReportPlayhead(sentenceIndex: number): void {
+  streamReportPlayhead(requestId: number, sentenceIndex: number): void {
     if (this.isElectron) {
-      void (window as any).electron.play.streamPlayhead(sentenceIndex);
+      void (window as any).electron.play.streamPlayhead(requestId, sentenceIndex);
     }
   }
 

@@ -561,10 +561,23 @@ async function loadVoiceOnWorker(worker: Worker, descriptor: StreamVoice): Promi
   });
 }
 
-// FIFO queue of callers waiting for a free worker. A waiter MUST set
-// worker.pendingRequest synchronously when invoked, so only one waiter is
-// released per freed worker (no polling race).
-const workerWaiters: Array<(worker: Worker | null) => void> = [];
+// Waiters for a free worker, in two FIFO tiers: the playing session's sentences
+// (priority) are served strictly before background read-ahead (normal). Each tier
+// is FIFO so a session's sentences run in DISPATCH order — the streamed playhead
+// sentence is dispatched first and must get the first free worker, not the last.
+// (An unshift-based queue jump once reversed this: the playing block's lookahead
+// sentences piled in front of its own first sentence, and since the client drains
+// PCM strictly in order, playback start waited ~3 extra sentence generations.)
+// A waiter's run() MUST set worker.pendingRequest synchronously when invoked, so
+// only one waiter is released per freed worker (no polling race).
+interface WorkerWaiter {
+  run: (worker: Worker | null) => void;
+  /** Stale check — a cancelled session's queued jobs are skipped at release time
+   *  instead of burning a worker on a sentence nobody will hear. */
+  isCancelled?: () => boolean;
+}
+const priorityWaiters: WorkerWaiter[] = [];
+const normalWaiters: WorkerWaiter[] = [];
 
 function findFreeWorker(): Worker | undefined {
   return workers.find(w => w.isReady && !w.pendingRequest);
@@ -572,51 +585,57 @@ function findFreeWorker(): Worker | undefined {
 
 /** Called whenever a worker's pendingRequest is cleared. */
 function releaseWorkerSlot(): void {
-  const worker = findFreeWorker();
-  if (!worker) return;
-  const waiter = workerWaiters.shift();
-  if (waiter) {
-    waiter(worker);
+  let worker = findFreeWorker();
+  while (worker) {
+    const waiter = priorityWaiters.shift() ?? normalWaiters.shift();
+    if (!waiter) return;
+    if (waiter.isCancelled?.()) {
+      waiter.run(null);  // resolves as no-worker; the caller drops it as stale
+      continue;          // the worker is still free — try the next waiter
+    }
+    waiter.run(worker);  // reserves the worker synchronously
+    worker = findFreeWorker();
   }
 }
 
 /**
- * Run `job` on a free worker, waiting FIFO if all are busy. The job MUST set
+ * Run `job` on a free worker, waiting if all are busy. The job MUST set
  * worker.pendingRequest synchronously when invoked - that reservation is what
  * prevents two callers from claiming the same worker. There must be NO await
  * between picking a free worker and running the job (an async gap here once
  * let 4 concurrent dispatches pile onto one worker while 3 sat idle).
- * Priority callers (the streamed playhead sentence) jump the queue so seeks
- * aren't stuck behind stale lookahead jobs.
+ * `priority` selects the tier: the playing session's sentences (priority) are
+ * served before read-ahead (normal), FIFO within each tier. `isCancelled` lets
+ * a queued job be discarded at release time if its session was cancelled.
  */
 function runOnFreeWorker<T>(
   job: (worker: Worker) => Promise<T>,
   onNoWorkers: () => T,
-  priority = false
+  priority = false,
+  isCancelled?: () => boolean
 ): Promise<T> {
   const worker = findFreeWorker();
   if (worker) return job(worker);
   if (workers.length === 0) return Promise.resolve(onNoWorkers());
   return new Promise<T>(resolve => {
-    const waiter = (w: Worker | null) => {
+    const run = (w: Worker | null) => {
       if (!w) {
         resolve(onNoWorkers());
         return;
       }
       void job(w).then(resolve);
     };
-    if (priority) {
-      workerWaiters.unshift(waiter);
-    } else {
-      workerWaiters.push(waiter);
-    }
+    (priority ? priorityWaiters : normalWaiters).push({ run, isCancelled });
   });
 }
 
 /** Wake all waiters with null (session ending / all workers gone). */
 function drainWorkerWaiters(): void {
-  while (workerWaiters.length > 0) {
-    workerWaiters.shift()!(null);
+  while (priorityWaiters.length > 0) {
+    priorityWaiters.shift()!.run(null);
+  }
+  while (normalWaiters.length > 0) {
+    normalWaiters.shift()!.run(null);
   }
 }
 
@@ -626,12 +645,16 @@ function drainWorkerWaiters(): void {
 export async function generateSentence(
   text: string,
   sentenceIndex: number,
-  settings: PlaySettings
+  settings: PlaySettings,
+  priority = false,
+  isCancelled?: () => boolean
 ): Promise<{ success: boolean; audio?: AudioChunk; error?: string }> {
   touchActivity();
   return runOnFreeWorker<{ success: boolean; audio?: AudioChunk; error?: string }>(
     worker => generateOnWorker(worker, text, sentenceIndex, settings),
-    () => ({ success: false, error: 'No workers available' })
+    () => ({ success: false, error: 'No workers available' }),
+    priority,
+    isCancelled
   );
 }
 
@@ -683,13 +706,15 @@ async function generateOnWorker(
 export async function generateSentenceStream(
   text: string,
   settings: PlaySettings,
-  onChunk: (chunk: StreamChunk) => void
+  onChunk: (chunk: StreamChunk) => void,
+  isCancelled?: () => boolean
 ): Promise<StreamResult> {
   touchActivity();
   return runOnFreeWorker<StreamResult>(
     worker => streamOnWorker(worker, text, settings, onChunk),
     () => ({ success: false, error: 'No workers available' }),
-    true
+    true,
+    isCancelled
   );
 }
 

@@ -66,6 +66,8 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 {"action": "speak",                                // the main verb
  "requestId": "blk-17-1718120000",                 // client-chosen string or number; echo key for all events
  "text": "Raw text of the block. Multiple sentences are fine.\n\nParagraphs too.",
+ "preempt": true,                                  // optional, default true: cancel other sessions (take over the audio output)
+ "background": false,                              // optional, default false: true = a read-ahead block, batched at low pool priority
  "settings": {                                     // optional, all fields optional
    "voice": "ScarlettJohansson",                   // omit to use the engine's current/last voice
    "speed": 1.1,                                   // playback-rate baked into the audio, default 1.0
@@ -151,17 +153,22 @@ Decoding a chunk: `atob` → `Uint8Array` → `Int16Array` → `Float32Array` (d
 
 ### Lookahead and the `playhead` action
 
-The server throttles generation to **~45 seconds of audio ahead of the reported playhead** (so pausing doesn't burn GPU on audio nobody may hear). Consequences:
+The server throttles generation to **~2000 seconds of audio ahead of the reported playhead** (deep enough that a typical per-block request generates fully up front; the cap only matters for one very long request, where pausing shouldn't burn compute on audio nobody may hear). Consequences:
 
-- Blocks shorter than ~45 s of speech: everything generates immediately; you can ignore `playhead` entirely.
-- Longer blocks: generation will idle at the 45 s window until you advance it. Send `{"action":"playhead","requestId","sentenceIndex":N}` whenever playback crosses into sentence N (cheap; once per sentence boundary is right). If playback is paused, simply don't send it — generation pauses with you and resumes when you do.
+- Blocks shorter than ~2000 s of speech (almost all of them): everything generates immediately; you can ignore `playhead` for throttling purposes.
+- Still send `{"action":"playhead","requestId","sentenceIndex":N}` whenever playback crosses into sentence N (cheap; once per sentence boundary is right): besides advancing the window on very long requests, it promotes a `background` session to playing priority when you adopt it. If playback is paused, simply don't send it.
 - The playhead only moves **forward** on the server (backward reports are ignored). That's fine: rewind plays from the local buffer and never needs the server.
 
 ### Concurrency model
 
-There is **one generation session globally**. A new `speak` — from any extension tab, any client, or BookForge's own Listen window — preempts the current one, which receives `{"type":"cancelled"}`. This is the desired UX (clicking play on block B while block A is loading should switch to B), but build the extension so a `cancelled` event cleanly finalizes whatever audio that request already has rather than treating it as an error.
+There is **one playing session plus any number of read-ahead sessions**. A `speak` with `preempt:true` (the default) cancels every other session — that's how a new play action takes over the single audio output; the cancelled sessions receive `{"type":"cancelled"}`. A `speak` with `preempt:false` runs **alongside** the others, and `background:true` marks it as read-ahead: the server batches it at low pool priority so it never delays the block actually being heard.
 
-Multiple WebSocket connections are fine; audio events are routed only to the connection that sent the `speak`.
+This is what lets the engine's workers all stay busy. With one block per `speak` and no read-ahead concurrency, a page of one-sentence paragraphs would use a single worker at a time (fine on a fast GPU, but on a multi-worker CPU pool it can't keep ahead of playback). So the extension fans out: it sends the current block as `{preempt:true}` and prefetches the next few upcoming blocks as `{preempt:false, background:true}`, all generating concurrently. When it reaches a prefetched block it just plays the buffered audio; a `playhead` for a still-generating background block promotes it to playing priority.
+
+- Clicking play on block B while block A is loading: send B with `preempt:true` → A is cancelled, B takes over. Build the client so a `cancelled` event cleanly finalizes whatever audio that request already has rather than treating it as an error.
+- Reading straight through a page: send block N with `preempt:true`, then N+1…N+k with `{preempt:false, background:true}` to keep the pool full.
+
+Multiple WebSocket connections are fine; audio events are routed only to the connection that sent the `speak`. A connection closing cancels every session it started.
 
 ### Engine lifecycle notes
 

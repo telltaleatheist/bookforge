@@ -4282,7 +4282,13 @@ function setupIpcHandlers(): void {
   ) => {
     try {
       const { streamScheduler } = await import('./stream-scheduler.js');
-      return streamScheduler.start(sentences, startIndex, settings, requestId);
+      // The Play tab streams a whole book as one session, so it uses a small
+      // rolling window (vs the extension's deep per-block default): 45s refills
+      // faster than playback drains it, and a deep window would burn minutes of
+      // compute on audio the listener may never reach.
+      return streamScheduler.start(sentences, startIndex, settings, requestId, undefined, {
+        lookaheadSeconds: 45
+      });
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -4298,10 +4304,10 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('stream:playhead', async (_event, sentenceIndex: number) => {
+  ipcMain.handle('stream:playhead', async (_event, requestId: number, sentenceIndex: number) => {
     try {
       const { streamScheduler } = await import('./stream-scheduler.js');
-      streamScheduler.reportPlayhead(sentenceIndex);
+      streamScheduler.reportPlayhead(requestId, sentenceIndex);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };

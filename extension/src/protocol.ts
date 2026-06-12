@@ -58,7 +58,12 @@ export type ClientAction =
   // next start (use engine.restart to apply now).
   | { action: 'config.get' }
   | { action: 'config.set'; cpuWorkers?: number; voice?: string }
-  | { action: 'speak'; requestId: string; text: string; settings?: SpeakSettings }
+  // preempt (default true) cancels other sessions so this block takes over the
+  // audio output; background (default false) generates a read-ahead block at low
+  // pool priority alongside the playing one. Prefetch sends {preempt:false,
+  // background:true} so upcoming blocks generate concurrently and keep every CPU
+  // worker busy even when each block is a one-sentence paragraph.
+  | { action: 'speak'; requestId: string; text: string; settings?: SpeakSettings; preempt?: boolean; background?: boolean }
   | { action: 'playhead'; requestId: string; sentenceIndex: number }
   | { action: 'cancel'; requestId: string };
 

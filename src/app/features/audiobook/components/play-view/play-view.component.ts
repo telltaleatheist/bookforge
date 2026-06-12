@@ -25,6 +25,10 @@ import {
   SessionState
 } from '../../models/play.types';
 
+// Seconds of generated-but-unplayed audio that count as a full buffer ring. Matches
+// the scheduler's in-app lookahead window (main.ts stream:start, lookaheadSeconds).
+const BUFFER_TARGET_SECONDS = 45;
+
 /** One selectable voice in the dropdown (from the main-process catalog). */
 interface VoiceOption {
   id: string;
@@ -245,6 +249,9 @@ interface StreamCue {
               <span class="play-icon">{{ isPlaying() ? '⏸' : '▶' }}</span>
             </button>
             <button class="bar-btn" (click)="skipSentence(1)" [disabled]="currentGlobalIndex() >= allCues().length - 1" title="Next sentence">⏭</button>
+            <span class="buffer-ring-wrap" [title]="bufferTitle()">
+              <span class="buffer-ring" [style.background]="bufferRingBg()"></span>
+            </span>
           </div>
           <div class="speed-group">
             <button class="bar-btn bar-btn-bookmark" (click)="addBookmark()" title="Add bookmark">🔖</button>
@@ -878,6 +885,24 @@ interface StreamCue {
       gap: 10px;
     }
 
+    /* Buffer "health" ring: conic fill over a dim track, hollowed by a radial mask
+       (same look as the BookForge Reader extension's transport bar). */
+    .buffer-ring-wrap {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+    }
+
+    .buffer-ring {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      -webkit-mask: radial-gradient(circle, transparent 4.5px, #000 5px);
+      mask: radial-gradient(circle, transparent 4.5px, #000 5px);
+      transition: background 0.3s linear;
+    }
+
     .bar-btn {
       width: 28px;
       height: 28px;
@@ -1123,6 +1148,23 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   readonly isGenerating = signal(false);
   readonly selectedVoice = signal<string>('ScarlettJohansson');
   readonly selectedSpeed = signal<number>(1.25);
+
+  // Buffer-health ring: fills clockwise as decoded audio accumulates ahead of the
+  // playhead. Scaled to the scheduler's 45s in-app lookahead window, so a full ring
+  // means the generation window is topped up (no underrun risk); also full once
+  // there's nothing left to generate.
+  readonly bufferFillPct = computed(() => {
+    if (this.audioPlayer.generationFinished()) return 100;
+    return Math.round(Math.min(1, this.audioPlayer.bufferedAhead() / BUFFER_TARGET_SECONDS) * 100);
+  });
+  readonly bufferRingBg = computed(() =>
+    `conic-gradient(#3ec46d ${this.bufferFillPct()}%, rgba(127, 127, 127, 0.25) 0)`
+  );
+  readonly bufferTitle = computed(() =>
+    this.audioPlayer.generationFinished()
+      ? 'Fully generated'
+      : `Buffer: ${Math.round(this.audioPlayer.bufferedAhead())}s ready (${this.bufferFillPct()}%)`
+  );
   /** Playhead position in the whole-book sentence space (same space the stream uses) */
   readonly currentGlobalIndex = signal<number>(0);
 
@@ -1205,7 +1247,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       const index = this.audioPlayer.currentSentenceIndex();
       if (index >= 0) {
         this.currentGlobalIndex.set(index);
-        this.electronService.streamReportPlayhead(index);
+        this.electronService.streamReportPlayhead(this.streamRequestId, index);
         this.scrollToCurrent();
       }
     });

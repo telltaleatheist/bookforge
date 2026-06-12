@@ -57,6 +57,10 @@ export class AudioPlayerService {
   readonly currentSentenceIndex = signal<number>(-1);
   readonly currentTime = signal<number>(0);
   readonly totalDuration = signal<number>(0);
+  /** Seconds of decoded audio ahead of the playhead (drives the buffer ring). */
+  readonly bufferedAhead = signal<number>(0);
+  /** True once the scheduler reported there is nothing left to generate. */
+  readonly generationFinished = signal<boolean>(false);
 
   // Computed
   readonly isPlaying = computed(() => this.playbackState() === 'playing');
@@ -103,9 +107,11 @@ export class AudioPlayerService {
     this.expectedNext = startIndex;
     this.startIndex = startIndex;
     this.generationDone = false;
+    this.generationFinished.set(false);
     this.started = false;
     this.streamStartedAt = performance.now();
     this.bufferedAudioSec = 0;
+    this.bufferedAhead.set(0);
     this.wantToPlay = true;
     this.playbackState.set('buffering');
   }
@@ -154,6 +160,7 @@ export class AudioPlayerService {
   /** Nothing left to generate for this stream. */
   generationComplete(): void {
     this.generationDone = true;
+    this.generationFinished.set(true);
 
     // Nothing buffered and nothing coming -> the stream is over
     if (
@@ -389,7 +396,12 @@ export class AudioPlayerService {
   /** Periodic: track the playing sentence, detect underrun / end of stream. */
   private tick(): void {
     const ctx = this.audioContext;
-    if (!ctx || this.playbackState() !== 'playing') return;
+    // Keep the buffer ring live in every active state (it should climb while
+    // buffering/paused too). Idle reports 0: resetPlayback rewinds the schedule
+    // cursor, so the ahead-sum over segments would falsely read as full.
+    const state = this.playbackState();
+    this.bufferedAhead.set(state === 'idle' ? 0 : this.bufferedAheadSeconds());
+    if (!ctx || state !== 'playing') return;
 
     const now = ctx.currentTime;
 

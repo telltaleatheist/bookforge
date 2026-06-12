@@ -1,10 +1,21 @@
 /**
  * Stream Scheduler - main-process orchestration for Play/Stream TTS playback
  *
- * Owns the sentence queue for a listening session: streams the first sentence
- * chunk-by-chunk for fast time-to-first-audio (~2-3s), fills lookahead with
- * batch generations across the worker pool, and throttles generation to a
- * seconds-based window ahead of the renderer-reported playhead.
+ * Owns the sentence queues for listening. MULTIPLE sessions can generate at
+ * once: one "playing" session (priority) plus any number of background
+ * read-ahead sessions the browser extension prefetches for upcoming blocks.
+ * Their sentences interleave across the whole worker pool via the pool's
+ * free-worker queue, so a page made of tiny one-sentence blocks still saturates
+ * all CPU workers instead of dribbling through one block at a time. The playing
+ * session's sentences are dispatched at high priority (they jump the pool's wait
+ * queue) so read-ahead never delays what's actually being heard.
+ *
+ * A `start({preempt:true})` (the default) cancels every existing session first —
+ * that's how a new play action takes over the single audio output. A
+ * `start({preempt:false})` adds a session alongside the others — that's how the
+ * extension fans out read-ahead. `priority:false` marks a session as background
+ * (batch-only, low pool priority); a background session is promoted the moment a
+ * playhead is reported for it (the extension adopted it as the current block).
  *
  * Living in the main process means any window (main app or listen window) can
  * drive or observe a session, and renderer reloads don't orphan generation.
@@ -29,14 +40,17 @@ import {
 /** Where a session's events go. Defaults to broadcasting to all windows. */
 export type StreamSink = (data: Record<string, unknown>) => void;
 
-// Generate until this much audio is buffered ahead of the playhead, then idle
-// until the playhead advances. Sized to fully buffer a short article up front
+// Default: generate until this much audio is buffered ahead of the playhead, then
+// idle until the playhead advances. Sized to fully buffer a short article up front
 // (~2000s ≈ 5000 spoken words) so a whole page can play through without underruns;
-// the worker pool generates flat-out until the window is full, then idles. For the
-// common per-block path each request is a single paragraph that finishes well
-// inside this window; the large cap only matters when one request is a long
-// selection. Memory is the client's concern — see PREFETCH_LOOKAHEAD_SECONDS.
-const LOOKAHEAD_SECONDS = 2000;
+// the worker pool generates flat-out until the window is full, then idles. Right
+// for the extension's per-block requests (each finishes well inside the window).
+// Callers streaming ONE long session — the in-app Play tab streams a whole book —
+// pass a small lookaheadSeconds instead: 45s refills faster than playback drains
+// it (~2.1x realtime aggregate), and a deep window on a book would burn minutes of
+// flat-out compute on audio the listener may never reach (and discard it all on a
+// voice/speed change). Memory is the client's concern.
+const DEFAULT_LOOKAHEAD_SECONDS = 2000;
 
 interface SchedulerSession {
   requestId: string | number;
@@ -51,9 +65,19 @@ interface SchedulerSession {
   stopped: boolean;
   completeSent: boolean;
   sink: StreamSink;
+  /** Playing session (true) vs background read-ahead (false). Drives pool
+   *  priority and whether the first sentence streams. Flips to true when a
+   *  playhead is reported (the client started playing this block). */
+  priority: boolean;
+  /** True while this session's first sentence is mid-stream — so cancelling it
+   *  knows to call cancelStreaming (only priority sessions ever stream). */
+  streaming: boolean;
+  /** Generate-ahead window for this session (seconds ahead of the playhead). */
+  lookaheadSeconds: number;
 }
 
-let session: SchedulerSession | null = null;
+/** Every generating session, keyed by requestId. */
+const sessions = new Map<string | number, SchedulerSession>();
 
 function broadcastToWindows(data: Record<string, unknown>): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -63,25 +87,42 @@ function broadcastToWindows(data: Record<string, unknown>): void {
   }
 }
 
+/** Options for {@link start}. */
+export interface StartOptions {
+  /** Cancel every other session first (a new play action takes over the audio
+   *  output). Default true — read-ahead passes false to coexist. */
+  preempt?: boolean;
+  /** Playing session (true, default) vs background read-ahead (false). */
+  priority?: boolean;
+  /** Generate-ahead window (seconds of audio ahead of the playhead). Defaults
+   *  deep (whole short article); long single-session callers pass ~45. */
+  lookaheadSeconds?: number;
+}
+
 /**
- * Start (or restart) generation. requestId is caller-supplied so the renderer
- * can filter events for the session it asked for; a new start invalidates all
- * in-flight work from previous ones.
+ * Start a generation session. requestId is caller-supplied so the client can
+ * filter events for the session it asked for. With `preempt` (default) this
+ * cancels all other sessions first; with `preempt:false` it runs alongside them.
  */
 export function start(
   sentences: string[],
   startIndex: number,
   settings: PlaySettings,
   requestId: string | number,
-  sink: StreamSink = broadcastToWindows
+  sink: StreamSink = broadcastToWindows,
+  opts: StartOptions = {}
 ): { success: boolean; error?: string } {
   if (!xttsWorkerPool.isSessionActive()) {
     return { success: false, error: 'TTS session not active' };
   }
 
-  stop();
+  const preempt = opts.preempt !== false;
+  const priority = opts.priority !== false;
 
-  session = {
+  if (preempt) stopAll();
+  else endSession(sessions.get(requestId));  // replace a same-id session, if any
+
+  const s: SchedulerSession = {
     requestId,
     sentences,
     settings,
@@ -92,44 +133,67 @@ export function start(
     inFlight: new Set(),
     stopped: false,
     completeSent: false,
-    sink
+    sink,
+    priority,
+    streaming: false,
+    lookaheadSeconds: opts.lookaheadSeconds ?? DEFAULT_LOOKAHEAD_SECONDS
   };
+  sessions.set(requestId, s);
 
-  console.log(`[StreamScheduler] Start req=${requestId} from sentence ${startIndex}/${sentences.length}`);
-  pump();
+  console.log(`[StreamScheduler] Start req=${requestId} ${priority ? 'play' : 'prefetch'} from sentence ${startIndex}/${sentences.length}${preempt ? ' (preempt)' : ''}`);
+  pump(s);
   return { success: true };
 }
 
-/** Renderer reports playback position so the lookahead window can advance. */
-export function reportPlayhead(sentenceIndex: number): void {
-  if (!session || session.stopped) return;
-  if (sentenceIndex > session.playhead) {
-    session.playhead = sentenceIndex;
-    pump();
+/** Client reports playback position. Advances this session's lookahead window
+ *  and — since only the block being listened to reports a playhead — promotes a
+ *  background read-ahead session to playing priority. */
+export function reportPlayhead(requestId: string | number, sentenceIndex: number): void {
+  const s = sessions.get(requestId);
+  if (!s || s.stopped) return;
+  s.priority = true;
+  if (sentenceIndex > s.playhead) {
+    s.playhead = sentenceIndex;
+    pump(s);
   }
 }
 
-/** Stop generating. In-flight streaming is cancelled; batch results are dropped. */
-export function stop(): void {
-  if (session && !session.stopped) {
-    console.log(`[StreamScheduler] Stop req=${session.requestId}`);
-    session.stopped = true;
-    xttsWorkerPool.cancelStreaming();
-    if (!session.completeSent) {
-      session.sink({ kind: 'cancelled', requestId: session.requestId });
-    }
-  }
+/** Stop one session (by requestId) or, with no argument, every session.
+ *  In-flight streaming is cancelled; batch results are dropped via isStale(). */
+export function stop(requestId?: string | number): void {
+  if (requestId === undefined) { stopAll(); return; }
+  endSession(sessions.get(requestId));
 }
 
-/** requestId of the session currently generating, or null. Lets external
- *  callers (TTS API server) verify ownership before stopping. */
-export function getActiveRequestId(): string | number | null {
-  return session && !session.stopped ? session.requestId : null;
+/** True if a session with this requestId is still generating. Lets external
+ *  callers (TTS API server) verify ownership before playhead/cancel. */
+export function isActive(requestId: string | number): boolean {
+  const s = sessions.get(requestId);
+  return !!s && !s.stopped;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internals
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** Cancel every session (used by a preempting start / global stop). */
+function stopAll(): void {
+  for (const s of [...sessions.values()]) endSession(s);
+}
+
+/** Cancel one session: drop it from the map, cancel its stream if any, and tell
+ *  the client it was cancelled (unless it already completed). */
+function endSession(s: SchedulerSession | undefined): void {
+  if (!s || s.stopped) return;
+  console.log(`[StreamScheduler] Stop req=${s.requestId}`);
+  s.stopped = true;
+  sessions.delete(s.requestId);
+  // Only the playing session ever streams, so cancel streaming only when this
+  // session is the one mid-stream — otherwise we'd abort an unrelated session's
+  // first sentence (cancelStreaming hits every streaming worker).
+  if (s.streaming) xttsWorkerPool.cancelStreaming();
+  if (!s.completeSent) s.sink({ kind: 'cancelled', requestId: s.requestId });
+}
 
 /** Seconds of generated-but-not-yet-played audio ahead of the playhead. */
 function bufferedSecondsAhead(s: SchedulerSession): number {
@@ -140,14 +204,13 @@ function bufferedSecondsAhead(s: SchedulerSession): number {
   return total;
 }
 
-function pump(): void {
-  const s = session;
-  if (!s || s.stopped) return;
+function pump(s: SchedulerSession): void {
+  if (s.stopped || sessions.get(s.requestId) !== s) return;
 
   while (
     s.inFlight.size < xttsWorkerPool.getWorkerCount() &&
     s.nextToDispatch < s.sentences.length &&
-    bufferedSecondsAhead(s) < LOOKAHEAD_SECONDS
+    bufferedSecondsAhead(s) < s.lookaheadSeconds
   ) {
     dispatch(s, s.nextToDispatch++);
   }
@@ -159,6 +222,7 @@ function pump(): void {
     s.inFlight.size === 0
   ) {
     s.completeSent = true;
+    sessions.delete(s.requestId);
     s.sink({ kind: 'complete', requestId: s.requestId });
   }
 }
@@ -166,12 +230,14 @@ function pump(): void {
 function dispatch(s: SchedulerSession, sentenceIndex: number): void {
   const requestId = s.requestId;
   const text = s.sentences[sentenceIndex];
-  const isStale = () => !session || session.requestId !== requestId || session.stopped;
+  const isStale = () => sessions.get(requestId) !== s || s.stopped;
   s.inFlight.add(sentenceIndex);
 
-  // The playhead sentence streams so audio starts in ~2-3s. Streaming costs
-  // ~37% more compute than batch, so lookahead sentences use batch inference.
-  if (sentenceIndex === s.startIndex) {
+  // Only the playing session streams its first sentence (audio starts in ~2-3s).
+  // Streaming costs ~37% more compute than batch, so every lookahead sentence and
+  // every background read-ahead sentence uses batch inference instead.
+  if (s.priority && sentenceIndex === s.startIndex) {
+    s.streaming = true;
     void xttsWorkerPool
       .generateSentenceStream(text, s.settings, (chunk: StreamChunk) => {
         if (isStale()) return;
@@ -184,8 +250,9 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
           duration: chunk.duration,
           sampleRate: chunk.sampleRate
         });
-      })
+      }, isStale)
       .then((result) => {
+        s.streaming = false;
         if (isStale()) return;
         s.inFlight.delete(sentenceIndex);
         if (result.success && !result.cancelled) {
@@ -195,13 +262,13 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
           console.error(`[StreamScheduler] Stream sentence ${sentenceIndex} failed:`, result.error);
           s.sink({ kind: 'failed', requestId, sentenceIndex, error: result.error });
         }
-        pump();
+        pump(s);
       });
     return;
   }
 
   void xttsWorkerPool
-    .generateSentence(text, sentenceIndex, s.settings)
+    .generateSentence(text, sentenceIndex, s.settings, s.priority, isStale)
     .then((result) => {
       if (isStale()) return;
       s.inFlight.delete(sentenceIndex);
@@ -221,7 +288,7 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
         console.error(`[StreamScheduler] Sentence ${sentenceIndex} failed:`, result.error);
         s.sink({ kind: 'failed', requestId, sentenceIndex, error: result.error });
       }
-      pump();
+      pump(s);
     });
 }
 
@@ -229,5 +296,5 @@ export const streamScheduler = {
   start,
   reportPlayhead,
   stop,
-  getActiveRequestId
+  isActive
 };

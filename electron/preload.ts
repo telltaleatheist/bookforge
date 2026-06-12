@@ -1325,7 +1325,7 @@ export interface ElectronAPI {
     }>;
     streamStart: (sentences: string[], startIndex: number, settings: PlaySettings, requestId: number) => Promise<{ success: boolean; error?: string }>;
     streamStop: () => Promise<{ success: boolean; error?: string }>;
-    streamPlayhead: (sentenceIndex: number) => Promise<{ success: boolean; error?: string }>;
+    streamPlayhead: (requestId: number, sentenceIndex: number) => Promise<{ success: boolean; error?: string }>;
     onStreamEvent: (callback: (event: Record<string, unknown>) => void) => () => void;
   };
   ttsService: {
@@ -2661,8 +2661,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('stream:start', sentences, startIndex, settings, requestId),
     streamStop: () =>
       ipcRenderer.invoke('stream:stop'),
-    streamPlayhead: (sentenceIndex: number) =>
-      ipcRenderer.invoke('stream:playhead', sentenceIndex),
+    streamPlayhead: (requestId: number, sentenceIndex: number) =>
+      ipcRenderer.invoke('stream:playhead', requestId, sentenceIndex),
     onStreamEvent: (callback: (event: Record<string, unknown>) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: Record<string, unknown>) => callback(data);
       ipcRenderer.on('stream:event', listener);

@@ -69,13 +69,14 @@ type OffscreenMessage =
 
 const CACHE_LIMIT_BYTES = 256 * 1024 * 1024;
 const START_MIN_SECONDS = 8;
-// Before the very first play, build a cushion so the slow first couple of sentences
-// (engine still warming — those inferences run below real-time) don't underrun the
-// instant the playhead catches the live edge. We hold off until at least one sentence
-// has assembled AND this many seconds of audio sit queued behind it. generationDone
-// and START_MIN_SECONDS below still let short clips / long single sentences start
-// without waiting for a cushion that will never come.
-const STARTUP_LEAD_SECONDS = 3;
+// Start playing as soon as the first sentence is assembled — we hold for at least one
+// finished sentence plus this small floor of audio behind it. Concurrent read-ahead
+// now generates the current block's remaining sentences in parallel (~2x real-time
+// aggregate) and prefetches the next block, so the buffer keeps growing under the
+// playhead without a big head start; a larger cushion here just delays time-to-audio.
+// generationDone and START_MIN_SECONDS still let short clips / long single sentences
+// start without waiting for a cushion that will never come.
+const STARTUP_LEAD_SECONDS = 1;
 // After the playhead catches the live edge (underrun), wait until this much new
 // audio has buffered before reloading. Kept small so an underrun becomes a brief
 // boundary reload (landed in the natural gap between sentences) rather than a long
@@ -220,16 +221,18 @@ audio.preload = 'auto';
 let current: QueueItem | null = null;
 let upcoming: QueueItem[] = [];
 
-// Prefetch: once the current item finishes generating (server idle), we start
-// streaming the next queued item into a second session so the gap at the queue
-// boundary disappears. On advance we "adopt" it as the current player.
-let prefetch: Session | null = null;
-let prefetchItem: QueueItem | null = null;
-let prefetchStarting = false; // synchronous guard against double-starting a prefetch
+// Read-ahead: while the current item plays, generate upcoming blocks into the cache
+// CONCURRENTLY — each as its own server session ({preempt:false, background:true}) —
+// so every engine worker stays busy instead of dribbling one block at a time. That's
+// the whole game on CPU (Mac), where a single worker can't keep ahead of playback and
+// the per-block pipeline otherwise behaves like one worker. On advance we "adopt" a
+// finished (or still-in-flight) read-ahead session as the current player.
+const prefetches = new Map<string /* requestId */, { session: Session; item: QueueItem }>();
+const startingItems = new Set<string /* item id */>(); // items mid-start (async-gap guard)
 // Seconds of cached audio already ready for each upcoming block (by item id), set as
-// prefetch/playback caches each block. Lets maybeStartPrefetch measure how deep the
-// read-ahead buffer is — and pick the first not-yet-generated block — synchronously,
-// without recomputing cache keys.
+// read-ahead/playback caches each block. Lets fillPrefetch measure how deep the buffer
+// is — and pick the next not-yet-generated block — synchronously, without recomputing
+// cache keys.
 const readyAhead = new Map<string, number>();
 
 // player (for the current item)
@@ -334,11 +337,11 @@ function onSocketClosed(): void {
 // ─── Server events ────────────────────────────────────────────────────────────
 
 function handleServerEvent(msg: ServerEvent): void {
-  // Events for the prefetch session accumulate quietly and never touch the player
+  // Events for a read-ahead session accumulate quietly and never touch the player
   // or the broadcast — the UI still reflects the currently-playing item.
-  if (prefetch && 'requestId' in msg && msg.requestId === prefetch.requestId) {
-    handlePrefetchEvent(msg);
-    return;
+  if ('requestId' in msg && msg.requestId !== undefined) {
+    const entry = prefetches.get(msg.requestId);
+    if (entry) { handlePrefetchEvent(entry, msg); return; }
   }
   switch (msg.type) {
     case 'state':
@@ -386,7 +389,7 @@ function handleServerEvent(msg: ServerEvent): void {
       if (!session || msg.requestId !== session.requestId) return;
       finishGeneration(true);
       afterData();
-      maybeStartPrefetch(); // server is now idle — get a head start on the next item
+      fillPrefetch(); // current done — top up the read-ahead pipeline
       return;
     case 'cancelled':
       if (!session || msg.requestId !== session.requestId) return;
@@ -425,18 +428,15 @@ function playNow(item: QueueItem): void {
   // Move to the top of the queue and play immediately; keep upcoming intact.
   upcoming = upcoming.filter((i) => i.id !== item.id);
   current = item;
-  startCurrent();
+  startCurrent(true);
 }
 
 /** Replace the queue with an ordered run (block → end of page) and start it. */
 function playSequence(items: QueueItem[]): void {
   if (items.length === 0) return;
-  cancelGeneration();
-  dropPrefetch();
-  readyAhead.clear();
   current = items[0];
   upcoming = items.slice(1);
-  startCurrent();
+  startCurrent(true);
 }
 
 function enqueue(item: QueueItem): void {
@@ -445,7 +445,7 @@ function enqueue(item: QueueItem): void {
   if (!current || currentIsDone()) { playNow(item); return; }
   if (item.id === current.id || upcoming.some((i) => i.id === item.id)) { broadcast(); return; }
   upcoming.push(item);
-  maybeStartPrefetch(); // current may already be done generating — get ahead on this one
+  fillPrefetch(); // a new read-ahead target — start generating it concurrently
   broadcast();
 }
 
@@ -465,15 +465,15 @@ function removeFromQueue(id: string): void {
   if (current && current.id === id) { skipCurrent(); return; }
   upcoming = upcoming.filter((i) => i.id !== id);
   readyAhead.delete(id);
-  if (prefetchItem && prefetchItem.id === id) dropPrefetch();
-  maybeStartPrefetch(); // a new item may now be next in line
+  dropPrefetchForItem(id);
+  fillPrefetch(); // a new item may now be next in line
   broadcast();
 }
 
 /** Clear upcoming but keep the current/playing item. */
 function clearUpcoming(): void {
   upcoming = [];
-  dropPrefetch();
+  dropAllPrefetch();
   readyAhead.clear();
   broadcast();
 }
@@ -485,10 +485,10 @@ function skipCurrent(): void {
   if (next) {
     if (adoptPrefetchFor(next)) return;
     current = next;
-    startCurrent();
+    startCurrent(false);
   } else {
     current = null;
-    dropPrefetch();
+    dropAllPrefetch();
     resetPlayer();
     stopStatusTicker();
     broadcast();
@@ -506,7 +506,7 @@ function concludeCurrent(): void {
   if (!next) { broadcast(); return; }
   if (adoptPrefetchFor(next)) return;
   current = next;
-  startCurrent();
+  startCurrent(false);
 }
 
 /** Stop everything (Stop button / page ✕ / tab navigation / tab close): cancel
@@ -516,7 +516,7 @@ function concludeCurrent(): void {
  *  waiting on LRU eviction or the offscreen document's idle teardown. */
 function stopAll(): void {
   cancelGeneration();
-  dropPrefetch();
+  dropAllPrefetch();
   readyAhead.clear();
   current = null;
   upcoming = [];
@@ -553,12 +553,25 @@ function resetPlayer(): void {
   try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch { /* ignore */ }
 }
 
-// ─── Prefetch the next queued item ────────────────────────────────────────────
+// ─── Read-ahead (concurrent prefetch of upcoming blocks) ───────────────────────
 
-/** Accumulate the prefetch session's audio without disturbing current playback. */
-function handlePrefetchEvent(msg: ServerEvent): void {
-  const s = prefetch;
-  if (!s) return;
+/** How many read-ahead blocks to generate at once. Sized to the engine's worker
+ *  count so even one-sentence blocks keep every worker busy; the playing block is
+ *  served first (the server runs read-ahead at low priority), so this is just the
+ *  fan-out that fills the spare workers. Falls back to 4 before config arrives. */
+function prefetchConcurrency(): number {
+  return Math.max(1, serverConfig?.deviceWorkers ?? 4);
+}
+
+function isPrefetchingItem(id: string): boolean {
+  if (startingItems.has(id)) return true;
+  for (const { item } of prefetches.values()) if (item.id === id) return true;
+  return false;
+}
+
+/** Accumulate a read-ahead session's audio without disturbing current playback. */
+function handlePrefetchEvent(entry: { session: Session; item: QueueItem }, msg: ServerEvent): void {
+  const { session: s, item } = entry;
   switch (msg.type) {
     case 'speaking': s.initSlots(msg.sentences); return;
     case 'chunk': s.addChunk(msg.sentenceIndex, msg.seq, decodeBase64(msg.data)); s.drain(); return;
@@ -568,105 +581,125 @@ function handlePrefetchEvent(msg: ServerEvent): void {
       s.generationDone = true;
       s.complete = true;
       s.drain();
-      cachePrefetchSession(); // caches + records readyAhead for this block
+      cachePrefetchSession(entry); // caches + records readyAhead for this block
       // This block is done and lives in the cache now; free the slot and keep the
-      // read-ahead chain going on the next not-yet-ready block.
-      prefetch = null;
-      prefetchItem = null;
-      maybeStartPrefetch();
+      // read-ahead pipeline going on the next not-yet-ready block.
+      prefetches.delete(s.requestId);
+      readyAhead.set(item.id, s.seconds);
+      fillPrefetch();
       return;
     case 'cancelled':
     case 'error':
       // Preempted or failed before we adopted it — drop and regenerate on advance.
-      dropPrefetch();
+      dropPrefetchByRequest(s.requestId);
       return;
   }
 }
 
 /**
- * If the server is idle (current item done generating), keep generating upcoming
- * blocks into the cache — in playback order — until the read-ahead buffer is
- * PREFETCH_LOOKAHEAD_SECONDS deep. Walks the queue front-first: sums the audio already
- * cached ahead, and prefetches the first block that isn't ready yet. Re-armed after
- * each prefetch completes, so one call kicks off a self-sustaining chain.
- * Best-effort: bails on any race or queue change.
+ * Keep upcoming blocks generating into the cache, CONCURRENTLY — up to
+ * prefetchConcurrency() sessions at once and PREFETCH_LOOKAHEAD_SECONDS of cached
+ * audio deep. Walks the queue front-first: counts what's cached ahead, skips blocks
+ * already in flight, and starts read-ahead for the next gaps. Unlike the old design
+ * this does NOT wait for the current block to finish — read-ahead runs alongside it
+ * (the server prioritises the playing block), which is what keeps the CPU pool full.
+ * Best-effort: every startPrefetch re-validates and bails on a race or queue change.
  */
-function maybeStartPrefetch(): void {
-  if (prefetch || prefetchStarting) return;
-  if (!session || !session.generationDone) return; // server still busy with current
+function fillPrefetch(): void {
+  if (!session) return;
   let aheadSeconds = 0;
-  let target: QueueItem | null = null;
   for (const item of upcoming) {
+    if (prefetches.size + startingItems.size >= prefetchConcurrency()) break;
+    if (aheadSeconds >= PREFETCH_LOOKAHEAD_SECONDS) break;
     const cached = readyAhead.get(item.id);
     if (cached !== undefined) { aheadSeconds += cached; continue; }
-    target = item; // first block with nothing cached yet — fill the gap nearest the playhead
-    break;
+    if (isPrefetchingItem(item.id)) continue; // already generating — don't double-start
+    void startPrefetch(item);
   }
-  if (!target || aheadSeconds >= PREFETCH_LOOKAHEAD_SECONDS) return;
-  prefetchStarting = true;
-  // Re-evaluate on settle: a cache-hit target records itself and we move to the next;
-  // a started prefetch occupies the slot until its 'complete' re-arms the chain.
-  void startPrefetch(target).finally(() => { prefetchStarting = false; maybeStartPrefetch(); });
 }
 
 async function startPrefetch(item: QueueItem): Promise<void> {
   const seq = playSeq;
-  const settings = await getSettings();
-  if (seq !== playSeq) return;
-  const voice = settings.voice;
-  const key = await cacheKeyFor(voice, item.text);
-  // Re-validate after the awaits: still the same playback context, still idle, the
-  // target still queued, and not already cached or in flight.
-  if (seq !== playSeq || prefetch) return;
-  const hit = cacheGet(key);
-  if (hit) { readyAhead.set(item.id, hit.bytes / BYTES_PER_SECOND); return; } // already cached → count it; chain moves on
-  if (!session || !session.generationDone || !upcoming.some((u) => u.id === item.id)) return;
-  try { await ensureConnected(); } catch { return; }
-  if (seq !== playSeq || prefetch) return;
-  if (!session || !session.generationDone || !upcoming.some((u) => u.id === item.id)) return;
+  startingItems.add(item.id); // synchronous reservation (closed in finally)
+  try {
+    const settings = await getSettings();
+    if (seq !== playSeq) return;
+    const voice = settings.voice;
+    const key = await cacheKeyFor(voice, item.text);
+    // Re-validate after the awaits: still the same playback context, the target still
+    // queued, and not already cached or in flight on another session.
+    if (seq !== playSeq) return;
+    const hit = cacheGet(key);
+    if (hit) { readyAhead.set(item.id, hit.bytes / BYTES_PER_SECOND); return; } // already cached → count it
+    if (!upcoming.some((u) => u.id === item.id)) return;
+    if ([...prefetches.values()].some((p) => p.item.id === item.id)) return;
+    try { await ensureConnected(); } catch { return; }
+    if (seq !== playSeq || !upcoming.some((u) => u.id === item.id)) return;
+    if ([...prefetches.values()].some((p) => p.item.id === item.id)) return;
 
-  const s = new Session(`${item.id}#pf${++reqCounter}`);
-  prefetch = s;
-  prefetchItem = item;
-  cacheKeyByRequest.set(s.requestId, key);
-  const speakSettings: SpeakSettings = { speed: 1.0 };
-  if (voice) speakSettings.voice = voice;
-  console.log('[BFR] prefetch', s.requestId, '|', item.text.length, 'chars');
-  send({ action: 'speak', requestId: s.requestId, text: item.text, settings: speakSettings });
+    const s = new Session(`${item.id}#pf${++reqCounter}`);
+    prefetches.set(s.requestId, { session: s, item });
+    cacheKeyByRequest.set(s.requestId, key);
+    const speakSettings: SpeakSettings = { speed: 1.0 };
+    if (voice) speakSettings.voice = voice;
+    console.log('[BFR] prefetch', s.requestId, '|', item.text.length, 'chars');
+    // preempt:false so it coexists with the playing block; background:true so the
+    // server batches it at low pool priority behind what's actually being heard.
+    send({ action: 'speak', requestId: s.requestId, text: item.text, settings: speakSettings, preempt: false, background: true });
+  } finally {
+    startingItems.delete(item.id);
+    fillPrefetch(); // settle: a cache hit / abort frees the slot for the next block
+  }
 }
 
-function cachePrefetchSession(): void {
-  if (!prefetch || !prefetch.complete || prefetch.bytes === 0) return;
-  const key = cacheKeyByRequest.get(prefetch.requestId);
+function cachePrefetchSession(entry: { session: Session; item: QueueItem }): void {
+  const { session: s, item } = entry;
+  if (!s.complete || s.bytes === 0) return;
+  const key = cacheKeyByRequest.get(s.requestId);
   if (!key) return;
   cachePut(key, {
-    segments: prefetch.segments,
-    bytes: prefetch.bytes,
-    boundaries: prefetch.boundaries,
-    sentences: prefetch.sentences
+    segments: s.segments,
+    bytes: s.bytes,
+    boundaries: s.boundaries,
+    sentences: s.sentences
   });
-  if (prefetchItem) readyAhead.set(prefetchItem.id, prefetch.seconds);
+  readyAhead.set(item.id, s.seconds);
 }
 
-/** Abandon any prefetch (its item is no longer next, or we're stopping). */
-function dropPrefetch(): void {
-  if (!prefetch) return;
-  if (!prefetch.generationDone && isConnected()) send({ action: 'cancel', requestId: prefetch.requestId });
-  cacheKeyByRequest.delete(prefetch.requestId);
-  prefetch = null;
-  prefetchItem = null;
+/** Abandon one read-ahead session by requestId. */
+function dropPrefetchByRequest(requestId: string): void {
+  const entry = prefetches.get(requestId);
+  if (!entry) return;
+  if (!entry.session.generationDone && isConnected()) send({ action: 'cancel', requestId });
+  cacheKeyByRequest.delete(requestId);
+  prefetches.delete(requestId);
+}
+
+/** Abandon any read-ahead session generating a given queue item. */
+function dropPrefetchForItem(id: string): void {
+  for (const [requestId, { item }] of [...prefetches.entries()]) {
+    if (item.id === id) dropPrefetchByRequest(requestId);
+  }
+}
+
+/** Abandon every read-ahead session (queue replaced, or we're stopping). */
+function dropAllPrefetch(): void {
+  for (const requestId of [...prefetches.keys()]) dropPrefetchByRequest(requestId);
 }
 
 /**
- * Promote the prefetched session to current and play it immediately. Returns false
- * if there's no prefetch for this item (caller falls back to a fresh startCurrent).
+ * Promote a read-ahead session to current and play it immediately. Returns false
+ * if there's no read-ahead for this item (caller falls back to a fresh startCurrent).
  */
 function adoptPrefetchFor(item: QueueItem): boolean {
-  if (!prefetch || !prefetchItem || prefetchItem.id !== item.id) return false;
-  const s = prefetch;
-  prefetch = null;
-  prefetchItem = null;
-  ++playSeq; // invalidate any in-flight startCurrent/startPrefetch
+  let found: { requestId: string; session: Session } | null = null;
+  for (const [requestId, entry] of prefetches) {
+    if (entry.item.id === item.id) { found = { requestId, session: entry.session }; break; }
+  }
+  if (!found) return false;
+  const s = found.session;
+  prefetches.delete(found.requestId);
+  ++playSeq; // invalidate any in-flight startCurrent/startPrefetch racing on the old current
 
   // Tear down the current player but install the prefetched session in its place.
   try { audio.pause(); } catch { /* ignore */ }
@@ -685,20 +718,28 @@ function adoptPrefetchFor(item: QueueItem): boolean {
   ensureStatusTicker();
   preState = 'buffering';
   afterData(); // starts playback now if enough is buffered, else when more arrives
-  maybeStartPrefetch(); // if the adopted item is already complete, prefetch the next
+  fillPrefetch(); // keep the read-ahead pipeline full past the adopted block
   broadcast();
   return true;
 }
 
 // ─── Play the current item ────────────────────────────────────────────────────
 
-async function startCurrent(): Promise<void> {
+/**
+ * Start (or replay from cache) the current block.
+ * @param preempt true for a user-initiated new context (play / play-sequence) —
+ *   takes over the audio output and clears stale read-ahead; false when advancing
+ *   within the same run (skip / auto-advance on a cache miss), which keeps the
+ *   read-ahead sessions already generating further-ahead blocks.
+ */
+async function startCurrent(preempt: boolean): Promise<void> {
   const item = current;
   if (!item) return;
   const seq = ++playSeq;
 
   cancelGeneration();
   resetPlayer();
+  if (preempt) { dropAllPrefetch(); readyAhead.clear(); } // fresh run — old read-ahead is stale
   readyAhead.delete(item.id); // becoming current — no longer "ahead"
   rate = (await getSettings()).rate;
   if (seq !== playSeq) return;
@@ -714,7 +755,7 @@ async function startCurrent(): Promise<void> {
   if (seq !== playSeq) return;
 
   // Cache hit — replay with zero server contact. Leave any in-flight read-ahead
-  // prefetch running so the buffer keeps growing across this boundary.
+  // running so the buffer keeps growing across this boundary.
   const cached = cacheGet(key);
   if (cached) {
     const s = new Session(`cache-${++reqCounter}`);
@@ -728,13 +769,10 @@ async function startCurrent(): Promise<void> {
     session = s;
     cacheKeyByRequest.set(s.requestId, key);
     startPlayback();
-    maybeStartPrefetch(); // cached item is already done — get ahead on the next one
+    fillPrefetch(); // cached item is already done — keep read-ahead full
     return;
   }
 
-  // Cache miss — we need the single server session for THIS block now, so abandon any
-  // read-ahead prefetch (it was for a block we haven't reached) and generate.
-  dropPrefetch();
   const s = new Session(`${item.id}#${++reqCounter}`);
   session = s;
   cacheKeyByRequest.set(s.requestId, key);
@@ -755,8 +793,11 @@ async function startCurrent(): Promise<void> {
   if (voice) speakSettings.voice = voice;
   preState = engineState === 'running' ? 'buffering' : 'starting-engine';
   console.log('[BFR] speak', s.requestId, '| engine', engineState, '|', item.text.length, 'chars');
-  send({ action: 'speak', requestId: s.requestId, text: item.text, settings: speakSettings });
+  // preempt only on a fresh run; advancing keeps the concurrent read-ahead sessions.
+  // The playing block is foreground (background:false) so it's served before read-ahead.
+  send({ action: 'speak', requestId: s.requestId, text: item.text, settings: speakSettings, preempt, background: false });
   broadcast();
+  fillPrefetch(); // generate upcoming blocks alongside this one (sent after, so it's served first)
 }
 
 function connectErrorMessage(code: string): string {

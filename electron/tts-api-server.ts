@@ -13,9 +13,15 @@
  *     {action:'engine.restart', voice?, cpuWorkers?}   // apply a new worker count / voice
  *     {action:'config.get'}                            // read engine topology
  *     {action:'config.set', cpuWorkers?, voice?}       // persist worker count; warm voice
- *     {action:'speak',  requestId, text, settings?:{voice?, speed?, temperature?, topP?, repetitionPenalty?}}
- *     {action:'playhead', requestId, sentenceIndex}   // advances the lookahead window
+ *     {action:'speak',  requestId, text, settings?:{voice?, speed?, temperature?, topP?, repetitionPenalty?}, preempt?, background?}
+ *     {action:'playhead', requestId, sentenceIndex}   // advances the lookahead window; promotes a background block to playing
  *     {action:'cancel', requestId}
+ *
+ *   speak flags: preempt (default true) cancels other sessions so this block takes
+ *   over the audio output; background (default false) runs a read-ahead block at
+ *   low pool priority alongside the playing one. The extension prefetches upcoming
+ *   blocks with {preempt:false, background:true} so they all generate at once,
+ *   keeping every CPU worker busy even when each block is a one-sentence paragraph.
  *
  *   server → client
  *     {type:'hello',    state, serviceMode, voices, currentVoice, config, version}
@@ -73,8 +79,9 @@ const DEFAULT_VOICE = 'ScarlettJohansson';
 
 interface ClientState {
   authed: boolean;
-  /** requestId of this client's in-flight speak, if any */
-  activeRequestId: string | number | null;
+  /** requestIds of this client's in-flight speaks (the playing block plus any
+   *  read-ahead blocks it prefetched concurrently). */
+  activeRequestIds: Set<string | number>;
 }
 
 export class TtsApiServer {
@@ -203,7 +210,7 @@ export class TtsApiServer {
   // ───────────────────────────────────────────────────────────────────────────
 
   private handleConnection(ws: WebSocket): void {
-    const state: ClientState = { authed: false, activeRequestId: null };
+    const state: ClientState = { authed: false, activeRequestIds: new Set() };
     this.clients.set(ws, state);
 
     const authTimer = setTimeout(() => {
@@ -226,11 +233,12 @@ export class TtsApiServer {
     ws.on('close', () => {
       clearTimeout(authTimer);
       this.clients.delete(ws);
-      // A vanished client must not leave workers generating for nobody
-      if (state.activeRequestId !== null &&
-          streamScheduler.getActiveRequestId() === state.activeRequestId) {
-        streamScheduler.stop();
+      // A vanished client must not leave workers generating for nobody — stop
+      // every session it had in flight (playing block + read-ahead blocks).
+      for (const requestId of state.activeRequestIds) {
+        if (streamScheduler.isActive(requestId)) streamScheduler.stop(requestId);
       }
+      state.activeRequestIds.clear();
     });
   }
 
@@ -288,18 +296,23 @@ export class TtsApiServer {
         return;
 
       case 'playhead': {
+        const requestId = msg.requestId as string | number | undefined;
         const sentenceIndex = msg.sentenceIndex;
-        if (msg.requestId === streamScheduler.getActiveRequestId() && typeof sentenceIndex === 'number') {
-          streamScheduler.reportPlayhead(sentenceIndex);
+        if (requestId !== undefined && typeof sentenceIndex === 'number' &&
+            streamScheduler.isActive(requestId)) {
+          streamScheduler.reportPlayhead(requestId, sentenceIndex);
         }
         return;
       }
 
-      case 'cancel':
-        if (msg.requestId !== undefined && msg.requestId === streamScheduler.getActiveRequestId()) {
-          streamScheduler.stop();
+      case 'cancel': {
+        const requestId = msg.requestId as string | number | undefined;
+        if (requestId !== undefined && state.activeRequestIds.has(requestId)) {
+          streamScheduler.stop(requestId);
+          state.activeRequestIds.delete(requestId);
         }
         return;
+      }
 
       default:
         this.send(ws, { type: 'error', message: `unknown action: ${String(action)}` });
@@ -349,8 +362,19 @@ export class TtsApiServer {
       return;
     }
 
-    state.activeRequestId = requestId;
+    // preempt (default true): take over the audio output, cancelling other
+    // sessions. background (default false): a read-ahead block — coexist with the
+    // playing session at low pool priority. The extension fans out read-ahead with
+    // {preempt:false, background:true}; a plain client keeps the old take-over default.
+    const preempt = msg.preempt !== false;
+    const background = msg.background === true;
+
+    state.activeRequestIds.add(requestId);
     const sink = (event: Record<string, unknown>) => {
+      // A terminal event frees this requestId from the client's in-flight set.
+      if (event.kind === 'complete' || event.kind === 'cancelled') {
+        state.activeRequestIds.delete(requestId);
+      }
       if (ws.readyState !== WebSocket.OPEN) return;
       // Scheduler events use 'kind'; the wire protocol uses 'type'
       const { kind, ...rest } = event;
@@ -359,8 +383,12 @@ export class TtsApiServer {
 
     // Echo the segmentation before audio starts so the client can index chunks
     this.send(ws, { type: 'speaking', requestId, sentences });
-    const result = streamScheduler.start(sentences, 0, settings, requestId, sink);
+    const result = streamScheduler.start(sentences, 0, settings, requestId, sink, {
+      preempt,
+      priority: !background
+    });
     if (!result.success) {
+      state.activeRequestIds.delete(requestId);
       this.send(ws, { type: 'error', requestId, message: result.error || 'failed to start generation' });
     }
   }
