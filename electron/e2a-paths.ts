@@ -25,6 +25,7 @@ import {
   getWslOrpheusCondaEnv,
   wslPathToWindows,
 } from './tool-paths';
+import { componentManager } from './components/component-manager';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configurable paths (runtime overrides - for backward compatibility)
@@ -100,14 +101,29 @@ export function getDefaultE2aTmpPath(): string {
 export function getEnvPathForEngine(ttsEngine?: string, e2aPath?: string): string {
   const basePath = e2aPath || getDefaultE2aPath();
 
-  // Orpheus uses a separate environment due to vLLM dependency conflicts
+  // Orpheus uses a separate environment due to vLLM dependency conflicts.
+  // (This is the NATIVE execution path — Windows WSL Orpheus is routed elsewhere
+  // via shouldUseWsl2ForOrpheus and never reaches here.)
   if (ttsEngine?.toLowerCase() === 'orpheus') {
+    // Prefer an Orpheus the user manages via Settings → Add-ons — an external/BYO
+    // conda env they pointed at, or (later) a managed install.
+    const managed = componentManager.resolveEntry('orpheus');
+    if (managed) {
+      return managed;
+    }
+    // Legacy/bundled layout: a prefix env shipped inside the e2a install.
     const orpheusEnvPath = path.join(basePath, 'orpheus_env');
     if (fs.existsSync(orpheusEnvPath)) {
       return orpheusEnvPath;
     }
-    // Fall back to python_env if orpheus_env doesn't exist
-    console.warn('[E2A-PATHS] Warning: orpheus_env not found, falling back to python_env');
+    // NO silent fallback to python_env: that env has no vLLM/Orpheus and would
+    // crash deep in the worker. Fail clearly so the cause is obvious. (The UI
+    // already hides Orpheus when it isn't installed; this guards stale jobs and
+    // saved settings.)
+    throw new Error(
+      'Orpheus TTS environment not found. Install or locate Orpheus in ' +
+      'Settings → Add-ons, or create an "orpheus_env" beside your ebook2audiobook install.'
+    );
   }
 
   // Default: use python_env for XTTS and other engines
