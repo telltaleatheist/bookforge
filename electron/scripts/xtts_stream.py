@@ -83,7 +83,7 @@ FINE_TUNED_MODELS = {
     'DavidAttenborough': {
         'repo': 'drewThomasson/fineTunedTTSModels',
         'sub': 'xtts-v2/eng/DavidAttenborough/',
-        'voice_path': 'eng/adult/male/DavidAttenborough.wav',
+        'voice_path': 'eng/elder/male/DavidAttenborough.wav',
     },
     'MorganFreeman': {
         'repo': 'drewThomasson/fineTunedTTSModels',
