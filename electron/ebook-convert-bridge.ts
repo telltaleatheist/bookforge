@@ -11,6 +11,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as crypto from 'crypto';
 import { app } from 'electron';
+import { componentManager } from './components/component-manager';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -73,6 +74,17 @@ export async function findEbookConvert(): Promise<string | null> {
   // Return cached result if we've already searched
   if (cachedEbookConvertPath !== undefined) {
     return cachedEbookConvertPath;
+  }
+
+  // Prefer a Calibre the user manages via Settings → Add-ons (external/BYO or,
+  // later, a managed download). This is the resolveEntry integration seam: when
+  // a component is recorded it wins over the legacy path scan below. The scan
+  // remains as a fallback so behaviour is unchanged when nothing is recorded.
+  const managed = componentManager.resolveEntry('calibre');
+  if (managed) {
+    cachedEbookConvertPath = managed;
+    console.log('[EbookConvert] Using component-managed Calibre:', managed);
+    return managed;
   }
 
   // Check common paths
