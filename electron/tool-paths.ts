@@ -592,35 +592,21 @@ export function checkWslOrpheusSetup(config: {
 }
 
 /**
- * Check if WSL2 should be used for ALL TTS engines
- * Returns true only on Windows with useWsl2ForAllTts enabled
+ * Auto-WSL routing has been removed. BookForge no longer decides on its own to
+ * run TTS through WSL. Orpheus is an optional, user-installed component: if the
+ * user installs it under WSL, they point the e2a/conda/python paths at the WSL
+ * location and the normal path resolution handles it — no special spawn routing.
+ *
+ * These two predicates are kept (always false) so the existing WSL call sites
+ * compile and collapse to the native spawn path. The dead WSL branches, config
+ * keys, and settings UI can be deleted as a follow-up cleanup.
  */
 export function shouldUseWsl2ForAllTts(): boolean {
-  if (os.platform() !== 'win32') {
-    return false;
-  }
-  loadConfig();
-  // Handle both boolean true and string 'true' (settings UI saves as string)
-  const value = state.config.useWsl2ForAllTts as unknown;
-  return value === true || value === 'true';
+  return false;
 }
 
-/**
- * Check if WSL2 should be used for Orpheus TTS
- * Returns true only on Windows with useWsl2ForOrpheus or useWsl2ForAllTts enabled
- */
 export function shouldUseWsl2ForOrpheus(): boolean {
-  if (os.platform() !== 'win32') {
-    return false;
-  }
-  // If all TTS uses WSL, Orpheus does too
-  if (shouldUseWsl2ForAllTts()) {
-    return true;
-  }
-  loadConfig();
-  // Handle both boolean true and string 'true' (settings UI saves as string)
-  const value = state.config.useWsl2ForOrpheus as unknown;
-  return value === true || value === 'true';
+  return false;
 }
 
 /**
