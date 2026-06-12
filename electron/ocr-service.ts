@@ -74,7 +74,7 @@ export class OcrService {
   private preprocessAvailable: boolean | null = null;
 
   /**
-   * Find the ocr-preprocess.py script (same pattern as pdf-pymupdf-bridge.ts)
+   * Find the ocr-preprocess.py script
    */
   private findPreprocessScript(): string {
     const possiblePaths = [

@@ -1905,25 +1905,6 @@ export class ElectronService {
   }
 
   /**
-   * Compute word-level diff using system diff command (much more efficient)
-   * This runs in the main process using native diff, avoiding JS memory issues
-   */
-  async computeSystemDiff(originalText: string, cleanedText: string): Promise<{
-    success: boolean;
-    segments?: Array<{ text: string; type: 'unchanged' | 'added' | 'removed' }>;
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      const result = await (window as any).electron.diff.computeSystemDiff(originalText, cleanedText);
-      if (result.success) {
-        return { success: true, segments: result.data };
-      }
-      return { success: false, error: result.error || 'Failed to compute diff' };
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
    * Subscribe to diff loading progress events
    */
   onDiffLoadProgress(callback: (progress: {
