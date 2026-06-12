@@ -7,6 +7,7 @@ import { PluginService, PluginInfo } from '../../core/services/plugin.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
+import { AddOnsPanelComponent } from './components/add-ons-panel.component';
 import {
   AIConfig,
   AIProvider,
@@ -19,7 +20,7 @@ import {
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -1079,6 +1080,9 @@ import {
                   </p>
                 </div>
               </div>
+            } @else if (section.id === 'add-ons') {
+              <!-- Add-ons (optional components) — own child component -->
+              <app-add-ons-panel></app-add-ons-panel>
             } @else {
               <div class="fields-list">
                 @for (field of section.fields; track field.key) {

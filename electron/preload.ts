@@ -1,4 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type {
+  ComponentStatus,
+  SystemProfile,
+  InstallResult,
+  InstallProgress,
+} from './components/component-types';
 
 /**
  * Preload script - Exposes safe IPC methods to renderer process
@@ -1361,6 +1367,17 @@ export interface ElectronAPI {
   ttsStream: {
     getWorkerConfig: () => Promise<{ success: boolean; data?: { cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number }; error?: string }>;
     setWorkers: (count: number) => Promise<{ success: boolean; data?: { cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number }; error?: string }>;
+  };
+  components: {
+    list: () => Promise<ComponentStatus[]>;
+    get: (id: string) => Promise<ComponentStatus | null>;
+    probe: (force?: boolean) => Promise<SystemProfile>;
+    detectExternal: (id: string) => Promise<string | null>;
+    setExternalPath: (id: string, path: string) => Promise<ComponentStatus>;
+    install: (id: string) => Promise<InstallResult>;
+    cancel: (id: string) => Promise<void>;
+    uninstall: (id: string) => Promise<void>;
+    onProgress: (callback: (p: InstallProgress) => void) => () => void;
   };
   parallelTts: {
     detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: HardwareRecommendation; error?: string }>;
@@ -2729,6 +2746,31 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('tts-stream:get-worker-config'),
     setWorkers: (count: number) =>
       ipcRenderer.invoke('tts-stream:set-workers', count),
+  },
+  components: {
+    list: () =>
+      ipcRenderer.invoke('components:list'),
+    get: (id: string) =>
+      ipcRenderer.invoke('components:get', id),
+    probe: (force?: boolean) =>
+      ipcRenderer.invoke('components:probe', force),
+    detectExternal: (id: string) =>
+      ipcRenderer.invoke('components:detect', id),
+    setExternalPath: (id: string, path: string) =>
+      ipcRenderer.invoke('components:set-path', id, path),
+    install: (id: string) =>
+      ipcRenderer.invoke('components:install', id),
+    cancel: (id: string) =>
+      ipcRenderer.invoke('components:cancel', id),
+    uninstall: (id: string) =>
+      ipcRenderer.invoke('components:uninstall', id),
+    onProgress: (callback: (p: InstallProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, p: InstallProgress) => callback(p);
+      ipcRenderer.on('components:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('components:progress', listener);
+      };
+    },
   },
   parallelTts: {
     detectRecommendedWorkerCount: () =>

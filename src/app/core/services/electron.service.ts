@@ -60,6 +60,154 @@ export interface TocLine {
   isPageNumber: boolean;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Optional Component System — renderer-facing types.
+//
+// The renderer cannot import from electron/, so these are mirrored VERBATIM from
+// electron/components/component-types.ts (the locked contract). Keep them in sync
+// with that file. They carry no runtime dependencies.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type Platform = 'darwin' | 'win32' | 'linux';
+export type Arch = 'arm64' | 'x64';
+
+export type GpuKind = 'apple-silicon' | 'cuda' | 'any' | 'none';
+
+export type ComponentKind =
+  | 'binary'
+  | 'conda-env'
+  | 'system';
+
+export type AcquisitionMode = 'external' | 'managed';
+
+export type ComponentState =
+  | 'installed'
+  | 'available'
+  | 'incompatible'
+  | 'installing'
+  | 'error';
+
+export interface ComponentRequirements {
+  platforms?: Platform[];
+  gpu?: GpuKind;
+  minVramMB?: number;
+  minRamMB?: number;
+  minDiskMB?: number;
+}
+
+export interface ComponentArtifact {
+  platform: Platform;
+  arch: Arch;
+  gpu?: GpuKind;
+  url: string;
+  sha256: string;
+  bytes: number;
+  condaUnpack?: boolean;
+}
+
+export interface VerifySpec {
+  kind: 'exec' | 'python-import' | 'path-exists';
+  entry?: string;
+  args?: string[];
+  module?: string;
+  expect?: string;
+}
+
+export interface DetectSpec {
+  commandNames?: string[];
+  candidates?: { platform: Platform; path: string }[];
+  envVar?: string;
+}
+
+export interface OptionalComponent {
+  id: string;
+  name: string;
+  description: string;
+  kind: ComponentKind;
+  acquisition: AcquisitionMode[];
+  sizeBytes: number;
+  requirements: ComponentRequirements;
+  artifacts: ComponentArtifact[];
+  detect?: DetectSpec;
+  verify: VerifySpec;
+  version: string;
+  entryPath: string;
+  externalHelpUrl?: string;
+}
+
+export interface CudaInfo {
+  available: boolean;
+  name?: string;
+  vramMB?: number;
+}
+
+export interface WslInfo {
+  available: boolean;
+  distros: string[];
+  defaultDistro?: string;
+}
+
+export interface SystemProfile {
+  platform: Platform;
+  arch: Arch;
+  appleSilicon: boolean;
+  cuda: CudaInfo;
+  ramMB: number;
+  freeDiskMB: number;
+  wsl?: WslInfo;
+}
+
+export interface Compatibility {
+  compatible: boolean;
+  degraded?: boolean;
+  reasons: string[];
+}
+
+export interface InstalledRecord {
+  id: string;
+  version: string;
+  source: AcquisitionMode;
+  path: string;
+  entryPath: string;
+  sha256?: string;
+  bytes?: number;
+  installedAt: string;
+}
+
+export interface ComponentStatus {
+  component: OptionalComponent;
+  state: ComponentState;
+  compatibility: Compatibility;
+  installed?: InstalledRecord;
+  progress?: InstallProgress;
+}
+
+export type InstallPhase =
+  | 'resolve'
+  | 'download'
+  | 'verify'
+  | 'extract'
+  | 'postinstall'
+  | 'verify-run'
+  | 'done'
+  | 'error';
+
+export interface InstallProgress {
+  id: string;
+  phase: InstallPhase;
+  pct: number;
+  receivedBytes?: number;
+  totalBytes?: number;
+  message?: string;
+}
+
+export interface InstallResult {
+  id: string;
+  ok: boolean;
+  record?: InstalledRecord;
+  error?: string;
+}
+
 interface BrowseResult {
   path: string;
   parent: string;
@@ -3505,4 +3653,66 @@ export class ElectronService {
     }
     return { success: false, migrated: 0, skipped: 0, failed: [], error: 'Not running in Electron' };
   }
+
+  // ── Optional Component System ──────────────────────────────────────────────
+  // Mirrors the locked renderer contract. The underlying IPC returns the contract
+  // types raw (no { success, error } envelope), so outside Electron we reject with
+  // a clear error rather than fabricate a value — except onProgress, which mirrors
+  // the other subscription helpers and returns a no-op unsubscribe.
+  readonly components = {
+    list: (): Promise<ComponentStatus[]> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.list();
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    get: (id: string): Promise<ComponentStatus | null> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.get(id);
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    probe: (force?: boolean): Promise<SystemProfile> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.probe(force);
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    detectExternal: (id: string): Promise<string | null> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.detectExternal(id);
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    setExternalPath: (id: string, path: string): Promise<ComponentStatus> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.setExternalPath(id, path);
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    install: (id: string): Promise<InstallResult> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.install(id);
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    cancel: (id: string): Promise<void> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.cancel(id);
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    uninstall: (id: string): Promise<void> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.uninstall(id);
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    onProgress: (cb: (p: InstallProgress) => void): () => void => {
+      if (this.isElectron) {
+        return (window as any).electron.components.onProgress(cb);
+      }
+      return () => {};
+    },
+  };
 }

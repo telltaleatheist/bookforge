@@ -187,6 +187,13 @@ export class SettingsService {
         icon: '🔧',
         fields: [], // Tools section has custom UI
       },
+      {
+        id: 'add-ons',
+        name: 'Add-ons',
+        description: 'Optional components: Calibre, Tesseract, Orpheus, and more',
+        icon: '🧩',
+        fields: [], // Add-ons section has custom UI (app-add-ons-panel)
+      },
     ];
 
     this.sections.set(builtinSections);

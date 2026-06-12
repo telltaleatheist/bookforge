@@ -19,6 +19,8 @@ import { findEbookConvert } from './ebook-convert-bridge';
 import { applyMetadata } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
+import { componentManager } from './components/component-manager';
+import { systemProbe } from './components/system-probe';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -4209,6 +4211,44 @@ function setupIpcHandlers(): void {
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
+  });
+
+  // ── Optional Component System: catalog/probe/install bridge ──
+  // These return the contract types raw (ComponentStatus[], SystemProfile, …);
+  // thrown errors propagate to the renderer's promise as a rejection.
+
+  ipcMain.handle('components:list', async () => {
+    return componentManager.listStatus();
+  });
+
+  ipcMain.handle('components:get', async (_event, id: string) => {
+    return componentManager.getStatus(id);
+  });
+
+  ipcMain.handle('components:probe', async (_event, force?: boolean) => {
+    return systemProbe.profile(force);
+  });
+
+  ipcMain.handle('components:detect', async (_event, id: string) => {
+    return componentManager.detectExternal(id);
+  });
+
+  ipcMain.handle('components:set-path', async (_event, id: string, entryPath: string) => {
+    return componentManager.setExternalPath(id, entryPath);
+  });
+
+  ipcMain.handle('components:install', async (event, id: string) => {
+    return componentManager.install(id, (p) => {
+      event.sender.send('components:progress', p);
+    });
+  });
+
+  ipcMain.handle('components:cancel', async (_event, id: string) => {
+    return componentManager.cancel(id);
+  });
+
+  ipcMain.handle('components:uninstall', async (_event, id: string) => {
+    return componentManager.uninstall(id);
   });
 
   // Stream scheduler: main-process generation orchestration for the Play tab.
