@@ -22,9 +22,15 @@ import {
   PlayableChapter,
   PlaySettings,
   PlaybackState,
-  SessionState,
-  AVAILABLE_VOICES
+  SessionState
 } from '../../models/play.types';
+
+/** One selectable voice in the dropdown (from the main-process catalog). */
+interface VoiceOption {
+  id: string;
+  name: string;
+  group: string;
+}
 
 /** A saved position in the stream (sentence-based, since there is no global timeline) */
 interface StreamBookmark {
@@ -114,8 +120,12 @@ interface StreamCue {
               [disabled]="isPlaying()"
               title="Voice"
             >
-              @for (voice of voices; track voice.id) {
-                <option [value]="voice.id">{{ voice.name }}</option>
+              @for (g of voiceGroups(); track g.group) {
+                <optgroup [label]="g.group">
+                  @for (voice of g.voices; track voice.id) {
+                    <option [value]="voice.id">{{ voice.name }}</option>
+                  }
+                </optgroup>
               }
             </select>
             <button
@@ -1058,8 +1068,28 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   // View refs
   @ViewChild('textPane') textPane!: ElementRef<HTMLDivElement>;
 
-  // Constants
-  readonly voices = AVAILABLE_VOICES;
+  // Voice catalog (loaded from the main process; available before the engine
+  // starts). Grouped into optgroups by voiceGroups().
+  readonly voiceCatalog = signal<VoiceOption[]>([]);
+  readonly voiceGroups = computed(() => {
+    const order = ['Default', 'Fine-tuned', 'Voice Library'];
+    const byGroup = new Map<string, VoiceOption[]>();
+    for (const v of this.voiceCatalog()) {
+      const bucket = byGroup.get(v.group);
+      if (bucket) bucket.push(v);
+      else byGroup.set(v.group, [v]);
+    }
+    const ordered: Array<{ group: string; voices: VoiceOption[] }> = [];
+    for (const g of order) {
+      const vs = byGroup.get(g);
+      if (vs) ordered.push({ group: g, voices: vs });
+    }
+    for (const [g, vs] of byGroup) {
+      if (!order.includes(g)) ordered.push({ group: g, voices: vs });
+    }
+    return ordered;
+  });
+
   readonly Math = Math;
 
   // Loading modal state
@@ -1196,6 +1226,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   ngOnInit() {
     this.loadChapters();
     this.loadBookmarks();
+    void this.loadVoices();
 
     // Audio events from the main-process stream scheduler
     this.unsubscribeStreamEvents = this.electronService.onStreamEvent(
@@ -1494,6 +1525,23 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   // ─────────────────────────────────────────────────────────────────────────────
   // Private methods
   // ─────────────────────────────────────────────────────────────────────────────
+
+  /** Load the voice catalog and keep the current selection valid. */
+  private async loadVoices() {
+    const result = await this.electronService.playGetVoices();
+    if (!result.success || !result.voices?.length) return;
+
+    this.voiceCatalog.set(result.voices);
+
+    const ids = new Set(result.voices.map(v => v.id));
+    if (!ids.has(this.selectedVoice())) {
+      const preferred =
+        result.voices.find(v => v.id === 'ScarlettJohansson') ||
+        result.voices.find(v => v.group === 'Default') ||
+        result.voices[0];
+      this.selectedVoice.set(preferred.id);
+    }
+  }
 
   private async loadChapters() {
     this.chaptersLoading.set(true);

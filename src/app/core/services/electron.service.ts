@@ -2223,7 +2223,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async playGetVoices(): Promise<{ success: boolean; voices?: string[]; error?: string }> {
+  async playGetVoices(): Promise<{ success: boolean; voices?: Array<{ id: string; name: string; group: string }>; error?: string }> {
     if (this.isElectron) {
       const result = await (window as any).electron.play.getVoices();
       if (result.success && result.data) {

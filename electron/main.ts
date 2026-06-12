@@ -4233,7 +4233,9 @@ function setupIpcHandlers(): void {
   ipcMain.handle('play:get-voices', async () => {
     try {
       const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      const voices = xttsWorkerPool.getAvailableVoices();
+      // Full catalog (id, name, group) so the dropdown can label and group
+      // voices; available before the engine starts.
+      const voices = xttsWorkerPool.getVoiceCatalog();
       return { success: true, data: { voices } };
     } catch (err) {
       return { success: false, error: (err as Error).message };

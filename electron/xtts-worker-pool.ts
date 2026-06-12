@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as readline from 'readline';
 import { getDefaultE2aPath, getCondaRunArgs, getCondaPath, buildCondaSpawnEnv } from './e2a-paths';
+import { getStreamVoices, resolveStreamVoice, StreamVoice } from './xtts-voices';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -32,7 +33,6 @@ export interface AudioChunk {
 
 interface XTTSResponse {
   type: 'ready' | 'status' | 'loaded' | 'audio' | 'chunk' | 'done' | 'error' | 'stopped';
-  voices?: string[];
   device?: string;
   voice?: string;
   message?: string;
@@ -114,7 +114,6 @@ function targetWorkerCount(): number {
 let workers: Worker[] = [];
 let mainWindow: BrowserWindow | null = null;
 let currentVoice: string | null = null;
-let discoveredVoices: string[] = [];
 
 // Idle shutdown: kill the pool if nothing was generated for this long
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -367,11 +366,6 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
                 }
                 detectedDevice = response.device;
               }
-              // Store discovered voices from the first worker
-              if (response.voices && response.voices.length > 0 && discoveredVoices.length === 0) {
-                discoveredVoices = response.voices;
-                console.log(`[XTTS Pool] Discovered ${discoveredVoices.length} voices`);
-              }
               resolve({ success: true });
             }
           } catch (err) {
@@ -437,10 +431,17 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
     return { success: true };
   }
 
+  // Resolve the catalog entry here so the worker stays a generic executor:
+  // it just loads (repo, sub) and clones refPath.
+  const descriptor = resolveStreamVoice(voice);
+  if (!descriptor) {
+    return { success: false, error: `Unknown voice: ${voice}` };
+  }
+
   console.log(`[XTTS Pool] Loading voice ${voice} on ${workers.length} workers...`);
 
   // Load voice on all workers in parallel
-  const loadPromises = workers.map(worker => loadVoiceOnWorker(worker, voice));
+  const loadPromises = workers.map(worker => loadVoiceOnWorker(worker, descriptor));
   const results = await Promise.all(loadPromises);
 
   const allSuccess = results.every(r => r.success);
@@ -454,7 +455,7 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
   }
 }
 
-async function loadVoiceOnWorker(worker: Worker, voice: string): Promise<{ success: boolean; error?: string }> {
+async function loadVoiceOnWorker(worker: Worker, descriptor: StreamVoice): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
     let resolved = false;
 
@@ -477,7 +478,7 @@ async function loadVoiceOnWorker(worker: Worker, voice: string): Promise<{ succe
             releaseWorkerSlot();
           }
           if (result.success || result.audio) {
-            worker.currentVoice = voice;
+            worker.currentVoice = descriptor.id;
             resolve({ success: true });
           } else {
             resolve({ success: false, error: result.error });
@@ -487,7 +488,13 @@ async function loadVoiceOnWorker(worker: Worker, voice: string): Promise<{ succe
       sentenceIndex: -1  // Special marker for voice load
     };
 
-    sendToWorker(worker, { action: 'load', voice });
+    sendToWorker(worker, {
+      action: 'load',
+      voice: descriptor.id,
+      repo: descriptor.repo,
+      sub: descriptor.sub,
+      ref_path: descriptor.refPath
+    });
   });
 }
 
@@ -710,7 +717,6 @@ export async function endSession(): Promise<void> {
 
   workers = [];
   currentVoice = null;
-  discoveredVoices = [];
   serviceMode = false;  // engine off ⇒ service off
 
   if (hadWorkers) {
@@ -727,11 +733,19 @@ export function isSessionActive(): boolean {
 }
 
 /**
- * Get available voices (discovered from e2a voices directory)
+ * Voice ids available to stream. Sourced from the catalog (the e2a voices
+ * folder), so it works before the engine starts. Kept as string[] for the TTS
+ * API server / browser-extension protocol.
  */
 export function getAvailableVoices(): string[] {
-  // Return discovered voices, or empty if not yet discovered
-  return discoveredVoices;
+  return getStreamVoices().map(v => v.id);
+}
+
+/**
+ * Full voice catalog (id, display name, group, model paths) for the UI dropdown.
+ */
+export function getVoiceCatalog(): StreamVoice[] {
+  return getStreamVoices();
 }
 
 /**
@@ -833,6 +847,7 @@ export const xttsWorkerPool = {
   endSession,
   isSessionActive,
   getAvailableVoices,
+  getVoiceCatalog,
   getCurrentVoice,
   getWorkerCount,
   getEngineState,

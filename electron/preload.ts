@@ -1361,7 +1361,7 @@ export interface ElectronAPI {
     loadVoice: (voice: string) => Promise<{ success: boolean; error?: string }>;
     endSession: () => Promise<{ success: boolean; error?: string }>;
     isSessionActive: () => Promise<{ success: boolean; data?: { active: boolean }; error?: string }>;
-    getVoices: () => Promise<{ success: boolean; data?: { voices: string[] }; error?: string }>;
+    getVoices: () => Promise<{ success: boolean; data?: { voices: Array<{ id: string; name: string; group: string }> }; error?: string }>;
     onStatus: (callback: (status: { message: string }) => void) => () => void;
     onSessionEnded: (callback: (data: { code: number }) => void) => () => void;
     onSessionStarted: (callback: () => void) => () => void;
