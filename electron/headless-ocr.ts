@@ -22,7 +22,6 @@ export interface HeadlessOcrPageResult {
   text: string;
   confidence: number;
   textLines?: OcrTextLine[];
-  layoutBlocks?: any[];  // Plugin layout blocks if available
 }
 
 export interface HeadlessOcrOptions {
@@ -225,8 +224,7 @@ export class HeadlessOcrService {
       page: pageNum,
       text: typedResult.data?.text || '',
       confidence: typedResult.data?.confidence || 0,
-      textLines: typedResult.data?.textLines,
-      layoutBlocks: typedResult.data?.layoutBlocks
+      textLines: typedResult.data?.textLines
     };
   }
 

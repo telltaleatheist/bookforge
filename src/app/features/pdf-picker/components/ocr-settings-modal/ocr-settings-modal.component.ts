@@ -24,45 +24,15 @@ export interface OcrJob {
 
 export type { OcrTextLine };
 
-// Layout detection categories from Surya (actual output format)
-export type LayoutLabel =
-  | 'Caption'
-  | 'Footnote'
-  | 'Formula'
-  | 'ListItem'
-  | 'PageFooter'
-  | 'PageHeader'
-  | 'Picture'
-  | 'Figure'
-  | 'SectionHeader'
-  | 'Table'
-  | 'Form'
-  | 'TableOfContents'
-  | 'Handwriting'
-  | 'Text'
-  | 'TextInlineMath'
-  | 'Title';
-
-export interface LayoutBlock {
-  bbox: [number, number, number, number];
-  polygon: number[][];
-  label: LayoutLabel;
-  confidence: number;
-  position: number;
-  text?: string;
-}
-
 export interface OcrPageResult {
   page: number;
   text: string;
   confidence: number;
   textLines?: OcrTextLine[];  // Text lines with bounding boxes
-  layoutBlocks?: LayoutBlock[];  // Semantic layout regions (Surya only)
 }
 
 export interface OcrCompletionEvent {
   results: OcrPageResult[];
-  useLayoutCategories: boolean;  // Whether layout detection was used for categorization
 }
 
 @Component({
@@ -108,24 +78,6 @@ export interface OcrCompletionEvent {
               }
             </div>
           </div>
-
-          <!-- Layout Detection picker (when selected engine lacks its own layout detection) -->
-          @if (!selectedEngineHasLayout() && layoutPluginAvailable()) {
-            <div class="section">
-              <h3 class="section-title">Layout Detection</h3>
-              <select
-                class="select-field"
-                [value]="selectedLayoutPlugin()"
-                (change)="selectedLayoutPlugin.set($any($event.target).value)"
-              >
-                <option value="">None</option>
-                @for (engine of availableLayoutEngines(); track engine.id) {
-                  <option [value]="engine.id">{{ engine.name }}</option>
-                }
-              </select>
-              <span class="checkbox-hint" style="display: block; margin-top: 4px;">Classify headers, footnotes, captions, etc. Adds processing time per page.</span>
-            </div>
-          }
 
           <!-- Language (Tesseract) - always reserve space to prevent layout shift -->
           <div class="section language-section" [class.hidden]="settings().engine !== 'tesseract' || !engineAvailable()">
@@ -796,18 +748,9 @@ export class OcrSettingsModalComponent implements OnDestroy {
     name: string;
     available: boolean;
     version: string | null;
-    hasLayout: boolean;
   }>>([
-    { id: 'tesseract', name: 'Tesseract', available: false, version: null, hasLayout: false },
+    { id: 'tesseract', name: 'Tesseract', available: false, version: null },
   ]);
-
-  // Which external layout plugin to use (empty string = none)
-  readonly selectedLayoutPlugin = signal<string>('');
-
-  // Computed: available layout engines for the dropdown
-  availableLayoutEngines(): Array<{ id: string; name: string }> {
-    return this.engines().filter(e => e.hasLayout && e.available).map(e => ({ id: e.id, name: e.name }));
-  }
 
   readonly availableLanguages = signal<string[]>(['eng']);
   readonly scope = signal<OcrScope>('all');
@@ -868,18 +811,14 @@ export class OcrSettingsModalComponent implements OnDestroy {
       const status = await this.electronService.ocrIsAvailable();
       const languages = await this.electronService.ocrGetLanguages();
 
-      // Engines that support layout detection
-      const layoutEngines = new Set(['surya-ocr', 'paddle-ocr']);
-
       // Start with Tesseract as the built-in engine
       const engineList: Array<{
         id: string;
         name: string;
         available: boolean;
         version: string | null;
-        hasLayout: boolean;
       }> = [
-        { id: 'tesseract', name: 'Tesseract', available: status.available, version: status.version, hasLayout: false },
+        { id: 'tesseract', name: 'Tesseract', available: status.available, version: status.version },
       ];
 
       // Discover OCR plugins dynamically (include unavailable ones so they show as "Not installed")
@@ -893,7 +832,6 @@ export class OcrSettingsModalComponent implements OnDestroy {
           name: plugin.name,
           available: availability.available,
           version: availability.version || null,
-          hasLayout: layoutEngines.has(plugin.id),
         });
       }
 
@@ -930,9 +868,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
   getEngineIcon(engineId: string): string {
     const icons: Record<string, string> = {
       'tesseract': '🔤',
-      'surya-ocr': '🌅',
       'apple-vision-ocr': '',
-      'paddle-ocr': '🏓',
     };
     return icons[engineId] || '🔌';
   }
@@ -942,38 +878,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
     const engineInfo = this.engines().find(e => e.id === engine);
     const name = engineInfo?.name || engine;
 
-    if (engine === 'tesseract' && this.selectedLayoutPlugin()) {
-      return `Processing with Tesseract + layout detection...`;
-    }
     return `Running ${name} (this may take a moment)...`;
-  }
-
-  selectedEngineHasLayout(): boolean {
-    const engine = this.engines().find(e => e.id === this.settings().engine);
-    return engine?.hasLayout ?? false;
-  }
-
-  layoutPluginAvailable(): boolean {
-    return this.engines().some(e => e.hasLayout && e.available);
-  }
-
-  private findLayoutPlugin(): string | null {
-    // If the selected OCR engine has layout, use it
-    const engine = this.engines().find(e => e.id === this.settings().engine);
-    if (engine?.hasLayout && engine.available) return engine.id;
-    // Otherwise use the user's selected layout plugin from the dropdown
-    const selected = this.selectedLayoutPlugin();
-    if (selected) {
-      const layoutEngine = this.engines().find(e => e.id === selected && e.hasLayout && e.available);
-      if (layoutEngine) return layoutEngine.id;
-    }
-    return null;
-  }
-
-  private shouldUseLayoutCategories(): boolean {
-    const engineInfo = this.engines().find(e => e.id === this.settings().engine);
-    if (engineInfo?.hasLayout) return true;
-    return !!this.selectedLayoutPlugin();
   }
 
   progressPercent(): number {
@@ -1100,10 +1005,9 @@ export class OcrSettingsModalComponent implements OnDestroy {
           continue;
         }
 
-        let result: { text: string; confidence: number; textLines?: OcrTextLine[]; layoutBlocks?: LayoutBlock[] } | null = null;
+        let result: { text: string; confidence: number; textLines?: OcrTextLine[] } | null = null;
 
         let textLines: OcrTextLine[] | undefined;
-        let layoutBlocks: LayoutBlock[] | undefined;
 
         // Step 1: Run OCR with selected engine
         if (engine === 'tesseract') {
@@ -1124,28 +1028,6 @@ export class OcrSettingsModalComponent implements OnDestroy {
           }
         }
 
-        // Step 2: Run layout detection
-        const engineInfo = this.engines().find(e => e.id === engine);
-        const engineHasLayout = engineInfo?.hasLayout ?? false;
-        const shouldRunLayout = engineHasLayout || !!this.selectedLayoutPlugin();
-
-        if (result && shouldRunLayout) {
-          // Determine which plugin to use for layout
-          const layoutPluginId = engineHasLayout ? engine : this.findLayoutPlugin();
-          if (layoutPluginId) {
-            try {
-              console.log(`[OCR] Running layout detection via ${layoutPluginId} for page ${pageNum}`);
-              const layoutResult = await this.pluginService.detectLayout(layoutPluginId, imageData);
-              if (layoutResult.success && layoutResult.layoutBlocks) {
-                layoutBlocks = layoutResult.layoutBlocks as LayoutBlock[] | undefined;
-                console.log(`[OCR] Layout detection returned ${layoutBlocks?.length || 0} blocks for page ${pageNum}`);
-              }
-            } catch (layoutErr) {
-              console.warn('Layout detection failed:', layoutErr);
-            }
-          }
-        }
-
         this.processingPage.set(false);
 
         if (result) {
@@ -1154,8 +1036,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
             page: pageNum,
             text: result!.text,
             confidence: result!.confidence,
-            textLines: textLines,
-            layoutBlocks: layoutBlocks
+            textLines: textLines
           }]);
         }
       } catch (err) {
@@ -1179,7 +1060,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
     // Auto-apply results to document
     if (this.results().length > 0) {
-      this.ocrCompleted.emit({ results: this.results(), useLayoutCategories: this.shouldUseLayoutCategories() });
+      this.ocrCompleted.emit({ results: this.results() });
     }
   }
 
@@ -1207,7 +1088,6 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
     // Normal mode: start regular background OCR job
     const getImage = this.getPageImage();
-    const useLayoutCategoriesForEngine = this.shouldUseLayoutCategories();
 
     // Start background job
     const jobId = await this.ocrJobService.startJob(
@@ -1223,11 +1103,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
           page: r.page,
           text: r.text,
           confidence: r.confidence,
-          textLines: r.textLines,
-          layoutBlocks: r.layoutBlocks as OcrPageResult['layoutBlocks']
+          textLines: r.textLines
         }));
         if (results.length > 0) {
-          this.ocrCompleted.emit({ results, useLayoutCategories: useLayoutCategoriesForEngine });
+          this.ocrCompleted.emit({ results });
         }
       }
     );
@@ -1252,7 +1131,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
     // Emit already processed results immediately (before modal closes)
     const alreadyProcessedResults = this.results();
     if (alreadyProcessedResults.length > 0) {
-      this.ocrCompleted.emit({ results: alreadyProcessedResults, useLayoutCategories: this.shouldUseLayoutCategories() });
+      this.ocrCompleted.emit({ results: alreadyProcessedResults });
     }
 
     if (remainingPages.length === 0) {
@@ -1303,7 +1182,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
   }
 
   applyResults(): void {
-    this.ocrCompleted.emit({ results: this.results(), useLayoutCategories: this.shouldUseLayoutCategories() });
+    this.ocrCompleted.emit({ results: this.results() });
     this.close.emit();
   }
 }

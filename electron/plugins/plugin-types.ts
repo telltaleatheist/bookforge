@@ -32,7 +32,7 @@ export interface PluginSettingField {
  * Plugin manifest - describes the plugin
  */
 export interface PluginManifest {
-  id: string; // 'surya-ocr', 'ebook2audiobook'
+  id: string; // 'apple-vision-ocr', 'ebook2audiobook'
   name: string; // Display name
   version: string;
   description: string;

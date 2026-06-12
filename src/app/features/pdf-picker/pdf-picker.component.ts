@@ -2490,14 +2490,12 @@ export class PdfPickerComponent implements OnInit {
   // Global OCR job completion callback (stored as a stable reference so it can
   // be unregistered on destroy)
   private readonly ocrJobCompleteCallback = (job: OcrJob): void => {
-    // Convert OcrJobResult to OcrPageResult and process (including layoutBlocks)
-    // Cast layoutBlocks to LayoutBlock[] since PluginLayoutBlock.label is string but LayoutBlock.label is a union type
+    // Convert OcrJobResult to OcrPageResult and process
     const results: OcrPageResult[] = job.results.map(r => ({
       page: r.page,
       text: r.text,
       confidence: r.confidence,
-      textLines: r.textLines,
-      layoutBlocks: r.layoutBlocks as OcrPageResult['layoutBlocks']
+      textLines: r.textLines
     }));
     if (results.length > 0) {
       this.onOcrCompleted(results);
@@ -10644,8 +10642,6 @@ export class PdfPickerComponent implements OnInit {
   onOcrCompleted(event: OcrCompletionEvent | OcrPageResult[]): void {
     // Handle both old format (array) and new format (event object)
     const results = Array.isArray(event) ? event : event.results;
-    const useSuryaCategories = Array.isArray(event) ? false : (event as any).useSuryaCategories ?? (event as any).useLayoutCategories ?? false;
-
 
     // Count total text lines with bboxes
     const totalLines = results.reduce((sum, r) => sum + (r.textLines?.length || 0), 0);
@@ -10779,38 +10775,10 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
-    // Collect layout blocks from Surya (if available) for smart categorization
-    const layoutBlocksByPage = new Map<number, any[]>();
-    // Debug: check what layout data is coming in
-    const pagesWithLayout = results.filter(r => r.layoutBlocks && r.layoutBlocks.length > 0);
-    if (pagesWithLayout.length === 0 && results.length > 0) {
-    }
-    for (const result of results) {
-      if (result.layoutBlocks && result.layoutBlocks.length > 0) {
-        // Scale layout blocks from image pixels to PDF coordinates
-        const scaledBlocks = result.layoutBlocks.map(lb => ({
-          ...lb,
-          bbox: [
-            lb.bbox[0] / renderScale,
-            lb.bbox[1] / renderScale,
-            lb.bbox[2] / renderScale,
-            lb.bbox[3] / renderScale
-          ] as [number, number, number, number]
-        }));
-        layoutBlocksByPage.set(result.page, scaledBlocks);
-        scaledBlocks.forEach((b, i) => {
-        });
-      }
-    }
-
     // Post-process OCR blocks: merge lines into paragraphs and apply smart categorization
-    // Always pass layout data when available — used for paragraph grouping even without Surya categories
-    const layoutData = layoutBlocksByPage.size > 0 ? layoutBlocksByPage : undefined;
-    const processedResult = this.ocrPostProcessor.processOcrBlocks(newBlocks, pageDims, layoutData);
+    const processedResult = this.ocrPostProcessor.processOcrBlocks(newBlocks, pageDims);
     const processedBlocks = processedResult.blocks;
     const newCategories = processedResult.categories;
-
-    const hasLayoutData = useSuryaCategories && layoutBlocksByPage.size > 0;
 
     // Merge new OCR categories with existing categories
     const existingCategories = this.categories();
@@ -10914,15 +10882,11 @@ export class PdfPickerComponent implements OnInit {
             page: r.page,
             text: r.text,
             confidence: r.confidence,
-            textLines: r.textLines,
-            layoutBlocks: r.layoutBlocks
+            textLines: r.textLines
           }));
 
           // Process the OCR results - this will apply them to the document
-          this.onOcrCompleted({
-            results: ocrPageResults,
-            useLayoutCategories: engine !== 'tesseract'
-          });
+          this.onOcrCompleted({ results: ocrPageResults });
 
           // Show success message
           this.showAlert({

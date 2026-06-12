@@ -12,32 +12,11 @@
 
 import { Injectable } from '@angular/core';
 import { TextBlock, Category, PageDimension } from './pdf.service';
-import { LayoutBlock, LayoutLabel } from '../components/ocr-settings-modal/ocr-settings-modal.component';
 
 export interface ProcessedOcrResult {
   blocks: TextBlock[];
   categories: Record<string, Category>;
 }
-
-// Map Surya layout labels to our category system (using actual Surya output format)
-const SURYA_LABEL_TO_CATEGORY: Record<LayoutLabel, string> = {
-  'Title': 'title',
-  'SectionHeader': 'heading',
-  'Text': 'body',
-  'Handwriting': 'body',
-  'TextInlineMath': 'body',
-  'ListItem': 'body',
-  'Form': 'body',
-  'Caption': 'caption',
-  'Footnote': 'footnote',
-  'PageFooter': 'footer',
-  'PageHeader': 'header',
-  'Formula': 'quote',  // Math formulas as quote (indented/special)
-  'Table': 'body',  // Tables as body text
-  'Figure': 'body',  // Figure placeholders
-  'Picture': 'body',  // Picture placeholders
-  'TableOfContents': 'body',  // TOC as body text
-};
 
 interface LineBlock {
   id: string;
@@ -155,16 +134,12 @@ export class OcrPostProcessorService {
    *   Pass 1 (global): Compute global body font size across all pages, detect
    *     cross-page repeating text at fixed Y positions (running headers/footers).
    *   Pass 2 (per-page): Merge lines into paragraphs and classify using global context.
-   *
-   * If layoutBlocks are provided (from Surya), use them for categorization instead of heuristics.
    */
   processOcrBlocks(
     rawBlocks: TextBlock[],
-    pageDimensions: PageDimension[],
-    layoutBlocksByPage?: Map<number, LayoutBlock[]>
+    pageDimensions: PageDimension[]
   ): ProcessedOcrResult {
-    const hasLayoutData = layoutBlocksByPage && layoutBlocksByPage.size > 0;
-    console.log(`[OCR Post-Processor] Processing ${rawBlocks.length} raw blocks (layout detection: ${hasLayoutData ? 'enabled' : 'disabled'})`);
+    console.log(`[OCR Post-Processor] Processing ${rawBlocks.length} raw blocks`);
 
     if (rawBlocks.length === 0) {
       return { blocks: [], categories: {} };
@@ -188,8 +163,7 @@ export class OcrPostProcessorService {
 
     for (const [pageNum, pageBlocks] of blocksByPage) {
       const dims = pageDimensions[pageNum] || { width: 600, height: 800 };
-      const pageLayoutBlocks = layoutBlocksByPage?.get(pageNum);
-      const processed = this.processPage(pageBlocks, dims, pageNum, pageLayoutBlocks, globalContext);
+      const processed = this.processPage(pageBlocks, dims, pageNum, globalContext);
 
       for (const block of processed) {
         processedBlocks.push(block);
@@ -325,7 +299,6 @@ export class OcrPostProcessorService {
     blocks: TextBlock[],
     dims: PageDimension,
     pageNum: number,
-    layoutBlocks?: LayoutBlock[],
     global?: GlobalContext
   ): TextBlock[] {
     if (blocks.length === 0) return [];
@@ -373,20 +346,12 @@ export class OcrPostProcessorService {
 
     console.log(`[OCR PostProc] Page ${pageNum}: ${lines.length} lines, bodySize=${avgFontSize.toFixed(1)}${global ? ' (global)' : ' (page)'}, medianLineHeight=${medianLineHeight.toFixed(1)}, footnoteY=${footnoteY !== null ? (footnoteY / pageHeight * 100).toFixed(0) + '%' : 'none'}`);
 
-    // Merge lines into paragraphs and categorize
-    let categorizedBlocks: Array<{ x: number; y: number; width: number; height: number; text: string; fontSize: number; lineCount: number; category: string }>;
-
-    if (layoutBlocks && layoutBlocks.length > 0) {
-      // Layout-aware: group lines by Surya layout block, merge within each group
-      categorizedBlocks = this.mergeWithLayout(lines, layoutBlocks, medianLineHeight, pageWidth, dims, pageCenterX, avgFontSize, footnoteY, global?.repeatingTexts);
-    } else {
-      // Heuristic: merge lines into paragraphs, then categorize by position/size
-      const merged = this.mergeLines(lines, medianLineHeight, pageWidth);
-      categorizedBlocks = merged.map(m => ({
-        ...m,
-        category: this.categorizeBlock(m, dims, pageCenterX, avgFontSize, footnoteY, global?.repeatingTexts)
-      }));
-    }
+    // Merge lines into paragraphs, then categorize by position/size
+    const merged = this.mergeLines(lines, medianLineHeight, pageWidth);
+    const categorizedBlocks = merged.map(m => ({
+      ...m,
+      category: this.categorizeBlock(m, dims, pageCenterX, avgFontSize, footnoteY, global?.repeatingTexts)
+    }));
 
     // ── Pass 3: Cross-block footnote reclassification ───────────────────
     this.reclassifyFootnotes(categorizedBlocks, dims, avgFontSize, pageNum);
@@ -669,120 +634,6 @@ export class OcrPostProcessorService {
     if (yPct > 0.50 && fontRatio < 0.88) return 'footnote';
 
     return 'body';
-  }
-
-  /**
-   * Group OCR lines by their best-overlapping Surya layout block.
-   * Lines with <30% overlap go to fallback group (index -1).
-   */
-  private groupLinesByLayout(
-    lines: LineBlock[],
-    layoutBlocks: LayoutBlock[]
-  ): Map<number, LineBlock[]> {
-    const groups = new Map<number, LineBlock[]>();
-    groups.set(-1, []);
-
-    for (const line of lines) {
-      const lineBox: [number, number, number, number] = [line.x, line.y, line.x + line.width, line.y + line.height];
-      const lineArea = line.width * line.height;
-
-      let bestIdx = -1;
-      let bestOverlap = 0;
-
-      for (let i = 0; i < layoutBlocks.length; i++) {
-        const overlap = this.calculateOverlap(lineBox, layoutBlocks[i].bbox);
-        const overlapPercent = lineArea > 0 ? overlap / lineArea : 0;
-
-        if (overlapPercent > bestOverlap) {
-          bestOverlap = overlapPercent;
-          bestIdx = i;
-        }
-      }
-
-      // Require at least 30% overlap
-      if (bestOverlap < 0.3) bestIdx = -1;
-
-      if (!groups.has(bestIdx)) groups.set(bestIdx, []);
-      groups.get(bestIdx)!.push(line);
-    }
-
-    return groups;
-  }
-
-  /**
-   * Merge lines using layout-aware grouping: group by Surya layout block,
-   * merge within each group using heuristics, assign category from layout label.
-   */
-  private mergeWithLayout(
-    lines: LineBlock[],
-    layoutBlocks: LayoutBlock[],
-    medianLineHeight: number,
-    pageWidth: number,
-    dims: PageDimension,
-    pageCenterX: number,
-    avgFontSize: number,
-    footnoteY: number | null,
-    repeatingTexts?: Set<string>
-  ): Array<{ x: number; y: number; width: number; height: number; text: string; fontSize: number; lineCount: number; category: string }> {
-    const groups = this.groupLinesByLayout(lines, layoutBlocks);
-    const result: Array<{ x: number; y: number; width: number; height: number; text: string; fontSize: number; lineCount: number; category: string }> = [];
-
-    for (const [layoutIdx, groupLines] of groups) {
-      if (groupLines.length === 0) continue;
-
-      // Sort by Y within group
-      groupLines.sort((a, b) => a.y - b.y);
-
-      // Merge lines within this layout group
-      const merged = this.mergeLines(groupLines, medianLineHeight, pageWidth);
-
-      if (layoutIdx >= 0) {
-        // Known layout block — use its label for category
-        const label = layoutBlocks[layoutIdx].label;
-        const layoutCategory = SURYA_LABEL_TO_CATEGORY[label] || 'body';
-
-        // Surya's 'Text' label is generic — it doesn't distinguish between
-        // body text, footnotes, headers, or footers. Apply heuristic refinement
-        // so position/font/content signals can override when appropriate.
-        const needsRefinement = layoutCategory === 'body' && (
-          label === 'Text' || label === 'Handwriting' || label === 'TextInlineMath'
-        );
-
-        for (const m of merged) {
-          const category = needsRefinement
-            ? this.categorizeBlock(m, dims, pageCenterX, avgFontSize, footnoteY, repeatingTexts)
-            : layoutCategory;
-          result.push({ ...m, category });
-        }
-      } else {
-        // Fallback group — use heuristic categorization
-        for (const m of merged) {
-          result.push({
-            ...m,
-            category: this.categorizeBlock(m, dims, pageCenterX, avgFontSize, footnoteY, repeatingTexts)
-          });
-        }
-      }
-    }
-
-    // Sort by Y to maintain reading order
-    result.sort((a, b) => a.y - b.y);
-
-    console.log(`[OCR PostProc] Layout-aware merge: ${lines.length} lines → ${result.length} blocks (${groups.size} layout groups)`);
-
-    return result;
-  }
-
-  /**
-   * Calculate the area of overlap between two bounding boxes
-   */
-  private calculateOverlap(
-    boxA: [number, number, number, number],  // [x1, y1, x2, y2]
-    boxB: [number, number, number, number]
-  ): number {
-    const xOverlap = Math.max(0, Math.min(boxA[2], boxB[2]) - Math.max(boxA[0], boxB[0]));
-    const yOverlap = Math.max(0, Math.min(boxA[3], boxB[3]) - Math.max(boxA[1], boxB[1]));
-    return xOverlap * yOverlap;
   }
 
   /**

@@ -8,7 +8,7 @@
 
 import { Injectable, inject, signal, computed } from '@angular/core';
 import { ElectronService } from '../../../core/services/electron.service';
-import { PluginService, PluginLayoutBlock } from '../../../core/services/plugin.service';
+import { PluginService } from '../../../core/services/plugin.service';
 
 // Defined here to avoid circular dependency with ocr-settings-modal.component
 export interface OcrTextLine {
@@ -22,7 +22,6 @@ export interface OcrJobResult {
   text: string;
   confidence: number;
   textLines?: OcrTextLine[];
-  layoutBlocks?: PluginLayoutBlock[];
 }
 
 export interface OcrJob {
@@ -297,24 +296,6 @@ export class OcrJobService {
             };
           } else if (pluginResult.error) {
             throw new Error(pluginResult.error);
-          }
-        }
-
-        // Run layout detection for engines that support it (surya-ocr, paddle-ocr)
-        const layoutEngines = ['surya-ocr', 'paddle-ocr'];
-        if (result && layoutEngines.includes(job.engine)) {
-          try {
-            const plugin = this.pluginService.getPlugin(job.engine);
-            if (plugin?.available) {
-              console.log(`[OCR Job] Running layout detection for page ${pageNum}`);
-              const layoutResult = await this.pluginService.detectLayout(job.engine, imageData);
-              if (layoutResult.success && layoutResult.layoutBlocks) {
-                result.layoutBlocks = layoutResult.layoutBlocks;
-                console.log(`[OCR Job] Layout detection returned ${layoutResult.layoutBlocks.length} blocks for page ${pageNum}`);
-              }
-            }
-          } catch (layoutErr) {
-            console.warn(`[OCR Job] Layout detection failed for page ${pageNum}:`, layoutErr);
           }
         }
 
