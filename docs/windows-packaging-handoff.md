@@ -57,6 +57,38 @@ voice-conversion caches survive app updates). Stamp files key the idempotence:
    `myfork` (github.com/telltaleatheist/ebook2audiobook). **Pull the fork on
    Windows before doing anything.**
 
+## Progress (Windows session, Jun 12 2026)
+
+Steps 1–3 DONE and validated. The relocatable Windows env tarball is built and
+passes a minimal-PATH clean-machine smoke test.
+
+- e2a fork synced (fast-forwarded to `c7a3cc59`; espeak-loader `conf.py` present).
+- Built fresh CPU pack-env **`ebook2audiobook-pack`** (py 3.11.15, CPU torch
+  2.7.1, coqui-tts 0.27.5, +ffmpeg 8.1.1/sox/mediainfo/espeakng-loader). The
+  pre-existing `ebook2audiobook` env is the CUDA dev env — left untouched.
+- Packed → `packaging/artifacts/e2a-env-windows-x64.tar.gz` (1.72 GB, gitignored),
+  yml committed → `packaging/env/ebook2audiobook-windows-x64.yml`.
+- Unpack test (`C:\tmp\e2a-env-test2`): conda-unpack + `compileall` clean +
+  minimal-PATH smoke (torch/TTS/transformers/stanza/gradio import, numpy↔torch,
+  espeak ru/ar, ffmpeg/ffprobe/sox/mediainfo resolve from relocated Library\bin).
+
+**Two Windows-only gotchas the Mac freeze never surfaced:**
+1. **`unidic` dictionary** — `import TTS` crashes with a MeCab error unless the
+   full unidic dict is downloaded: `<envpy> -m unidic download` (526 MB into
+   site-packages/unidic/dicdir; conda-pack then captures it). Do this BEFORE
+   packing, after `pip install -r requirements.txt`.
+2. **conda-pack `\\?\` corruption** — base conda-pack had a non-upstream patch in
+   `conda_pack/prefixes.py::text_replace` that stripped EVERY `\\?\`/`//?/` from
+   text files during conda-unpack, corrupting source files that use Windows
+   long-path literals (huggingface_hub `file_download.py`/`_local_folder.py` →
+   broke the whole TTS import chain; 7 files total). Fixed to strip the marker
+   only where it precedes the inserted prefix. The fix lives ONLY in base's
+   site-packages — re-apply if conda-pack is reinstalled, then clear its
+   `__pycache__`. Always `compileall` a freshly-unpacked tarball to catch this.
+
+Remaining: step 3.4 (BOOKFORGE_E2A_ENV electron:dev integration run) + step 4
+(`npm run package:win-x64` + clean-machine NSIS validation) + the loose ends.
+
 ## Windows task list (in order)
 
 ### 1. Prereqs on the Windows box
