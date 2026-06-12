@@ -53,6 +53,13 @@ let selControl: HTMLDivElement;
 let blocks: { id: string; el: HTMLElement }[] = [];
 let blockElToId = new Map<HTMLElement, string>(); // O(1) hover hit-testing
 let lastUi: UiState | null = null;
+// While the user is adjusting the speed slider (and briefly after, while the new
+// rate round-trips through the background to the player), renderBar must not snap
+// the thumb back to the player's still-stale rate — the periodic UiState ticks
+// would fight the drag.
+let speedThumbHeld = false;
+let speedHoldUntil = 0;
+const SPEED_HOLD_MS = 1000;
 let rescanTimer: number | null = null;
 let rescanFirstScheduled = 0; // when the current pending rescan was first requested
 let watchdog: number | null = null;
@@ -509,8 +516,17 @@ function buildBar(): void {
   const speedVal = document.createElement('span');
   speedVal.className = 'bfr-speed-val';
   speedVal.textContent = speedLabel(settings.rate);
-  speed.addEventListener('input', () => { speedVal.textContent = speedLabel(Number(speed.value)); });
+  speed.addEventListener('pointerdown', () => { speedThumbHeld = true; });
+  const releaseThumb = () => { speedThumbHeld = false; speedHoldUntil = Date.now() + SPEED_HOLD_MS; };
+  speed.addEventListener('pointerup', releaseThumb);
+  speed.addEventListener('pointercancel', releaseThumb);
+  speed.addEventListener('input', () => {
+    // Covers keyboard adjustment too, where no pointerdown fires.
+    speedHoldUntil = Date.now() + SPEED_HOLD_MS;
+    speedVal.textContent = speedLabel(Number(speed.value));
+  });
   speed.addEventListener('change', () => {
+    speedHoldUntil = Date.now() + SPEED_HOLD_MS;
     settings.rate = Number(speed.value);
     try { void chrome.storage.local.set({ rate: settings.rate }); } catch { /* orphaned context */ }
     send({ target: 'background', cmd: 'transport', op: 'rate', rate: settings.rate });
@@ -554,7 +570,8 @@ function renderBar(ui: UiState): void {
   barEls.rewind.disabled = p.position <= 0.3;
   barEls.forward.disabled = headroom <= (p.totalKnown ? 0.6 : 5.2);
   barEls.status.textContent = statusText(ui);
-  if (Number(barEls.speed.value) !== p.rate) {
+  const speedHeld = speedThumbHeld || Date.now() < speedHoldUntil;
+  if (!speedHeld && Number(barEls.speed.value) !== p.rate) {
     barEls.speed.value = String(p.rate);
     barEls.speedVal.textContent = speedLabel(p.rate);
   }
