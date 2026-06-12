@@ -8,7 +8,7 @@
  * refreshes engine state (and connects if needed).
  */
 
-import { PlaybackStatus, QueueSnapshot, RuntimeMessage } from './messages';
+import { PlaybackStatus, QueueSnapshot, RuntimeMessage, loadSettings } from './messages';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -20,6 +20,10 @@ const playPauseBtn = $('playPause') as HTMLButtonElement;
 const skipBtn = $('skip') as HTMLButtonElement;
 const clearBtn = $('clear') as HTMLButtonElement;
 const queueEl = $('queue') as HTMLOListElement;
+const voiceEl = $('voice') as HTMLSelectElement;
+const workersEl = $('workers') as HTMLInputElement;
+const applyEngineBtn = $('applyEngine') as HTMLButtonElement;
+const engineNote = $('engineNote') as HTMLDivElement;
 
 let snapshot: QueueSnapshot | null = null;
 
@@ -69,7 +73,99 @@ function render(): void {
   clearBtn.disabled = !snapshot?.upcoming.length;
 
   renderQueue();
+  renderEngine();
 }
+
+// ─── Engine settings (voice + CPU workers) ─────────────────────────────────────
+
+// The voice the extension uses for every speak (chrome.storage `voice`); '' means
+// "use whatever the engine has loaded". Loaded once, then owned by the dropdown.
+let selectedVoice = '';
+// Rebuild the <option>s only when the voice list actually changes (null = never
+// built yet) so a 300 ms snapshot tick can't reset the dropdown mid-interaction.
+let voicesSig: string | null = null;
+// True between "Restart to apply" and the engine coming back up, so the note shows
+// progress instead of the restimed live topology.
+let restarting = false;
+
+function buildVoiceOptions(voices: string[]): void {
+  // Keep the saved voice selectable even if the engine hasn't reported voices yet.
+  const list = selectedVoice && !voices.includes(selectedVoice) ? [selectedVoice, ...voices] : voices;
+  voiceEl.textContent = '';
+  const def = document.createElement('option');
+  def.value = '';
+  def.textContent = 'Engine default (keep loaded voice)';
+  voiceEl.appendChild(def);
+  for (const v of list) {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = v;
+    voiceEl.appendChild(o);
+  }
+  voiceEl.value = selectedVoice;
+}
+
+function renderEngine(): void {
+  const s = snapshot;
+  const voices = s?.voices ?? [];
+  const config = s?.config ?? null;
+  const connected = !!s?.connected;
+
+  const sig = voices.join('|');
+  if (sig !== voicesSig) { voicesSig = sig; buildVoiceOptions(voices); }
+
+  const cuda = config?.device === 'cuda';
+  if (config) {
+    workersEl.min = String(config.minWorkers);
+    workersEl.max = String(config.maxWorkers);
+    // Don't stomp a value the user is editing.
+    if (document.activeElement !== workersEl) workersEl.value = String(config.cpuWorkers);
+  }
+  workersEl.disabled = !config || cuda;
+  applyEngineBtn.disabled = !connected || !config || restarting;
+  voiceEl.disabled = !connected;
+
+  if (restarting) {
+    if (s?.engineState === 'running') { restarting = false; setNote('Restarted ✓', 'good'); }
+    else { setNote('Restarting engine… (can take ~a minute)', ''); return; }
+  }
+  if (!connected) { setNote(s?.connectionError ?? 'Connect to BookForge to configure the engine.', ''); return; }
+  if (!config) { setNote('', ''); return; }
+  const device = config.device ? config.device.toUpperCase() : 'engine';
+  const active = config.activeWorkers > 0 ? `${config.activeWorkers} running` : 'engine stopped';
+  setNote(
+    cuda
+      ? `${device}: one worker (the GPU serializes decode). ${active}.`
+      : `${device}: ${config.cpuWorkers} configured, ${active}. Range ${config.minWorkers}–${config.maxWorkers}. More is faster but uses more memory.`,
+    ''
+  );
+}
+
+function setNote(text: string, cls: '' | 'good' | 'bad'): void {
+  engineNote.textContent = text;
+  engineNote.className = cls ? `note ${cls}` : 'note';
+}
+
+voiceEl.addEventListener('change', () => {
+  selectedVoice = voiceEl.value;
+  void chrome.storage.local.set({ voice: selectedVoice });
+  // Warms the new voice immediately if the engine is running; otherwise it just
+  // becomes the default for the next speak (offscreen reads storage per request).
+  send({ target: 'background', cmd: 'set-voice', voice: selectedVoice });
+  if (!restarting) setNote(selectedVoice ? `Voice set to ${selectedVoice}.` : 'Using the engine default voice.', 'good');
+});
+
+applyEngineBtn.addEventListener('click', () => {
+  const config = snapshot?.config;
+  const min = config?.minWorkers ?? 1;
+  const max = config?.maxWorkers ?? 8;
+  const cpuWorkers = Math.min(max, Math.max(min, Math.round(Number(workersEl.value) || min)));
+  workersEl.value = String(cpuWorkers);
+  restarting = true;
+  applyEngineBtn.disabled = true;
+  setNote('Restarting engine… (can take ~a minute)', '');
+  send({ target: 'background', cmd: 'restart-engine', cpuWorkers, voice: selectedVoice || undefined });
+});
 
 const LOADING_STATES = new Set<PlaybackStatus['state']>(['connecting', 'starting-engine', 'buffering']);
 
@@ -199,6 +295,9 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage) => {
   if (!raw || (raw as { target?: string }).target !== 'popup') return;
   if (raw.cmd === 'snapshot') { snapshot = raw.snapshot; render(); }
 });
+
+// Seed the voice selection from storage before the first snapshot arrives.
+void loadSettings().then((s) => { selectedVoice = s.voice; voicesSig = null; render(); });
 
 // Ask background for current state; it replies via a 'snapshot' push (and the
 // offscreen player broadcasts a fresh one right after).

@@ -1,7 +1,8 @@
 /**
- * Options page — connection settings (host / port / token), voice, auto-advance,
- * and a "Test connection" that authenticates against the server and reports
- * engine state + discovered voices.
+ * Options page — connection settings only (host / port / token) plus a "Test
+ * connection" that authenticates against the server and reports engine state +
+ * discovered voices. Voice and CPU worker count are configured in the popup
+ * (under "Engine settings"), since it has live engine state.
  */
 
 import { DEFAULT_SETTINGS, Settings, loadSettings } from './messages';
@@ -12,7 +13,6 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const hostEl = $('host') as HTMLInputElement;
 const portEl = $('port') as HTMLInputElement;
 const tokenEl = $('token') as HTMLInputElement;
-const voiceEl = $('voice') as HTMLSelectElement;
 const testBtn = $('test') as HTMLButtonElement;
 const testResult = $('testResult') as HTMLSpanElement;
 const savedNote = $('saved') as HTMLSpanElement;
@@ -22,43 +22,23 @@ async function restore(): Promise<void> {
   hostEl.value = s.host;
   portEl.value = String(s.port);
   tokenEl.value = s.token;
-  setVoiceOptions(s.voice ? [s.voice] : [], s.voice);
 }
 
-function setVoiceOptions(voices: string[], selected: string): void {
-  const have = new Set(voices);
-  if (selected && !have.has(selected)) voices = [selected, ...voices];
-  voiceEl.textContent = '';
-  const def = document.createElement('option');
-  def.value = '';
-  def.textContent = 'Engine default (keep loaded voice)';
-  voiceEl.appendChild(def);
-  for (const v of voices) {
-    const opt = document.createElement('option');
-    opt.value = v;
-    opt.textContent = v;
-    voiceEl.appendChild(opt);
-  }
-  voiceEl.value = selected;
-}
-
-function current(): Pick<Settings, 'host' | 'port' | 'token' | 'voice'> {
+function current(): Pick<Settings, 'host' | 'port' | 'token'> {
   return {
     host: hostEl.value.trim() || DEFAULT_SETTINGS.host,
     port: Number(portEl.value) || DEFAULT_SETTINGS.port,
-    token: tokenEl.value.trim(),
-    voice: voiceEl.value
+    token: tokenEl.value.trim()
   };
 }
 
 async function save(): Promise<void> {
-  // rate is owned by the transport bar; never written here.
   await chrome.storage.local.set(current());
   savedNote.textContent = 'Saved';
   setTimeout(() => { savedNote.textContent = ''; }, 1200);
 }
 
-for (const el of [hostEl, portEl, tokenEl, voiceEl]) {
+for (const el of [hostEl, portEl, tokenEl]) {
   el.addEventListener('change', () => void save());
 }
 
@@ -93,14 +73,9 @@ testBtn.addEventListener('click', () => {
     if (msg.type !== 'hello') return;
     settled = true;
     clearTimeout(timeout);
+    void save();
     const engine = msg.state === 'running' ? 'engine running' : `engine ${msg.state}`;
-    if (msg.voices.length) {
-      setVoiceOptions(msg.voices, voiceEl.value);
-      void save();
-      setResult(`Connected — ${engine}, ${msg.voices.length} voices loaded.`, 'good');
-    } else {
-      setResult(`Connected — ${engine}. Voices appear once the engine starts.`, 'good');
-    }
+    setResult(`Connected — ${engine}, ${msg.voices.length} voices.`, 'good');
     socket.close(1000);
   };
   socket.onclose = (e) => {

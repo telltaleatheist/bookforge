@@ -12,7 +12,7 @@
  * down to the content script.
  */
 
-import { EngineState } from './protocol';
+import { EngineState, ServerConfig } from './protocol';
 
 export type MessageTarget = 'background' | 'offscreen' | 'content' | 'popup';
 
@@ -68,6 +68,12 @@ export interface QueueSnapshot {
   playback: PlaybackStatus;
   /** why the socket isn't connected (no token / bad token / unreachable) */
   connectionError?: string;
+  /** voices the engine can use (catalog-sourced — present even while stopped) */
+  voices: string[];
+  /** the voice currently loaded, or null when stopped/none */
+  currentVoice: string | null;
+  /** engine topology (CPU worker count, device); null before the first connect */
+  config: ServerConfig | null;
 }
 
 /** Per-tab projection of the snapshot, sent down to a content script. */
@@ -139,6 +145,21 @@ export interface SyncCmd {
   cmd: 'sync';
 }
 
+/** Set the default voice; warmed live if the engine is running (no restart). */
+export interface SetVoiceCmd {
+  target: 'background';
+  cmd: 'set-voice';
+  voice: string;
+}
+
+/** Restart the engine to apply a new worker count and/or warm a voice. */
+export interface RestartEngineCmd {
+  target: 'background';
+  cmd: 'restart-engine';
+  cpuWorkers?: number;
+  voice?: string;
+}
+
 // ─── background → offscreen ───────────────────────────────────────────────────
 
 export interface PlayItemCmd {
@@ -157,6 +178,8 @@ export interface PlaySequenceCmd {
 export interface EngineOffscreenCmd { target: 'offscreen'; cmd: 'engine'; op: 'start' | 'stop'; }
 export interface QueueOffscreenCmd { target: 'offscreen'; cmd: 'queue'; op: 'remove' | 'clear' | 'skip'; id?: string; }
 export interface SyncOffscreenCmd { target: 'offscreen'; cmd: 'sync'; }
+export interface SetVoiceOffscreenCmd { target: 'offscreen'; cmd: 'set-voice'; voice: string; }
+export interface RestartEngineOffscreenCmd { target: 'offscreen'; cmd: 'restart-engine'; cpuWorkers?: number; voice?: string; }
 
 // ─── offscreen → background ───────────────────────────────────────────────────
 
@@ -197,11 +220,15 @@ export type RuntimeMessage =
   | EngineCmd
   | QueueOpCmd
   | SyncCmd
+  | SetVoiceCmd
+  | RestartEngineCmd
   | PlayItemCmd
   | PlaySequenceCmd
   | EngineOffscreenCmd
   | QueueOffscreenCmd
   | SyncOffscreenCmd
+  | SetVoiceOffscreenCmd
+  | RestartEngineOffscreenCmd
   | SnapshotMsg
   | UiMsg
   | ToggleUiMsg

@@ -17,6 +17,8 @@ import {
   TransportCmd,
   EngineCmd,
   QueueOpCmd,
+  SetVoiceCmd,
+  RestartEngineCmd,
   QueueItem,
   QueueSnapshot,
   UiState,
@@ -140,6 +142,14 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
     case 'engine':
       void sendToOffscreen({ target: 'offscreen', cmd: 'engine', op: (raw as EngineCmd).op });
       return;
+    case 'set-voice':
+      void sendToOffscreen({ target: 'offscreen', cmd: 'set-voice', voice: (raw as SetVoiceCmd).voice });
+      return;
+    case 'restart-engine': {
+      const c = raw as RestartEngineCmd;
+      void sendToOffscreen({ target: 'offscreen', cmd: 'restart-engine', cpuWorkers: c.cpuWorkers, voice: c.voice });
+      return;
+    }
     case 'queue': {
       const q = raw as QueueOpCmd;
       void sendToOffscreen({ target: 'offscreen', cmd: 'queue', op: q.op, id: q.id });

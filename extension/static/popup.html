@@ -45,6 +45,26 @@
       .empty { opacity: 0.55; padding: 8px 2px; }
       .links { margin-top: 10px; font-size: 12px; opacity: 0.7; }
       .links a { color: inherit; }
+      details.engine { margin: 10px 0 2px; border-top: 1px solid #8882; padding-top: 8px; }
+      details.engine summary {
+        cursor: pointer; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em;
+        opacity: 0.6; list-style: none; user-select: none;
+      }
+      details.engine summary::-webkit-details-marker { display: none; }
+      details.engine summary::before { content: '▸ '; }
+      details.engine[open] summary::before { content: '▾ '; }
+      .field { margin: 10px 0 6px; }
+      .field label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 12px; opacity: 0.85; }
+      .field select, .field input[type="number"] {
+        width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px;
+        border: 1px solid #8884; background: #2a3140; color: #f2f3f5; font: inherit;
+      }
+      .wrow { display: flex; gap: 8px; align-items: center; }
+      .wrow input[type="number"] { width: 70px; flex: none; }
+      .wrow button { flex: 1; }
+      .note { font-size: 11px; opacity: 0.6; margin-top: 5px; }
+      .note.good { color: #3ec46d; opacity: 0.9; }
+      .note.bad { color: #ef6b6b; opacity: 0.9; }
     </style>
   </head>
   <body>
@@ -64,6 +84,22 @@
       <button id="playPause">Play / Pause</button>
       <button id="skip">Skip ⏭</button>
     </div>
+
+    <details class="engine" id="engine" open>
+      <summary>Engine settings</summary>
+      <div class="field">
+        <label for="voice">Voice</label>
+        <select id="voice"></select>
+      </div>
+      <div class="field">
+        <label for="workers">CPU workers</label>
+        <div class="wrow">
+          <input id="workers" type="number" min="1" max="8" step="1" />
+          <button id="applyEngine">Restart to apply</button>
+        </div>
+        <div class="note" id="engineNote"></div>
+      </div>
+    </details>
 
     <div class="qhead">
       <h2>Queue</h2>

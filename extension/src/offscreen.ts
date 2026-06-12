@@ -20,6 +20,7 @@ import {
   BYTES_PER_SECOND,
   CLOSE_AUTH,
   EngineState,
+  ServerConfig,
   ServerEvent,
   ClientAction,
   SpeakSettings,
@@ -35,6 +36,8 @@ import {
   EngineOffscreenCmd,
   QueueOffscreenCmd,
   SyncOffscreenCmd,
+  SetVoiceOffscreenCmd,
+  RestartEngineOffscreenCmd,
   Settings,
   DEFAULT_SETTINGS
 } from './messages';
@@ -58,7 +61,9 @@ type OffscreenMessage =
   | TransportCmd
   | EngineOffscreenCmd
   | QueueOffscreenCmd
-  | SyncOffscreenCmd;
+  | SyncOffscreenCmd
+  | SetVoiceOffscreenCmd
+  | RestartEngineOffscreenCmd;
 
 // ─── Tunables ─────────────────────────────────────────────────────────────────
 
@@ -247,6 +252,11 @@ let authed = false;
 let connectPromise: Promise<void> | null = null;
 let engineState: EngineState = 'stopped';
 let connectionError: string | null = null; // why we're not connected (for the popup)
+// Engine catalog/topology mirrored from hello/status/config events, surfaced in the
+// snapshot so the popup can render the voice + worker-count controls.
+let voices: string[] = [];
+let currentVoice: string | null = null;
+let serverConfig: ServerConfig | null = null;
 
 function isConnected(): boolean {
   return !!(ws && ws.readyState === WebSocket.OPEN && authed);
@@ -278,6 +288,9 @@ async function ensureConnected(): Promise<void> {
         if (msg.type === 'hello') {
           authed = true;
           engineState = msg.state;
+          voices = msg.voices;
+          currentVoice = msg.currentVoice;
+          serverConfig = msg.config;
           connectionError = null;
           clearTimeout(timeout);
           console.log('[BFR] connected; engine', msg.state, '| voices', msg.voices.length);
@@ -326,6 +339,19 @@ function handleServerEvent(msg: ServerEvent): void {
     case 'state':
       engineState = msg.state;
       if (!started && session) preState = msg.state === 'running' ? 'buffering' : 'starting-engine';
+      broadcast();
+      return;
+    case 'status':
+      engineState = msg.state;
+      voices = msg.voices;
+      currentVoice = msg.currentVoice;
+      serverConfig = msg.config;
+      broadcast();
+      return;
+    case 'config':
+      voices = msg.voices;
+      currentVoice = msg.currentVoice;
+      serverConfig = msg.config;
       broadcast();
       return;
     case 'speaking':
@@ -859,6 +885,28 @@ async function handleEngine(op: 'start' | 'stop'): Promise<void> {
   }
 }
 
+/** Persist/warm a voice without restarting (server warms it live if running). */
+async function handleSetVoice(voice: string): Promise<void> {
+  try { await ensureConnected(); } catch (err) {
+    connectionError = connectErrorMessage((err as Error).message);
+    broadcast();
+    return;
+  }
+  send({ action: 'config.set', voice });
+}
+
+/** Restart the engine to apply a worker count and/or warm a voice. The server
+ *  replies with 'state' pushes then a final 'status', refreshing the snapshot. */
+async function handleRestart(cpuWorkers?: number, voice?: string): Promise<void> {
+  try { await ensureConnected(); } catch (err) {
+    connectionError = connectErrorMessage((err as Error).message);
+    broadcast();
+    return;
+  }
+  send({ action: 'engine.restart', voice: voice || undefined, cpuWorkers });
+  broadcast();
+}
+
 async function doSync(): Promise<void> {
   // Refresh engine state for the popup; don't start anything.
   broadcast(); // instant: confirm the pipe works while we (re)connect
@@ -939,7 +987,10 @@ function broadcast(): void {
     current,
     upcoming,
     playback: currentStatus(),
-    connectionError: connectionError ?? undefined
+    connectionError: connectionError ?? undefined,
+    voices,
+    currentVoice,
+    config: serverConfig
   };
   // Up to background, which projects per-tab UiState to content and pushes the
   // full snapshot to the popup. (No chrome.storage here — unavailable offscreen.)
@@ -965,6 +1016,8 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
     case 'enqueue': enqueue(msg.item); break;
     case 'transport': handleTransport(msg); break;
     case 'engine': void handleEngine(msg.op); break;
+    case 'set-voice': void handleSetVoice(msg.voice); break;
+    case 'restart-engine': void handleRestart(msg.cpuWorkers, msg.voice); break;
     case 'queue':
       if (msg.op === 'remove' && msg.id) removeFromQueue(msg.id);
       else if (msg.op === 'clear') clearUpcoming();

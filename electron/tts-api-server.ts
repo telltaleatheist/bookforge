@@ -10,13 +10,17 @@
  *     {action:'status'}
  *     {action:'engine.start', voice?}
  *     {action:'engine.stop'}
+ *     {action:'engine.restart', voice?, cpuWorkers?}   // apply a new worker count / voice
+ *     {action:'config.get'}                            // read engine topology
+ *     {action:'config.set', cpuWorkers?, voice?}       // persist worker count; warm voice
  *     {action:'speak',  requestId, text, settings?:{voice?, speed?, temperature?, topP?, repetitionPenalty?}}
  *     {action:'playhead', requestId, sentenceIndex}   // advances the lookahead window
  *     {action:'cancel', requestId}
  *
  *   server → client
- *     {type:'hello',    state, serviceMode, voices, currentVoice, version}
- *     {type:'status',   state, serviceMode, voices, currentVoice}
+ *     {type:'hello',    state, serviceMode, voices, currentVoice, config, version}
+ *     {type:'status',   state, serviceMode, voices, currentVoice, config}
+ *     {type:'config',   config, voices, currentVoice}  // reply to config.* / engine.restart
  *     {type:'state',    state, serviceMode}            // pushed on engine state changes
  *     {type:'speaking', requestId, sentences}          // text was segmented; generation started
  *     {type:'chunk',    requestId, sentenceIndex, seq, data(pcm16 b64), duration, sampleRate}
@@ -243,14 +247,7 @@ export class TtsApiServer {
         return;
       }
       state.authed = true;
-      this.send(ws, {
-        type: 'hello',
-        version: PROTOCOL_VERSION,
-        state: xttsWorkerPool.getEngineState(),
-        serviceMode: xttsWorkerPool.isServiceMode(),
-        voices: xttsWorkerPool.getAvailableVoices(),
-        currentVoice: xttsWorkerPool.getCurrentVoice()
-      });
+      this.send(ws, { type: 'hello', version: PROTOCOL_VERSION, ...this.statusPayload() });
       return;
     }
 
@@ -261,24 +258,30 @@ export class TtsApiServer {
 
     switch (action) {
       case 'status':
-        this.send(ws, {
-          type: 'status',
-          state: xttsWorkerPool.getEngineState(),
-          serviceMode: xttsWorkerPool.isServiceMode(),
-          voices: xttsWorkerPool.getAvailableVoices(),
-          currentVoice: xttsWorkerPool.getCurrentVoice()
-        });
+        this.send(ws, { type: 'status', ...this.statusPayload() });
         return;
 
       case 'engine.start': {
         await this.ensureEngine(typeof msg.voice === 'string' ? msg.voice : undefined);
-        this.send(ws, { type: 'status', state: xttsWorkerPool.getEngineState(), serviceMode: xttsWorkerPool.isServiceMode(), voices: xttsWorkerPool.getAvailableVoices(), currentVoice: xttsWorkerPool.getCurrentVoice() });
+        this.send(ws, { type: 'status', ...this.statusPayload() });
         return;
       }
 
       case 'engine.stop':
         await xttsWorkerPool.endSession();
         return;  // engine state push notifies all clients
+
+      case 'engine.restart':
+        await this.handleRestart(ws, msg);
+        return;
+
+      case 'config.get':
+        this.send(ws, { type: 'config', ...this.configPayload() });
+        return;
+
+      case 'config.set':
+        await this.handleConfigSet(ws, msg);
+        return;
 
       case 'speak':
         await this.handleSpeak(ws, state, msg);
@@ -360,6 +363,70 @@ export class TtsApiServer {
     if (!result.success) {
       this.send(ws, { type: 'error', requestId, message: result.error || 'failed to start generation' });
     }
+  }
+
+  /**
+   * Persist a new CPU worker count and/or warm a voice without restarting. The
+   * worker count only takes effect on the next engine start (the pool is never
+   * resized live), so this is the "save settings" path; engine.restart applies it.
+   */
+  private async handleConfigSet(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
+    if (typeof msg.cpuWorkers === 'number') {
+      xttsWorkerPool.setStreamCpuWorkers(msg.cpuWorkers);
+    }
+    // A running engine can swap voices live; a stopped one just remembers it for
+    // the next start (the client passes it again on engine.restart/start).
+    if (typeof msg.voice === 'string' && msg.voice && xttsWorkerPool.getEngineState() === 'running') {
+      const loaded = await xttsWorkerPool.loadVoice(msg.voice);
+      if (!loaded.success) {
+        this.send(ws, { type: 'error', message: loaded.error || 'failed to load voice' });
+        return;
+      }
+    }
+    this.send(ws, { type: 'config', ...this.configPayload() });
+  }
+
+  /**
+   * Stop and restart the pool so a new worker count takes effect, optionally
+   * warming a chosen voice. Preserves service mode across the bounce (endSession
+   * clears it) so a resident server stays resident after the restart.
+   */
+  private async handleRestart(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
+    if (typeof msg.cpuWorkers === 'number') {
+      xttsWorkerPool.setStreamCpuWorkers(msg.cpuWorkers);
+    }
+    const wasService = xttsWorkerPool.isServiceMode();
+    const voice = typeof msg.voice === 'string' && msg.voice ? msg.voice : undefined;
+
+    await xttsWorkerPool.endSession();
+    const started = await this.ensureEngine(voice);
+    if (started.success && wasService) xttsWorkerPool.setServiceMode(true);
+
+    if (!started.success) {
+      this.send(ws, { type: 'error', message: started.error || 'engine failed to restart' });
+    }
+    // status carries the new topology (activeWorkers reflects the resized pool).
+    this.send(ws, { type: 'status', ...this.statusPayload() });
+  }
+
+  /** Engine state + voices + topology, shared by hello/status. */
+  private statusPayload(): Record<string, unknown> {
+    return {
+      state: xttsWorkerPool.getEngineState(),
+      serviceMode: xttsWorkerPool.isServiceMode(),
+      voices: xttsWorkerPool.getAvailableVoices(),
+      currentVoice: xttsWorkerPool.getCurrentVoice(),
+      config: xttsWorkerPool.getStreamWorkerConfig()
+    };
+  }
+
+  /** Topology + voices, for the dedicated config event. */
+  private configPayload(): Record<string, unknown> {
+    return {
+      config: xttsWorkerPool.getStreamWorkerConfig(),
+      voices: xttsWorkerPool.getAvailableVoices(),
+      currentVoice: xttsWorkerPool.getCurrentVoice()
+    };
   }
 
   /** Start the worker pool (no-op if running) and warm the voice. */

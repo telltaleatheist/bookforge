@@ -54,6 +54,14 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 
 {"action": "engine.start", "voice": "RayPorter"}   // optionally pre-warm the engine (voice optional)
 {"action": "engine.stop"}                          // shut the engine down (frees ~20 GB RAM)
+{"action": "engine.restart", "voice": "RayPorter", "cpuWorkers": 4}
+// Bounce the pool to apply a new worker count and/or warm a voice. Both optional;
+// cpuWorkers is persisted server-side. Service mode (resident server) is preserved.
+
+{"action": "config.get"}                           // read engine topology (workers/device)
+{"action": "config.set", "cpuWorkers": 4, "voice": "RayPorter"}
+// Persist the CPU worker count (applies on next start — pair with engine.restart to
+// apply now). A voice given while the engine is RUNNING is warmed immediately.
 
 {"action": "speak",                                // the main verb
  "requestId": "blk-17-1718120000",                 // client-chosen string or number; echo key for all events
@@ -73,10 +81,17 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 
 ```jsonc
 {"type": "hello", "version": 1, "state": "stopped|starting|running",
- "serviceMode": false, "voices": ["ScarlettJohansson", "..."], "currentVoice": null}
+ "serviceMode": false, "voices": ["ScarlettJohansson", "..."], "currentVoice": null,
+ "config": {"cpuWorkers": 4, "defaultCpuWorkers": 4, "minWorkers": 1, "maxWorkers": 8,
+            "device": "cpu", "activeWorkers": 0}}
 // Reply to hello. voices is [] while the engine is cold (it's discovered on engine start).
+// config.device is null until a non-mac engine first probes torch; activeWorkers is 0
+// while stopped. cpuWorkers is ignored on CUDA (the GPU always runs one worker).
 
-{"type": "status", ...same fields as hello minus version}   // reply to status / engine.start
+{"type": "status", ...same fields as hello minus version}   // reply to status / engine.start / engine.restart
+
+{"type": "config", "config": {...}, "voices": [...], "currentVoice": "RayPorter"}
+// Reply to config.get / config.set.
 
 {"type": "state", "state": "stopped|starting|running", "serviceMode": bool}
 // PUSHED to all connected clients whenever engine state changes. Use it to drive

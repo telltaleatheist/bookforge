@@ -23,6 +23,23 @@ export interface SpeakSettings {
   repetitionPenalty?: number;
 }
 
+/**
+ * The server's tunable engine topology. `cpuWorkers` is the only knob (CUDA always
+ * runs one worker — autoregressive decode serializes on the GPU). Worker-count
+ * changes are persisted server-side and take effect on the next engine start, so
+ * the client pairs them with an `engine.restart` to apply them now.
+ */
+export interface ServerConfig {
+  cpuWorkers: number;
+  defaultCpuWorkers: number;
+  minWorkers: number;
+  maxWorkers: number;
+  /** null until the engine first probes torch (non-mac); mac is always 'cpu' */
+  device: 'cpu' | 'cuda' | null;
+  /** workers currently alive — 0 when the engine is stopped */
+  activeWorkers: number;
+}
+
 // ─── Client → server ────────────────────────────────────────────────────────
 
 export type ClientAction =
@@ -30,6 +47,14 @@ export type ClientAction =
   | { action: 'status' }
   | { action: 'engine.start'; voice?: string }
   | { action: 'engine.stop' }
+  // Restart the pool to apply a new worker count and/or warm a voice. When
+  // `cpuWorkers` is present the server persists it before bringing the pool back.
+  | { action: 'engine.restart'; voice?: string; cpuWorkers?: number }
+  // Read or persist engine config without restarting. A voice given while the
+  // engine is running is warmed immediately; cpuWorkers only takes effect on the
+  // next start (use engine.restart to apply now).
+  | { action: 'config.get' }
+  | { action: 'config.set'; cpuWorkers?: number; voice?: string }
   | { action: 'speak'; requestId: string; text: string; settings?: SpeakSettings }
   | { action: 'playhead'; requestId: string; sentenceIndex: number }
   | { action: 'cancel'; requestId: string };
@@ -43,12 +68,22 @@ export interface HelloEvent {
   serviceMode: boolean;
   voices: string[];
   currentVoice: string | null;
+  config: ServerConfig;
 }
 
 export interface StatusEvent {
   type: 'status';
   state: EngineState;
   serviceMode: boolean;
+  voices: string[];
+  currentVoice: string | null;
+  config: ServerConfig;
+}
+
+/** Reply to config.get / config.set / engine.restart. */
+export interface ConfigEvent {
+  type: 'config';
+  config: ServerConfig;
   voices: string[];
   currentVoice: string | null;
 }
@@ -110,6 +145,7 @@ export type ServerEvent =
   | HelloEvent
   | StatusEvent
   | StateEvent
+  | ConfigEvent
   | SpeakingEvent
   | ChunkEvent
   | DoneEvent
