@@ -210,27 +210,46 @@ export class PageRenderService {
     }
   }
 
+  // First slice rendered before the loading state clears — small enough to
+  // paint in a couple of seconds, big enough to fill the opening viewport
+  private readonly FIRST_PAINT_PAGES = 12;
+
   /**
    * Start on-demand rendering for a new document.
-   * Renders previews for ALL pages (cached pages resolve instantly via disk lookup).
-   * Then starts a background pass to upgrade everything to full-res.
+   * Renders the opening pages first so the user sees content immediately,
+   * then previews for ALL remaining pages (cached pages resolve instantly
+   * via disk lookup), then a background pass upgrading everything to full-res.
    */
   async startOnDemandRendering(pageCount?: number): Promise<void> {
     const count = pageCount ?? this.currentTotalPages;
     if (!this.currentPdfPath || count === 0) return;
+    const gen = this.generation;
 
     this.onDemandMode.set(true);
     this.isLoading.set(true);
     this.backgroundUpgradeCancelled = false;
 
     try {
-      // Render ALL pages as previews in batches.
-      // For cached documents this is nearly instant (disk cache lookups).
-      const allPages = Array.from({ length: count }, (_, i) => i);
-      await this.requestPagesImmediate(allPages, 'preview');
+      const firstSlice = Math.min(this.FIRST_PAINT_PAGES, count);
+      await this.requestPagesImmediate(
+        Array.from({ length: firstSlice }, (_, i) => i),
+        'preview'
+      );
     } finally {
       this.isLoading.set(false);
     }
+
+    if (gen !== this.generation) return; // document changed during first paint
+
+    if (count > this.FIRST_PAINT_PAGES) {
+      const rest = Array.from(
+        { length: count - this.FIRST_PAINT_PAGES },
+        (_, i) => i + this.FIRST_PAINT_PAGES
+      );
+      await this.requestPagesImmediate(rest, 'preview');
+    }
+
+    if (gen !== this.generation) return;
 
     // Start background full-res upgrade for ALL pages
     this.startBackgroundFullResUpgrade();
@@ -245,8 +264,9 @@ export class PageRenderService {
     this.backgroundUpgradeRunning = true;
     const gen = this.generation;
 
-    const BATCH_SIZE = 10;
-    const BATCH_DELAY_MS = 200; // Pause between batches to yield to UI
+    // Sized for the render worker pool (~4 pages per worker per batch)
+    const BATCH_SIZE = 16;
+    const BATCH_DELAY_MS = 100; // Pause between batches to yield to UI
 
     try {
       for (let i = 0; i < this.currentTotalPages; i += BATCH_SIZE) {
@@ -314,8 +334,6 @@ export class PageRenderService {
 
   // Max pages per IPC call
   private readonly RENDER_BATCH_SIZE = 50;
-  // How often to update the UI signal (every N pages rendered)
-  private readonly SIGNAL_UPDATE_INTERVAL = 100;
 
   /**
    * Immediately request rendering of specific pages (no debounce).
@@ -346,7 +364,6 @@ export class PageRenderService {
     }
 
     const failedPages: number[] = [];
-    let pagesSinceLastSignal = 0;
 
     try {
       // Batch into chunks to avoid long-blocking IPC calls
@@ -384,13 +401,8 @@ export class PageRenderService {
           }
         }
 
-        // Throttle signal updates: update every ~100 pages or on last batch
-        pagesSinceLastSignal += batch.length;
-        const isLastBatch = i + this.RENDER_BATCH_SIZE >= toRender.length;
-        if (pagesSinceLastSignal >= this.SIGNAL_UPDATE_INTERVAL || isLastBatch) {
-          this.updatePageImagesSignal();
-          pagesSinceLastSignal = 0;
-        }
+        // Update the UI after every batch so pages appear as they render
+        this.updatePageImagesSignal();
       }
     } finally {
       // Only release in-flight markers for our own generation — after a

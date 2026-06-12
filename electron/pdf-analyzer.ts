@@ -10,6 +10,7 @@ import * as crypto from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { pdfBridgeManager, RedactionRegion, Bookmark, MupdfJsBridge } from './pdf-bridge';
+import { getRenderCacheBaseDir } from './render-cache';
 import { MutoolBridge } from './mutool-bridge';
 
 const execAsync = promisify(exec);
@@ -293,8 +294,7 @@ export class PDFAnalyzer {
    * Get the base cache directory for BookForge
    */
   private getAnalysisCacheDir(): string {
-    const homeDir = os.homedir();
-    return path.join(homeDir, 'Documents', 'BookForge', 'cache');
+    return getRenderCacheBaseDir();
   }
 
   /**
@@ -1858,6 +1858,7 @@ export class PDFAnalyzer {
   // Scale constants for two-tier rendering
   private readonly PREVIEW_SCALE = 0.5;  // Fast, low quality
   private readonly FULL_SCALE = 2.5;     // Slower, high quality
+  private readonly JPEG_QUALITY = 85;    // Cache encode quality
 
   // On-demand rendering: cached document handle to avoid re-opening on every scroll
   private renderDoc: {
@@ -1878,8 +1879,7 @@ export class PDFAnalyzer {
    * Get the base cache directory for BookForge
    */
   private getCacheBaseDir(): string {
-    const homeDir = os.homedir();
-    return path.join(homeDir, 'Documents', 'BookForge', 'cache');
+    return getRenderCacheBaseDir();
   }
 
   /**
@@ -1890,6 +1890,13 @@ export class PDFAnalyzer {
     const cacheDir = path.join(baseDir, fileHash);
     if (!fs.existsSync(cacheDir)) {
       fs.mkdirSync(cacheDir, { recursive: true });
+    } else {
+      // Mark as recently used — startup eviction (render-cache.ts) deletes
+      // hash dirs whose mtime is older than the retention window
+      try {
+        const now = new Date();
+        fs.utimesSync(cacheDir, now, now);
+      } catch { /* ignore */ }
     }
     return cacheDir;
   }
@@ -1920,21 +1927,23 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Check if a page is already cached
+   * Find a cached page image in a quality dir. New renders are JPEG;
+   * caches written before June 2026 hold PNGs — both are valid hits.
    */
-  private isPageCached(fileHash: string, pageNum: number, quality: 'preview' | 'full'): boolean {
-    const qualityDir = this.getQualityCacheDir(fileHash, quality);
-    const filePath = path.join(qualityDir, `page-${pageNum}.png`);
-    return fs.existsSync(filePath);
+  private findCachedPage(qualityDir: string, pageNum: number): string | null {
+    for (const ext of ['jpg', 'png']) {
+      const filePath = path.join(qualityDir, `page-${pageNum}.${ext}`);
+      if (fs.existsSync(filePath)) return filePath;
+    }
+    return null;
   }
 
   /**
-   * Get cached page path if it exists
+   * Encode a rendered pixmap for the page cache.
+   * JPEG: ~5-10x smaller than PNG for scanned pages and faster to encode.
    */
-  private getCachedPagePath(fileHash: string, pageNum: number, quality: 'preview' | 'full'): string | null {
-    const qualityDir = this.getQualityCacheDir(fileHash, quality);
-    const filePath = path.join(qualityDir, `page-${pageNum}.png`);
-    return fs.existsSync(filePath) ? filePath : null;
+  private encodePixmap(pixmap: any): Uint8Array {
+    return pixmap.asJPEG(this.JPEG_QUALITY, false);
   }
 
   /**
@@ -2046,73 +2055,6 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Render a single page to cache
-   */
-  async renderPageToFile(
-    pageNum: number,
-    scale: number = 2.0,
-    pdfPath?: string
-  ): Promise<string> {
-    const mupdfLib = await getMupdf();
-    const targetPath = pdfPath || this.pdfPath;
-
-    if (!targetPath) {
-      throw new Error('No document path specified');
-    }
-
-    // Compute file hash for cache key
-    const fileHash = await this.computeFileHash(targetPath);
-    const quality: 'preview' | 'full' = scale <= 1.0 ? 'preview' : 'full';
-
-    // Check if already cached
-    const cachedPath = this.getCachedPagePath(fileHash, pageNum, quality);
-    if (cachedPath) {
-      this.renderedPagePaths.set(pageNum, cachedPath);
-      return cachedPath;
-    }
-
-    // Render the page
-    let doc = this.doc;
-    let tempDoc: typeof doc | null = null;
-    if (pdfPath && pdfPath !== this.pdfPath) {
-      const data = fs.readFileSync(pdfPath);
-      const mimeType = getMimeType(pdfPath);
-      tempDoc = mupdfLib.Document.openDocument(data, mimeType);
-      if (mimeType === 'application/epub+zip') {
-        tempDoc.layout(600, 900, 18);
-      }
-      doc = tempDoc;
-    }
-
-    if (!doc) {
-      throw new Error('No document loaded');
-    }
-
-    let page, pixmap;
-    try {
-      page = doc.loadPage(pageNum);
-      const matrix = mupdfLib.Matrix.scale(scale, scale);
-      pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-      const pngData = pixmap.asPNG();
-
-      // Write to cache
-      const qualityDir = this.getQualityCacheDir(fileHash, quality);
-      const filePath = path.join(qualityDir, `page-${pageNum}.png`);
-      fs.writeFileSync(filePath, Buffer.from(pngData));
-
-      this.renderedPagePaths.set(pageNum, filePath);
-      return filePath;
-    } finally {
-      try { pixmap?.destroy(); } catch { /* ignore */ }
-      try { page?.destroy(); } catch { /* ignore */ }
-      // Clean up temp document if we created one
-      if (tempDoc) {
-        tempDoc.destroy();
-      }
-    }
-  }
-
-  /**
    * Render all pages with two-tier approach:
    * 1. First render low-res previews quickly
    * 2. Then render high-res in background
@@ -2174,23 +2116,24 @@ export class PDFAnalyzer {
     // Phase 1: Render previews (or use cached)
     let previewCompleted = 0;
     const renderPreview = async (pageNum: number): Promise<void> => {
-      const filePath = path.join(previewDir, `page-${pageNum}.png`);
+      let filePath = this.findCachedPage(previewDir, pageNum);
 
-      if (!fs.existsSync(filePath)) {
+      if (!filePath) {
+        filePath = path.join(previewDir, `page-${pageNum}.jpg`);
         try {
-          const pngData = await this.withWasmLock(() => {
+          const imgData = await this.withWasmLock(() => {
             let page, pixmap;
             try {
               page = doc.loadPage(pageNum);
               const matrix = mupdfLib.Matrix.scale(this.PREVIEW_SCALE, this.PREVIEW_SCALE);
               pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-              return pixmap.asPNG();
+              return this.encodePixmap(pixmap);
             } finally {
               try { pixmap?.destroy(); } catch { /* ignore */ }
               try { page?.destroy(); } catch { /* ignore */ }
             }
           });
-          fs.writeFileSync(filePath, Buffer.from(pngData));
+          fs.writeFileSync(filePath, Buffer.from(imgData));
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           console.error(`[PDF Render] Error rendering preview for page ${pageNum}:`, errorMsg);
@@ -2238,41 +2181,44 @@ export class PDFAnalyzer {
 
     let fullCompleted = 0;
     let memoryErrorOccurred = false;
+    // Stand-in when full-res rendering hits WASM memory limits: copy the
+    // preview file (keeping its extension truthful to its content)
+    const copyPreviewAsFull = (pageNum: number): string | null => {
+      const previewPath = this.findCachedPage(previewDir, pageNum);
+      if (!previewPath) return null;
+      const destPath = path.join(fullDir, `page-${pageNum}${path.extname(previewPath)}`);
+      fs.copyFileSync(previewPath, destPath);
+      return destPath;
+    };
     const renderFull = async (pageNum: number): Promise<void> => {
-      const filePath = path.join(fullDir, `page-${pageNum}.png`);
+      let filePath = this.findCachedPage(fullDir, pageNum);
 
-      if (!fs.existsSync(filePath)) {
+      if (!filePath) {
         // If memory already failed, just copy preview for remaining pages
         if (memoryErrorOccurred) {
-          const previewPath = path.join(previewDir, `page-${pageNum}.png`);
-          if (fs.existsSync(previewPath)) {
-            fs.copyFileSync(previewPath, filePath);
-          }
+          filePath = copyPreviewAsFull(pageNum);
         } else {
+          filePath = path.join(fullDir, `page-${pageNum}.jpg`);
           try {
-            const pngData = await this.withWasmLock(() => {
+            const imgData = await this.withWasmLock(() => {
               let page, pixmap;
               try {
                 page = doc.loadPage(pageNum);
                 const matrix = mupdfLib.Matrix.scale(effectiveScale, effectiveScale);
                 pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-                return pixmap.asPNG();
+                return this.encodePixmap(pixmap);
               } finally {
                 try { pixmap?.destroy(); } catch { /* ignore */ }
                 try { page?.destroy(); } catch { /* ignore */ }
               }
             });
-            fs.writeFileSync(filePath, Buffer.from(pngData));
+            fs.writeFileSync(filePath, Buffer.from(imgData));
           } catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             if (errorMsg.includes('malloc') || errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
               console.warn(`[PDF Render] Memory error at page ${pageNum}, falling back to preview for remaining ${totalPages - pageNum} pages`);
               memoryErrorOccurred = true;
-              // Copy preview for this page
-              const previewPath = path.join(previewDir, `page-${pageNum}.png`);
-              if (fs.existsSync(previewPath)) {
-                fs.copyFileSync(previewPath, filePath);
-              }
+              filePath = copyPreviewAsFull(pageNum);
             } else {
               console.error(`[PDF Render] Error rendering page ${pageNum}:`, errorMsg);
             }
@@ -2280,14 +2226,13 @@ export class PDFAnalyzer {
         }
       }
 
-      if (fs.existsSync(filePath)) {
+      if (filePath && fs.existsSync(filePath)) {
         this.renderedPagePaths.set(pageNum, filePath);
+        if (fullCallback) {
+          fullCallback(pageNum, filePath);
+        }
       }
       fullCompleted++;
-
-      if (fullCallback && fs.existsSync(filePath)) {
-        fullCallback(pageNum, filePath);
-      }
       if (progressCallback) {
         progressCallback(fullCompleted, totalPages, 'full');
       }
@@ -2361,23 +2306,23 @@ export class PDFAnalyzer {
     let completed = 0;
 
     const renderPage = async (pageNum: number): Promise<void> => {
-      const filePath = path.join(cacheDir, `page-${pageNum}.png`);
-
       // Check if already cached
-      if (!fs.existsSync(filePath)) {
-        const pngData = await this.withWasmLock(() => {
+      let filePath = this.findCachedPage(cacheDir, pageNum);
+      if (!filePath) {
+        filePath = path.join(cacheDir, `page-${pageNum}.jpg`);
+        const imgData = await this.withWasmLock(() => {
           let page, pixmap;
           try {
             page = doc.loadPage(pageNum);
             const matrix = mupdfLib.Matrix.scale(scale, scale);
             pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-            return pixmap.asPNG();
+            return this.encodePixmap(pixmap);
           } finally {
             try { pixmap?.destroy(); } catch { /* ignore */ }
             try { page?.destroy(); } catch { /* ignore */ }
           }
         });
-        fs.writeFileSync(filePath, Buffer.from(pngData));
+        fs.writeFileSync(filePath, Buffer.from(imgData));
       }
 
       paths[pageNum] = filePath;
@@ -2551,35 +2496,36 @@ export class PDFAnalyzer {
       // otherwise a >60s loop can have the doc destroyed underneath it.
       this.touchRenderDoc();
 
-      const filePath = path.join(qualityDir, `page-${pageNum}.png`);
-
-      // Check disk cache first — validate file is a non-trivial PNG (>200 bytes)
+      // Check disk cache first — validate file is a non-trivial image (>200 bytes)
       // to avoid serving corrupt/empty files from previous WASM failures
-      if (fs.existsSync(filePath)) {
-        const stat = fs.statSync(filePath);
+      const cachedPath = this.findCachedPage(qualityDir, pageNum);
+      if (cachedPath) {
+        const stat = fs.statSync(cachedPath);
         if (stat.size > 200) {
-          result[pageNum] = filePath;
+          result[pageNum] = cachedPath;
           continue;
         }
         // Corrupt file — delete and re-render
-        try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+        try { fs.unlinkSync(cachedPath); } catch { /* ignore */ }
       }
+
+      const filePath = path.join(qualityDir, `page-${pageNum}.jpg`);
 
       // Render the page — acquire WASM lock to prevent concurrent mupdf access
       try {
-        const pngData = await this.withWasmLock(() => {
+        const imgData = await this.withWasmLock(() => {
           let page, pixmap;
           try {
             page = doc.loadPage(pageNum);
             const matrix = mupdfLib.Matrix.scale(scale, scale);
             pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceRGB, false);
-            return pixmap.asPNG();
+            return this.encodePixmap(pixmap);
           } finally {
             try { pixmap?.destroy(); } catch { /* ignore */ }
             try { page?.destroy(); } catch { /* ignore */ }
           }
         });
-        fs.writeFileSync(filePath, Buffer.from(pngData));
+        fs.writeFileSync(filePath, Buffer.from(imgData));
         result[pageNum] = filePath;
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);

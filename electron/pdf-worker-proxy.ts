@@ -1,26 +1,37 @@
 /**
  * PDF Worker Proxy
  *
- * Thin main-thread proxy that spawns pdf-worker.js in a Worker thread and
+ * Thin main-thread proxy that spawns pdf-worker.js in Worker threads and
  * forwards IPC calls.  Correlates request ↔ response via a requestId map
  * and routes progress messages to the correct BrowserWindow.
  *
- * The worker is spawned lazily on first call() and auto-terminates after
- * 5 minutes of idle time to free ~200MB of memory.
+ * Two kinds of workers:
+ *  - The main worker holds analyzer state (analysis doc, spans, export) and
+ *    handles everything except batch page rendering.
+ *  - The render pool: each worker hosts its own mupdf WASM instance, so a
+ *    renderPages batch split across the pool renders pages in parallel
+ *    instead of serializing behind a single WASM lock.
+ *
+ * All workers are spawned lazily on first use and auto-terminate after
+ * 5 minutes of idle time to free WASM memory.
  */
 import { Worker } from 'worker_threads';
 import * as path from 'path';
+import * as os from 'os';
 import type { WebContents } from 'electron';
 
 interface PendingCall {
   resolve: (value: any) => void;
   reject: (reason: any) => void;
   sender?: WebContents;
+  worker: Worker;
 }
 
 const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+const RENDER_POOL_SIZE = Math.max(2, Math.min(4, os.cpus().length - 2));
 
 let worker: Worker | null = null;
+let renderPool: Worker[] = [];
 let pending = new Map<string, PendingCall>();
 let requestCounter = 0;
 let defaultSender: WebContents | null = null;
@@ -40,17 +51,25 @@ function clearIdleTimer(): void {
 function resetIdleTimer(): void {
   clearIdleTimer();
   idleTimer = setTimeout(() => {
-    if (worker && pending.size === 0) {
+    if (pending.size > 0) return;
+    if (worker) {
       console.log('[pdf-worker-proxy] Worker terminated (idle)');
       worker.terminate();
       worker = null;
     }
+    if (renderPool.length > 0) {
+      console.log(`[pdf-worker-proxy] Render pool terminated (idle, ${renderPool.length} workers)`);
+      for (const w of renderPool) {
+        w.terminate();
+      }
+      renderPool = [];
+    }
   }, IDLE_TIMEOUT);
 }
 
-function spawn(): Worker {
+function spawn(label: string, onExit: (w: Worker) => void): Worker {
   const w = new Worker(workerPath());
-  console.log('[pdf-worker-proxy] Worker started');
+  console.log(`[pdf-worker-proxy] ${label} started`);
 
   w.on('message', (msg: any) => {
     if (msg.type === 'progress') {
@@ -94,20 +113,22 @@ function spawn(): Worker {
   });
 
   w.on('error', (err) => {
-    console.error('[pdf-worker-proxy] Worker error:', err.message);
+    console.error(`[pdf-worker-proxy] ${label} error:`, err.message);
   });
 
   w.on('exit', (code) => {
     clearIdleTimer();
     if (code !== 0) {
-      console.error(`[pdf-worker-proxy] Worker exited with code ${code}`);
+      console.error(`[pdf-worker-proxy] ${label} exited with code ${code}`);
     }
-    // Reject all pending calls
+    // Reject pending calls belonging to this worker only
     for (const [id, entry] of pending) {
-      entry.reject(new Error(`PDF worker exited unexpectedly (code ${code})`));
-      pending.delete(id);
+      if (entry.worker === w) {
+        entry.reject(new Error(`PDF worker exited unexpectedly (code ${code})`));
+        pending.delete(id);
+      }
     }
-    worker = null;
+    onExit(w);
   });
 
   return w;
@@ -115,9 +136,29 @@ function spawn(): Worker {
 
 function ensureWorker(): Worker {
   if (!worker) {
-    worker = spawn();
+    worker = spawn('Worker', () => { worker = null; });
   }
   return worker;
+}
+
+function ensureRenderPool(): Worker[] {
+  while (renderPool.length < RENDER_POOL_SIZE) {
+    const label = `Render worker ${renderPool.length + 1}/${RENDER_POOL_SIZE}`;
+    const w = spawn(label, (exited) => {
+      renderPool = renderPool.filter(x => x !== exited);
+    });
+    renderPool.push(w);
+  }
+  return renderPool;
+}
+
+function callOn(w: Worker, method: string, args: any[], sender?: WebContents): Promise<any> {
+  clearIdleTimer();
+  const requestId = `r${++requestCounter}`;
+  return new Promise((resolve, reject) => {
+    pending.set(requestId, { resolve, reject, sender, worker: w });
+    w.postMessage({ type: 'call', requestId, method, args });
+  });
 }
 
 /**
@@ -129,31 +170,71 @@ export function setDefaultSender(sender: WebContents): void {
 }
 
 /**
- * Call a method on the PDF worker.
+ * Call a method on the main PDF worker.
  * @param method  Method name matching the dispatch table in pdf-worker.ts
  * @param args    Positional arguments (will be serialized via structured clone)
  * @param sender  Optional WebContents to receive progress events
  */
 export function call(method: string, args: any[], sender?: WebContents): Promise<any> {
-  const w = ensureWorker();
-  // Any active call means the worker is not idle
-  clearIdleTimer();
-  const requestId = `r${++requestCounter}`;
-  return new Promise((resolve, reject) => {
-    pending.set(requestId, { resolve, reject, sender });
-    w.postMessage({ type: 'call', requestId, method, args });
-  });
+  return callOn(ensureWorker(), method, args, sender);
 }
 
 /**
- * Terminate the worker. Call during app shutdown.
+ * Render a batch of pages in parallel across the render pool.
+ * Splits the page list into contiguous chunks, one per pool worker, and
+ * merges the pageNum → filePath results. A failed chunk only loses its own
+ * pages (they're absent from the result; the renderer retries absent pages).
+ */
+export async function callRenderPages(
+  pdfPath: string,
+  pageNumbers: number[],
+  quality: 'preview' | 'full',
+  sender?: WebContents
+): Promise<Record<number, string>> {
+  const pool = ensureRenderPool();
+  const chunkSize = Math.ceil(pageNumbers.length / pool.length);
+  const calls: Promise<Record<number, string>>[] = [];
+  for (let i = 0; i < pool.length; i++) {
+    const chunk = pageNumbers.slice(i * chunkSize, (i + 1) * chunkSize);
+    if (chunk.length === 0) break;
+    calls.push(callOn(pool[i], 'renderPages', [pdfPath, chunk, quality], sender));
+  }
+
+  const settled = await Promise.allSettled(calls);
+  const merged: Record<number, string> = {};
+  for (const s of settled) {
+    if (s.status === 'fulfilled') {
+      Object.assign(merged, s.value);
+    } else {
+      console.error('[pdf-worker-proxy] Render pool chunk failed:', s.reason?.message ?? s.reason);
+    }
+  }
+  return merged;
+}
+
+/**
+ * Call a method on every *existing* worker (main + render pool) without
+ * spawning new ones. Used for closeRenderDoc/close so each worker releases
+ * its cached document handle.
+ */
+export async function broadcast(method: string, args: any[]): Promise<void> {
+  const targets: Worker[] = [...renderPool];
+  if (worker) targets.push(worker);
+  await Promise.allSettled(targets.map(w => callOn(w, method, args)));
+}
+
+/**
+ * Terminate all workers. Call during app shutdown.
  */
 export async function terminate(): Promise<void> {
   clearIdleTimer();
-  if (worker) {
-    await worker.terminate();
-    worker = null;
-    pending.clear();
-    console.log('[pdf-worker-proxy] Worker terminated');
+  const targets: Worker[] = [...renderPool];
+  if (worker) targets.push(worker);
+  worker = null;
+  renderPool = [];
+  pending.clear();
+  if (targets.length > 0) {
+    await Promise.all(targets.map(w => w.terminate()));
+    console.log(`[pdf-worker-proxy] ${targets.length} worker(s) terminated`);
   }
 }
