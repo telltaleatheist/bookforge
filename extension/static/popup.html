@@ -1,0 +1,73 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 13px/1.45 system-ui, sans-serif; width: 320px; margin: 0; padding: 12px; }
+      h1 { font-size: 14px; margin: 0 0 2px; }
+      .status { display: flex; align-items: center; gap: 7px; margin: 6px 0 10px; }
+      .dot { width: 9px; height: 9px; border-radius: 50%; background: #9aa0a6; flex: none; }
+      .dot.on { background: #1a9d4b; }
+      .dot.warn { background: #f0a020; }
+      .dot.off { background: #d23b3b; }
+      .status .text { opacity: 0.85; }
+      button {
+        font: inherit; cursor: pointer; border-radius: 7px; border: 1px solid #8884;
+        background: #333a47; color: #f2f3f5; padding: 7px 10px;
+      }
+      button:hover:not(:disabled) { background: #44506a; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      button.primary { background: #4f7cff; border-color: transparent; }
+      button.danger { background: #b63b3b; border-color: transparent; }
+      .row { display: flex; gap: 8px; margin-bottom: 8px; }
+      .row button { flex: 1; }
+      .qhead { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 6px; }
+      .qhead h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.6; margin: 0; }
+      .qhead button { padding: 3px 8px; font-size: 12px; background: transparent; border: none; opacity: 0.8; }
+      ol { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
+      li {
+        display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px;
+        background: #8881; margin-bottom: 4px;
+      }
+      li.current { background: #4f7cff22; border: 1px solid #4f7cff66; }
+      li .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      li .badge { font-size: 11px; opacity: 0.7; flex: none; }
+      li .rm { background: transparent; border: none; padding: 2px 6px; opacity: 0.6; }
+      li .rm:hover { opacity: 1; color: #d23b3b; }
+      .empty { opacity: 0.55; padding: 8px 2px; }
+      .links { margin-top: 10px; font-size: 12px; opacity: 0.7; }
+      .links a { color: inherit; }
+    </style>
+  </head>
+  <body>
+    <h1>BookForge Reader</h1>
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span class="text" id="statusText">Checking…</span>
+    </div>
+
+    <div class="row">
+      <button id="server" class="primary">Start TTS server</button>
+    </div>
+    <div class="row">
+      <button id="toggleUi">Show controls on page</button>
+    </div>
+    <div class="row">
+      <button id="playPause">Play / Pause</button>
+      <button id="skip">Skip ⏭</button>
+    </div>
+
+    <div class="qhead">
+      <h2>Queue</h2>
+      <button id="clear">Clear queue</button>
+    </div>
+    <ol id="queue"></ol>
+
+    <div class="links">
+      <a href="#" id="openOptions">Options &amp; server settings</a>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

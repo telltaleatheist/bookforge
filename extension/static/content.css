@@ -1,0 +1,128 @@
+/* BookForge Reader injected UI. Scoped under #bfr-root; everything carries
+   explicit values so host-page styles can't bleed in. */
+
+#bfr-root {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  z-index: 2147483646;
+  pointer-events: none; /* children opt back in */
+}
+
+#bfr-root * { box-sizing: border-box; }
+
+/* Per-block button group (play ▶ over enqueue ＋) */
+.bfr-group {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  pointer-events: auto;
+}
+
+.bfr-play,
+.bfr-add {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  color: #fff;
+  font: 11px/24px system-ui, sans-serif;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.bfr-play { background: #4f7cff; }
+.bfr-add { background: #5a6270; font-size: 13px; }
+
+.bfr-group:hover .bfr-play,
+.bfr-group:hover .bfr-add { opacity: 0.95; }
+
+.bfr-play:hover,
+.bfr-add:hover { opacity: 1; transform: scale(1.1); }
+
+.bfr-play[data-state="connecting"] { opacity: 1; background: #6a7280; animation: bfr-pulse 1s ease-in-out infinite; }
+.bfr-play[data-state="loading"]    { opacity: 1; background: #f0a020; animation: bfr-pulse 1s ease-in-out infinite; }
+.bfr-play[data-state="playing"]    { opacity: 1; background: #1a9d4b; }
+.bfr-play[data-state="paused"]     { opacity: 1; background: #6a7280; }
+.bfr-play[data-state="done"]       { opacity: 0.85; background: #1a9d4b; }
+.bfr-play[data-state="error"]      { opacity: 1; background: #d23b3b; }
+
+.bfr-add[data-state="queued"] { opacity: 1; background: #1a9d4b; }
+
+@keyframes bfr-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.18); }
+}
+
+/* Floating control shown on text selection */
+.bfr-sel {
+  position: absolute;
+  display: flex;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  background: #1d2129;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+  z-index: 2147483647;
+}
+
+/* Transport bar */
+#bfr-bar {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: #1d2129;
+  color: #f2f3f5;
+  font: 13px/1 system-ui, sans-serif;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+  z-index: 2147483647;
+  pointer-events: auto;
+  max-width: 92vw;
+}
+
+.bfr-ctl {
+  padding: 5px 9px;
+  border: none;
+  border-radius: 7px;
+  background: #333a47;
+  color: #f2f3f5;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.bfr-ctl:hover:not(:disabled) { background: #44506a; }
+.bfr-ctl:disabled { opacity: 0.4; cursor: default; }
+#bfr-bar .bfr-close { background: transparent; font-size: 15px; }
+
+#bfr-bar .bfr-label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; font-style: italic; }
+#bfr-bar .bfr-time { font-variant-numeric: tabular-nums; opacity: 0.9; white-space: nowrap; }
+#bfr-bar .bfr-sentence { font-variant-numeric: tabular-nums; opacity: 0.6; white-space: nowrap; }
+
+#bfr-bar .bfr-speed {
+  background: #333a47;
+  color: #f2f3f5;
+  border: none;
+  border-radius: 7px;
+  padding: 4px 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+#bfr-bar .bfr-status { opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }

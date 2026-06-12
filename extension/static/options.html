@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>BookForge Reader — Options</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font: 14px/1.5 system-ui, sans-serif;
+        max-width: 540px;
+        margin: 32px auto;
+        padding: 0 20px;
+      }
+      h1 { font-size: 18px; margin-bottom: 4px; }
+      p.sub { margin-top: 0; opacity: 0.7; }
+      .field { margin: 16px 0; }
+      label { display: block; font-weight: 600; margin-bottom: 4px; }
+      input[type="text"], input[type="password"], input[type="number"], select {
+        width: 100%; padding: 7px 9px; box-sizing: border-box;
+        border: 1px solid #8888; border-radius: 6px; background: transparent; color: inherit;
+        font: inherit;
+      }
+      input[type="number"] { width: 120px; }
+      .row { display: flex; gap: 16px; align-items: flex-end; }
+      .checkbox { display: flex; align-items: center; gap: 8px; }
+      .checkbox input { width: auto; }
+      button {
+        padding: 8px 14px; border-radius: 6px; border: 1px solid #8888;
+        background: #4f7cff; color: #fff; font: inherit; cursor: pointer;
+      }
+      .result { margin-left: 10px; font-weight: 600; }
+      .result.good { color: #1a9d4b; }
+      .result.bad { color: #d23b3b; }
+      .result.pending { opacity: 0.7; }
+      .hint { font-size: 12px; opacity: 0.65; margin-top: 4px; }
+      code { background: #8881; padding: 1px 5px; border-radius: 4px; }
+      #saved { color: #1a9d4b; font-size: 12px; margin-left: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>BookForge Reader</h1>
+    <p class="sub">Reads web pages aloud through your local BookForge TTS engine.</p>
+
+    <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.04em;opacity:0.6;margin:18px 0 0">Server</h2>
+    <div class="row">
+      <div class="field" style="flex:1">
+        <label for="host">Host</label>
+        <input id="host" type="text" placeholder="127.0.0.1" />
+      </div>
+      <div class="field">
+        <label for="port">Port</label>
+        <input id="port" type="number" placeholder="8766" />
+      </div>
+    </div>
+    <p class="hint">Leave host as <code>127.0.0.1</code> for a local BookForge. To listen to another
+      machine on your network, set that machine's BookForge server to listen on <code>0.0.0.0</code>,
+      then enter its IP and the same token here. (Automatic discovery of servers on the network is
+      planned for a later release.)</p>
+
+    <div class="field">
+      <label for="token">Token</label>
+      <input id="token" type="password" placeholder="paste the token from tts-api.json" />
+      <p class="hint">Found in BookForge's config (launch the app once to generate it):<br />
+        macOS: <code>~/Library/Application Support/bookforge-app/tts-api.json</code><br />
+        Windows: <code>%APPDATA%/bookforge-app/tts-api.json</code></p>
+    </div>
+
+    <div class="field">
+      <label for="voice">Voice</label>
+      <select id="voice"></select>
+      <p class="hint">"Engine default" keeps whatever voice BookForge already has loaded (fastest).
+        Run Test connection while the engine is running to populate this list.</p>
+    </div>
+
+    <div class="field">
+      <button id="test">Test connection</button>
+      <span id="testResult" class="result"></span>
+      <span id="saved"></span>
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

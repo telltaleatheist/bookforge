@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "BookForge Reader",
+  "version": "0.1.0",
+  "description": "Read web pages aloud through BookForge's local streaming TTS engine.",
+  "minimum_chrome_version": "116",
+  "action": { "default_title": "BookForge Reader", "default_popup": "popup.html" },
+  "background": { "service_worker": "background.js" },
+  "options_page": "options.html",
+  "permissions": ["activeTab", "scripting", "offscreen", "storage"]
+}
