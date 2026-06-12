@@ -6,6 +6,7 @@ import {
 } from '../../creamsicle-desktop';
 import { StudioService } from './services/studio.service';
 import { StudioItem, MainTab, AudiobookSubTab, LanguageLearningSubTab, ProcessStep } from './models/studio.types';
+import { sortStudioItems } from './models/studio-sort';
 import { StudioListComponent } from './components/studio-list/studio-list.component';
 import { StudioBrowseComponent } from './components/studio-browse/studio-browse.component';
 import { StudioVersionsComponent } from './components/studio-versions/studio-versions.component';
@@ -78,6 +79,30 @@ import { SettingsService } from '../../core/services/settings.service';
           <button [class.active]="viewMode() === 'browse'" (click)="viewMode.set('browse')">Browse</button>
           <button [class.active]="viewMode() === 'workspace'" (click)="viewMode.set('workspace')">Workspace</button>
         </div>
+
+        <!-- Shared sort control (Browse + Workspace order identically) -->
+        <div class="sort-control">
+          <select
+            class="sort-select"
+            [ngModel]="studioService.sort().field"
+            (ngModelChange)="studioService.setSortField($event)"
+            title="Sort by"
+          >
+            <option value="modified">Date modified</option>
+            <option value="created">Date added</option>
+            <option value="title">Title</option>
+            <option value="custom">Custom</option>
+          </select>
+          <button
+            class="sort-dir"
+            [disabled]="studioService.sort().field === 'custom'"
+            (click)="studioService.toggleSortDirection()"
+            [title]="studioService.sort().direction === 'asc' ? 'Ascending' : 'Descending'"
+          >
+            {{ studioService.sort().direction === 'asc' ? '↑' : '↓' }}
+          </button>
+        </div>
+
         @if (viewMode() === 'browse') {
           <div class="topbar-search">
             <input
@@ -114,6 +139,7 @@ import { SettingsService } from '../../core/services/settings.service';
           (open)="openInWorkspace($event)"
           (editRequested)="editFromBrowse($event)"
           (exportRequested)="exportFromBrowse($event)"
+          (reorder)="onBrowseReorder($event)"
         />
       } @else {
       <desktop-split-pane [primarySize]="280" [minSize]="200" [maxSize]="500">
@@ -543,6 +569,39 @@ import { SettingsService } from '../../core/services/settings.service';
       background: var(--accent-primary, #06b6d4);
       color: #fff;
     }
+    .sort-control {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .sort-select {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      border-radius: 6px;
+      color: var(--text-primary);
+      padding: 5px 8px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      outline: none;
+    }
+    .sort-select:focus { border-color: var(--accent-primary, #06b6d4); }
+    .sort-dir {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-size: 0.9rem;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .sort-dir:hover:not(:disabled) { border-color: var(--accent-primary, #06b6d4); }
+    .sort-dir:disabled { opacity: 0.4; cursor: default; }
     .topbar-search { flex: 1; position: relative; max-width: 420px; }
     .topbar-search .search-input {
       width: 100%;
@@ -1366,8 +1425,14 @@ export class StudioComponent implements OnInit, OnDestroy {
     return archived;
   });
 
-  // Combined collection for the Browse grid (books first, then articles).
-  readonly browseItems = computed(() => [...this.filteredBooks(), ...this.filteredArticles()]);
+  // Combined collection for the Browse grid. Title/date sorts interleave books
+  // and articles into one true order; Custom keeps them grouped (books then
+  // articles) since each type owns a separate manual sortOrder space.
+  readonly browseItems = computed(() => {
+    const combined = [...this.filteredBooks(), ...this.filteredArticles()];
+    const sort = this.studioService.sort();
+    return sort.field === 'custom' ? combined : sortStudioItems(combined, sort);
+  });
 
   // Tab navigation
   readonly mainTab = signal<MainTab>('files');
@@ -1990,7 +2055,31 @@ export class StudioComponent implements OnInit, OnDestroy {
   // ─────────────────────────────────────────────────────────────────────────
 
   onReorder(event: { section: 'articles' | 'books' | 'archived'; orderedIds: string[] }): void {
+    // A manual drag defines the custom order, so switch to it (unless it's
+    // already custom) and persist the new sequence.
+    if (this.studioService.sort().field !== 'custom') {
+      this.studioService.setSortField('custom');
+    }
     this.studioService.reorderItems(event.section, event.orderedIds);
+  }
+
+  /**
+   * Reorder from the Browse grid, which mixes books and articles. Switch to
+   * Custom and persist each type's new relative order (the grid groups books
+   * before articles in Custom, so cross-type position resolves to rank within
+   * the dragged item's own type).
+   */
+  onBrowseReorder(orderedIds: string[]): void {
+    if (this.studioService.sort().field !== 'custom') {
+      this.studioService.setSortField('custom');
+    }
+    const items = orderedIds
+      .map(id => this.studioService.getItem(id))
+      .filter((i): i is StudioItem => !!i);
+    const bookIds = items.filter(i => i.type === 'book').map(i => i.id);
+    const articleIds = items.filter(i => i.type === 'article').map(i => i.id);
+    void this.studioService.reorderItems('books', bookIds);
+    void this.studioService.reorderItems('articles', articleIds);
   }
 
   async onArchive(ids: string[]): Promise<void> {

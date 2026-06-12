@@ -2,7 +2,10 @@ import { Injectable, inject, signal, computed, effect } from '@angular/core';
 import { ElectronService } from '../../../core/services/electron.service';
 import { LibraryService } from '../../../core/services/library.service';
 import { StudioItem, StudioItemType, FetchUrlResult, EditAction } from '../models/studio.types';
+import { SortField, SortPreference, DEFAULT_SORT, defaultDirectionFor, sortStudioItems } from '../models/studio-sort';
 import type { AudiobookOutput } from '../../../core/models/manifest.types';
+
+const SORT_STORAGE_KEY = 'bookforge-studio-sort';
 
 /**
  * StudioService - Unified project management for books and articles
@@ -25,15 +28,53 @@ export class StudioService {
   private readonly _loading = signal<boolean>(false);
   private readonly _error = signal<string | null>(null);
 
-  // Public computed signals
-  readonly books = computed(() => this._books());
-  readonly articles = computed(() => this._articles());
-  readonly archived = computed(() => this._archived());
+  // Active sort preference — shared by the Browse grid and Workspace list, and
+  // persisted so it survives reloads and library switches.
+  private readonly _sort = signal<SortPreference>(this.loadSortPref());
+  readonly sort = computed(() => this._sort());
+
+  // Public computed signals — ordered by the active sort so both views agree.
+  // Books and articles each carry their own sortOrder space, so in Custom mode
+  // they sort independently; the Browse grid groups them (books then articles).
+  readonly books = computed(() => sortStudioItems(this._books(), this._sort()));
+  readonly articles = computed(() => sortStudioItems(this._articles(), this._sort()));
+  readonly archived = computed(() => sortStudioItems(this._archived(), this._sort()));
   readonly loading = computed(() => this._loading());
   readonly error = computed(() => this._error());
 
   // Combined count
   readonly totalCount = computed(() => this._books().length + this._articles().length);
+
+  private loadSortPref(): SortPreference {
+    try {
+      const raw = localStorage.getItem(SORT_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as SortPreference;
+        if (parsed?.field && parsed?.direction) return parsed;
+      }
+    } catch { /* fall through to default */ }
+    return { ...DEFAULT_SORT };
+  }
+
+  private persistSort(pref: SortPreference): void {
+    try { localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(pref)); } catch { /* non-fatal */ }
+  }
+
+  /** Change the sort field, picking the direction that reads most naturally. */
+  setSortField(field: SortField): void {
+    const next: SortPreference = { field, direction: defaultDirectionFor(field) };
+    this._sort.set(next);
+    this.persistSort(next);
+  }
+
+  /** Flip ascending/descending. No-op in Custom (manual order has no direction). */
+  toggleSortDirection(): void {
+    const cur = this._sort();
+    if (cur.field === 'custom') return;
+    const next: SortPreference = { field: cur.field, direction: cur.direction === 'asc' ? 'desc' : 'asc' };
+    this._sort.set(next);
+    this.persistSort(next);
+  }
 
   // Tracks the library path the loaded items belong to, so we can reload live
   // when the user switches library locations in Settings.
@@ -279,13 +320,10 @@ export class StudioService {
         }));
       }
 
-      // Separate archived books
+      // Separate archived books (ordering is applied by the books/archived
+      // computeds via the active sort preference)
       const activeBooks = books.filter(b => !b.archived);
       const archivedBooks = books.filter(b => b.archived);
-
-      // Sort: unsorted items first (by modifiedAt desc), then items with sortOrder
-      this.sortItems(activeBooks);
-      this.sortItems(archivedBooks);
 
       this._books.set(activeBooks);
       // Merge archived books into the archived signal (combined with archived articles)
@@ -373,13 +411,10 @@ export class StudioService {
         };
       });
 
-      // Separate archived articles
+      // Separate archived articles (ordering is applied by the articles/archived
+      // computeds via the active sort preference)
       const activeArticles = articles.filter(a => !a.archived);
       const archivedArticles = articles.filter(a => a.archived);
-
-      // Sort: unsorted items first (by modifiedAt desc), then items with sortOrder
-      this.sortItems(activeArticles);
-      this.sortItems(archivedArticles);
 
       this._articles.set(activeArticles);
       // Merge archived articles into the archived signal (combined with archived books)
@@ -716,23 +751,6 @@ export class StudioService {
   }
 
   /**
-   * Sort items: unsorted items first (by modifiedAt desc), then items with sortOrder (ascending).
-   * This ensures recently completed books (whose sortOrder is cleared) appear at the top.
-   */
-  private sortItems(items: StudioItem[]): void {
-    items.sort((a, b) => {
-      const aHasOrder = a.sortOrder !== undefined;
-      const bHasOrder = b.sortOrder !== undefined;
-      if (!aHasOrder && !bHasOrder) {
-        return new Date(b.modifiedAt || 0).getTime() - new Date(a.modifiedAt || 0).getTime();
-      }
-      if (!aHasOrder) return -1;  // a unsorted → a first
-      if (!bHasOrder) return 1;   // b unsorted → b first
-      return a.sortOrder! - b.sortOrder!;
-    });
-  }
-
-  /**
    * Archive one or more items (move to Archived section)
    */
   async archiveItems(ids: string[]): Promise<void> {
@@ -759,29 +777,46 @@ export class StudioService {
   }
 
   /**
-   * Reorder items within a section by setting sortOrder on each item
+   * Reorder items within a section by assigning each a sequential sortOrder.
+   *
+   * orderedIds may be a subset of the section (e.g. a search/tag filter is
+   * active, or the Browse grid reorders only one type): items not referenced
+   * keep their existing slots, and only the referenced items are reshuffled
+   * among those slots. Then the whole section is renumbered so the custom order
+   * is a clean 0..n sequence, and only the items whose sortOrder actually
+   * changed are persisted.
    */
   async reorderItems(section: 'articles' | 'books' | 'archived', orderedIds: string[]): Promise<void> {
     const items = section === 'articles' ? this._articles()
       : section === 'books' ? this._books()
       : this._archived();
 
-    // Optimistic local update
-    const reordered = orderedIds
+    // Reorder referenced items within their existing positions, leaving any
+    // unreferenced (filtered-out) items where they are.
+    const referencedSet = new Set(orderedIds);
+    const queue = orderedIds
       .map(id => items.find(i => i.id === id))
-      .filter((i): i is StudioItem => !!i)
-      .map((item, idx) => ({ ...item, sortOrder: idx }));
+      .filter((i): i is StudioItem => !!i);
+    let qi = 0;
+    const merged = items.map(item => (referencedSet.has(item.id) ? queue[qi++] : item));
 
-    if (section === 'articles') this._articles.set(reordered);
-    else if (section === 'books') this._books.set(reordered);
-    else this._archived.set(reordered);
+    // Renumber the full section and remember which items changed.
+    const changed: StudioItem[] = [];
+    const withOrder = merged.map((item, idx) => {
+      if (item.sortOrder === idx) return item;
+      const updated = { ...item, sortOrder: idx };
+      changed.push(updated);
+      return updated;
+    });
 
-    // Persist sortOrder for each item
-    for (let i = 0; i < orderedIds.length; i++) {
-      const item = items.find(it => it.id === orderedIds[i]);
-      if (!item) continue;
+    if (section === 'articles') this._articles.set(withOrder);
+    else if (section === 'books') this._books.set(withOrder);
+    else this._archived.set(withOrder);
+
+    // Persist only the items whose sortOrder moved.
+    for (const item of changed) {
       const projectId = this.resolveProjectId(item);
-      await this.electronService.manifestUpdate({ projectId, sortOrder: i });
+      await this.electronService.manifestUpdate({ projectId, sortOrder: item.sortOrder });
     }
   }
 
