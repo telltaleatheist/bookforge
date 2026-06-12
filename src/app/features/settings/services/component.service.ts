@@ -38,6 +38,9 @@ export class ComponentService {
   /** Unsubscribe handles for active onProgress subscriptions, keyed by id. */
   private readonly progressUnsubs = new Map<string, () => void>();
 
+  /** Dedup guard so consumers can ensureLoaded() without re-fetching. */
+  private loadPromise: Promise<void> | null = null;
+
   isBusy(id: string): boolean {
     return this.busyIds().has(id);
   }
@@ -73,6 +76,25 @@ export class ComponentService {
     } finally {
       this.loading.set(false);
     }
+  }
+
+  /**
+   * Load once on first request, sharing the in-flight/settled promise. Lets
+   * consumers outside the Add-ons tab (e.g. the TTS engine pickers) gate their
+   * UI on availability without each triggering its own round-trip.
+   */
+  ensureLoaded(): Promise<void> {
+    if (!this.loadPromise) this.loadPromise = this.refresh();
+    return this.loadPromise;
+  }
+
+  /**
+   * True when a component is installed and usable (i.e. resolveEntry would
+   * succeed). Reads the `components` signal, so any template or computed that
+   * calls it re-renders when availability changes.
+   */
+  isInstalled(id: string): boolean {
+    return this.components().some(c => c.component.id === id && c.state === 'installed');
   }
 
   /**

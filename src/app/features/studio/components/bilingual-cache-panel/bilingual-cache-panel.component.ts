@@ -13,6 +13,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { SUPPORTED_LANGUAGES } from '../../models/studio.types';
 import { CachedLanguageInfo, CachedTtsSettings } from '../../models/sentence-cache.types';
+import { ComponentService } from '../../../settings/services/component.service';
 
 interface TtsConfig {
   engine: 'xtts' | 'orpheus';
@@ -117,7 +118,9 @@ interface TtsConfig {
                 <label>Engine</label>
                 <select [(ngModel)]="ttsConfig.engine" (ngModelChange)="onEngineChange()">
                   <option value="xtts">XTTS (Clone Voice)</option>
-                  <option value="orpheus">Orpheus (Natural)</option>
+                  @if (componentService.isInstalled('orpheus')) {
+                    <option value="orpheus">Orpheus (Natural)</option>
+                  }
                 </select>
               </div>
 
@@ -614,6 +617,9 @@ interface TtsConfig {
   `]
 })
 export class BilingualCachePanelComponent implements OnInit, OnChanges {
+  // Public for the template: gates optional TTS engines (e.g. Orpheus) on availability.
+  protected readonly componentService = inject(ComponentService);
+
   // Inputs
   readonly audiobookFolder = input.required<string>();
 
@@ -668,6 +674,13 @@ export class BilingualCachePanelComponent implements OnInit, OnChanges {
 
   async ngOnInit(): Promise<void> {
     await this.loadCache();
+    // Default engine is Orpheus; if it isn't installed, fall back to XTTS so the
+    // picker (which now hides the Orpheus option) and the config stay consistent.
+    await this.componentService.ensureLoaded();
+    if (this.ttsConfig.engine === 'orpheus' && !this.componentService.isInstalled('orpheus')) {
+      this.ttsConfig.engine = 'xtts';
+      this.onEngineChange();
+    }
   }
 
   async ngOnChanges(changes: SimpleChanges): Promise<void> {

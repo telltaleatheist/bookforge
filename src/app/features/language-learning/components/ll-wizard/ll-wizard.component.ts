@@ -25,6 +25,7 @@ import { SettingsService } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { QueueService } from '../../../queue/services/queue.service';
+import { ComponentService } from '../../../settings/services/component.service';
 import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
 import { EpubResolverService } from '../../services/epub-resolver.service';
 import {
@@ -648,14 +649,16 @@ interface SourceStage {
                     <span class="provider-name">XTTS</span>
                     <span class="provider-status">Multi-language</span>
                   </button>
-                  <button
-                    class="provider-btn"
-                    [class.selected]="ttsEngine() === 'orpheus'"
-                    (click)="selectTtsEngine('orpheus')"
-                  >
-                    <span class="provider-name">Orpheus</span>
-                    <span class="provider-status">Better prosody</span>
-                  </button>
+                  @if (componentService.isInstalled('orpheus')) {
+                    <button
+                      class="provider-btn"
+                      [class.selected]="ttsEngine() === 'orpheus'"
+                      (click)="selectTtsEngine('orpheus')"
+                    >
+                      <span class="provider-name">Orpheus</span>
+                      <span class="provider-status">Better prosody</span>
+                    </button>
+                  }
                 </div>
               </div>
 
@@ -2342,6 +2345,8 @@ export class LLWizardComponent implements OnInit {
   private readonly queueService = inject(QueueService);
   private readonly router = inject(Router);
   private readonly epubResolver = inject(EpubResolverService);
+  // Public for the template: gates optional TTS engines (e.g. Orpheus) on availability.
+  protected readonly componentService = inject(ComponentService);
 
   // Make Array available in template
   readonly Array = Array;
@@ -2805,6 +2810,11 @@ export class LLWizardComponent implements OnInit {
 
     this.detectedSourceLang.set(this.initialSourceLang());
     this.initializeFromSettings();
+    // Optional engines: if a saved/default engine isn't installed, fall back to XTTS.
+    await this.componentService.ensureLoaded();
+    if (this.ttsEngine() === 'orpheus' && !this.componentService.isInstalled('orpheus')) {
+      this.selectTtsEngine('xtts');
+    }
     this.checkOllamaConnection();
     // EPUBs are scanned by the bfpPath effect — await a tick for it to complete
     await this.scanProjectEpubs();
