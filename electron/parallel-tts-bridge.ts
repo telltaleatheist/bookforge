@@ -920,7 +920,7 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
  * On Windows with Orpheus + WSL enabled: spawns via wsl.exe
  */
 function spawnWithWslSupport(
-  condaPath: string,
+  command: string,
   args: string[],
   options: {
     cwd: string;
@@ -959,7 +959,7 @@ function spawnWithWslSupport(
   const safeArgs = options.shell ? shellEscapeArgs(args) : args;
 
   // Regular Windows/Mac/Linux spawn
-  return spawn(condaPath, safeArgs, options);
+  return spawn(command, safeArgs, options);
 }
 
 /**
@@ -1208,8 +1208,8 @@ export interface ParallelConversionResult {
 
 import {
   getDefaultE2aPath,
-  getCondaRunArgs,
-  getCondaPath,
+  getPythonInvocation,
+  PythonInvocation,
   shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
   getWslDistro,
@@ -1223,10 +1223,10 @@ import {
   buildCondaSpawnEnv,
 } from './e2a-paths';
 
-// Helper to get conda run args - always uses fresh e2aPath from centralized config
+// Helper to resolve the Python invocation - always uses fresh e2aPath from centralized config
 // Pass ttsEngine to use the correct environment (orpheus_tts for Orpheus in WSL, python_env for others)
-function condaRunArgs(ttsEngine?: string): string[] {
-  return getCondaRunArgs(getDefaultE2aPath(), ttsEngine);
+function pythonInvocation(ttsEngine?: string): PythonInvocation {
+  return getPythonInvocation(getDefaultE2aPath(), ttsEngine);
 }
 
 /**
@@ -1662,7 +1662,7 @@ export async function prepareSession(
   const deviceArg = deviceMap[settings.device] || settings.device.toUpperCase();
 
   const args = [
-    ...condaRunArgs(settings.ttsEngine),
+    ...pythonInvocation(settings.ttsEngine).args,
     appPath,
     '--headless',
     '--ebook', epubPath,
@@ -1716,7 +1716,7 @@ export async function prepareSession(
     let stderr = '';
 
     const prepProcess = spawnWithWslSupport(
-      getCondaPath(),
+      pythonInvocation(settings.ttsEngine).command,
       args,
       {
         cwd: getDefaultE2aPath(),
@@ -1887,7 +1887,7 @@ function startWorker(
     const deviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
     const deviceArg = deviceMap[settings.device] || settings.device.toUpperCase();
     args = [
-      ...condaRunArgs(settings.ttsEngine),
+      ...pythonInvocation(settings.ttsEngine).args,
       workerPath,
       '--session', prepInfo.sessionId,
       '--session_dir', prepInfo.sessionDir,
@@ -1926,7 +1926,7 @@ function startWorker(
     const appDeviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
     const appDeviceArg = appDeviceMap[settings.device] || settings.device.toUpperCase();
     args = [
-      ...condaRunArgs(settings.ttsEngine),
+      ...pythonInvocation(settings.ttsEngine).args,
       appPath,
       '--headless',
       '--session', prepInfo.sessionId,
@@ -1983,7 +1983,7 @@ function startWorker(
   }).catch(() => {}); // Don't fail if logging fails
 
   const workerProcess = spawnWithWslSupport(
-    getCondaPath(),
+    pythonInvocation(settings.ttsEngine).command,
     args,
     {
       cwd: getDefaultE2aPath(),
@@ -2402,7 +2402,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   const asmDeviceArg = asmDeviceMap[settings.device] || settings.device.toUpperCase();
 
   const args = [
-    ...condaRunArgs(settings.ttsEngine),
+    ...pythonInvocation(settings.ttsEngine).args,
     appPath,
     '--headless',
     // Only include --ebook if we have a path (assembly_only doesn't require it)
@@ -2434,7 +2434,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
 
     // Use WSL-aware spawn for Orpheus to ensure session files are found in WSL filesystem
     session.assemblyProcess = spawnWithWslSupport(
-      getCondaPath(),
+      pythonInvocation(settings.ttsEngine).command,
       args,
       {
         cwd: getDefaultE2aPath(),
@@ -4248,7 +4248,7 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
   const appPath = path.join(getDefaultE2aPath(), 'app.py');
 
   const args = [
-    ...condaRunArgs(),
+    ...pythonInvocation().args,
     appPath,
     '--headless',
     '--resume_session', sessionPath
@@ -4260,7 +4260,7 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
     let stdout = '';
     let stderr = '';
 
-    const resumeCheckProcess = spawn(getCondaPath(), args, {
+    const resumeCheckProcess = spawn(pythonInvocation().command, args, {
       cwd: getDefaultE2aPath(),
       env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
     });
@@ -4344,7 +4344,7 @@ export async function listResumableSessions(): Promise<Array<{
   const appPath = path.join(getDefaultE2aPath(), 'app.py');
 
   const args = [
-    ...condaRunArgs(),
+    ...pythonInvocation().args,
     appPath,
     '--headless',
     '--list_sessions'
@@ -4355,7 +4355,7 @@ export async function listResumableSessions(): Promise<Array<{
   return new Promise((resolve) => {
     let stdout = '';
 
-    const listProcess = spawn(getCondaPath(), args, {
+    const listProcess = spawn(pythonInvocation().command, args, {
       cwd: getDefaultE2aPath(),
       env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
     });

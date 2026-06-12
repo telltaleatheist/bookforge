@@ -14,9 +14,12 @@
     "build:electron": "npx tsc -p tsconfig.electron.json && npx shx cp -r electron/prompts dist/electron/ && npx shx cp -r electron/bookshelf-ui dist/electron/ && npm run copy:plugin-assets",
     "electron:dev": "npm run build:electron && concurrently \"ng serve --port 4250\" \"wait-on http://localhost:4250 && electron . --max-old-space-size=8192\"",
     "electron:build": "npm run build:electron && npm run build:prod && electron-builder",
-    "package:mac": "npm run download:mupdf && npm run electron:build -- --mac",
-    "package:win": "npm run download:mupdf && npm run electron:build -- --win",
-    "package:win-x64": "npm run download:mupdf && npm run electron:build -- --win --x64",
+    "stage:packaging": "node packaging/stage-resources.js",
+    "stage:packaging:offline": "node packaging/stage-resources.js --models",
+    "package:mac": "npm run download:mupdf && npm run stage:packaging && npm run electron:build -- --mac",
+    "package:mac:offline": "npm run download:mupdf && npm run stage:packaging:offline && npm run electron:build -- --mac",
+    "package:win": "npm run download:mupdf && npm run stage:packaging && npm run electron:build -- --win",
+    "package:win-x64": "npm run download:mupdf && npm run stage:packaging && npm run electron:build -- --win --x64",
     "package:linux": "npm run download:mupdf && npm run electron:build -- --linux",
     "watch": "ng build --watch --configuration development",
     "watch:electron": "npx tsc -p tsconfig.electron.json --watch",
@@ -91,6 +94,11 @@
       "bookforge-icon.png"
     ],
     "icon": "bookforge-icon.png",
+    "compression": "store",
+    "dmg": {
+      "format": "ULFO",
+      "writeUpdateInfo": false
+    },
     "mac": {
       "category": "public.app-category.productivity",
       "target": "dmg",
@@ -99,6 +107,14 @@
         {
           "from": "resources/bin/mutool-${arch}",
           "to": "bin/mutool-${arch}"
+        },
+        {
+          "from": "resources/e2a-env.tar.gz",
+          "to": "e2a-env.tar.gz"
+        },
+        {
+          "from": "resources/e2a",
+          "to": "e2a"
         }
       ]
     },
@@ -109,6 +125,14 @@
         {
           "from": "resources/bin/mutool.exe",
           "to": "bin/mutool.exe"
+        },
+        {
+          "from": "resources/e2a-env.tar.gz",
+          "to": "e2a-env.tar.gz"
+        },
+        {
+          "from": "resources/e2a",
+          "to": "e2a"
         }
       ]
     },

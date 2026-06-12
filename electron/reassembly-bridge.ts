@@ -6,12 +6,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
-import { getDefaultE2aPath, getDefaultE2aTmpPath, getCondaActivation, getCondaRunArgs, getCondaPath, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
+import { getDefaultE2aPath, getDefaultE2aTmpPath, getPythonInvocation, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
 import * as os from 'os';
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata, optimizeCoverForM4b } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
-import { getFfmpegPath } from './tool-paths';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -913,30 +912,22 @@ export async function startReassembly(
     } else {
       // Standard Windows/macOS/Linux spawn
       // Use shell: true + shellEscapeArgs to handle paths with apostrophes/quotes
-      // (conda run re-invokes through a shell, so paths must be properly escaped)
-      const condaArgs = [...getCondaRunArgs(e2aPath), ...appArgs];
-      const escapedArgs = shellEscapeArgs(condaArgs);
-      console.log('[REASSEMBLY] Running command: conda', escapedArgs.join(' '));
+      // (conda run re-invokes through a shell, so paths must be properly escaped).
+      // The command is escaped too: a bundled relocatable python lives under
+      // "Application Support" on macOS.
+      const py = getPythonInvocation(e2aPath);
+      const escapedArgs = shellEscapeArgs([...py.args, ...appArgs]);
+      const escapedCommand = shellEscapeArgs([py.command])[0];
+      console.log('[REASSEMBLY] Running command:', escapedCommand, escapedArgs.join(' '));
 
-      // Packaged Electron apps have a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
-      // e2a's Python code (pydub) shells out to ffmpeg/ffprobe, which live in
-      // /opt/homebrew/bin or /usr/local/bin. Enrich PATH so they're found.
-      const spawnEnv = buildCondaSpawnEnv({
-        PYTHONUNBUFFERED: '1',
-        PYTHONIOENCODING: 'utf-8',
-      });
-      const ffmpegDir = path.dirname(getFfmpegPath());
-      if (ffmpegDir && ffmpegDir !== '.') {
-        const pathKey = Object.keys(spawnEnv).find(k => k.toUpperCase() === 'PATH') || 'PATH';
-        if (!(spawnEnv[pathKey] || '').includes(ffmpegDir)) {
-          spawnEnv[pathKey] = `${ffmpegDir}${path.delimiter}${spawnEnv[pathKey] || ''}`;
-          console.log(`[REASSEMBLY] Enriched ${pathKey} with ffmpeg dir: ${ffmpegDir}`);
-        }
-      }
-
-      proc = spawn(getCondaPath(), escapedArgs, {
+      // buildCondaSpawnEnv enriches PATH with the resolved ffmpeg dir so e2a's
+      // Python (pydub) finds ffmpeg/ffprobe even under a packaged app's minimal PATH.
+      proc = spawn(escapedCommand, escapedArgs, {
         cwd: e2aPath,
-        env: spawnEnv,
+        env: buildCondaSpawnEnv({
+          PYTHONUNBUFFERED: '1',
+          PYTHONIOENCODING: 'utf-8',
+        }),
         shell: true,
       });
     }

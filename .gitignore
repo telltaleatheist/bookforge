@@ -60,3 +60,10 @@ CLAUDE.md
 resources/bin/*
 summary-*.json
 *.ttf
+
+# conda-pack tarballs (multi-GB build artifacts; ymls in packaging/env are committed)
+packaging/artifacts/
+
+# staged packaging resources (rebuilt by packaging/stage-resources.js)
+resources/e2a/
+resources/e2a-env.tar.gz

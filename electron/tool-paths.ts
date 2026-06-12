@@ -15,6 +15,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { app } from 'electron';
+import { getActiveBundledEnvPath, getActiveBundledE2aPath, relocatableBinaryPath } from './e2a-env-bootstrap';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -303,7 +304,7 @@ export function getCondaPath(): string {
 
 /**
  * Get ffmpeg executable path
- * Priority: config > env var > auto-detect > fallback to 'ffmpeg'
+ * Priority: config > env var > bundled relocatable env > auto-detect > fallback to 'ffmpeg'
  */
 export function getFfmpegPath(): string {
   loadConfig();
@@ -318,19 +319,31 @@ export function getFfmpegPath(): string {
     return process.env.FFMPEG_PATH;
   }
 
-  // 3. Auto-detect
+  // 3. Bundled relocatable env (packaged builds / BOOKFORGE_E2A_ENV override).
+  // The env tarball ships ffmpeg, so a clean target machine needs no system
+  // install — BookForge's own ffmpeg calls use the same binary e2a does.
+  const bundledEnv = getActiveBundledEnvPath();
+  if (bundledEnv) {
+    const bundledFfmpeg = relocatableBinaryPath(bundledEnv, 'ffmpeg');
+    if (bundledFfmpeg) {
+      return bundledFfmpeg;
+    }
+    console.warn(`[TOOL-PATHS] Bundled env at ${bundledEnv} contains no ffmpeg — the tarball is missing its binaries; falling back to system detection`);
+  }
+
+  // 4. Auto-detect
   const detected = findExistingPath(getFfmpegCandidates());
   if (detected) {
     return detected;
   }
 
-  // 4. Fallback
+  // 5. Fallback
   return 'ffmpeg';
 }
 
 /**
  * Get ebook2audiobook installation path
- * Priority: config > env var > auto-detect
+ * Priority: config > env var > bundled runtime copy > auto-detect
  */
 export function getE2aPath(): string {
   loadConfig();
@@ -345,13 +358,20 @@ export function getE2aPath(): string {
     return process.env.EBOOK2AUDIOBOOK_PATH;
   }
 
-  // 3. Auto-detect
+  // 3. Bundled e2a (packaged builds): the shipped snapshot copied to a
+  // writable runtime dir by ensureBundledE2a() on first run.
+  const bundledE2a = getActiveBundledE2aPath();
+  if (bundledE2a) {
+    return bundledE2a;
+  }
+
+  // 4. Auto-detect
   const detected = findExistingPath(getE2aCandidates());
   if (detected) {
     return detected;
   }
 
-  // 4. Return a reasonable default (may not exist)
+  // 5. Return a reasonable default (may not exist)
   const homeDir = os.homedir();
   return path.join(homeDir, 'Projects', 'ebook2audiobook');
 }

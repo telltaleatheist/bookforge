@@ -10,7 +10,7 @@ import { BrowserWindow, app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as readline from 'readline';
-import { getDefaultE2aPath, getCondaRunArgs, getCondaPath, buildCondaSpawnEnv } from './e2a-paths';
+import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from './e2a-paths';
 import { getStreamVoices, resolveStreamVoice, StreamVoice } from './xtts-voices';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -361,17 +361,17 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
 
       console.log(`[XTTS Pool] Starting worker ${id}...`);
 
-      // Get conda run args dynamically (handles prefix vs named env)
-      const condaArgs = [...getCondaRunArgs(E2A_PATH)];
-      // Replace 'python' with 'python -u' for unbuffered output, add script path
-      condaArgs[condaArgs.length - 1] = 'python';
-      condaArgs.push('-u', scriptPath);
+      // Resolve the env layout (bundled relocatable python or conda run);
+      // -u for unbuffered output.
+      const py = getPythonInvocation(E2A_PATH);
+      const condaArgs = [...py.args, '-u', scriptPath];
 
       // shell: false like every other native conda spawn (parallel-tts-bridge):
-      // conda is an executable on all platforms, and skipping the shell avoids
-      // cmd.exe quoting rules on Windows. buildCondaSpawnEnv keeps System32 on
-      // PATH, which conda's env activation needs (chcp) and can otherwise drop.
-      const child = spawn(getCondaPath(), condaArgs, {
+      // the command is an executable on all platforms, and skipping the shell
+      // avoids cmd.exe quoting rules on Windows. buildCondaSpawnEnv keeps
+      // System32 on PATH, which conda's env activation needs (chcp) and can
+      // otherwise drop.
+      const child = spawn(py.command, condaArgs, {
         cwd: E2A_PATH,
         env: buildCondaSpawnEnv({
           PYTHONUNBUFFERED: '1',

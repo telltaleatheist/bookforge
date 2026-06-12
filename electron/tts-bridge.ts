@@ -11,7 +11,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as logger from './audiobook-logger';
-import { getDefaultE2aPath, getCondaRunArgs, getCondaPath, buildCondaSpawnEnv } from './e2a-paths';
+import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from './e2a-paths';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -367,17 +367,17 @@ export async function startConversion(
     let stderr = '';
     let outputFile = '';
 
-    // Use conda run to activate the ebook2audiobook environment
-    // --no-capture-output prevents conda from buffering all stdout/stderr
-    // getCondaRunArgs() detects if a local python_env folder exists (prefix) or uses named env
+    // getPythonInvocation() picks the env layout: bundled relocatable python,
+    // conda run -p (prefix env), or conda run -n (named env).
     // For Orpheus: uses WSL with orpheus_tts conda env for CUDA graph performance on Windows
     const currentE2aPath = getDefaultE2aPath();
-    const fullArgs = [...getCondaRunArgs(currentE2aPath, settings.ttsEngine), ...args];
+    const py = getPythonInvocation(currentE2aPath, settings.ttsEngine);
+    const fullArgs = [...py.args, ...args];
     console.log('[TTS] Starting ebook2audiobook with command:');
-    console.log('[TTS]   conda', fullArgs.join(' '));
+    console.log('[TTS]  ', py.command, fullArgs.join(' '));
     console.log('[TTS]   cwd:', currentE2aPath);
 
-    currentProcess = spawn(getCondaPath(), fullArgs, {
+    currentProcess = spawn(py.command, fullArgs, {
       cwd: currentE2aPath,
       env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
     });

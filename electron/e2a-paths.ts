@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import {
   getCondaPath as getToolCondaPath,
   getE2aPath as getToolE2aPath,
+  getFfmpegPath,
   updateConfig as updateToolConfig,
   shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
@@ -26,6 +27,11 @@ import {
   wslPathToWindows,
 } from './tool-paths';
 import { componentManager } from './components/component-manager';
+import {
+  getActiveBundledEnvPath,
+  relocatablePythonPath,
+  relocatableEnvBinDirs,
+} from './e2a-env-bootstrap';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configurable paths (runtime overrides - for backward compatibility)
@@ -159,20 +165,36 @@ function condaNamedEnvExists(name: string): boolean {
 }
 
 /**
- * Resolve the conda environment for a TTS engine — with NO silent fallback.
+ * Resolve the Python environment for a TTS engine — with NO silent fallback.
  *
- * Two supported install layouts: a prefix env folder shipped inside the e2a install
- * (./python_env, ./orpheus_env), or a named conda env ("ebook2audiobook"). The prefix
- * env wins when present; otherwise we use the named env *but only after confirming it
- * exists*. If neither can be found, we throw a clear error rather than handing conda a
+ * Three supported layouts:
+ *  - relocatable: the conda-pack env a packaged build ships (or the
+ *    BOOKFORGE_E2A_ENV override in dev). Run via its python directly —
+ *    no conda exists on a clean target machine.
+ *  - prefix: an env folder shipped inside the e2a install (./python_env,
+ *    ./orpheus_env), run via `conda run -p`.
+ *  - named: the "ebook2audiobook" conda env, run via `conda run -n`, but only
+ *    after confirming it exists.
+ * If none can be found, we throw a clear error rather than handing conda a
  * name/path that will fail cryptically deep in the worker spawn.
  */
 function resolveCondaEnv(
   e2aPath?: string,
   ttsEngine?: string
-): { kind: 'prefix'; path: string } | { kind: 'named'; name: string } {
+): { kind: 'relocatable'; path: string } | { kind: 'prefix'; path: string } | { kind: 'named'; name: string } {
   const basePath = e2aPath || getDefaultE2aPath();
   const envPath = getEnvPathForEngine(ttsEngine, basePath);
+
+  // Orpheus never uses the bundled env (its deps conflict with it); the path
+  // from the component seam / orpheus_env is verified to exist or has thrown.
+  if (ttsEngine?.toLowerCase() === 'orpheus') {
+    return { kind: 'prefix', path: envPath };
+  }
+
+  // Bundled relocatable env wins: packaged installs always use it, and the
+  // BOOKFORGE_E2A_ENV override exists precisely to force this path in dev.
+  const bundled = getActiveBundledEnvPath();
+  if (bundled) return { kind: 'relocatable', path: bundled };
 
   if (fs.existsSync(envPath)) return { kind: 'prefix', path: envPath };
 
@@ -195,54 +217,35 @@ function resolveCondaEnv(
   );
 }
 
+export interface PythonInvocation {
+  command: string;
+  args: string[];
+}
+
 /**
- * Get the conda run arguments for executing Python in the ebook2audiobook environment.
+ * How to launch Python in the e2a environment: spawn `command` with
+ * `[...args, <script>, ...scriptArgs]`.
  *
- * Returns args for either a prefix env (./python_env) or the named env, per the
- * detected install layout (see resolveCondaEnv). Throws if neither env exists.
+ * Relocatable env → the env's python directly (no conda on the machine).
+ * Prefix / named env → `conda run`. Throws when no env can be found.
  *
- * Note: For Orpheus TTS on Windows, WSL2 with orpheus_tts conda env is preferred for
- * CUDA graph performance. This function is for legacy Windows native execution.
+ * Note: For Orpheus TTS on Windows, WSL2 with orpheus_tts conda env is preferred
+ * for CUDA graph performance — that route never consults this function.
  *
  * @param e2aPath - Optional base e2a path (defaults to auto-detected path)
  * @param ttsEngine - Optional TTS engine name to determine which environment to use
  */
-export function getCondaRunArgs(e2aPath?: string, ttsEngine?: string): string[] {
+export function getPythonInvocation(e2aPath?: string, ttsEngine?: string): PythonInvocation {
   const env = resolveCondaEnv(e2aPath, ttsEngine);
+  if (env.kind === 'relocatable') {
+    console.log(`[E2A-PATHS] Using bundled relocatable env: ${env.path} for engine: ${ttsEngine || 'default'}`);
+    return { command: relocatablePythonPath(env.path), args: [] };
+  }
   if (env.kind === 'prefix') {
     console.log(`[E2A-PATHS] Using conda env: ${env.path} for engine: ${ttsEngine || 'default'}`);
-    return ['run', '--no-capture-output', '-p', env.path, 'python'];
+    return { command: getCondaPath(), args: ['run', '--no-capture-output', '-p', env.path, 'python'] };
   }
-  return ['run', '--no-capture-output', '-n', env.name, 'python'];
-}
-
-/**
- * Get the Python command to use for ebook2audiobook
- * @deprecated Use getCondaRunArgs() instead for more flexibility
- */
-export function getPythonCommand(): { command: string; args: string[] } {
-  return {
-    command: 'conda',
-    args: getCondaRunArgs(),
-  };
-}
-
-/**
- * Get platform-specific conda activation prefix for shell commands
- *
- * @param e2aPath - Optional base e2a path (defaults to auto-detected path)
- * @param ttsEngine - Optional TTS engine name to determine which environment to use
- */
-export function getCondaActivation(e2aPath?: string, ttsEngine?: string): string {
-  const platform = os.platform();
-  const env = resolveCondaEnv(e2aPath, ttsEngine);
-  // Prefix env → activate by path (quoted); named env → activate by name.
-  const target = env.kind === 'prefix' ? `"${env.path}"` : env.name;
-
-  if (platform === 'win32') {
-    return `conda activate ${target} && `;
-  }
-  return `source $(conda info --base)/etc/profile.d/conda.sh && conda activate ${target} && `;
+  return { command: getCondaPath(), args: ['run', '--no-capture-output', '-n', env.name, 'python'] };
 }
 
 /**
@@ -373,8 +376,30 @@ export function buildCondaSpawnEnv(extra: Record<string, string> = {}): Record<s
     ...extra,
   };
 
+  const pathKey = Object.keys(env).find(k => k.toUpperCase() === 'PATH') || 'PATH';
+
+  // e2a's Python resolves ffmpeg/ffprobe from PATH (the conda env doesn't ship
+  // them). A packaged app launched from Finder/Explorer inherits a minimal PATH,
+  // so make the resolved ffmpeg's directory visible to every e2a spawn.
+  const ffmpegDir = path.dirname(getFfmpegPath());
+  if (ffmpegDir && ffmpegDir !== '.' && !(env[pathKey] || '').includes(ffmpegDir)) {
+    env[pathKey] = `${ffmpegDir}${path.delimiter}${env[pathKey] || ''}`;
+  }
+
+  // Relocatable env: replicate what `conda activate` would have done — the
+  // env's bin dirs go first so its python, ffmpeg/ffprobe/sox/mediainfo and
+  // ebook-convert win over anything else on the machine.
+  const bundled = getActiveBundledEnvPath();
+  if (bundled) {
+    for (const dir of relocatableEnvBinDirs(bundled).reverse()) {
+      if (!(env[pathKey] || '').includes(dir)) {
+        env[pathKey] = `${dir}${path.delimiter}${env[pathKey] || ''}`;
+      }
+    }
+    env.CONDA_PREFIX = bundled;
+  }
+
   if (process.platform === 'win32') {
-    const pathKey = Object.keys(env).find(k => k.toUpperCase() === 'PATH') || 'PATH';
     const system32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
     // Always prepend System32 — conda's env activation can replace PATH entirely,
     // so even if System32 is already present, putting it first ensures it survives.
@@ -395,8 +420,7 @@ export function buildCondaSpawnEnv(extra: Record<string, string> = {}): Record<s
 export const e2aPaths = {
   getDefaultE2aPath,
   getDefaultE2aTmpPath,
-  getPythonCommand,
-  getCondaActivation,
+  getPythonInvocation,
   getCondaPath,
   getEnvPathForEngine,
   normalizePath,
