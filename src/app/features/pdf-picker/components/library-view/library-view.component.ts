@@ -1116,9 +1116,10 @@ export class LibraryViewComponent implements OnInit {
               return;
             } else {
               console.error('[Library] Conversion failed:', result.error);
+              this.error.emit(result.error || 'Calibre could not convert this file to EPUB.');
             }
           } else {
-            console.log('[Library] ebook-convert not available, cannot convert', fileName);
+            this.error.emit('This format needs Calibre. Install it, then add it in Settings → Add-ons.');
           }
         }
       }

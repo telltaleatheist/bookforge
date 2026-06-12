@@ -2,7 +2,9 @@
  * Ebook Convert Bridge - Calibre ebook-convert CLI integration
  *
  * Converts various ebook formats to EPUB using Calibre's ebook-convert tool.
- * If Calibre is not installed, conversion is silently skipped.
+ * Calibre is OPTIONAL — EPUB/PDF are handled natively and need no conversion.
+ * When Calibre is absent, callers surface an honest "install Calibre" prompt
+ * (Settings → Add-ons) rather than silently skipping the file.
  */
 
 import { spawn } from 'child_process';
@@ -214,7 +216,7 @@ export async function convertToEpub(
   if (!ebookConvertPath) {
     return {
       success: false,
-      error: 'ebook-convert not found. Install Calibre to enable format conversion.'
+      error: "Calibre (ebook-convert) isn't installed. Install Calibre, then add it in Settings → Add-ons, to open this format."
     };
   }
 

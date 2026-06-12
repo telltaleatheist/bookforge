@@ -4684,12 +4684,22 @@ export class PdfPickerComponent implements OnInit {
           } else {
             console.error('[PdfPicker] Conversion failed:', convResult.error);
             this.loading.set(false);
+            this.showAlert({
+              title: 'Conversion failed',
+              message: convResult.error || 'Calibre could not convert this file to EPUB.',
+              type: 'error',
+            });
             return; // Can't proceed without conversion
           }
         } else {
           console.log('[PdfPicker] ebook-convert not available, cannot open', path);
           this.loading.set(false);
-          return; // Silently ignore unsupported format
+          this.showAlert({
+            title: 'Calibre required',
+            message: 'This format needs Calibre to convert it to EPUB. Install Calibre, then add it in Settings → Add-ons.',
+            type: 'error',
+          });
+          return;
         }
       }
     }

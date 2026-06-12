@@ -1561,13 +1561,25 @@ function setupIpcHandlers(): void {
   ipcMain.handle('dialog:open-pdf', async () => {
     if (!mainWindow) return { success: false, error: 'No window' };
 
+    // Calibre (optional) is what converts the exotic input formats to EPUB.
+    // When it isn't installed, only offer formats BookForge handles natively so
+    // the picker never presents a file we can't actually open.
+    const { ebookConvertBridge } = await import('./ebook-convert-bridge.js');
+    const calibreAvailable = await ebookConvertBridge.isAvailable();
+    const filters = calibreAvailable
+      ? [
+          { name: 'Ebooks', extensions: ['pdf', 'epub', 'jwpub', 'azw3', 'azw', 'mobi', 'kfx', 'prc', 'fb2'] },
+          { name: 'Documents', extensions: ['docx', 'odt', 'rtf', 'txt', 'html', 'htm'] },
+          { name: 'All Files', extensions: ['*'] },
+        ]
+      : [
+          { name: 'Ebooks', extensions: ['pdf', 'epub', 'jwpub'] },
+          { name: 'All Files', extensions: ['*'] },
+        ];
+
     const result = await dialog.showOpenDialog(mainWindow, {
       title: 'Open Document',
-      filters: [
-        { name: 'Ebooks', extensions: ['pdf', 'epub', 'jwpub', 'azw3', 'azw', 'mobi', 'kfx', 'prc', 'fb2'] },
-        { name: 'Documents', extensions: ['docx', 'odt', 'rtf', 'txt', 'html', 'htm'] },
-        { name: 'All Files', extensions: ['*'] }
-      ],
+      filters,
       properties: ['openFile', 'multiSelections']
     });
 
