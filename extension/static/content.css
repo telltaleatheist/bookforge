@@ -153,7 +153,20 @@
 #bfr-bar .bfr-label { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; font-style: italic; }
 #bfr-bar .bfr-status { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.85; }
 
-#bfr-bar .bfr-time { flex: 0 0 auto; width: 104px; text-align: right; font-variant-numeric: tabular-nums; opacity: 0.9; white-space: nowrap; overflow: hidden; }
+/* Buffer-health ring: a donut that fills clockwise with green via a conic-gradient
+   keyed off --bfr-fill (0–100). The radial mask punches out the center to leave a
+   ring; the track (unfilled arc) is a dim slate. Width matches the old time field's
+   visual weight without the text. */
+#bfr-bar .bfr-buffer { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 24px; }
+#bfr-bar .bfr-buffer-ring {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: conic-gradient(#3ec46d calc(var(--bfr-fill, 0) * 1%), rgba(255, 255, 255, 0.14) 0);
+  -webkit-mask: radial-gradient(circle, transparent 5px, #000 5.5px);
+  mask: radial-gradient(circle, transparent 5px, #000 5.5px);
+  transition: background 0.3s linear;
+}
 #bfr-bar .bfr-sentence { flex: 0 0 auto; width: 46px; text-align: center; font-variant-numeric: tabular-nums; opacity: 0.6; white-space: nowrap; overflow: hidden; }
 
 #bfr-bar .bfr-speed {

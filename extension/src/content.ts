@@ -30,6 +30,9 @@ const RESCAN_DEBOUNCE_MS = 1500;
 const SPEED_MIN = 0.5;
 const SPEED_MAX = 4;
 const SPEED_STEP = 0.25;
+// Seconds of read-ahead audio that counts as a "full" buffer — mirrors offscreen's
+// PREFETCH_LOOKAHEAD_SECONDS. The buffer-health ring fills green up to this much.
+const PREBUFFER_TARGET = 45;
 
 const idMap = new WeakMap<HTMLElement, string>();
 let idCounter = 0;
@@ -408,7 +411,8 @@ interface BarEls {
   forward: HTMLButtonElement;
   skip: HTMLButtonElement;
   label: HTMLSpanElement;
-  time: HTMLSpanElement;
+  buffer: HTMLSpanElement;
+  bufferRing: HTMLSpanElement;
   sentence: HTMLSpanElement;
   speed: HTMLInputElement;
   speedVal: HTMLSpanElement;
@@ -434,9 +438,17 @@ function buildBar(): void {
 
   const label = document.createElement('span');
   label.className = 'bfr-label';
-  const time = document.createElement('span');
-  time.className = 'bfr-time';
-  time.textContent = '0:00 / 0:00';
+  // Buffer "health" ring: fills clockwise with green as the read-ahead buffer
+  // approaches PREBUFFER_TARGET seconds (offscreen's PREFETCH_LOOKAHEAD_SECONDS).
+  // Full ring ⇒ fully buffered / no underrun risk. Replaces the old position/total
+  // time readout.
+  const buffer = document.createElement('span');
+  buffer.className = 'bfr-buffer';
+  buffer.title = 'Buffer health';
+  const bufferRing = document.createElement('span');
+  bufferRing.className = 'bfr-buffer-ring';
+  bufferRing.style.setProperty('--bfr-fill', '0');
+  buffer.appendChild(bufferRing);
   const sentence = document.createElement('span');
   sentence.className = 'bfr-sentence';
 
@@ -464,8 +476,8 @@ function buildBar(): void {
   const close = ctl('✕', () => { send({ target: 'background', cmd: 'transport', op: 'stop' }); hideBar(); });
   close.classList.add('bfr-close');
 
-  for (const el of [rewind, playPause, forward, skip, label, time, sentence, speed, speedVal, status, close]) bar.appendChild(el);
-  barEls = { rewind, playPause, forward, skip, label, time, sentence, speed, speedVal, status, close };
+  for (const el of [rewind, playPause, forward, skip, label, buffer, sentence, speed, speedVal, status, close]) bar.appendChild(el);
+  barEls = { rewind, playPause, forward, skip, label, buffer, bufferRing, sentence, speed, speedVal, status, close };
   root.appendChild(bar);
 }
 
@@ -483,12 +495,16 @@ function hideBar(): void { bar.style.display = 'none'; }
 function renderBar(ui: UiState): void {
   const p = ui.playback;
   barEls.label.textContent = ui.currentLabel ? `“${ui.currentLabel}”` : '';
-  const plus = p.totalKnown ? '' : '+';
-  barEls.time.textContent = `${fmt(p.position)} / ${fmt(p.buffered)}${plus}`;
   barEls.sentence.textContent =
     p.sentenceCount > 0 && p.sentenceIndex >= 0 ? `${p.sentenceIndex + 1}/${p.sentenceCount}` : '';
   setPlayPause(barEls.playPause, p.state);
-  const headroom = p.buffered - p.position;
+  const headroom = Math.max(0, p.buffered - p.position);
+  // Once the whole clip is generated (totalKnown) there's nothing left to buffer —
+  // a short item that's fully ready reads as a full ring even if its tail is < 45s.
+  const frac = p.totalKnown ? 1 : Math.min(1, headroom / PREBUFFER_TARGET);
+  const pct = Math.round(frac * 100);
+  barEls.bufferRing.style.setProperty('--bfr-fill', String(pct));
+  barEls.buffer.title = p.totalKnown ? 'Fully buffered' : `Buffer: ${Math.round(headroom)}s ready (${pct}%)`;
   barEls.rewind.disabled = p.position <= 0.3;
   barEls.forward.disabled = headroom <= (p.totalKnown ? 0.6 : 5.2);
   barEls.status.textContent = statusText(ui);
@@ -550,13 +566,6 @@ function statusText(ui: UiState): string {
     default: base = '';
   }
   return p.note ? (base ? `${base} — ${p.note}` : p.note) : base;
-}
-
-function fmt(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 // ─── Incoming messages ────────────────────────────────────────────────────────
