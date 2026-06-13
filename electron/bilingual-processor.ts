@@ -48,7 +48,7 @@ export interface BilingualProcessingConfig {
   sourceText: string;
   sourceLang: string;
   targetLang: string;
-  aiProvider: 'ollama' | 'claude' | 'openai';
+  aiProvider: 'ollama' | 'claude' | 'openai' | 'local';
   aiModel: string;
   ollamaBaseUrl?: string;
   claudeApiKey?: string;
@@ -225,6 +225,16 @@ async function callOpenAI(
 }
 
 /**
+ * Call the bundled local llama.cpp model (serves the active model). Cogito is a
+ * reasoning model, so strip any <think>…</think> block from the output.
+ */
+async function callLocal(prompt: string, systemPrompt?: string): Promise<string> {
+  const { llamaBridge } = await import('./llama-bridge.js');
+  const out = await llamaBridge.generate({ system: systemPrompt, prompt, temperature: 0.3 });
+  return out.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
+/**
  * Call the configured AI provider
  */
 export async function callAI(
@@ -240,6 +250,8 @@ export async function callAI(
       return await callClaude(prompt, config.aiModel, config.claudeApiKey!, systemPrompt);
     case 'openai':
       return await callOpenAI(prompt, config.aiModel, config.openaiApiKey!, systemPrompt);
+    case 'local':
+      return await callLocal(prompt, systemPrompt);
     default:
       throw new Error(`Unsupported AI provider: ${config.aiProvider}`);
   }

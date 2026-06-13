@@ -501,6 +501,8 @@ export class QueueService {
       let llJobRaf: number | null = null;
       this.unsubscribeLLJobProgress = electron.bilingualCleanup.onProgress((data) => {
         if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
+          // Clear any pending RAF data so a stale progress event can't overwrite completion
+          pendingLLJobData = null;
           this.ngZone.run(() => this.handleLLJobProgressUpdate(data.jobId, data.progress));
           return;
         }
@@ -523,6 +525,13 @@ export class QueueService {
     this._jobs.update(jobs =>
       jobs.map(job => {
         if (job.id !== jobId) return job;
+
+        // Don't overwrite terminal statuses — runJob/handleJobComplete may have
+        // already marked this job complete before this RAF-coalesced update fires.
+        // Without this, a late "saving 95%" event reverts a finished translation
+        // to 'processing', which then blocks its reassembly sibling forever.
+        if (job.status === 'complete' || job.status === 'error') return job;
+
         const currentChunk = progress.currentChunk || progress.currentSentence || 0;
         const totalChunks = progress.totalChunks || progress.totalSentences || 0;
         const prevCompleted = job.chunksCompletedInJob || 0;
