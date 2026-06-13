@@ -2646,7 +2646,7 @@ export class QueueService {
               testMode: config.testMode,
               testSentences: config.testSentences
             },
-            // Pass metadata for final audiobook (applied after assembly via m4b-tool)
+            // Pass metadata for final audiobook (applied after assembly via ffmpeg)
             // Use bookTitle/author for m4b tags (metadata.title is the queue display label)
             metadata: {
               title: job.metadata?.bookTitle || job.metadata?.title,
