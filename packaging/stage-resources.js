@@ -102,6 +102,18 @@ const SEED_VOICE_LANGS = new Set(
     .split(',').map((s) => s.trim()).filter(Boolean)
 );
 
+// On Windows, fs.cpSync invokes the `filter` callback with `src` paths carrying
+// the \\?\ extended-length (namespaced) prefix (it resolves through
+// path.toNamespacedPath internally), while e2aSource has no such prefix. Without
+// normalizing, path.relative() returns the whole namespaced path instead of a
+// clean "models"/"tmp" segment, so parts[0] never matches EXCLUDE_TOP and EVERY
+// exclusion silently misses — shipping the entire working tree (models/, env
+// dirs, tmp/, .git/ — ~48 GB). Strip the prefix from both sides before compare.
+function stripNamespacePrefix(p) {
+  return p.replace(/^\\\\\?\\UNC\\/, '\\\\').replace(/^\\\\\?\\/, '');
+}
+const e2aBase = stripNamespacePrefix(path.resolve(e2aSource));
+
 // ── Stage ────────────────────────────────────────────────────────────────────
 
 const CLONE = fs.constants.COPYFILE_FICLONE;
@@ -153,7 +165,7 @@ fs.cpSync(e2aSource, snapshotDest, {
   recursive: true,
   mode: CLONE,
   filter: (src) => {
-    const rel = path.relative(e2aSource, src);
+    const rel = path.relative(e2aBase, stripNamespacePrefix(src));
     if (!rel) return true;
     const parts = rel.split(path.sep);
     if (EXCLUDE_TOP.has(parts[0])) return false;
