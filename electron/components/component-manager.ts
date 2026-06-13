@@ -12,12 +12,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { spawnSync, execSync } from 'child_process';
+import { spawn, spawnSync, execSync } from 'child_process';
 import { app } from 'electron';
 
 import { CATALOG, getComponent } from './component-catalog';
 import { systemProbe } from './system-probe';
 import { downloadAndExtract } from './downloader';
+import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
 import type {
   IComponentManager,
   OptionalComponent,
@@ -366,6 +367,184 @@ function chmodEntry(entryPath: string): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TTS-model fetch (kind 'tts-model') — download a HF voice into e2a's HF cache
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The HF-cache repo dir name for a repo id ('a/b' → 'models--a--b'). */
+function hfRepoDir(repo: string): string {
+  return `models--${repo.replace(/\//g, '--')}`;
+}
+
+/** The checkpoint file within a voice's `files` (the .pth, or the last entry). */
+function modelFileOf(files: string[]): string {
+  return files.find((f) => f.endsWith('.pth')) || files[files.length - 1];
+}
+
+/**
+ * Glob e2a's HF cache for a tts-model's checkpoint across snapshot revisions.
+ * Returns the absolute model.pth path if present (so bundled + already-downloaded
+ * voices surface as Installed), else null.
+ */
+function findTtsModelEntry(component: OptionalComponent): string | null {
+  if (!component.hf) return null;
+  const { repo, sub, files } = component.hf;
+  const snapshotsRoot = path.join(
+    getDefaultE2aPath(), 'models', 'tts', hfRepoDir(repo), 'snapshots'
+  );
+  let snaps: string[];
+  try {
+    snaps = fs.readdirSync(snapshotsRoot);
+  } catch {
+    return null;
+  }
+  const subParts = sub.split('/').filter(Boolean);
+  const modelFile = modelFileOf(files);
+  for (const snap of snaps) {
+    const candidate = path.join(snapshotsRoot, snap, ...subParts, modelFile);
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
+/**
+ * Download a tts-model by spawning the bundled-python helper, which fetches the
+ * voice into the same HF cache the XTTS engine reads — so the result is
+ * byte-identical to a bundled voice. Progress comes from BF_PROGRESS lines the
+ * helper prints; the final stdout line is a JSON result.
+ */
+async function fetchTtsModel(
+  component: OptionalComponent,
+  emit: (p: InstallProgress) => void
+): Promise<InstallResult> {
+  const id = component.id;
+  if (!component.hf) {
+    return { id, ok: false, error: `${component.name} has no HuggingFace coordinates.` };
+  }
+
+  emit({ id, phase: 'resolve', pct: 0, message: 'Preparing download…' });
+
+  const controller = new AbortController();
+  inFlight.set(id, { controller, tempDir: null });
+
+  // Drive the helper from the component's HF coordinates (repo/sub/files) rather
+  // than a preset name, so it works uniformly for fine-tuned voices AND the base
+  // model (whose preset 'sub' doesn't match its actual repo layout).
+  const { command, args: pyArgs } = getPythonInvocation(getDefaultE2aPath(), 'xtts');
+  const helperArgs = [
+    ...pyArgs,
+    '-m', 'bookforge_ext.download_model',
+    '--engine', 'xtts',
+    '--repo', component.hf.repo,
+    '--sub', component.hf.sub,
+    '--files', ...component.hf.files,
+    '--bf-progress',
+  ];
+
+  return await new Promise<InstallResult>((resolve) => {
+    let finalJson = '';
+    let stderrTail = '';
+    let stdoutBuf = '';
+    let settled = false;
+    // Track each HF progress bar by description; the largest-total bar is the
+    // checkpoint, which we surface as the headline percentage.
+    const totalByDesc = new Map<string, number>();
+    const recvByDesc = new Map<string, number>();
+
+    const child = spawn(command, helperArgs, {
+      cwd: getDefaultE2aPath(),
+      env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }),
+    });
+
+    controller.signal.addEventListener('abort', () => {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    });
+
+    child.stdout?.on('data', (d: Buffer) => {
+      stdoutBuf += d.toString();
+      let nl: number;
+      while ((nl = stdoutBuf.indexOf('\n')) >= 0) {
+        const line = stdoutBuf.slice(0, nl).trim();
+        stdoutBuf = stdoutBuf.slice(nl + 1);
+        if (!line) continue;
+        if (line.startsWith('BF_PROGRESS ')) {
+          const m = line.match(/^BF_PROGRESS\s+(\d+)\s+(\d+)\s+(.*)$/);
+          if (!m) continue;
+          const recv = parseInt(m[1], 10);
+          const total = parseInt(m[2], 10);
+          const desc = m[3] || 'model';
+          if (total > 0) {
+            totalByDesc.set(desc, total);
+            recvByDesc.set(desc, recv);
+          }
+          let bigDesc = '';
+          let bigTotal = 0;
+          for (const [k, v] of totalByDesc) if (v > bigTotal) { bigTotal = v; bigDesc = k; }
+          const r = recvByDesc.get(bigDesc) || 0;
+          const pct = bigTotal > 0 ? Math.min(100, Math.round((r / bigTotal) * 100)) : 0;
+          emit({ id, phase: 'download', pct, receivedBytes: r, totalBytes: bigTotal,
+                 message: `Downloading ${component.name}…` });
+        } else if (line.startsWith('{')) {
+          finalJson = line;
+        }
+      }
+    });
+
+    child.stderr?.on('data', (d: Buffer) => {
+      stderrTail = (stderrTail + d.toString()).slice(-2000);
+    });
+
+    const finish = (result: InstallResult) => {
+      if (settled) return;
+      settled = true;
+      inFlight.delete(id);
+      resolve(result);
+    };
+
+    child.on('error', (err) => {
+      emit({ id, phase: 'error', pct: 0, message: err.message });
+      finish({ id, ok: false, error: err.message });
+    });
+
+    child.on('close', (code) => {
+      if (controller.signal.aborted) {
+        const msg = 'Download cancelled';
+        emit({ id, phase: 'error', pct: 0, message: msg });
+        return finish({ id, ok: false, error: msg });
+      }
+      let parsed: { ok?: boolean; error?: string; files?: Record<string, string>;
+                    subDir?: string; snapshotDir?: string } | null = null;
+      try { parsed = finalJson ? JSON.parse(finalJson) : null; } catch { /* keep null */ }
+
+      if (code === 0 && parsed?.ok && parsed.files) {
+        const entryPath = parsed.files[modelFileOf(component.hf!.files)]
+          || Object.values(parsed.files).find((p) => p.endsWith('.pth'))
+          || Object.values(parsed.files)[0];
+        const record: InstalledRecord = {
+          id,
+          version: component.version,
+          source: 'managed',
+          path: parsed.subDir || parsed.snapshotDir || path.dirname(entryPath),
+          entryPath,
+          bytes: component.sizeBytes || undefined,
+          installedAt: new Date().toISOString(),
+        };
+        putRecord(record);
+        emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
+        return finish({ id, ok: true, record });
+      }
+
+      const error = parsed?.error || stderrTail.trim() || `Download failed (exit ${code}).`;
+      emit({ id, phase: 'error', pct: 0, message: error });
+      finish({ id, ok: false, error });
+    });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Managed install
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -387,6 +566,12 @@ async function install(
   }
   if (!component.acquisition.includes('managed')) {
     return { id, ok: false, error: `${component.name} does not support managed install.` };
+  }
+
+  // TTS voices fetch into e2a's HF cache via the python helper, not a single
+  // archive download — different mechanism, same install()/progress contract.
+  if (component.kind === 'tts-model') {
+    return fetchTtsModel(component, emit);
   }
 
   emit({ id, phase: 'resolve', pct: 0, message: 'Resolving artifact…' });
@@ -639,6 +824,26 @@ async function buildStatus(
     );
     dropRecord(component.id);
     record = undefined;
+  }
+
+  // For tts-model voices without a (valid) record, glob the HF cache: bundled and
+  // already-downloaded voices surface as Installed for free, and a snapshot path
+  // that changed across an app update is re-detected here.
+  if (!record && component.kind === 'tts-model') {
+    const found = findTtsModelEntry(component);
+    if (found) {
+      record = {
+        id: component.id,
+        version: component.version,
+        source: 'managed',
+        path: path.dirname(found),
+        entryPath: found,
+        bytes: component.sizeBytes || undefined,
+        installedAt: new Date().toISOString(),
+      };
+      putRecord(record);
+      console.log(`[COMPONENTS] ${component.id}: detected TTS model in HF cache at ${found}`);
+    }
   }
 
   let state: ComponentState;

@@ -9668,18 +9668,26 @@ app.whenReady().then(async () => {
   // background so the window isn't blocked; e2a spawns resolve the bundled
   // env as soon as the unpack finishes.
   void (async () => {
+    const { ensureBundledEnv, ensureBundledE2a } = await import('./e2a-env-bootstrap.js');
+    // Independent try blocks: the e2a code snapshot and the Python env unpack are
+    // unrelated, so a failure in one must NOT block the other (a single bad file
+    // in the snapshot copy previously left the bundled env unpacked → conda
+    // fallback for everything).
     try {
-      const { ensureBundledEnv, ensureBundledE2a } = await import('./e2a-env-bootstrap.js');
       const e2aDir = await ensureBundledE2a((message) => logger.info(message));
       if (e2aDir) {
         logger.info('Bundled e2a code ready', { e2aDir });
       }
+    } catch (err) {
+      logger.error('Bundled e2a code setup failed', { error: (err as Error).message });
+    }
+    try {
       const envDir = await ensureBundledEnv((message) => logger.info(message));
       if (envDir) {
         logger.info('Bundled Python env ready', { envDir });
       }
     } catch (err) {
-      logger.error('Bundled runtime setup failed', { error: (err as Error).message });
+      logger.error('Bundled Python env setup failed', { error: (err as Error).message });
     }
   })();
 

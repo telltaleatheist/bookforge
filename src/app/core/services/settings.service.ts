@@ -196,6 +196,13 @@ export class SettingsService {
         fields: [], // Tools section has custom UI
       },
       {
+        id: 'voices',
+        name: 'Voices',
+        description: 'Download premium TTS voices (Attenborough, Freeman, and more)',
+        icon: '🎙️',
+        fields: [], // Voices section has custom UI (app-voices-panel)
+      },
+      {
         id: 'add-ons',
         name: 'Add-ons',
         description: 'Optional components: Calibre, Tesseract, Orpheus, and more',

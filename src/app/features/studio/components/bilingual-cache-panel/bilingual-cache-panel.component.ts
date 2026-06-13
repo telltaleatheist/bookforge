@@ -13,7 +13,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { SUPPORTED_LANGUAGES } from '../../models/studio.types';
 import { CachedLanguageInfo, CachedTtsSettings } from '../../models/sentence-cache.types';
-import { ComponentService } from '../../../settings/services/component.service';
+import { ComponentService } from '../../../../core/services/component.service';
 
 interface TtsConfig {
   engine: 'xtts' | 'orpheus';

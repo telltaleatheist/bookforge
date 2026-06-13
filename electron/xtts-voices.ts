@@ -31,22 +31,39 @@ export interface StreamVoice {
   refPath: string;  // absolute path to the reference wav for conditioning latents
 }
 
-const BASE_REPO = 'coqui/XTTS-v2';
+export const BASE_REPO = 'coqui/XTTS-v2';
 const BASE_SUB = '';
-const FINE_TUNED_REPO = 'drewThomasson/fineTunedTTSModels';
+export const FINE_TUNED_REPO = 'drewThomasson/fineTunedTTSModels';
 
 // The stock XTTS voice. Claribel Dervla is XTTS-v2's first built-in speaker;
 // cloning her reference clip via the base model reproduces the default voice.
 const DEFAULT_VOICE_REL = 'eng/adult/female/ClaribelDervla.wav';
 
-// Curated voices with dedicated fine-tuned checkpoints (premium quality).
-const FINE_TUNED: Array<{ id: string; name: string; sub: string; refRel: string }> = [
-  { id: 'ScarlettJohansson', name: 'Scarlett Johansson', sub: 'xtts-v2/eng/ScarlettJohansson/', refRel: 'eng/adult/female/ScarlettJohansson.wav' },
-  { id: 'DavidAttenborough', name: 'David Attenborough', sub: 'xtts-v2/eng/DavidAttenborough/', refRel: 'eng/elder/male/DavidAttenborough.wav' },
-  { id: 'MorganFreeman', name: 'Morgan Freeman', sub: 'xtts-v2/eng/MorganFreeman/', refRel: 'eng/adult/male/MorganFreeman.wav' },
-  { id: 'NeilGaiman', name: 'Neil Gaiman', sub: 'xtts-v2/eng/NeilGaiman/', refRel: 'eng/adult/male/NeilGaiman.wav' },
-  { id: 'RayPorter', name: 'Ray Porter', sub: 'xtts-v2/eng/RayPorter/', refRel: 'eng/adult/male/RayPorter.wav' },
-  { id: 'RosamundPike', name: 'Rosamund Pike', sub: 'xtts-v2/eng/RosamundPike/', refRel: 'eng/adult/female/RosamundPike.wav' },
+// The three checkpoint files each fine-tuned XTTS voice ships on HuggingFace
+// (the 4th preset file, ref.wav, is a local clip, not downloaded).
+export const FINE_TUNED_FILES = ['config.json', 'model.pth', 'vocab.json'];
+// Each fine-tuned checkpoint is ~1.7 GB (model.pth) plus a few hundred KB.
+export const FINE_TUNED_APPROX_BYTES = 1_860_000_000;
+
+export interface FineTunedVoice {
+  id: string;
+  name: string;
+  sub: string;
+  refRel: string;
+  lang: string;
+  gender: 'male' | 'female';
+}
+
+// Curated voices with dedicated fine-tuned checkpoints (premium quality). This
+// is the single source of truth for both the player dropdown and the
+// downloadable-voice catalog (see components/voice-components.ts).
+export const FINE_TUNED: FineTunedVoice[] = [
+  { id: 'ScarlettJohansson', name: 'Scarlett Johansson', sub: 'xtts-v2/eng/ScarlettJohansson/', refRel: 'eng/adult/female/ScarlettJohansson.wav', lang: 'eng', gender: 'female' },
+  { id: 'DavidAttenborough', name: 'David Attenborough', sub: 'xtts-v2/eng/DavidAttenborough/', refRel: 'eng/elder/male/DavidAttenborough.wav', lang: 'eng', gender: 'male' },
+  { id: 'MorganFreeman', name: 'Morgan Freeman', sub: 'xtts-v2/eng/MorganFreeman/', refRel: 'eng/adult/male/MorganFreeman.wav', lang: 'eng', gender: 'male' },
+  { id: 'NeilGaiman', name: 'Neil Gaiman', sub: 'xtts-v2/eng/NeilGaiman/', refRel: 'eng/adult/male/NeilGaiman.wav', lang: 'eng', gender: 'male' },
+  { id: 'RayPorter', name: 'Ray Porter', sub: 'xtts-v2/eng/RayPorter/', refRel: 'eng/adult/male/RayPorter.wav', lang: 'eng', gender: 'male' },
+  { id: 'RosamundPike', name: 'Rosamund Pike', sub: 'xtts-v2/eng/RosamundPike/', refRel: 'eng/adult/female/RosamundPike.wav', lang: 'eng', gender: 'female' },
 ];
 
 // Cache keyed by voices dir so a library-path change rebuilds the catalog.

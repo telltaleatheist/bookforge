@@ -10,7 +10,7 @@ import { BrowserWindow, app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as readline from 'readline';
-import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from './e2a-paths';
+import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, toUnpackedPath } from './e2a-paths';
 import { getStreamVoices, resolveStreamVoice, StreamVoice } from './xtts-voices';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -358,6 +358,9 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
       if (!fs.existsSync(scriptPath)) {
         scriptPath = path.join(__dirname, 'scripts', 'xtts_stream.py');
       }
+      // Packaged: redirect from inside app.asar to the asarUnpack'd real file
+      // (a spawned Python can't read inside the archive).
+      scriptPath = toUnpackedPath(scriptPath);
 
       console.log(`[XTTS Pool] Starting worker ${id}...`);
 

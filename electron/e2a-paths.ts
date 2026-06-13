@@ -143,18 +143,12 @@ export function getEnvPathForEngine(ttsEngine?: string, e2aPath?: string): strin
     if (managed) {
       return managed;
     }
-    // Legacy/bundled layout: a prefix env shipped inside the e2a install.
-    const orpheusEnvPath = path.join(basePath, 'orpheus_env');
-    if (fs.existsSync(orpheusEnvPath)) {
-      return orpheusEnvPath;
-    }
     // NO silent fallback to python_env: that env has no vLLM/Orpheus and would
     // crash deep in the worker. Fail clearly so the cause is obvious. (The UI
     // already hides Orpheus when it isn't installed; this guards stale jobs and
     // saved settings.)
     throw new Error(
-      'Orpheus TTS environment not found. Install or locate Orpheus in ' +
-      'Settings → Add-ons, or create an "orpheus_env" beside your ebook2audiobook install.'
+      'Orpheus TTS environment not found. Install or locate Orpheus in Settings → Add-ons.'
     );
   }
 
@@ -197,8 +191,8 @@ function condaNamedEnvExists(name: string): boolean {
  *  - relocatable: the conda-pack env a packaged build ships (or the
  *    BOOKFORGE_E2A_ENV override in dev). Run via its python directly —
  *    no conda exists on a clean target machine.
- *  - prefix: an env folder shipped inside the e2a install (./python_env,
- *    ./orpheus_env), run via `conda run -p`.
+ *  - prefix: an env folder shipped inside the e2a install (./python_env),
+ *    run via `conda run -p`.
  *  - named: the "ebook2audiobook" conda env, run via `conda run -n`, but only
  *    after confirming it exists.
  * If none can be found, we throw a clear error rather than handing conda a
@@ -212,7 +206,7 @@ function resolveCondaEnv(
   const envPath = getEnvPathForEngine(ttsEngine, basePath);
 
   // Orpheus never uses the bundled env (its deps conflict with it); the path
-  // from the component seam / orpheus_env is verified to exist or has thrown.
+  // from the component seam is verified to exist or has thrown.
   if (ttsEngine?.toLowerCase() === 'orpheus') {
     return { kind: 'prefix', path: envPath };
   }
@@ -246,6 +240,19 @@ function resolveCondaEnv(
 export interface PythonInvocation {
   command: string;
   args: string[];
+}
+
+/**
+ * Redirect a path that lands inside app.asar to its asarUnpack'd real-file
+ * location. Electron's patched fs sees files inside the archive (so existsSync
+ * passes), but a spawned subprocess (Python) uses the real fs and cannot read
+ * them — it must be handed the app.asar.unpacked path instead.
+ */
+export function toUnpackedPath(p: string): string {
+  if (p.includes('app.asar') && !p.includes('app.asar.unpacked')) {
+    return p.replace('app.asar', 'app.asar.unpacked');
+  }
+  return p;
 }
 
 /**

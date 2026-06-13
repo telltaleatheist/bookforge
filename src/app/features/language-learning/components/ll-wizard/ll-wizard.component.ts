@@ -25,7 +25,7 @@ import { SettingsService } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { QueueService } from '../../../queue/services/queue.service';
-import { ComponentService } from '../../../settings/services/component.service';
+import { ComponentService } from '../../../../core/services/component.service';
 import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
 import { EpubResolverService } from '../../services/epub-resolver.service';
 import {
@@ -1302,6 +1302,9 @@ interface SourceStage {
                 Add to Queue ({{ getTotalJobCount() }} jobs)
               }
             </button>
+            @if (voiceDownloadMsg(); as msg) {
+              <span class="voice-download-msg">{{ msg }}</span>
+            }
           }
         </div>
       </div>
@@ -2280,6 +2283,12 @@ interface SourceStage {
       transition: all 0.15s ease;
     }
 
+    .voice-download-msg {
+      margin-left: 12px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
     .btn-back {
       background: var(--bg-elevated);
       border: 1px solid var(--border-default);
@@ -2607,6 +2616,9 @@ export class LLWizardComponent implements OnInit {
   readonly ttsSourceEpub = signal<string>('latest');
   readonly monoTtsVoice = signal('ScarlettJohansson');
   readonly monoTtsSpeed = signal(1.0);
+
+  // Pre-flight voice download status (shown near the Add to Queue button).
+  readonly voiceDownloadMsg = signal<string | null>(null);
   readonly ttsTemperature = signal(0.7);
   readonly ttsTopP = signal(0.9);
   readonly advancedTtsOpen = signal(false);
@@ -3744,6 +3756,51 @@ export class LLWizardComponent implements OnInit {
   // Queue Jobs
   // ─────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Pre-flight: if a selected XTTS voice isn't downloaded yet, offer a one-click
+   * download before queuing. Declining still proceeds — the voice then downloads
+   * on demand when the job runs (with progress in the queue). Voices that aren't
+   * downloadable components (the stock voice / voice-library clones, which use
+   * the base model) are left to that on-demand path.
+   */
+  private async ensureSelectedVoicesAvailable(): Promise<void> {
+    if (this._skippedSteps.has('tts') || this.ttsEngine() !== 'xtts') return;
+    await this.componentService.ensureLoaded();
+
+    const ids = this.pipelineMode() === 'mono'
+      ? [this.monoTtsVoice()]
+      : this.ttsLanguageRows().map(r => r.voice);
+
+    const statuses = this.componentService.components();
+    const missing = [...new Set(ids)]
+      .map(id => statuses.find(s => s.component.id === id && s.component.kind === 'tts-model'))
+      .filter((s): s is NonNullable<typeof s> => !!s && !this.componentService.isInstalled(s!.component.id));
+
+    if (missing.length === 0) return;
+
+    const names = missing.map(s => s.component.name).join(', ');
+    const plural = missing.length > 1;
+    const { confirmed } = await this.electronService.showConfirmDialog({
+      type: 'question',
+      title: plural ? 'Download voices?' : 'Download voice?',
+      message: `${names} ${plural ? "aren't" : "isn't"} downloaded yet (~1.7 GB each).`,
+      detail: 'Download now, or choose “Queue anyway” to fetch it automatically when the job runs.',
+      confirmLabel: 'Download now',
+      cancelLabel: 'Queue anyway',
+    });
+    if (!confirmed) return; // proceed; the on-demand fallback handles it at job time
+
+    for (const s of missing) {
+      this.voiceDownloadMsg.set(`Downloading ${s.component.name}…`);
+      try {
+        await this.componentService.install(s.component.id);
+      } catch (err) {
+        console.error('[LL-WIZARD] Voice download failed (will retry at job time):', err);
+      }
+    }
+    this.voiceDownloadMsg.set(null);
+  }
+
   async addToQueue(): Promise<void> {
     if (this.getTotalJobCount() === 0) return;
 
@@ -3752,6 +3809,8 @@ export class LLWizardComponent implements OnInit {
       console.error('[LLWizard] No project directory available');
       return;
     }
+
+    await this.ensureSelectedVoicesAvailable();
 
     if (this.pipelineMode() === 'mono') {
       return this.addMonoJobsToQueue(projectDir);

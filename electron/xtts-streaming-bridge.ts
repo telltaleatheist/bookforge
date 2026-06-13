@@ -10,7 +10,7 @@ import { BrowserWindow, app } from 'electron';
 import * as path from 'path';
 import * as readline from 'readline';
 import * as fs from 'fs';
-import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
+import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, shellEscapeArgs, toUnpackedPath } from './e2a-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -89,6 +89,11 @@ export async function startSession(): Promise<{ success: boolean; voices?: strin
         // Last resort: try the dist folder
         scriptPath = path.join(__dirname, 'scripts', 'xtts_stream.py');
       }
+
+      // Packaged: the script lives inside app.asar (existsSync sees it via
+      // Electron's fs) but the spawned Python can't read it there — redirect to
+      // the asarUnpack'd real file.
+      scriptPath = toUnpackedPath(scriptPath);
 
       console.log('[XTTS] Starting Python subprocess...');
       console.log('[XTTS] App path:', appPath);

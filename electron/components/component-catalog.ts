@@ -11,6 +11,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { getE2aPath } from '../tool-paths';
+import { voiceComponents } from './voice-components';
 import type {
   OptionalComponent,
   ComponentArtifact,
@@ -205,7 +206,12 @@ const orpheus: OptionalComponent = {
 // Catalog
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const CATALOG: OptionalComponent[] = [calibre, tesseract, orpheus];
+export const CATALOG: OptionalComponent[] = [
+  calibre,
+  tesseract,
+  orpheus,
+  ...voiceComponents(),
+];
 
 export function getComponent(id: string): OptionalComponent | undefined {
   return CATALOG.find((c) => c.id === id);

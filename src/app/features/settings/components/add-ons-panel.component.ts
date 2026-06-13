@@ -1,7 +1,7 @@
 import { Component, inject, computed, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
-import { ComponentService } from '../services/component.service';
+import { ComponentService } from '../../../core/services/component.service';
 import { ComponentStatus, OptionalComponent } from '../../../core/services/electron.service';
 
 /**
@@ -45,12 +45,12 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
         <div class="status-message error">{{ err }}</div>
       }
 
-      @if (svc.loading() && svc.components().length === 0) {
+      @if (svc.loading() && addOns().length === 0) {
         <p class="loading-hint">Loading add-ons…</p>
       }
 
       <div class="component-list">
-        @for (status of svc.components(); track status.component.id) {
+        @for (status of addOns(); track status.component.id) {
           <div class="component-card" [class.incompatible]="status.state === 'incompatible'">
             <div class="component-head">
               <div class="component-meta">
@@ -372,6 +372,11 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
 })
 export class AddOnsPanelComponent implements OnInit {
   readonly svc = inject(ComponentService);
+
+  /** Tools/runtimes only — TTS voices live in their own Voices panel. */
+  readonly addOns = computed(() =>
+    this.svc.components().filter(s => s.component.kind !== 'tts-model'),
+  );
 
   /** Components offering managed (download) acquisition. */
   readonly managedIds = computed(() =>

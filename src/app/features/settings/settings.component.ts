@@ -8,6 +8,7 @@ import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
+import { VoicesPanelComponent } from './components/voices-panel.component';
 import {
   AIConfig,
   AIProvider,
@@ -20,7 +21,7 @@ import {
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -957,6 +958,9 @@ import {
                   </p>
                 </div>
               </div>
+            } @else if (section.id === 'voices') {
+              <!-- Voices (downloadable TTS models) — own child component -->
+              <app-voices-panel></app-voices-panel>
             } @else if (section.id === 'add-ons') {
               <!-- Add-ons (optional components) — own child component -->
               <app-add-ons-panel></app-add-ons-panel>

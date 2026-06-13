@@ -5,7 +5,7 @@ import {
   SystemProfile,
   InstallProgress,
   InstallResult,
-} from '../../../core/services/electron.service';
+} from './electron.service';
 
 /**
  * Renderer-side state for the optional component system (Settings → Add-ons).

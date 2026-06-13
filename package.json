@@ -11,15 +11,17 @@
     "build": "ng build",
     "build:prod": "ng build --configuration production",
     "copy:plugin-assets": "node -e \"require('fs').cpSync('electron/plugins/builtin','dist/electron/plugins/builtin',{recursive:true,filter:(s)=>!s.endsWith('.ts')})\"",
-    "build:electron": "npx tsc -p tsconfig.electron.json && npx shx cp -r electron/prompts dist/electron/ && npx shx cp -r electron/bookshelf-ui dist/electron/ && npm run copy:plugin-assets",
+    "build:electron": "npx tsc -p tsconfig.electron.json && npx shx cp -r electron/prompts dist/electron/ && npx shx cp -r electron/bookshelf-ui dist/electron/ && npx shx mkdir -p dist/electron/scripts && npx shx cp electron/scripts/xtts_stream.py dist/electron/scripts/ && npm run copy:plugin-assets",
     "electron:dev": "npm run build:electron && concurrently \"ng serve --port 4250\" \"wait-on http://localhost:4250 && electron . --max-old-space-size=8192\"",
     "electron:build": "npm run build:electron && npm run build:prod && electron-builder",
     "stage:packaging": "node packaging/stage-resources.js",
+    "stage:packaging:seed": "node packaging/stage-resources.js --seed",
     "stage:packaging:offline": "node packaging/stage-resources.js --models",
-    "package:mac": "npm run download:mupdf && npm run stage:packaging && npm run electron:build -- --mac",
+    "package:mac": "npm run download:mupdf && npm run stage:packaging:seed && npm run electron:build -- --mac",
+    "package:mac:lean": "npm run download:mupdf && npm run stage:packaging && npm run electron:build -- --mac",
     "package:mac:offline": "npm run download:mupdf && npm run stage:packaging:offline && npm run electron:build -- --mac",
-    "package:win": "npm run download:mupdf && npm run stage:packaging && npm run electron:build -- --win",
-    "package:win-x64": "npm run download:mupdf && npm run stage:packaging && npm run electron:build -- --win --x64",
+    "package:win": "npm run download:mupdf && npm run stage:packaging:seed && npm run electron:build -- --win",
+    "package:win-x64": "npm run download:mupdf && npm run stage:packaging:seed && npm run electron:build -- --win --x64",
     "package:linux": "npm run download:mupdf && npm run electron:build -- --linux",
     "watch": "ng build --watch --configuration development",
     "watch:electron": "npx tsc -p tsconfig.electron.json --watch",
@@ -92,6 +94,9 @@
     "files": [
       "dist/**/*",
       "bookforge-icon.png"
+    ],
+    "asarUnpack": [
+      "dist/electron/scripts/**"
     ],
     "icon": "bookforge-icon.png",
     "compression": "store",
