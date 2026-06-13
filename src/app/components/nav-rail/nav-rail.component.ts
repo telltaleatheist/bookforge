@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { Router, NavigationEnd } from '@angular/router';
 import { filter } from 'rxjs/operators';
 import { TtsServerService } from '../../core/services/tts-server.service';
+import { BookshelfServerService } from '../../core/services/bookshelf-server.service';
 
 // Global log capture
 const capturedLogs: string[] = [];
@@ -62,6 +63,21 @@ export interface NavRailItem {
         }
       </div>
       <div class="nav-footer">
+        <button
+          class="service-btn"
+          [class.running]="bookshelf.state() === 'running'"
+          [class.starting]="bookshelf.state() === 'starting'"
+          (click)="toggleBookshelf()"
+          [title]="bookshelfTitle()"
+        >
+          <span class="nav-icon">🌐</span>
+          <span class="nav-label">
+            @if (bookshelf.state() === 'starting') { Starting… } @else { Bookshelf }
+          </span>
+          @if (bookshelf.state() === 'running') {
+            <span class="service-dot"></span>
+          }
+        </button>
         <button
           class="service-btn"
           [class.running]="ttsServer.state() === 'running'"
@@ -274,6 +290,7 @@ export interface NavRailItem {
 export class NavRailComponent {
   private readonly router = inject(Router);
   readonly ttsServer = inject(TtsServerService);
+  readonly bookshelf = inject(BookshelfServerService);
 
   // Navigation items are provided by the host (see app.ts navItems).
   readonly items = input<NavRailItem[]>([]);
@@ -301,6 +318,19 @@ export class NavRailComponent {
 
   toggleTtsServer(): void {
     void this.ttsServer.toggle();
+  }
+
+  toggleBookshelf(): void {
+    void this.bookshelf.toggle();
+  }
+
+  bookshelfTitle(): string {
+    const port = this.bookshelf.port();
+    switch (this.bookshelf.state()) {
+      case 'running': return `Bookshelf is sharing your library on the network (port ${port}). Click to stop it.`;
+      case 'starting': return 'Bookshelf server is starting…';
+      default: return `Start the Bookshelf server: browse and stream your audiobooks from any device on the network (port ${port}).`;
+    }
   }
 
   ttsServerTitle(): string {

@@ -411,6 +411,24 @@ function findTtsModelEntry(component: OptionalComponent): string | null {
 }
 
 /**
+ * Probe e2a's models/stanza for a language pack's dir. Returns the absolute
+ * stanza/<code> path if it exists and is non-empty (so bundled + already-
+ * downloaded packs surface as Installed), else null.
+ */
+function findLanguagePackEntry(component: OptionalComponent): string | null {
+  if (!component.stanza) return null;
+  try {
+    const dir = path.join(getDefaultE2aPath(), 'models', 'stanza', component.stanza.code);
+    if (fs.existsSync(dir) && fs.readdirSync(dir).length > 0) {
+      return dir;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
  * Download a tts-model by spawning the bundled-python helper, which fetches the
  * voice into the same HF cache the XTTS engine reads — so the result is
  * byte-identical to a bundled voice. Progress comes from BF_PROGRESS lines the
@@ -545,6 +563,138 @@ async function fetchTtsModel(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Language-pack fetch (kind 'language-pack') — download a Stanza segmentation
+// model into e2a's models/stanza/<code> via the python helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Download a Stanza language pack by spawning the bundled-python helper, which
+ * runs stanza.download() into e2a's models/stanza dir — where the segmentation
+ * pipeline reads it via STANZA_RESOURCES_DIR. Progress comes from BF_PROGRESS
+ * lines the helper prints; the final stdout line is a JSON result.
+ */
+async function fetchLanguagePack(
+  component: OptionalComponent,
+  emit: (p: InstallProgress) => void
+): Promise<InstallResult> {
+  const id = component.id;
+  if (!component.stanza) {
+    return { id, ok: false, error: `${component.name} has no Stanza language code.` };
+  }
+
+  emit({ id, phase: 'resolve', pct: 0, message: 'Preparing download…' });
+
+  const controller = new AbortController();
+  inFlight.set(id, { controller, tempDir: null });
+
+  const { command, args: pyArgs } = getPythonInvocation(getDefaultE2aPath(), 'xtts');
+  const helperArgs = [
+    ...pyArgs,
+    '-m', 'bookforge_ext.download_model',
+    '--engine', 'stanza',
+    '--lang', component.stanza.code,
+    '--total', String(component.sizeBytes || 0),
+    '--bf-progress',
+  ];
+
+  return await new Promise<InstallResult>((resolve) => {
+    let finalJson = '';
+    let stderrTail = '';
+    let stdoutBuf = '';
+    let settled = false;
+    // The helper emits a single progress stream keyed by language; reuse the
+    // same per-desc tracking so the largest-total bar drives the headline pct.
+    const totalByDesc = new Map<string, number>();
+    const recvByDesc = new Map<string, number>();
+
+    const child = spawn(command, helperArgs, {
+      cwd: getDefaultE2aPath(),
+      env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }),
+    });
+
+    controller.signal.addEventListener('abort', () => {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    });
+
+    child.stdout?.on('data', (d: Buffer) => {
+      stdoutBuf += d.toString();
+      let nl: number;
+      while ((nl = stdoutBuf.indexOf('\n')) >= 0) {
+        const line = stdoutBuf.slice(0, nl).trim();
+        stdoutBuf = stdoutBuf.slice(nl + 1);
+        if (!line) continue;
+        if (line.startsWith('BF_PROGRESS ')) {
+          const m = line.match(/^BF_PROGRESS\s+(\d+)\s+(\d+)\s+(.*)$/);
+          if (!m) continue;
+          const recv = parseInt(m[1], 10);
+          const total = parseInt(m[2], 10);
+          const desc = m[3] || 'model';
+          if (total > 0) {
+            totalByDesc.set(desc, total);
+            recvByDesc.set(desc, recv);
+          }
+          let bigDesc = '';
+          let bigTotal = 0;
+          for (const [k, v] of totalByDesc) if (v > bigTotal) { bigTotal = v; bigDesc = k; }
+          const r = recvByDesc.get(bigDesc) || 0;
+          const pct = bigTotal > 0 ? Math.min(100, Math.round((r / bigTotal) * 100)) : 0;
+          emit({ id, phase: 'download', pct, receivedBytes: r, totalBytes: bigTotal,
+                 message: `Downloading ${component.name}…` });
+        } else if (line.startsWith('{')) {
+          finalJson = line;
+        }
+      }
+    });
+
+    child.stderr?.on('data', (d: Buffer) => {
+      stderrTail = (stderrTail + d.toString()).slice(-2000);
+    });
+
+    const finish = (result: InstallResult) => {
+      if (settled) return;
+      settled = true;
+      inFlight.delete(id);
+      resolve(result);
+    };
+
+    child.on('error', (err) => {
+      emit({ id, phase: 'error', pct: 0, message: err.message });
+      finish({ id, ok: false, error: err.message });
+    });
+
+    child.on('close', (code) => {
+      if (controller.signal.aborted) {
+        const msg = 'Download cancelled';
+        emit({ id, phase: 'error', pct: 0, message: msg });
+        return finish({ id, ok: false, error: msg });
+      }
+      let parsed: { ok?: boolean; error?: string; dir?: string; lang?: string } | null = null;
+      try { parsed = finalJson ? JSON.parse(finalJson) : null; } catch { /* keep null */ }
+
+      if (code === 0 && parsed?.ok && parsed.dir) {
+        const entryPath = parsed.dir;
+        const record: InstalledRecord = {
+          id,
+          version: component.version,
+          source: 'managed',
+          path: entryPath,
+          entryPath,
+          bytes: component.sizeBytes || undefined,
+          installedAt: new Date().toISOString(),
+        };
+        putRecord(record);
+        emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
+        return finish({ id, ok: true, record });
+      }
+
+      const error = parsed?.error || stderrTail.trim() || `Download failed (exit ${code}).`;
+      emit({ id, phase: 'error', pct: 0, message: error });
+      finish({ id, ok: false, error });
+    });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Managed install
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -572,6 +722,12 @@ async function install(
   // archive download — different mechanism, same install()/progress contract.
   if (component.kind === 'tts-model') {
     return fetchTtsModel(component, emit);
+  }
+
+  // Language packs fetch into e2a's models/stanza dir via the python helper,
+  // same mechanism as tts-model — different helper branch, same contract.
+  if (component.kind === 'language-pack') {
+    return fetchLanguagePack(component, emit);
   }
 
   emit({ id, phase: 'resolve', pct: 0, message: 'Resolving artifact…' });
@@ -843,6 +999,24 @@ async function buildStatus(
       };
       putRecord(record);
       console.log(`[COMPONENTS] ${component.id}: detected TTS model in HF cache at ${found}`);
+    }
+  }
+
+  // Same for language packs: bundled and already-downloaded Stanza models in
+  // e2a's models/stanza dir surface as Installed for free.
+  if (!record && component.kind === 'language-pack') {
+    const found = findLanguagePackEntry(component);
+    if (found) {
+      record = {
+        id: component.id,
+        version: component.version,
+        source: 'managed',
+        path: found,
+        entryPath: found,
+        installedAt: new Date().toISOString(),
+      };
+      putRecord(record);
+      console.log(`[COMPONENTS] ${component.id}: detected Stanza language pack at ${found}`);
     }
   }
 

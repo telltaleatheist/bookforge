@@ -373,9 +373,11 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
 export class AddOnsPanelComponent implements OnInit {
   readonly svc = inject(ComponentService);
 
-  /** Tools/runtimes only — TTS voices live in their own Voices panel. */
+  /** Tools/runtimes only — TTS voices and language packs live in their own panels. */
   readonly addOns = computed(() =>
-    this.svc.components().filter(s => s.component.kind !== 'tts-model'),
+    this.svc.components().filter(
+      s => s.component.kind !== 'tts-model' && s.component.kind !== 'language-pack',
+    ),
   );
 
   /** Components offering managed (download) acquisition. */

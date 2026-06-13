@@ -24,8 +24,10 @@ import { AiService } from './core/services/ai.service';
     OnboardingComponent
   ],
   template: `
-    <!-- First-run setup overlay: blocks the UI while the bundled TTS runtime
-         unpacks so jobs can't start against a half-ready runtime. -->
+    <!-- First-run setup overlay: only blocks on a setup ERROR (needs attention).
+         While the runtime unpacks we DON'T block — the user runs onboarding /
+         guided setup in the meantime; the queue defers job start until ready and
+         env-dependent downloads gate on runtime.ready(). -->
     @if (showSetupOverlay()) {
       <div class="setup-overlay">
         <div class="setup-card">
@@ -214,7 +216,7 @@ export class App implements OnInit {
   private readonly setupDismissed = signal(false);
 
   readonly showSetupOverlay = computed(() =>
-    !this.setupDismissed() && (this.runtime.preparing() || !!this.runtime.errorStatus())
+    !this.setupDismissed() && !!this.runtime.errorStatus()
   );
 
   dismissSetup(): void {
@@ -255,16 +257,19 @@ export class App implements OnInit {
 
   ngOnInit() {
     this.themeService.initializeTheme();
+
+    // TEMP (dev): always land on the guided first-run setup at startup so we can
+    // iterate on it without resetting onboarding state. Remove once the flow is
+    // finalized — normal behavior routes to /setup only from onboarding complete.
+    if (!this.isStandaloneWindow()) {
+      void this.router.navigate(['/setup']);
+    }
   }
 
   async onOnboardingComplete(): Promise<void> {
-    // Onboarding complete - the view updates automatically because
-    // libraryService.isConfigured() is a computed signal.
-    // First-run nudge: if no AI source is configured yet, drop the user straight
-    // into the AI Setup wizard (cleanup/simplify is unusable until one exists).
+    // First run: after the library is set, walk the user through the guided
+    // setup (AI → voices → language packs → optional tools → home).
     await this.ai.refresh();
-    if (!this.ai.available()) {
-      void this.router.navigate(['/ai-setup']);
-    }
+    void this.router.navigate(['/setup']);
   }
 }

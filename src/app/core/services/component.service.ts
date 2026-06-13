@@ -6,6 +6,7 @@ import {
   InstallProgress,
   InstallResult,
 } from './electron.service';
+import { RuntimeService } from './runtime.service';
 
 /**
  * Renderer-side state for the optional component system (Settings → Add-ons).
@@ -21,6 +22,7 @@ import {
 @Injectable({ providedIn: 'root' })
 export class ComponentService {
   private readonly electron = inject(ElectronService);
+  private readonly runtime = inject(RuntimeService);
 
   /** Catalog × installed × compatibility for every known component. */
   readonly components = signal<ComponentStatus[]>([]);
@@ -105,6 +107,17 @@ export class ComponentService {
    */
   async install(id: string): Promise<void> {
     if (this.isBusy(id)) return;
+
+    // Voice + language-pack downloads spawn the bundled env's python. During the
+    // first-run unpack that python doesn't exist yet, so gate them on runtime
+    // readiness with a friendly message instead of a confusing ENOENT. Archive
+    // installs (Calibre/Orpheus tarballs) don't need the env and aren't gated.
+    const kind = this.components().find(c => c.component.id === id)?.component.kind;
+    if ((kind === 'tts-model' || kind === 'language-pack') && !this.runtime.ready()) {
+      this.error.set('The audiobook engine is still setting up — this download will be available in a moment.');
+      return;
+    }
+
     this.error.set(null);
     this.setBusy(id, true);
 

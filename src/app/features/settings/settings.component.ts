@@ -1,7 +1,7 @@
 import { Component, inject, signal, computed, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
+import { Router, ActivatedRoute } from '@angular/router';
 import { SettingsService, SettingsSection, SettingField } from '../../core/services/settings.service';
 import { PluginService, PluginInfo } from '../../core/services/plugin.service';
 import { ElectronService } from '../../core/services/electron.service';
@@ -9,12 +9,13 @@ import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
 import { VoicesPanelComponent } from './components/voices-panel.component';
+import { LanguagesPanelComponent } from './components/languages-panel.component';
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, AiSetupWizardComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -747,6 +748,10 @@ import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
                   <app-voices-panel></app-voices-panel>
                 </div>
               </div>
+            } @else if (section.id === 'languages') {
+              <!-- Languages: downloadable Stanza sentence-segmentation packs
+                   for cleanup & translation. -->
+              <app-languages-panel></app-languages-panel>
             } @else {
               <div class="fields-list">
                 @for (field of section.fields; track field.key) {
@@ -1718,6 +1723,7 @@ import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 })
 export class SettingsComponent implements OnInit {
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
   private readonly settingsService = inject(SettingsService);
   private readonly pluginService = inject(PluginService);
   private readonly electronService = inject(ElectronService);
@@ -1838,6 +1844,12 @@ export class SettingsComponent implements OnInit {
   });
 
   ngOnInit(): void {
+    // Deep-link: ?section=languages preselects a section (used by the
+    // translation-step language gate and first-run setup).
+    const section = this.route.snapshot.queryParamMap.get('section');
+    if (section && this.allSections().some(s => s.id === section)) {
+      this.selectedSection.set(section);
+    }
     // Load cache size on init
     this.refreshCacheSize();
     // Check bookshelf server status

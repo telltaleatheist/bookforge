@@ -29,6 +29,7 @@ import { ComponentService } from '../../../../core/services/component.service';
 import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
 import { EpubResolverService } from '../../services/epub-resolver.service';
 import { AiService } from '../../../../core/services/ai.service';
+import { LanguagePackService } from '../../../../core/services/language-pack.service';
 import {
   SUPPORTED_LANGUAGES,
   TtsLanguageRow,
@@ -433,6 +434,34 @@ interface SourceStage {
                 <span class="label">Detected source language:</span>
                 <span class="value">{{ getLanguageName(detectedSourceLang()) }}</span>
               </div>
+
+              <!-- Language packs needed for the selected languages → inline gate,
+                   the translation analog of the cleanup step's AI layover. -->
+              @if (missingLanguagePacks().length > 0) {
+                <div class="lang-gate">
+                  <div class="lang-gate-head">
+                    <span class="lang-gate-icon">🌍</span>
+                    <div>
+                      <h4>Language packs needed</h4>
+                      <p>Cleanup &amp; translation segment text per language. These languages don’t have a segmentation pack yet — download them so processing works offline.</p>
+                    </div>
+                  </div>
+                  <div class="lang-gate-list">
+                    @for (lang of missingLanguagePacks(); track lang.code) {
+                      <div class="lang-gate-row">
+                        <span class="lang-gate-name">{{ lang.name }}</span>
+                        @if (lang.installing) {
+                          <div class="lang-gate-progress"><div class="lang-gate-bar" [style.width.%]="lang.pct"></div></div>
+                          <button class="lang-gate-btn ghost" (click)="langPacks.cancel(lang.code)">Cancel</button>
+                        } @else {
+                          <button class="lang-gate-btn" [disabled]="langPacks.isBusy(lang.code)" (click)="langPacks.install(lang.code)">Download</button>
+                        }
+                      </div>
+                    }
+                  </div>
+                  <button class="lang-gate-link" (click)="openLanguageSettings()">Manage all languages…</button>
+                </div>
+              }
 
               @if (translateMode() === 'sentence') {
                 <!-- Target Language Multi-Select Grid -->
@@ -1406,6 +1435,69 @@ interface SourceStage {
     }
     .ai-layover-btn:hover { opacity: 0.9; }
 
+    .lang-gate {
+      margin: 12px 0 4px;
+      padding: 14px 16px;
+      border: 1px solid color-mix(in srgb, var(--accent-primary) 35%, var(--border-default));
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--accent-primary) 7%, transparent);
+    }
+    .lang-gate-head {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      margin-bottom: 10px;
+    }
+    .lang-gate-icon { font-size: 1.4rem; line-height: 1.2; }
+    .lang-gate-head h4 { margin: 0 0 2px; font-size: 0.95rem; color: var(--text-primary); }
+    .lang-gate-head p { margin: 0; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.45; }
+    .lang-gate-list { display: flex; flex-direction: column; gap: 6px; }
+    .lang-gate-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: var(--bg-elevated);
+    }
+    .lang-gate-name { flex: 0 0 auto; min-width: 120px; font-size: 0.85rem; color: var(--text-primary); }
+    .lang-gate-progress {
+      flex: 1 1 auto;
+      height: 6px;
+      border-radius: 3px;
+      background: var(--bg-hover);
+      overflow: hidden;
+    }
+    .lang-gate-bar { height: 100%; background: var(--accent-primary); transition: width 0.2s ease; }
+    .lang-gate-btn {
+      margin-left: auto;
+      padding: 5px 14px;
+      border: none;
+      border-radius: 6px;
+      background: var(--accent-primary);
+      color: #fff;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .lang-gate-btn:hover { opacity: 0.9; }
+    .lang-gate-btn:disabled { opacity: 0.5; cursor: default; }
+    .lang-gate-btn.ghost {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-default);
+    }
+    .lang-gate-link {
+      margin-top: 10px;
+      padding: 0;
+      border: none;
+      background: none;
+      color: var(--accent-primary);
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .lang-gate-link:hover { text-decoration: underline; }
+
       h3 {
         margin: 0 0 8px;
         font-size: 18px;
@@ -2340,6 +2432,36 @@ export class LLWizardComponent implements OnInit {
   protected readonly componentService = inject(ComponentService);
   // Gates the AI Cleanup step behind a "set up an AI" layover when none configured.
   protected readonly ai = inject(AiService);
+  protected readonly langPacks = inject(LanguagePackService);
+
+  /**
+   * Languages the Translate step needs a Stanza pack for (source + selected
+   * targets) that aren't installed yet. Drives the inline language gate — the
+   * translation analog of the cleanup step's "AI isn't set up" layover.
+   */
+  readonly missingLanguagePacks = computed(() => {
+    if (!this.langPacks.checkedOnce()) return [];
+    const needed = new Set<string>();
+    const src = this.detectedSourceLang();
+    if (src) needed.add(src);
+    if (this.translateMode() === 'sentence') {
+      for (const c of this.targetLangs()) needed.add(c);
+    } else if (this.monoTargetLang()) {
+      needed.add(this.monoTargetLang());
+    }
+    const out: { code: string; name: string; installing: boolean; pct: number }[] = [];
+    for (const code of needed) {
+      const st = this.langPacks.statusFor(code);
+      if (!st || st.state === 'installed') continue; // not offered, or already present
+      out.push({
+        code,
+        name: this.getLanguageName(code),
+        installing: st.state === 'installing',
+        pct: st.progress?.pct ?? 0,
+      });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  });
 
   // Make Array available in template
   readonly Array = Array;
@@ -3145,6 +3267,11 @@ export class LLWizardComponent implements OnInit {
   /** Open the AI Setup wizard from the cleanup-step layover. */
   openAiSetup(): void {
     void this.router.navigate(['/ai-setup']);
+  }
+
+  /** Open Settings → Languages to manage the full language-pack catalog. */
+  openLanguageSettings(): void {
+    void this.router.navigate(['/settings'], { queryParams: { section: 'languages' } });
   }
 
   async clearCleanupStage(): Promise<void> {

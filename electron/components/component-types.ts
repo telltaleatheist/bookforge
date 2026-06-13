@@ -32,6 +32,7 @@ export type ComponentKind =
   | 'binary'     // an executable (downloadable archive, or a user's own install)
   | 'conda-env'  // a conda env (conda-pack tarball, or a user's own `conda create`)
   | 'tts-model'  // a HuggingFace TTS voice/model fetched into e2a's HF cache
+  | 'language-pack' // a Stanza sentence-segmentation model fetched into e2a's models/stanza
   | 'system';    // provided by the OS (e.g. Apple Vision); nothing to download
 
 /**
@@ -134,6 +135,10 @@ export interface OptionalComponent {
    *  resolves. `sub` is the repo sub-path ('xtts-v2/eng/<Voice>/'); `files` are
    *  the checkpoint files to fetch (config.json, model.pth, vocab.json). */
   hf?: { repo: string; sub: string; files: string[] };
+  /** kind 'language-pack' only: the Stanza language to fetch. `code` is the
+   *  ISO 639-1 code stanza.download() expects ('en', 'de', 'ko'); it lands in
+   *  e2a's models/stanza/<code>/ where the segmentation pipeline reads it. */
+  stanza?: { code: string };
   /** External-mode auto-detection. Present when 'external' is supported. */
   detect?: DetectSpec;
   verify: VerifySpec;
