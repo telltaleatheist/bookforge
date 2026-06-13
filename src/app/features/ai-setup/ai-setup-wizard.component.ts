@@ -111,6 +111,20 @@ import { SettingsService } from '../../core/services/settings.service';
               <desktop-button variant="primary" (click)="setProvider('local')">Use local AI for cleanup</desktop-button>
             </div>
           }
+
+          @if (downloadedModels().length > 0) {
+            <div class="danger-row">
+              @if (confirmDeleteModels()) {
+                <span class="danger-confirm">
+                  Delete {{ downloadedModels().length }} downloaded model{{ downloadedModels().length === 1 ? '' : 's' }}?
+                  <desktop-button variant="ghost" size="sm" (click)="deleteAllModels()">Delete</desktop-button>
+                  <desktop-button variant="ghost" size="sm" (click)="confirmDeleteModels.set(false)">Cancel</desktop-button>
+                </span>
+              } @else {
+                <button class="link-danger" (click)="confirmDeleteModels.set(true)">Delete all downloaded models</button>
+              }
+            </div>
+          }
         }
       </section>
 
@@ -166,6 +180,20 @@ import { SettingsService } from '../../core/services/settings.service';
                 autocomplete="off"
               />
               <desktop-button variant="primary" size="sm" [disabled]="!keyDrafts[p.id].trim()" (click)="saveKey(p.id)">Save</desktop-button>
+            }
+          </div>
+        }
+
+        @if (anyKeySaved()) {
+          <div class="danger-row">
+            @if (confirmClearKeys()) {
+              <span class="danger-confirm">
+                Clear all saved API keys?
+                <desktop-button variant="ghost" size="sm" (click)="clearAllKeys()">Clear</desktop-button>
+                <desktop-button variant="ghost" size="sm" (click)="confirmClearKeys.set(false)">Cancel</desktop-button>
+              </span>
+            } @else {
+              <button class="link-danger" (click)="confirmClearKeys.set(true)">Clear all keys</button>
             }
           </div>
         }
@@ -242,6 +270,14 @@ import { SettingsService } from '../../core/services/settings.service';
     .key-saved-tag { flex: none; color: var(--success); font-size: 0.75rem; font-weight: 600; }
 
     .wizard-foot { display: flex; justify-content: flex-end; margin-top: 0.5rem; }
+
+    .danger-row { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
+    .danger-confirm { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-secondary); }
+    .link-danger {
+      background: none; border: none; cursor: pointer; padding: 0.2rem 0;
+      font-size: 0.8rem; color: var(--error, #d9534f);
+    }
+    .link-danger:hover { text-decoration: underline; }
   `]
 })
 export class AiSetupWizardComponent implements OnInit, OnDestroy {
@@ -279,6 +315,31 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     if (cfg.openai?.apiKey?.trim()) parts.push('OpenAI key');
     return parts.length ? `Detected: ${parts.join(', ')}.` : '';
   });
+
+  // ── "Delete all" actions (per the bare-bones reset model) ──
+  /** Downloaded local models a "delete all" would remove (Ollama is untouched). */
+  readonly downloadedModels = computed(() => this.models().filter((m) => m.downloaded));
+  readonly confirmDeleteModels = signal(false);
+
+  /** Whether any API key is saved (drives the "Clear all keys" affordance). */
+  readonly anyKeySaved = computed(() => this.hasKey('claude') || this.hasKey('openai'));
+  readonly confirmClearKeys = signal(false);
+
+  /** Remove every downloaded local LLM. Leaves Ollama config + API keys alone. */
+  async deleteAllModels(): Promise<void> {
+    for (const m of this.downloadedModels()) {
+      await this.ai.deleteModel(m.id);
+    }
+    this.confirmDeleteModels.set(false);
+    await this.reload();
+  }
+
+  /** Clear every saved API key (both providers). */
+  clearAllKeys(): void {
+    if (this.hasKey('claude')) this.deleteKey('claude');
+    if (this.hasKey('openai')) this.deleteKey('openai');
+    this.confirmClearKeys.set(false);
+  }
 
   async ngOnInit(): Promise<void> {
     this.unsub = this.ai.onModelProgress((p) => {

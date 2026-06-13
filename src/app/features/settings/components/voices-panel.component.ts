@@ -17,8 +17,10 @@ interface CustomVoice {
  * BookForge bundles one voice (Scarlett Johansson) and offers the rest as
  * one-click downloads. Each voice is a managed `tts-model` component, so this
  * panel reuses the whole component backend (ComponentService + IPC + progress)
- * — it just filters to voices and renders a Download button. Downloaded voices
- * land in the app's data folder (userData/runtime/e2a/models), not the library.
+ * — it just filters to voices and renders them as a compact, filterable list.
+ * With 30+ voices a card-per-voice layout was unusable; rows + a search box +
+ * group headers keep it scannable. Downloaded voices land in the app's data
+ * folder (userData/runtime/e2a/models), not the library.
  */
 @Component({
   selector: 'app-voices-panel',
@@ -27,84 +29,85 @@ interface CustomVoice {
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="voices-section">
-      @if (svc.profile(); as p) {
-        <div class="system-info">
-          <span class="sys-item">{{ formatBytes(p.freeDiskMB * 1024 * 1024) }} free disk</span>
-        </div>
-      }
+      <div class="toolbar">
+        <input
+          type="text"
+          class="filter-input"
+          placeholder="Search voices…"
+          [value]="filter()"
+          (input)="filter.set($any($event.target).value)"
+        />
+        @if (svc.profile(); as p) {
+          <span class="free-disk">{{ formatBytes(p.freeDiskMB * 1024 * 1024) }} free</span>
+        }
+      </div>
 
       @if (svc.error(); as err) {
         <div class="status-message error">{{ err }}</div>
       }
-
       @if (svc.loading() && voices().length === 0) {
         <p class="loading-hint">Loading voices…</p>
       }
 
-      <div class="component-list">
-        @for (status of voices(); track status.component.id) {
-          <div class="component-card">
-            <div class="component-head">
-              <div class="component-meta">
-                <h4 class="component-name">{{ status.component.name }}</h4>
-                <p class="component-desc">{{ status.component.description }}</p>
-              </div>
-              <div class="component-badge">
-                <span class="status-badge" [ngClass]="badgeClass(status)">{{ badgeLabel(status) }}</span>
-                @if (status.state !== 'installed' && status.component.sizeBytes > 0) {
-                  <span class="component-size">{{ formatBytes(status.component.sizeBytes) }}</span>
-                }
-              </div>
-            </div>
+      <!-- Default voice pack (base XTTS) — unlocks the stock voice + every
+           reference-clip clone, so it's pinned at the top in its own group. -->
+      @if (basePack(); as base) {
+        <div class="group">
+          <div class="group-head">Default</div>
+          <ng-container *ngTemplateOutlet="row; context: { $implicit: base, isBase: true }"></ng-container>
+        </div>
+      }
 
-            @if (status.state === 'installing' && status.progress; as prog) {
-              <div class="install-progress">
-                <div class="progress-bar">
-                  <div class="progress-fill" [style.width.%]="prog.pct"></div>
-                </div>
-                <span class="progress-label">
-                  {{ phaseLabel(prog.phase) }}
-                  @if (prog.totalBytes) {
-                    — {{ formatBytes(prog.receivedBytes || 0) }} / {{ formatBytes(prog.totalBytes) }}
-                  } @else if (prog.message) {
-                    — {{ prog.message }}
-                  }
-                </span>
-              </div>
-            }
-
-            <div class="component-actions">
-              @switch (status.state) {
-                @case ('installed') {
-                  <span class="action-note ok">✓ Ready to use</span>
-                }
-                @case ('installing') {
-                  <desktop-button variant="ghost" size="sm" (click)="svc.cancel(status.component.id)">
-                    Cancel
-                  </desktop-button>
-                }
-                @default {
-                  <desktop-button
-                    variant="primary"
-                    size="sm"
-                    (click)="svc.install(status.component.id)"
-                    [disabled]="svc.isBusy(status.component.id)"
-                  >
-                    Download
-                  </desktop-button>
-                }
-              }
-            </div>
-          </div>
+      <!-- Premium fine-tuned voices -->
+      <div class="group">
+        <div class="group-head">
+          Premium voices
+          <span class="group-count">{{ filteredVoices().length }}</span>
+        </div>
+        @if (filteredVoices().length === 0) {
+          <p class="empty-hint">No voices match “{{ filter() }}”.</p>
+        }
+        @for (status of filteredVoices(); track status.component.id) {
+          <ng-container *ngTemplateOutlet="row; context: { $implicit: status, isBase: false }"></ng-container>
         }
       </div>
 
+      <!-- One compact row, shared by the base pack + every voice. -->
+      <ng-template #row let-status let-isBase="isBase">
+        <div class="voice-row" [class.is-installed]="status.state === 'installed'">
+          <span class="vr-name" [title]="status.component.name">{{ status.component.name }}</span>
+
+          @if (status.state === 'installing' && status.progress; as prog) {
+            <div class="vr-progress">
+              <div class="vr-bar" [style.width.%]="prog.pct || 0"></div>
+            </div>
+            <span class="vr-pct">{{ prog.pct || 0 }}%</span>
+            <button class="vr-btn ghost" (click)="svc.cancel(status.component.id)" title="Cancel">✕</button>
+          } @else if (status.state === 'installed') {
+            <span class="vr-ready" title="Installed">✓</span>
+            <button
+              class="vr-btn ghost"
+              (click)="svc.remove(status.component.id)"
+              [disabled]="svc.isBusy(status.component.id)"
+              title="Remove download"
+            >Remove</button>
+          } @else {
+            <span class="vr-size">{{ isBase ? '~1.9 GB' : '1.7 GB' }}</span>
+            <button
+              class="vr-btn primary"
+              (click)="svc.install(status.component.id)"
+              [disabled]="svc.isBusy(status.component.id)"
+            >Get</button>
+          }
+        </div>
+      </ng-template>
+
       <!-- User-added custom voices (own fine-tuned XTTS checkpoints) -->
-      <div class="custom-voices">
-        <div class="custom-head">
-          <h4 class="custom-title">Your Voices</h4>
+      <div class="group custom-voices">
+        <div class="group-head">
+          Your voices
           <desktop-button variant="ghost" size="sm" (click)="addCustomVoice()" [disabled]="customBusy()">
-            {{ customBusy() ? 'Adding…' : 'Add your own voice…' }}
+            {{ customBusy() ? 'Adding…' : 'Add your own…' }}
           </desktop-button>
         </div>
 
@@ -114,44 +117,38 @@ interface CustomVoice {
 
         @if (customVoices().length > 0) {
           @for (cv of customVoices(); track cv.id) {
-            <div class="component-card">
-              <div class="component-head">
-                <div class="component-meta">
-                  <h4 class="component-name">{{ cv.name }}</h4>
-                  <p class="component-desc">{{ cv.checkpointDir }}</p>
-                </div>
-                <div class="component-badge">
-                  <span class="status-badge installed">Ready</span>
-                </div>
-              </div>
-              <div class="component-actions">
-                <desktop-button variant="ghost" size="sm" (click)="removeCustomVoice(cv.id)">
-                  Remove
-                </desktop-button>
-              </div>
+            <div class="voice-row is-installed">
+              <span class="vr-name" [title]="cv.checkpointDir">{{ cv.name }}</span>
+              <span class="vr-ready">✓ Ready</span>
+              <button class="vr-btn ghost" (click)="removeCustomVoice(cv.id)" title="Remove">Remove</button>
             </div>
           }
         } @else {
           <p class="help-text">
-            Have your own fine-tuned XTTS voice? Add the folder that holds
+            Have your own fine-tuned XTTS voice? Add the folder with
             <code>config.json</code>, <code>model.pth</code>, <code>vocab.json</code> and a
-            reference <code>.wav</code>. It'll appear in the Play tab and the browser extension.
+            reference <code>.wav</code>.
           </p>
         }
       </div>
 
-      <div class="section-actions">
+      <div class="footer">
         <desktop-button variant="ghost" size="sm" (click)="svc.refresh()" [disabled]="svc.loading()">
           Refresh
         </desktop-button>
-      </div>
-
-      <div class="help-text">
-        <p>
-          BookForge ships with the Scarlett Johansson voice. Download any other voice with one
-          click — it's saved in the app's data folder and stays available across updates.
-          Downloads run in the background; you can keep working.
-        </p>
+        <span class="help-text">Downloads run in the background and survive updates.</span>
+        <span class="spacer"></span>
+        @if (removableVoices().length > 0) {
+          @if (confirmDeleteAll()) {
+            <span class="danger-confirm">
+              Delete {{ removableVoices().length }} downloaded voice{{ removableVoices().length === 1 ? '' : 's' }}? (keeps Scarlett Johansson)
+              <button class="vr-btn danger" (click)="deleteAllVoices()">Delete</button>
+              <button class="vr-btn ghost" (click)="confirmDeleteAll.set(false)">Cancel</button>
+            </span>
+          } @else {
+            <button class="vr-btn ghost danger-text" (click)="confirmDeleteAll.set(true)">Delete all downloads</button>
+          }
+        }
       </div>
     </div>
   `,
@@ -161,185 +158,231 @@ interface CustomVoice {
     .voices-section {
       display: flex;
       flex-direction: column;
-      gap: var(--ui-spacing-lg);
-    }
-
-    .system-info {
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--ui-spacing-sm) var(--ui-spacing-md);
-      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
-      background: var(--bg-elevated);
-      border-radius: $radius-md;
-      font-size: var(--ui-font-xs);
-      color: var(--text-secondary);
-    }
-
-    .loading-hint {
-      color: var(--text-tertiary);
-      font-size: var(--ui-font-sm);
-    }
-
-    .component-list {
-      display: flex;
-      flex-direction: column;
       gap: var(--ui-spacing-md);
     }
 
-    .component-card {
-      display: flex;
-      flex-direction: column;
-      gap: var(--ui-spacing-md);
-      padding: var(--ui-spacing-lg);
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      border-radius: $radius-md;
-    }
-
-    .component-head {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: var(--ui-spacing-lg);
-    }
-
-    .component-meta {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .component-name {
-      margin: 0 0 var(--ui-spacing-xs) 0;
-      font-size: var(--ui-font-base);
-      font-weight: $font-weight-semibold;
-      color: var(--text-primary);
-    }
-
-    .component-desc {
-      margin: 0;
-      font-size: var(--ui-font-sm);
-      color: var(--text-tertiary);
-    }
-
-    .component-badge {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: var(--ui-spacing-xs);
-      flex-shrink: 0;
-    }
-
-    .status-badge {
-      font-size: var(--ui-font-xs);
-      padding: 2px 8px;
-      border-radius: 4px;
-      white-space: nowrap;
-
-      &.installed { background: var(--success-bg); color: var(--success); }
-      &.available { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
-      &.installing { background: var(--bg-elevated); color: var(--text-secondary); }
-    }
-
-    .component-size {
-      font-size: var(--ui-font-xs);
-      color: var(--text-tertiary);
-    }
-
-    .install-progress {
-      display: flex;
-      flex-direction: column;
-      gap: var(--ui-spacing-xs);
-    }
-
-    .progress-bar {
-      width: 100%;
-      height: 6px;
-      background: var(--bg-elevated);
-      border-radius: 3px;
-      overflow: hidden;
-    }
-
-    .progress-fill {
-      height: 100%;
-      background: var(--accent);
-      transition: width $duration-fast $ease-out;
-    }
-
-    .progress-label {
-      font-size: var(--ui-font-xs);
-      color: var(--text-secondary);
-    }
-
-    .component-actions {
+    .toolbar {
       display: flex;
       align-items: center;
       gap: var(--ui-spacing-md);
     }
 
-    .action-note {
+    .filter-input {
+      flex: 1;
+      min-width: 0;
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      background: var(--bg-input, var(--bg-elevated));
+      border: 1px solid var(--border-input, var(--border-default));
+      border-radius: $radius-md;
+      color: var(--text-primary);
       font-size: var(--ui-font-sm);
-      color: var(--text-tertiary);
 
-      &.ok { color: var(--success); }
+      &::placeholder { color: var(--text-tertiary); }
+      &:focus { outline: none; border-color: var(--accent); }
+    }
+
+    .free-disk {
+      flex-shrink: 0;
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      white-space: nowrap;
+    }
+
+    .loading-hint, .empty-hint {
+      color: var(--text-tertiary);
+      font-size: var(--ui-font-sm);
+      padding: var(--ui-spacing-sm) 0;
+      margin: 0;
+    }
+
+    .group {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .group-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-sm) 0 var(--ui-spacing-xs);
+      font-size: var(--ui-font-xs);
+      font-weight: $font-weight-semibold;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-tertiary);
+    }
+
+    .group-count {
+      font-weight: $font-weight-regular;
+      color: var(--text-tertiary);
+      background: var(--bg-elevated);
+      border-radius: 10px;
+      padding: 0 7px;
+    }
+
+    /* Compact row — the whole point of this redesign. */
+    .voice-row {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-md);
+      padding: 7px var(--ui-spacing-sm);
+      border-bottom: 1px solid var(--border-subtle);
+      min-height: 34px;
+
+      &:hover { background: var(--bg-elevated); }
+      &:last-child { border-bottom: none; }
+    }
+
+    .vr-name {
+      flex: 1;
+      min-width: 0;
+      font-size: var(--ui-font-sm);
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .vr-size {
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      white-space: nowrap;
+    }
+
+    .vr-ready {
+      font-size: var(--ui-font-xs);
+      color: var(--success);
+      white-space: nowrap;
+    }
+
+    .vr-progress {
+      flex: 0 0 80px;
+      height: 5px;
+      background: var(--bg-elevated);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .vr-bar {
+      height: 100%;
+      background: var(--accent);
+      transition: width $duration-fast $ease-out;
+    }
+    .vr-pct {
+      font-size: var(--ui-font-xs);
+      color: var(--text-secondary);
+      min-width: 34px;
+      text-align: right;
+    }
+
+    .vr-btn {
+      flex-shrink: 0;
+      font-size: var(--ui-font-xs);
+      font-weight: $font-weight-medium;
+      padding: 3px 12px;
+      border-radius: $radius-sm;
+      border: 1px solid transparent;
+      cursor: pointer;
+
+      &.primary { background: var(--accent); color: #fff; }
+      &.primary:hover:not(:disabled) { background: var(--accent-hover, var(--accent)); }
+      &.primary:disabled { opacity: 0.5; cursor: default; }
+      &.ghost { background: transparent; border-color: var(--border-default); color: var(--text-secondary); }
+      &.ghost:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+      &.danger { background: var(--error, #d9534f); color: #fff; }
+      &.danger:hover { filter: brightness(1.08); }
+    }
+
+    .custom-voices { padding-top: var(--ui-spacing-sm); }
+
+    .footer {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-md);
+      padding-top: var(--ui-spacing-sm);
+      border-top: 1px solid var(--border-subtle);
+    }
+    .footer .spacer { flex: 1; }
+
+    .danger-text {
+      color: var(--error, #d9534f) !important;
+      border-color: transparent !important;
+    }
+    .danger-text:hover { text-decoration: underline; }
+
+    .danger-confirm {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      font-size: var(--ui-font-xs);
+      color: var(--text-secondary);
     }
 
     .status-message {
       padding: var(--ui-spacing-sm) var(--ui-spacing-md);
       border-radius: $radius-md;
       font-size: var(--ui-font-sm);
-
       &.error { background: var(--error-bg); color: var(--error); }
     }
 
-    .section-actions {
-      padding-top: var(--ui-spacing-sm);
-    }
-
-    .custom-voices {
-      display: flex;
-      flex-direction: column;
-      gap: var(--ui-spacing-md);
-      padding-top: var(--ui-spacing-md);
-      border-top: 1px solid var(--border-subtle);
-    }
-
-    .custom-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: var(--ui-spacing-md);
-    }
-
-    .custom-title {
-      margin: 0;
-      font-size: var(--ui-font-base);
-      font-weight: $font-weight-semibold;
-      color: var(--text-primary);
-    }
-
-    .custom-voices code {
-      font-family: var(--font-mono, monospace);
-      font-size: 0.9em;
-      padding: 1px 4px;
-      background: var(--bg-elevated);
-      border-radius: 3px;
-    }
-
     .help-text {
-      font-size: var(--ui-font-sm);
+      font-size: var(--ui-font-xs);
       color: var(--text-tertiary);
+      margin: 0;
 
-      p { margin: 0; }
+      code {
+        font-family: var(--font-mono, monospace);
+        font-size: 0.9em;
+        padding: 1px 4px;
+        background: var(--bg-elevated);
+        border-radius: 3px;
+      }
     }
   `],
 })
 export class VoicesPanelComponent implements OnInit {
   readonly svc = inject(ComponentService);
 
-  /** Only the downloadable TTS voices (kind 'tts-model'). */
+  /** Filter text for the premium-voice list. */
+  readonly filter = signal('');
+
+  /** All downloadable TTS voices (kind 'tts-model'). */
   readonly voices = computed(() =>
     this.svc.components().filter((s) => s.component.kind === 'tts-model'),
   );
+
+  /** The base XTTS pack ('xtts-base'), pinned in its own group. */
+  readonly basePack = computed(() =>
+    this.voices().find((s) => s.component.id === 'xtts-base') ?? null,
+  );
+
+  /** Premium fine-tuned voices (everything except the base), name-filtered. */
+  readonly filteredVoices = computed(() => {
+    const q = this.filter().trim().toLowerCase();
+    const list = this.voices().filter((s) => s.component.id !== 'xtts-base');
+    if (!q) return list;
+    return list.filter((s) => s.component.name.toLowerCase().includes(q));
+  });
+
+  // Bare-bones voices that ship bundled and must survive a "delete all".
+  private static readonly KEEP_VOICE_IDS = ['ScarlettJohansson', 'xtts-base'];
+
+  /** Downloaded voices that "delete all" would remove (excludes the bundled core). */
+  readonly removableVoices = computed(() =>
+    this.voices().filter(
+      (s) => s.state === 'installed' && !VoicesPanelComponent.KEEP_VOICE_IDS.includes(s.component.id),
+    ),
+  );
+
+  readonly confirmDeleteAll = signal(false);
+
+  /** Remove every downloaded voice except the bundled Scarlett + base. */
+  deleteAllVoices(): void {
+    for (const s of this.removableVoices()) {
+      void this.svc.remove(s.component.id);
+    }
+    this.confirmDeleteAll.set(false);
+  }
 
   // User-added custom voices (own fine-tuned XTTS checkpoints).
   readonly customVoices = signal<CustomVoice[]>([]);
@@ -389,32 +432,6 @@ export class VoicesPanelComponent implements OnInit {
     if (!api) return;
     await api.remove(id);
     await this.loadCustomVoices();
-  }
-
-  badgeClass(status: ComponentStatus): string {
-    switch (status.state) {
-      case 'installed': return 'installed';
-      case 'installing': return 'installing';
-      default: return 'available';
-    }
-  }
-
-  badgeLabel(status: ComponentStatus): string {
-    switch (status.state) {
-      case 'installed': return 'Installed';
-      case 'installing': return 'Downloading';
-      default: return 'Available';
-    }
-  }
-
-  phaseLabel(phase: string): string {
-    switch (phase) {
-      case 'resolve': return 'Preparing…';
-      case 'download': return 'Downloading…';
-      case 'done': return 'Done';
-      case 'error': return 'Failed';
-      default: return 'Downloading…';
-    }
   }
 
   formatBytes(bytes: number): string {

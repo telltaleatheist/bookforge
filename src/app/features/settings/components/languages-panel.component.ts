@@ -1,8 +1,7 @@
-import { Component, inject, computed, ChangeDetectionStrategy, OnInit } from '@angular/core';
+import { Component, inject, computed, signal, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
-import { ComponentStatus } from '../../../core/services/electron.service';
 
 /**
  * Settings → Languages.
@@ -21,300 +20,239 @@ import { ComponentStatus } from '../../../core/services/electron.service';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="languages-section">
-      @if (svc.profile(); as p) {
-        <div class="system-info">
-          <span class="sys-item">{{ formatBytes(p.freeDiskMB * 1024 * 1024) }} free disk</span>
-        </div>
-      }
+      <div class="toolbar">
+        <input
+          type="text"
+          class="filter-input"
+          placeholder="Search languages…"
+          [value]="filter()"
+          (input)="filter.set($any($event.target).value)"
+        />
+        @if (svc.profile(); as p) {
+          <span class="free-disk">{{ formatBytes(p.freeDiskMB * 1024 * 1024) }} free</span>
+        }
+      </div>
 
       @if (svc.error(); as err) {
         <div class="status-message error">{{ err }}</div>
       }
-
       @if (svc.loading() && languages().length === 0) {
         <p class="loading-hint">Loading languages…</p>
       }
 
-      <div class="component-list">
-        @for (status of languages(); track status.component.id) {
-          <div class="component-card">
-            <div class="component-head">
-              <div class="component-meta">
-                <h4 class="component-name">{{ status.component.name }}</h4>
-                <p class="component-desc">{{ status.component.description }}</p>
-              </div>
-              <div class="component-badge">
-                <span class="status-badge" [ngClass]="badgeClass(status)">{{ badgeLabel(status) }}</span>
-                @if (status.state !== 'installed' && status.component.sizeBytes > 0) {
-                  <span class="component-size">{{ formatBytes(status.component.sizeBytes) }}</span>
-                }
-              </div>
-            </div>
-
-            @if (status.state === 'installing' && status.progress; as prog) {
-              <div class="install-progress">
-                <div class="progress-bar">
-                  <div class="progress-fill" [style.width.%]="prog.pct"></div>
-                </div>
-                <span class="progress-label">
-                  {{ phaseLabel(prog.phase) }}
-                  @if (prog.totalBytes) {
-                    — {{ formatBytes(prog.receivedBytes || 0) }} / {{ formatBytes(prog.totalBytes) }}
-                  } @else if (prog.message) {
-                    — {{ prog.message }}
-                  }
-                </span>
-              </div>
+      <div class="lang-scroll">
+        @if (installedLangs().length > 0) {
+          <div class="group">
+            <div class="group-head">Installed <span class="group-count">{{ installedLangs().length }}</span></div>
+            @for (status of installedLangs(); track status.component.id) {
+              <ng-container *ngTemplateOutlet="row; context: { $implicit: status }"></ng-container>
             }
-
-            <div class="component-actions">
-              @switch (status.state) {
-                @case ('installed') {
-                  <span class="action-note ok">✓ Ready to use</span>
-                  <desktop-button
-                    variant="ghost"
-                    size="sm"
-                    (click)="svc.remove(status.component.id)"
-                    [disabled]="svc.isBusy(status.component.id)"
-                  >
-                    Remove
-                  </desktop-button>
-                }
-                @case ('installing') {
-                  <desktop-button variant="ghost" size="sm" (click)="svc.cancel(status.component.id)">
-                    Cancel
-                  </desktop-button>
-                }
-                @default {
-                  <desktop-button
-                    variant="primary"
-                    size="sm"
-                    (click)="svc.install(status.component.id)"
-                    [disabled]="svc.isBusy(status.component.id)"
-                  >
-                    Download
-                  </desktop-button>
-                }
-              }
-            </div>
           </div>
         }
+
+        <div class="group">
+          <div class="group-head">Available <span class="group-count">{{ availableLangs().length }}</span></div>
+          @if (availableLangs().length === 0 && filter()) {
+            <p class="empty-hint">No languages match “{{ filter() }}”.</p>
+          }
+          @for (status of availableLangs(); track status.component.id) {
+            <ng-container *ngTemplateOutlet="row; context: { $implicit: status }"></ng-container>
+          }
+        </div>
       </div>
 
-      <div class="section-actions">
+      <ng-template #row let-status>
+        <div class="lang-row" [class.is-installed]="status.state === 'installed'">
+          <span class="lr-name" [title]="status.component.name">{{ status.component.name }}</span>
+
+          @if (status.state === 'installing' && status.progress; as prog) {
+            <div class="lr-progress"><div class="lr-bar" [style.width.%]="prog.pct || 0"></div></div>
+            <span class="lr-pct">{{ prog.pct || 0 }}%</span>
+            <button class="lr-btn ghost" (click)="svc.cancel(status.component.id)" title="Cancel">✕</button>
+          } @else if (status.state === 'installed') {
+            <span class="lr-ready">✓</span>
+            <button
+              class="lr-btn ghost"
+              (click)="svc.remove(status.component.id)"
+              [disabled]="svc.isBusy(status.component.id)"
+              title="Remove"
+            >Remove</button>
+          } @else {
+            <span class="lr-size">{{ formatBytes(status.component.sizeBytes) }}</span>
+            <button
+              class="lr-btn primary"
+              (click)="svc.install(status.component.id)"
+              [disabled]="svc.isBusy(status.component.id)"
+            >Get</button>
+          }
+        </div>
+      </ng-template>
+
+      <div class="footer">
         <desktop-button variant="ghost" size="sm" (click)="svc.refresh()" [disabled]="svc.loading()">
           Refresh
         </desktop-button>
-      </div>
-
-      <div class="help-text">
-        <p>
-          These are sentence-segmentation models needed to clean and translate text in each
-          language. A few common ones (English, German, Spanish, Korean) ship bundled and show
-          as <strong>Installed</strong>; download any other language with one click. Downloads
-          run in the background; you can keep working.
-        </p>
+        <span class="help-text">
+          Sentence-segmentation models for cleanup &amp; translation. Common languages ship bundled; download more anytime.
+        </span>
+        <span class="spacer"></span>
+        @if (removableLangs().length > 0) {
+          @if (confirmDeleteAll()) {
+            <span class="danger-confirm">
+              Delete {{ removableLangs().length }} language{{ removableLangs().length === 1 ? '' : 's' }}? (keeps English)
+              <button class="lr-btn danger" (click)="deleteAllLanguages()">Delete</button>
+              <button class="lr-btn ghost" (click)="confirmDeleteAll.set(false)">Cancel</button>
+            </span>
+          } @else {
+            <button class="lr-btn ghost danger-text" (click)="confirmDeleteAll.set(true)">Delete all downloads</button>
+          }
+        }
       </div>
     </div>
   `,
   styles: [`
     @use '../../../creamsicle-desktop/styles/variables' as *;
 
-    .languages-section {
-      display: flex;
-      flex-direction: column;
-      gap: var(--ui-spacing-lg);
-    }
+    .languages-section { display: flex; flex-direction: column; gap: var(--ui-spacing-md); }
 
-    .system-info {
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--ui-spacing-sm) var(--ui-spacing-md);
+    .toolbar { display: flex; align-items: center; gap: var(--ui-spacing-md); }
+
+    .filter-input {
+      flex: 1; min-width: 0;
       padding: var(--ui-spacing-sm) var(--ui-spacing-md);
-      background: var(--bg-elevated);
+      background: var(--bg-input, var(--bg-elevated));
+      border: 1px solid var(--border-input, var(--border-default));
       border-radius: $radius-md;
-      font-size: var(--ui-font-xs);
-      color: var(--text-secondary);
-    }
-
-    .loading-hint {
-      color: var(--text-tertiary);
-      font-size: var(--ui-font-sm);
-    }
-
-    .component-list {
-      display: flex;
-      flex-direction: column;
-      gap: var(--ui-spacing-md);
-      /* ~70 languages — keep the list scrollable so it doesn't blow out the page. */
-      max-height: 480px;
-      overflow-y: auto;
-    }
-
-    .component-card {
-      display: flex;
-      flex-direction: column;
-      gap: var(--ui-spacing-md);
-      padding: var(--ui-spacing-lg);
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      border-radius: $radius-md;
-    }
-
-    .component-head {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: var(--ui-spacing-lg);
-    }
-
-    .component-meta {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .component-name {
-      margin: 0 0 var(--ui-spacing-xs) 0;
-      font-size: var(--ui-font-base);
-      font-weight: $font-weight-semibold;
       color: var(--text-primary);
-    }
-
-    .component-desc {
-      margin: 0;
       font-size: var(--ui-font-sm);
-      color: var(--text-tertiary);
+      &::placeholder { color: var(--text-tertiary); }
+      &:focus { outline: none; border-color: var(--accent); }
     }
 
-    .component-badge {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: var(--ui-spacing-xs);
-      flex-shrink: 0;
+    .free-disk { flex-shrink: 0; font-size: var(--ui-font-xs); color: var(--text-tertiary); white-space: nowrap; }
+
+    .loading-hint, .empty-hint { color: var(--text-tertiary); font-size: var(--ui-font-sm); padding: var(--ui-spacing-sm) 0; margin: 0; }
+
+    /* ~70 languages — keep scrollable so it doesn't blow out the page. */
+    .lang-scroll { display: flex; flex-direction: column; max-height: 460px; overflow-y: auto; }
+
+    .group { display: flex; flex-direction: column; }
+
+    .group-head {
+      display: flex; align-items: center; gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-sm) 0 var(--ui-spacing-xs);
+      font-size: var(--ui-font-xs); font-weight: $font-weight-semibold;
+      text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary);
+      position: sticky; top: 0; background: var(--bg-surface); z-index: 1;
+    }
+    .group-count {
+      font-weight: $font-weight-regular; color: var(--text-tertiary);
+      background: var(--bg-elevated); border-radius: 10px; padding: 0 7px;
     }
 
-    .status-badge {
-      font-size: var(--ui-font-xs);
-      padding: 2px 8px;
-      border-radius: 4px;
-      white-space: nowrap;
-
-      &.installed { background: var(--success-bg); color: var(--success); }
-      &.available { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
-      &.installing { background: var(--bg-elevated); color: var(--text-secondary); }
+    .lang-row {
+      display: flex; align-items: center; gap: var(--ui-spacing-md);
+      padding: 6px var(--ui-spacing-sm);
+      border-bottom: 1px solid var(--border-subtle);
+      min-height: 32px;
+      &:hover { background: var(--bg-elevated); }
+      &:last-child { border-bottom: none; }
     }
 
-    .component-size {
-      font-size: var(--ui-font-xs);
-      color: var(--text-tertiary);
+    .lr-name {
+      flex: 1; min-width: 0; font-size: var(--ui-font-sm); color: var(--text-primary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .lr-size { font-size: var(--ui-font-xs); color: var(--text-tertiary); white-space: nowrap; }
+    .lr-ready { font-size: var(--ui-font-sm); color: var(--success); }
+
+    .lr-progress { flex: 0 0 80px; height: 5px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
+    .lr-bar { height: 100%; background: var(--accent); transition: width $duration-fast $ease-out; }
+    .lr-pct { font-size: var(--ui-font-xs); color: var(--text-secondary); min-width: 34px; text-align: right; }
+
+    .lr-btn {
+      flex-shrink: 0; font-size: var(--ui-font-xs); font-weight: $font-weight-medium;
+      padding: 3px 12px; border-radius: $radius-sm; border: 1px solid transparent; cursor: pointer;
+      &.primary { background: var(--accent); color: #fff; }
+      &.primary:hover:not(:disabled) { background: var(--accent-hover, var(--accent)); }
+      &.primary:disabled { opacity: 0.5; cursor: default; }
+      &.ghost { background: transparent; border-color: var(--border-default); color: var(--text-secondary); }
+      &.ghost:hover:not(:disabled) { color: var(--text-primary); border-color: var(--text-secondary); }
+      &.danger { background: var(--error, #d9534f); color: #fff; }
+      &.danger:hover { filter: brightness(1.08); }
     }
 
-    .install-progress {
-      display: flex;
-      flex-direction: column;
-      gap: var(--ui-spacing-xs);
+    .footer {
+      display: flex; align-items: center; gap: var(--ui-spacing-md);
+      padding-top: var(--ui-spacing-sm); border-top: 1px solid var(--border-subtle);
     }
+    .footer .spacer { flex: 1; }
 
-    .progress-bar {
-      width: 100%;
-      height: 6px;
-      background: var(--bg-elevated);
-      border-radius: 3px;
-      overflow: hidden;
-    }
-
-    .progress-fill {
-      height: 100%;
-      background: var(--accent);
-      transition: width $duration-fast $ease-out;
-    }
-
-    .progress-label {
-      font-size: var(--ui-font-xs);
-      color: var(--text-secondary);
-    }
-
-    .component-actions {
-      display: flex;
-      align-items: center;
-      gap: var(--ui-spacing-md);
-    }
-
-    .action-note {
-      font-size: var(--ui-font-sm);
-      color: var(--text-tertiary);
-
-      &.ok { color: var(--success); }
+    .danger-text { color: var(--error, #d9534f) !important; border-color: transparent !important; }
+    .danger-text:hover { text-decoration: underline; }
+    .danger-confirm {
+      display: inline-flex; align-items: center; gap: var(--ui-spacing-sm);
+      font-size: var(--ui-font-xs); color: var(--text-secondary);
     }
 
     .status-message {
-      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
-      border-radius: $radius-md;
-      font-size: var(--ui-font-sm);
-
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md); border-radius: $radius-md; font-size: var(--ui-font-sm);
       &.error { background: var(--error-bg); color: var(--error); }
     }
 
-    .section-actions {
-      padding-top: var(--ui-spacing-sm);
-    }
-
-    .help-text {
-      font-size: var(--ui-font-sm);
-      color: var(--text-tertiary);
-
-      p { margin: 0; }
-    }
+    .help-text { font-size: var(--ui-font-xs); color: var(--text-tertiary); margin: 0; }
   `],
 })
 export class LanguagesPanelComponent implements OnInit {
   readonly svc = inject(ComponentService);
 
-  /**
-   * Only the downloadable language packs (kind 'language-pack'), sorted so
-   * installed languages appear first, then alphabetically by name.
-   */
+  /** Filter text for the language list. */
+  readonly filter = signal('');
+
+  /** All downloadable language packs (kind 'language-pack'). */
   readonly languages = computed(() =>
-    this.svc.components()
-      .filter((s) => s.component.kind === 'language-pack')
-      .slice()
-      .sort((a, b) => {
-        const aInstalled = a.state === 'installed' ? 0 : 1;
-        const bInstalled = b.state === 'installed' ? 0 : 1;
-        if (aInstalled !== bInstalled) return aInstalled - bInstalled;
-        return a.component.name.localeCompare(b.component.name);
-      }),
+    this.svc.components().filter((s) => s.component.kind === 'language-pack'),
   );
+
+  /** Name-filtered packs. */
+  private readonly filtered = computed(() => {
+    const q = this.filter().trim().toLowerCase();
+    const list = this.languages();
+    if (!q) return list;
+    return list.filter((s) => s.component.name.toLowerCase().includes(q));
+  });
+
+  readonly installedLangs = computed(() =>
+    this.filtered()
+      .filter((s) => s.state === 'installed')
+      .slice()
+      .sort((a, b) => a.component.name.localeCompare(b.component.name)),
+  );
+
+  readonly availableLangs = computed(() =>
+    this.filtered()
+      .filter((s) => s.state !== 'installed')
+      .slice()
+      .sort((a, b) => a.component.name.localeCompare(b.component.name)),
+  );
+
+  /** Downloaded language packs that "delete all" would remove (keeps bundled English). */
+  readonly removableLangs = computed(() =>
+    this.languages().filter((s) => s.state === 'installed' && s.component.id !== 'stanza-en'),
+  );
+
+  readonly confirmDeleteAll = signal(false);
+
+  /** Remove every downloaded language pack except bundled English. */
+  deleteAllLanguages(): void {
+    for (const s of this.removableLangs()) {
+      void this.svc.remove(s.component.id);
+    }
+    this.confirmDeleteAll.set(false);
+  }
 
   ngOnInit(): void {
     this.svc.ensureLoaded();
-  }
-
-  badgeClass(status: ComponentStatus): string {
-    switch (status.state) {
-      case 'installed': return 'installed';
-      case 'installing': return 'installing';
-      default: return 'available';
-    }
-  }
-
-  badgeLabel(status: ComponentStatus): string {
-    switch (status.state) {
-      case 'installed': return 'Installed';
-      case 'installing': return 'Downloading';
-      default: return 'Available';
-    }
-  }
-
-  phaseLabel(phase: string): string {
-    switch (phase) {
-      case 'resolve': return 'Preparing…';
-      case 'download': return 'Downloading…';
-      case 'done': return 'Done';
-      case 'error': return 'Failed';
-      default: return 'Downloading…';
-    }
   }
 
   formatBytes(bytes: number): string {
