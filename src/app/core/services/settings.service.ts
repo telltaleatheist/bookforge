@@ -164,6 +164,14 @@ export class SettingsService {
             default: '',
             placeholder: 'Default: ~/Projects/ebook2audiobook/tmp',
           },
+          {
+            key: 'ttsScratchPath',
+            type: 'path',
+            label: 'TTS Scratch Folder',
+            description: 'Where in-progress TTS sessions are written before being cached into the project. Leave empty for the default: a "<library>-scratch" folder next to your library.',
+            default: '',
+            placeholder: 'Default: next to library folder',
+          },
         ],
       },
       {
@@ -252,7 +260,8 @@ export class SettingsService {
     try {
       const e2aPath = this.get<string>('e2aPath') || '';
       const condaPath = this.get<string>('condaPath') || '';
-      await this.electron.configureE2aPaths({ e2aPath, condaPath });
+      const ttsScratchPath = this.get<string>('ttsScratchPath') || '';
+      await this.electron.configureE2aPaths({ e2aPath, condaPath, ttsScratchPath });
     } catch (err) {
       console.error('[SettingsService] Failed to apply e2a paths:', err);
     }
@@ -327,7 +336,7 @@ export class SettingsService {
     await this.saveSettings();
 
     // Apply e2a path changes if relevant
-    if ('e2aPath' in pending || 'condaPath' in pending) {
+    if ('e2aPath' in pending || 'condaPath' in pending || 'ttsScratchPath' in pending) {
       this.applyE2aPaths();
     }
 
@@ -355,7 +364,7 @@ export class SettingsService {
     this.saveSettings();
 
     // Apply e2a path changes immediately
-    if (key === 'e2aPath' || key === 'condaPath') {
+    if (key === 'e2aPath' || key === 'condaPath' || key === 'ttsScratchPath') {
       this.applyE2aPaths();
     }
   }

@@ -18,6 +18,8 @@ import * as manifestMigration from './manifest-migration';
 import { findEbookConvert } from './ebook-convert-bridge';
 import { applyMetadata } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
+import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
+import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { componentManager } from './components/component-manager';
 import { systemProbe } from './components/system-probe';
@@ -152,6 +154,26 @@ function getLibraryRoot(): string {
     return customLibraryRoot;
   }
   return path.join(app.getPath('documents'), 'BookForge');
+}
+
+/**
+ * Point e2a's temp/session storage at a scratch folder beside the library
+ * root (e.g. /Volumes/Callisto/Shared/BookForge -> BookForge-scratch): same
+ * volume, so caching a finished session into the library is an APFS clone,
+ * but outside the Syncthing-synced library tree so in-progress sessions
+ * never churn sync. Called at startup and whenever the library root changes.
+ */
+function applyE2aScratchDir(): void {
+  // A user-configured scratch path wins; otherwise derive a sibling of the
+  // library root. loadConfig() is safe before app-ready (it only reads a JSON
+  // file under userData, with try/catch fallbacks).
+  const override = loadToolPathsConfig().ttsScratchPath;
+  if (typeof override === 'string' && override.trim()) {
+    setE2aScratchDir(override.trim());
+    return;
+  }
+  const root = getLibraryRoot();
+  setE2aScratchDir(path.join(path.dirname(root), `${path.basename(root)}-scratch`));
 }
 
 // Bookshelf config file path
@@ -1733,6 +1755,7 @@ function setupIpcHandlers(): void {
 
     customLibraryRoot = libraryPath;
     persistLibraryRoot(libraryPath);
+    applyE2aScratchDir();
     // Sync to manifest service
     manifestService.setLibraryBasePath(libraryPath);
     // The bookshelf server resolves the library root dynamically but caches its
@@ -3709,7 +3732,7 @@ function setupIpcHandlers(): void {
   // E2A Path Configuration
   // ─────────────────────────────────────────────────────────────────────────────
 
-  ipcMain.handle('e2a:configure-paths', async (_event, config: { e2aPath?: string; condaPath?: string }) => {
+  ipcMain.handle('e2a:configure-paths', async (_event, config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) => {
     try {
       const { setCondaPath, setE2aPath } = await import('./e2a-paths.js');
       if (config.e2aPath !== undefined) {
@@ -3717,6 +3740,12 @@ function setupIpcHandlers(): void {
       }
       if (config.condaPath !== undefined) {
         setCondaPath(config.condaPath || null);
+      }
+      if (config.ttsScratchPath !== undefined) {
+        const { updateConfig } = await import('./tool-paths.js');
+        updateConfig({ ttsScratchPath: config.ttsScratchPath || undefined });
+        // Re-resolve the scratch dir so the override (or its removal) applies now.
+        applyE2aScratchDir();
       }
       return { success: true };
     } catch (err) {
@@ -9540,8 +9569,11 @@ app.whenReady().then(async () => {
     logger.warn('Failed to cleanup manifest staging dir', { error: (err as Error).message });
   }
 
-  // Evict page render caches for documents not opened in 30 days.
-  // Delayed so the sweep's disk I/O doesn't compete with app launch.
+  // Evict page render caches for documents not opened in 30 days, and sweep
+  // stale e2a TTS sessions (e2a never garbage-collects in headless mode, so
+  // failed/cancelled sessions accumulate forever). Delayed so the sweeps' disk
+  // I/O doesn't compete with app launch, which also guarantees this runs after
+  // applyE2aScratchDir() below has resolved the active scratch dir.
   setTimeout(() => {
     void (async () => {
       try {
@@ -9555,6 +9587,67 @@ app.whenReady().then(async () => {
         }
       } catch (err) {
         logger.warn('Render cache eviction failed', { error: (err as Error).message });
+      }
+
+      // Sweep ebook-* session folders in the active scratch dir older than 30
+      // days. Matches the render-cache policy and safely exceeds the user's
+      // 1-2 week book lifecycle (older sessions aren't resumable in practice).
+      try {
+        const tmpDir = getDefaultE2aTmpPath();
+        const STALE_MS = 30 * 24 * 60 * 60 * 1000;
+        const now = Date.now();
+        let entries: import('fs').Dirent[] = [];
+        try {
+          entries = await fs.readdir(tmpDir, { withFileTypes: true });
+        } catch {
+          entries = []; // tmp dir may not exist yet — nothing to sweep
+        }
+
+        const dirSize = async (dir: string): Promise<number> => {
+          let total = 0;
+          let kids: import('fs').Dirent[];
+          try {
+            kids = await fs.readdir(dir, { withFileTypes: true });
+          } catch {
+            return 0;
+          }
+          for (const kid of kids) {
+            const full = path.join(dir, kid.name);
+            try {
+              if (kid.isDirectory()) {
+                total += await dirSize(full);
+              } else {
+                total += (await fs.stat(full)).size;
+              }
+            } catch { /* file vanished mid-walk */ }
+          }
+          return total;
+        };
+
+        let removed = 0;
+        let freedBytes = 0;
+        for (const entry of entries) {
+          if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
+          const full = path.join(tmpDir, entry.name);
+          try {
+            const stat = await fs.stat(full);
+            if (now - stat.mtimeMs < STALE_MS) continue;
+            freedBytes += await dirSize(full);
+            await fs.rm(full, { recursive: true, force: true });
+            removed++;
+          } catch (err) {
+            logger.warn('Failed to sweep stale TTS session', { dir: full, error: (err as Error).message });
+          }
+        }
+        if (removed > 0) {
+          logger.info('Swept stale TTS sessions', {
+            sessions: removed,
+            freedMB: Math.round(freedBytes / 1024 / 1024),
+            scratchDir: tmpDir,
+          });
+        }
+      } catch (err) {
+        logger.warn('Stale TTS session sweep failed', { error: (err as Error).message });
       }
     })();
   }, 15_000);
@@ -9606,6 +9699,7 @@ app.whenReady().then(async () => {
     manifestService.setLibraryBasePath(persistedRoot);
     console.log('[Startup] Restored persisted library root:', persistedRoot);
   }
+  applyE2aScratchDir();
 
   // Auto-start bookshelf server if configured
   await autoStartBookshelf();

@@ -28,6 +28,10 @@ export interface ToolPathsConfig {
   // ebook2audiobook
   e2aPath?: string;
 
+  // TTS scratch dir: where in-progress e2a sessions are written before being
+  // cached into the project. Empty = derived sibling of the library root.
+  ttsScratchPath?: string;
+
   // FFmpeg
   ffmpegPath?: string;
 

@@ -39,6 +39,19 @@ import {
 
 let runtimeCondaPath: string | null = null;
 let runtimeE2aPath: string | null = null;
+let e2aScratchDir: string | null = null;
+
+/**
+ * Set the machine-local scratch dir for e2a temp/session storage. main.ts
+ * derives this from the library root (a sibling of the library folder, so it
+ * shares the volume — session caching becomes an APFS/ReFS clone — but stays
+ * outside the Syncthing-synced tree). Passed to every e2a spawn as
+ * E2A_TMP_DIR, which lib/conf.py honors over its <e2a_root>/tmp default.
+ */
+export function setE2aScratchDir(dir: string | null): void {
+  e2aScratchDir = dir && dir.trim() ? dir.trim() : null;
+  console.log('[E2A-PATHS] e2a scratch dir configured:', e2aScratchDir || '(default <e2a>/tmp)');
+}
 
 /**
  * Set the conda executable path (runtime override)
@@ -87,9 +100,22 @@ export function getDefaultE2aPath(): string {
 }
 
 /**
- * Get the default tmp path for ebook2audiobook sessions
+ * Get the tmp path for ebook2audiobook sessions.
+ *
+ * Prefers the configured scratch dir (see setE2aScratchDir). The scratch
+ * lives on the library volume, which may be an external drive that isn't
+ * mounted yet — in that case fall back to <e2a>/tmp for this call rather
+ * than failing spawns that don't need the library (e.g. streaming TTS).
  */
 export function getDefaultE2aTmpPath(): string {
+  if (e2aScratchDir) {
+    const volume = path.dirname(e2aScratchDir);
+    if (fs.existsSync(volume)) {
+      fs.mkdirSync(e2aScratchDir, { recursive: true });
+      return e2aScratchDir;
+    }
+    console.warn(`[E2A-PATHS] Scratch dir volume not mounted (${volume}), using default e2a tmp for this call`);
+  }
   return path.join(getDefaultE2aPath(), 'tmp');
 }
 
@@ -377,6 +403,13 @@ export function buildCondaSpawnEnv(extra: Record<string, string> = {}): Record<s
   };
 
   const pathKey = Object.keys(env).find(k => k.toUpperCase() === 'PATH') || 'PATH';
+
+  // Relocate e2a's temp/session storage to the configured scratch dir.
+  // getDefaultE2aTmpPath() resolves the scratch (or the <e2a>/tmp default
+  // when none is set / its volume is offline); conf.py in the e2a fork
+  // honors E2A_TMP_DIR. Explicit `extra.E2A_TMP_DIR` still wins (spread above
+  // happens first, so re-apply it).
+  env.E2A_TMP_DIR = extra.E2A_TMP_DIR || getDefaultE2aTmpPath();
 
   // e2a's Python resolves ffmpeg/ffprobe from PATH (the conda env doesn't ship
   // them). A packaged app launched from Finder/Explorer inherits a minimal PATH,

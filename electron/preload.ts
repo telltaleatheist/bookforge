@@ -1106,7 +1106,7 @@ export interface ElectronAPI {
     updateConfig: (updates: { externalAudiobooksDir?: string }) => Promise<{ success: boolean; error?: string }>;
   };
   e2a: {
-    configurePaths: (config: { e2aPath?: string; condaPath?: string }) => Promise<{ success: boolean; error?: string }>;
+    configurePaths: (config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) => Promise<{ success: boolean; error?: string }>;
   };
   toolPaths: {
     getConfig: () => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
@@ -2396,7 +2396,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('bookshelf:updateConfig', updates),
   },
   e2a: {
-    configurePaths: (config: { e2aPath?: string; condaPath?: string }) =>
+    configurePaths: (config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) =>
       ipcRenderer.invoke('e2a:configure-paths', config),
   },
   toolPaths: {

@@ -85,9 +85,6 @@ function buildWslAssemblyCommand(
   return `${cdCommand} && ${condaCommand}`;
 }
 
-// Default E2A tmp path (uses cross-platform detection)
-const DEFAULT_E2A_TMP_PATH = getDefaultE2aTmpPath();
-
 // The e2a app path (uses cross-platform detection)
 const E2A_APP_PATH = getDefaultE2aPath();
 
@@ -306,7 +303,7 @@ function cleanupStagingDir(jobId: string): void {
  */
 export async function scanE2aTmpFolder(customTmpPath?: string): Promise<{ sessions: E2aSession[]; tmpPath: string }> {
   const sessions: E2aSession[] = [];
-  const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
+  const tmpPath = customTmpPath || getDefaultE2aTmpPath();
 
   // Scan e2a tmp folder for active sessions (async I/O to avoid blocking main process)
   try {
@@ -514,7 +511,7 @@ async function parseChapterSentences(processDir: string): Promise<any | null> {
  * @param customTmpPath - Optional custom path to the e2a tmp folder
  */
 export async function getSession(sessionId: string, customTmpPath?: string): Promise<E2aSession | null> {
-  const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
+  const tmpPath = customTmpPath || getDefaultE2aTmpPath();
   const sessionDir = path.join(tmpPath, `ebook-${sessionId}`);
 
   try {
@@ -531,7 +528,7 @@ export async function getSession(sessionId: string, customTmpPath?: string): Pro
  * If the directory doesn't exist, returns true (already gone = success).
  */
 export async function deleteSession(sessionId: string, customTmpPath?: string): Promise<boolean> {
-  const targetDir = path.join(customTmpPath || DEFAULT_E2A_TMP_PATH, `ebook-${sessionId}`);
+  const targetDir = path.join(customTmpPath || getDefaultE2aTmpPath(), `ebook-${sessionId}`);
 
   try {
     await fs.promises.access(targetDir);
@@ -670,7 +667,7 @@ export async function startReassembly(
   const reassemblyLog = getReassemblyLogger();
 
   // Derive e2a app path from tmp path (parent directory)
-  const tmpPath = config.e2aTmpPath || DEFAULT_E2A_TMP_PATH;
+  const tmpPath = config.e2aTmpPath || getDefaultE2aTmpPath();
   const e2aPath = getE2aAppPath(tmpPath);
 
   reassemblyLog.info('Starting reassembly', {
@@ -1600,7 +1597,7 @@ function sendProgress(
  * @param customTmpPath - Optional custom path to the e2a tmp folder
  */
 export function isE2aAvailable(customTmpPath?: string): boolean {
-  const tmpPath = customTmpPath || DEFAULT_E2A_TMP_PATH;
+  const tmpPath = customTmpPath || getDefaultE2aTmpPath();
   const e2aPath = getE2aAppPath(tmpPath);
   return fs.existsSync(e2aPath) && fs.existsSync(path.join(e2aPath, 'app.py'));
 }

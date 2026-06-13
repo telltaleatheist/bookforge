@@ -528,7 +528,13 @@ export async function cacheSessionToProject(
         proc.on('error', reject);
       });
     } else {
-      await fs.cp(sessionDir, tempDestDir, { recursive: true });
+      // Clone-on-write where the filesystem supports it (APFS/ReFS) — with the
+      // scratch dir on the library volume this is near-instant regardless of
+      // session size. Falls back to a regular copy automatically elsewhere.
+      await fs.cp(sessionDir, tempDestDir, {
+        recursive: true,
+        mode: fsSync.constants.COPYFILE_FICLONE,
+      });
     }
 
     // Rename temp dir to final name
@@ -1208,6 +1214,7 @@ export interface ParallelConversionResult {
 
 import {
   getDefaultE2aPath,
+  getDefaultE2aTmpPath,
   getPythonInvocation,
   PythonInvocation,
   shouldUseWsl2ForAllTts,
@@ -1652,8 +1659,10 @@ export async function prepareSession(
     sessionDirForReading = wslPathToWindows(sessionDir);
     console.log(`[PARALLEL-TTS] WSL session dir: ${sessionDir} -> ${sessionDirForReading}`);
   } else {
-    // Session in Windows e2a path
-    sessionDir = path.join(getDefaultE2aPath(), 'tmp', `ebook-${sessionId}`);
+    // Native session dir — the configured scratch, or <e2a>/tmp by default.
+    // Must match where the spawned e2a writes it (buildCondaSpawnEnv passes
+    // the same resolution as E2A_TMP_DIR).
+    sessionDir = path.join(getDefaultE2aTmpPath(), `ebook-${sessionId}`);
     sessionDirForReading = sessionDir;
   }
 
@@ -3731,9 +3740,16 @@ function normalizePathForComparison(p: string): string {
 function getSessionTmpDirs(): string[] {
   const dirs: string[] = [];
 
-  // Always include the Windows/native e2a tmp dir
-  const nativeTmp = path.join(getDefaultE2aPath(), 'tmp');
+  // The active tmp dir (configured scratch, or <e2a>/tmp)
+  const nativeTmp = getDefaultE2aTmpPath();
   dirs.push(nativeTmp);
+
+  // Also search the legacy <e2a>/tmp so sessions created before the scratch
+  // dir was configured stay resumable
+  const legacyTmp = path.join(getDefaultE2aPath(), 'tmp');
+  if (legacyTmp !== nativeTmp) {
+    dirs.push(legacyTmp);
+  }
 
   // On Windows, also include the WSL e2a tmp dir if WSL TTS is enabled
   if (os.platform() === 'win32' && (shouldUseWsl2ForAllTts() || shouldUseWsl2ForOrpheus())) {

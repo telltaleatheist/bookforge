@@ -2846,7 +2846,7 @@ export class ElectronService {
    * Configure ebook2audiobook paths (e2a installation and conda executable)
    * Called on app startup with values from settings
    */
-  async configureE2aPaths(config: { e2aPath?: string; condaPath?: string }): Promise<boolean> {
+  async configureE2aPaths(config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }): Promise<boolean> {
     if (this.isElectron && (window as any).electron.e2a) {
       try {
         const result = await (window as any).electron.e2a.configurePaths(config);
