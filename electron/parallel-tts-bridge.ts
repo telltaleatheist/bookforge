@@ -25,10 +25,13 @@ import { getTTSLogger } from './rolling-logger';
 // Cap stderr buffers to prevent OOM on large books (e.g. 7983 sentences producing
 // megabytes of FFmpeg output). Only the tail is needed for error diagnostics.
 const MAX_STDERR_BYTES = 10 * 1024; // 10 KB
-function appendCapped(buf: string, chunk: string): string {
+// Smaller per-worker cap for stderr tails surfaced in error messages — keeps
+// per-progress-event payloads small and the UI message readable.
+const MAX_WORKER_STDERR_TAIL_BYTES = 2 * 1024; // 2 KB
+function appendCapped(buf: string, chunk: string, maxBytes: number = MAX_STDERR_BYTES): string {
   buf += chunk;
-  if (buf.length > MAX_STDERR_BYTES) {
-    buf = buf.slice(-MAX_STDERR_BYTES);
+  if (buf.length > maxBytes) {
+    buf = buf.slice(-maxBytes);
   }
   return buf;
 }
@@ -1101,6 +1104,12 @@ export interface WorkerState {
   startedAt?: number;          // Timestamp when worker started
   lastProgressAt?: number;     // Timestamp of last progress update
   hasShownProgress?: boolean;  // Has worker shown any converting progress
+  // Diagnostics — NOT serialized to the renderer (see serializeWorkers); only
+  // appended to worker.error on non-zero exit. Capped at MAX_WORKER_STDERR_TAIL_BYTES.
+  stderrTail?: string;         // Tail of non-progress stderr lines for crash diagnosis
+  // Timestamp of last HuggingFace model-download activity. Used by the startup
+  // watchdog so an actively-downloading worker isn't killed at the startup timeout.
+  lastDownloadActivityAt?: number;
 }
 
 export interface PrepInfo {
@@ -1261,6 +1270,16 @@ let useLightweightWorker = true;
 // Watchdog configuration - detect stuck workers
 const WORKER_STARTUP_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes to start showing progress
 const WORKER_PROGRESS_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes without progress = stuck
+// Prep watchdog — kill prep if it emits no output for this long (likely a hung
+// model download). Generous because first-run downloads can legitimately stall briefly.
+const PREP_STALL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes of silence = stalled
+
+// First-run HuggingFace model downloads print lines like
+//   "Fetching 17 files:  12%|..."  /  "model.safetensors:  34%|..."  /  "Downloading ..."
+// Detecting these lets us (a) show a "downloading model" note and (b) avoid killing
+// a slow-but-alive worker/prep at the startup timeout.
+const MODEL_DOWNLOAD_RE = /downloading|\.safetensors|\.bin(?:\s|:|$)|huggingface|fetching \d+ files/i;
+const MODEL_DOWNLOAD_NOTE = 'Downloading TTS model (first run — this can take a while)…';
 
 /**
  * Initialize the logger for parallel TTS bridge
@@ -1298,6 +1317,9 @@ interface ConversionSession {
   persistentState?: PersistentSessionState;
   // State save timer
   stateSaveTimer?: NodeJS.Timeout;
+  // First-run model download note — surfaced as the progress message while
+  // workers download the TTS model and no sentences have completed yet.
+  downloadNote?: string;
 }
 
 // Persistent session state - saved to disk for resume capability
@@ -1640,7 +1662,8 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
  */
 export async function prepareSession(
   epubPath: string,
-  settings: ParallelTtsSettings
+  settings: ParallelTtsSettings,
+  prepJobId?: string  // Used only to address first-run model-download progress notes
 ): Promise<PrepInfo> {
   const appPath = path.join(getDefaultE2aPath(), 'app.py');
   const sessionId = crypto.randomUUID();
@@ -1720,9 +1743,17 @@ export async function prepareSession(
 
   console.log('[PARALLEL-TTS] Running prep with:', args.join(' '));
 
+  // Hoisted OUTSIDE the promise so the tails remain visible after it settles —
+  // needed for the exit-0 validation below and the stall-timeout reject message.
+  let stderr = '';
+  let lastStdoutTail = '';
+  let downloadNoteEmitted = false;
+
   // Run the prep command
   await new Promise<void>((resolve, reject) => {
-    let stderr = '';
+    let lastOutputAt = Date.now();
+    let stallTimer: NodeJS.Timeout | null = null;
+    const clearStallTimer = () => { if (stallTimer) { clearInterval(stallTimer); stallTimer = null; } };
 
     const prepProcess = spawnWithWslSupport(
       pythonInvocation(settings.ttsEngine).command,
@@ -1737,6 +1768,7 @@ export async function prepareSession(
 
     // Log stdout for visibility (but don't parse it)
     prepProcess.stdout?.on('data', (data: Buffer) => {
+      lastOutputAt = Date.now();
       const text = data.toString().trim();
       if (text) {
         // Only log non-JSON lines (skip the massive prep info JSON)
@@ -1744,11 +1776,13 @@ export async function prepareSession(
           const logLine = `[PREP] ${text.substring(0, 500)}`;
           console.log('[PARALLEL-TTS] Prep:', text.substring(0, 200));
           writeWorkerLog(logLine);
+          lastStdoutTail = appendCapped(lastStdoutTail, text + '\n', MAX_WORKER_STDERR_TAIL_BYTES);
         }
       }
     });
 
     prepProcess.stderr?.on('data', (data: Buffer) => {
+      lastOutputAt = Date.now();
       stderr = appendCapped(stderr, data.toString());
       // Log stderr for visibility
       const text = data.toString().trim();
@@ -1757,9 +1791,40 @@ export async function prepareSession(
         console.log('[PARALLEL-TTS] Prep stderr:', text.substring(0, 200));
         writeWorkerLog(logLine);
       }
+      // First-run model download visibility: emit a 'preparing' note once when the
+      // download starts (throttled — only on the unset→set transition).
+      if (!downloadNoteEmitted && prepJobId && MODEL_DOWNLOAD_RE.test(text) && mainWindow) {
+        downloadNoteEmitted = true;
+        const progress: AggregatedProgress = {
+          phase: 'preparing',
+          totalSentences: 0,
+          completedSentences: 0,
+          completedInSession: 0,
+          percentage: 0,
+          activeWorkers: 0,
+          workers: [],
+          estimatedRemaining: 0,
+          message: MODEL_DOWNLOAD_NOTE
+        };
+        mainWindow.webContents.send('parallel-tts:progress', { jobId: prepJobId, progress });
+      }
     });
 
+    // Stall watchdog: kill prep if it goes silent (likely a hung model download).
+    stallTimer = setInterval(() => {
+      if (Date.now() - lastOutputAt > PREP_STALL_TIMEOUT_MS) {
+        clearStallTimer();
+        console.error('[PARALLEL-TTS] Prep stalled — no output for 10 minutes, killing prep process');
+        killWslProcessTree(prepProcess, 'prep', settings.ttsEngine);
+        const tail = stderr.trim().slice(-500);
+        reject(new Error(
+          `Prep stalled — no output for 10 minutes (possibly a hung model download). Last stderr: ${tail}`
+        ));
+      }
+    }, 30 * 1000);
+
     prepProcess.on('close', (code: number | null) => {
+      clearStallTimer();
       if (code === 0) {
         resolve();
       } else {
@@ -1767,23 +1832,45 @@ export async function prepareSession(
       }
     });
 
-    prepProcess.on('error', reject);
+    prepProcess.on('error', (err) => {
+      clearStallTimer();
+      reject(err);
+    });
   });
 
-  // Read the session-state.json file from the process subdirectory
-  // Use sessionDirForReading which is a Windows-accessible path (UNC for WSL paths)
-  const entries = await fs.readdir(sessionDirForReading, { withFileTypes: true });
-  const processDir = entries.find(e => e.isDirectory());
-  if (!processDir) {
-    throw new Error(`No process directory found in ${sessionDirForReading}`);
-  }
+  // Prep exited 0 — validate it actually produced a usable session. Calibre can die
+  // silently on some filesystems (e.g. ExFAT) yet leave exit code 0, producing no
+  // session dir / empty state. Surface a clear error instead of a cryptic ENOENT.
+  let state: any;
+  let processDirForReading: string;
+  try {
+    // Read the session-state.json file from the process subdirectory
+    // Use sessionDirForReading which is a Windows-accessible path (UNC for WSL paths)
+    const entries = await fs.readdir(sessionDirForReading, { withFileTypes: true });
+    const processDir = entries.find(e => e.isDirectory());
+    if (!processDir) {
+      throw new Error(`No process directory found in ${sessionDirForReading}`);
+    }
 
-  // Build Windows-accessible paths from sessionDirForReading
-  // The session-state.json contains WSL-native paths, but we need Windows UNC paths for file operations
-  const processDirForReading = path.join(sessionDirForReading, processDir.name);
-  const statePath = path.join(processDirForReading, 'session-state.json');
-  const stateContent = await fs.readFile(statePath, 'utf-8');
-  const state = JSON.parse(stateContent);
+    // Build Windows-accessible paths from sessionDirForReading
+    // The session-state.json contains WSL-native paths, but we need Windows UNC paths for file operations
+    processDirForReading = path.join(sessionDirForReading, processDir.name);
+    const statePath = path.join(processDirForReading, 'session-state.json');
+    const stateContent = await fs.readFile(statePath, 'utf-8');
+    state = JSON.parse(stateContent);
+
+    if (!state || state.total_sentences === 0 || !Array.isArray(state.chapters) || state.chapters.length === 0) {
+      throw new Error(`session-state.json has no sentences/chapters (total_sentences=${state?.total_sentences})`);
+    }
+  } catch (err) {
+    const stdoutTail = lastStdoutTail.trim().slice(-300);
+    const stderrTail = stderr.trim().slice(-300);
+    throw new Error(
+      `Prep exited successfully but produced no usable session — the ebook conversion step ` +
+      `(Calibre) may have failed silently. Underlying error: ${err instanceof Error ? err.message : String(err)}. ` +
+      `Last prep output: ${stdoutTail} | stderr: ${stderrTail}`
+    );
+  }
 
   const prepInfo: PrepInfo = {
     sessionId: state.session_id,
@@ -2043,7 +2130,20 @@ function startWorker(
             startupTime: Math.round((Date.now() - (worker.startedAt || Date.now())) / 1000)
           }).catch(() => {});
         }
+        // Real sentence progress arrived — clear any first-run download note.
+        if (session.downloadNote) session.downloadNote = undefined;
         emitProgress(session);
+        continue;
+      }
+
+      // Detect first-run model downloads on stdout too (keeps the watchdog alive).
+      if (MODEL_DOWNLOAD_RE.test(line)) {
+        worker.lastProgressAt = Date.now();
+        worker.lastDownloadActivityAt = Date.now();
+        if (!session.downloadNote) {
+          session.downloadNote = MODEL_DOWNLOAD_NOTE;
+          emitProgress(session);
+        }
       }
     }
   });
@@ -2070,7 +2170,29 @@ function startWorker(
             startupTime: Math.round((Date.now() - (worker.startedAt || Date.now())) / 1000)
           }).catch(() => {});
         }
+        // Real sentence progress arrived — clear any first-run download note.
+        if (session.downloadNote) session.downloadNote = undefined;
         emitProgress(session);
+        continue;
+      }
+
+      // Detect first-run HuggingFace model downloads so (a) the watchdog doesn't
+      // kill a slow-but-alive download and (b) the UI shows a "downloading" note.
+      if (MODEL_DOWNLOAD_RE.test(line)) {
+        worker.lastProgressAt = Date.now();
+        worker.lastDownloadActivityAt = Date.now();
+        if (!session.downloadNote) {
+          session.downloadNote = MODEL_DOWNLOAD_NOTE;
+          emitProgress(session);
+        }
+        continue;
+      }
+
+      // Capture non-progress stderr for crash diagnosis (surfaced in worker.error
+      // on non-zero exit). Skip progress-bar lines to keep the tail signal-dense.
+      const trimmed = line.trim();
+      if (!trimmed.includes('━') && !/^\s*\d+%\|/.test(line)) {
+        worker.stderrTail = appendCapped(worker.stderrTail || '', trimmed + '\n', MAX_WORKER_STDERR_TAIL_BYTES);
       }
     }
   });
@@ -2107,6 +2229,12 @@ function startWorker(
     } else {
       worker.status = 'error';
       worker.error = `Worker exited with code ${code}`;
+      // Append the tail of recent stderr so "All workers failed: ..." is actually
+      // diagnosable (AF_UNIX crashes, Python tracebacks, etc.).
+      if (worker.stderrTail && worker.stderrTail.trim()) {
+        const tail = worker.stderrTail.trim().slice(-500).replace(/\s*\n+\s*/g, ' | ').trim();
+        if (tail) worker.error += `. Last output: ${tail}`;
+      }
       logger.logError(session.jobId, `Worker ${workerId} failed`, new Error(`Exit code ${code}`), {
         duration,
         hadProgress: worker.hasShownProgress,
@@ -2275,7 +2403,13 @@ async function checkForStuckWorkers(session: ConversionSession): Promise<void> {
 
     // Check if worker has been running but never showed progress
     if (!worker.hasShownProgress && worker.startedAt) {
-      const timeSinceStart = now - worker.startedAt;
+      // An actively-downloading worker (first run) is alive even without sentence
+      // progress — measure the startup timeout from its last download activity so
+      // a slow 3GB HuggingFace download isn't killed at the 10-minute mark.
+      const effectiveStart = worker.lastDownloadActivityAt
+        ? Math.max(worker.startedAt, worker.lastDownloadActivityAt)
+        : worker.startedAt;
+      const timeSinceStart = now - effectiveStart;
       const minutesElapsed = Math.round(timeSinceStart / 1000 / 60);
       const timeoutMinutes = Math.round(WORKER_STARTUP_TIMEOUT_MS / 1000 / 60);
       if (timeSinceStart > WORKER_STARTUP_TIMEOUT_MS) {
@@ -2326,6 +2460,7 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
   worker.error = undefined;
   worker.completedSentences = 0;
   worker.currentSentence = worker.sentenceStart;
+  worker.stderrTail = undefined;
 
   // Emit progress immediately to clear error state from UI
   emitProgress(session);
@@ -2957,6 +3092,31 @@ const MIN_SESSION_TIME_FOR_ETA = 10; // Wait at least 10 seconds before showing 
 const lastStateSave: Map<string, { sentences: number; time: number }> = new Map();
 const STATE_SAVE_SENTENCE_INTERVAL = 10; // Save state every 10 sentences
 
+/**
+ * Emit a terminal failure for a job that fails BEFORE a ConversionSession with
+ * prepInfo exists (e.g. missing outputDir, prep crash, bad resume info). These
+ * early-return paths can't use emitComplete (which requires session.prepInfo), so
+ * the renderer's event-based completion listener would otherwise never fire and
+ * the job would hang in "running" forever.
+ */
+function emitJobFailure(jobId: string, error: string): void {
+  if (!mainWindow) return;
+  const progress: AggregatedProgress = {
+    phase: 'error',
+    totalSentences: 0,
+    completedSentences: 0,
+    completedInSession: 0,
+    percentage: 0,
+    activeWorkers: 0,
+    workers: [],
+    estimatedRemaining: 0,
+    message: error,
+    error
+  };
+  mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
+  mainWindow.webContents.send('parallel-tts:complete', { jobId, success: false, error });
+}
+
 function emitProgress(session: ConversionSession): void {
   if (!mainWindow || !session.prepInfo) return;
 
@@ -3055,9 +3215,11 @@ function emitProgress(session: ConversionSession): void {
     activeWorkers,
     workers: serializeWorkers(session.workers) as WorkerState[],
     estimatedRemaining,
-    message: session.isResumeJob
-      ? `Resuming: ${sentencesDoneInSession} new${rateDisplay}`
-      : `${activeWorkers} workers${rateDisplay}`,
+    message: (session.downloadNote && sentencesDoneInSession === 0)
+      ? session.downloadNote
+      : session.isResumeJob
+        ? `Resuming: ${sentencesDoneInSession} new${rateDisplay}`
+        : `${activeWorkers} workers${rateDisplay}`,
     // Historical data for accurate elapsed time display
     totalElapsedSeconds,
     historicalRate: session.persistentState?.historicalSentencesPerMinute
@@ -3255,6 +3417,7 @@ export async function startParallelConversion(
     console.error('[PARALLEL-TTS]', error);
     await logger.failJob(jobId, error);
     stopPowerBlock();
+    emitJobFailure(jobId, error);
     return { success: false, error };
   }
 
@@ -3272,7 +3435,7 @@ export async function startParallelConversion(
   // Prepare the session first
   let prepInfo: PrepInfo;
   try {
-    prepInfo = await prepareSession(config.epubPath, config.settings);
+    prepInfo = await prepareSession(config.epubPath, config.settings, jobId);
     await logger.log('INFO', jobId, 'Prep complete', {
       totalSentences: prepInfo.totalSentences,
       totalChapters: prepInfo.totalChapters,
@@ -3283,6 +3446,7 @@ export async function startParallelConversion(
     console.error('[PARALLEL-TTS]', error);
     await logger.failJob(jobId, error);
     stopPowerBlock();
+    emitJobFailure(jobId, error);
     return { success: false, error };
   }
 
@@ -4406,7 +4570,9 @@ export async function resumeParallelConversion(
   console.log(`[PARALLEL-TTS] Missing ${resumeInfo.missingSentences} of ${resumeInfo.totalSentences} sentences`);
 
   if (!resumeInfo.success) {
-    return { success: false, error: resumeInfo.error || 'Resume info invalid' };
+    const error = resumeInfo.error || 'Resume info invalid';
+    emitJobFailure(jobId, error);
+    return { success: false, error };
   }
 
   // Check if we have all required fields - if not, re-fetch from fast check
@@ -4425,11 +4591,15 @@ export async function resumeParallelConversion(
       console.log('[PARALLEL-TTS] Re-fetching from epubPath:', config.epubPath);
       freshInfo = await checkResumeStatusFast(config.epubPath);
     } else {
-      return { success: false, error: 'Cannot re-fetch resume info: no processDir or epubPath available' };
+      const error = 'Cannot re-fetch resume info: no processDir or epubPath available';
+      emitJobFailure(jobId, error);
+      return { success: false, error };
     }
 
     if (!freshInfo.success) {
-      return { success: false, error: freshInfo.error || 'Failed to re-fetch resume info' };
+      const error = freshInfo.error || 'Failed to re-fetch resume info';
+      emitJobFailure(jobId, error);
+      return { success: false, error };
     }
     // Merge fresh info into resumeInfo
     resumeInfo = { ...resumeInfo, ...freshInfo };
@@ -4449,6 +4619,7 @@ export async function resumeParallelConversion(
   } else {
     const error = 'Output directory not configured. Please set the audiobook output folder in Settings.';
     console.error('[PARALLEL-TTS]', error);
+    emitJobFailure(jobId, error);
     return { success: false, error };
   }
 

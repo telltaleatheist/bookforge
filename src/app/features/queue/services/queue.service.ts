@@ -2747,12 +2747,37 @@ export class QueueService {
             });
           });
 
+          // Capture the invoke result so we can detect failures that occur BEFORE
+          // the bridge can emit parallel-tts:complete (e.g. missing outputDir, prep
+          // crash). Those used to leave the job hung in "running" forever because
+          // ttsComplete never resolved. The bridge now emits complete for those via
+          // emitJobFailure; this is the belt-and-suspenders inline fallback.
+          let invokeResult: { success: boolean; data?: any; error?: string };
           if (shouldResume && resumeCheckResult) {
             console.log(`[QUEUE] Resuming TTS conversion from ${resumeCheckResult.completedSentences} sentences`);
-            await electron.parallelTts.resumeConversion(job.id, parallelConfig, resumeCheckResult);
+            invokeResult = await electron.parallelTts.resumeConversion(job.id, parallelConfig, resumeCheckResult);
           } else {
             // Start fresh conversion
-            await electron.parallelTts.startConversion(job.id, parallelConfig);
+            invokeResult = await electron.parallelTts.startConversion(job.id, parallelConfig);
+          }
+
+          // `data` is the bridge's ParallelConversionResult ({ success, error? }).
+          const bridgeResult = invokeResult?.data ?? invokeResult;
+          if (invokeResult?.success === false || bridgeResult?.success === false) {
+            const errMsg = bridgeResult?.error || invokeResult?.error || 'TTS conversion failed to start';
+            console.warn(`[QUEUE] TTS invoke reported failure for jobId=${job.id}: ${errMsg}`);
+            // The bridge normally emits parallel-tts:complete for failures (handled by
+            // the constructor listener, which owns completion). Wait briefly; if the
+            // event never arrives (e.g. the IPC handler threw before the bridge could
+            // emit), finalize inline. handleJobComplete is idempotent if both fire.
+            const settled = await Promise.race([
+              ttsComplete,
+              new Promise(res => setTimeout(() => res(null), 3000))
+            ]);
+            if (!settled) {
+              await this.handleJobComplete({ jobId: job.id, success: false, error: errMsg });
+            }
+            return;
           }
 
           // Wait for TTS to actually finish (the invoke above returns immediately).
