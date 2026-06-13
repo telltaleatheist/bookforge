@@ -33,6 +33,13 @@ $cyan-900: #164e63;
   --accent-subtle: rgba(6, 182, 212, 0.1);
   --accent-glow: 0 0 20px rgba(6, 182, 212, 0.3);
 
+  // Compatibility aliases — token names used across feature components that map
+  // onto the canonical palette above. Defining them here fixes the phantom-token
+  // gaps (accent-primary / accent-danger / bg-hover) app-wide in one place.
+  --accent-primary: #{$cyan-500};
+  --accent-danger: #{$error-500};
+  --bg-hover: rgba(24, 23, 21, 0.04);
+
   // -------------------------------------------------------------------------
   // Background Layers
   // -------------------------------------------------------------------------
@@ -145,6 +152,12 @@ $cyan-900: #164e63;
   --accent-muted: rgba(6, 182, 212, 0.2);
   --accent-subtle: rgba(6, 182, 212, 0.12);
   --accent-glow: 0 0 20px rgba(34, 211, 238, 0.4);
+
+  // Compatibility aliases (see light theme) — accent-primary / accent-danger /
+  // bg-hover map onto the canonical dark palette.
+  --accent-primary: #{$cyan-400};
+  --accent-danger: #f87171;
+  --bg-hover: rgba(255, 255, 255, 0.05);
 
   // -------------------------------------------------------------------------
   // Background Layers

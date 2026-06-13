@@ -202,11 +202,11 @@ interface SetupStep {
       transition: background 0.15s ease;
     }
     .dot.done {
-      background: var(--accent-primary, #ff8a3d);
+      background: var(--accent);
       opacity: 0.5;
     }
     .dot.active {
-      background: var(--accent-primary, #ff8a3d);
+      background: var(--accent);
     }
 
     .engine-banner {
@@ -220,8 +220,8 @@ interface SetupStep {
       line-height: 1.4;
     }
     .engine-banner.preparing {
-      background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
-      border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, var(--border-default));
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+      border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border-default));
       color: var(--text-secondary);
     }
     .engine-banner.ready {
@@ -234,8 +234,8 @@ interface SetupStep {
       width: 14px;
       height: 14px;
       flex: 0 0 auto;
-      border: 2px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
-      border-top-color: var(--accent-primary);
+      border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+      border-top-color: var(--accent);
       border-radius: 50%;
       animation: engineSpin 0.8s linear infinite;
     }
@@ -264,13 +264,13 @@ interface SetupStep {
       gap: 8px;
       font-size: 13px;
       color: var(--text-primary, #f0f0f0);
-      background: color-mix(in srgb, var(--accent-primary, #ff8a3d) 14%, transparent);
-      border: 1px solid color-mix(in srgb, var(--accent-primary, #ff8a3d) 40%, transparent);
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+      border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
       border-radius: 8px;
       padding: 6px 12px;
     }
     .ai-ready-note .check {
-      color: var(--accent-primary, #ff8a3d);
+      color: var(--accent);
       font-weight: 700;
     }
 
@@ -314,12 +314,12 @@ interface SetupStep {
       border-color: var(--text-secondary, #9a9a9a);
     }
     .btn.primary {
-      background: var(--accent-primary, #ff8a3d);
+      background: var(--accent);
       color: #1a1a1a;
       font-weight: 600;
     }
     .btn.primary:hover {
-      background: color-mix(in srgb, var(--accent-primary, #ff8a3d) 88%, #fff);
+      background: color-mix(in srgb, var(--accent) 88%, #fff);
     }
   `]
 })

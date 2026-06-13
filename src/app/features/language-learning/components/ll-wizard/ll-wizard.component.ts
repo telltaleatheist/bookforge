@@ -1438,9 +1438,9 @@ interface SourceStage {
     .lang-gate {
       margin: 12px 0 4px;
       padding: 14px 16px;
-      border: 1px solid color-mix(in srgb, var(--accent-primary) 35%, var(--border-default));
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-default));
       border-radius: 8px;
-      background: color-mix(in srgb, var(--accent-primary) 7%, transparent);
+      background: color-mix(in srgb, var(--accent) 7%, transparent);
     }
     .lang-gate-head {
       display: flex;
@@ -1468,13 +1468,13 @@ interface SourceStage {
       background: var(--bg-hover);
       overflow: hidden;
     }
-    .lang-gate-bar { height: 100%; background: var(--accent-primary); transition: width 0.2s ease; }
+    .lang-gate-bar { height: 100%; background: var(--accent); transition: width 0.2s ease; }
     .lang-gate-btn {
       margin-left: auto;
       padding: 5px 14px;
       border: none;
       border-radius: 6px;
-      background: var(--accent-primary);
+      background: var(--accent);
       color: #fff;
       font-size: 0.8rem;
       font-weight: 600;
@@ -1492,7 +1492,7 @@ interface SourceStage {
       padding: 0;
       border: none;
       background: none;
-      color: var(--accent-primary);
+      color: var(--accent);
       font-size: 0.8rem;
       cursor: pointer;
     }
