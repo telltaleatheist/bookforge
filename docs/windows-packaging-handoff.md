@@ -190,3 +190,113 @@ ffmpeg** (the MSI laptop is the canary):
 Build commands: `npm run package:mac` (lean), `npm run package:mac:offline`
 (+26 GB models), `npm run package:win-x64`. For an unpacked test build append
 nothing — use `npm run electron:build -- --mac --dir` (output in `release/`).
+
+---
+
+# llama.cpp local-LLM bundling (added Jun 13 2026, on Mac)
+
+This wires the **AI Setup wizard's local-model path** (`electron/llama-bridge.ts`)
+so the bundled `llama-server` actually ships. Until now `resolveBinary()` found
+nothing, `localStatus().binaryPresent` was false, and the wizard steered users to
+Ollama / API keys. See memory notes `ws2-ai-setup-wizard-direction` and
+`packaging-distribution-initiative`.
+
+## Done on Mac (committed, verified end-to-end)
+
+| Piece | Status |
+|---|---|
+| `scripts/download-llama-cpp.js` | NEW — fetches the pinned llama.cpp prebuilt for the **host** platform (build-on-target, like `download-mupdf.js`), stages into `resources/bin/` |
+| `package.json` scripts | `download:llama` added; chained into `package:mac[:lean:offline]` + `package:win[-x64]` right after `download:mupdf` |
+| `package.json` extraResources | mac: `llama-server-${arch}` + `*.dylib`; win: `llama-server.exe` + `*.dll` — mirrors the mutool pattern |
+| Mac binary | VERIFIED — `version: 7482`, runs from inside the packaged `.app` `Resources/bin` in a **clean env** (no `DYLD_LIBRARY_PATH`); all load commands rewritten to `@loader_path`, ad-hoc codesigned |
+| e2a snapshot re-stage | DONE — bumped from stale `d92629b9-dirty` to `b267cd11+seed`, so the **custom-voice** code (args/session/worker_core/worker.py) now ships |
+
+### Decisions locked in (with the user)
+1. **llama.cpp version**: pinned **`b7482`** (matches Briefcase's proven pin; `LLAMA_CPP_VERSION` in the script).
+2. **Windows flavor**: **CUDA 12.4** build (`WIN_CUDA_TAG`), not CPU-only. The CUDA
+   binary still runs on CPU where no NVIDIA GPU/driver is present — it hard-links
+   only the bundled CUDA *runtime* (cudart), not the GPU driver. So we bundle the
+   CUDA build **plus** `cudart-llama-bin-win-cuda-12.4-x64.zip`. (12.4 over 13.1 for
+   wider driver compatibility.)
+3. **Seed model**: **download-on-demand** (unchanged). Binary ships; the wizard
+   downloads Cogito 3B (~2.2 GB) on first use. No GGUF in the installer.
+4. **Linux**: deferred. Script `warn()`s and skips on Linux; no `build.linux`
+   llama entry. The release has `llama-b7482-bin-ubuntu-x64.zip` when we want it.
+
+### How the Mac path resolves (recap)
+`download-llama-cpp.js` → `resources/bin/llama-server-arm64` + `lib*.dylib`
+(original leaf names — no whisper here, so none of Briefcase's rename/prefix
+dance) → electron-builder extraResources → `<App>/Resources/bin/` →
+`resolveBinary()` finds `process.resourcesPath/bin/llama-server-<arch>`. Dev
+fallback `resources/bin/` also works after `npm run download:llama`.
+
+## Windows task list (do these on the Windows box)
+
+> **Build-on-target**: `download-llama-cpp.js` keys off `process.platform`, so
+> running it on Windows fetches the Windows CUDA build. Nothing Windows-specific
+> needs editing — just run the package script. These steps are mostly *verify*.
+
+1. **Pull this repo + the e2a fork.** Confirm the e2a fork is at **`b267cd11`**
+   (or later) so the custom-voice code stages — `npm run package:win-x64` runs
+   `stage:packaging:seed`, which snapshots whatever the fork checkout currently is.
+   (Set `EBOOK2AUDIOBOOK_PATH` to your Windows e2a path; the `~/Projects/...`
+   default won't match.)
+
+2. **Fetch + stage the binary** (happens automatically inside `package:win-x64`,
+   but you can run it standalone first to eyeball it):
+   ```
+   npm run download:llama
+   ```
+   Expect ~595 MB of downloads (204 MB CUDA build + 391 MB cudart), cached in
+   `.llama-build/` (gitignored). It copies `llama-server.exe` + all `*.dll` from
+   both archives into `resources/bin/`.
+
+3. **VC++ runtime — VERIFY.** When run on Windows the script copies
+   `MSVCP140.dll`, `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll`,
+   `MSVCP140_CODECVT_IDS.dll` from `System32` into `resources/bin/`. Confirm they
+   land. If your build box somehow lacks them, install the **VC++ 2015–2022
+   Redistributable** first. (It cannot bundle these when cross-built from Mac —
+   that's why this must run on Windows.)
+
+4. **Smoke-test the binary from the staged path** (PowerShell):
+   ```
+   .\resources\bin\llama-server.exe --version
+   ```
+   Should print `version: 7482 ...` and exit 0. The bridge sets `cwd` to the
+   binary dir at runtime so the DLLs resolve; running it from `resources/bin`
+   directly mimics that.
+
+5. **Package + inspect the bundle.**
+   ```
+   npm run package:win-x64
+   ```
+   Then confirm `release\win-unpacked\resources\bin\` contains `llama-server.exe`
+   + the DLLs (cudart64_*, cublas*, ggml*, llama*). `resolveBinary()` looks at
+   `process.resourcesPath\bin\llama-server.exe`.
+
+6. **CPU-fallback check (important for the CUDA decision).** On a machine with
+   **no NVIDIA GPU/driver**, confirm `llama-server.exe` still loads and serves
+   (it should find 0 CUDA devices and fall back to CPU). If it fails to load due
+   to a missing `nvcuda.dll`, that's a driver-only DLL we do NOT bundle and the
+   binary shouldn't hard-link — flag it if it happens.
+
+7. **End-to-end** (the real acceptance test, either platform): package →
+   first-run → **AI Setup → download Cogito 3B → run an AI cleanup job** →
+   confirm the local provider generates (not Ollama/API). On Mac this is ready to
+   try now; on Windows after steps 1–6.
+
+## Known caveats / possible cleanups
+
+- **Mac dylib tripling**: the release tarball ships versioned symlink chains
+  (`libggml.dylib → .0.dylib → .0.9.4.dylib`); `copyFileSync` follows them, so we
+  stage 3 real copies of each (~10 MB extra total). Harmless, the binary refs the
+  `.0.dylib` variants. Could preserve symlinks later to shave size — low priority.
+- **CUDA bundle size**: the Windows CUDA + cudart payload is ~hundreds of MB
+  uncompressed in the installer. Accepted (user wants GPU available). If it's too
+  heavy, the CPU-only `llama-b7482-bin-win-cpu-x64.zip` (20 MB) is a one-line swap
+  in `setupWindows()`.
+- **WS5 custom voice — NOT runtime-tested**: the e2a code now ships, but nobody
+  has run full audiobook gen with a real user fine-tuned checkpoint through the
+  pre-staged `custom_model_dir`. Fold a real-checkpoint test into the Windows pass.
+- **Linux**: no llama-server (and no e2a env) — local-LLM path is unavailable on
+  Linux builds by design for now.

@@ -17,16 +17,17 @@
     "stage:packaging": "node packaging/stage-resources.js",
     "stage:packaging:seed": "node packaging/stage-resources.js --seed",
     "stage:packaging:offline": "node packaging/stage-resources.js --models",
-    "package:mac": "npm run download:mupdf && npm run stage:packaging:seed && npm run electron:build -- --mac",
-    "package:mac:lean": "npm run download:mupdf && npm run stage:packaging && npm run electron:build -- --mac",
-    "package:mac:offline": "npm run download:mupdf && npm run stage:packaging:offline && npm run electron:build -- --mac",
-    "package:win": "npm run download:mupdf && npm run stage:packaging:seed && npm run electron:build -- --win",
-    "package:win-x64": "npm run download:mupdf && npm run stage:packaging:seed && npm run electron:build -- --win --x64",
+    "package:mac": "npm run download:mupdf && npm run download:llama && npm run stage:packaging:seed && npm run electron:build -- --mac",
+    "package:mac:lean": "npm run download:mupdf && npm run download:llama && npm run stage:packaging && npm run electron:build -- --mac",
+    "package:mac:offline": "npm run download:mupdf && npm run download:llama && npm run stage:packaging:offline && npm run electron:build -- --mac",
+    "package:win": "npm run download:mupdf && npm run download:llama && npm run stage:packaging:seed && npm run electron:build -- --win",
+    "package:win-x64": "npm run download:mupdf && npm run download:llama && npm run stage:packaging:seed && npm run electron:build -- --win --x64",
     "package:linux": "npm run download:mupdf && npm run electron:build -- --linux",
     "watch": "ng build --watch --configuration development",
     "watch:electron": "npx tsc -p tsconfig.electron.json --watch",
     "test": "ng test",
     "download:mupdf": "node scripts/download-mupdf.js",
+    "download:llama": "node scripts/download-llama-cpp.js",
     "postinstall": "npm run download:mupdf || echo 'MuPDF download skipped (run npm run download:mupdf manually if needed)'"
   },
   "prettier": {
@@ -114,6 +115,15 @@
           "to": "bin/mutool-${arch}"
         },
         {
+          "from": "resources/bin/llama-server-${arch}",
+          "to": "bin/llama-server-${arch}"
+        },
+        {
+          "from": "resources/bin",
+          "to": "bin",
+          "filter": ["*.dylib"]
+        },
+        {
           "from": "resources/e2a-env.tar.gz",
           "to": "e2a-env.tar.gz"
         },
@@ -130,6 +140,15 @@
         {
           "from": "resources/bin/mutool.exe",
           "to": "bin/mutool.exe"
+        },
+        {
+          "from": "resources/bin/llama-server.exe",
+          "to": "bin/llama-server.exe"
+        },
+        {
+          "from": "resources/bin",
+          "to": "bin",
+          "filter": ["*.dll"]
         },
         {
           "from": "resources/e2a-env.tar.gz",

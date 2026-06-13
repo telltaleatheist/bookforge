@@ -72,3 +72,6 @@ resources/*.stuck-*
 resources/.e2a-stuck-*
 # persistent seed staging cache (default voice checkpoint for --seed builds)
 packaging/.seed-cache/
+
+# llama.cpp prebuilt download cache (reused across builds; staged into resources/bin)
+.llama-build/
