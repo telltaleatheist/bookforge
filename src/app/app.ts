@@ -10,6 +10,7 @@ import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.co
 import { OnboardingComponent } from './components/onboarding/onboarding.component';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
+import { AiService } from './core/services/ai.service';
 
 @Component({
   selector: 'app-root',
@@ -207,6 +208,7 @@ export class App implements OnInit {
   readonly libraryService = inject(LibraryService);
   readonly runtime = inject(RuntimeService);
   private readonly router = inject(Router);
+  private readonly ai = inject(AiService);
 
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
@@ -242,25 +244,27 @@ export class App implements OnInit {
       route: '/queue'
     },
     {
-      id: 'ai-setup',
-      icon: '\u{1F916}', // Robot emoji
-      label: 'AI Setup',
-      route: '/ai-setup'
-    },
-    {
       id: 'settings',
       icon: '\u{2699}', // Gear emoji
       label: 'Settings',
       route: '/settings'
     }
+    // AI Setup is reached from Settings → AI and from first-run onboarding /
+    // the cleanup-page overlay — intentionally not a top-level nav item.
   ];
 
   ngOnInit() {
     this.themeService.initializeTheme();
   }
 
-  onOnboardingComplete(): void {
-    // Onboarding complete - the view will update automatically
-    // because libraryService.isConfigured() is a computed signal
+  async onOnboardingComplete(): Promise<void> {
+    // Onboarding complete - the view updates automatically because
+    // libraryService.isConfigured() is a computed signal.
+    // First-run nudge: if no AI source is configured yet, drop the user straight
+    // into the AI Setup wizard (cleanup/simplify is unusable until one exists).
+    await this.ai.refresh();
+    if (!this.ai.available()) {
+      void this.router.navigate(['/ai-setup']);
+    }
   }
 }

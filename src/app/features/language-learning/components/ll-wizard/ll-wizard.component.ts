@@ -108,9 +108,9 @@ interface SourceStage {
                 <div class="ai-layover">
                   <div class="ai-layover-card">
                     <div class="ai-layover-icon">&#129302;</div>
-                    <h4>Set up an AI to use cleanup</h4>
-                    <p>AI cleanup needs an AI source — a bundled local model, Ollama, or a Claude/OpenAI API key.</p>
-                    <button class="ai-layover-btn" (click)="openAiSetup()">Open AI Setup</button>
+                    <h4>AI isn't set up yet</h4>
+                    <p>Use the AI Setup wizard to enable cleanup &amp; simplify — add a bundled local model, connect Ollama, or save a Claude/OpenAI key.</p>
+                    <button class="ai-layover-btn" (click)="openAiSetup()">Open AI Setup wizard</button>
                   </div>
                 </div>
               }

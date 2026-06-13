@@ -9,19 +9,12 @@ import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
 import { VoicesPanelComponent } from './components/voices-panel.component';
-import {
-  AIConfig,
-  AIProvider,
-  ProviderStatus,
-  OLLAMA_MODELS,
-  CLAUDE_MODELS,
-  OPENAI_MODELS
-} from '../../core/models/ai-config.types';
+import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, AiSetupWizardComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -181,231 +174,8 @@ import {
                 }
               </div>
             } @else if (section.id === 'ai') {
-              <!-- AI Configuration Section -->
-              <div class="ai-section">
-                <!-- Provider Selection -->
-                <div class="ai-provider-select">
-                  <h3>AI Provider</h3>
-                  <p class="field-description">Select which AI service to use for OCR text cleanup</p>
-                  <div class="provider-cards">
-                    <button
-                      class="provider-card"
-                      [class.selected]="aiConfig().provider === 'ollama'"
-                      (click)="setAIProvider('ollama')"
-                    >
-                      <span class="provider-icon">🦙</span>
-                      <span class="provider-name">Ollama</span>
-                      <span class="provider-desc">Local, free</span>
-                      @if (ollamaStatus(); as status) {
-                        <span class="provider-status" [class.available]="status.available" [class.unavailable]="!status.available">
-                          {{ status.available ? 'Connected' : 'Not running' }}
-                        </span>
-                      }
-                    </button>
-                    <button
-                      class="provider-card"
-                      [class.selected]="aiConfig().provider === 'claude'"
-                      (click)="setAIProvider('claude')"
-                    >
-                      <span class="provider-icon">🧠</span>
-                      <span class="provider-name">Claude</span>
-                      <span class="provider-desc">Anthropic API</span>
-                      @if (aiConfig().claude.apiKey) {
-                        <span class="provider-status available">API Key Set</span>
-                      }
-                    </button>
-                    <button
-                      class="provider-card"
-                      [class.selected]="aiConfig().provider === 'openai'"
-                      (click)="setAIProvider('openai')"
-                    >
-                      <span class="provider-icon">🤖</span>
-                      <span class="provider-name">OpenAI</span>
-                      <span class="provider-desc">ChatGPT API</span>
-                      @if (aiConfig().openai.apiKey) {
-                        <span class="provider-status available">API Key Set</span>
-                      }
-                    </button>
-                  </div>
-                </div>
-
-                <!-- Provider-specific settings -->
-                <div class="provider-settings">
-                  @switch (aiConfig().provider) {
-                    @case ('ollama') {
-                      <div class="settings-group">
-                        <h4>Ollama Settings</h4>
-                        <div class="field-row">
-                          <div class="field-info">
-                            <label class="field-label">Server URL</label>
-                            <p class="field-description">Ollama server address</p>
-                          </div>
-                          <div class="field-control">
-                            <input
-                              type="text"
-                              class="text-input"
-                              [value]="aiConfig().ollama.baseUrl"
-                              (change)="updateOllamaUrl($any($event.target).value)"
-                            />
-                          </div>
-                        </div>
-                        <div class="field-row">
-                          <div class="field-info">
-                            <label class="field-label">Connection Status</label>
-                          </div>
-                          <div class="field-control">
-                            <desktop-button
-                              variant="ghost"
-                              size="sm"
-                              (click)="checkOllamaConnection()"
-                              [disabled]="ollamaChecking()"
-                            >
-                              {{ ollamaChecking() ? 'Checking...' : 'Test Connection' }}
-                            </desktop-button>
-                          </div>
-                        </div>
-                        @if (ollamaStatus(); as status) {
-                          <div class="connection-status" [class.success]="status.available" [class.error]="!status.available">
-                            @if (status.available) {
-                              ✓ Connected to Ollama
-                              @if (status.models && status.models.length > 0) {
-                                <span class="models-available">({{ status.models.length }} models available)</span>
-                              }
-                            } @else {
-                              ✕ {{ status.error || 'Could not connect to Ollama' }}
-                            }
-                          </div>
-                        }
-                        <div class="field-row">
-                          <div class="field-info">
-                            <label class="field-label">Model</label>
-                            <p class="field-description">AI model to use for text cleanup</p>
-                          </div>
-                          <div class="field-control">
-                            @if (ollamaModels().length > 0) {
-                              <select
-                                class="select-input"
-                                [value]="aiConfig().ollama.model"
-                                (change)="updateOllamaModel($any($event.target).value)"
-                              >
-                                @for (model of ollamaModels(); track model.value) {
-                                  <option [value]="model.value">{{ model.label }}</option>
-                                }
-                              </select>
-                            } @else {
-                              <span class="no-models-hint">Test connection to see available models</span>
-                            }
-                          </div>
-                        </div>
-                      </div>
-                    }
-                    @case ('claude') {
-                      <div class="settings-group">
-                        <h4>Claude Settings</h4>
-                        <div class="field-row">
-                          <div class="field-info">
-                            <label class="field-label">API Key</label>
-                            <p class="field-description">Your Anthropic API key</p>
-                          </div>
-                          <div class="field-control">
-                            <input
-                              type="password"
-                              class="text-input api-key-input"
-                              [value]="aiConfig().claude.apiKey"
-                              placeholder="sk-ant-..."
-                              (change)="updateClaudeApiKey($any($event.target).value)"
-                            />
-                          </div>
-                        </div>
-                        <div class="field-row">
-                          <div class="field-info">
-                            <label class="field-label">Model</label>
-                            <p class="field-description">Claude model to use</p>
-                          </div>
-                          <div class="field-control">
-                            @if (claudeModelsLoading()) {
-                              <span class="no-models-hint">Loading models...</span>
-                            } @else if (claudeModels().length > 0) {
-                              <select
-                                class="select-input"
-                                [value]="aiConfig().claude.model"
-                                (change)="updateClaudeModel($any($event.target).value)"
-                              >
-                                @for (model of claudeModels(); track model.value) {
-                                  <option [value]="model.value">{{ model.label }}</option>
-                                }
-                              </select>
-                            } @else {
-                              <span class="no-models-hint">Enter API key first</span>
-                            }
-                          </div>
-                        </div>
-                        <div class="api-key-hint">
-                          Get your API key from <a href="#" (click)="openExternal('https://console.anthropic.com/settings/keys')">console.anthropic.com</a>
-                        </div>
-                      </div>
-                    }
-                    @case ('openai') {
-                      <div class="settings-group">
-                        <h4>OpenAI Settings</h4>
-                        <div class="field-row">
-                          <div class="field-info">
-                            <label class="field-label">API Key</label>
-                            <p class="field-description">Your OpenAI API key</p>
-                          </div>
-                          <div class="field-control">
-                            <input
-                              type="password"
-                              class="text-input api-key-input"
-                              [value]="aiConfig().openai.apiKey"
-                              placeholder="sk-..."
-                              (change)="updateOpenAIApiKey($any($event.target).value)"
-                            />
-                          </div>
-                        </div>
-                        <div class="field-row">
-                          <div class="field-info">
-                            <label class="field-label">Model</label>
-                            <p class="field-description">OpenAI model to use</p>
-                          </div>
-                          <div class="field-control">
-                            @if (openaiModelsLoading()) {
-                              <span class="no-models-hint">Loading models...</span>
-                            } @else if (openaiModels().length > 0) {
-                              <select
-                                class="select-input"
-                                [value]="aiConfig().openai.model"
-                                (change)="updateOpenAIModel($any($event.target).value)"
-                              >
-                                @for (model of openaiModels(); track model.value) {
-                                  <option [value]="model.value">{{ model.label }}</option>
-                                }
-                              </select>
-                            } @else {
-                              <span class="no-models-hint">Enter API key first</span>
-                            }
-                          </div>
-                        </div>
-                        <div class="api-key-hint">
-                          Get your API key from <a href="#" (click)="openExternal('https://platform.openai.com/api-keys')">platform.openai.com</a>
-                        </div>
-                      </div>
-                    }
-                  }
-                </div>
-
-                <div class="save-section">
-                  <desktop-button variant="primary" size="md" (click)="saveAi()" [disabled]="!aiDirty() || aiSaving()">
-                    {{ aiSaving() ? 'Saving…' : (aiDirty() ? 'Save Changes' : 'Saved') }}
-                  </desktop-button>
-                  @if (aiDirty()) {
-                    <desktop-button variant="ghost" size="md" (click)="discardAi()" [disabled]="aiSaving()">
-                      Discard
-                    </desktop-button>
-                    <span class="unsaved-hint">You have unsaved changes</span>
-                  }
-                </div>
-              </div>
+              <!-- AI Configuration — the AI Setup wizard, embedded (supersedes the old provider-card UI) -->
+              <app-ai-setup-wizard [embedded]="true" />
             } @else if (section.id === 'bookshelf') {
               <!-- Bookshelf Server Section -->
               <div class="bookshelf-section">
@@ -1482,6 +1252,25 @@ import {
       gap: var(--ui-spacing-xl);
     }
 
+    .ai-wizard-link {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-md);
+      flex-wrap: wrap;
+    }
+    .open-wizard-btn {
+      padding: 0.5rem 0.9rem;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      background: var(--accent-subtle, transparent);
+      color: var(--accent);
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .open-wizard-btn:hover { background: var(--accent); color: var(--bg-base); }
+    .ai-wizard-hint { color: var(--text-secondary); font-size: 0.8rem; }
+
     .ai-provider-select {
       h3 {
         margin: 0 0 var(--ui-spacing-xs) 0;
@@ -1953,51 +1742,6 @@ export class SettingsComponent implements OnInit {
   readonly cacheLoading = signal(false);
   readonly clearCacheStatus = signal<{ success: boolean; message: string } | null>(null);
 
-  // AI section state — edits go into aiDraft and only persist on Save.
-  readonly savedAiConfig = computed(() => this.settingsService.getAIConfig());
-  readonly aiDraft = signal<AIConfig | null>(null);
-  // What the UI displays/edits: the draft if dirty, else the saved config.
-  readonly aiConfig = computed(() => this.aiDraft() ?? this.savedAiConfig());
-  readonly aiDirty = computed(() => {
-    const draft = this.aiDraft();
-    return draft !== null && JSON.stringify(draft) !== JSON.stringify(this.savedAiConfig());
-  });
-  readonly aiSaving = signal(false);
-  readonly ollamaStatus = signal<ProviderStatus | null>(null);
-  readonly ollamaChecking = signal(false);
-
-  // Dynamic model options - fetched from providers
-  readonly fetchedOllamaModels = signal<{ value: string; label: string }[]>([]);
-  readonly fetchedClaudeModels = signal<{ value: string; label: string }[]>([]);
-  readonly fetchedOpenaiModels = signal<{ value: string; label: string }[]>([]);
-  readonly claudeModelsLoading = signal(false);
-  readonly openaiModelsLoading = signal(false);
-
-  // Fallback static model options (used only when API unavailable)
-  readonly defaultOllamaModels = OLLAMA_MODELS;
-  readonly defaultClaudeModels = CLAUDE_MODELS;
-  readonly defaultOpenaiModels = OPENAI_MODELS;
-
-  // Computed: use fetched models if available, otherwise use defaults
-  readonly ollamaModels = computed(() => {
-    const fetched = this.fetchedOllamaModels();
-    return fetched.length > 0 ? fetched : this.defaultOllamaModels;
-  });
-
-  readonly claudeModels = computed(() => {
-    const fetched = this.fetchedClaudeModels();
-    // Only show models if API key is provided and models are fetched
-    if (!this.aiConfig().claude.apiKey) return [];
-    return fetched.length > 0 ? fetched : this.defaultClaudeModels;
-  });
-
-  readonly openaiModels = computed(() => {
-    const fetched = this.fetchedOpenaiModels();
-    // Only show models if API key is provided and models are fetched
-    if (!this.aiConfig().openai.apiKey) return [];
-    return fetched.length > 0 ? fetched : this.defaultOpenaiModels;
-  });
-
   // Bookshelf Server section state — edits buffered in bookshelfDraft until Save.
   readonly savedBookshelfConfig = computed(() => this.settingsService.getBookshelfConfig());
   readonly bookshelfDraft = signal<{ port?: number; externalAudiobooksDir?: string } | null>(null);
@@ -2111,6 +1855,10 @@ export class SettingsComponent implements OnInit {
 
   goBack(): void {
     this.router.navigate(['/studio']);
+  }
+
+  openAiSetup(): void {
+    this.router.navigate(['/ai-setup']);
   }
 
   selectSection(sectionId: string): void {
@@ -2283,157 +2031,6 @@ export class SettingsComponent implements OnInit {
     this.libraryChangeStatus.set(null);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // AI Configuration Methods
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  /** Apply an edit to the in-progress AI draft (seeded from the saved config). */
-  private patchAiDraft(updater: (config: AIConfig) => AIConfig): void {
-    const base = this.aiDraft() ?? this.savedAiConfig();
-    // Deep-clone so we never mutate the saved object
-    const clone: AIConfig = JSON.parse(JSON.stringify(base));
-    this.aiDraft.set(updater(clone));
-  }
-
-  setAIProvider(provider: AIProvider): void {
-    this.patchAiDraft(config => ({ ...config, provider }));
-
-    // Check Ollama connection when selecting it (read-only probe, safe pre-save)
-    if (provider === 'ollama') {
-      this.checkOllamaConnection();
-    }
-  }
-
-  updateOllamaUrl(url: string): void {
-    this.patchAiDraft(config => ({ ...config, ollama: { ...config.ollama, baseUrl: url } }));
-  }
-
-  updateOllamaModel(model: string): void {
-    this.patchAiDraft(config => ({ ...config, ollama: { ...config.ollama, model } }));
-  }
-
-  updateClaudeApiKey(apiKey: string): void {
-    this.patchAiDraft(config => ({ ...config, claude: { ...config.claude, apiKey } }));
-    // Fetch Claude models when API key is provided
-    if (apiKey && apiKey.startsWith('sk-ant-')) {
-      this.fetchClaudeModels(apiKey);
-    } else {
-      this.fetchedClaudeModels.set([]);
-    }
-  }
-
-  updateClaudeModel(model: string): void {
-    this.patchAiDraft(config => ({ ...config, claude: { ...config.claude, model } }));
-  }
-
-  updateOpenAIApiKey(apiKey: string): void {
-    this.patchAiDraft(config => ({ ...config, openai: { ...config.openai, apiKey } }));
-    // Fetch OpenAI models when API key is provided
-    if (apiKey && apiKey.startsWith('sk-')) {
-      this.fetchOpenAIModels(apiKey);
-    } else {
-      this.fetchedOpenaiModels.set([]);
-    }
-  }
-
-  updateOpenAIModel(model: string): void {
-    this.patchAiDraft(config => ({ ...config, openai: { ...config.openai, model } }));
-  }
-
-  async saveAi(): Promise<void> {
-    const draft = this.aiDraft();
-    if (!draft || !this.aiDirty()) return;
-    this.aiSaving.set(true);
-    try {
-      this.settingsService.setAIConfig(draft);
-      this.aiDraft.set(null);
-    } finally {
-      this.aiSaving.set(false);
-    }
-  }
-
-  discardAi(): void {
-    this.aiDraft.set(null);
-  }
-
-  async checkOllamaConnection(): Promise<void> {
-    this.ollamaChecking.set(true);
-    try {
-      const result = await this.electronService.checkAIConnection('ollama');
-      this.ollamaStatus.set(result);
-
-      // Populate fetched models from Ollama
-      if (result.available && result.models) {
-        this.fetchedOllamaModels.set(
-          result.models.map(m => ({ value: m, label: m }))
-        );
-      }
-    } catch (err) {
-      this.ollamaStatus.set({
-        available: false,
-        error: err instanceof Error ? err.message : 'Connection failed'
-      });
-    } finally {
-      this.ollamaChecking.set(false);
-    }
-  }
-
-  private async fetchClaudeModels(apiKey: string): Promise<void> {
-    this.claudeModelsLoading.set(true);
-    try {
-      // Claude doesn't have a public models API, so we use the known models
-      // but only show them when API key is valid
-      this.fetchedClaudeModels.set([
-        { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-        { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
-        { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
-        { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus' }
-      ]);
-    } finally {
-      this.claudeModelsLoading.set(false);
-    }
-  }
-
-  private async fetchOpenAIModels(apiKey: string): Promise<void> {
-    this.openaiModelsLoading.set(true);
-    try {
-      // Fetch models from OpenAI API
-      const response = await fetch('https://api.openai.com/v1/models', {
-        headers: {
-          'Authorization': `Bearer ${apiKey}`
-        }
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        // Filter to only show GPT models suitable for text completion
-        const gptModels = (data.data as Array<{ id: string }>)
-          .filter(m => m.id.startsWith('gpt-4') || m.id.startsWith('gpt-3.5'))
-          .sort((a, b) => b.id.localeCompare(a.id))
-          .slice(0, 10)
-          .map(m => ({ value: m.id, label: m.id }));
-
-        this.fetchedOpenaiModels.set(gptModels.length > 0 ? gptModels : this.defaultOpenaiModels);
-      } else {
-        // If API fails, use default models
-        this.fetchedOpenaiModels.set(this.defaultOpenaiModels);
-      }
-    } catch {
-      // On error, use default models
-      this.fetchedOpenaiModels.set(this.defaultOpenaiModels);
-    } finally {
-      this.openaiModelsLoading.set(false);
-    }
-  }
-
-  openExternal(url: string): void {
-    // Open URL in system browser
-    if (window.electron?.shell) {
-      window.electron.shell.openExternal(url);
-    } else {
-      window.open(url, '_blank');
-    }
-  }
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Bookshelf Server Methods
