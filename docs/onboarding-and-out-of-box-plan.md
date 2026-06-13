@@ -54,37 +54,60 @@ try blocks). The bootstrap already takes `onProgress` callbacks and logs
 
 ---
 
-## Workstream 2 — Out-of-box AI cleanup: bundle a small LLM (cogito 3b)  *(biggest decision)*
+## Workstream 2 — Out-of-box AI cleanup: PORT Briefcase's bundled-llama.cpp + AI setup wizard
 
-**Goal:** cleanup works on first launch with NO user setup (no Ollama install,
-no API key). User specifically named **cogito 3b**.
+**Goal:** cleanup works on first launch with NO user setup (no Ollama, no API
+key), AND a wizard lets the user download a better/bigger model with one click.
 
-**Current:** `ai-bridge.ts` hits Ollama at `http://localhost:11434`. If Ollama
-isn't running / model not pulled → cleanup fails. Ollama is external, unmanaged.
+**Current:** `ai-bridge.ts` hits Ollama at `http://localhost:11434` (default
+model cogito). If Ollama isn't running / model not pulled → cleanup fails.
 
-**The real question is the runtime, not the model file.** A 3B Q4 GGUF is ~2 GB.
-Options to RUN it offline:
+**PROVEN PRIOR ART — copy it from Briefcase** (`/Volumes/Callisto/Projects/Briefcase`).
+Briefcase already does exactly this; port the architecture, restyle to BookForge's
+creamsicle theme. Key files to copy/adapt:
 
-| Option | How | Pros | Cons |
-|---|---|---|---|
-| **A. Bundle Ollama + cogito** | Ship the Ollama binary (managed component or bundled), auto-start its server, bundle/pull cogito | Zero `ai-bridge` changes (still hits :11434); Ollama handles GGUF, keep-alive, context | Ollama binary + service to manage; ~2 GB model; another moving part |
-| **B. node-llama-cpp (embedded)** | Add a 4th provider that loads a bundled GGUF in-process via `node-llama-cpp` | Fully self-contained, no service/port, no Ollama | New provider code + prompt plumbing; llama.cpp native build per platform |
-| **C. Downloadable, not bundled** | Keep cleanup optional; offer "Download local AI (cogito 3b)" in Add-ons (like voices) | Keeps seed small; reuses component system | Not truly out-of-box; still needs a runtime (A or B underneath) |
+| Briefcase file | What it does | BookForge port |
+|---|---|---|
+| `backend/src/bridges/llama-bridge.ts` | Spawns a persistent **`llama-server`** (llama.cpp) binary on a port; generates via HTTP. `LlamaConfig{binaryPath, port}` | New `electron/llama-bridge.ts` — spawn bundled `llama-server`, manage lifecycle |
+| `backend/src/bridges/llama-manager.ts` | Lists `.gguf` in modelsDir, picks/loads active model | model resolution in the bridge |
+| `backend/src/config/model-manager.service.ts` | **Cogito catalog** + download (progress/cancel via AbortController) + **GPU/RAM-aware recommendation** | reuse the existing component-manager download machinery; port the catalog + the hardware-recommend logic |
+| `frontend-v3/src/app/components/ai-setup-wizard/` | Step wizard: "AI is optional" → detect hardware + recommend → click-download with progress → done | new Angular wizard, creamsicle-styled |
+| `frontend-v3/src/app/services/ai-setup.service.ts` (+ `ai-setup-helper.service.ts`) | status checks, platform install hints, recommended models | the wizard's service |
+| `AI_SETUP_GUIDE.md`, `BINARY_PACKAGING_GUIDE.md` | the UX spec + how the binary is bundled (extraResources) | follow for packaging |
 
-**Recommendation:** **B (node-llama-cpp) as the bundled default provider**, with
-the existing Ollama/Claude/OpenAI providers kept for power users. It's the only
-option that's genuinely zero-setup and self-contained. Bundle a small default
-(cogito-3b Q4, or a 1–1.5B if size matters) so the seed grows ~+2 GB (4 → ~6 GB)
-— or ship the runtime bundled and the GGUF as a one-click download to keep the
-seed lean (hybrid of B+C). **Decision needed: bundle the GGUF (true out-of-box,
-+2 GB) vs download-on-first-cleanup (lean, needs network once).**
+**The Cogito catalog (verified, bartowski GGUFs on HF, direct resolve URLs):**
+- `cogito-3b` — 2.24 GB, minRAM 4 — "Lightweight and fast" ← out-of-box default
+- `cogito-8b` — 4.92 GB, minRAM 6 — "Good balance"
+- `cogito-14b` — 8.99 GB, minRAM 10 — "Higher quality"
+- `cogito-32b` — 19.85 GB, minRAM 24 — "Best quality (Mac 32GB+ unified)"
+URL pattern: `https://huggingface.co/bartowski/deepcogito_cogito-v1-preview-<llama-3B|llama-8B|qwen-14B|qwen-32B>-GGUF/resolve/main/<filename>.gguf`
 
-**Open:** confirm cogito-3b license allows redistribution; pick quant; verify
-node-llama-cpp packaging (asarUnpack the native .node + model, same pattern as
-`xtts_stream.py`).
+**Runtime:** bundle the per-platform `llama-server` binary (llama.cpp) via
+electron-builder `extraResources` + `asarUnpack` if spawned from the asar — SAME
+hazards we just hit with `xtts_stream.py` (resolve to `app.asar.unpacked`, real
+file on disk). `ai-bridge.ts` gets a 4th provider `local` that hits the local
+llama-server (it speaks an OpenAI-compatible / `/completion` endpoint), so the
+Ollama/Claude/OpenAI providers stay for power users.
 
-**Files:** `electron/ai-bridge.ts` (new provider), packaging (bundle GGUF +
-native module), settings AI section, `voices`/Add-ons (if download path).
+**Out-of-box decision (recommended):** bundle the `llama-server` binary + the
+**Cogito 3B (2.24 GB)** GGUF as the default → cleanup works offline on first run.
+The wizard then offers 8B/14B/32B as one-click downloads (hardware-recommended)
+into the same models dir. Seed grows ~4 GB → ~6.5 GB. Alt: bundle only the
+binary, make even 3B a first-run download (lean seed, needs network once).
+
+**This IS the setup wizard** the user asked for — it merges with Workstream 8:
+the AI step of onboarding is this wizard ("AI cleanup is optional; bundled 3B
+works now, or download a bigger one"). Frame AI as optional (cleanup can be
+skipped, or use an API key).
+
+**Files (BookForge):** `electron/llama-bridge.ts` (new), `electron/ai-bridge.ts`
+(local provider), model catalog (reuse component-manager download), packaging
+(bundle binary + 3B GGUF, extraResources/asarUnpack), new AI setup wizard
+component + service, settings AI section.
+
+**Open:** confirm Cogito redistribution license for bundling the 3B; pick where
+GGUFs live (userData/models vs the e2a runtime models dir); decide bundle-3B vs
+download-3B.
 
 ---
 
@@ -231,7 +254,10 @@ voices, add-ons, or AI setup.
    bundle-vs-download decision and a node-llama-cpp packaging spike.
 
 ## Cross-cutting decisions to make up front
-- **WS2:** bundle the cogito GGUF (+2 GB, true out-of-box) vs download-on-demand
-  (lean). And runtime: node-llama-cpp (recommended) vs bundle Ollama.
+- **WS2:** runtime is settled — **port Briefcase's bundled `llama-server`
+  (llama.cpp) + Cogito catalog + AI setup wizard**, restyled. Decision left:
+  bundle the Cogito 3B GGUF (+2.24 GB, true out-of-box) vs download-3B-on-first-
+  run (lean seed). And where GGUFs live (userData/models vs e2a runtime models).
+- **WS2↔WS8:** the AI setup wizard IS the onboarding AI step — build once, reuse.
 - **WS7:** commit to one "Add-ons & Models" hub and retire redundant Tools rows?
 - **WS6:** invest in managed Orpheus hosting, or keep BYO?
