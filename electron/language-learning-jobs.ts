@@ -39,7 +39,7 @@ export interface LanguageLearningJobConfig {
   htmlPath: string;
   pdfPath?: string;
   deletedBlockIds: string[];
-  aiProvider: 'ollama' | 'claude' | 'openai';
+  aiProvider: 'ollama' | 'claude' | 'openai' | 'local';
   aiModel: string;
   ollamaBaseUrl?: string;
   claudeApiKey?: string;

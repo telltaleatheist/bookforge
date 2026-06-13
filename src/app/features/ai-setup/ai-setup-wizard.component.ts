@@ -173,9 +173,9 @@ import { SettingsService } from '../../core/services/settings.service';
       background: var(--bg-subtle); border: 1px solid var(--border-default);
       font-size: 0.875rem; color: var(--text-secondary);
     }
-    .status-banner.ok { border-color: var(--accent-success); }
+    .status-banner.ok { border-color: var(--success); }
     .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-tertiary, #888); flex: none; }
-    .dot.ok { background: var(--accent-success); }
+    .dot.ok { background: var(--success); }
 
     .card {
       background: var(--bg-elevated); border: 1px solid var(--border-default);
@@ -193,18 +193,18 @@ import { SettingsService } from '../../core/services/settings.service';
       display: flex; align-items: center; justify-content: space-between; gap: 1rem;
       padding: 0.75rem; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-subtle);
     }
-    .model.active { border-color: var(--accent-primary); }
+    .model.active { border-color: var(--accent); }
     .model-info { flex: 1; min-width: 0; }
     .model-name { color: var(--text-primary); font-weight: 600; font-size: 0.9rem; display: flex; align-items: center; gap: 0.5rem; }
     .model-meta { color: var(--text-secondary); font-size: 0.78rem; margin-top: 0.2rem; }
     .badge { font-size: 0.68rem; font-weight: 600; padding: 0.1rem 0.4rem; border-radius: 4px; }
-    .badge.rec { background: color-mix(in srgb, var(--accent-primary) 18%, transparent); color: var(--accent-primary); }
-    .badge.active { background: color-mix(in srgb, var(--accent-success) 18%, transparent); color: var(--accent-success); }
+    .badge.rec { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+    .badge.active { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
     .model-actions { display: flex; gap: 0.4rem; flex: none; }
 
     .progress { margin-top: 0.5rem; }
     .bar { height: 6px; border-radius: 3px; background: var(--border-default); overflow: hidden; }
-    .fill { height: 100%; background: var(--accent-primary); transition: width 0.2s; }
+    .fill { height: 100%; background: var(--accent); transition: width 0.2s; }
     .progress-meta { font-size: 0.72rem; color: var(--text-secondary); margin-top: 0.2rem; }
 
     .use-row { margin-top: 1rem; }
@@ -216,7 +216,7 @@ import { SettingsService } from '../../core/services/settings.service';
       background: var(--bg-base); color: var(--text-primary); font-size: 0.85rem;
     }
     .key-input { flex: 1; }
-    .saved-note { color: var(--accent-success); font-size: 0.8rem; margin: 0.6rem 0 0; }
+    .saved-note { color: var(--success); font-size: 0.8rem; margin: 0.6rem 0 0; }
 
     .wizard-foot { display: flex; justify-content: flex-end; margin-top: 0.5rem; }
   `]

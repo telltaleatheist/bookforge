@@ -2250,6 +2250,17 @@ export async function cleanupEpub(
       stopAIPowerBlock();
       return { success: false, error: 'OpenAI model not specified in config' };
     }
+  } else if (config.provider === 'local') {
+    const { llamaBridge } = await import('./llama-bridge.js');
+    const s = await llamaBridge.status();
+    if (!s.binaryPresent) {
+      stopAIPowerBlock();
+      return { success: false, error: 'The local AI engine is not bundled in this build.' };
+    }
+    if (!s.activeModelDownloaded) {
+      stopAIPowerBlock();
+      return { success: false, error: 'No local model is downloaded. Download one in AI Setup.' };
+    }
   } else {
     stopAIPowerBlock();
     return { success: false, error: `Unknown AI provider: ${config.provider}` };
@@ -2628,7 +2639,8 @@ export async function cleanupEpub(
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 2: Process all chunks (parallel or sequential)
     // ─────────────────────────────────────────────────────────────────────────
-    const useParallel = options?.useParallel && config.provider !== 'ollama';
+    // Local (single llama-server) and Ollama are single-stream — never parallelize.
+    const useParallel = options?.useParallel && config.provider !== 'ollama' && config.provider !== 'local';
     const workerCount = Math.min(options?.parallelWorkers || 3, totalChunksInJob);
 
     if (useParallel && workerCount > 1) {

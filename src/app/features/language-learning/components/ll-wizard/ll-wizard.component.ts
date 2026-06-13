@@ -144,93 +144,37 @@ interface SourceStage {
                 </div>
               </div>
 
-              <!-- Provider Selection -->
+              <!-- AI Model — unified selector: only configured sources, grouped by provider -->
               <div class="config-section">
-                <label class="field-label">AI Provider</label>
-                <div class="provider-buttons">
-                  <button
-                    class="provider-btn"
-                    [class.selected]="cleanupProvider() === 'ollama'"
-                    [class.connected]="cleanupProvider() === 'ollama' && ollamaConnected()"
-                    (click)="selectCleanupProvider('ollama')"
-                  >
-                    <span class="provider-icon">🦙</span>
-                    <span class="provider-name">Ollama</span>
-                    @if (cleanupProvider() === 'ollama') {
-                      <span class="provider-status" [class.connected]="ollamaConnected()">
-                        {{ ollamaConnected() ? 'Connected' : 'Not connected' }}
-                      </span>
-                    }
-                  </button>
-                  <button
-                    class="provider-btn"
-                    [class.selected]="cleanupProvider() === 'claude'"
-                    [class.disabled]="!hasClaudeKey()"
-                    (click)="selectCleanupProvider('claude')"
-                  >
-                    <span class="provider-icon">🧠</span>
-                    <span class="provider-name">Claude</span>
-                    @if (!hasClaudeKey()) {
-                      <span class="provider-status">No API key</span>
-                    }
-                  </button>
-                  <button
-                    class="provider-btn"
-                    [class.selected]="cleanupProvider() === 'openai'"
-                    [class.disabled]="!hasOpenAIKey()"
-                    (click)="selectCleanupProvider('openai')"
-                  >
-                    <span class="provider-icon">🤖</span>
-                    <span class="provider-name">OpenAI</span>
-                    @if (!hasOpenAIKey()) {
-                      <span class="provider-status">No API key</span>
-                    }
-                  </button>
-                  @if (ai.localUsable()) {
-                    <button
-                      class="provider-btn"
-                      [class.selected]="cleanupProvider() === 'local'"
-                      [class.connected]="cleanupProvider() === 'local'"
-                      (click)="selectCleanupProvider('local')"
-                    >
-                      <span class="provider-icon">💻</span>
-                      <span class="provider-name">Local AI</span>
-                      <span class="provider-status connected">Bundled</span>
-                    </button>
-                  }
-                </div>
-              </div>
-
-              <!-- Model Selection -->
-              <div class="config-section">
-                <label class="field-label">Model</label>
-                @if (cleanupModels().length > 0) {
+                <label class="field-label">AI Model</label>
+                @if (aiSourceGroups().length > 0) {
                   <select
                     class="select-input"
-                    [value]="cleanupModel()"
-                    (change)="cleanupModel.set($any($event.target).value)"
+                    [value]="cleanupSelection()"
+                    (change)="onCleanupModelChange($any($event.target).value)"
                   >
-                    @for (model of cleanupModels(); track model.value) {
-                      <option [value]="model.value" [selected]="model.value === cleanupModel()">{{ model.label }}</option>
+                    @for (group of aiSourceGroups(); track group.provider) {
+                      <optgroup [label]="group.label">
+                        @for (m of group.models; track m.value) {
+                          <option
+                            [value]="group.provider + '::' + m.value"
+                            [selected]="(group.provider + '::' + m.value) === cleanupSelection()"
+                          >{{ m.label }}@if (m.active) {  (active)}</option>
+                        }
+                      </optgroup>
                     }
                   </select>
                 } @else {
                   <div class="no-models">
-                    @if (cleanupProvider() === 'ollama') {
-                      @if (checkingConnection()) {
-                        Checking connection...
-                      } @else if (!ollamaConnected()) {
-                        <span class="error-text">Ollama not running.</span>
-                        <a href="https://ollama.ai" target="_blank">Install Ollama</a> and run <code>ollama pull cogito:14b</code>
-                      } @else {
-                        No models found. Run <code>ollama pull cogito:14b</code>
-                      }
-                    } @else if (loadingModels()) {
-                      Fetching available models...
+                    @if (checkingConnection()) {
+                      Checking for available AI…
                     } @else {
-                      Configure API key in Settings
+                      <span class="error-text">No AI configured.</span> Set up a local model, Ollama, or an API key.
                     }
                   </div>
+                }
+                @if (!allAiConfigured()) {
+                  <button class="configure-ai-btn" (click)="openAiSetup()">⚙ Configure AI</button>
                 }
               </div>
 
@@ -421,76 +365,37 @@ interface SourceStage {
                 </div>
               </div>
 
-              <!-- AI Provider for Translation -->
+              <!-- AI Model — unified selector: only configured sources, grouped by provider -->
               <div class="config-section">
-                <label class="field-label">AI Provider</label>
-                <div class="provider-buttons">
-                  <button
-                    class="provider-btn"
-                    [class.selected]="translateProvider() === 'ollama'"
-                    [class.connected]="translateProvider() === 'ollama' && ollamaConnected()"
-                    (click)="selectTranslateProvider('ollama')"
-                  >
-                    <span class="provider-icon">🦙</span>
-                    <span class="provider-name">Ollama</span>
-                    @if (translateProvider() === 'ollama') {
-                      <span class="provider-status" [class.connected]="ollamaConnected()">
-                        {{ ollamaConnected() ? 'Connected' : 'Not connected' }}
-                      </span>
-                    }
-                  </button>
-                  <button
-                    class="provider-btn"
-                    [class.selected]="translateProvider() === 'claude'"
-                    [class.disabled]="!hasClaudeKey()"
-                    (click)="selectTranslateProvider('claude')"
-                  >
-                    <span class="provider-icon">🧠</span>
-                    <span class="provider-name">Claude</span>
-                    @if (!hasClaudeKey()) {
-                      <span class="provider-status">No API key</span>
-                    }
-                  </button>
-                  <button
-                    class="provider-btn"
-                    [class.selected]="translateProvider() === 'openai'"
-                    [class.disabled]="!hasOpenAIKey()"
-                    (click)="selectTranslateProvider('openai')"
-                  >
-                    <span class="provider-icon">🤖</span>
-                    <span class="provider-name">OpenAI</span>
-                    @if (!hasOpenAIKey()) {
-                      <span class="provider-status">No API key</span>
-                    }
-                  </button>
-                </div>
-              </div>
-
-              <!-- Model Selection -->
-              <div class="config-section">
-                <label class="field-label">Model</label>
-                @if (translateModels().length > 0) {
+                <label class="field-label">AI Model</label>
+                @if (aiSourceGroups().length > 0) {
                   <select
                     class="select-input"
-                    [value]="translateModel()"
-                    (change)="translateModel.set($any($event.target).value)"
+                    [value]="translateSelection()"
+                    (change)="onTranslateModelChange($any($event.target).value)"
                   >
-                    @for (model of translateModels(); track model.value) {
-                      <option [value]="model.value" [selected]="model.value === translateModel()">{{ model.label }}</option>
+                    @for (group of aiSourceGroups(); track group.provider) {
+                      <optgroup [label]="group.label">
+                        @for (m of group.models; track m.value) {
+                          <option
+                            [value]="group.provider + '::' + m.value"
+                            [selected]="(group.provider + '::' + m.value) === translateSelection()"
+                          >{{ m.label }}@if (m.active) {  (active)}</option>
+                        }
+                      </optgroup>
                     }
                   </select>
                 } @else {
                   <div class="no-models">
-                    @if (translateProvider() === 'ollama') {
-                      @if (!ollamaConnected()) {
-                        <span class="error-text">Ollama not running.</span>
-                      } @else {
-                        No models found.
-                      }
+                    @if (checkingConnection()) {
+                      Checking for available AI…
                     } @else {
-                      Configure API key in Settings
+                      <span class="error-text">No AI configured.</span> Set up a local model, Ollama, or an API key.
                     }
                   </div>
+                }
+                @if (!allAiConfigured()) {
+                  <button class="configure-ai-btn" (click)="openAiSetup()">⚙ Configure AI</button>
                 }
               </div>
 
@@ -1611,6 +1516,19 @@ interface SourceStage {
         background: var(--bg-surface);
       }
     }
+
+    .configure-ai-btn {
+      margin-top: 10px;
+      padding: 7px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .configure-ai-btn:hover { border-color: var(--accent-primary); }
 
     .no-models {
       padding: 12px;
@@ -2748,6 +2666,8 @@ export class LLWizardComponent implements OnInit {
   readonly ollamaModels = signal<{ value: string; label: string }[]>([]);
   readonly claudeModels = signal<{ value: string; label: string }[]>([]);
   readonly openaiModels = signal<{ value: string; label: string }[]>([]);
+  // Bundled llama.cpp models that are downloaded (value = catalog model id).
+  readonly localModels = signal<{ value: string; label: string; active: boolean }[]>([]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Queue State
@@ -2770,21 +2690,43 @@ export class LLWizardComponent implements OnInit {
     return !!config.openai.apiKey;
   });
 
-  readonly cleanupModels = computed(() => {
-    const provider = this.cleanupProvider();
-    if (provider === 'ollama') return this.ollamaModels();
-    if (provider === 'claude') return this.claudeModels();
-    if (provider === 'openai') return this.openaiModels();
-    return [];
+  /**
+   * Unified AI source list for the cleanup/translate dropdowns. Only sources the
+   * user has actually configured appear; each is its own optgroup. Option values
+   * are encoded `${provider}::${model}` so one <select> drives provider + model.
+   */
+  readonly aiSourceGroups = computed<{ provider: AIProvider; label: string; models: { value: string; label: string; active?: boolean }[] }[]>(() => {
+    const cfg = this.settingsService.getAIConfig();
+    const groups: { provider: AIProvider; label: string; models: { value: string; label: string; active?: boolean }[] }[] = [];
+
+    const local = this.localModels();
+    if (local.length > 0) {
+      groups.push({ provider: 'local', label: 'Bundled · offline', models: local });
+    }
+    if (this.ollamaConnected() && this.ollamaModels().length > 0) {
+      groups.push({ provider: 'ollama', label: 'Ollama', models: this.ollamaModels() });
+    }
+    if (this.hasClaudeKey()) {
+      const m = this.claudeModels();
+      groups.push({ provider: 'claude', label: 'Claude', models: m.length ? m : [{ value: cfg.claude.model || 'claude-sonnet-4-6', label: cfg.claude.model || 'Claude' }] });
+    }
+    if (this.hasOpenAIKey()) {
+      const m = this.openaiModels();
+      groups.push({ provider: 'openai', label: 'OpenAI', models: m.length ? m : [{ value: cfg.openai.model || 'gpt-4o', label: cfg.openai.model || 'OpenAI' }] });
+    }
+    return groups;
   });
 
-  readonly translateModels = computed(() => {
-    const provider = this.translateProvider();
-    if (provider === 'ollama') return this.ollamaModels();
-    if (provider === 'claude') return this.claudeModels();
-    if (provider === 'openai') return this.openaiModels();
-    return [];
-  });
+  /** Current dropdown value for each step: `${provider}::${model}`. */
+  readonly cleanupSelection = computed(() => `${this.cleanupProvider()}::${this.cleanupModel()}`);
+  readonly translateSelection = computed(() => `${this.translateProvider()}::${this.translateModel()}`);
+
+  /** Everything the user could set up is set up → hide the "Configure AI" button. */
+  readonly allAiConfigured = computed(() =>
+    this.hasClaudeKey()
+    && this.hasOpenAIKey()
+    && (this.localModels().length > 0 || (this.ollamaConnected() && this.ollamaModels().length > 0))
+  );
 
   /**
    * Effective project directory - uses projectDir if provided,
@@ -2897,7 +2839,10 @@ export class LLWizardComponent implements OnInit {
     if (this.ttsEngine() === 'orpheus' && !this.componentService.isInstalled('orpheus')) {
       this.selectTtsEngine('xtts');
     }
-    this.checkOllamaConnection();
+    await this.ai.refresh();
+    await this.checkOllamaConnection();
+    await this.loadLocalModels();
+    this.normalizeAiSelections();
     await this.loadCustomVoices();
     // EPUBs are scanned by the bfpPath effect — await a tick for it to complete
     await this.scanProjectEpubs();
@@ -3291,49 +3236,64 @@ export class LLWizardComponent implements OnInit {
   // Provider Selection
   // ─────────────────────────────────────────────────────────────────────────
 
-  selectCleanupProvider(provider: AIProvider): void {
-    if (provider === 'claude' && !this.hasClaudeKey()) return;
-    if (provider === 'openai' && !this.hasOpenAIKey()) return;
-    if (provider === this.cleanupProvider()) return; // Re-clicking same provider — keep current model
+  /** Parse a `${provider}::${model}` dropdown value. */
+  private parseSelection(value: string): { provider: AIProvider; model: string } {
+    const i = value.indexOf('::');
+    const provider = (i >= 0 ? value.slice(0, i) : value) as AIProvider;
+    const model = i >= 0 ? value.slice(i + 2) : '';
+    return { provider, model };
+  }
 
+  onCleanupModelChange(value: string): void {
+    const { provider, model } = this.parseSelection(value);
     this.cleanupProvider.set(provider);
-    // Local AI has an implicit active model (resolved in the main process); set a
-    // non-empty model id so the job's aiModel guard passes — it's ignored downstream.
-    if (provider === 'local') {
-      this.cleanupModel.set(this.ai.localStatus()?.activeModelId ?? 'local');
-      return;
-    }
-    const config = this.settingsService.getAIConfig();
-    const models = this.getModelsForProvider(provider);
-    const saved = (config as any)[provider]?.model;
-    const match = saved && models.some(m => m.value === saved);
-    const preferred = provider === 'ollama'
-      ? (models.find(m => m.value === 'cogito:14b')?.value ?? models[0]?.value ?? saved)
-      : (models[0]?.value ?? saved);
-    this.cleanupModel.set(match ? saved : preferred);
+    this.cleanupModel.set(model);
+    // Bundled llama.cpp serves whichever model is "active" — selecting one here
+    // promotes it so the cleanup job actually runs against that model.
+    if (provider === 'local') void this.ai.setActiveModel(model);
   }
 
-  selectTranslateProvider(provider: AIProvider): void {
-    if (provider === 'claude' && !this.hasClaudeKey()) return;
-    if (provider === 'openai' && !this.hasOpenAIKey()) return;
-    if (provider === this.translateProvider()) return; // Re-clicking same provider — keep current model
-
+  onTranslateModelChange(value: string): void {
+    const { provider, model } = this.parseSelection(value);
     this.translateProvider.set(provider);
-    const config = this.settingsService.getAIConfig();
-    const models = this.getModelsForProvider(provider);
-    const saved = (config as any)[provider]?.model;
-    const match = saved && models.some(m => m.value === saved);
-    const preferred = provider === 'ollama'
-      ? (models.find(m => m.value === 'cogito:14b')?.value ?? models[0]?.value ?? saved)
-      : (models[0]?.value ?? saved);
-    this.translateModel.set(match ? saved : preferred);
+    this.translateModel.set(model);
+    if (provider === 'local') void this.ai.setActiveModel(model);
   }
 
-  private getModelsForProvider(provider: AIProvider): { value: string; label: string }[] {
-    if (provider === 'ollama') return this.ollamaModels();
-    if (provider === 'claude') return this.claudeModels();
-    if (provider === 'openai') return this.openaiModels();
-    return [];
+  /** Load downloaded bundled (llama.cpp) models into the unified picker. */
+  private async loadLocalModels(): Promise<void> {
+    const models = await this.ai.listLocalModels();
+    this.localModels.set(
+      models
+        .filter((m) => m.downloaded)
+        .map((m) => ({ value: m.id, label: `${m.name} · ${m.sizeGB} GB`, active: m.isActive }))
+    );
+  }
+
+  /**
+   * Ensure each step's saved provider/model still points at an available option;
+   * if not, fall back to the active bundled model, else the first available source.
+   * (The default from settings may name an unconfigured provider.)
+   */
+  private normalizeAiSelections(): void {
+    const groups = this.aiSourceGroups();
+    if (groups.length === 0) return;
+    const has = (provider: string, model: string) =>
+      groups.some((g) => g.provider === provider && g.models.some((m) => m.value === model));
+
+    const localGroup = groups.find((g) => g.provider === 'local');
+    const def = localGroup
+      ? { provider: 'local' as AIProvider, model: (localGroup.models.find((m) => m.active) ?? localGroup.models[0]).value }
+      : { provider: groups[0].provider, model: groups[0].models[0]?.value ?? '' };
+
+    if (!has(this.cleanupProvider(), this.cleanupModel())) {
+      this.cleanupProvider.set(def.provider);
+      this.cleanupModel.set(def.model);
+    }
+    if (!has(this.translateProvider(), this.translateModel())) {
+      this.translateProvider.set(def.provider);
+      this.translateModel.set(def.model);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────

@@ -334,6 +334,25 @@ async function translateWithOpenAI(
 }
 
 /**
+ * Translate a chunk using the bundled local llama.cpp model (active model).
+ * Cogito is a reasoning model — strip any <think>…</think> block.
+ */
+async function translateWithLocal(
+  text: string,
+  systemPrompt: string,
+  abortSignal?: AbortSignal
+): Promise<string> {
+  const { llamaBridge } = await import('./llama-bridge.js');
+  const out = await llamaBridge.generate({
+    system: systemPrompt,
+    prompt: text,
+    temperature: 0.3,
+    signal: abortSignal,
+  });
+  return out.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || text;
+}
+
+/**
  * Translate a chunk using the configured provider with retry logic
  */
 async function translateChunkWithProvider(
@@ -367,6 +386,8 @@ async function translateChunkWithProvider(
             throw new Error('OpenAI not configured');
           }
           return await translateWithOpenAI(text, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal);
+        case 'local':
+          return await translateWithLocal(text, systemPrompt, abortSignal);
         default:
           throw new Error(`Unknown provider: ${config.provider}`);
       }
