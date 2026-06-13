@@ -8,7 +8,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { getDefaultE2aPath, getDefaultE2aTmpPath, getPythonInvocation, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
 import * as os from 'os';
-import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata, optimizeCoverForM4b } from './metadata-tools';
+import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 
@@ -1449,7 +1449,7 @@ export async function startReassembly(
 
         // Apply extended metadata with m4b-tool if output file exists
         if (outputPath && fs.existsSync(outputPath)) {
-          await applyMetadataWithM4bTool(outputPath, config.metadata, mainWindow, jobId);
+          await applyM4bMetadata(outputPath, config.metadata, mainWindow, jobId);
         }
 
         // ── Atomic move: staging → output dir ──
@@ -1641,10 +1641,10 @@ export async function getBfpCachedSession(bfpPath: string): Promise<E2aSession |
 }
 
 /**
- * Apply extended metadata to M4B using shared metadata-tools module
- * (uses tone on Windows, m4b-tool on macOS/Linux)
+ * Apply extended metadata to M4B using the shared metadata-tools module
+ * (bundled ffmpeg — no third-party tagger)
  */
-async function applyMetadataWithM4bTool(
+async function applyM4bMetadata(
   m4bPath: string,
   metadata: ReassemblyConfig['metadata'],
   mainWindow: BrowserWindow | null,
@@ -1712,18 +1712,12 @@ async function applyMetadataWithM4bTool(
   activeMetadataAborts.set(jobId, controller);
 
   try {
-    // Remove existing cover first to ensure clean state (strips Calibre-generated covers)
-    if (metadataToApply.coverPath) {
-      try {
-        await removeCover(m4bPath);
-        console.log('[REASSEMBLY] Removed existing cover before applying new one');
-      } catch (removeErr) {
-        console.warn('[REASSEMBLY] Failed to remove existing cover (continuing):', removeErr);
-      }
-    }
-
+    // applyMetadata maps only the chosen cover (any existing/Calibre-generated
+    // cover is dropped) in a single lossless `-c copy` remux, so no separate
+    // cover-strip pass is needed. Timeout is generous — a remux rewrites the
+    // whole file, which is seconds for a normal book but longer for multi-GB ones.
     await applyMetadata(m4bPath, metadataToApply, {
-      timeoutMs: 60_000,
+      timeoutMs: 300_000,
       signal: controller.signal
     });
     console.log('[REASSEMBLY] Metadata applied successfully');

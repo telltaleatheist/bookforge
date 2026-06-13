@@ -1,6 +1,28 @@
 /**
  * Unified metadata tool abstraction for audiobook tagging.
- * Uses `tone` on Windows and `m4b-tool` on macOS/Linux.
+ *
+ * Uses the bundled ffmpeg for everything — no third-party binary (previously
+ * `tone` on Windows / `m4b-tool` + PHP on macOS/Linux). ffmpeg ships inside the
+ * relocatable env, so audiobook tagging + cover art works on a clean machine
+ * with nothing installed.
+ *
+ * The audiobook (.m4b) is already built by e2a via ffmpeg (chapters, cover, the
+ * iTunes audiobook `media_type` atom). These functions are a post-step that
+ * layers BookForge's user-edited metadata + chosen cover on top, as a lossless
+ * `-c copy` remux that preserves chapters and the audio bitstream byte-for-byte.
+ *
+ * Validated recipe (replace cover + tags, keep chapters):
+ *   ffmpeg -i in.m4b -i cover.jpg -map 0:a -map 1:0 -map_chapters 0 \
+ *     -c:a copy -c:v copy -disposition:v:0 attached_pic \
+ *     -metadata title=… -metadata artist=… -metadata composer=<narrator> \
+ *     -metadata grouping=<series> -metadata genre=… -metadata media_type=2  out.m4b
+ *
+ * Narrator → `composer` and series → `grouping` match the long-standing m4b-tool
+ * mapping (`--writer` = composer). Two gotchas, both verified empirically:
+ *   - `-map 1:0` (explicit stream), NOT `-map 1:v` with global `-c copy` — the
+ *     latter drops the cover when the chapter track is rebuilt.
+ *   - Do NOT add `-movflags use_metadata_tags` — it also silently drops the
+ *     attached_pic cover. Standard mp4 metadata keys don't need it.
  */
 
 import { spawn, execFileSync } from 'child_process';
@@ -16,8 +38,9 @@ function appendCapped(buf: string, chunk: string): string {
   return buf;
 }
 
-// Tool type detection
-type MetadataTool = 'tone' | 'm4b-tool';
+// Tool type detection. ffmpeg is the only backend now; the type + shape are kept
+// so existing callers (`getMetadataToolPath()`) are unchanged.
+type MetadataTool = 'ffmpeg';
 
 interface MetadataToolInfo {
   tool: MetadataTool;
@@ -25,79 +48,15 @@ interface MetadataToolInfo {
 }
 
 /**
- * Get the appropriate metadata tool for the current platform
+ * Get the metadata tool for the current platform. Always ffmpeg (bundled in the
+ * relocatable env, with system/PATH fallback). Never null in practice — ffmpeg
+ * is a hard dependency of the whole pipeline — but typed nullable for callers
+ * that gate on it.
  */
 export function getMetadataToolPath(): MetadataToolInfo | null {
-  const platform = os.platform();
-  const homeDir = os.homedir();
-
-  if (platform === 'win32') {
-    // Windows: prefer tone (standalone binary, no PHP required)
-    const toneCandidates = [
-      path.join(homeDir, 'tools', 'tone', 'tone.exe'),
-      'C:\\tools\\tone\\tone.exe',
-      'C:\\Program Files\\tone\\tone.exe',
-      path.join(homeDir, 'AppData', 'Local', 'tone', 'tone.exe'),
-    ];
-
-    for (const candidate of toneCandidates) {
-      try {
-        if (fs.existsSync(candidate)) {
-          return { tool: 'tone', path: candidate };
-        }
-      } catch { /* continue */ }
-    }
-
-    // Fallback: check if m4b-tool exists (requires PHP)
-    const m4bCandidates = [
-      path.join(homeDir, 'scoop', 'shims', 'm4b-tool.bat'),
-      path.join(homeDir, 'scoop', 'apps', 'm4b-tool', 'current', 'm4b-tool.bat'),
-      'C:\\Program Files\\m4b-tool\\m4b-tool.bat',
-      'C:\\tools\\m4b-tool\\m4b-tool.bat',
-    ];
-
-    for (const candidate of m4bCandidates) {
-      try {
-        if (fs.existsSync(candidate)) {
-          return { tool: 'm4b-tool', path: candidate };
-        }
-      } catch { /* continue */ }
-    }
-
-    return null;
-  } else {
-    // macOS/Linux: prefer m4b-tool (traditional choice)
-    const m4bCandidates = [
-      '/opt/homebrew/bin/m4b-tool',
-      '/usr/local/bin/m4b-tool',
-      path.join(homeDir, '.local', 'bin', 'm4b-tool'),
-    ];
-
-    for (const candidate of m4bCandidates) {
-      try {
-        if (fs.existsSync(candidate)) {
-          return { tool: 'm4b-tool', path: candidate };
-        }
-      } catch { /* continue */ }
-    }
-
-    // Fallback: check if tone exists
-    const toneCandidates = [
-      '/usr/local/bin/tone',
-      path.join(homeDir, '.local', 'bin', 'tone'),
-    ];
-
-    for (const candidate of toneCandidates) {
-      try {
-        if (fs.existsSync(candidate)) {
-          return { tool: 'tone', path: candidate };
-        }
-      } catch { /* continue */ }
-    }
-
-    // Default for Mac (most common installation path)
-    return { tool: 'm4b-tool', path: '/opt/homebrew/bin/m4b-tool' };
-  }
+  const ffmpeg = getFfmpegPath();
+  if (!ffmpeg) return null;
+  return { tool: 'ffmpeg', path: ffmpeg };
 }
 
 /**
@@ -116,59 +75,137 @@ export interface AudiobookMetadata {
   contributors?: Array<{ first: string; last: string }>;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared ffmpeg remux helper
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * Remove cover/embedded pictures from an audiobook file
+ * Run an ffmpeg remux that reads `filePath`, writes a sibling temp file, and —
+ * only on a clean exit with a plausibly-sized output — atomically swaps it in.
+ * The original is renamed aside first and restored on any failure, so the file
+ * is never left half-written (the reason the old m4b-tool path needed a backup).
+ *
+ * Metadata is non-critical: a missing ffmpeg, a timeout, or an abort resolves
+ * quietly (the file keeps its prior tags) rather than failing the job.
  */
-export function removeCover(filePath: string): Promise<void> {
+function ffmpegRemuxInPlace(
+  filePath: string,
+  buildArgs: (tmpOut: string) => string[],
+  options?: { timeoutMs?: number; signal?: AbortSignal; label?: string }
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const toolInfo = getMetadataToolPath();
-    if (!toolInfo) {
-      console.log('[METADATA-TOOLS] No metadata tool found, skipping cover removal');
+    const ffmpeg = getFfmpegPath();
+    if (!ffmpeg) {
+      console.log('[METADATA-TOOLS] ffmpeg not found, skipping');
       resolve();
       return;
     }
-
-    let args: string[];
-
-    if (toolInfo.tool === 'tone') {
-      // tone: tone tag --meta-remove-property=EmbeddedPictures --force file.m4b
-      args = ['tag', '--meta-remove-property=EmbeddedPictures', '--force', filePath];
-    } else {
-      // NOTE: m4b-tool's --skip-cover doesn't actually REMOVE the cover, it just tells m4b-tool
-      // not to copy the existing cover during metadata operations. For proper cover replacement,
-      // we rely on applyMetadata() with --cover which should replace the existing cover.
-      // This call is mainly a no-op for m4b-tool but left for compatibility.
-      args = ['meta', '--skip-cover', '-f', filePath];
+    if (options?.signal?.aborted) {
+      console.log('[METADATA-TOOLS] Already aborted, skipping');
+      resolve();
+      return;
+    }
+    if (!fs.existsSync(filePath)) {
+      reject(new Error(`File not found: ${filePath}`));
+      return;
     }
 
-    console.log(`[METADATA-TOOLS] Removing cover: ${toolInfo.path} ${args.join(' ')}`);
+    const ext = path.extname(filePath);
+    const tmpOut = `${filePath}.ffwork${ext}`;
+    const tmpPrev = `${filePath}.ffprev${ext}`;
+    const originalSize = fs.statSync(filePath).size;
+    for (const stale of [tmpOut, tmpPrev]) {
+      try { if (fs.existsSync(stale)) fs.unlinkSync(stale); } catch { /* ignore */ }
+    }
 
-    const proc = spawn(toolInfo.path, args, {
-      shell: os.platform() === 'win32' && toolInfo.tool === 'm4b-tool'
-    });
+    const args = buildArgs(tmpOut);
+    const label = options?.label ?? 'remux';
+    console.log(`[METADATA-TOOLS] ffmpeg ${label}: ${ffmpeg} ${args.join(' ')}`);
 
+    const proc = spawn(ffmpeg, args);
     let stderr = '';
+    let settled = false;
+    const timeoutMs = options?.timeoutMs ?? 180_000;
 
-    proc.stdout?.on('data', (data: Buffer) => {
-      console.log('[METADATA-TOOLS]', data.toString().trim());
+    function cleanupTmp() {
+      try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch { /* ignore */ }
+    }
+
+    function finish(resolution: 'resolve' | 'reject', error?: Error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (onAbort && options?.signal) options.signal.removeEventListener('abort', onAbort);
+      if (resolution === 'resolve') resolve();
+      else reject(error);
+    }
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      console.warn(`[METADATA-TOOLS] Timeout after ${timeoutMs}ms, killing ffmpeg`);
+      proc.kill('SIGKILL');
+      cleanupTmp();
+      finish('resolve'); // non-critical: leave the original untouched
+    }, timeoutMs);
+
+    let onAbort: (() => void) | null = null;
+    if (options?.signal) {
+      onAbort = () => {
+        if (settled) return;
+        console.log('[METADATA-TOOLS] Aborted, killing ffmpeg');
+        proc.kill('SIGKILL');
+        cleanupTmp();
+        finish('resolve');
+      };
+      options.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    proc.stdout?.on('data', (d: Buffer) => console.log('[METADATA-TOOLS]', d.toString().trim()));
+    proc.stderr?.on('data', (d: Buffer) => {
+      stderr = appendCapped(stderr, d.toString());
+      const line = d.toString().trim();
+      if (line) console.log('[METADATA-TOOLS STDERR]', line);
     });
 
-    proc.stderr?.on('data', (data: Buffer) => {
-      stderr = appendCapped(stderr, data.toString());
-      console.log('[METADATA-TOOLS STDERR]', data.toString().trim());
-    });
+    proc.on('error', (err) => { cleanupTmp(); finish('reject', err); });
 
     proc.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`Cover removal failed with code ${code}: ${stderr}`));
+      if (settled) return;
+      if (code !== 0) {
+        cleanupTmp();
+        finish('reject', new Error(`ffmpeg ${label} failed with code ${code}: ${stderr}`));
+        return;
+      }
+      // Sanity-check the output before swapping it in: a `-c copy` remux should
+      // be within a hair of the original size. Guard against a 0-byte / truncated
+      // file masquerading as success.
+      if (!fs.existsSync(tmpOut) || fs.statSync(tmpOut).size < originalSize * 0.5) {
+        cleanupTmp();
+        finish('reject', new Error(`ffmpeg ${label} produced an implausible output (size check failed)`));
+        return;
+      }
+      // Atomic-ish swap, same volume: original→prev, tmp→original, drop prev.
+      try {
+        fs.renameSync(filePath, tmpPrev);
+        try {
+          fs.renameSync(tmpOut, filePath);
+        } catch (swapErr) {
+          try { fs.renameSync(tmpPrev, filePath); } catch { /* best effort restore */ }
+          throw swapErr;
+        }
+        try { if (fs.existsSync(tmpPrev)) fs.unlinkSync(tmpPrev); } catch { /* ignore */ }
+        finish('resolve');
+      } catch (err) {
+        cleanupTmp();
+        finish('reject', err instanceof Error ? err : new Error(String(err)));
       }
     });
-
-    proc.on('error', reject);
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cover optimization (already ffmpeg-based)
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Optimize a cover image for M4B embedding.
@@ -212,239 +249,115 @@ export function optimizeCoverForM4b(coverPath: string, maxDim = 1400): string {
   return coverPath;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Public operations
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * Apply metadata to an audiobook file
+ * Remove cover/embedded pictures from an audiobook file.
+ * Remuxes audio + chapters only (drops every video/attached_pic stream).
+ */
+export function removeCover(filePath: string): Promise<void> {
+  return ffmpegRemuxInPlace(
+    filePath,
+    (tmpOut) => [
+      '-v', 'error', '-y',
+      '-i', filePath,
+      '-map', '0:a',
+      '-map_chapters', '0',
+      '-c:a', 'copy',
+      tmpOut,
+    ],
+    { label: 'removeCover', timeoutMs: 180_000 }
+  ).catch((err) => {
+    // Cover removal is non-critical; surface as a rejection so callers that
+    // wrap it in try/catch can log, but it never corrupts the file.
+    throw err instanceof Error ? err : new Error(String(err));
+  });
+}
+
+/**
+ * Apply metadata (and optionally swap the cover) on an audiobook file.
  */
 export function applyMetadata(
   filePath: string,
   metadata: AudiobookMetadata,
   options?: { timeoutMs?: number; signal?: AbortSignal }
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const toolInfo = getMetadataToolPath();
-    if (!toolInfo) {
-      console.log('[METADATA-TOOLS] No metadata tool found, skipping metadata application');
-      resolve();
-      return;
+  // Build artist string from contributors if available
+  const artistString = metadata.contributors && metadata.contributors.length > 0
+    ? metadata.contributors
+        .filter(c => c.first || c.last)
+        .map(c => [c.first, c.last].filter(Boolean).join(' '))
+        .join('; ')
+    : metadata.author;
+
+  // Optimize cover for M4B compatibility (convert to JPEG, resize)
+  let optimizedCoverPath: string | undefined;
+  if (metadata.coverPath && fs.existsSync(metadata.coverPath)) {
+    optimizedCoverPath = optimizeCoverForM4b(metadata.coverPath);
+  }
+
+  // Collect the metadata flags so we can skip the whole remux if there's nothing
+  // to write and no cover to swap.
+  const metaFlags: string[] = [];
+  if (metadata.title) metaFlags.push('-metadata', `title=${metadata.title}`);
+  if (artistString) metaFlags.push('-metadata', `artist=${artistString}`);
+  if (metadata.year) {
+    // Full date if given (YYYY-MM-DD), else year-only — ffmpeg accepts both.
+    metaFlags.push('-metadata', `date=${metadata.year}`);
+  }
+  if (metadata.narrator) metaFlags.push('-metadata', `composer=${metadata.narrator}`);
+  if (metadata.series) metaFlags.push('-metadata', `grouping=${metadata.series}`);
+  if (metadata.genre) metaFlags.push('-metadata', `genre=${metadata.genre}`);
+  if (metadata.description) metaFlags.push('-metadata', `description=${metadata.description}`);
+
+  if (metaFlags.length === 0 && !optimizedCoverPath) {
+    console.log('[METADATA-TOOLS] No metadata or cover to apply');
+    return Promise.resolve();
+  }
+
+  function cleanupOptimizedCover() {
+    if (optimizedCoverPath && optimizedCoverPath !== metadata.coverPath) {
+      try { fs.unlinkSync(optimizedCoverPath); } catch { /* non-critical */ }
     }
+  }
 
-    // Check if already aborted before doing any work
-    if (options?.signal?.aborted) {
-      console.log('[METADATA-TOOLS] Already aborted, skipping metadata application');
-      resolve();
-      return;
-    }
+  return ffmpegRemuxInPlace(
+    filePath,
+    (tmpOut) => {
+      const args = ['-v', 'error', '-y', '-i', filePath];
+      if (optimizedCoverPath) args.push('-i', optimizedCoverPath);
 
-    // Build artist string from contributors if available
-    const artistString = metadata.contributors && metadata.contributors.length > 0
-      ? metadata.contributors
-          .filter(c => c.first || c.last)
-          .map(c => [c.first, c.last].filter(Boolean).join(' '))
-          .join('; ')
-      : metadata.author;
-
-    // Optimize cover for M4B compatibility (convert to JPEG, resize)
-    let optimizedCoverPath: string | undefined;
-    if (metadata.coverPath && fs.existsSync(metadata.coverPath)) {
-      optimizedCoverPath = optimizeCoverForM4b(metadata.coverPath);
-    }
-
-    let args: string[];
-
-    if (toolInfo.tool === 'tone') {
-      // Build tone arguments
-      args = ['tag'];
-
-      if (metadata.title) {
-        args.push('--meta-title', metadata.title);
-      }
-      if (artistString) {
-        args.push('--meta-artist', artistString);
-      }
-      if (metadata.year) {
-        // tone requires full date format (YYYY-MM-DD), convert year-only to full date
-        const yearValue = metadata.year.includes('-') ? metadata.year : `${metadata.year}-01-01`;
-        args.push('--meta-publishing-date', yearValue);
-      }
-      if (metadata.narrator) {
-        args.push('--meta-narrator', metadata.narrator);
-      }
-      if (metadata.series) {
-        args.push('--meta-group', metadata.series);
-      }
-      if (metadata.genre) {
-        args.push('--meta-genre', metadata.genre);
-      }
-      if (metadata.description) {
-        args.push('--meta-description', metadata.description);
-      }
+      // Audio first, then the cover. Chapters are regenerated from the source.
+      args.push('-map', '0:a');
       if (optimizedCoverPath) {
-        args.push('--meta-cover-file', optimizedCoverPath);
-      }
-
-      args.push('--force', filePath);
-    } else {
-      // Build m4b-tool arguments
-      args = ['meta'];
-
-      if (metadata.title) {
-        args.push('--name', metadata.title);
-      }
-      if (artistString) {
-        args.push('--artist', artistString);
-      }
-      if (metadata.year) {
-        args.push('--year', metadata.year);
-      }
-      if (metadata.narrator) {
-        // m4b-tool uses --writer for narrator (based on common usage)
-        args.push('--writer', metadata.narrator);
-      }
-      if (metadata.series) {
-        args.push('--series', metadata.series);
-      }
-      if (metadata.seriesNumber) {
-        args.push('--series-part', metadata.seriesNumber);
-      }
-      if (metadata.genre) {
-        args.push('--genre', metadata.genre);
-      }
-      if (metadata.description) {
-        args.push('--description', metadata.description);
-      }
-      if (optimizedCoverPath) {
-        args.push('--cover', optimizedCoverPath);
-      }
-
-      args.push('-f', filePath);
-    }
-
-    // Check if we have any metadata to apply (beyond just the force flag and file path)
-    const minArgs = toolInfo.tool === 'tone' ? 3 : 3; // tag + --force + file OR meta + -f + file
-    if (args.length <= minArgs) {
-      console.log('[METADATA-TOOLS] No metadata to apply');
-      resolve();
-      return;
-    }
-
-    console.log(`[METADATA-TOOLS] Applying metadata: ${toolInfo.path} ${args.join(' ')}`);
-
-    // Back up the file before m4b-tool touches it — m4b-tool can corrupt files
-    // even when it reports an error (e.g., invalid atom size during chapter reimport)
-    const backupPath = filePath + '.metadata-bak';
-    try {
-      fs.copyFileSync(filePath, backupPath);
-      console.log(`[METADATA-TOOLS] Backed up file to: ${backupPath}`);
-    } catch (backupErr) {
-      console.error('[METADATA-TOOLS] Failed to create backup, skipping metadata:', backupErr);
-      resolve();
-      return;
-    }
-
-    function restoreBackup() {
-      try {
-        if (fs.existsSync(backupPath)) {
-          fs.copyFileSync(backupPath, filePath);
-          console.log(`[METADATA-TOOLS] Restored file from backup after failure`);
-        }
-      } catch (restoreErr) {
-        console.error('[METADATA-TOOLS] Failed to restore backup:', restoreErr);
-      }
-    }
-
-    function removeBackup() {
-      try {
-        if (fs.existsSync(backupPath)) {
-          fs.unlinkSync(backupPath);
-        }
-      } catch { /* non-critical */ }
-    }
-
-    function cleanupOptimizedCover() {
-      if (optimizedCoverPath && optimizedCoverPath !== metadata.coverPath) {
-        try { fs.unlinkSync(optimizedCoverPath); } catch { /* non-critical */ }
-      }
-    }
-
-    const proc = spawn(toolInfo.path, args, {
-      shell: os.platform() === 'win32' && toolInfo.tool === 'm4b-tool'
-    });
-
-    let stderr = '';
-    let settled = false;
-    const timeoutMs = options?.timeoutMs ?? 60_000;
-
-    function settle(resolution: 'resolve' | 'reject', error?: Error) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutTimer);
-      cleanupOptimizedCover();
-      if (onAbort) options!.signal!.removeEventListener('abort', onAbort);
-      if (resolution === 'resolve') {
-        removeBackup();
-        resolve();
+        args.push('-map', '1:0');          // explicit stream — NOT 1:v (drops cover)
       } else {
-        restoreBackup();
-        removeBackup();
-        reject(error);
+        args.push('-map', '0:v?');         // keep an existing cover if present
       }
-    }
-
-    // Timeout: kill, restore, and resolve (metadata is non-critical)
-    const timeoutTimer = setTimeout(() => {
-      if (settled) return;
-      console.warn(`[METADATA-TOOLS] Timeout after ${timeoutMs}ms, killing process`);
-      proc.kill('SIGKILL');
-      restoreBackup();
-      removeBackup();
-      cleanupOptimizedCover();
-      settled = true;
-      clearTimeout(timeoutTimer);
-      if (onAbort) options!.signal!.removeEventListener('abort', onAbort);
-      resolve();
-    }, timeoutMs);
-
-    // AbortSignal: kill, restore, and resolve
-    let onAbort: (() => void) | null = null;
-    if (options?.signal) {
-      onAbort = () => {
-        if (settled) return;
-        console.log('[METADATA-TOOLS] Aborted, killing process');
-        proc.kill('SIGKILL');
-        restoreBackup();
-        removeBackup();
-        cleanupOptimizedCover();
-        settled = true;
-        clearTimeout(timeoutTimer);
-        options!.signal!.removeEventListener('abort', onAbort!);
-        resolve();
-      };
-      options.signal.addEventListener('abort', onAbort, { once: true });
-    }
-
-    proc.stdout?.on('data', (data: Buffer) => {
-      console.log('[METADATA-TOOLS]', data.toString().trim());
-    });
-
-    proc.stderr?.on('data', (data: Buffer) => {
-      stderr = appendCapped(stderr, data.toString());
-      console.log('[METADATA-TOOLS STDERR]', data.toString().trim());
-    });
-
-    proc.on('close', (code) => {
-      if (code === 0) {
-        settle('resolve');
-      } else {
-        settle('reject', new Error(`Metadata application failed with code ${code}: ${stderr}`));
-      }
-    });
-
-    proc.on('error', (err) => settle('reject', err));
-  });
+      args.push('-map_chapters', '0');
+      args.push('-c:a', 'copy', '-c:v', 'copy');
+      if (optimizedCoverPath) args.push('-disposition:v:0', 'attached_pic');
+      // NOTE: do NOT add `-movflags use_metadata_tags` here — it silently drops
+      // the attached_pic cover stream. All fields below are standard mp4 keys
+      // (title/artist/composer/grouping/genre/date/media_type) and write fine
+      // without it.
+      args.push(...metaFlags);
+      // iTunes "audiobook" media kind (stik=2) — keep players treating it right.
+      args.push('-metadata', 'media_type=2');
+      args.push(tmpOut);
+      return args;
+    },
+    { label: 'applyMetadata', timeoutMs: options?.timeoutMs ?? 180_000, signal: options?.signal }
+  ).then(
+    () => { cleanupOptimizedCover(); },
+    (err) => { cleanupOptimizedCover(); throw err; }
+  );
 }
 
 /**
- * Check if a metadata tool is available
+ * Check if a metadata tool is available (ffmpeg is bundled, so effectively always)
  */
 export function isMetadataToolAvailable(): boolean {
   return getMetadataToolPath() !== null;

@@ -210,7 +210,7 @@ export interface ReassemblyJobConfig {
     year?: string;
     coverPath?: string;
     outputFilename?: string;
-    // Extended metadata (applied with m4b-tool)
+    // Extended metadata (applied with bundled ffmpeg)
     narrator?: string;
     series?: string;
     seriesNumber?: string;

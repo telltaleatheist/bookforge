@@ -65,7 +65,7 @@ function writeWorkerLog(line: string): void {
     workerLogStream.write(`${new Date().toISOString()} ${line}\n`);
   }
 }
-import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
+import { getMetadataToolPath, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import * as manifestService from './manifest-service';
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 
@@ -2805,8 +2805,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
 
         if (config.metadata && finalPath && config.outputDir) {
           try {
-            console.log('[PARALLEL-TTS] Calling applyMetadataWithM4bTool...');
-            const processedPath = await applyMetadataWithM4bTool(finalPath, config.metadata, config.outputDir, config.bfpPath);
+            console.log('[PARALLEL-TTS] Calling applyM4bMetadata...');
+            const processedPath = await applyM4bMetadata(finalPath, config.metadata, config.outputDir, config.bfpPath);
             console.log('[PARALLEL-TTS] After metadata, path:', processedPath);
             resolve(await finalizeOutputPath(processedPath, session));
           } catch (metaErr) {
@@ -2845,7 +2845,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
             if (config.metadata && config.outputDir) {
               try {
                 console.log('[PARALLEL-TTS] Attempting post-processing despite assembly error...');
-                const processedPath = await applyMetadataWithM4bTool(foundPath, config.metadata, config.outputDir, config.bfpPath);
+                const processedPath = await applyM4bMetadata(foundPath, config.metadata, config.outputDir, config.bfpPath);
                 console.log('[PARALLEL-TTS] Post-processing succeeded:', processedPath);
                 resolve(await finalizeOutputPath(processedPath, session));
                 return;
@@ -2883,9 +2883,9 @@ interface MetadataConfig {
 }
 
 /**
- * Apply metadata to m4b file using m4b-tool and optionally rename
+ * Apply metadata to m4b file (bundled ffmpeg via metadata-tools) and optionally rename
  */
-async function applyMetadataWithM4bTool(
+async function applyM4bMetadata(
   inputPath: string,
   metadata: MetadataConfig,
   outputDir: string,
@@ -2894,7 +2894,7 @@ async function applyMetadataWithM4bTool(
   const hasMetadataChanges = metadata.title || metadata.author || metadata.year || metadata.coverPath;
   const hasRename = metadata.outputFilename;
 
-  console.log('[PARALLEL-TTS] applyMetadataWithM4bTool called with:');
+  console.log('[PARALLEL-TTS] applyM4bMetadata called with:');
   console.log('[PARALLEL-TTS]   inputPath:', inputPath);
   console.log('[PARALLEL-TTS]   outputDir:', outputDir);
   console.log('[PARALLEL-TTS]   bfpPath:', bfpPath);
@@ -2971,20 +2971,12 @@ async function applyMetadataWithM4bTool(
     console.log('[PARALLEL-TTS] No coverPath available - M4B will have no custom cover');
   }
 
-  // Apply metadata if we have any changes
+  // Apply metadata if we have any changes. applyMetadata swaps the cover and
+  // drops any existing/Calibre cover in a single lossless remux — no separate
+  // cover-strip pass needed.
   if (Object.keys(metadataToApply).length > 0) {
-    // Remove existing cover first to ensure clean state (strips Calibre-generated covers)
-    if (metadataToApply.coverPath) {
-      try {
-        await removeCover(inputPath);
-        console.log('[PARALLEL-TTS] Removed existing cover before applying new one');
-      } catch (removeErr) {
-        console.warn('[PARALLEL-TTS] Failed to remove existing cover (continuing):', removeErr);
-      }
-    }
-
     console.log('[PARALLEL-TTS] Applying metadata to M4B:', JSON.stringify(metadataToApply, null, 2));
-    await applyMetadata(inputPath, metadataToApply);
+    await applyMetadata(inputPath, metadataToApply, { timeoutMs: 300_000 });
   }
 
   // Rename and move if custom filename specified and outputDir is valid
