@@ -200,6 +200,16 @@ export class SettingsService {
         fields: [], // Custom UI (app-add-ons-panel + app-voices-panel)
       },
       {
+        // Downloadable Stanza language packs (sentence-segmentation models) used
+        // by AI cleanup & translation. Renders app-languages-panel. Sits right
+        // after the Add-ons & Models hub (which holds Voices).
+        id: 'languages',
+        name: 'Languages',
+        description: 'Download sentence-segmentation models for cleanup & translation',
+        icon: '🌍',
+        fields: [], // Custom UI (app-languages-panel)
+      },
+      {
         // Thin advanced section: genuine overrides only (tool paths, scratch
         // dir, WSL). Conda is hidden on packaged builds (bundled env). Renamed
         // from "External Tools" — WS7.
@@ -439,9 +449,11 @@ export class SettingsService {
     // Initialize AI config with defaults
     defaults['aiConfig'] = { ...DEFAULT_AI_CONFIG };
 
-    // Initialize bookshelf server config with defaults
+    // Initialize bookshelf server config with defaults.
+    // Enabled by default: the Bookshelf server starts on launch so the library
+    // is immediately browsable on the network. Users can stop it from the nav rail.
     defaults['bookshelfConfig'] = {
-      enabled: false,
+      enabled: true,
       port: 8765
     };
 

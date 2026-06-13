@@ -254,16 +254,25 @@ async function saveBookshelfConfig(config: { enabled: boolean; port: number; ext
   await fs.writeFile(configPath, JSON.stringify(config, null, 2));
 }
 
-// Auto-start bookshelf server if enabled
+// Auto-start bookshelf server. Default ON: a fresh install (no bookshelf.json
+// yet) starts the server and persists the config, so the library is immediately
+// browsable on the network. An explicit user opt-out (enabled:false, written by
+// the stop handler) is respected on subsequent launches.
 async function autoStartBookshelf(): Promise<void> {
   const config = await loadBookshelfConfig();
-  if (config && config.enabled) {
-    try {
-      console.log('[BookshelfServer] Auto-starting with config:', config);
-      await bookshelfServer.start({ port: config.port, userDataPath: app.getPath('userData') });
-    } catch (err) {
-      console.error('[BookshelfServer] Auto-start failed:', err);
+  const port = config?.port ?? 8765;
+  const enabled = config ? config.enabled : true;
+  if (!enabled) return;
+  try {
+    console.log('[BookshelfServer] Auto-starting on port', port);
+    await bookshelfServer.start({ port, userDataPath: app.getPath('userData') });
+    // Persist the default on first launch so the stop handler has a config to
+    // flip to disabled (it only saves when a config already exists).
+    if (!config) {
+      await saveBookshelfConfig({ enabled: true, port });
     }
+  } catch (err) {
+    console.error('[BookshelfServer] Auto-start failed:', err);
   }
 }
 

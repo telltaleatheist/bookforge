@@ -12,6 +12,7 @@ import * as path from 'path';
 
 import { getE2aPath } from '../tool-paths';
 import { voiceComponents } from './voice-components';
+import { languagePackComponents } from './language-pack-components';
 import type {
   OptionalComponent,
   ComponentArtifact,
@@ -211,6 +212,7 @@ export const CATALOG: OptionalComponent[] = [
   tesseract,
   orpheus,
   ...voiceComponents(),
+  ...languagePackComponents(),
 ];
 
 export function getComponent(id: string): OptionalComponent | undefined {

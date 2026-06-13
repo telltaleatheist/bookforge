@@ -10,6 +10,7 @@ import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.co
 import { OnboardingComponent } from './components/onboarding/onboarding.component';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
+import { AiService } from './core/services/ai.service';
 
 @Component({
   selector: 'app-root',
@@ -23,8 +24,10 @@ import { RuntimeService } from './core/services/runtime.service';
     OnboardingComponent
   ],
   template: `
-    <!-- First-run setup overlay: blocks the UI while the bundled TTS runtime
-         unpacks so jobs can't start against a half-ready runtime. -->
+    <!-- First-run setup overlay: only blocks on a setup ERROR (needs attention).
+         While the runtime unpacks we DON'T block — the user runs onboarding /
+         guided setup in the meantime; the queue defers job start until ready and
+         env-dependent downloads gate on runtime.ready(). -->
     @if (showSetupOverlay()) {
       <div class="setup-overlay">
         <div class="setup-card">
@@ -207,12 +210,13 @@ export class App implements OnInit {
   readonly libraryService = inject(LibraryService);
   readonly runtime = inject(RuntimeService);
   private readonly router = inject(Router);
+  private readonly ai = inject(AiService);
 
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
 
   readonly showSetupOverlay = computed(() =>
-    !this.setupDismissed() && (this.runtime.preparing() || !!this.runtime.errorStatus())
+    !this.setupDismissed() && !!this.runtime.errorStatus()
   );
 
   dismissSetup(): void {
@@ -242,25 +246,30 @@ export class App implements OnInit {
       route: '/queue'
     },
     {
-      id: 'ai-setup',
-      icon: '\u{1F916}', // Robot emoji
-      label: 'AI Setup',
-      route: '/ai-setup'
-    },
-    {
       id: 'settings',
       icon: '\u{2699}', // Gear emoji
       label: 'Settings',
       route: '/settings'
     }
+    // AI Setup is reached from Settings → AI and from first-run onboarding /
+    // the cleanup-page overlay — intentionally not a top-level nav item.
   ];
 
   ngOnInit() {
     this.themeService.initializeTheme();
+
+    // TEMP (dev): always land on the guided first-run setup at startup so we can
+    // iterate on it without resetting onboarding state. Remove once the flow is
+    // finalized — normal behavior routes to /setup only from onboarding complete.
+    if (!this.isStandaloneWindow()) {
+      void this.router.navigate(['/setup']);
+    }
   }
 
-  onOnboardingComplete(): void {
-    // Onboarding complete - the view will update automatically
-    // because libraryService.isConfigured() is a computed signal
+  async onOnboardingComplete(): Promise<void> {
+    // First run: after the library is set, walk the user through the guided
+    // setup (AI → voices → language packs → optional tools → home).
+    await this.ai.refresh();
+    void this.router.navigate(['/setup']);
   }
 }

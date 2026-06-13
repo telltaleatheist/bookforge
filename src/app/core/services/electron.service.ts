@@ -77,6 +77,7 @@ export type ComponentKind =
   | 'binary'
   | 'conda-env'
   | 'tts-model'
+  | 'language-pack'
   | 'system';
 
 export type AcquisitionMode = 'external' | 'managed';

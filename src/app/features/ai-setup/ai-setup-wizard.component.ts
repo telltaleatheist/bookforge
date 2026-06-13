@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, inject, signal, computed } from '@angular/core';
+import { Component, OnInit, OnDestroy, inject, signal, computed, input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
@@ -21,17 +21,19 @@ import { SettingsService } from '../../core/services/settings.service';
   standalone: true,
   imports: [CommonModule, FormsModule, DesktopButtonComponent],
   template: `
-    <div class="wizard">
-      <header class="wizard-head">
-        <div class="head-icon">&#129302;</div>
-        <div>
-          <h1>Set up AI</h1>
-          <p class="sub">
-            AI cleanup is optional — it tidies OCR text before narration. Pick one
-            source below. You can always skip cleanup entirely.
-          </p>
-        </div>
-      </header>
+    <div class="wizard" [class.embedded]="embedded()">
+      @if (!embedded()) {
+        <header class="wizard-head">
+          <div class="head-icon">&#129302;</div>
+          <div>
+            <h1>Set up AI</h1>
+            <p class="sub">
+              AI cleanup is optional — it tidies OCR text before narration. Pick one
+              source below. You can always skip cleanup entirely.
+            </p>
+          </div>
+        </header>
+      }
 
       <!-- Availability banner -->
       <div class="status-banner" [class.ok]="ai.available()">
@@ -121,47 +123,66 @@ import { SettingsService } from '../../core/services/settings.service';
         @if (ai.ollamaConnected()) {
           <p class="muted">
             Ollama is running@if (ai.ollamaHasModels()) {  with models installed}@else {, but no models are pulled yet}.
-            Choose the model in Settings → AI.
+            Its models appear in the model picker on the cleanup/translate steps.
           </p>
         } @else {
           <p class="muted">Ollama isn't running. Install it, then pull a model (e.g. <code>ollama pull cogito</code>).</p>
         }
-        <div class="card-actions">
-          <desktop-button variant="ghost" size="sm" (click)="openExternal('https://ollama.com/download')">Get Ollama</desktop-button>
-          <desktop-button variant="ghost" size="sm" (click)="goSettings()">Configure in Settings</desktop-button>
-        </div>
-      </section>
-
-      <!-- ── API key ── -->
-      <section class="card">
-        <div class="card-head">
-          <h2>&#128273; API key</h2>
-          <span class="tag">Claude or OpenAI · highest quality</span>
-        </div>
-        <div class="key-row">
-          <select [(ngModel)]="keyProvider" class="key-select">
-            <option value="claude">Claude (Anthropic)</option>
-            <option value="openai">OpenAI</option>
-          </select>
+        <div class="ollama-url-row">
+          <label class="ollama-url-label">Server URL</label>
           <input
             class="key-input"
-            type="password"
-            [(ngModel)]="keyValue"
-            [placeholder]="keyProvider === 'claude' ? 'sk-ant-…' : 'sk-…'"
-            autocomplete="off"
+            type="text"
+            [value]="ollamaUrl()"
+            (change)="setOllamaUrl($any($event.target).value)"
+            placeholder="http://localhost:11434"
           />
-          <desktop-button variant="primary" size="sm" [disabled]="!keyValue.trim()" (click)="saveKey()">Save</desktop-button>
+          <desktop-button variant="ghost" size="sm" (click)="testOllama()">Test</desktop-button>
         </div>
-        @if (keySaved()) { <p class="saved-note">Saved — this provider will be used for cleanup.</p> }
+        <div class="card-actions">
+          <desktop-button variant="ghost" size="sm" (click)="openExternal('https://ollama.com/download')">Get Ollama</desktop-button>
+        </div>
       </section>
 
-      <footer class="wizard-foot">
-        <desktop-button variant="ghost" (click)="close()">Done</desktop-button>
-      </footer>
+      <!-- ── API keys ── -->
+      <section class="card">
+        <div class="card-head">
+          <h2>&#128273; API keys</h2>
+          <span class="tag">Claude or OpenAI · highest quality</span>
+        </div>
+        @for (p of apiProviders; track p.id) {
+          <div class="key-item">
+            <span class="key-provider">{{ p.label }}</span>
+            @if (hasKey(p.id)) {
+              <span class="key-mask" title="A key is saved (hidden)">••••••••••••</span>
+              <span class="key-saved-tag">Saved</span>
+              <desktop-button variant="ghost" size="sm" (click)="deleteKey(p.id)">Delete</desktop-button>
+            } @else {
+              <input
+                class="key-input"
+                type="password"
+                [(ngModel)]="keyDrafts[p.id]"
+                [placeholder]="p.placeholder"
+                autocomplete="off"
+              />
+              <desktop-button variant="primary" size="sm" [disabled]="!keyDrafts[p.id].trim()" (click)="saveKey(p.id)">Save</desktop-button>
+            }
+          </div>
+        }
+      </section>
+
+      @if (!embedded()) {
+        <footer class="wizard-foot">
+          <desktop-button variant="ghost" (click)="close()">Done</desktop-button>
+        </footer>
+      }
     </div>
   `,
   styles: [`
     .wizard { max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem 3rem; overflow-y: auto; height: 100%; }
+    .wizard.embedded { padding: 0; max-width: none; height: auto; overflow: visible; }
+    .ollama-url-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0 0.75rem; }
+    .ollama-url-label { flex: none; color: var(--text-secondary); font-size: 0.85rem; }
     .wizard-head { display: flex; gap: 1rem; align-items: flex-start; margin-bottom: 1.5rem; }
     .head-icon { font-size: 2.5rem; }
     h1 { font-size: 1.5rem; font-weight: 600; color: var(--text-primary); margin: 0 0 0.25rem; }
@@ -210,13 +231,15 @@ import { SettingsService } from '../../core/services/settings.service';
     .use-row { margin-top: 1rem; }
     .card-actions { display: flex; gap: 0.5rem; }
 
-    .key-row { display: flex; gap: 0.5rem; align-items: center; }
-    .key-select, .key-input {
-      padding: 0.5rem 0.6rem; border: 1px solid var(--border-default); border-radius: 6px;
+    .key-item { display: flex; gap: 0.5rem; align-items: center; padding: 0.4rem 0; }
+    .key-item + .key-item { border-top: 1px solid var(--border-subtle, var(--border-default)); }
+    .key-provider { flex: none; min-width: 9.5rem; color: var(--text-primary); font-size: 0.875rem; font-weight: 500; }
+    .key-input {
+      flex: 1; padding: 0.5rem 0.6rem; border: 1px solid var(--border-default); border-radius: 6px;
       background: var(--bg-base); color: var(--text-primary); font-size: 0.85rem;
     }
-    .key-input { flex: 1; }
-    .saved-note { color: var(--success); font-size: 0.8rem; margin: 0.6rem 0 0; }
+    .key-mask { flex: 1; color: var(--text-secondary); letter-spacing: 2px; font-size: 0.9rem; }
+    .key-saved-tag { flex: none; color: var(--success); font-size: 0.75rem; font-weight: 600; }
 
     .wizard-foot { display: flex; justify-content: flex-end; margin-top: 0.5rem; }
   `]
@@ -231,9 +254,14 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   readonly localStatus = this.ai.localStatus;
   private readonly _progress = signal<Record<string, LocalModelProgress>>({});
 
-  keyProvider: 'claude' | 'openai' = 'claude';
-  keyValue = '';
-  readonly keySaved = signal(false);
+  /** Embedded mode (rendered inside Settings → AI): hide the page header/footer. */
+  readonly embedded = input(false);
+
+  readonly apiProviders = [
+    { id: 'claude' as const, label: 'Claude (Anthropic)', placeholder: 'sk-ant-…' },
+    { id: 'openai' as const, label: 'OpenAI', placeholder: 'sk-…' },
+  ];
+  keyDrafts: Record<'claude' | 'openai', string> = { claude: '', openai: '' };
 
   private unsub?: () => void;
 
@@ -313,18 +341,47 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     this.settings.updateAIConfig({ provider });
   }
 
-  saveKey(): void {
-    const key = this.keyValue.trim();
+  /** True when a non-empty key is saved for the provider. Reads the settings
+   *  signal so it re-evaluates after save/delete. */
+  hasKey(provider: 'claude' | 'openai'): boolean {
+    const cfg = this.settings.getAIConfig();
+    return !!cfg[provider]?.apiKey?.trim();
+  }
+
+  saveKey(provider: 'claude' | 'openai'): void {
+    const key = (this.keyDrafts[provider] || '').trim();
     if (!key) return;
-    if (this.keyProvider === 'claude') {
-      const cfg = this.settings.getAIConfig();
+    const cfg = this.settings.getAIConfig();
+    if (provider === 'claude') {
       this.settings.updateAIConfig({ provider: 'claude', claude: { ...cfg.claude, apiKey: key } });
     } else {
-      const cfg = this.settings.getAIConfig();
       this.settings.updateAIConfig({ provider: 'openai', openai: { ...cfg.openai, apiKey: key } });
     }
-    this.keyValue = '';
-    this.keySaved.set(true);
+    this.keyDrafts[provider] = '';
+    void this.ai.refresh();
+  }
+
+  // ── Ollama server URL (config used by cleanup/translate jobs at runtime) ──
+  ollamaUrl(): string {
+    return this.settings.getAIConfig().ollama?.baseUrl || 'http://localhost:11434';
+  }
+  setOllamaUrl(url: string): void {
+    const cfg = this.settings.getAIConfig();
+    this.settings.updateAIConfig({ ollama: { ...cfg.ollama, baseUrl: url.trim() } });
+    void this.ai.refresh();
+  }
+  testOllama(): void {
+    void this.ai.refresh();
+  }
+
+  /** Remove a saved API key. Leaves the provider selection to the unified picker. */
+  deleteKey(provider: 'claude' | 'openai'): void {
+    const cfg = this.settings.getAIConfig();
+    if (provider === 'claude') {
+      this.settings.updateAIConfig({ claude: { ...cfg.claude, apiKey: '' } });
+    } else {
+      this.settings.updateAIConfig({ openai: { ...cfg.openai, apiKey: '' } });
+    }
     void this.ai.refresh();
   }
 
