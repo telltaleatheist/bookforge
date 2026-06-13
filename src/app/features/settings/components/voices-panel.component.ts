@@ -1,8 +1,15 @@
-import { Component, inject, computed, ChangeDetectionStrategy, OnInit } from '@angular/core';
+import { Component, inject, computed, signal, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
 import { ComponentStatus } from '../../../core/services/electron.service';
+
+interface CustomVoice {
+  id: string;
+  name: string;
+  checkpointDir: string;
+  refPath: string;
+}
 
 /**
  * Settings → Voices.
@@ -89,6 +96,47 @@ import { ComponentStatus } from '../../../core/services/electron.service';
               }
             </div>
           </div>
+        }
+      </div>
+
+      <!-- User-added custom voices (own fine-tuned XTTS checkpoints) -->
+      <div class="custom-voices">
+        <div class="custom-head">
+          <h4 class="custom-title">Your Voices</h4>
+          <desktop-button variant="ghost" size="sm" (click)="addCustomVoice()" [disabled]="customBusy()">
+            {{ customBusy() ? 'Adding…' : 'Add your own voice…' }}
+          </desktop-button>
+        </div>
+
+        @if (customError(); as err) {
+          <div class="status-message error">{{ err }}</div>
+        }
+
+        @if (customVoices().length > 0) {
+          @for (cv of customVoices(); track cv.id) {
+            <div class="component-card">
+              <div class="component-head">
+                <div class="component-meta">
+                  <h4 class="component-name">{{ cv.name }}</h4>
+                  <p class="component-desc">{{ cv.checkpointDir }}</p>
+                </div>
+                <div class="component-badge">
+                  <span class="status-badge installed">Ready</span>
+                </div>
+              </div>
+              <div class="component-actions">
+                <desktop-button variant="ghost" size="sm" (click)="removeCustomVoice(cv.id)">
+                  Remove
+                </desktop-button>
+              </div>
+            </div>
+          }
+        } @else {
+          <p class="help-text">
+            Have your own fine-tuned XTTS voice? Add the folder that holds
+            <code>config.json</code>, <code>model.pth</code>, <code>vocab.json</code> and a
+            reference <code>.wav</code>. It'll appear in the Play tab and the browser extension.
+          </p>
         }
       </div>
 
@@ -247,6 +295,36 @@ import { ComponentStatus } from '../../../core/services/electron.service';
       padding-top: var(--ui-spacing-sm);
     }
 
+    .custom-voices {
+      display: flex;
+      flex-direction: column;
+      gap: var(--ui-spacing-md);
+      padding-top: var(--ui-spacing-md);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .custom-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--ui-spacing-md);
+    }
+
+    .custom-title {
+      margin: 0;
+      font-size: var(--ui-font-base);
+      font-weight: $font-weight-semibold;
+      color: var(--text-primary);
+    }
+
+    .custom-voices code {
+      font-family: var(--font-mono, monospace);
+      font-size: 0.9em;
+      padding: 1px 4px;
+      background: var(--bg-elevated);
+      border-radius: 3px;
+    }
+
     .help-text {
       font-size: var(--ui-font-sm);
       color: var(--text-tertiary);
@@ -263,8 +341,54 @@ export class VoicesPanelComponent implements OnInit {
     this.svc.components().filter((s) => s.component.kind === 'tts-model'),
   );
 
+  // User-added custom voices (own fine-tuned XTTS checkpoints).
+  readonly customVoices = signal<CustomVoice[]>([]);
+  readonly customBusy = signal(false);
+  readonly customError = signal<string | null>(null);
+
+  private get customApi() {
+    return (window as unknown as { electron?: { customVoices?: {
+      list: () => Promise<{ success: boolean; data?: CustomVoice[]; error?: string }>;
+      add: () => Promise<{ success: boolean; voice?: CustomVoice; canceled?: boolean; error?: string }>;
+      remove: (id: string) => Promise<{ success: boolean; error?: string }>;
+    } } }).electron?.customVoices;
+  }
+
   ngOnInit(): void {
     this.svc.ensureLoaded();
+    void this.loadCustomVoices();
+  }
+
+  async loadCustomVoices(): Promise<void> {
+    const api = this.customApi;
+    if (!api) return;
+    const res = await api.list();
+    if (res.success && res.data) this.customVoices.set(res.data);
+  }
+
+  async addCustomVoice(): Promise<void> {
+    const api = this.customApi;
+    if (!api) return;
+    this.customError.set(null);
+    this.customBusy.set(true);
+    try {
+      const res = await api.add();
+      if (res.canceled) return;
+      if (res.success) {
+        await this.loadCustomVoices();
+      } else {
+        this.customError.set(res.error || 'Could not add that voice folder.');
+      }
+    } finally {
+      this.customBusy.set(false);
+    }
+  }
+
+  async removeCustomVoice(id: string): Promise<void> {
+    const api = this.customApi;
+    if (!api) return;
+    await api.remove(id);
+    await this.loadCustomVoices();
   }
 
   badgeClass(status: ComponentStatus): string {

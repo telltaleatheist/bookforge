@@ -269,6 +269,18 @@ export function hasBundledE2aSnapshot(): boolean {
   return fs.existsSync(path.join(getBundledE2aSnapshotDir(), E2A_SNAPSHOT_STAMP));
 }
 
+/**
+ * Whether the bundled runtime needs no further unpacking — i.e. there's nothing
+ * for ensureBundledEnv/ensureBundledE2a to do. True in dev (no tarball/snapshot
+ * ships) and on a packaged install whose env + e2a are already unpacked and
+ * current. Used to decide up front whether to show the first-run setup overlay.
+ */
+export function bundledRuntimeReady(): boolean {
+  const envNeedsSetup = hasBundledEnvTarball() && !envIsReady(getBundledEnvDir());
+  const e2aNeedsSetup = hasBundledE2aSnapshot() && !e2aIsReady(getRuntimeE2aDir());
+  return !envNeedsSetup && !e2aNeedsSetup;
+}
+
 // Clone-on-write where the filesystem supports it (APFS/ReFS), full copy
 // elsewhere. COPYFILE_FICLONE falls back to a regular copy automatically.
 const CLONE_MODE = fs.constants.COPYFILE_FICLONE;

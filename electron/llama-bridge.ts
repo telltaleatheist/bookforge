@@ -1,0 +1,595 @@
+/**
+ * Llama bridge — bundled local LLM for offline AI cleanup (WS2).
+ *
+ * Ports Briefcase's llama.cpp integration: spawns a persistent `llama-server`
+ * binary on a local port and generates via its OpenAI-compatible
+ * `/v1/chat/completions` endpoint. Owns the Cogito GGUF catalog, a
+ * hardware-aware recommendation, single-file model downloads (progress +
+ * cancel), and the server's start/stop/idle lifecycle.
+ *
+ * Binary:   resources/bin/llama-server-<arch>  (mac/linux) | llama-server.exe (win)
+ * Models:   <userData>/llama-models/*.gguf
+ * Active:   <userData>/llama-models/active-model.json   { activeModelId }
+ *
+ * The binary is OPTIONAL — if it isn't bundled (lean seed), localStatus()
+ * reports binaryPresent:false and the wizard steers the user to Ollama / an API
+ * key instead. Everything downstream degrades gracefully.
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+import { spawn, ChildProcess } from 'child_process';
+import { app } from 'electron';
+
+import { downloadFile } from './components/downloader';
+import { systemProbe } from './components/system-probe';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Catalog (Cogito GGUFs — bartowski quants on HuggingFace, direct resolve URLs)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface LocalModelInfo {
+  id: string;
+  name: string;
+  filename: string;
+  url: string;
+  sizeGB: number;
+  minRAM: number;        // GB of (V)RAM the quant comfortably needs
+  description: string;
+  downloaded: boolean;   // filled in by listModels()
+  isActive: boolean;     // filled in by listModels()
+  recommended: boolean;  // filled in by listModels() from the current machine
+}
+
+type CatalogEntry = Omit<LocalModelInfo, 'downloaded' | 'isActive' | 'recommended'>;
+
+const HF = 'https://huggingface.co/bartowski';
+
+const COGITO_MODELS: CatalogEntry[] = [
+  {
+    id: 'cogito-3b',
+    name: 'Cogito 3B',
+    filename: 'deepcogito_cogito-v1-preview-llama-3B-Q4_K_M.gguf',
+    url: `${HF}/deepcogito_cogito-v1-preview-llama-3B-GGUF/resolve/main/deepcogito_cogito-v1-preview-llama-3B-Q4_K_M.gguf`,
+    sizeGB: 2.24,
+    minRAM: 4,
+    description: 'Lightweight and fast. Works on most GPUs (4GB+) or CPU.',
+  },
+  {
+    id: 'cogito-8b',
+    name: 'Cogito 8B',
+    filename: 'deepcogito_cogito-v1-preview-llama-8B-Q4_K_M.gguf',
+    url: `${HF}/deepcogito_cogito-v1-preview-llama-8B-GGUF/resolve/main/deepcogito_cogito-v1-preview-llama-8B-Q4_K_M.gguf`,
+    sizeGB: 4.92,
+    minRAM: 6,
+    description: 'Good balance of quality and speed. Great on 6GB+ GPU.',
+  },
+  {
+    id: 'cogito-14b',
+    name: 'Cogito 14B',
+    filename: 'deepcogito_cogito-v1-preview-qwen-14B-Q4_K_M.gguf',
+    url: `${HF}/deepcogito_cogito-v1-preview-qwen-14B-GGUF/resolve/main/deepcogito_cogito-v1-preview-qwen-14B-Q4_K_M.gguf`,
+    sizeGB: 8.99,
+    minRAM: 10,
+    description: 'Higher quality results. Runs on 10GB+ GPU or 16GB+ RAM.',
+  },
+  {
+    id: 'cogito-32b',
+    name: 'Cogito 32B',
+    filename: 'deepcogito_cogito-v1-preview-qwen-32B-Q4_K_M.gguf',
+    url: `${HF}/deepcogito_cogito-v1-preview-qwen-32B-GGUF/resolve/main/deepcogito_cogito-v1-preview-qwen-32B-Q4_K_M.gguf`,
+    sizeGB: 19.85,
+    minRAM: 24,
+    description: 'Best quality. Needs a 24GB+ GPU or a 32GB+ unified-memory Mac.',
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface LocalModelProgress {
+  modelId: string;
+  pct: number;            // 0–100
+  receivedBytes: number;
+  totalBytes: number;
+  speed?: string;         // e.g. "12.3 MB/s"
+  eta?: string;           // e.g. "1m 40s"
+  phase: 'download' | 'done' | 'error' | 'cancelled';
+  message?: string;
+}
+
+export interface LocalSystemInfo {
+  platform: NodeJS.Platform;
+  totalRamGB: number;
+  cuda: boolean;
+  cudaName?: string;
+  vramGB?: number;
+  effectiveGB: number;     // VRAM if a usable GPU is present, else system RAM
+  recommendedModelId: string;
+}
+
+export interface LocalStatus {
+  binaryPresent: boolean;
+  ready: boolean;                  // server is up and serving
+  activeModelId: string | null;
+  activeModelDownloaded: boolean;
+  anyModelDownloaded: boolean;
+  modelsDir: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Paths
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DEFAULT_PORT = 8769;
+const STARTUP_TIMEOUT_MS = 120_000;  // model load can be slow on a cold cache
+const GENERATE_TIMEOUT_MS = 300_000; // a long chunk on CPU
+const IDLE_SHUTDOWN_MS = 5 * 60_000;
+
+function getModelsDir(): string {
+  const dir = path.join(app.getPath('userData'), 'llama-models');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function getActiveConfigPath(): string {
+  return path.join(getModelsDir(), 'active-model.json');
+}
+
+/**
+ * Resolve the bundled llama-server binary. Mirrors mutool-bridge's resolution:
+ * prefer process.resourcesPath/bin (packaged), fall back to the repo's
+ * resources/bin in dev. Returns null when the binary isn't bundled.
+ */
+function resolveBinary(): string | null {
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const isWin = process.platform === 'win32';
+  const names = isWin
+    ? ['llama-server.exe']
+    : [`llama-server-${arch}`, 'llama-server'];
+
+  const resourcesPath = (process as unknown as { resourcesPath?: string }).resourcesPath || '';
+  const roots = [
+    path.join(resourcesPath, 'bin'),
+    path.join(__dirname, '..', '..', 'resources', 'bin'),
+  ];
+
+  for (const root of roots) {
+    for (const name of names) {
+      const candidate = path.join(root, name);
+      try {
+        if (fs.existsSync(candidate)) return candidate;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Model management
+// ─────────────────────────────────────────────────────────────────────────────
+
+function getActiveModelId(): string | null {
+  try {
+    const raw = fs.readFileSync(getActiveConfigPath(), 'utf-8');
+    const parsed = JSON.parse(raw) as { activeModelId?: string };
+    return parsed.activeModelId || null;
+  } catch {
+    return null;
+  }
+}
+
+function setActiveModelId(modelId: string | null): void {
+  const tmp = getActiveConfigPath() + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify({ activeModelId: modelId }, null, 2));
+  fs.renameSync(tmp, getActiveConfigPath());
+}
+
+function isDownloaded(entry: CatalogEntry): boolean {
+  try {
+    const p = path.join(getModelsDir(), entry.filename);
+    return fs.existsSync(p) && fs.statSync(p).size > 100 * 1024 * 1024; // >100MB = real
+  } catch {
+    return false;
+  }
+}
+
+async function systemInfo(): Promise<LocalSystemInfo> {
+  const prof = await systemProbe.profile();
+  const totalRamGB = Math.round((prof.ramMB / 1024) * 10) / 10;
+  const usableGpu = prof.cuda.available && (prof.cuda.vramMB ?? 0) >= 4096;
+  const vramGB = prof.cuda.vramMB ? Math.round((prof.cuda.vramMB / 1024) * 10) / 10 : undefined;
+  // Apple Silicon shares unified memory → use system RAM as the budget.
+  const effectiveGB = usableGpu && vramGB ? vramGB : totalRamGB;
+
+  let recommendedModelId: string;
+  if (effectiveGB >= 24) recommendedModelId = 'cogito-32b';
+  else if (effectiveGB >= 10) recommendedModelId = 'cogito-14b';
+  else if (effectiveGB >= 6) recommendedModelId = 'cogito-8b';
+  else recommendedModelId = 'cogito-3b';
+
+  return {
+    platform: process.platform,
+    totalRamGB,
+    cuda: prof.cuda.available,
+    cudaName: prof.cuda.name,
+    vramGB,
+    effectiveGB: Math.round(effectiveGB * 10) / 10,
+    recommendedModelId,
+  };
+}
+
+async function listModels(): Promise<LocalModelInfo[]> {
+  const info = await systemInfo();
+  const activeId = getActiveModelId();
+  return COGITO_MODELS.map((m) => ({
+    ...m,
+    downloaded: isDownloaded(m),
+    isActive: m.id === activeId,
+    recommended: m.id === info.recommendedModelId,
+  }));
+}
+
+async function status(): Promise<LocalStatus> {
+  const activeId = getActiveModelId();
+  const active = activeId ? COGITO_MODELS.find((m) => m.id === activeId) : undefined;
+  const downloaded = COGITO_MODELS.filter(isDownloaded);
+  return {
+    binaryPresent: resolveBinary() !== null,
+    ready: server.isReady(),
+    activeModelId: activeId,
+    activeModelDownloaded: active ? isDownloaded(active) : false,
+    anyModelDownloaded: downloaded.length > 0,
+    modelsDir: getModelsDir(),
+  };
+}
+
+// In-flight download per model id (for cancel).
+const downloads = new Map<string, AbortController>();
+
+function fmtBytesPerSec(bps: number): string {
+  const mb = bps / (1024 * 1024);
+  return `${mb.toFixed(1)} MB/s`;
+}
+
+function fmtEta(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+async function downloadModel(
+  modelId: string,
+  onProgress: (p: LocalModelProgress) => void,
+): Promise<{ ok: boolean; error?: string }> {
+  const entry = COGITO_MODELS.find((m) => m.id === modelId);
+  if (!entry) return { ok: false, error: `Unknown model: ${modelId}` };
+
+  if (downloads.has(modelId)) {
+    return { ok: false, error: 'Download already in progress' };
+  }
+
+  const dest = path.join(getModelsDir(), entry.filename);
+  const tmp = dest + '.download';
+  const controller = new AbortController();
+  downloads.set(modelId, controller);
+
+  // Compute speed/ETA from the downloader's byte progress (throttled to ~1/s).
+  let lastTick = 0;
+  let lastBytes = 0;
+  let speed = '';
+  let eta = '';
+
+  try {
+    await downloadFile(
+      entry.url,
+      tmp,
+      modelId,
+      (p) => {
+        const received = p.receivedBytes ?? 0;
+        const total = p.totalBytes ?? 0;
+        const now = Date.now();
+        if (now - lastTick >= 1000 && received > lastBytes) {
+          const bps = ((received - lastBytes) / (now - lastTick)) * 1000;
+          speed = fmtBytesPerSec(bps);
+          eta = total > 0 ? fmtEta((total - received) / bps) : '';
+          lastTick = now;
+          lastBytes = received;
+        }
+        onProgress({
+          modelId,
+          pct: p.pct ?? 0,
+          receivedBytes: received,
+          totalBytes: total,
+          speed,
+          eta,
+          phase: 'download',
+          message: `Downloading ${entry.name}…`,
+        });
+      },
+      controller.signal,
+    );
+
+    fs.renameSync(tmp, dest);
+    downloads.delete(modelId);
+
+    // First model downloaded becomes the active one automatically.
+    if (!getActiveModelId()) setActiveModelId(modelId);
+
+    onProgress({ modelId, pct: 100, receivedBytes: 0, totalBytes: 0, phase: 'done',
+                 message: `${entry.name} ready.` });
+    return { ok: true };
+  } catch (err) {
+    downloads.delete(modelId);
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
+    const aborted = controller.signal.aborted;
+    const message = aborted ? 'Download cancelled' : (err instanceof Error ? err.message : String(err));
+    onProgress({ modelId, pct: 0, receivedBytes: 0, totalBytes: 0,
+                 phase: aborted ? 'cancelled' : 'error', message });
+    return { ok: false, error: message };
+  }
+}
+
+function cancelDownload(modelId: string): void {
+  downloads.get(modelId)?.abort();
+}
+
+function deleteModel(modelId: string): { ok: boolean; error?: string } {
+  const entry = COGITO_MODELS.find((m) => m.id === modelId);
+  if (!entry) return { ok: false, error: `Unknown model: ${modelId}` };
+  try {
+    const p = path.join(getModelsDir(), entry.filename);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+    if (getActiveModelId() === modelId) {
+      // Promote any other downloaded model, else clear.
+      const next = COGITO_MODELS.find((m) => m.id !== modelId && isDownloaded(m));
+      setActiveModelId(next ? next.id : null);
+      if (server.activeModelId() === modelId) void server.stop();
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function setActive(modelId: string): { ok: boolean; error?: string } {
+  const entry = COGITO_MODELS.find((m) => m.id === modelId);
+  if (!entry) return { ok: false, error: `Unknown model: ${modelId}` };
+  if (!isDownloaded(entry)) return { ok: false, error: `${entry.name} is not downloaded` };
+  const prev = getActiveModelId();
+  setActiveModelId(modelId);
+  // If a different model was loaded, drop it so the next request loads the new one.
+  if (prev !== modelId && server.activeModelId() === prev) void server.stop();
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Server lifecycle + generation
+// ─────────────────────────────────────────────────────────────────────────────
+
+class LlamaServer {
+  private proc: ChildProcess | null = null;
+  private port = DEFAULT_PORT;
+  private ready = false;
+  private loadedModelId: string | null = null;
+  private starting: Promise<void> | null = null;
+  private idleTimer: NodeJS.Timeout | null = null;
+
+  isReady(): boolean {
+    return this.ready && this.proc !== null;
+  }
+
+  activeModelId(): string | null {
+    return this.loadedModelId;
+  }
+
+  private touch(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => { void this.stop(); }, IDLE_SHUTDOWN_MS);
+  }
+
+  /** Start (or reuse) the server for the active model. Throws on failure. */
+  private async ensureStarted(): Promise<void> {
+    const activeId = getActiveModelId();
+    if (!activeId) throw new Error('No local model selected. Download one in AI Setup.');
+    const entry = COGITO_MODELS.find((m) => m.id === activeId);
+    if (!entry || !isDownloaded(entry)) {
+      throw new Error('The selected local model is not downloaded.');
+    }
+
+    // Already serving the right model.
+    if (this.ready && this.proc && this.loadedModelId === activeId) {
+      this.touch();
+      return;
+    }
+    // Serving a stale model — restart.
+    if (this.proc && this.loadedModelId !== activeId) {
+      await this.stop();
+    }
+    if (this.starting) return this.starting;
+
+    const binary = resolveBinary();
+    if (!binary) throw new Error('The local AI engine (llama-server) is not bundled in this build.');
+
+    const modelPath = path.join(getModelsDir(), entry.filename);
+    this.starting = this.spawnServer(binary, modelPath, activeId);
+    try {
+      await this.starting;
+    } finally {
+      this.starting = null;
+    }
+  }
+
+  private spawnServer(binary: string, modelPath: string, modelId: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const args = [
+        '-m', modelPath,
+        '--port', String(this.port),
+        '-c', '8192',          // context window
+        '-ngl', '99',          // offload all layers to GPU/Metal where present
+        '--threads', '4',
+      ];
+
+      const env = { ...process.env };
+      // macOS: llama.cpp dylibs ship alongside the binary.
+      if (process.platform === 'darwin') {
+        const binDir = path.dirname(binary);
+        env.DYLD_LIBRARY_PATH = `${binDir}:${env.DYLD_LIBRARY_PATH || ''}`;
+      }
+
+      const proc = spawn(binary, args, {
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // Windows needs the cwd at the binary dir so it finds its DLLs.
+        cwd: process.platform === 'win32' ? path.dirname(binary) : undefined,
+        windowsHide: true,
+      });
+      this.proc = proc;
+      this.loadedModelId = modelId;
+
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { proc.kill(); } catch { /* ignore */ }
+        reject(new Error('llama-server did not start within 2 minutes.'));
+      }, STARTUP_TIMEOUT_MS);
+
+      const onReady = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        this.ready = true;
+        this.touch();
+        resolve();
+      };
+
+      const watch = (buf: Buffer) => {
+        const s = buf.toString();
+        if (/server is listening|HTTP server listening|llama server listening|listening on/i.test(s)) {
+          onReady();
+        }
+      };
+      proc.stdout?.on('data', watch);
+      proc.stderr?.on('data', watch);
+
+      proc.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        this.proc = null;
+        this.ready = false;
+        reject(err);
+      });
+
+      proc.on('close', () => {
+        this.proc = null;
+        this.ready = false;
+        this.loadedModelId = null;
+        if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
+      });
+    });
+  }
+
+  async stop(): Promise<void> {
+    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
+    const proc = this.proc;
+    if (!proc) { this.ready = false; return; }
+    this.ready = false;
+    this.proc = null;
+    this.loadedModelId = null;
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      proc.once('close', finish);
+      try {
+        if (process.platform === 'win32' && proc.pid) {
+          spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true });
+        } else {
+          proc.kill('SIGTERM');
+        }
+      } catch { finish(); return; }
+      setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* ignore */ } finish(); }, 5000);
+    });
+  }
+
+  /** Generate a completion via the OpenAI-compatible endpoint. */
+  async generate(opts: {
+    system?: string;
+    prompt: string;
+    maxTokens?: number;
+    temperature?: number;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    await this.ensureStarted();
+    this.touch();
+
+    const messages: Array<{ role: string; content: string }> = [];
+    if (opts.system) messages.push({ role: 'system', content: opts.system });
+    messages.push({ role: 'user', content: opts.prompt });
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GENERATE_TIMEOUT_MS);
+    const onAbort = () => controller.abort();
+    opts.signal?.addEventListener('abort', onAbort);
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${this.port}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.loadedModelId || 'local',
+          messages,
+          max_tokens: opts.maxTokens ?? 4096,
+          temperature: opts.temperature ?? 0.1,
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new Error(`llama-server HTTP ${res.status}`);
+      }
+      const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+      const text = data.choices?.[0]?.message?.content ?? '';
+      if (!text) throw new Error('llama-server returned no text');
+      this.touch();
+      return text;
+    } catch (err) {
+      if (controller.signal.aborted && !opts.signal?.aborted) {
+        throw new Error(`llama-server timed out after ${GENERATE_TIMEOUT_MS / 1000}s`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+      opts.signal?.removeEventListener('abort', onAbort);
+    }
+  }
+}
+
+const server = new LlamaServer();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Export
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const llamaBridge = {
+  catalog: (): CatalogEntry[] => COGITO_MODELS,
+  listModels,
+  systemInfo,
+  status,
+  downloadModel,
+  cancelDownload,
+  deleteModel,
+  setActive,
+  generate: (opts: Parameters<LlamaServer['generate']>[0]) => server.generate(opts),
+  stop: () => server.stop(),
+  /** True when a local model is selected, downloaded, and the binary is present. */
+  isUsable: async (): Promise<boolean> => {
+    const s = await status();
+    return s.binaryPresent && s.activeModelDownloaded;
+  },
+};

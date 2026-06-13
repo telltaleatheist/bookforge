@@ -7,7 +7,7 @@
  * - OpenAI (ChatGPT API)
  */
 
-export type AIProvider = 'ollama' | 'claude' | 'openai';
+export type AIProvider = 'ollama' | 'claude' | 'openai' | 'local';
 
 export interface OllamaConfig {
   baseUrl: string;
@@ -24,11 +24,18 @@ export interface OpenAIConfig {
   model: string;
 }
 
+export interface LocalConfig {
+  /** Active model id is owned by the main process; informational here. */
+  model?: string;
+}
+
 export interface AIConfig {
   provider: AIProvider;
   ollama: OllamaConfig;
   claude: ClaudeConfig;
   openai: OpenAIConfig;
+  // Bundled llama.cpp. Optional so configs persisted before WS2 still parse.
+  local?: LocalConfig;
 }
 
 export const DEFAULT_AI_CONFIG: AIConfig = {

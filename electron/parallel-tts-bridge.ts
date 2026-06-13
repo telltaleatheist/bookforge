@@ -67,6 +67,7 @@ function writeWorkerLog(line: string): void {
 }
 import { getMetadataToolPath, removeCover, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import * as manifestService from './manifest-service';
+import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 
 /**
  * Kill a process and all its children (process tree)
@@ -1705,7 +1706,20 @@ export async function prepareSession(
     '--prep_only'
   ];
 
-  if (settings.fineTuned) {
+  // User-added custom voice → pre-stage its checkpoint and pass --custom_model*;
+  // fine_tuned stays a valid preset key (samplerate lookup). Otherwise pass the
+  // catalog fine-tune as usual.
+  if (isCustomVoiceId(settings.fineTuned)) {
+    const staged = ensureCustomVoiceStaged(settings.fineTuned!);
+    if (staged) {
+      args.push('--custom_model', staged.customModel);
+      args.push('--custom_model_dir', staged.customModelDir);
+      args.push('--voice', staged.voicePath);
+      args.push('--fine_tuned', 'internal');
+    } else {
+      args.push('--fine_tuned', settings.fineTuned!);
+    }
+  } else if (settings.fineTuned) {
     args.push('--fine_tuned', settings.fineTuned);
   }
 
@@ -1993,7 +2007,17 @@ function startWorker(
 
     // Always pass fine_tuned (voice) to ensure current UI selection is used
     // This is critical for resume jobs where session-state.json has the original voice
-    if (settings.fineTuned) {
+    if (isCustomVoiceId(settings.fineTuned)) {
+      const staged = ensureCustomVoiceStaged(settings.fineTuned!);
+      if (staged) {
+        args.push('--custom_model', staged.customModel);
+        args.push('--custom_model_dir', staged.customModelDir);
+        args.push('--voice', staged.voicePath);
+        args.push('--fine_tuned', 'internal');
+      } else {
+        args.push('--fine_tuned', settings.fineTuned!);
+      }
+    } else if (settings.fineTuned) {
       args.push('--fine_tuned', settings.fineTuned);
     }
 
@@ -2035,7 +2059,17 @@ function startWorker(
     ];
 
     // Always pass fine_tuned (voice) to ensure current UI selection is used
-    if (settings.fineTuned) {
+    if (isCustomVoiceId(settings.fineTuned)) {
+      const staged = ensureCustomVoiceStaged(settings.fineTuned!);
+      if (staged) {
+        args.push('--custom_model', staged.customModel);
+        args.push('--custom_model_dir', staged.customModelDir);
+        args.push('--voice', staged.voicePath);
+        args.push('--fine_tuned', 'internal');
+      } else {
+        args.push('--fine_tuned', settings.fineTuned!);
+      }
+    } else if (settings.fineTuned) {
       args.push('--fine_tuned', settings.fineTuned);
     }
 

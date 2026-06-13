@@ -1,4 +1,4 @@
-import { Component, OnInit, inject, computed } from '@angular/core';
+import { Component, OnInit, inject, computed, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterOutlet } from '@angular/router';
 import {
@@ -9,6 +9,7 @@ import {
 import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.component';
 import { OnboardingComponent } from './components/onboarding/onboarding.component';
 import { LibraryService } from './core/services/library.service';
+import { RuntimeService } from './core/services/runtime.service';
 
 @Component({
   selector: 'app-root',
@@ -22,6 +23,28 @@ import { LibraryService } from './core/services/library.service';
     OnboardingComponent
   ],
   template: `
+    <!-- First-run setup overlay: blocks the UI while the bundled TTS runtime
+         unpacks so jobs can't start against a half-ready runtime. -->
+    @if (showSetupOverlay()) {
+      <div class="setup-overlay">
+        <div class="setup-card">
+          @if (runtime.errorStatus(); as err) {
+            <h2>Setup didn't finish</h2>
+            <p class="setup-message">{{ err.message }}</p>
+            @if (err.error) {
+              <p class="setup-error">{{ err.error }}</p>
+            }
+            <button class="setup-dismiss" (click)="dismissSetup()">Continue anyway</button>
+          } @else {
+            <div class="setup-spinner"></div>
+            <h2>Setting up the audiobook engine…</h2>
+            <p class="setup-message">{{ runtime.status().message }}</p>
+            <p class="setup-hint">This one-time setup takes a minute. You can leave this window open.</p>
+          }
+        </div>
+      </div>
+    }
+
     <!-- Onboarding wizard (shown on first launch) -->
     @if (!libraryService.isConfigured() && !libraryService.loading()) {
       <app-onboarding (complete)="onOnboardingComplete()" />
@@ -63,6 +86,80 @@ import { LibraryService } from './core/services/library.service';
     </div>
   `,
   styles: [`
+    .setup-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-base, #1a1a1a);
+      -webkit-app-region: drag; // let the user move the frameless window
+    }
+
+    .setup-card {
+      max-width: 460px;
+      padding: 40px 48px;
+      text-align: center;
+      color: var(--text-primary, #f0f0f0);
+      -webkit-app-region: no-drag;
+    }
+
+    .setup-card h2 {
+      margin: 16px 0 8px;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .setup-message {
+      margin: 4px 0;
+      color: var(--text-secondary, #c0c0c0);
+      font-size: 14px;
+    }
+
+    .setup-hint {
+      margin-top: 16px;
+      color: var(--text-tertiary, #888);
+      font-size: 12px;
+    }
+
+    .setup-error {
+      margin: 8px 0;
+      color: var(--color-danger, #e06c75);
+      font-size: 12px;
+      font-family: var(--font-mono, monospace);
+      word-break: break-word;
+    }
+
+    .setup-spinner {
+      width: 36px;
+      height: 36px;
+      margin: 0 auto;
+      border: 3px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+      border-top-color: var(--color-accent, #ff7a45);
+      border-radius: 50%;
+      animation: setup-spin 0.8s linear infinite;
+    }
+
+    @keyframes setup-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .setup-dismiss {
+      margin-top: 16px;
+      padding: 8px 20px;
+      border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.2));
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-primary, #f0f0f0);
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .setup-dismiss:hover {
+      background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+    }
+
     .app-container {
       height: 100vh;
       width: 100vw;
@@ -108,7 +205,19 @@ import { LibraryService } from './core/services/library.service';
 export class App implements OnInit {
   readonly themeService = inject(DesktopThemeService);
   readonly libraryService = inject(LibraryService);
+  readonly runtime = inject(RuntimeService);
   private readonly router = inject(Router);
+
+  // Lets the user dismiss the setup overlay (only reachable in the error state).
+  private readonly setupDismissed = signal(false);
+
+  readonly showSetupOverlay = computed(() =>
+    !this.setupDismissed() && (this.runtime.preparing() || !!this.runtime.errorStatus())
+  );
+
+  dismissSetup(): void {
+    this.setupDismissed.set(true);
+  }
 
   // Hide nav rail for standalone popup windows (alignment, editor, etc.)
   // App uses hash routing, so the route is in the hash fragment, not pathname
@@ -131,6 +240,12 @@ export class App implements OnInit {
       icon: '\u{23F3}', // Hourglass emoji
       label: 'Queue',
       route: '/queue'
+    },
+    {
+      id: 'ai-setup',
+      icon: '\u{1F916}', // Robot emoji
+      label: 'AI Setup',
+      route: '/ai-setup'
     },
     {
       id: 'settings',

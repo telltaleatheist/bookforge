@@ -28,6 +28,7 @@ import { QueueService } from '../../../queue/services/queue.service';
 import { ComponentService } from '../../../../core/services/component.service';
 import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
 import { EpubResolverService } from '../../services/epub-resolver.service';
+import { AiService } from '../../../../core/services/ai.service';
 import {
   SUPPORTED_LANGUAGES,
   TtsLanguageRow,
@@ -102,6 +103,18 @@ interface SourceStage {
               <h3>AI Cleanup</h3>
               <p class="step-desc">Clean up OCR artifacts and formatting issues using AI.</p>
 
+              <!-- No AI configured → gray out behind a layover that links to the wizard -->
+              @if (ai.checkedOnce() && !ai.available()) {
+                <div class="ai-layover">
+                  <div class="ai-layover-card">
+                    <div class="ai-layover-icon">&#129302;</div>
+                    <h4>Set up an AI to use cleanup</h4>
+                    <p>AI cleanup needs an AI source — a bundled local model, Ollama, or a Claude/OpenAI API key.</p>
+                    <button class="ai-layover-btn" (click)="openAiSetup()">Open AI Setup</button>
+                  </div>
+                </div>
+              }
+
               <!-- Existing cleanup notice -->
               @if (hasExistingCleanup()) {
                 <div class="existing-cleanup-banner">
@@ -173,6 +186,18 @@ interface SourceStage {
                       <span class="provider-status">No API key</span>
                     }
                   </button>
+                  @if (ai.localUsable()) {
+                    <button
+                      class="provider-btn"
+                      [class.selected]="cleanupProvider() === 'local'"
+                      [class.connected]="cleanupProvider() === 'local'"
+                      (click)="selectCleanupProvider('local')"
+                    >
+                      <span class="provider-icon">💻</span>
+                      <span class="provider-name">Local AI</span>
+                      <span class="provider-status connected">Bundled</span>
+                    </button>
+                  }
                 </div>
               </div>
 
@@ -285,7 +310,7 @@ interface SourceStage {
               </div>
 
               <!-- Parallel Workers (cloud providers, whole-book pipeline) -->
-              @if (pipelineMode() === 'mono' && cleanupProvider() !== 'ollama' && itemType() === 'book') {
+              @if (pipelineMode() === 'mono' && (cleanupProvider() === 'claude' || cleanupProvider() === 'openai') && itemType() === 'book') {
                 <div class="config-section">
                   <label class="field-label">Parallel Workers</label>
                   <div class="worker-options">
@@ -1431,11 +1456,50 @@ interface SourceStage {
       background: var(--bg-surface);
       border-radius: 8px;
       padding: 24px;
+      position: relative;
 
       &.scrollable {
         max-height: 100%;
         overflow-y: auto;
       }
+
+    .ai-layover {
+      position: absolute;
+      inset: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--bg-surface) 78%, transparent);
+      backdrop-filter: blur(2px);
+    }
+
+    .ai-layover-card {
+      max-width: 420px;
+      text-align: center;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      padding: 28px 32px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    .ai-layover-icon { font-size: 2.5rem; margin-bottom: 8px; }
+    .ai-layover-card h4 { margin: 0 0 8px; font-size: 1.1rem; color: var(--text-primary); }
+    .ai-layover-card p { margin: 0 0 18px; font-size: 0.875rem; color: var(--text-secondary); line-height: 1.5; }
+    .ai-layover-btn {
+      padding: 9px 20px;
+      border: none;
+      border-radius: 6px;
+      background: var(--accent-primary);
+      color: #fff;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .ai-layover-btn:hover { opacity: 0.9; }
 
       h3 {
         margin: 0 0 8px;
@@ -2356,6 +2420,8 @@ export class LLWizardComponent implements OnInit {
   private readonly epubResolver = inject(EpubResolverService);
   // Public for the template: gates optional TTS engines (e.g. Orpheus) on availability.
   protected readonly componentService = inject(ComponentService);
+  // Gates the AI Cleanup step behind a "set up an AI" layover when none configured.
+  protected readonly ai = inject(AiService);
 
   // Make Array available in template
   readonly Array = Array;
@@ -2636,6 +2702,10 @@ export class LLWizardComponent implements OnInit {
     { value: 'internal', label: 'Default XTTS' },
   ];
 
+  // User-added custom XTTS voices (own fine-tuned checkpoints). Their `value` is
+  // the voice id; the TTS bridge detects it and routes through --custom_model.
+  readonly customXttsVoices = signal<{ value: string; label: string }[]>([]);
+
   readonly orpheusVoices = [
     { value: 'tara', label: 'Tara (Female)' },
     { value: 'leah', label: 'Leah (Female)' },
@@ -2828,6 +2898,7 @@ export class LLWizardComponent implements OnInit {
       this.selectTtsEngine('xtts');
     }
     this.checkOllamaConnection();
+    await this.loadCustomVoices();
     // EPUBs are scanned by the bfpPath effect — await a tick for it to complete
     await this.scanProjectEpubs();
     this.scanAvailableSessions();
@@ -3126,6 +3197,11 @@ export class LLWizardComponent implements OnInit {
   }
 
   /** Delete existing cleanup output so the next run starts fresh */
+  /** Open the AI Setup wizard from the cleanup-step layover. */
+  openAiSetup(): void {
+    void this.router.navigate(['/ai-setup']);
+  }
+
   async clearCleanupStage(): Promise<void> {
     const projectDir = this.effectiveProjectDir();
     if (!projectDir) return;
@@ -3221,6 +3297,12 @@ export class LLWizardComponent implements OnInit {
     if (provider === this.cleanupProvider()) return; // Re-clicking same provider — keep current model
 
     this.cleanupProvider.set(provider);
+    // Local AI has an implicit active model (resolved in the main process); set a
+    // non-empty model id so the job's aiModel guard passes — it's ignored downstream.
+    if (provider === 'local') {
+      this.cleanupModel.set(this.ai.localStatus()?.activeModelId ?? 'local');
+      return;
+    }
     const config = this.settingsService.getAIConfig();
     const models = this.getModelsForProvider(provider);
     const saved = (config as any)[provider]?.model;
@@ -3333,8 +3415,26 @@ export class LLWizardComponent implements OnInit {
     );
   }
 
+  /** Load user-added custom XTTS voices into the picker (alongside the catalog). */
+  private async loadCustomVoices(): Promise<void> {
+    try {
+      const api = (window as any).electron?.customVoices;
+      if (!api?.list) return;
+      const res = await api.list();
+      if (res?.success && Array.isArray(res.data)) {
+        this.customXttsVoices.set(
+          res.data.map((v: { id: string; name: string }) => ({ value: v.id, label: `${v.name} (custom)` }))
+        );
+      }
+    } catch {
+      /* no custom voices available */
+    }
+  }
+
   getVoicesForEngine(): { value: string; label: string }[] {
-    return this.ttsEngine() === 'orpheus' ? this.orpheusVoices : this.xttsVoices;
+    return this.ttsEngine() === 'orpheus'
+      ? this.orpheusVoices
+      : [...this.xttsVoices, ...this.customXttsVoices()];
   }
 
   /**
@@ -4333,7 +4433,8 @@ export class LLWizardComponent implements OnInit {
             testModeChunks: this.testMode() ? this.testModeChunks() : undefined,
             cleanupPrompt: this.promptModified() ? this.promptText() : undefined,  // Only override when user customized
             customInstructions: this.customInstructions() || undefined,
-            useParallel: this.cleanupProvider() !== 'ollama',
+            // Only cloud APIs parallelize; ollama + bundled local AI run one server.
+            useParallel: this.cleanupProvider() === 'claude' || this.cleanupProvider() === 'openai',
             parallelWorkers: this.cleanupParallelWorkers(),
           };
 

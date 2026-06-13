@@ -27,7 +27,7 @@ export interface DownloadHandle {
 // Internal: streamed download with redirects + progress + abort
 // ─────────────────────────────────────────────────────────────────────────────
 
-function downloadFile(
+export function downloadFile(
   url: string,
   destPath: string,
   id: string,

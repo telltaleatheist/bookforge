@@ -27,6 +27,10 @@ export const routes: Routes = [
     loadComponent: () => import('./features/settings/settings.component').then(m => m.SettingsComponent)
   },
   {
+    path: 'ai-setup',
+    loadComponent: () => import('./features/ai-setup/ai-setup-wizard.component').then(m => m.AiSetupWizardComponent)
+  },
+  {
     // Editor window - opens in separate Electron window
     path: 'editor',
     loadComponent: () => import('./features/studio/components/editor-window/editor-window.component').then(m => m.EditorWindowComponent)

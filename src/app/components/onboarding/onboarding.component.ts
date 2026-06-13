@@ -1,10 +1,12 @@
-import { Component, inject, signal, output } from '@angular/core';
+import { Component, inject, signal, computed, output } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Router } from '@angular/router';
 import { LibraryService } from '../../core/services/library.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
 
-type OnboardingStep = 'welcome' | 'library';
+type OnboardingStep = 'welcome' | 'library' | 'ready';
+const STEP_ORDER: OnboardingStep[] = ['welcome', 'library', 'ready'];
 
 @Component({
   selector: 'app-onboarding',
@@ -15,14 +17,19 @@ type OnboardingStep = 'welcome' | 'library';
       <div class="onboarding-modal">
         <!-- Step indicator -->
         <div class="step-indicator">
-          <div class="step" [class.active]="currentStep() === 'welcome'" [class.completed]="currentStep() === 'library'">
+          <div class="step" [class.active]="stepIndex() === 0" [class.completed]="stepIndex() > 0">
             <div class="step-dot">1</div>
             <span>Welcome</span>
           </div>
-          <div class="step-line" [class.completed]="currentStep() === 'library'"></div>
-          <div class="step" [class.active]="currentStep() === 'library'">
+          <div class="step-line" [class.completed]="stepIndex() > 0"></div>
+          <div class="step" [class.active]="stepIndex() === 1" [class.completed]="stepIndex() > 1">
             <div class="step-dot">2</div>
             <span>Library</span>
+          </div>
+          <div class="step-line" [class.completed]="stepIndex() > 1"></div>
+          <div class="step" [class.active]="stepIndex() === 2">
+            <div class="step-dot">3</div>
+            <span>Ready</span>
           </div>
         </div>
 
@@ -113,6 +120,49 @@ type OnboardingStep = 'welcome' | 'library';
                 (click)="createLibrary()"
               >
                 {{ isCreating() ? 'Setting up...' : 'Continue' }}
+              </desktop-button>
+            </div>
+          </div>
+        }
+
+        <!-- You're Ready Step -->
+        @if (currentStep() === 'ready') {
+          <div class="step-content">
+            <div class="icon-large">&#10024;</div>
+            <h1>You're ready to go</h1>
+            <p class="description">
+              BookForge is set up. It already ships with one voice, so you can make
+              an audiobook right now. Here's where to find more when you want it.
+            </p>
+            <div class="features">
+              <div class="feature">
+                <span class="feature-icon">&#127908;</span>
+                <div>
+                  <strong>More voices</strong>
+                  <p>Settings → Add-ons &amp; Models: download premium voices or add your own.</p>
+                </div>
+              </div>
+              <div class="feature">
+                <span class="feature-icon">&#129513;</span>
+                <div>
+                  <strong>Optional tools</strong>
+                  <p>Settings → Add-ons &amp; Models: Calibre and Tesseract for more formats and OCR.</p>
+                </div>
+              </div>
+              <div class="feature">
+                <span class="feature-icon">&#129302;</span>
+                <div>
+                  <strong>AI cleanup (optional)</strong>
+                  <p>Tidy OCR text before narration with a bundled local model, Ollama, or an API key. The AI Setup wizard walks you through it — or skip it entirely.</p>
+                </div>
+              </div>
+            </div>
+            <div class="actions">
+              <desktop-button variant="ghost" (click)="finishAndSetupAi()">
+                Set up AI
+              </desktop-button>
+              <desktop-button variant="primary" (click)="finish()">
+                Start using BookForge
               </desktop-button>
             </div>
           </div>
@@ -349,9 +399,11 @@ type OnboardingStep = 'welcome' | 'library';
 export class OnboardingComponent {
   private readonly libraryService = inject(LibraryService);
   private readonly electronService = inject(ElectronService);
+  private readonly router = inject(Router);
 
   // State
   readonly currentStep = signal<OnboardingStep>('welcome');
+  readonly stepIndex = computed(() => STEP_ORDER.indexOf(this.currentStep()));
   readonly selectedOption = signal<'default' | 'custom'>('default');
   readonly customPath = signal<string>('');
   readonly isCreating = signal(false);
@@ -399,7 +451,9 @@ export class OnboardingComponent {
       }
 
       if (result.success) {
-        this.complete.emit();
+        // Show the "you're ready" step rather than closing immediately, so the
+        // user learns where to find voices, add-ons, and AI setup.
+        this.currentStep.set('ready');
       } else {
         this.error.set(result.error || 'Failed to create library');
       }
@@ -408,5 +462,15 @@ export class OnboardingComponent {
     } finally {
       this.isCreating.set(false);
     }
+  }
+
+  finish(): void {
+    this.complete.emit();
+  }
+
+  /** Close onboarding and open the AI Setup wizard (first-run AI guidance). */
+  finishAndSetupAi(): void {
+    this.complete.emit();
+    void this.router.navigate(['/ai-setup']);
   }
 }

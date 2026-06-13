@@ -91,6 +91,10 @@ export class TtsApiServer {
   private userDataPath: string | null = null;
   private clients = new Map<WebSocket, ClientState>();
   private unsubscribeEngineState: (() => void) | null = null;
+  // Voices whose model is installed (a subset of the full catalog). External
+  // clients only see these. Refreshed at startup and whenever a voice is
+  // downloaded, so the extension never lists a voice it can't play.
+  private installedVoices: string[] = [];
 
   // ───────────────────────────────────────────────────────────────────────────
   // Config
@@ -158,6 +162,9 @@ export class TtsApiServer {
     this.unsubscribeEngineState = xttsWorkerPool.onEngineState((state, serviceMode) => {
       this.broadcast({ type: 'state', state, serviceMode });
     });
+
+    // Populate the installed-voice list before the first client connects.
+    await this.refreshInstalledVoices();
 
     console.log(`[TTS API] Listening on ws://${config.host}:${config.port}`);
     return this.getStatus();
@@ -442,7 +449,7 @@ export class TtsApiServer {
     return {
       state: xttsWorkerPool.getEngineState(),
       serviceMode: xttsWorkerPool.isServiceMode(),
-      voices: xttsWorkerPool.getAvailableVoices(),
+      voices: this.installedVoices,
       currentVoice: xttsWorkerPool.getCurrentVoice(),
       config: xttsWorkerPool.getStreamWorkerConfig()
     };
@@ -452,9 +459,31 @@ export class TtsApiServer {
   private configPayload(): Record<string, unknown> {
     return {
       config: xttsWorkerPool.getStreamWorkerConfig(),
-      voices: xttsWorkerPool.getAvailableVoices(),
+      voices: this.installedVoices,
       currentVoice: xttsWorkerPool.getCurrentVoice()
     };
+  }
+
+  /**
+   * Recompute which voices are installed and push the new list to connected
+   * clients. Called at startup and whenever a voice download completes, so the
+   * extension's voice list updates live without a reconnect.
+   */
+  async refreshInstalledVoices(): Promise<void> {
+    try {
+      const { getInstalledVoiceIds } = await import('./components/installed-voices.js');
+      const next = await getInstalledVoiceIds();
+      const changed =
+        next.length !== this.installedVoices.length ||
+        next.some((v, i) => v !== this.installedVoices[i]);
+      this.installedVoices = next;
+      // Only broadcast when there are clients and the list actually changed.
+      if (changed && this.clients.size > 0) {
+        this.broadcast({ type: 'config', ...this.configPayload() });
+      }
+    } catch (err) {
+      console.error('[TTS API] Failed to refresh installed voices:', err);
+    }
   }
 
   /** Start the worker pool (no-op if running) and warm the voice. */

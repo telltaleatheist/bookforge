@@ -30,6 +30,7 @@ import {
 import { AIProvider } from '../../../core/models/ai-config.types';
 import { StudioService } from '../../studio/services/studio.service';
 import { SettingsService } from '../../../core/services/settings.service';
+import { RuntimeService } from '../../../core/services/runtime.service';
 
 // AI Provider config for IPC
 interface AIProviderConfig {
@@ -237,6 +238,7 @@ export class QueueService {
   private readonly ngZone = inject(NgZone);
   private readonly studioService = inject(StudioService);
   private readonly settingsService = inject(SettingsService);
+  private readonly runtimeService = inject(RuntimeService);
 
   // Progress listener cleanup
   private unsubscribeProgress: (() => void) | null = null;
@@ -315,6 +317,16 @@ export class QueueService {
       saveTimeout = setTimeout(() => {
         this.saveQueueState();
       }, 500);
+    });
+
+    // Resume the queue once the bundled runtime finishes its first-run unpack.
+    // processNext() bails out while the runtime is preparing (see guard there),
+    // so a job queued during setup — or a remote start from the bookshelf —
+    // would otherwise sit until the next completion event nudged the queue.
+    effect(() => {
+      if (this.runtimeService.ready() && this._isRunning()) {
+        this.processNext();
+      }
     });
 
     this.destroyRef.onDestroy(() => {
@@ -2243,6 +2255,16 @@ export class QueueService {
   private async processNext(): Promise<void> {
     if (this._currentJobId()) {
       console.log(`[QUEUE] processNext: already processing job ${this._currentJobId()}, returning`);
+      return;
+    }
+
+    // Don't start work against a half-ready runtime. While the bundled env/e2a
+    // are still unpacking (first run), leave jobs pending; the runtime-ready
+    // effect in the constructor calls processNext() again once setup completes.
+    // Only the active 'preparing' state gates — an errored setup falls through
+    // so the job can run (and surface the real failure) instead of hanging.
+    if (this.runtimeService.preparing()) {
+      console.log('[QUEUE] processNext: runtime still preparing, deferring until ready');
       return;
     }
 

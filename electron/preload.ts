@@ -313,7 +313,7 @@ export interface EpubStructure {
 // AI Types (Multi-provider)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type AIProvider = 'ollama' | 'claude' | 'openai';
+export type AIProvider = 'ollama' | 'claude' | 'openai' | 'local';
 
 export interface AIProviderConfig {
   provider: AIProvider;
@@ -329,6 +329,53 @@ export interface AIProviderConfig {
     apiKey: string;
     model: string;
   };
+  local?: {
+    model?: string;
+  };
+}
+
+// Bundled local AI (llama.cpp) — mirrors electron/llama-bridge.ts shapes.
+export interface LocalAiModel {
+  id: string;
+  name: string;
+  filename: string;
+  url: string;
+  sizeGB: number;
+  minRAM: number;
+  description: string;
+  downloaded: boolean;
+  isActive: boolean;
+  recommended: boolean;
+}
+
+export interface LocalAiSystemInfo {
+  platform: string;
+  totalRamGB: number;
+  cuda: boolean;
+  cudaName?: string;
+  vramGB?: number;
+  effectiveGB: number;
+  recommendedModelId: string;
+}
+
+export interface LocalAiStatus {
+  binaryPresent: boolean;
+  ready: boolean;
+  activeModelId: string | null;
+  activeModelDownloaded: boolean;
+  anyModelDownloaded: boolean;
+  modelsDir: string;
+}
+
+export interface LocalAiModelProgress {
+  modelId: string;
+  pct: number;
+  receivedBytes: number;
+  totalBytes: number;
+  speed?: string;
+  eta?: string;
+  phase: 'download' | 'done' | 'error' | 'cancelled';
+  message?: string;
 }
 
 export interface OllamaModel {
@@ -1076,7 +1123,7 @@ export interface ElectronAPI {
   };
   ai: {
     checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: OllamaModel[]; error?: string }; error?: string }>;
-    checkProviderConnection: (provider: 'ollama' | 'claude' | 'openai') => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
+    checkProviderConnection: (provider: AIProvider) => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
     getModels: () => Promise<{ success: boolean; data?: OllamaModel[]; error?: string }>;
     getClaudeModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
     getOpenAIModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
@@ -1093,6 +1140,15 @@ export interface ElectronAPI {
     onCleanupProgress: (callback: (progress: CleanupProgress) => void) => () => void;
     getPrompt: () => Promise<{ success: boolean; data?: { prompt: string; filePath: string }; error?: string }>;
     savePrompt: (prompt: string) => Promise<{ success: boolean; error?: string }>;
+    // Bundled local AI (llama.cpp) — AI Setup wizard
+    localStatus: () => Promise<{ success: boolean; data?: LocalAiStatus; error?: string }>;
+    localSystemInfo: () => Promise<{ success: boolean; data?: LocalAiSystemInfo; error?: string }>;
+    localListModels: () => Promise<{ success: boolean; data?: LocalAiModel[]; error?: string }>;
+    localDownloadModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+    localCancelDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+    localDeleteModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+    localSetActive: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+    onLocalModelProgress: (callback: (p: LocalAiModelProgress) => void) => () => void;
   };
   shell: {
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
@@ -1107,6 +1163,16 @@ export interface ElectronAPI {
   };
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) => Promise<{ success: boolean; error?: string }>;
+  };
+  runtime: {
+    getStatus: () => Promise<{ success: boolean; data?: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }; error?: string }>;
+    onStatus: (callback: (status: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }) => void) => () => void;
+    usingBundledEnv: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
+  };
+  customVoices: {
+    list: () => Promise<{ success: boolean; data?: Array<{ id: string; name: string; checkpointDir: string; refPath: string }>; error?: string }>;
+    add: () => Promise<{ success: boolean; voice?: { id: string; name: string; checkpointDir: string; refPath: string }; canceled?: boolean; error?: string }>;
+    remove: (id: string) => Promise<{ success: boolean; error?: string }>;
   };
   toolPaths: {
     getConfig: () => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
@@ -2341,7 +2407,7 @@ const electronAPI: ElectronAPI = {
   ai: {
     checkConnection: () =>
       ipcRenderer.invoke('ai:check-connection'),
-    checkProviderConnection: (provider: 'ollama' | 'claude' | 'openai') =>
+    checkProviderConnection: (provider: AIProvider) =>
       ipcRenderer.invoke('ai:check-provider-connection', provider),
     getModels: () =>
       ipcRenderer.invoke('ai:get-models'),
@@ -2376,6 +2442,25 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('ai:get-prompt'),
     savePrompt: (prompt: string) =>
       ipcRenderer.invoke('ai:save-prompt', prompt),
+    localStatus: () =>
+      ipcRenderer.invoke('ai:local-status'),
+    localSystemInfo: () =>
+      ipcRenderer.invoke('ai:local-system-info'),
+    localListModels: () =>
+      ipcRenderer.invoke('ai:local-list-models'),
+    localDownloadModel: (modelId: string) =>
+      ipcRenderer.invoke('ai:local-download-model', modelId),
+    localCancelDownload: (modelId: string) =>
+      ipcRenderer.invoke('ai:local-cancel-download', modelId),
+    localDeleteModel: (modelId: string) =>
+      ipcRenderer.invoke('ai:local-delete-model', modelId),
+    localSetActive: (modelId: string) =>
+      ipcRenderer.invoke('ai:local-set-active', modelId),
+    onLocalModelProgress: (callback: (p: LocalAiModelProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, p: LocalAiModelProgress) => callback(p);
+      ipcRenderer.on('ai:local-model-progress', listener);
+      return () => ipcRenderer.removeListener('ai:local-model-progress', listener);
+    },
   },
   shell: {
     openExternal: (url: string) =>
@@ -2398,6 +2483,25 @@ const electronAPI: ElectronAPI = {
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) =>
       ipcRenderer.invoke('e2a:configure-paths', config),
+  },
+  runtime: {
+    getStatus: () =>
+      ipcRenderer.invoke('runtime:get-status'),
+    onStatus: (callback: (status: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }) => void) => {
+      const handler = (_event: unknown, status: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }) => callback(status);
+      ipcRenderer.on('runtime:status', handler);
+      return () => ipcRenderer.removeListener('runtime:status', handler);
+    },
+    usingBundledEnv: () =>
+      ipcRenderer.invoke('runtime:using-bundled-env'),
+  },
+  customVoices: {
+    list: () =>
+      ipcRenderer.invoke('custom-voices:list'),
+    add: () =>
+      ipcRenderer.invoke('custom-voices:add'),
+    remove: (id: string) =>
+      ipcRenderer.invoke('custom-voices:remove', id),
   },
   toolPaths: {
     getConfig: () =>

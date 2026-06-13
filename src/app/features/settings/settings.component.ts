@@ -671,17 +671,20 @@ import {
                 </div>
               </div>
             } @else if (section.id === 'tools') {
-              <!-- External Tools Section -->
+              <!-- Advanced Section (tool-path overrides, scratch dir, WSL) -->
               <div class="tools-section">
                 @if (toolPathsLoading()) {
                   <p class="loading-hint">Loading tool paths...</p>
                 }
 
-                <!-- Conda Path -->
+                <!-- Conda Path — hidden on packaged builds (they run on the
+                     bundled relocatable env and never need conda). Shown in
+                     dev / bring-your-own setups. -->
+                @if (!usingBundledEnv()) {
                 <div class="tool-row">
                   <div class="tool-info">
                     <h4>Conda</h4>
-                    <p class="tool-description">Python environment manager (required for TTS)</p>
+                    <p class="tool-description">Python environment manager (optional — only for advanced / bring-your-own TTS setups)</p>
                     @if (getToolStatus('conda'); as status) {
                       <div class="tool-status" [class.detected]="status.detected" [class.not-detected]="!status.detected">
                         @if (status.configured) {
@@ -710,6 +713,7 @@ import {
                     </div>
                   </div>
                 </div>
+                }
 
                 <!-- FFmpeg Path -->
                 <div class="tool-row">
@@ -958,12 +962,21 @@ import {
                   </p>
                 </div>
               </div>
-            } @else if (section.id === 'voices') {
-              <!-- Voices (downloadable TTS models) — own child component -->
-              <app-voices-panel></app-voices-panel>
             } @else if (section.id === 'add-ons') {
-              <!-- Add-ons (optional components) — own child component -->
-              <app-add-ons-panel></app-add-ons-panel>
+              <!-- Add-ons & Models hub: optional tools/runtimes + downloadable
+                   voices, merged into one section (WS7). -->
+              <div class="addons-hub">
+                <div class="addons-group">
+                  <h3 class="addons-group-title">Tools &amp; Runtimes</h3>
+                  <p class="addons-group-sub">Optional components: Calibre, Tesseract, Orpheus.</p>
+                  <app-add-ons-panel></app-add-ons-panel>
+                </div>
+                <div class="addons-group">
+                  <h3 class="addons-group-title">Voices</h3>
+                  <p class="addons-group-sub">Download premium TTS voices, or add your own.</p>
+                  <app-voices-panel></app-voices-panel>
+                </div>
+              </div>
             } @else {
               <div class="fields-list">
                 @for (field of section.fields; track field.key) {
@@ -1707,6 +1720,25 @@ import {
       gap: var(--ui-spacing-lg);
     }
 
+    .addons-hub {
+      display: flex;
+      flex-direction: column;
+      gap: var(--ui-spacing-xl, 32px);
+    }
+
+    .addons-group-title {
+      margin: 0 0 4px;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .addons-group-sub {
+      margin: 0 0 var(--ui-spacing-md, 12px);
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
     .tool-row {
       display: flex;
       align-items: flex-start;
@@ -2024,6 +2056,9 @@ export class SettingsComponent implements OnInit {
   readonly toolPathsLoading = signal(false);
   readonly toolPathsSaving = signal(false);
   readonly toolPathsSaveStatus = signal<{ success: boolean; message: string } | null>(null);
+  // Packaged builds run on the bundled relocatable env and never need conda, so
+  // the Conda tool row is hidden there. It stays visible in dev / BYO setups.
+  readonly usingBundledEnv = signal(false);
   readonly toolPathsDirty = computed(() => {
     const draft = this.toolPathsDraft();
     const saved = this.toolPathsConfig();
@@ -2654,6 +2689,12 @@ export class SettingsComponent implements OnInit {
       const statusResult = await this.electronService.toolPathsGetStatus();
       if (statusResult.success && statusResult.data) {
         this.toolPathsStatus.set(statusResult.data);
+      }
+
+      // Whether conda is even relevant (hidden on packaged/bundled-env builds).
+      const bundledResult = await this.electronService.runtimeUsingBundledEnv();
+      if (bundledResult.success && bundledResult.data !== undefined) {
+        this.usingBundledEnv.set(bundledResult.data);
       }
     } catch (err) {
       console.error('Failed to load tool paths:', err);

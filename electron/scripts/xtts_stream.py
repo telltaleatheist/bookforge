@@ -200,14 +200,18 @@ class XTTSStreamServer:
             self.generations_since_cleanup = 0
             self._cleanup_memory()
 
-    def load_voice(self, voice: str, repo: str, sub: str, ref_path: str):
-        """Load a voice: ensure its checkpoint (repo, sub) is loaded, then set
-        conditioning latents cloned from ref_path.
+    def load_voice(self, voice: str, repo: str, sub: str, ref_path: str, local_checkpoint_dir: str = None):
+        """Load a voice: ensure its checkpoint is loaded, then set conditioning
+        latents cloned from ref_path.
 
         The base XTTS-v2 model (repo=coqui/XTTS-v2, sub='') serves every cloned
         voice, so switching among the library reuses the loaded model and only
         recomputes latents (~2s). Fine-tuned voices have their own checkpoint
         and trigger a model reload.
+
+        User-added custom voices pass local_checkpoint_dir: the config.json /
+        model.pth / vocab.json are read straight from that folder instead of
+        being fetched from HuggingFace.
         """
         try:
             from TTS.tts.configs.xtts_config import XttsConfig
@@ -220,7 +224,9 @@ class XTTSStreamServer:
             if not os.path.exists(ref_path):
                 raise FileNotFoundError(f"Voice file not found: {ref_path}")
 
-            model_key = f"{repo}|{sub}"
+            # A local custom checkpoint is keyed by its folder so each distinct
+            # custom voice triggers its own reload.
+            model_key = f"local|{local_checkpoint_dir}" if local_checkpoint_dir else f"{repo}|{sub}"
             if self.tts is None or self.loaded_key != model_key:
                 log_memory("Before model load")
                 send_response('status', {'message': f'Loading XTTS model ({self.device})...'})
@@ -232,9 +238,17 @@ class XTTSStreamServer:
                     self._cleanup_memory()
                     log_memory("After cleanup old model")
 
-                config_path = hf_hub_download(repo_id=repo, filename=f"{sub}config.json", cache_dir=TTS_DIR)
-                checkpoint_path = hf_hub_download(repo_id=repo, filename=f"{sub}model.pth", cache_dir=TTS_DIR)
-                vocab_path = hf_hub_download(repo_id=repo, filename=f"{sub}vocab.json", cache_dir=TTS_DIR)
+                if local_checkpoint_dir:
+                    config_path = os.path.join(local_checkpoint_dir, 'config.json')
+                    checkpoint_path = os.path.join(local_checkpoint_dir, 'model.pth')
+                    vocab_path = os.path.join(local_checkpoint_dir, 'vocab.json')
+                    for p in (config_path, checkpoint_path, vocab_path):
+                        if not os.path.exists(p):
+                            raise FileNotFoundError(f"Custom voice file not found: {p}")
+                else:
+                    config_path = hf_hub_download(repo_id=repo, filename=f"{sub}config.json", cache_dir=TTS_DIR)
+                    checkpoint_path = hf_hub_download(repo_id=repo, filename=f"{sub}model.pth", cache_dir=TTS_DIR)
+                    vocab_path = hf_hub_download(repo_id=repo, filename=f"{sub}vocab.json", cache_dir=TTS_DIR)
 
                 config = XttsConfig()
                 config.load_json(config_path)
@@ -407,7 +421,8 @@ class XTTSStreamServer:
                     repo = request.get('repo', BASE_REPO)
                     sub = request.get('sub', BASE_SUB)
                     ref_path = request.get('ref_path', DEFAULT_REF)
-                    success = self.load_voice(voice, repo, sub, ref_path)
+                    local_checkpoint_dir = request.get('local_checkpoint_dir') or None
+                    success = self.load_voice(voice, repo, sub, ref_path, local_checkpoint_dir)
                     if success:
                         send_response('loaded', {'voice': self.current_voice})
 

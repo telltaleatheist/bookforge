@@ -559,7 +559,10 @@ async function loadVoiceOnWorker(worker: Worker, descriptor: StreamVoice): Promi
       voice: descriptor.id,
       repo: descriptor.repo,
       sub: descriptor.sub,
-      ref_path: descriptor.refPath
+      ref_path: descriptor.refPath,
+      // Set for user-added custom voices: load from this local folder instead
+      // of fetching the checkpoint from HuggingFace.
+      local_checkpoint_dir: descriptor.localCheckpointDir ?? null
     });
   });
 }

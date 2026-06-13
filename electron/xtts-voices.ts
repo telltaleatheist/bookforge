@@ -21,14 +21,18 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getDefaultE2aPath } from './e2a-paths';
+import { listCustomVoices } from './custom-voices';
 
 export interface StreamVoice {
   id: string;       // stable id echoed back on load
   name: string;     // display name
   group: string;    // dropdown optgroup
-  repo: string;     // HF repo for the model checkpoint
+  repo: string;     // HF repo for the model checkpoint ('' for local custom voices)
   sub: string;      // HF sub-path ('' = repo root, used by the base model)
   refPath: string;  // absolute path to the reference wav for conditioning latents
+  // Set for user-added custom voices: load the checkpoint from this local
+  // folder (config.json/model.pth/vocab.json) instead of fetching from HF.
+  localCheckpointDir?: string;
 }
 
 export const BASE_REPO = 'coqui/XTTS-v2';
@@ -93,7 +97,26 @@ function walkWavs(dir: string): string[] {
   return out;
 }
 
+/** User-added custom voices as catalog entries (loaded from a local folder). */
+function customStreamVoices(): StreamVoice[] {
+  return listCustomVoices().map((v) => ({
+    id: v.id,
+    name: v.name,
+    group: 'Your Voices',
+    repo: '',
+    sub: '',
+    refPath: v.refPath,
+    localCheckpointDir: v.checkpointDir,
+  }));
+}
+
 export function getStreamVoices(): StreamVoice[] {
+  // Custom voices are appended fresh every call (cheap) so a just-added voice
+  // shows up immediately; only the folder scan below is cached.
+  return [...getScannedStreamVoices(), ...customStreamVoices()];
+}
+
+function getScannedStreamVoices(): StreamVoice[] {
   const voicesDir = path.join(getDefaultE2aPath(), 'voices');
   if (cache && cache.dir === voicesDir) return cache.voices;
 

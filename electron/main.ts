@@ -26,6 +26,39 @@ import { systemProbe } from './components/system-probe';
 
 let mainWindow: BrowserWindow | null = null;
 
+// First-run runtime readiness. Packaged builds unpack the bundled Python env +
+// e2a snapshot on first launch (~40 s); during that window the UI looks ready
+// but jobs would hit a half-ready runtime / conda fallback. We track the state
+// here and broadcast it so the renderer can show a blocking "Setting up…"
+// overlay and gate job submission. Buffered so a late-loading renderer can
+// query the current state via `runtime:get-status` instead of missing events.
+export type RuntimeReadyState = 'preparing' | 'ready' | 'error';
+export interface RuntimeStatus {
+  state: RuntimeReadyState;
+  message: string;
+  error?: string;
+}
+let runtimeStatus: RuntimeStatus = { state: 'preparing', message: 'Starting the audiobook engine…' };
+
+function setRuntimeStatus(next: RuntimeStatus): void {
+  runtimeStatus = next;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('runtime:status', next);
+  }
+}
+
+// Nudge the TTS API server to recompute its installed-voice list and push it to
+// connected external clients (e.g. after a voice download/uninstall). No-op if
+// the server hasn't started yet — start() builds the list itself.
+async function refreshTtsApiVoices(): Promise<void> {
+  try {
+    const { ttsApiServer } = await import('./tts-api-server.js');
+    await ttsApiServer.refreshInstalledVoices();
+  } catch (err) {
+    console.error('[Startup] Failed to refresh TTS API voices:', err);
+  }
+}
+
 // Suppress benign mupdf WASM FinalizationRegistry errors.
 // These fire asynchronously during GC when mupdf tries to free stale page/pixmap/annotation
 // objects. They don't affect functionality — the resources are already freed by mupdf internally.
@@ -3757,6 +3790,25 @@ function setupIpcHandlers(): void {
   // Tool Paths Configuration (centralized config for external tools)
   // ─────────────────────────────────────────────────────────────────────────────
 
+  // First-run runtime readiness: the renderer queries this on boot to sync the
+  // current state (events may have fired before the renderer subscribed), then
+  // listens for `runtime:status` pushes.
+  ipcMain.handle('runtime:get-status', async () => {
+    return { success: true, data: runtimeStatus };
+  });
+
+  // Whether spawns use the bundled relocatable env (packaged) vs a conda env
+  // (dev / BYO Orpheus). Lets the renderer hide the "Conda — required for TTS"
+  // tool row when conda is irrelevant.
+  ipcMain.handle('runtime:using-bundled-env', async () => {
+    try {
+      const { getActiveBundledEnvPath } = await import('./e2a-env-bootstrap.js');
+      return { success: true, data: !!getActiveBundledEnvPath() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('tool-paths:get-config', async () => {
     try {
       const { getConfig } = await import('./tool-paths.js');
@@ -4274,9 +4326,13 @@ function setupIpcHandlers(): void {
   });
 
   ipcMain.handle('components:install', async (event, id: string) => {
-    return componentManager.install(id, (p) => {
+    const result = await componentManager.install(id, (p) => {
       event.sender.send('components:progress', p);
     });
+    // A newly-downloaded voice should appear in external clients (extension)
+    // without a reconnect.
+    void refreshTtsApiVoices();
+    return result;
   });
 
   ipcMain.handle('components:cancel', async (_event, id: string) => {
@@ -4284,7 +4340,131 @@ function setupIpcHandlers(): void {
   });
 
   ipcMain.handle('components:uninstall', async (_event, id: string) => {
-    return componentManager.uninstall(id);
+    const result = await componentManager.uninstall(id);
+    void refreshTtsApiVoices();
+    return result;
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Custom (user-added) XTTS voices — Play tab + browser extension
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('custom-voices:list', async () => {
+    try {
+      const { listCustomVoices } = await import('./custom-voices.js');
+      return { success: true, data: listCustomVoices() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Pick a checkpoint folder, validate it, and register it as a custom voice.
+  ipcMain.handle('custom-voices:add', async () => {
+    try {
+      if (!mainWindow) return { success: false, error: 'No window' };
+      const picked = await dialog.showOpenDialog(mainWindow, {
+        title: 'Select a fine-tuned XTTS voice folder',
+        message: 'Pick the folder containing config.json, model.pth, vocab.json and a reference .wav',
+        properties: ['openDirectory'],
+      });
+      if (picked.canceled || picked.filePaths.length === 0) {
+        return { success: false, canceled: true };
+      }
+
+      const [{ addCustomVoiceFromFolder }, { getStreamVoices }] = await Promise.all([
+        import('./custom-voices.js'),
+        import('./xtts-voices.js'),
+      ]);
+      // Reserve existing catalog ids so a custom voice can't shadow a built-in one.
+      const reserved = new Set(getStreamVoices().map((v) => v.id));
+      const result = addCustomVoiceFromFolder(picked.filePaths[0], reserved);
+      if (result.success) void refreshTtsApiVoices();
+      return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('custom-voices:remove', async (_event, id: string) => {
+    try {
+      const { removeCustomVoice } = await import('./custom-voices.js');
+      const result = removeCustomVoice(id);
+      void refreshTtsApiVoices();
+      return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Local AI (bundled llama.cpp) — AI Setup wizard + offline cleanup (WS2)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('ai:local-status', async () => {
+    try {
+      const { llamaBridge } = await import('./llama-bridge.js');
+      return { success: true, data: await llamaBridge.status() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ai:local-system-info', async () => {
+    try {
+      const { llamaBridge } = await import('./llama-bridge.js');
+      return { success: true, data: await llamaBridge.systemInfo() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ai:local-list-models', async () => {
+    try {
+      const { llamaBridge } = await import('./llama-bridge.js');
+      return { success: true, data: await llamaBridge.listModels() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ai:local-download-model', async (event, modelId: string) => {
+    try {
+      const { llamaBridge } = await import('./llama-bridge.js');
+      const result = await llamaBridge.downloadModel(modelId, (p) => {
+        event.sender.send('ai:local-model-progress', p);
+      });
+      return { success: result.ok, error: result.error };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ai:local-cancel-download', async (_event, modelId: string) => {
+    try {
+      const { llamaBridge } = await import('./llama-bridge.js');
+      llamaBridge.cancelDownload(modelId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ai:local-delete-model', async (_event, modelId: string) => {
+    try {
+      const { llamaBridge } = await import('./llama-bridge.js');
+      return llamaBridge.deleteModel(modelId);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('ai:local-set-active', async (_event, modelId: string) => {
+    try {
+      const { llamaBridge } = await import('./llama-bridge.js');
+      return llamaBridge.setActive(modelId);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   // Stream scheduler: main-process generation orchestration for the Play tab.
@@ -9663,31 +9843,73 @@ app.whenReady().then(async () => {
     pdfWorkerProxy.setDefaultSender(mainWindow.webContents);
   }
 
-  // First-run unpack of the bundled Python env (packaged builds only — dev
-  // builds ship no tarball and this returns immediately). Runs in the
-  // background so the window isn't blocked; e2a spawns resolve the bundled
-  // env as soon as the unpack finishes.
+  // First-run unpack of the bundled Python env + e2a snapshot (packaged builds
+  // only — dev ships no tarball/snapshot and the ensure* calls return at once).
+  // Runs in the background so the window isn't blocked; readiness is broadcast
+  // so the renderer can show a "Setting up…" overlay and gate job submission
+  // until the runtime is actually usable. The TTS API server start is folded in
+  // here so external clients (browser extension) never hit a half-ready runtime.
   void (async () => {
-    const { ensureBundledEnv, ensureBundledE2a } = await import('./e2a-env-bootstrap.js');
+    const { ensureBundledEnv, ensureBundledE2a, bundledRuntimeReady } =
+      await import('./e2a-env-bootstrap.js');
+
+    // Nothing to unpack (dev, or already current) → ready immediately, no overlay.
+    if (bundledRuntimeReady()) {
+      setRuntimeStatus({ state: 'ready', message: 'Ready' });
+    } else {
+      setRuntimeStatus({ state: 'preparing', message: 'Setting up the audiobook engine…' });
+    }
+
+    const emit = (message: string) => {
+      logger.info(message);
+      setRuntimeStatus({ state: 'preparing', message });
+    };
+
     // Independent try blocks: the e2a code snapshot and the Python env unpack are
     // unrelated, so a failure in one must NOT block the other (a single bad file
     // in the snapshot copy previously left the bundled env unpacked → conda
     // fallback for everything).
+    let firstError: string | null = null;
     try {
-      const e2aDir = await ensureBundledE2a((message) => logger.info(message));
+      const e2aDir = await ensureBundledE2a(emit);
       if (e2aDir) {
         logger.info('Bundled e2a code ready', { e2aDir });
       }
     } catch (err) {
-      logger.error('Bundled e2a code setup failed', { error: (err as Error).message });
+      firstError = (err as Error).message;
+      logger.error('Bundled e2a code setup failed', { error: firstError });
     }
     try {
-      const envDir = await ensureBundledEnv((message) => logger.info(message));
+      const envDir = await ensureBundledEnv(emit);
       if (envDir) {
         logger.info('Bundled Python env ready', { envDir });
       }
     } catch (err) {
-      logger.error('Bundled Python env setup failed', { error: (err as Error).message });
+      const message = (err as Error).message;
+      firstError = firstError ?? message;
+      logger.error('Bundled Python env setup failed', { error: message });
+    }
+
+    if (firstError) {
+      setRuntimeStatus({
+        state: 'error',
+        message: 'Setup of the audiobook engine failed.',
+        error: firstError,
+      });
+    } else {
+      setRuntimeStatus({ state: 'ready', message: 'Ready' });
+    }
+
+    // TTS API server: WebSocket front door for external clients (browser
+    // extension). Started only after the runtime unpack window so a connecting
+    // client never spawns a worker against a half-ready runtime. Always on —
+    // binds localhost-only unless configured for LAN.
+    try {
+      const { ttsApiServer } = await import('./tts-api-server.js');
+      const status = await ttsApiServer.start(app.getPath('userData'));
+      console.log(`[Startup] TTS API server on port ${status.port} (host ${status.host})`);
+    } catch (err) {
+      console.error('[Startup] TTS API server failed to start:', err);
     }
   })();
 
@@ -9717,15 +9939,9 @@ app.whenReady().then(async () => {
     mainWindow?.webContents.send('queue:remote-control', action);
   });
 
-  // TTS API server: WebSocket front door for external clients (browser
-  // extension). Always on — binds localhost-only unless configured for LAN.
-  try {
-    const { ttsApiServer } = await import('./tts-api-server.js');
-    const status = await ttsApiServer.start(app.getPath('userData'));
-    console.log(`[Startup] TTS API server on port ${status.port} (host ${status.host})`);
-  } catch (err) {
-    console.error('[Startup] TTS API server failed to start:', err);
-  }
+  // NOTE: the TTS API server is started inside the runtime-bootstrap IIFE above,
+  // gated behind the first-run unpack so external clients never hit a half-ready
+  // runtime.
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Window management: Cmd+W hides, Cmd+Q double-press to quit

@@ -189,25 +189,25 @@ export class SettingsService {
         fields: [], // TTS Server section has custom UI
       },
       {
+        // Single hub for optional capabilities: tools/runtimes (Calibre,
+        // Tesseract, Orpheus) AND downloadable voices. Renders both
+        // app-add-ons-panel and app-voices-panel. (Merged from the former
+        // separate "Voices" + "Add-ons" sections — WS7.)
+        id: 'add-ons',
+        name: 'Add-ons & Models',
+        description: 'Optional components and downloadable voices: Calibre, Tesseract, Orpheus, premium voices, and more',
+        icon: '🧩',
+        fields: [], // Custom UI (app-add-ons-panel + app-voices-panel)
+      },
+      {
+        // Thin advanced section: genuine overrides only (tool paths, scratch
+        // dir, WSL). Conda is hidden on packaged builds (bundled env). Renamed
+        // from "External Tools" — WS7.
         id: 'tools',
-        name: 'External Tools',
-        description: 'Configure paths to external tools (conda, ffmpeg, etc.)',
+        name: 'Advanced',
+        description: 'Advanced overrides: tool paths (ffmpeg, conda), TTS scratch folder, WSL',
         icon: '🔧',
         fields: [], // Tools section has custom UI
-      },
-      {
-        id: 'voices',
-        name: 'Voices',
-        description: 'Download premium TTS voices (Attenborough, Freeman, and more)',
-        icon: '🎙️',
-        fields: [], // Voices section has custom UI (app-voices-panel)
-      },
-      {
-        id: 'add-ons',
-        name: 'Add-ons',
-        description: 'Optional components: Calibre, Tesseract, Orpheus, and more',
-        icon: '🧩',
-        fields: [], // Add-ons section has custom UI (app-add-ons-panel)
       },
     ];
 

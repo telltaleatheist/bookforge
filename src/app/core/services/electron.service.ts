@@ -2648,6 +2648,14 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /** True when spawns use the bundled relocatable env (packaged) — conda is then irrelevant. */
+  async runtimeUsingBundledEnv(): Promise<{ success: boolean; data?: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.runtime.usingBundledEnv();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // WSL2 Support (Windows only, for Orpheus TTS)
   // ─────────────────────────────────────────────────────────────────────────────
