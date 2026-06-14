@@ -147,7 +147,7 @@ function robustRmDir(dir) {
 
 console.log(`[stage-resources] e2a source:  ${e2aSource}`);
 console.log(`[stage-resources] env tarball: ${tarballSource}`);
-console.log(`[stage-resources] models:      ${includeModels ? 'INCLUDED (offline build)' : seedModels ? `SEED (${process.platform === 'darwin' ? 'base XTTS + ' : ''}Scarlett + English stanza)` : 'excluded'}`);
+console.log(`[stage-resources] models:      ${includeModels ? 'INCLUDED (offline build)' : seedModels ? 'SEED (Scarlett + base speakers_xtts.pth + English stanza)' : 'excluded'}`);
 
 fs.mkdirSync(resourcesDir, { recursive: true });
 
@@ -213,9 +213,10 @@ fs.writeFileSync(
 //
 // The bulk copy above already excluded models/ (EXCLUDE_TOP) but kept voices/
 // (the small reference clips every downloadable voice needs). Here we add back a
-// curated slice of models/: the base XTTS-v2 model, the ScarlettJohansson voice,
-// and the English stanza pack. Every
-// other voice/model downloads on demand into the app's data folder at runtime.
+// curated slice of models/: the base speakers_xtts.pth (required for any XTTS
+// voice to init), the ScarlettJohansson voice, and the English stanza pack. Every
+// other voice/model — including the full base XTTS model — downloads on demand
+// into the app's data folder at runtime.
 if (seedModels) {
   // Build the voice checkpoint in a PERSISTENT staging cache (idempotent — a
   // second build is instant), then clone-on-write it into the snapshot. The
@@ -226,69 +227,49 @@ if (seedModels) {
   fs.mkdirSync(seedCache, { recursive: true });
   fs.mkdirSync(ttsDest, { recursive: true });
 
-  // Base XTTS-v2 model (coqui/XTTS-v2 — mirrors BASE_REPO/BASE_FILES in
-  // electron/xtts-voices.ts + voice-components.ts). Bundling it makes the stock
-  // "XTTS Default" voice AND every reference-clip "Voice Library" clone work out
-  // of the box — cloning needs the base weights + speakers_xtts.pth. Without it,
-  // only the bundled fine-tune (Scarlett) works until the user downloads it.
+  // Base XTTS-v2: bundle ONLY speakers_xtts.pth (~7.7 MB) — the same minimal,
+  // required set on EVERY platform. It is the only base file the engine REQUIRES:
+  // xtts.py's __init__ calls _load_xtts_builtin_list() for ALL voices (incl. the
+  // bundled fine-tune Scarlett), which hf_hub_downloads + torch.loads the base
+  // repo's speakers_xtts.pth (the 58 built-in speaker fingerprints). Offline
+  // without it the engine raises LocalEntryNotFoundError and even Scarlett fails
+  // to initialize.
   //
-  // PLATFORM SPLIT: bundle it on macOS only. On Windows the seed installer must
-  // fit Inno's ~4.2 GB single-file cap, and the base adds ~1.9 GB — so Windows
-  // ships it as a download-on-demand component (`xtts-base`) instead. (The shared
-  // .seed-cache may still hold the base from a Mac build; the copy loop below
-  // skips it when not bundling.)
+  // The full base model.pth (~1.9 GB) is the inference engine ONLY for the stock
+  // "XTTS Default" voice + the reference-clip "Voice Library" clones, so it stays
+  // download-on-demand (`xtts-base`) on every platform. Fine-tuned voices ship
+  // their own model.pth and clone from a reference clip, so omitting the full
+  // base is no quality loss — speakers_xtts.pth is just an init formality for them.
   const BASE_REPO_DIR = 'models--coqui--XTTS-v2';
-  const seedBase = process.platform === 'darwin';
-  if (seedBase) {
-    console.log(`[stage-resources] seeding full base XTTS-v2 model via: ${seedPyCmd}`);
-    execSync(
-      `${seedPyCmd} -m bookforge_ext.download_model --engine xtts --repo coqui/XTTS-v2 --files config.json model.pth vocab.json speakers_xtts.pth --cache-dir "${seedCache}"`,
-      { cwd: e2aSource, stdio: 'inherit' }
-    );
-  } else {
-    console.log('[stage-resources] full base XTTS-v2 NOT bundled here — download-on-demand (xtts-base); shipping only speakers_xtts.pth below');
+  const speakersCache = path.join(repoRoot, 'packaging', '.seed-cache-speakers');
+  fs.mkdirSync(speakersCache, { recursive: true });
+  console.log(`[stage-resources] seeding base speakers_xtts.pth (~7.7 MB) via: ${seedPyCmd}`);
+  execSync(
+    `${seedPyCmd} -m bookforge_ext.download_model --engine xtts --repo coqui/XTTS-v2 --files speakers_xtts.pth --cache-dir "${speakersCache}"`,
+    { cwd: e2aSource, stdio: 'inherit' }
+  );
+  const baseSpeakers = path.join(speakersCache, BASE_REPO_DIR);
+  if (!fs.existsSync(baseSpeakers)) {
+    throw new Error('speakers_xtts.pth seed failed — base repo cache not created; XTTS would fail to init offline');
   }
+  fs.cpSync(baseSpeakers, path.join(ttsDest, BASE_REPO_DIR), {
+    recursive: true, verbatimSymlinks: true, mode: CLONE,
+  });
 
-  // Premium bundled voice (fine-tune). Both land in the same seed cache and are
-  // copied into the snapshot together below.
+  // Premium bundled voice (fine-tune): ScarlettJohansson — standalone (its own
+  // model.pth + a reference clip).
   console.log(`[stage-resources] seeding default voice (ScarlettJohansson) via: ${seedPyCmd}`);
   execSync(
     `${seedPyCmd} -m bookforge_ext.download_model --engine xtts --preset ScarlettJohansson --cache-dir "${seedCache}"`,
     { cwd: e2aSource, stdio: 'inherit' }
   );
   for (const entry of fs.readdirSync(seedCache)) {
-    // Don't ship the full base model on platforms that aren't bundling it, even
-    // if a prior (Mac) build left it in the shared seed cache.
-    if (!seedBase && entry === BASE_REPO_DIR) continue;
+    // Never ship the full base model — only speakers_xtts.pth (above) + the
+    // fine-tune. A prior build may have left the full base in the shared cache.
+    if (entry === BASE_REPO_DIR) continue;
     // verbatimSymlinks: keep the HF cache's relative blob symlinks intact (else
     // they'd dereference into full copies).
     fs.cpSync(path.join(seedCache, entry), path.join(ttsDest, entry), {
-      recursive: true, verbatimSymlinks: true, mode: CLONE,
-    });
-  }
-
-  // EVERY platform needs the base repo's speakers_xtts.pth (~7.7 MB): xtts.py's
-  // __init__ loads it for ALL voices (incl. the bundled fine-tune Scarlett) via
-  // _load_xtts_builtin_list() (lib/classes/tts_engines/common/utils.py). Without
-  // it the engine fails to initialize offline (LocalEntryNotFoundError) — so even
-  // Scarlett won't run. macOS already has it via the full base above; on Windows
-  // we bundle ONLY this file into a clean cache (the full base model stays
-  // download-on-demand as `xtts-base`). It does NOT affect fine-tuned audio
-  // quality — those voices infer from their own model.pth + a reference clip and
-  // never read the built-in speaker table.
-  if (!seedBase) {
-    const speakersCache = path.join(repoRoot, 'packaging', '.seed-cache-speakers');
-    fs.mkdirSync(speakersCache, { recursive: true });
-    console.log(`[stage-resources] seeding base speakers_xtts.pth (~7.7 MB) via: ${seedPyCmd}`);
-    execSync(
-      `${seedPyCmd} -m bookforge_ext.download_model --engine xtts --repo coqui/XTTS-v2 --files speakers_xtts.pth --cache-dir "${speakersCache}"`,
-      { cwd: e2aSource, stdio: 'inherit' }
-    );
-    const baseSpeakers = path.join(speakersCache, BASE_REPO_DIR);
-    if (!fs.existsSync(baseSpeakers)) {
-      throw new Error('speakers_xtts.pth seed failed — base repo cache not created; XTTS would fail to init offline');
-    }
-    fs.cpSync(baseSpeakers, path.join(ttsDest, BASE_REPO_DIR), {
       recursive: true, verbatimSymlinks: true, mode: CLONE,
     });
   }
