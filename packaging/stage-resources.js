@@ -147,7 +147,7 @@ function robustRmDir(dir) {
 
 console.log(`[stage-resources] e2a source:  ${e2aSource}`);
 console.log(`[stage-resources] env tarball: ${tarballSource}`);
-console.log(`[stage-resources] models:      ${includeModels ? 'INCLUDED (offline build)' : seedModels ? 'SEED (default voice + stanza only)' : 'excluded'}`);
+console.log(`[stage-resources] models:      ${includeModels ? 'INCLUDED (offline build)' : seedModels ? 'SEED (base XTTS + Scarlett + English stanza)' : 'excluded'}`);
 
 fs.mkdirSync(resourcesDir, { recursive: true });
 
@@ -213,7 +213,8 @@ fs.writeFileSync(
 //
 // The bulk copy above already excluded models/ (EXCLUDE_TOP) but kept voices/
 // (the small reference clips every downloadable voice needs). Here we add back a
-// curated slice of models/: the ScarlettJohansson checkpoint and stanza. Every
+// curated slice of models/: the base XTTS-v2 model, the ScarlettJohansson voice,
+// and the English stanza pack. Every
 // other voice/model downloads on demand into the app's data folder at runtime.
 if (seedModels) {
   // Build the voice checkpoint in a PERSISTENT staging cache (idempotent — a
@@ -225,6 +226,19 @@ if (seedModels) {
   fs.mkdirSync(seedCache, { recursive: true });
   fs.mkdirSync(ttsDest, { recursive: true });
 
+  // Base XTTS-v2 model (coqui/XTTS-v2 — mirrors BASE_REPO/BASE_FILES in
+  // electron/xtts-voices.ts + voice-components.ts). Bundling it makes the stock
+  // "XTTS Default" voice AND every reference-clip "Voice Library" clone work out
+  // of the box — cloning needs the base weights + speakers_xtts.pth. Without it,
+  // only the bundled fine-tune (Scarlett) would work until the user downloads it.
+  console.log(`[stage-resources] seeding base XTTS-v2 model via: ${seedPyCmd}`);
+  execSync(
+    `${seedPyCmd} -m bookforge_ext.download_model --engine xtts --repo coqui/XTTS-v2 --files config.json model.pth vocab.json speakers_xtts.pth --cache-dir "${seedCache}"`,
+    { cwd: e2aSource, stdio: 'inherit' }
+  );
+
+  // Premium bundled voice (fine-tune). Both land in the same seed cache and are
+  // copied into the snapshot together below.
   console.log(`[stage-resources] seeding default voice (ScarlettJohansson) via: ${seedPyCmd}`);
   execSync(
     `${seedPyCmd} -m bookforge_ext.download_model --engine xtts --preset ScarlettJohansson --cache-dir "${seedCache}"`,
