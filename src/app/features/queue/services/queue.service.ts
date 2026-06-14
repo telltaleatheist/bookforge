@@ -2310,6 +2310,11 @@ export class QueueService {
     });
     if (pending.length === 0) {
       console.log(`[QUEUE] processNext: no eligible pending jobs found (total jobs: ${allJobs.length}, pending: ${allJobs.filter(j => j.status === 'pending').length})`);
+      // The queue has drained (we only get here with no current job). Drop the
+      // running flag so the toolbar shows Start again instead of a phantom Pause —
+      // otherwise isRunning stays true after the last job and the user has to
+      // click Pause then Start to actually begin the next run.
+      this._isRunning.set(false);
       return;
     }
 

@@ -218,30 +218,6 @@ interface SourceStage {
                 }
               </div>
 
-              <!-- Test Mode -->
-              <div class="config-section">
-                <label class="field-label">Test Mode</label>
-                <div class="worker-options">
-                  <button
-                    class="worker-btn"
-                    [class.selected]="!testMode()"
-                    (click)="testMode.set(false)"
-                  >
-                    Full
-                  </button>
-                  @for (count of [3, 5, 10, 20]; track count) {
-                    <button
-                      class="worker-btn"
-                      [class.selected]="testModeChunks() === count && testMode()"
-                      (click)="testMode.set(true); testModeChunks.set(count)"
-                    >
-                      {{ count }}
-                    </button>
-                  }
-                </div>
-                <span class="hint">Test mode processes only first N chunks</span>
-              </div>
-
               <!-- Custom Instructions -->
               <div class="config-section">
                 <label class="field-label">Custom Instructions</label>
@@ -399,22 +375,6 @@ interface SourceStage {
                 @if (!allAiConfigured()) {
                   <button class="configure-ai-btn" (click)="openAiSetup()">⚙ Configure AI</button>
                 }
-              </div>
-
-              <!-- Test Mode -->
-              <div class="config-section">
-                <label class="field-label">Test Mode</label>
-                <div class="worker-options">
-                  <button class="worker-btn" [class.selected]="!translateTestMode()" (click)="translateTestMode.set(false)">
-                    Full
-                  </button>
-                  @for (count of [3, 5, 10, 20]; track count) {
-                    <button class="worker-btn" [class.selected]="translateTestChunks() === count && translateTestMode()" (click)="translateTestMode.set(true); translateTestChunks.set(count)">
-                      {{ count }}
-                    </button>
-                  }
-                </div>
-                <span class="hint">Test mode translates only first N chunks</span>
               </div>
 
               <!-- Custom Instructions -->
@@ -660,22 +620,6 @@ interface SourceStage {
                   <span class="hint">More workers = faster, but uses ~5GB RAM each. Default from Settings.</span>
                 </div>
               }
-
-              <!-- Test Mode -->
-              <div class="config-section">
-                <label class="field-label">Test Mode</label>
-                <div class="worker-options">
-                  <button class="worker-btn" [class.selected]="!ttsTestMode()" (click)="ttsTestMode.set(false)">
-                    Full
-                  </button>
-                  @for (count of [5, 10, 20, 50]; track count) {
-                    <button class="worker-btn" [class.selected]="ttsTestSentences() === count && ttsTestMode()" (click)="ttsTestMode.set(true); ttsTestSentences.set(count)">
-                      {{ count }}
-                    </button>
-                  }
-                </div>
-                <span class="hint">Test mode processes only first N sentences</span>
-              </div>
 
               @if (pipelineMode() === 'mono') {
                 <!-- Source EPUB Selection -->
@@ -1058,12 +1002,6 @@ interface SourceStage {
                           {{ enableAiCleanup() && simplifyForLearning() ? 'AI Cleanup + Simplify' : enableAiCleanup() ? 'AI Cleanup' : simplifyForLearning() ? 'Simplify for Learning' : 'None' }}
                         </span>
                       </div>
-                      @if (testMode()) {
-                        <div class="review-row">
-                          <span class="review-label">Test:</span>
-                          <span class="review-value">First {{ testModeChunks() }} chunks</span>
-                        </div>
-                      }
                     </div>
                   </div>
                 } @else {
@@ -1145,12 +1083,6 @@ interface SourceStage {
                             <span class="review-value">{{ row.voice }} @ {{ row.speed }}x</span>
                           </div>
                         }
-                      }
-                      @if (pipelineMode() === 'bilingual' && ttsTestMode()) {
-                        <div class="review-row">
-                          <span class="review-label">Test:</span>
-                          <span class="review-value">First {{ ttsTestSentences() }} sentences</span>
-                        </div>
                       }
                     </div>
                   </div>
@@ -2525,8 +2457,6 @@ export class LLWizardComponent implements OnInit {
   readonly cleanupModel = signal<string>('');
   readonly enableAiCleanup = signal(false);  // Start with neither selected
   readonly simplifyForLearning = signal(false);
-  readonly testMode = signal(false);
-  readonly testModeChunks = signal(5);
   readonly customInstructions = signal('');
   readonly cleanupParallelWorkers = signal(4);  // Parallel workers for Claude/OpenAI (mono ocr-cleanup)
 
@@ -2707,8 +2637,6 @@ export class LLWizardComponent implements OnInit {
   readonly translateProvider = signal<AIProvider>('ollama');
   readonly translateModel = signal<string>('');
   readonly detectedSourceLang = signal<string>('en');
-  readonly translateTestMode = signal(false);
-  readonly translateTestChunks = signal(5);
   readonly translateCustomInstructions = signal('');
 
   readonly supportedLanguages = SUPPORTED_LANGUAGES;
@@ -2731,8 +2659,6 @@ export class LLWizardComponent implements OnInit {
   readonly effectiveTtsWorkers = computed(() =>
     this.ttsEngine() === 'xtts' && this.workerCfg.enabled() ? this.ttsWorkers() : 1,
   );
-  readonly ttsTestMode = signal(false);
-  readonly ttsTestSentences = signal(10);
   readonly ttsLanguageRows = signal<TtsLanguageRow[]>([]);
   readonly continueTts = signal(false);
 
@@ -4079,8 +4005,6 @@ export class LLWizardComponent implements OnInit {
           ollamaBaseUrl: aiConfig.ollama?.baseUrl,
           claudeApiKey: aiConfig.claude?.apiKey,
           openaiApiKey: aiConfig.openai?.apiKey,
-          testMode: this.testMode(),
-          testModeChunks: this.testModeChunks(),
           cleanupPrompt: undefined as string | undefined, // Backend loads from file
           customInstructions: this.customInstructions() || undefined,
         };
@@ -4155,8 +4079,6 @@ export class LLWizardComponent implements OnInit {
               ollamaBaseUrl: aiConfig.ollama?.baseUrl,
               claudeApiKey: aiConfig.claude?.apiKey,
               openaiApiKey: aiConfig.openai?.apiKey,
-              testMode: this.translateTestMode(),
-              testModeChunks: this.translateTestChunks(),
               customInstructions: this.translateCustomInstructions() || undefined,
             },
             workflowId,
@@ -4354,8 +4276,6 @@ export class LLWizardComponent implements OnInit {
               parallelWorkers: this.effectiveTtsWorkers(),
               sentencePerParagraph: true,
               skipHeadings: true,
-              testMode: this.ttsTestMode(),
-              testSentences: this.ttsTestSentences(),
               // Skip assembly - only generate sentence audio files
               skipAssembly: true,
               // Output to temp directory
@@ -4548,8 +4468,6 @@ export class LLWizardComponent implements OnInit {
               ollamaBaseUrl: aiConfig.ollama?.baseUrl,
               claudeApiKey: aiConfig.claude?.apiKey,
               openaiApiKey: aiConfig.openai?.apiKey,
-              testMode: this.testMode(),
-              testModeChunks: this.testModeChunks(),
               customInstructions: this.customInstructions() || undefined,
               simplifyForLearning: this.simplifyForLearning(),
             },
@@ -4567,8 +4485,6 @@ export class LLWizardComponent implements OnInit {
             enableAiCleanup: this.enableAiCleanup(),
             simplifyForLearning: this.simplifyForLearning(),
             simplifyMode: 'plain' as const,
-            testMode: this.testMode(),
-            testModeChunks: this.testMode() ? this.testModeChunks() : undefined,
             cleanupPrompt: this.promptModified() ? this.promptText() : undefined,  // Only override when user customized
             customInstructions: this.customInstructions() || undefined,
             // Only cloud APIs parallelize; ollama + bundled local AI run one server.
@@ -4684,8 +4600,6 @@ export class LLWizardComponent implements OnInit {
             useParallel: true,
             parallelMode: 'sentences',
             parallelWorkers: this.effectiveTtsWorkers(),
-            testMode: this.ttsTestMode(),
-            testSentences: this.ttsTestSentences(),
             outputDir,
             skipAssembly,
           };
