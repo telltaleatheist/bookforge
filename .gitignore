@@ -70,8 +70,9 @@ resources/e2a-env.tar.gz
 # ExFAT-orphaned snapshot dirs that couldn't be deleted (renamed aside)
 resources/*.stuck-*
 resources/.e2a-stuck-*
-# persistent seed staging cache (default voice checkpoint for --seed builds)
+# persistent seed staging caches (voice/base checkpoints for --seed builds)
 packaging/.seed-cache/
+packaging/.seed-cache-speakers/
 
 # llama.cpp prebuilt download cache (reused across builds; staged into resources/bin)
 .llama-build/
