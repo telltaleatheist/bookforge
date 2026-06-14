@@ -411,6 +411,8 @@ interface SetupStep {
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
+      /* Reserve the scrollbar gutter so it never sits over the row checkboxes. */
+      scrollbar-gutter: stable;
     }
 
     .mw-setup-block {

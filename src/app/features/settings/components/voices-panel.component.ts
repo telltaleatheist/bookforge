@@ -50,6 +50,15 @@ interface CustomVoice {
         <p class="loading-hint">Loading voices…</p>
       }
 
+      @if (selectionMode() && selectableVoiceIds().length > 0) {
+        <div class="select-all-bar">
+          <button type="button" class="select-all-btn" (click)="toggleSelectAll()">
+            {{ sel.allSelectedAmong(selectableVoiceIds()) ? 'Deselect all' : 'Select all' }}
+          </button>
+          <span class="select-all-count">{{ selectedHereCount() }} of {{ selectableVoiceIds().length }} selected</span>
+        </div>
+      }
+
       <!-- Default voice pack (base XTTS) — unlocks the stock voice + every
            reference-clip clone, so it's pinned at the top in its own group. -->
       @if (basePack(); as base) {
@@ -75,7 +84,13 @@ interface CustomVoice {
 
       <!-- One compact row, shared by the base pack + every voice. -->
       <ng-template #row let-status let-isBase="isBase">
-        <div class="voice-row" [class.is-installed]="status.state === 'installed'">
+        <div
+          class="voice-row"
+          [class.is-installed]="status.state === 'installed'"
+          [class.selectable]="selectionMode() && status.state !== 'installed'"
+          [class.selected]="selectionMode() && status.state !== 'installed' && sel.isSelected(status.component.id)"
+          (click)="rowClick(status)"
+        >
           <span class="vr-name" [title]="status.component.name">{{ status.component.name }}</span>
 
           @if (selectionMode()) {
@@ -86,8 +101,8 @@ interface CustomVoice {
               <input
                 type="checkbox"
                 class="vr-check"
+                tabindex="-1"
                 [checked]="sel.isSelected(status.component.id)"
-                (change)="sel.toggle(status.component.id)"
               />
             }
           } @else if (status.state === 'installing' && status.progress; as prog) {
@@ -247,7 +262,27 @@ interface CustomVoice {
 
       &:hover { background: var(--bg-elevated); }
       &:last-child { border-bottom: none; }
+      /* Whole-row click target in selection mode; the box lights up when picked. */
+      &.selectable { cursor: pointer; border-radius: $radius-sm; }
+      &.selected {
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
+      &.selected:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
     }
+
+    .select-all-bar {
+      display: flex; align-items: center; gap: var(--ui-spacing-md);
+      padding: var(--ui-spacing-xs) 0;
+    }
+    .select-all-btn {
+      font-size: var(--ui-font-xs); font-weight: $font-weight-medium;
+      padding: 3px 12px; border-radius: $radius-sm;
+      border: 1px solid var(--border-default); background: transparent;
+      color: var(--text-secondary); cursor: pointer;
+      &:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+    }
+    .select-all-count { font-size: var(--ui-font-xs); color: var(--text-tertiary); }
 
     .vr-name {
       flex: 1;
@@ -271,7 +306,8 @@ interface CustomVoice {
       white-space: nowrap;
     }
 
-    .vr-check { flex-shrink: 0; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+    /* pointer-events:none → clicks fall through to the whole-row handler. */
+    .vr-check { flex-shrink: 0; width: 16px; height: 16px; accent-color: var(--accent); pointer-events: none; }
 
     .vr-progress {
       flex: 0 0 80px;
@@ -385,6 +421,36 @@ export class VoicesPanelComponent implements OnInit {
     if (!q) return list;
     return list.filter((s) => s.component.name.toLowerCase().includes(q));
   });
+
+  /** Not-yet-installed voices currently shown (base + filtered premium) — the
+   *  targets of "Select all" and the whole-row toggle. */
+  readonly selectableVoiceIds = computed(() => {
+    const ids: string[] = [];
+    const base = this.basePack();
+    if (base && base.state !== 'installed') ids.push(base.component.id);
+    for (const s of this.filteredVoices()) {
+      if (s.state !== 'installed') ids.push(s.component.id);
+    }
+    return ids;
+  });
+
+  /** How many of the selectable voices on this page are currently checked. */
+  readonly selectedHereCount = computed(() =>
+    this.selectableVoiceIds().filter((id) => this.sel.isSelected(id)).length,
+  );
+
+  /** Select-all / Deselect-all over the voices shown on this page. */
+  toggleSelectAll(): void {
+    const ids = this.selectableVoiceIds();
+    if (this.sel.allSelectedAmong(ids)) this.sel.deselectMany(ids);
+    else this.sel.selectMany(ids);
+  }
+
+  /** Whole-row click toggles selection (selection mode, not-installed only). */
+  rowClick(status: { component: { id: string }; state: string }): void {
+    if (!this.selectionMode() || status.state === 'installed') return;
+    this.sel.toggle(status.component.id);
+  }
 
   // Bare-bones voices that ship bundled and must survive a "delete all".
   private static readonly KEEP_VOICE_IDS = ['ScarlettJohansson', 'xtts-base'];

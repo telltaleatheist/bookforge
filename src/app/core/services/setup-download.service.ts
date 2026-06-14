@@ -75,6 +75,31 @@ export class SetupDownloadService {
     this.selected.set(new Set());
   }
 
+  /** Check every given id (a page's "Select all"). */
+  selectMany(ids: string[]): void {
+    this.selected.update((s) => {
+      const next = new Set(s);
+      for (const id of ids) next.add(id);
+      return next;
+    });
+  }
+
+  /** Uncheck every given id (a page's "Deselect all"). */
+  deselectMany(ids: string[]): void {
+    this.selected.update((s) => {
+      const next = new Set(s);
+      for (const id of ids) next.delete(id);
+      return next;
+    });
+  }
+
+  /** True when every id is checked (drives the Select-all/Deselect-all label). */
+  allSelectedAmong(ids: string[]): boolean {
+    if (ids.length === 0) return false;
+    const s = this.selected();
+    return ids.every((id) => s.has(id));
+  }
+
   /** Number of components currently checked for download. */
   readonly count = computed(() => this.selected().size);
 

@@ -41,6 +41,15 @@ import { SetupDownloadService } from '../../../core/services/setup-download.serv
         <p class="loading-hint">Loading languages…</p>
       }
 
+      @if (selectionMode() && selectableLangIds().length > 0) {
+        <div class="select-all-bar">
+          <button type="button" class="select-all-btn" (click)="toggleSelectAll()">
+            {{ sel.allSelectedAmong(selectableLangIds()) ? 'Deselect all' : 'Select all' }}
+          </button>
+          <span class="select-all-count">{{ selectedHereCount() }} of {{ selectableLangIds().length }} selected</span>
+        </div>
+      }
+
       <div class="lang-scroll">
         @if (installedLangs().length > 0) {
           <div class="group">
@@ -63,7 +72,13 @@ import { SetupDownloadService } from '../../../core/services/setup-download.serv
       </div>
 
       <ng-template #row let-status>
-        <div class="lang-row" [class.is-installed]="status.state === 'installed'">
+        <div
+          class="lang-row"
+          [class.is-installed]="status.state === 'installed'"
+          [class.selectable]="selectionMode() && status.state !== 'installed'"
+          [class.selected]="selectionMode() && status.state !== 'installed' && sel.isSelected(status.component.id)"
+          (click)="rowClick(status)"
+        >
           <span class="lr-name" [title]="status.component.name">{{ status.component.name }}</span>
 
           @if (selectionMode()) {
@@ -74,8 +89,8 @@ import { SetupDownloadService } from '../../../core/services/setup-download.serv
               <input
                 type="checkbox"
                 class="lr-check"
+                tabindex="-1"
                 [checked]="sel.isSelected(status.component.id)"
-                (change)="sel.toggle(status.component.id)"
               />
             }
           } @else if (status.state === 'installing' && status.progress; as prog) {
@@ -148,8 +163,27 @@ import { SetupDownloadService } from '../../../core/services/setup-download.serv
 
     .loading-hint, .empty-hint { color: var(--text-tertiary); font-size: var(--ui-font-sm); padding: var(--ui-spacing-sm) 0; margin: 0; }
 
-    /* ~70 languages — keep scrollable so it doesn't blow out the page. */
-    .lang-scroll { display: flex; flex-direction: column; max-height: 460px; overflow-y: auto; }
+    /* ~70 languages — keep scrollable so it doesn't blow out the page.
+       scrollbar-gutter + right padding so the scrollbar never sits over the
+       checkboxes/controls at the row's right edge. */
+    .lang-scroll {
+      display: flex; flex-direction: column; max-height: 460px; overflow-y: auto;
+      scrollbar-gutter: stable;
+      padding-right: var(--ui-spacing-sm);
+    }
+
+    .select-all-bar {
+      display: flex; align-items: center; gap: var(--ui-spacing-md);
+      padding: var(--ui-spacing-xs) 0;
+    }
+    .select-all-btn {
+      font-size: var(--ui-font-xs); font-weight: $font-weight-medium;
+      padding: 3px 12px; border-radius: $radius-sm;
+      border: 1px solid var(--border-default); background: transparent;
+      color: var(--text-secondary); cursor: pointer;
+      &:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+    }
+    .select-all-count { font-size: var(--ui-font-xs); color: var(--text-tertiary); }
 
     .group { display: flex; flex-direction: column; }
 
@@ -172,6 +206,13 @@ import { SetupDownloadService } from '../../../core/services/setup-download.serv
       min-height: 32px;
       &:hover { background: var(--bg-elevated); }
       &:last-child { border-bottom: none; }
+      /* Whole-row click target in selection mode; the box lights up when picked. */
+      &.selectable { cursor: pointer; border-radius: $radius-sm; }
+      &.selected {
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
+      &.selected:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
     }
 
     .lr-name {
@@ -180,7 +221,8 @@ import { SetupDownloadService } from '../../../core/services/setup-download.serv
     }
     .lr-size { font-size: var(--ui-font-xs); color: var(--text-tertiary); white-space: nowrap; }
     .lr-ready { font-size: var(--ui-font-sm); color: var(--success); }
-    .lr-check { flex-shrink: 0; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+    /* pointer-events:none → clicks fall through to the whole-row handler. */
+    .lr-check { flex-shrink: 0; width: 16px; height: 16px; accent-color: var(--accent); pointer-events: none; }
 
     .lr-progress { flex: 0 0 80px; height: 5px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
     .lr-bar { height: 100%; background: var(--accent); transition: width $duration-fast $ease-out; }
@@ -261,6 +303,30 @@ export class LanguagesPanelComponent implements OnInit {
   readonly removableLangs = computed(() =>
     this.languages().filter((s) => s.state === 'installed' && s.component.id !== 'stanza-en'),
   );
+
+  /** Not-yet-installed packs currently shown (respects the filter) — the targets
+   *  of "Select all" and the whole-row toggle. */
+  readonly selectableLangIds = computed(() =>
+    this.availableLangs().map((s) => s.component.id),
+  );
+
+  /** How many of the selectable packs on this page are currently checked. */
+  readonly selectedHereCount = computed(() =>
+    this.selectableLangIds().filter((id) => this.sel.isSelected(id)).length,
+  );
+
+  /** Select-all / Deselect-all over the packs shown on this page. */
+  toggleSelectAll(): void {
+    const ids = this.selectableLangIds();
+    if (this.sel.allSelectedAmong(ids)) this.sel.deselectMany(ids);
+    else this.sel.selectMany(ids);
+  }
+
+  /** Whole-row click toggles selection (selection mode, not-installed only). */
+  rowClick(status: { component: { id: string }; state: string }): void {
+    if (!this.selectionMode() || status.state === 'installed') return;
+    this.sel.toggle(status.component.id);
+  }
 
   readonly confirmDeleteAll = signal(false);
 

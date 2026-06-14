@@ -50,6 +50,15 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
         <p class="loading-hint">Loading add-ons…</p>
       }
 
+      @if (selectionMode() && selectableAddOnIds().length > 0) {
+        <div class="select-all-bar">
+          <button type="button" class="select-all-btn" (click)="toggleSelectAll()">
+            {{ sel.allSelectedAmong(selectableAddOnIds()) ? 'Deselect all' : 'Select all' }}
+          </button>
+          <span class="select-all-count">{{ selectedHereCount() }} of {{ selectableAddOnIds().length }} selected</span>
+        </div>
+      }
+
       <div class="component-list">
         @for (status of addOns(); track status.component.id) {
           <div class="component-card" [class.incompatible]="status.state === 'incompatible'">
@@ -298,6 +307,19 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
       flex-direction: column;
       gap: var(--ui-spacing-md);
     }
+
+    .select-all-bar {
+      display: flex; align-items: center; gap: var(--ui-spacing-md);
+      padding: var(--ui-spacing-xs) 0;
+    }
+    .select-all-btn {
+      font-size: var(--ui-font-xs); font-weight: $font-weight-medium;
+      padding: 3px 12px; border-radius: $radius-sm;
+      border: 1px solid var(--border-default); background: transparent;
+      color: var(--text-secondary); cursor: pointer;
+      &:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+    }
+    .select-all-count { font-size: var(--ui-font-xs); color: var(--text-tertiary); }
 
     .component-card {
       display: flex;
@@ -593,6 +615,25 @@ export class AddOnsPanelComponent implements OnInit {
       s => s.state === 'installed' && s.installed?.source === 'managed',
     ),
   );
+
+  /** Not-yet-installed, downloadable add-ons — targets of "Select all". */
+  readonly selectableAddOnIds = computed(() =>
+    this.addOns()
+      .filter((s) => s.state !== 'installed' && this.isManaged(s.component) && this.isDownloadable(s.component))
+      .map((s) => s.component.id),
+  );
+
+  /** How many selectable add-ons on this page are currently checked. */
+  readonly selectedHereCount = computed(() =>
+    this.selectableAddOnIds().filter((id) => this.sel.isSelected(id)).length,
+  );
+
+  /** Select-all / Deselect-all over the downloadable add-ons shown here. */
+  toggleSelectAll(): void {
+    const ids = this.selectableAddOnIds();
+    if (this.sel.allSelectedAmong(ids)) this.sel.deselectMany(ids);
+    else this.sel.selectMany(ids);
+  }
 
   readonly confirmDeleteAll = signal(false);
 
