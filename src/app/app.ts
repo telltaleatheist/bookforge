@@ -221,9 +221,27 @@ export class App implements OnInit {
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
 
-  readonly showSetupOverlay = computed(() =>
-    !this.setupDismissed() && !!this.runtime.errorStatus()
-  );
+  // Current route (hash) mirrored into a signal so the overlay reacts to
+  // navigation — kept in sync from Router events in ngOnInit.
+  private readonly currentUrl = signal('');
+
+  // When to block the app behind the setup splash:
+  //  • a setup ERROR always blocks (needs attention; dismissable), OR
+  //  • the bundled runtime is still unpacking AND the user has finished
+  //    onboarding/guided setup and moved into the app. The first-run unpack
+  //    (~40 s) normally completes while they pick a library and set up AI, so
+  //    this is the safety net for when they outpace it: the engine isn't usable
+  //    until 'ready', and landing on a half-ready runtime wedges TTS workers.
+  // The guided setup route (/setup) stays interactive — AI keys and voice
+  // picking don't need the runtime — so we never cover it; we only block once
+  // they leave it for the rest of the app.
+  readonly showSetupOverlay = computed(() => {
+    if (this.isStandaloneWindow()) return false;
+    if (this.runtime.errorStatus()) return !this.setupDismissed();
+    return this.runtime.preparing()
+      && this.libraryService.isConfigured()
+      && !this.currentUrl().startsWith('/setup');
+  });
 
   dismissSetup(): void {
     this.setupDismissed.set(true);
@@ -271,6 +289,12 @@ export class App implements OnInit {
 
   ngOnInit() {
     this.themeService.initializeTheme();
+
+    // Mirror the active route into a signal so showSetupOverlay re-evaluates on
+    // navigation (e.g. leaving /setup for /studio should reveal the splash if
+    // the runtime is still unpacking).
+    this.currentUrl.set(this.router.url);
+    this.router.events.subscribe(() => this.currentUrl.set(this.router.url));
   }
 
   async onOnboardingComplete(): Promise<void> {
