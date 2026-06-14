@@ -1,7 +1,8 @@
-import { Component, inject, computed, ChangeDetectionStrategy, OnInit } from '@angular/core';
+import { Component, inject, input, computed, signal, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
+import { SetupDownloadService } from '../../../core/services/setup-download.service';
 import { ComponentStatus, OptionalComponent } from '../../../core/services/electron.service';
 
 /**
@@ -65,6 +66,14 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
               </div>
             </div>
 
+            <!-- Detected-GPU explainer for the CUDA acceleration pack -->
+            @if (status.component.id === 'llama-cuda' && status.state !== 'incompatible' && gpuName(); as gpu) {
+              <div class="gpu-explainer">
+                <span class="gpu-spark">⚡</span>
+                We found your <strong>{{ gpu }}</strong> — add GPU acceleration to run on-device AI cleanup much faster.
+              </div>
+            }
+
             <!-- Compatibility reasons (incompatible / degraded) -->
             @if (!status.compatibility.compatible || status.compatibility.degraded) {
               @if (status.compatibility.reasons.length > 0) {
@@ -98,14 +107,18 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
             <div class="component-actions">
               @switch (status.state) {
                 @case ('installed') {
-                  <desktop-button
-                    variant="ghost"
-                    size="sm"
-                    (click)="svc.remove(status.component.id)"
-                    [disabled]="svc.isBusy(status.component.id)"
-                  >
-                    {{ status.installed?.source === 'managed' ? 'Uninstall' : 'Remove' }}
-                  </desktop-button>
+                  @if (selectionMode()) {
+                    <span class="action-note installed-note">Installed ✓</span>
+                  } @else {
+                    <desktop-button
+                      variant="ghost"
+                      size="sm"
+                      (click)="svc.remove(status.component.id)"
+                      [disabled]="svc.isBusy(status.component.id)"
+                    >
+                      {{ status.installed?.source === 'managed' ? 'Uninstall' : 'Remove' }}
+                    </desktop-button>
+                  }
                 }
 
                 @case ('installing') {
@@ -132,10 +145,10 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
                     <desktop-button
                       variant="ghost"
                       size="sm"
-                      (click)="svc.locate(status.component.id)"
+                      (click)="startLocate(status.component.id)"
                       [disabled]="svc.isBusy(status.component.id)"
                     >
-                      Locate…
+                      {{ svc.isBusy(status.component.id) ? 'Searching…' : 'Locate…' }}
                     </desktop-button>
                     @if (status.component.externalHelpUrl) {
                       <a class="help-link" href="#" (click)="openHelp($event, status.component.externalHelpUrl!)">
@@ -144,14 +157,27 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
                     }
                   }
                   @if (isManaged(status.component)) {
-                    <desktop-button
-                      variant="primary"
-                      size="sm"
-                      (click)="svc.install(status.component.id)"
-                      [disabled]="svc.isBusy(status.component.id)"
-                    >
-                      Install
-                    </desktop-button>
+                    @if (selectionMode()) {
+                      @if (isDownloadable(status.component)) {
+                        <label class="select-check">
+                          <input
+                            type="checkbox"
+                            [checked]="sel.isSelected(status.component.id)"
+                            (change)="sel.toggle(status.component.id)"
+                          />
+                          Add to downloads
+                        </label>
+                      }
+                    } @else {
+                      <desktop-button
+                        variant="primary"
+                        size="sm"
+                        (click)="svc.install(status.component.id)"
+                        [disabled]="svc.isBusy(status.component.id)"
+                      >
+                        Install
+                      </desktop-button>
+                    }
                   }
                   @if (status.state === 'error' && !canLocate(status.component) && !isManaged(status.component)) {
                     <span class="action-note">Unavailable</span>
@@ -159,14 +185,59 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
                 }
               }
             </div>
+
+            <!-- Inline manual-locate form: shown after auto-detect found nothing. -->
+            @if (showManual(status.component.id)) {
+              <div class="locate-manual">
+                <p class="locate-msg">
+                  Couldn’t find {{ status.component.name }} in the usual places. Enter the full path to
+                  its program, or browse for it (handy if you keep a specific version).
+                </p>
+                <div class="locate-row">
+                  <input
+                    type="text"
+                    class="locate-input"
+                    [value]="manualPath(status.component.id)"
+                    (input)="onManualInput(status.component.id, $event)"
+                    [placeholder]="locatePlaceholder(status.component)"
+                  />
+                  <desktop-button
+                    variant="primary" size="sm"
+                    (click)="useManual(status.component.id)"
+                    [disabled]="svc.isBusy(status.component.id) || !manualPath(status.component.id).trim()"
+                  >Use this path</desktop-button>
+                </div>
+                <div class="locate-row">
+                  <desktop-button
+                    variant="ghost" size="sm"
+                    (click)="browseFor(status.component.id)"
+                    [disabled]="svc.isBusy(status.component.id)"
+                  >Browse…</desktop-button>
+                  <button type="button" class="link-btn" (click)="closeManual(status.component.id)">Cancel</button>
+                </div>
+              </div>
+            }
           </div>
         }
       </div>
 
+      @if (!selectionMode()) {
       <div class="section-actions">
         <desktop-button variant="ghost" size="sm" (click)="svc.refresh()" [disabled]="svc.loading()">
           Refresh
         </desktop-button>
+        <span class="spacer"></span>
+        @if (removableAddOns().length > 0) {
+          @if (confirmDeleteAll()) {
+            <span class="danger-confirm">
+              Remove {{ removableAddOns().length }} downloaded add-on{{ removableAddOns().length === 1 ? '' : 's' }}?
+              <button class="mini-btn danger" (click)="deleteAllAddOns()">Remove</button>
+              <button class="mini-btn ghost" (click)="confirmDeleteAll.set(false)">Cancel</button>
+            </span>
+          } @else {
+            <button class="mini-btn danger-text" (click)="confirmDeleteAll.set(true)">Delete all downloads</button>
+          }
+        }
       </div>
 
       <div class="help-text">
@@ -176,6 +247,7 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
           Use <strong>Locate…</strong> to point at one BookForge could not find.
         </p>
       </div>
+      }
     </div>
   `,
   styles: [`
@@ -340,6 +412,19 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
     .action-note {
       font-size: var(--ui-font-sm);
       color: var(--text-tertiary);
+
+      &.installed-note { color: var(--success); }
+    }
+
+    .select-check {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      font-size: var(--ui-font-sm);
+      color: var(--text-secondary);
+      cursor: pointer;
+
+      input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
     }
 
     .help-link {
@@ -350,6 +435,35 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
       &:hover { text-decoration: underline; }
     }
 
+    .locate-manual {
+      display: flex;
+      flex-direction: column;
+      gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-md);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: $radius-md;
+    }
+    .locate-msg { margin: 0; font-size: var(--ui-font-sm); color: var(--text-secondary); }
+    .locate-row { display: flex; align-items: center; gap: var(--ui-spacing-sm); }
+    .locate-input {
+      flex: 1; min-width: 0;
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      background: var(--bg-input, var(--bg-sunken));
+      border: 1px solid var(--border-input, var(--border-default));
+      border-radius: $radius-sm;
+      color: var(--text-primary);
+      font-size: var(--ui-font-sm);
+      font-family: var(--font-mono, monospace);
+      &::placeholder { color: var(--text-tertiary); font-family: inherit; }
+      &:focus { outline: none; border-color: var(--accent); }
+    }
+    .link-btn {
+      background: none; border: none; cursor: pointer;
+      color: var(--text-tertiary); font-size: var(--ui-font-sm);
+      &:hover { color: var(--text-primary); text-decoration: underline; }
+    }
+
     .status-message {
       padding: var(--ui-spacing-sm) var(--ui-spacing-md);
       border-radius: $radius-md;
@@ -358,8 +472,57 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
       &.error { background: var(--error-bg); color: var(--error); }
     }
 
+    .gpu-explainer {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+      border-radius: $radius-md;
+      font-size: var(--ui-font-sm);
+      color: var(--text-secondary);
+
+      strong { color: var(--text-primary); }
+    }
+    .gpu-spark { flex-shrink: 0; }
+
     .section-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-md);
       padding-top: var(--ui-spacing-sm);
+
+      .spacer { flex: 1; }
+    }
+
+    .mini-btn {
+      font-size: var(--ui-font-xs);
+      font-weight: $font-weight-medium;
+      padding: 3px 12px;
+      border-radius: $radius-sm;
+      border: 1px solid transparent;
+      cursor: pointer;
+
+      &.ghost { background: transparent; border-color: var(--border-default); color: var(--text-secondary); }
+      &.ghost:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+      &.danger { background: var(--error, #d9534f); color: #fff; }
+      &.danger:hover { filter: brightness(1.08); }
+    }
+
+    .danger-text {
+      background: transparent;
+      color: var(--error, #d9534f);
+      border-color: transparent;
+    }
+    .danger-text:hover { text-decoration: underline; }
+
+    .danger-confirm {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      font-size: var(--ui-font-xs);
+      color: var(--text-secondary);
     }
 
     .help-text {
@@ -372,6 +535,11 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
 })
 export class AddOnsPanelComponent implements OnInit {
   readonly svc = inject(ComponentService);
+  readonly sel = inject(SetupDownloadService);
+
+  /** First-run selection mode: downloadable add-ons (CUDA) become checkboxes for
+   *  the batch runner; external tools keep Locate. Settings uses inline mode. */
+  readonly selectionMode = input(false);
 
   /** Tools/runtimes only — TTS voices and language packs live in their own panels. */
   readonly addOns = computed(() =>
@@ -387,12 +555,87 @@ export class AddOnsPanelComponent implements OnInit {
       .map(c => c.component.id)),
   );
 
+  /** The detected GPU name, for the CUDA pack's explainer line. */
+  readonly gpuName = computed(() => {
+    const cuda = this.svc.profile()?.cuda;
+    return cuda?.available ? (cuda.name || 'NVIDIA GPU') : null;
+  });
+
+  /** Downloaded (managed) add-ons that "delete all" would remove. External
+   *  installs are left alone — we never delete a user's own software. */
+  readonly removableAddOns = computed(() =>
+    this.addOns().filter(
+      s => s.state === 'installed' && s.installed?.source === 'managed',
+    ),
+  );
+
+  readonly confirmDeleteAll = signal(false);
+
+  /** Uninstall every downloaded managed add-on. */
+  deleteAllAddOns(): void {
+    for (const s of this.removableAddOns()) {
+      void this.svc.remove(s.component.id);
+    }
+    this.confirmDeleteAll.set(false);
+  }
+
+  // Inline manual-locate form state, keyed by component id.
+  private readonly manualOpen = signal<Set<string>>(new Set());
+  private readonly manualPaths = signal<Record<string, string>>({});
+
+  showManual(id: string): boolean { return this.manualOpen().has(id); }
+  manualPath(id: string): string { return this.manualPaths()[id] ?? ''; }
+
+  private openManual(id: string): void {
+    this.manualOpen.update(s => new Set(s).add(id));
+  }
+  closeManual(id: string): void {
+    this.manualOpen.update(s => { const n = new Set(s); n.delete(id); return n; });
+  }
+  onManualInput(id: string, event: Event): void {
+    const value = (event.target as HTMLInputElement).value;
+    this.manualPaths.update(m => ({ ...m, [id]: value }));
+  }
+
+  /** Locate… : first auto-search common locations; only reveal the manual form
+   *  (type a path / browse) if the tool isn't found automatically. */
+  async startLocate(id: string): Promise<void> {
+    const found = await this.svc.autoLocate(id);
+    if (!found) this.openManual(id);
+  }
+
+  async useManual(id: string): Promise<void> {
+    const ok = await this.svc.setManualPath(id, this.manualPath(id));
+    if (ok) this.closeManual(id);
+  }
+
+  async browseFor(id: string): Promise<void> {
+    const ok = await this.svc.locate(id);
+    if (ok) this.closeManual(id);
+  }
+
+  /** A platform-appropriate example path for the manual-entry placeholder,
+   *  pulled from the component's own detection candidates when available. */
+  locatePlaceholder(component: OptionalComponent): string {
+    const plat = this.svc.profile()?.platform;
+    const cand = component.detect?.candidates?.find(c => c.platform === plat);
+    if (cand) return `e.g. ${cand.path}`;
+    return 'Full path to the program';
+  }
+
   ngOnInit(): void {
     this.svc.refresh();
   }
 
   isManaged(component: OptionalComponent): boolean {
     return component.acquisition.includes('managed');
+  }
+
+  /** Managed AND actually fetchable now (has a real artifact URL) — i.e. CUDA,
+   *  not a stub-URL placeholder like the Orpheus managed entry. */
+  isDownloadable(component: OptionalComponent): boolean {
+    return component.acquisition.includes('managed')
+      && component.artifacts.some(a => !!a.url && a.url.trim() !== '');
   }
 
   /** External-mode components can be pointed at via the Locate… picker. */

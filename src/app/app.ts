@@ -8,6 +8,7 @@ import {
 } from './creamsicle-desktop';
 import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.component';
 import { OnboardingComponent } from './components/onboarding/onboarding.component';
+import { SetupDownloadDockComponent } from './components/setup-download-dock/setup-download-dock.component';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
 import { AiService } from './core/services/ai.service';
@@ -21,7 +22,8 @@ import { AiService } from './core/services/ai.service';
     WindowChromeComponent,
     StatusBarComponent,
     NavRailComponent,
-    OnboardingComponent
+    OnboardingComponent,
+    SetupDownloadDockComponent
   ],
   template: `
     <!-- First-run setup overlay: only blocks on a setup ERROR (needs attention).
@@ -87,6 +89,10 @@ import { AiService } from './core/services/ai.service';
         </ng-container>
       </desktop-window>
     </div>
+
+    <!-- Persistent download-progress widget: survives navigation away from
+         first-run setup so the batch keeps running, visible in a corner. -->
+    <app-setup-download-dock />
   `,
   styles: [`
     .setup-overlay {

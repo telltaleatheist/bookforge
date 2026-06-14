@@ -14,7 +14,7 @@
  *
  * Staged layout (matches resolveBinary() in electron/llama-bridge.ts):
  *   macOS:   resources/bin/llama-server-<arch>   + *.dylib   (orig names)
- *   Windows: resources/bin/llama-server.exe      + *.dll     (incl. cudart)
+ *   Windows: resources/bin/llama-server.exe      + *.dll     (CPU build)
  *
  * macOS dylibs keep their original leaf names (BookForge has no whisper, so no
  * name-collision dance like Briefcase): we copy them next to the binary and
@@ -22,9 +22,10 @@
  * codesign so the modified Mach-O runs. The bridge ALSO sets DYLD_LIBRARY_PATH
  * to the binary dir, so loading is belt-and-suspenders.
  *
- * Windows ships the CUDA build (GPU when an NVIDIA card+driver is present, CPU
- * fallback otherwise — the binary only hard-links the bundled CUDA *runtime*,
- * not the GPU driver), so we also fetch the matching cudart redistributable.
+ * Windows ships the small CPU-only build (~20 MB) so the installer stays under
+ * the single-file size cap and runs on every machine. The CUDA build (GPU
+ * acceleration, ~570 MB) is a download-on-demand optional component gated on a
+ * detected NVIDIA GPU — see electron/components/llama-cuda.ts.
  *
  * Usage: node scripts/download-llama-cpp.js [--force]
  */
@@ -39,13 +40,10 @@ const { execSync } = require('child_process');
 // ── Pins ─────────────────────────────────────────────────────────────────────
 
 // llama.cpp release tag. Matches Briefcase's proven pin (its dylib set and
-// runtime behavior are known-good against this bridge).
+// runtime behavior are known-good against this bridge). KEEP IN SYNC with
+// LLAMA_CPP_VERSION in electron/components/llama-cuda.ts (the optional GPU pack
+// must come from the same release as the bundled CPU build).
 const LLAMA_CPP_VERSION = 'b7482';
-
-// Windows: CUDA 12.4 runtime is compatible with the widest driver range
-// (≥ ~550.x). 13.1 needs much newer drivers. The CUDA build still runs on CPU
-// where no NVIDIA GPU is present.
-const WIN_CUDA_TAG = '12.4';
 
 const REL = `https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_VERSION}`;
 
@@ -268,20 +266,16 @@ async function setupWindows() {
     return;
   }
 
-  // CUDA build (GPU + CPU fallback).
-  const cudaDir = await fetchAndCache(`llama-${LLAMA_CPP_VERSION}-bin-win-cuda-${WIN_CUDA_TAG}-x64.zip`);
-  const serverSrc = findFile(cudaDir, (f) => f.toLowerCase() === 'llama-server.exe');
-  if (!serverSrc) throw new Error('llama-server.exe not found in Windows CUDA archive');
-  const cudaBinDir = path.dirname(serverSrc);
+  // CPU-only build (~20 MB). The CUDA build is a download-on-demand component
+  // (electron/components/llama-cuda.ts), so the installer ships only this.
+  const cpuDir = await fetchAndCache(`llama-${LLAMA_CPP_VERSION}-bin-win-cpu-x64.zip`);
+  const serverSrc = findFile(cpuDir, (f) => f.toLowerCase() === 'llama-server.exe');
+  if (!serverSrc) throw new Error('llama-server.exe not found in Windows CPU archive');
+  const cpuBinDir = path.dirname(serverSrc);
 
   fs.copyFileSync(serverSrc, destBinary);
-  log('staged llama-server.exe');
-  copyAllDlls(cudaBinDir, 'llama CUDA build');
-
-  // CUDA runtime redistributable (cudart64_*.dll, cublas, etc.).
-  const cudartDir = await fetchAndCache(`cudart-llama-bin-win-cuda-${WIN_CUDA_TAG}-x64.zip`);
-  const cudartDllDir = path.dirname(findFile(cudartDir, (f) => f.toLowerCase().endsWith('.dll')) || cudartDir);
-  copyAllDlls(cudartDllDir, 'CUDA runtime');
+  log('staged llama-server.exe (CPU build)');
+  copyAllDlls(cpuBinDir, 'llama CPU build');
 
   // VC++ runtime (only obtainable from a Windows host's System32).
   if (process.platform === 'win32') {

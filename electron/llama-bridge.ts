@@ -23,6 +23,8 @@ import { app } from 'electron';
 
 import { downloadFile } from './components/downloader';
 import { systemProbe } from './components/system-probe';
+import { componentManager } from './components/component-manager';
+import { LLAMA_CUDA_ID } from './components/llama-cuda';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Catalog (Cogito GGUFs — bartowski quants on HuggingFace, direct resolve URLs)
@@ -138,11 +140,23 @@ function getActiveConfigPath(): string {
 }
 
 /**
- * Resolve the bundled llama-server binary. Mirrors mutool-bridge's resolution:
- * prefer process.resourcesPath/bin (packaged), fall back to the repo's
- * resources/bin in dev. Returns null when the binary isn't bundled.
+ * Resolve the llama-server binary to run.
+ *
+ * On Windows we ship the small CPU-only build in resources/bin and offer the
+ * CUDA build as an optional component (see components/llama-cuda.ts). When that
+ * pack is installed, prefer its GPU binary so local AI cleanup runs on the GPU.
+ *
+ * Otherwise mirror mutool-bridge's resolution: process.resourcesPath/bin
+ * (packaged) → the repo's resources/bin (dev). Returns null when no binary is
+ * available.
  */
 function resolveBinary(): string | null {
+  // Downloaded CUDA pack wins when present (Windows only).
+  if (process.platform === 'win32') {
+    const cudaEntry = componentManager.resolveEntry(LLAMA_CUDA_ID);
+    if (cudaEntry) return cudaEntry;
+  }
+
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
   const isWin = process.platform === 'win32';
   const names = isWin
@@ -376,6 +390,7 @@ class LlamaServer {
   private port = DEFAULT_PORT;
   private ready = false;
   private loadedModelId: string | null = null;
+  private loadedBinary: string | null = null;
   private starting: Promise<void> | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
 
@@ -401,19 +416,21 @@ class LlamaServer {
       throw new Error('The selected local model is not downloaded.');
     }
 
-    // Already serving the right model.
-    if (this.ready && this.proc && this.loadedModelId === activeId) {
+    const binary = resolveBinary();
+    if (!binary) throw new Error('The local AI engine (llama-server) is not bundled in this build.');
+
+    // Already serving the right model with the right binary (e.g. the CUDA pack
+    // wasn't installed/removed since launch).
+    if (this.ready && this.proc && this.loadedModelId === activeId && this.loadedBinary === binary) {
       this.touch();
       return;
     }
-    // Serving a stale model — restart.
-    if (this.proc && this.loadedModelId !== activeId) {
+    // Serving a stale model, or the resolved binary changed (CUDA pack just
+    // installed/removed) — restart so the new binary takes effect.
+    if (this.proc && (this.loadedModelId !== activeId || this.loadedBinary !== binary)) {
       await this.stop();
     }
     if (this.starting) return this.starting;
-
-    const binary = resolveBinary();
-    if (!binary) throw new Error('The local AI engine (llama-server) is not bundled in this build.');
 
     const modelPath = path.join(getModelsDir(), entry.filename);
     this.starting = this.spawnServer(binary, modelPath, activeId);
@@ -450,6 +467,7 @@ class LlamaServer {
       });
       this.proc = proc;
       this.loadedModelId = modelId;
+      this.loadedBinary = binary;
 
       let settled = false;
       const timeout = setTimeout(() => {
@@ -490,6 +508,7 @@ class LlamaServer {
         this.proc = null;
         this.ready = false;
         this.loadedModelId = null;
+        this.loadedBinary = null;
         if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
       });
     });
@@ -502,6 +521,7 @@ class LlamaServer {
     this.ready = false;
     this.proc = null;
     this.loadedModelId = null;
+    this.loadedBinary = null;
     await new Promise<void>((resolve) => {
       let done = false;
       const finish = () => { if (!done) { done = true; resolve(); } };

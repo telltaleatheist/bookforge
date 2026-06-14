@@ -27,12 +27,13 @@
 #ifndef CompressionMethod
   #define CompressionMethod "lzma2/max"
 #endif
-; Inno caps a single Setup.exe at ~4.2 GB (Windows limit). Our full offline
-; payload compresses past that, so disk spanning (Setup.exe + .bin slices) is on
-; by default. Once the payload is slimmed under ~4 GB (e.g. CPU-only llama +
-; lighter default voice), pass /DEnableSpanning=no for a single-file installer.
+; Inno caps a single Setup.exe at ~4.2 GB (Windows limit). The slimmed seed
+; payload (CPU-only llama, trimmed stanza, no CUDA) fits under that, so a
+; single-file installer is the default. The offline build (--seed swapped for
+; --models, +26 GB) compresses past 4.2 GB and must re-enable disk spanning
+; (Setup.exe + .bin slices) with /DEnableSpanning=yes.
 #ifndef EnableSpanning
-  #define EnableSpanning "yes"
+  #define EnableSpanning "no"
 #endif
 
 #define MyAppName "BookForge"

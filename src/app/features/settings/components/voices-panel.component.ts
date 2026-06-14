@@ -1,7 +1,8 @@
-import { Component, inject, computed, signal, ChangeDetectionStrategy, OnInit } from '@angular/core';
+import { Component, inject, input, computed, signal, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
+import { SetupDownloadService } from '../../../core/services/setup-download.service';
 import { ComponentStatus } from '../../../core/services/electron.service';
 
 interface CustomVoice {
@@ -77,7 +78,19 @@ interface CustomVoice {
         <div class="voice-row" [class.is-installed]="status.state === 'installed'">
           <span class="vr-name" [title]="status.component.name">{{ status.component.name }}</span>
 
-          @if (status.state === 'installing' && status.progress; as prog) {
+          @if (selectionMode()) {
+            @if (status.state === 'installed') {
+              <span class="vr-ready" title="Already installed">✓</span>
+            } @else {
+              <span class="vr-size">{{ isBase ? '~1.9 GB' : '1.7 GB' }}</span>
+              <input
+                type="checkbox"
+                class="vr-check"
+                [checked]="sel.isSelected(status.component.id)"
+                (change)="sel.toggle(status.component.id)"
+              />
+            }
+          } @else if (status.state === 'installing' && status.progress; as prog) {
             <div class="vr-progress">
               <div class="vr-bar" [style.width.%]="prog.pct || 0"></div>
             </div>
@@ -102,6 +115,7 @@ interface CustomVoice {
         </div>
       </ng-template>
 
+      @if (!selectionMode()) {
       <!-- User-added custom voices (own fine-tuned XTTS checkpoints) -->
       <div class="group custom-voices">
         <div class="group-head">
@@ -150,6 +164,7 @@ interface CustomVoice {
           }
         }
       </div>
+      }
     </div>
   `,
   styles: [`
@@ -256,6 +271,8 @@ interface CustomVoice {
       white-space: nowrap;
     }
 
+    .vr-check { flex-shrink: 0; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+
     .vr-progress {
       flex: 0 0 80px;
       height: 5px;
@@ -342,6 +359,11 @@ interface CustomVoice {
 })
 export class VoicesPanelComponent implements OnInit {
   readonly svc = inject(ComponentService);
+  readonly sel = inject(SetupDownloadService);
+
+  /** First-run selection mode: render checkboxes instead of Get/Remove and defer
+   *  downloads to the batch runner. Settings uses the default (inline) mode. */
+  readonly selectionMode = input(false);
 
   /** Filter text for the premium-voice list. */
   readonly filter = signal('');

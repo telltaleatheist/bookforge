@@ -285,16 +285,141 @@ fallback `resources/bin/` also works after `npm run download:llama`.
    confirm the local provider generates (not Ollama/API). On Mac this is ready to
    try now; on Windows after steps 1–6.
 
+## CUDA acceleration as a download-on-demand component (added Jun 13 2026, Windows)
+
+Done — the Windows bundle now ships **CPU-only** llama and the CUDA build is an
+optional component gated on a detected NVIDIA GPU.
+
+- `scripts/download-llama-cpp.js` → `setupWindows()` now fetches
+  `llama-b7482-bin-win-cpu-x64.zip` (~20 MB) instead of the CUDA build + cudart.
+- `electron/components/llama-cuda.ts` (NEW): the `llama-cuda` catalog entry
+  (managed `binary`, `requirements.platforms:['win32']`, `gpu:'cuda'`) +
+  `downloadLlamaCudaInto()`. Fetches the two release zips (build 204 MB + cudart
+  391 MB) **upstream GitHub first, falling back to owenmorgan.com/bookforge/llama/**
+  (byte-identical; the mirror has both zips, confirmed — but NOT the CPU zip),
+  flattens `llama-server.exe` + all CUDA/ggml DLLs + cudart + the bundled VC++
+  runtime (copied from `resources/bin`) side-by-side into
+  `userData/components/llama-cuda/`.
+- `component-manager.install()` branches the download step for `llama-cuda`; the
+  rest of the generic binary flow (compat/disk pre-check, verify-run, atomic
+  move, record) is reused. Verify = `llama-server.exe --version` (expects
+  `version`).
+- `llama-bridge.ts` `resolveBinary()` prefers `componentManager.resolveEntry('llama-cuda')`
+  on Windows, else the bundled CPU build. The server now tracks `loadedBinary`
+  and restarts when the resolved binary changes (install/remove the pack →
+  next generate switches CPU↔GPU without an app restart).
+- UI: the Add-ons panel shows a detected-GPU explainer on the CUDA card ("We
+  found your <GPU>…") and an add-ons "Delete all downloads" (managed installs
+  only). The first-run "Optional tools" step embeds this panel, so CUDA surfaces
+  there too. Uninstall (delete option) is the standard managed-component button.
+- **VALIDATED**: extract→flatten→VCRUNTIME against the cached zips produces a
+  binary that loads the CUDA backend (RTX 3090 Ti detected) and prints
+  `version: 7482`, exit 0. Full app-driven download+install not yet run.
+- **`resources/bin` re-staged to CPU (DONE Jun 13 2026)**: deleted the stale GPU
+  DLLs (`cublas64_12.dll`, `cublasLt64_12.dll`, `cudart64_12.dll`,
+  `ggml-cuda.dll`, ~1 GB) and ran `npm run download:llama -- --force`. `resources/bin`
+  is now 68 MB; `llama-server.exe --version` loads only RPC + CPU backends (no
+  CUDA), `version: 7482`. Note the script copies, never cleans — if you ever
+  re-introduce the CUDA build into `resources/bin`, delete those four DLLs by
+  hand before re-staging CPU.
+
+## Fallback-mirror wiring for downloads (added Jun 13 2026)
+
+Done — component downloads try upstream first, then the owenmorgan.com mirror.
+
+- **CUDA**: handled in `components/llama-cuda.ts` (GitHub → mirror), see above.
+- **XTTS voices + base**: `bookforge_ext/download_model.py` (in the e2a fork). On
+  any `snapshot_download` failure it calls `_download_xtts_from_mirror()`, which
+  fetches the files from `…/bookforge/xtts-v2/` (base, repo `coqui/XTTS-v2`) or
+  `…/bookforge/voices/<id>/` (fine-tuned, repo `drewThomasson/fineTunedTTSModels`;
+  `<id>` = last path component of the voice's `sub`) and writes a **valid HF-cache
+  layout** (`refs/main` + `snapshots/<sha>/<sub>/<file>`). It uses the real `main`
+  sha from `HfApi().model_info()` when the hub metadata is reachable (so the entry
+  resolves transparently online too — no re-download), else a deterministic fake
+  sha (offline-only). VERIFIED: a mirror-built entry resolves via
+  `hf_hub_download(local_files_only=True)`, which is exactly how `xtts.py`/`utils.py`
+  load checkpoints.
+- **Stanza language packs**: `_download_stanza_from_mirror()` fetches
+  `…/bookforge/stanza/<lang>/default.zip` and extracts it into
+  `models/stanza/<lang>/`. The full `resources.json` catalog already ships with the
+  bundled core langs, so `Pipeline(REUSE_RESOURCES)` finds the new lang once its
+  model files are present. The mirror does NOT host `resources.json` — this relies
+  on at least one bundled stanza lang (English is always bundled). Mirror only
+  hosts a subset of voices/langs; a non-mirrored file 404s and the fallback
+  cleanly reports "no mirror fallback available".
+- Mirror base is overridable via `BOOKFORGE_MIRROR_BASE` (for testing).
+- **NOTE**: this edits the **e2a fork** (`bookforge_ext/download_model.py`), a
+  separate repo — commit it there so `stage:packaging:seed` snapshots it.
+
+## First-run "select now, download at the end" + dockable progress (Jun 14 2026)
+
+The first-run setup no longer downloads inline. Each step's panel runs in a new
+selection mode (checkboxes); a final "Review & download" step batches everything.
+
+- `core/services/setup-download.service.ts` (NEW, root singleton): holds the
+  checked-component id set + a SEQUENTIAL batch runner (one `componentService.install`
+  at a time so the queue isn't overloaded), gating voice/language items on
+  `runtime.whenReady()` (added — resolves on ready OR error so a stalled setup
+  fails loud instead of hanging). Uncheck a queued item → skipped; cancel the
+  running one or the whole batch.
+- `components/setup-download-dock/`: a fixed bottom-right progress widget mounted
+  in `app.ts` (above the router-outlet) so it SURVIVES leaving first-run and the
+  batch keeps running. Expand/collapse via the arrow; collapses to a corner pill
+  when the user hits "Start … & finish".
+- Selection mode added to `voices-panel`, `languages-panel`, `add-ons-panel` via
+  an `input(false)` `selectionMode` — checkboxes replace Get/Install; Settings is
+  unchanged (default off). Per the user: only downloadable add-ons (CUDA) get a
+  checkbox; external BYO tools (Calibre/Tesseract) keep Locate.
+- `first-run-setup` gains a 5th `download` step (review list + total size) and a
+  footer "Start N downloads & finish" / "Finish without downloading".
+- **Locate… upgraded**: now auto-searches the platform's common locations first
+  (`componentManager.detectExternal`), and only if nothing's found reveals an
+  inline form to type the full path OR browse (for users with a specific version).
+  `ComponentService.autoLocate()` / `setManualPath()` added; `locate()` now
+  returns a boolean.
+- Verified: both projects build clean (strict templates) + electron tsc clean.
+  NOT yet visually driven in a running app — fold a first-run click-through into
+  the next manual pass.
+
+## Slim single-file Inno installer (Jun 14 2026)
+
+Target met: the seed payload now fits a single Setup.exe (< Inno's ~4.2 GB cap).
+
+- **CPU llama (CUDA out)**: done (resources/bin 68 MB; see above).
+- **Stanza trim** (`packaging/stage-resources.js`): the seed stanza copy now
+  filters each lang dir to only the processor models the pipeline loads —
+  `tokenize`, `mwt`, `ner` + the NER dependency closure (`pretrain`,
+  `forward_charlm`, `backward_charlm`). Drops `default.zip` (502 MB redundant
+  archive), `depparse`, `pos`, `lemma`, `constituency`, `sentiment`. English:
+  **1.1 GB → 209 MB**. VERIFIED: (a) the trimmed pack loads `tokenize,ner,mwt`
+  via the exact `REUSE_RESOURCES` Pipeline call and NER still tags DATE entities
+  (`1945`, `the 1960s`) — `get_date_entities` (year→decades) keeps working; (b)
+  the cpSync filter copies only the 6 kept dirs on Windows (the `\\?\` prefix is
+  stripped, or the filter silently passes everything — same gotcha as the
+  snapshot filter). The task's "tokenizer-only" guess was wrong — NER IS used
+  (lib/core.py `doc.ents`), so tokenize-alone would break date handling.
+- **Inno single-file**: `bookforge.iss` default flipped to
+  `EnableSpanning="no"`; `build-inno.js` passes `/DEnableSpanning=no` by default
+  (+ a raw-size > 4.2 GB warning) and takes `--spanning` for the offline
+  (+26 GB models) build. Compression stays `lzma2/max`. `package:win-inno` →
+  single file.
+- **Estimated seed payload** (no full build run here): env tarball 1.84 GB +
+  Scarlett 1.74 GB + stanza 0.21 GB + electron/code ≈ **~4.0 GB raw → ~3.8–3.9 GB
+  compressed** single file. Seed bundles NO base XTTS (download-on-demand), only
+  Scarlett. Headroom to the 4.2 GB cap is modest — if a future seed addition
+  pushes it over, fall back to `build-inno.js --spanning`. The real installer
+  size is confirmed only by an actual `npm run package:win-inno`.
+
 ## Known caveats / possible cleanups
 
 - **Mac dylib tripling**: the release tarball ships versioned symlink chains
   (`libggml.dylib → .0.dylib → .0.9.4.dylib`); `copyFileSync` follows them, so we
   stage 3 real copies of each (~10 MB extra total). Harmless, the binary refs the
   `.0.dylib` variants. Could preserve symlinks later to shave size — low priority.
-- **CUDA bundle size**: the Windows CUDA + cudart payload is ~hundreds of MB
-  uncompressed in the installer. Accepted (user wants GPU available). If it's too
-  heavy, the CPU-only `llama-b7482-bin-win-cpu-x64.zip` (20 MB) is a one-line swap
-  in `setupWindows()`.
+- **CUDA bundle size**: RESOLVED — the installer now ships the CPU-only build
+  (~20 MB) and CUDA is a download-on-demand component (see the CUDA section
+  above). Watch the task-4 follow-up: `resources/bin` must be re-staged to the
+  CPU build before the next package.
 - **WS5 custom voice — NOT runtime-tested**: the e2a code now ships, but nobody
   has run full audiobook gen with a real user fine-tuned checkpoint through the
   pre-staged `custom_model_dir`. Fold a real-checkpoint test into the Windows pass.

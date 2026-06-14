@@ -8,9 +8,11 @@ import { LanguagesPanelComponent } from '../settings/components/languages-panel.
 import { AddOnsPanelComponent } from '../settings/components/add-ons-panel.component';
 import { AiService } from '../../core/services/ai.service';
 import { RuntimeService } from '../../core/services/runtime.service';
+import { ComponentService } from '../../core/services/component.service';
+import { SetupDownloadService } from '../../core/services/setup-download.service';
 
 interface SetupStep {
-  id: 'ai' | 'voices' | 'languages' | 'tools';
+  id: 'ai' | 'voices' | 'languages' | 'tools' | 'download';
   title: string;
   subtitle: string;
 }
@@ -90,13 +92,41 @@ interface SetupStep {
               <app-ai-setup-wizard [embedded]="true" />
             }
             @case ('voices') {
-              <app-voices-panel />
+              <app-voices-panel [selectionMode]="true" />
             }
             @case ('languages') {
-              <app-languages-panel />
+              <app-languages-panel [selectionMode]="true" />
             }
             @case ('tools') {
-              <app-add-ons-panel />
+              <app-add-ons-panel [selectionMode]="true" />
+            }
+            @case ('download') {
+              <div class="review">
+                @if (sel.count() === 0) {
+                  <p class="review-empty">
+                    Nothing selected yet. Go back to check the voices, languages, or GPU
+                    acceleration you want — or finish now and grab them anytime from Settings.
+                  </p>
+                } @else {
+                  <p class="review-intro">
+                    Ready to download <strong>{{ sel.count() }}</strong>
+                    item{{ sel.count() === 1 ? '' : 's' }} (about {{ formatBytes(selTotalBytes()) }}).
+                    They download one at a time so your connection isn’t overloaded — keep using
+                    BookForge while they run.
+                  </p>
+                  <ul class="review-list">
+                    @for (s of selectedStatuses(); track s.component.id) {
+                      <li>
+                        <span class="rl-name">{{ s.component.name }}</span>
+                        <span class="rl-size">{{ formatBytes(s.component.sizeBytes) }}</span>
+                      </li>
+                    }
+                  </ul>
+                  @if (sel.phase() !== 'idle') {
+                    <p class="review-started">Downloads started — track progress in the corner ↘</p>
+                  }
+                }
+              </div>
             }
           }
         </div>
@@ -112,10 +142,21 @@ interface SetupStep {
             Back
           </button>
           <div class="spacer"></div>
-          <button type="button" class="btn ghost" (click)="next()">Skip</button>
-          <button type="button" class="btn primary" (click)="next()">
-            {{ isLast() ? 'Finish' : 'Next' }}
-          </button>
+          @if (!isLast()) {
+            <button type="button" class="btn ghost" (click)="next()">Skip</button>
+            <button type="button" class="btn primary" (click)="next()">Next</button>
+          } @else {
+            <button type="button" class="btn ghost" (click)="complete()">
+              Finish without downloading
+            </button>
+            @if (sel.count() > 0) {
+              <button type="button" class="btn primary" (click)="finishWithDownloads()">
+                Start {{ sel.count() }} download{{ sel.count() === 1 ? '' : 's' }} &amp; finish
+              </button>
+            } @else {
+              <button type="button" class="btn primary" (click)="complete()">Finish</button>
+            }
+          }
         </footer>
       </div>
     </div>
@@ -280,6 +321,30 @@ interface SetupStep {
       overflow-y: auto;
     }
 
+    .review { display: flex; flex-direction: column; gap: 12px; }
+    .review-empty, .review-intro {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-secondary, #9a9a9a);
+    }
+    .review-intro strong { color: var(--text-primary, #f0f0f0); }
+    .review-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+    .review-list li {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border-subtle, #2c2c2c);
+      font-size: 13px;
+    }
+    .review-list li:last-child { border-bottom: none; }
+    .rl-name { color: var(--text-primary, #f0f0f0); }
+    .rl-size { color: var(--text-tertiary, #888); font-size: 12px; white-space: nowrap; }
+    .review-started {
+      margin: 4px 0 0;
+      font-size: 13px;
+      color: var(--accent);
+    }
+
     .card-foot {
       display: flex;
       align-items: center;
@@ -327,6 +392,22 @@ export class FirstRunSetupComponent {
   private router = inject(Router);
   protected ai = inject(AiService);
   protected runtime = inject(RuntimeService);
+  private components = inject(ComponentService);
+  protected sel = inject(SetupDownloadService);
+
+  /** The catalog statuses for every checked component (for the review list). */
+  protected readonly selectedStatuses = computed(() => {
+    const ids = this.sel.selected();
+    return this.components
+      .components()
+      .filter((c) => ids.has(c.component.id))
+      .sort((a, b) => a.component.name.localeCompare(b.component.name));
+  });
+
+  /** Total download size of the current selection. */
+  protected readonly selTotalBytes = computed(() =>
+    this.selectedStatuses().reduce((sum, s) => sum + (s.component.sizeBytes || 0), 0),
+  );
 
   protected readonly steps: SetupStep[] = [
     {
@@ -351,7 +432,13 @@ export class FirstRunSetupComponent {
       id: 'tools',
       title: 'Optional tools',
       subtitle:
-        'Calibre and Tesseract improve EPUB conversion and OCR. Install them from their official sites, then locate them here. Skip if you don’t need them.'
+        'GPU acceleration (if we detect an NVIDIA card), plus Calibre and Tesseract for better EPUB conversion and OCR. Check what you want; locate BYO tools you already have.'
+    },
+    {
+      id: 'download',
+      title: 'Review & download',
+      subtitle:
+        'Everything you checked, downloaded together at the end so the queue isn’t overloaded. You can leave anytime — downloads keep running in the corner.'
     }
   ];
 
@@ -374,7 +461,23 @@ export class FirstRunSetupComponent {
     }
   }
 
+  /** Kick off the selected batch (runs in the background) and head to Studio.
+   *  The dock collapses to the corner so the user sees it shrink as they leave. */
+  finishWithDownloads(): void {
+    void this.sel.start();
+    this.sel.collapse();
+    void this.router.navigate(['/studio']);
+  }
+
   complete(): void {
     void this.router.navigate(['/studio']);
+  }
+
+  formatBytes(bytes: number): string {
+    if (!bytes || bytes <= 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
   }
 }

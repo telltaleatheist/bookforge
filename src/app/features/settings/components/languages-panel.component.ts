@@ -1,7 +1,8 @@
-import { Component, inject, computed, signal, ChangeDetectionStrategy, OnInit } from '@angular/core';
+import { Component, inject, input, computed, signal, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
+import { SetupDownloadService } from '../../../core/services/setup-download.service';
 
 /**
  * Settings → Languages.
@@ -65,7 +66,19 @@ import { ComponentService } from '../../../core/services/component.service';
         <div class="lang-row" [class.is-installed]="status.state === 'installed'">
           <span class="lr-name" [title]="status.component.name">{{ status.component.name }}</span>
 
-          @if (status.state === 'installing' && status.progress; as prog) {
+          @if (selectionMode()) {
+            @if (status.state === 'installed') {
+              <span class="lr-ready" title="Already installed">✓</span>
+            } @else {
+              <span class="lr-size">{{ formatBytes(status.component.sizeBytes) }}</span>
+              <input
+                type="checkbox"
+                class="lr-check"
+                [checked]="sel.isSelected(status.component.id)"
+                (change)="sel.toggle(status.component.id)"
+              />
+            }
+          } @else if (status.state === 'installing' && status.progress; as prog) {
             <div class="lr-progress"><div class="lr-bar" [style.width.%]="prog.pct || 0"></div></div>
             <span class="lr-pct">{{ prog.pct || 0 }}%</span>
             <button class="lr-btn ghost" (click)="svc.cancel(status.component.id)" title="Cancel">✕</button>
@@ -88,6 +101,7 @@ import { ComponentService } from '../../../core/services/component.service';
         </div>
       </ng-template>
 
+      @if (!selectionMode()) {
       <div class="footer">
         <desktop-button variant="ghost" size="sm" (click)="svc.refresh()" [disabled]="svc.loading()">
           Refresh
@@ -108,6 +122,7 @@ import { ComponentService } from '../../../core/services/component.service';
           }
         }
       </div>
+      }
     </div>
   `,
   styles: [`
@@ -165,6 +180,7 @@ import { ComponentService } from '../../../core/services/component.service';
     }
     .lr-size { font-size: var(--ui-font-xs); color: var(--text-tertiary); white-space: nowrap; }
     .lr-ready { font-size: var(--ui-font-sm); color: var(--success); }
+    .lr-check { flex-shrink: 0; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 
     .lr-progress { flex: 0 0 80px; height: 5px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
     .lr-bar { height: 100%; background: var(--accent); transition: width $duration-fast $ease-out; }
@@ -205,6 +221,11 @@ import { ComponentService } from '../../../core/services/component.service';
 })
 export class LanguagesPanelComponent implements OnInit {
   readonly svc = inject(ComponentService);
+  readonly sel = inject(SetupDownloadService);
+
+  /** First-run selection mode: render checkboxes instead of Get/Remove and defer
+   *  downloads to the batch runner. Settings uses the default (inline) mode. */
+  readonly selectionMode = input(false);
 
   /** Filter text for the language list. */
   readonly filter = signal('');

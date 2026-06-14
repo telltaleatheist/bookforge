@@ -211,7 +211,7 @@ function sha256File(filePath: string): Promise<string> {
 // Internal: extraction
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function extractArchive(
+export async function extractArchive(
   archivePath: string,
   destDir: string,
   url: string

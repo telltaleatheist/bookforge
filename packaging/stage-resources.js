@@ -248,6 +248,16 @@ if (seedModels) {
     .split(',').map((s) => s.trim()).filter(Boolean);
   const stanzaSrc = path.join(e2aSource, 'models', 'stanza');
   const stanzaDest = path.join(snapshotDest, 'models', 'stanza');
+  // e2a's pipeline loads ONLY processors='tokenize,ner,mwt' (lib/core.py), and
+  // the default NER (ontonotes-ww-multi_charlm) pulls a pretrain + forward/
+  // backward charlm. So ship just those processor dirs + the dependency closure
+  // and drop the rest of the full pack (default.zip, depparse, pos, lemma,
+  // constituency, sentiment) — ~0.9 GB saved on the English pack alone. A
+  // language not in year_to_decades_languages never loads stanza, but the same
+  // minimal set is correct for every seeded lang.
+  const STANZA_KEEP = new Set([
+    'tokenize', 'mwt', 'ner', 'pretrain', 'forward_charlm', 'backward_charlm',
+  ]);
   if (fs.existsSync(stanzaSrc)) {
     fs.mkdirSync(stanzaDest, { recursive: true });
     const resJson = path.join(stanzaSrc, 'resources.json');
@@ -255,8 +265,21 @@ if (seedModels) {
     for (const lang of seedLangs) {
       const s = path.join(stanzaSrc, lang);
       if (fs.existsSync(s)) {
-        fs.cpSync(s, path.join(stanzaDest, lang), { recursive: true, mode: CLONE });
-        console.log(`[stage-resources] seeded stanza/${lang}`);
+        fs.cpSync(s, path.join(stanzaDest, lang), {
+          recursive: true,
+          mode: CLONE,
+          // Keep only the processor dirs the pipeline actually loads + their
+          // dependency models. (Strip the Windows \\?\ prefix first, or the
+          // relative-path test silently passes everything — see the snapshot
+          // filter above.)
+          filter: (src) => {
+            const rel = path.relative(s, stripNamespacePrefix(src));
+            if (!rel) return true; // the lang dir root itself
+            const top = rel.split(path.sep)[0];
+            return STANZA_KEEP.has(top);
+          },
+        });
+        console.log(`[stage-resources] seeded stanza/${lang} (trimmed to tokenize/ner/mwt + deps)`);
       } else {
         console.warn(`[stage-resources] stanza/${lang} not found in source — skipped`);
       }

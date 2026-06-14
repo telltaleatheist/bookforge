@@ -10,7 +10,9 @@
  * Resolves ISCC.exe across the common install locations (winget installs it
  * per-user under LOCALAPPDATA). Override with ISCC_PATH if needed.
  *
- * Usage: node packaging/build-inno.js [--compression lzma2/fast|none|...]
+ * Usage: node packaging/build-inno.js [--compression lzma2/fast|none|...] [--spanning]
+ *   --spanning   re-enable disk spanning (Setup.exe + .bin slices) for the big
+ *                offline build; default is a single-file installer.
  */
 
 const fs = require('fs');
@@ -63,17 +65,30 @@ function main() {
     iconFile = null;
   }
 
+  const spanning = process.argv.includes('--spanning');
   const size = dirSizeGB(sourceDir);
   console.log(`[inno] ISCC:       ${iscc}`);
   console.log(`[inno] source:     ${sourceDir} (${size} GB)`);
   console.log(`[inno] output:     ${outputDir}\\BookForge-Setup-${pkg.version}.exe`);
   console.log(`[inno] compression:${compression}`);
+  console.log(`[inno] layout:     ${spanning ? 'disk spanning (.exe + .bin slices)' : 'single file'}`);
+
+  // Inno caps a single Setup.exe at ~4.2 GB. The seed payload is mostly the
+  // already-compressed env tarball, so the compressed installer lands near the
+  // raw size — warn before ISCC fails late on a multi-GB compile.
+  if (!spanning && parseFloat(size) > 4.2) {
+    console.warn(
+      `[inno] WARNING: source is ${size} GB raw — a single-file installer may exceed Inno's ~4.2 GB cap.\n` +
+      `[inno]          Re-run with --spanning (offline build) if the compile fails.`
+    );
+  }
 
   const defines = [
     `/DAppVersion=${pkg.version}`,
     `/DSourceDir=${sourceDir}`,
     `/DOutputDir=${outputDir}`,
     `/DCompressionMethod=${compression}`,
+    `/DEnableSpanning=${spanning ? 'yes' : 'no'}`,
   ];
   if (iconFile) defines.push(`/DIconFile=${iconFile}`);
 

@@ -40,6 +40,26 @@ export class RuntimeService {
 
   private unsubscribe?: () => void;
 
+  /**
+   * Resolves once the bundled runtime has settled — ready OR errored. Used to
+   * gate env-dependent downloads (voices / language packs spawn the bundled
+   * python, which doesn't exist until the first-run unpack finishes). Resolves
+   * on the error state too so a stalled setup makes the caller fail loudly
+   * rather than hang forever. Resolves immediately when already settled
+   * (dev / web, or after unpack).
+   */
+  whenReady(): Promise<void> {
+    if (this.ready() || this.errorStatus()) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setInterval(() => {
+        if (this.ready() || this.errorStatus()) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 200);
+    });
+  }
+
   constructor() {
     const api = (window as unknown as { electron?: { runtime?: RuntimeBridge } }).electron?.runtime;
     if (!api) {

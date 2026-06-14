@@ -165,6 +165,56 @@ export class ComponentService {
   }
 
   /**
+   * Auto-find an external tool in the platform's common install locations
+   * (env var → PATH → known candidate paths, via the backend DetectSpec). On a
+   * hit, verify + record it and return true. Returns false when nothing is found
+   * (the caller then offers manual entry / browse). Detection failures are an
+   * expected "not found" outcome, not an error to surface.
+   */
+  async autoLocate(id: string): Promise<boolean> {
+    if (this.isBusy(id)) return false;
+    this.error.set(null);
+    this.setBusy(id, true);
+    try {
+      const found = await this.electron.components.detectExternal(id);
+      if (!found) return false;
+      const updated = await this.electron.components.setExternalPath(id, found);
+      this.components.update(list => list.map(c => (c.component.id === id ? updated : c)));
+      await this.refresh();
+      return true;
+    } catch {
+      // Detected a path but it failed to verify → treat as not-found; the user
+      // can point at the right one manually.
+      return false;
+    } finally {
+      this.setBusy(id, false);
+    }
+  }
+
+  /**
+   * Record a user-typed path to an external tool's executable. Runs the
+   * VerifySpec via setExternalPath; on mismatch surfaces the error and returns
+   * false so the inline form stays open.
+   */
+  async setManualPath(id: string, entryPath: string): Promise<boolean> {
+    const trimmed = entryPath.trim();
+    if (!trimmed) return false;
+    this.error.set(null);
+    this.setBusy(id, true);
+    try {
+      const updated = await this.electron.components.setExternalPath(id, trimmed);
+      this.components.update(list => list.map(c => (c.component.id === id ? updated : c)));
+      await this.refresh();
+      return true;
+    } catch (err) {
+      this.error.set(this.toMessage(err, `${this.nameOf(id)} did not verify at that location`));
+      return false;
+    } finally {
+      this.setBusy(id, false);
+    }
+  }
+
+  /**
    * External "Locate…": open a native picker for the entry path, then record it
    * via setExternalPath (which runs the VerifySpec and throws on mismatch).
    *
@@ -174,12 +224,12 @@ export class ComponentService {
    * name to the chosen folder; for conda-env components the env root *is* the
    * folder, so it is used as-is.
    */
-  async locate(id: string): Promise<void> {
-    if (this.isBusy(id)) return;
+  async locate(id: string): Promise<boolean> {
+    if (this.isBusy(id)) return false;
     this.error.set(null);
 
     const result = await this.electron.openFolderDialog();
-    if (!result.success || !result.folderPath) return;
+    if (!result.success || !result.folderPath) return false;
 
     const status = this.components().find(c => c.component.id === id);
     const entryPath = this.deriveEntryPath(status, result.folderPath);
@@ -191,8 +241,10 @@ export class ComponentService {
         list.map(c => (c.component.id === id ? updated : c)),
       );
       await this.refresh();
+      return true;
     } catch (err) {
       this.error.set(this.toMessage(err, `${this.nameOf(id)} did not verify at that location`));
+      return false;
     } finally {
       this.setBusy(id, false);
     }

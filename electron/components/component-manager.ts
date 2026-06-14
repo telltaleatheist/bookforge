@@ -18,6 +18,7 @@ import { app } from 'electron';
 import { CATALOG, getComponent } from './component-catalog';
 import { systemProbe } from './system-probe';
 import { downloadAndExtract } from './downloader';
+import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
 import type {
   IComponentManager,
@@ -777,7 +778,13 @@ async function install(
 
   try {
     // ── Download + verify + extract into tempDir ──
-    await downloadAndExtract(artifact, tempDir, emit, controller.signal);
+    // The CUDA pack fetches two release zips (build + cudart) with an upstream→
+    // mirror fallback and flattens them, rather than the single-archive path.
+    if (component.id === LLAMA_CUDA_ID) {
+      await downloadLlamaCudaInto(tempDir, emit, controller.signal);
+    } else {
+      await downloadAndExtract(artifact, tempDir, emit, controller.signal);
+    }
 
     if (controller.signal.aborted) {
       throw new Error('Install cancelled');
