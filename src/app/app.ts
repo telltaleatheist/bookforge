@@ -1,4 +1,4 @@
-import { Component, OnInit, inject, computed, signal } from '@angular/core';
+import { Component, OnInit, inject, computed, signal, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterOutlet } from '@angular/router';
 import {
@@ -13,6 +13,25 @@ import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
 import { AiService } from './core/services/ai.service';
 
+/**
+ * Map a discrete runtime-setup stage message to a coarse 0–100 percent for the
+ * first-run progress bar. The main process reports named stages, not real
+ * percentages, so these are best-effort checkpoints; the caller clamps the
+ * result monotonically so out-of-order messages never make the bar jump back.
+ */
+function setupPercentFor(message: string, ready: boolean): number {
+  if (ready) return 100;
+  const m = (message || '').toLowerCase();
+  if (m.includes('ready')) return 100;
+  if (m.includes('conda-unpack') || m.includes('fixing environment')) return 80;
+  if (m.includes('extracting')) return 55;
+  if (m.includes('voices')) return 40;
+  if (m.includes('models')) return 30;
+  if (m.includes('audiobook engine') || m.includes('installing the bundled')) return 20;
+  if (m.includes('setting up') || m.includes('starting')) return 10;
+  return 12;
+}
+
 @Component({
   selector: 'app-root',
   standalone: true,
@@ -26,10 +45,11 @@ import { AiService } from './core/services/ai.service';
     SetupDownloadDockComponent
   ],
   template: `
-    <!-- First-run setup overlay: only blocks on a setup ERROR (needs attention).
-         While the runtime unpacks we DON'T block — the user runs onboarding /
-         guided setup in the meantime; the queue defers job start until ready and
-         env-dependent downloads gate on runtime.ready(). -->
+    <!-- First-run setup overlay: blocks ONLY on a setup ERROR (needs attention).
+         The normal unpack no longer blocks — the user stays on the guided Setup
+         page with a bottom progress bar (see setup-progress below); the queue
+         defers job start until ready and env-dependent downloads gate on
+         runtime.ready(). -->
     @if (showSetupOverlay()) {
       <div class="setup-overlay">
         <div class="setup-card">
@@ -40,11 +60,6 @@ import { AiService } from './core/services/ai.service';
               <p class="setup-error">{{ err.error }}</p>
             }
             <button class="setup-dismiss" (click)="dismissSetup()">Continue anyway</button>
-          } @else {
-            <div class="setup-spinner"></div>
-            <h2>Setting up the audiobook engine…</h2>
-            <p class="setup-message">{{ runtime.status().message }}</p>
-            <p class="setup-hint">This one-time setup takes a minute. You can leave this window open.</p>
           }
         </div>
       </div>
@@ -93,6 +108,22 @@ import { AiService } from './core/services/ai.service';
     <!-- Persistent download-progress widget: survives navigation away from
          first-run setup so the batch keeps running, visible in a corner. -->
     <app-setup-download-dock />
+
+    <!-- First-run engine setup: slim progress bar pinned to the bottom while the
+         bundled runtime unpacks. The user is kept on the Setup page (redirect in
+         the constructor) so they have something to do; this shows live progress. -->
+    @if (setupPreparing()) {
+      <div class="setup-progress" role="status" aria-live="polite">
+        <div class="setup-progress-track">
+          <div class="setup-progress-fill" [style.width.%]="setupProgress()"></div>
+        </div>
+        <div class="setup-progress-label">
+          <span class="setup-progress-spinner"></span>
+          <span class="setup-progress-text">Setting up the audiobook engine — {{ runtime.status().message }}</span>
+          <span class="setup-progress-pct">{{ setupProgress() }}%</span>
+        </div>
+      </div>
+    }
   `,
   styles: [`
     .setup-overlay {
@@ -169,6 +200,63 @@ import { AiService } from './core/services/ai.service';
       background: var(--bg-hover, rgba(255, 255, 255, 0.08));
     }
 
+    /* First-run engine-setup progress bar (pinned to the bottom of the window). */
+    .setup-progress {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 9000;
+      background: var(--bg-elevated, #1e1e1e);
+      border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+      box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.25);
+    }
+
+    .setup-progress-track {
+      height: 3px;
+      width: 100%;
+      background: var(--border-subtle, rgba(255, 255, 255, 0.12));
+      overflow: hidden;
+    }
+
+    .setup-progress-fill {
+      height: 100%;
+      background: var(--accent, #29b6f6);
+      transition: width 0.6s ease;
+    }
+
+    .setup-progress-label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      font-size: 12px;
+      color: var(--text-secondary, #c0c0c0);
+    }
+
+    .setup-progress-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .setup-progress-pct {
+      margin-left: auto;
+      flex: none;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-tertiary, #888);
+    }
+
+    .setup-progress-spinner {
+      flex: none;
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--border-subtle, rgba(255, 255, 255, 0.2));
+      border-top-color: var(--accent, #29b6f6);
+      border-radius: 50%;
+      animation: setup-spin 0.8s linear infinite;
+    }
+
     .app-container {
       height: 100vh;
       width: 100vw;
@@ -221,27 +309,56 @@ export class App implements OnInit {
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
 
-  // Current route (hash) mirrored into a signal so the overlay reacts to
-  // navigation — kept in sync from Router events in ngOnInit.
+  // Current route (hash) mirrored into a signal so the "stay on /setup during
+  // prep" redirect re-evaluates on navigation — kept in sync from Router events.
   private readonly currentUrl = signal('');
 
-  // When to block the app behind the setup splash:
-  //  • a setup ERROR always blocks (needs attention; dismissable), OR
-  //  • the bundled runtime is still unpacking AND the user has finished
-  //    onboarding/guided setup and moved into the app. The first-run unpack
-  //    (~40 s) normally completes while they pick a library and set up AI, so
-  //    this is the safety net for when they outpace it: the engine isn't usable
-  //    until 'ready', and landing on a half-ready runtime wedges TTS workers.
-  // The guided setup route (/setup) stays interactive — AI keys and voice
-  // picking don't need the runtime — so we never cover it; we only block once
-  // they leave it for the rest of the app.
+  // The full-screen overlay now blocks ONLY on a setup ERROR (needs attention).
+  // During the normal first-run unpack we no longer black out the app — instead
+  // we keep the user on the guided Setup page (something to do) and show a slim
+  // progress bar pinned to the bottom (setupPreparing / setupProgress below).
   readonly showSetupOverlay = computed(() => {
     if (this.isStandaloneWindow()) return false;
-    if (this.runtime.errorStatus()) return !this.setupDismissed();
-    return this.runtime.preparing()
-      && this.libraryService.isConfigured()
-      && !this.currentUrl().startsWith('/setup');
+    return !!this.runtime.errorStatus() && !this.setupDismissed();
   });
+
+  // True while the bundled runtime is still unpacking, the library is configured
+  // (past onboarding), and this isn't a standalone popup. Drives the bottom
+  // progress bar AND the "stay on /setup" redirect in the constructor — the
+  // engine isn't usable until 'ready', so we keep the user occupied on Setup
+  // rather than dumping them onto a half-ready home screen.
+  readonly setupPreparing = computed(() =>
+    this.runtime.preparing()
+    && this.libraryService.isConfigured()
+    && !this.isStandaloneWindow()
+  );
+
+  // Coarse 0–100 progress for the setup bar. The main process reports discrete
+  // stages (no real %), so we map each known stage to a target and clamp the
+  // result monotonically (never goes backwards); _progressFloor is bumped by an
+  // effect in the constructor.
+  private readonly _progressFloor = signal(0);
+  private readonly _rawProgress = computed(() =>
+    setupPercentFor(this.runtime.status().message, this.runtime.ready())
+  );
+  readonly setupProgress = computed(() => Math.max(this._rawProgress(), this._progressFloor()));
+
+  constructor() {
+    // Monotonic floor: stage messages can arrive slightly out of order, but the
+    // bar should only ever advance.
+    effect(() => {
+      const p = this._rawProgress();
+      if (p > this._progressFloor()) this._progressFloor.set(p);
+    });
+    // Keep the user on the guided Setup page while the engine unpacks, so they
+    // have something to do (AI keys, browsing voices) instead of a blank wait —
+    // and so they never reach a half-ready engine. Stops once it's ready.
+    effect(() => {
+      if (this.setupPreparing() && !this.currentUrl().startsWith('/setup')) {
+        void this.router.navigate(['/setup']);
+      }
+    });
+  }
 
   dismissSetup(): void {
     this.setupDismissed.set(true);
@@ -290,9 +407,9 @@ export class App implements OnInit {
   ngOnInit() {
     this.themeService.initializeTheme();
 
-    // Mirror the active route into a signal so showSetupOverlay re-evaluates on
-    // navigation (e.g. leaving /setup for /studio should reveal the splash if
-    // the runtime is still unpacking).
+    // Mirror the active route into a signal so the prep-time redirect effect
+    // re-evaluates on navigation (leaving /setup while the runtime is still
+    // unpacking should pull the user back to Setup).
     this.currentUrl.set(this.router.url);
     this.router.events.subscribe(() => this.currentUrl.set(this.router.url));
   }
