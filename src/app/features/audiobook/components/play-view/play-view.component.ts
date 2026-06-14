@@ -262,6 +262,7 @@ interface StreamCue {
               max="2"
               step="0.05"
               [value]="selectedSpeed()"
+              (input)="onSpeedDrag($event)"
               (change)="onSpeedSlider($event)"
               title="TTS speed (applies from the current sentence)"
             />
@@ -1498,11 +1499,23 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** Speed is a TTS generation setting — restart from the current sentence so it applies now. */
+  // The speed actually in effect for generation (vs. selectedSpeed, which also
+  // updates live while dragging so the "x" label tracks the thumb).
+  private appliedSpeed = 1.25;
+
+  /** Live update while dragging — moves the displayed "x" with the thumb, but
+   *  does NOT restart TTS (that would thrash on every drag tick). */
+  onSpeedDrag(event: Event) {
+    this.selectedSpeed.set(Number((event.target as HTMLInputElement).value));
+  }
+
+  /** On release: speed is a TTS generation setting — restart from the current
+   *  sentence so it applies now. */
   onSpeedSlider(event: Event) {
     const newSpeed = Number((event.target as HTMLInputElement).value);
-    if (newSpeed === this.selectedSpeed()) return;
     this.selectedSpeed.set(newSpeed);
+    if (newSpeed === this.appliedSpeed) return;
+    this.appliedSpeed = newSpeed;
 
     if (this.isPlaying() || this.isGenerating()) {
       void this.jumpToGlobal(this.currentGlobalIndex());
