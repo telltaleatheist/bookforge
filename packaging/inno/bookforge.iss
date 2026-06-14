@@ -87,3 +87,49 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+{ ────────────────────────────────────────────────────────────────────────────
+  Full uninstall of OUR data. The default uninstaller only removes {app} (the
+  program). All the heavy runtime data BookForge downloads — the unpacked Python
+  engine, voice & AI models, Stanza language packs, GPU components, caches, and
+  settings — lives in the per-user Electron userData (%APPDATA%\BookForge, plus
+  %LOCALAPPDATA%\BookForge caches), which it never touches. We delete that here
+  so uninstalling reclaims all the disk it used.
+
+  We deliberately DO NOT touch the user's audiobook library (Documents\BookForge:
+  their imported ebooks, projects, and finished audiobooks) — those are their own
+  files, not ours. The dialog tells them so.
+  ──────────────────────────────────────────────────────────────────────────── }
+
+procedure RemoveTreeIfExists(const Dir: String);
+begin
+  if DirExists(Dir) then
+    DelTree(Dir, True, True, True);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  AppData, LocalData, Library, KeptMsg: String;
+begin
+  if CurUninstallStep <> usPostUninstall then
+    Exit;
+
+  AppData   := ExpandConstant('{userappdata}\{#MyAppName}');
+  LocalData := ExpandConstant('{localappdata}\{#MyAppName}');
+  Library   := ExpandConstant('{userdocs}\{#MyAppName}');
+
+  if DirExists(Library) then
+    KeptMsg := 'Your audiobook library (your imported books, projects, and finished audiobooks) will be KEPT at:' + #13#10 + Library
+  else
+    KeptMsg := 'Your audiobook library, if any, will be kept — we never delete your own books.';
+
+  if MsgBox('Also remove BookForge''s downloaded data?' + #13#10#13#10 +
+            'This deletes the voice & AI models, language packs, GPU components, the bundled audiobook engine, caches, and your settings — freeing up to several GB.' + #13#10#13#10 +
+            KeptMsg,
+            mbConfirmation, MB_YESNO) = IDYES then
+  begin
+    RemoveTreeIfExists(AppData);
+    RemoveTreeIfExists(LocalData);
+  end;
+end;

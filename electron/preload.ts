@@ -926,6 +926,7 @@ export interface ElectronAPI {
   };
   library: {
     seedBookPath: () => Promise<string | null>;
+    removeAllData: () => Promise<{ ok: boolean; freedBytes: number; userData: string; platform: string }>;
     importFile: (sourcePath: string) => Promise<{
       success: boolean;
       libraryPath?: string;
@@ -2305,6 +2306,8 @@ const electronAPI: ElectronAPI = {
   library: {
     seedBookPath: () =>
       ipcRenderer.invoke('app:seed-book-path') as Promise<string | null>,
+    removeAllData: () =>
+      ipcRenderer.invoke('app:remove-all-data') as Promise<{ ok: boolean; freedBytes: number; userData: string; platform: string }>,
     importFile: (sourcePath: string) =>
       ipcRenderer.invoke('library:import-file', sourcePath),
     resolveSource: (options: { libraryPath?: string; sourcePath?: string; fileHash?: string; sourceName?: string }) =>

@@ -2251,6 +2251,15 @@ export class ElectronService {
     return null;
   }
 
+  /** Delete all of BookForge's downloaded data (engine, models, packs, settings).
+   *  Keeps the user's library/books. Returns bytes freed + platform for guidance. */
+  async removeAllData(): Promise<{ ok: boolean; freedBytes: number; userData: string; platform: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.library.removeAllData();
+    }
+    return { ok: false, freedBytes: 0, userData: '', platform: '' };
+  }
+
   async writeTextFile(filePath: string, content: string): Promise<{
     success: boolean;
     error?: string;

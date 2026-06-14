@@ -1810,6 +1810,47 @@ function setupIpcHandlers(): void {
     return null;
   });
 
+  // Remove ALL of BookForge's data — everything it downloaded/unpacked into the
+  // per-user userData dir (the audiobook engine, voice & AI models, language
+  // packs, GPU components, caches, settings). The user's library/books live in
+  // Documents\BookForge (outside userData) and are deliberately left untouched.
+  // The OS can't let an app delete itself, so the renderer then tells the user
+  // to drag the app to the Trash (mac) / run the uninstaller (win).
+  ipcMain.handle('app:remove-all-data', async () => {
+    // Stop the streaming engine first so the bundled env isn't locked.
+    try {
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      await xttsWorkerPool.endSession();
+    } catch { /* engine wasn't running */ }
+
+    const dirSizeBytes = (p: string): number => {
+      let total = 0;
+      let stat: fsSync.Stats;
+      try { stat = fsSync.lstatSync(p); } catch { return 0; }
+      if (stat.isSymbolicLink()) return 0;        // don't follow/double-count HF blob links
+      if (stat.isFile()) return stat.size;
+      if (stat.isDirectory()) {
+        let entries: string[] = [];
+        try { entries = fsSync.readdirSync(p); } catch { return total; }
+        for (const e of entries) total += dirSizeBytes(path.join(p, e));
+      }
+      return total;
+    };
+
+    const userData = app.getPath('userData');
+    let freedBytes = 0;
+    let entries: string[] = [];
+    try { entries = fsSync.readdirSync(userData); } catch { /* nothing there */ }
+    for (const entry of entries) {
+      const p = path.join(userData, entry);
+      try {
+        freedBytes += dirSizeBytes(p);
+        fsSync.rmSync(p, { recursive: true, force: true });
+      } catch { /* in-use file (logs/leveldb) — best effort; uninstaller mops up */ }
+    }
+    return { ok: true, freedBytes, userData, platform: process.platform };
+  });
+
   // Projects folder management
   // Library folder structure - uses module-level getLibraryRoot()
 
