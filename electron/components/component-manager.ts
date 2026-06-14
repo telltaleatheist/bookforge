@@ -13,11 +13,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, spawnSync, execSync } from 'child_process';
-import { app } from 'electron';
+import { app, shell } from 'electron';
 
 import { CATALOG, getComponent } from './component-catalog';
 import { systemProbe } from './system-probe';
-import { downloadAndExtract } from './downloader';
+import { downloadAndExtract, downloadFile } from './downloader';
+import { getExternalInstaller, installableExternalIds, ExternalInstaller } from './external-installers';
 import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
 import { CUDA_TTS_ID, installCudaTts, isCudaTtsInstalled, uninstallCudaTts, cudaTtsMarkerPath } from './cuda-tts';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
@@ -1129,6 +1130,59 @@ async function getStatus(id: string): Promise<ComponentStatus | null> {
   if (!component) return null;
   const profile = await systemProbe.profile();
   return buildStatus(component, profile);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// External-tool installer: download the right OS installer and launch it.
+// Standalone (not on the locked IComponentManager contract). Unlike install(),
+// it never emits 'done' — the tool is installed out-of-band by its own OS
+// installer, so the card's real state comes from detection afterward.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function runInstaller(
+  id: string,
+  onProgress?: (p: InstallProgress) => void,
+): Promise<InstallResult> {
+  const emit = (p: InstallProgress) => { try { onProgress?.(p); } catch { /* ignore */ } };
+  const component = getComponent(id);
+  if (!component) return { id, ok: false, error: `Unknown component: ${id}` };
+
+  const installer: ExternalInstaller | null = getExternalInstaller(id);
+  if (!installer) {
+    return { id, ok: false, error: `No installer is available for ${component.name} on this platform.` };
+  }
+
+  const controller = new AbortController();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `bookforge-installer-${id}-`));
+  inFlight.set(id, { controller, tempDir });
+  const dest = path.join(tempDir, installer.filename);
+
+  try {
+    emit({ id, phase: 'download', pct: 0, message: `Downloading the ${component.name} installer…` });
+    await downloadFile(installer.url, dest, id, emit, controller.signal);
+
+    emit({ id, phase: 'postinstall', pct: 100, message: installer.action === 'open' ? 'Opening installer…' : 'Launching installer…' });
+    const launchErr = await shell.openPath(dest);
+    if (launchErr) throw new Error(launchErr);
+
+    return { id, ok: true };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    emit({ id, phase: 'error', pct: 0, message: error });
+    return { id, ok: false, error };
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+/** Component ids that have a downloadable installer for the current platform. */
+export function listInstallableIds(): string[] {
+  return installableExternalIds();
+}
+
+/** Human guidance to show after an installer is launched (esp. dmg drag-install). */
+export function installerNote(id: string): string | null {
+  return getExternalInstaller(id)?.note ?? null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

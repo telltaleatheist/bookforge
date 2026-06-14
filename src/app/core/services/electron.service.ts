@@ -3528,6 +3528,18 @@ export class ElectronService {
       }
       return Promise.reject(new Error('Not running in Electron'));
     },
+    runInstaller: (id: string): Promise<InstallResult> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.runInstaller(id);
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    installers: (): Promise<{ ids: string[]; notes: Record<string, string | null> }> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.installers();
+      }
+      return Promise.resolve({ ids: [], notes: {} });
+    },
     cancel: (id: string): Promise<void> => {
       if (this.isElectron) {
         return (window as any).electron.components.cancel(id);

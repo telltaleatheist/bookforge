@@ -63,20 +63,73 @@ export class ComponentService {
     );
   }
 
+  /** Ids of external tools with a downloadable installer for this OS. */
+  private readonly installerIds = signal<Set<string>>(new Set());
+  private readonly installerNotes = signal<Record<string, string | null>>({});
+
+  /** True when the component has a one-click "Download & Install" path here. */
+  hasInstaller(id: string): boolean {
+    return this.installerIds().has(id);
+  }
+
   /** Reload the catalog list + system profile from the main process. */
   async refresh(): Promise<void> {
     this.loading.set(true);
     try {
-      const [list, profile] = await Promise.all([
+      const [list, profile, installers] = await Promise.all([
         this.electron.components.list(),
         this.electron.components.probe(),
+        this.electron.components.installers(),
       ]);
       this.components.set(list);
       this.profile.set(profile);
+      this.installerIds.set(new Set(installers.ids));
+      this.installerNotes.set(installers.notes);
     } catch (err) {
       this.error.set(this.toMessage(err, 'Failed to load add-ons'));
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  /**
+   * Download the right OS installer for an external tool and launch it. Unlike
+   * install(), it never flips the card to "installed" on its own — the OS does
+   * the install out-of-band — so we re-probe afterward and let detection decide.
+   */
+  async runInstaller(id: string): Promise<void> {
+    if (this.isBusy(id)) return;
+    this.error.set(null);
+    this.setBusy(id, true);
+    this.patchComponent(id, { state: 'installing', progress: { id, phase: 'download', pct: 0 } });
+
+    const unsub = this.electron.components.onProgress((p: InstallProgress) => {
+      if (p.id !== id) return;
+      this.patchComponent(id, {
+        state: p.phase === 'error' ? 'error' : 'installing',
+        progress: p,
+      });
+    });
+    this.progressUnsubs.set(id, unsub);
+
+    try {
+      const result = await this.electron.components.runInstaller(id);
+      if (!result.ok) {
+        this.error.set(result.error || `Could not download the ${id} installer`);
+      } else {
+        const note = this.installerNotes()[id];
+        await this.electron.showMessageDialog({
+          type: 'info',
+          title: 'Installer launched',
+          message: note || 'The installer was downloaded and opened. Complete it, then click Locate if it isn’t detected automatically.',
+        });
+      }
+    } catch (err) {
+      this.error.set(this.toMessage(err, `Could not download the ${id} installer`));
+    } finally {
+      this.teardownProgress(id);
+      this.setBusy(id, false);
+      await this.refresh(); // re-probe so the card reflects the real state
     }
   }
 
