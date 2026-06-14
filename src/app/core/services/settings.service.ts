@@ -2,11 +2,45 @@ import { Injectable, inject, signal, computed } from '@angular/core';
 import { ElectronService } from './electron.service';
 import {
   AIConfig,
+  AIProvider,
   DEFAULT_AI_CONFIG,
   OLLAMA_MODELS,
   CLAUDE_MODELS,
   OPENAI_MODELS
 } from '../models/ai-config.types';
+
+/**
+ * Default selections the processing pipeline (LL wizard) seeds itself from, so a
+ * user who always wants e.g. Claude for cleanup + XTTS + a particular voice
+ * doesn't re-pick every time. Edited in Settings → Pipeline Defaults; the wizard
+ * applies them on open (a restored in-progress session still overrides them).
+ */
+export interface PipelineDefaults {
+  cleanupProvider: AIProvider; cleanupModel: string;
+  simplifyProvider: AIProvider; simplifyModel: string;
+  translateProvider: AIProvider; translateModel: string;
+  ttsEngine: 'xtts' | 'orpheus';
+  ttsDevice: 'cpu' | 'mps' | 'gpu';
+  ttsVoice: string;
+  ttsSpeed: number;
+  ttsTemperature: number;
+  ttsTopP: number;
+  /** Assembly output: false = audiobook (M4B), true = video. */
+  generateVideo: boolean;
+}
+
+export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
+  cleanupProvider: 'ollama', cleanupModel: '',
+  simplifyProvider: 'ollama', simplifyModel: '',
+  translateProvider: 'ollama', translateModel: '',
+  ttsEngine: 'xtts',
+  ttsDevice: 'cpu',
+  ttsVoice: 'ScarlettJohansson',
+  ttsSpeed: 1.0,
+  ttsTemperature: 0.7,
+  ttsTopP: 0.9,
+  generateVideo: false,
+};
 
 /**
  * Setting field types matching plugin-types.ts
@@ -208,6 +242,15 @@ export class SettingsService {
         description: 'Download sentence-segmentation models for cleanup & translation',
         icon: '🌍',
         fields: [], // Custom UI (app-languages-panel)
+      },
+      {
+        // Default AI / TTS / output selections the processing pipeline seeds
+        // itself from. Custom UI (app-pipeline-defaults-panel).
+        id: 'pipeline-defaults',
+        name: 'Pipeline Defaults',
+        description: 'Default AI, TTS, and output choices for the processing pipeline',
+        icon: '🎚️',
+        fields: [],
       },
       {
         // Thin advanced section: genuine overrides only (tool paths, scratch
@@ -524,5 +567,24 @@ export class SettingsService {
   updateBookshelfConfig(updates: Partial<{ enabled: boolean; port: number; externalAudiobooksDir?: string }>): void {
     const current = this.getBookshelfConfig();
     this.setBookshelfConfig({ ...current, ...updates });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Pipeline Defaults
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /** The pipeline's default selections, merged with built-in defaults. */
+  getPipelineDefaults(): PipelineDefaults {
+    const stored = this.values()['pipelineDefaults'] as Partial<PipelineDefaults> | undefined;
+    return { ...DEFAULT_PIPELINE_DEFAULTS, ...(stored || {}) };
+  }
+
+  setPipelineDefaults(defaults: PipelineDefaults): void {
+    this.values.update(v => ({ ...v, pipelineDefaults: defaults }));
+    this.saveSettings();
+  }
+
+  updatePipelineDefaults(updates: Partial<PipelineDefaults>): void {
+    this.setPipelineDefaults({ ...this.getPipelineDefaults(), ...updates });
   }
 }

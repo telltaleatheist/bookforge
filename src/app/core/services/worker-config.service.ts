@@ -47,21 +47,26 @@ export class WorkerConfigService {
     if (!p) {
       return { recommended: 1, worthwhile: false, level: 'neutral', message: 'Checking your hardware…' };
     }
+    const ramGB = Math.round(p.ramMB / 1024);
 
-    // NVIDIA/CUDA: decode serializes on the GPU, so extra workers only contend.
-    if (p.cuda?.available) {
+    // The advice depends on the device the engine will actually run on. A CUDA
+    // GPU only serializes when it's the active device — force CPU and the
+    // workers run on cores in parallel, just like any other CPU.
+    const runsOnGpu = p.cuda?.available && this.devicePref() !== 'cpu';
+
+    // NVIDIA/CUDA (and not forced to CPU): decode serializes on the GPU.
+    if (runsOnGpu) {
       const name = p.cuda.name ? ` (${p.cuda.name})` : '';
       return {
         recommended: 1,
         worthwhile: false,
         level: 'discouraged',
-        message: `Your NVIDIA GPU${name} runs TTS decode one step at a time, so extra workers just fight over the GPU. Leave this off — 1 worker is fastest here.`,
+        message: `Your NVIDIA GPU${name} runs TTS decode one step at a time, so extra workers just fight over the GPU. Leave this off — 1 worker is fastest. (Switch the engine to CPU below if you want to use multiple workers.)`,
       };
     }
 
-    // Apple Silicon: unified/shared memory is the one case that genuinely scales.
+    // Apple Silicon: unified/shared memory is the one case that scales near-linearly.
     if (p.appleSilicon) {
-      const ramGB = Math.round(p.ramMB / 1024);
       // ~5 GB per worker, keep ~4 GB headroom, capped at 4 (bandwidth ceiling).
       const rec = Math.min(this.HARD_MAX, Math.max(1, Math.floor((ramGB - 4) / 5)));
       return rec >= 2
@@ -69,7 +74,7 @@ export class WorkerConfigService {
             recommended: rec,
             worthwhile: true,
             level: 'good',
-            message: `Apple Silicon with ${ramGB} GB shared memory — the rare machine that benefits. About ${rec} workers is the sweet spot; past 4 they compete for memory bandwidth, so 4 is the ceiling.`,
+            message: `Apple Silicon with ${ramGB} GB shared memory — the machine that benefits most. About ${rec} workers is the sweet spot; past 4 they compete for memory bandwidth, so 4 is the ceiling.`,
           }
         : {
             recommended: 1,
@@ -79,13 +84,24 @@ export class WorkerConfigService {
           };
     }
 
-    // Plain CPU (Windows/Linux, Intel Mac): extra workers oversubscribe cores.
-    const ramGB = Math.round(p.ramMB / 1024);
+    // Plain CPU (Windows/Linux x86, Intel Mac, or a GPU box forced to CPU).
+    // Workers DO run in parallel across cores — but each needs ~5 GB RAM and
+    // they share memory bandwidth, so the speedup is modest, not near-linear.
+    const rec = Math.min(this.HARD_MAX, Math.max(1, Math.floor((ramGB - 4) / 5)));
+    const forcedCpu = p.cuda?.available && this.devicePref() === 'cpu';
+    if (rec >= 2) {
+      return {
+        recommended: Math.min(rec, 2),
+        worthwhile: true,
+        level: 'neutral',
+        message: `${forcedCpu ? 'Running on CPU (GPU disabled): ' : ''}workers run in parallel across your cores, but each needs ~5 GB RAM (${ramGB} GB total) and they share memory bandwidth, so expect a modest speedup, not ${rec}×. Try 2 first.`,
+      };
+    }
     return {
       recommended: 1,
       worthwhile: false,
       level: 'discouraged',
-      message: `On a CPU without shared memory, extra workers oversubscribe your cores and rarely help — 1 worker is usually best. (Each adds ~5 GB RAM; you have ${ramGB} GB.)`,
+      message: `Not enough RAM for more than 1 worker (each needs ~5 GB; you have ${ramGB} GB).`,
     };
   });
 

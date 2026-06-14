@@ -14,11 +14,12 @@ import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
 import { WorkerConfigService } from '../../core/services/worker-config.service';
 import { ComponentService } from '../../core/services/component.service';
+import { PipelineDefaultsPanelComponent } from './components/pipeline-defaults-panel.component';
 
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -765,6 +766,9 @@ import { ComponentService } from '../../core/services/component.service';
               <!-- Languages: downloadable Stanza sentence-segmentation packs
                    for cleanup & translation. -->
               <app-languages-panel></app-languages-panel>
+            } @else if (section.id === 'pipeline-defaults') {
+              <!-- Default AI / TTS / output selections the pipeline seeds from. -->
+              <app-pipeline-defaults-panel></app-pipeline-defaults-panel>
             } @else {
               <div class="fields-list">
                 @for (field of section.fields; track field.key) {

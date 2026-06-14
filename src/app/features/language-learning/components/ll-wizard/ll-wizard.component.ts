@@ -2874,6 +2874,11 @@ export class LLWizardComponent implements OnInit {
   private isInitializing = true;
 
   constructor() {
+    // Seed every picker from the user's Pipeline Defaults (Settings). Runs in the
+    // constructor, before ngOnInit's session-restore, so a reopened in-progress
+    // run still overrides these with its own saved selections.
+    this.applyPipelineDefaults();
+
     // Re-scan project EPUBs whenever project dir changes (e.g. after exporting from PDF viewer)
     effect(() => {
       const dir = this.effectiveProjectDir();
@@ -3442,6 +3447,22 @@ export class LLWizardComponent implements OnInit {
   // TTS
   // ─────────────────────────────────────────────────────────────────────────
 
+  /** Seed every picker from Settings → Pipeline Defaults. */
+  private applyPipelineDefaults(): void {
+    const d = this.settingsService.getPipelineDefaults();
+    this.cleanupProvider.set(d.cleanupProvider);
+    this.cleanupModel.set(d.cleanupModel);
+    this.translateProvider.set(d.translateProvider);
+    this.translateModel.set(d.translateModel);
+    this.ttsEngine.set(d.ttsEngine);
+    this.ttsDevice.set(d.ttsDevice);
+    this.monoTtsVoice.set(d.ttsVoice);
+    this.monoTtsSpeed.set(d.ttsSpeed);
+    this.ttsTemperature.set(d.ttsTemperature);
+    this.ttsTopP.set(d.ttsTopP);
+    this.generateVideo.set(d.generateVideo);
+  }
+
   /** User picked a worker count for this job — stop auto-syncing from the global. */
   async setTtsWorkers(count: number): Promise<void> {
     // On a CUDA machine the GPU serializes decode, so >1 worker only contends.
@@ -3630,6 +3651,10 @@ export class LLWizardComponent implements OnInit {
       this.enableAiCleanup.set(true);
       // Remove cleanup from skipped steps since we're configuring it
       this._skippedSteps.delete('cleanup');
+      // The cleanup step shares one AI selector; honor the cleanup default.
+      const d = this.settingsService.getPipelineDefaults();
+      this.cleanupProvider.set(d.cleanupProvider);
+      this.cleanupModel.set(d.cleanupModel);
     } else {
       this.enableAiCleanup.set(false);
     }
@@ -3685,6 +3710,13 @@ export class LLWizardComponent implements OnInit {
       this.simplifyForLearning.set(true);
       // Remove cleanup from skipped steps since we're configuring it
       this._skippedSteps.delete('cleanup');
+      // Simplify-only intent → use the simplify AI default (the step shares one
+      // selector with cleanup, so only apply when cleanup isn't also on).
+      if (!this.enableAiCleanup()) {
+        const d = this.settingsService.getPipelineDefaults();
+        this.cleanupProvider.set(d.simplifyProvider);
+        this.cleanupModel.set(d.simplifyModel);
+      }
     } else {
       this.simplifyForLearning.set(false);
     }
