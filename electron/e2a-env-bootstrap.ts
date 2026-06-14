@@ -308,6 +308,12 @@ export async function ensureBundledE2a(onProgress?: (message: string) => void): 
     recursive: true,
     force: true,
     mode: CLONE_MODE,
+    // Copy symlinks as-is. The seeded HF model cache stores snapshots/* as
+    // RELATIVE symlinks into blobs/*; without this, cpSync resolves the target
+    // and its own is-subdir check throws EINVAL ("cannot copy to a subdirectory
+    // of self"). Staging (stage-resources.js) writes these links verbatim, so the
+    // runtime copy must preserve them verbatim too.
+    verbatimSymlinks: true,
     filter: (src) => {
       const rel = path.relative(snapshotDir, src);
       if (!rel) return true;
@@ -326,6 +332,9 @@ export async function ensureBundledE2a(onProgress?: (message: string) => void): 
       force: false,
       errorOnExist: false,
       mode: CLONE_MODE,
+      // Preserve the HF cache's relative blobs/* ↔ snapshots/* symlinks (see
+      // pass 1) — resolving them throws EINVAL on the seeded voice models.
+      verbatimSymlinks: true,
     });
   }
 
