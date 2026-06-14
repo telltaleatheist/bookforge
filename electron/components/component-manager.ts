@@ -19,6 +19,7 @@ import { CATALOG, getComponent } from './component-catalog';
 import { systemProbe } from './system-probe';
 import { downloadAndExtract } from './downloader';
 import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
+import { CUDA_TTS_ID, installCudaTts, isCudaTtsInstalled, uninstallCudaTts, cudaTtsMarkerPath } from './cuda-tts';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
 import type {
   IComponentManager,
@@ -696,6 +697,43 @@ async function fetchLanguagePack(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CUDA TTS (kind 'binary', id 'cuda-tts') — overlay GPU PyTorch into the env
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function fetchCudaTts(
+  component: OptionalComponent,
+  emit: (p: InstallProgress) => void
+): Promise<InstallResult> {
+  const id = component.id;
+  const controller = new AbortController();
+  inFlight.set(id, { controller, tempDir: null });
+  try {
+    await installCudaTts(emit, controller.signal);
+    const marker = cudaTtsMarkerPath() || '';
+    const record: InstalledRecord = {
+      id,
+      version: component.version,
+      source: 'managed',
+      path: marker,
+      entryPath: marker, // the env marker; resolveEntry checks it exists
+      bytes: component.sizeBytes || undefined,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
+    return { id, ok: true, record };
+  } catch (err) {
+    const message = controller.signal.aborted
+      ? 'Install cancelled'
+      : (err instanceof Error ? err.message : String(err));
+    emit({ id, phase: 'error', pct: 0, message });
+    return { id, ok: false, error: message };
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Managed install
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -729,6 +767,12 @@ async function install(
   // same mechanism as tts-model — different helper branch, same contract.
   if (component.kind === 'language-pack') {
     return fetchLanguagePack(component, emit);
+  }
+
+  // CUDA TTS overlays a GPU PyTorch build into the runtime env (pip), not a
+  // download-into-dir — its own branch, same install()/progress contract.
+  if (component.id === CUDA_TTS_ID) {
+    return fetchCudaTts(component, emit);
   }
 
   emit({ id, phase: 'resolve', pct: 0, message: 'Resolving artifact…' });
@@ -900,6 +944,19 @@ async function uninstall(id: string): Promise<void> {
     return;
   }
 
+  // CUDA TTS isn't a dir under components/ — it's an overlay in the runtime env.
+  // Revert to CPU torch + clear the marker, then drop the record.
+  if (id === CUDA_TTS_ID) {
+    try {
+      uninstallCudaTts();
+    } catch (err) {
+      console.error(`[COMPONENTS] ${id}: revert to CPU torch failed:`, err);
+    }
+    dropRecord(id);
+    console.log(`[COMPONENTS] ${id}: reverted GPU TTS overlay`);
+    return;
+  }
+
   if (record.source === 'managed') {
     const dir = getInstallDir(id);
     if (fs.existsSync(dir)) {
@@ -1025,6 +1082,22 @@ async function buildStatus(
       putRecord(record);
       console.log(`[COMPONENTS] ${component.id}: detected Stanza language pack at ${found}`);
     }
+  }
+
+  // CUDA TTS: the marker lives in the runtime env, so it auto-clears if the env
+  // is re-unpacked (app update) — detection always reflects the real env state.
+  if (!record && component.id === CUDA_TTS_ID && isCudaTtsInstalled()) {
+    const marker = cudaTtsMarkerPath() || '';
+    record = {
+      id: component.id,
+      version: component.version,
+      source: 'managed',
+      path: marker,
+      entryPath: marker,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    console.log(`[COMPONENTS] ${component.id}: detected CUDA PyTorch overlay in env`);
   }
 
   let state: ComponentState;

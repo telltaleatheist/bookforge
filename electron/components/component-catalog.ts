@@ -14,6 +14,7 @@ import { getE2aPath } from '../tool-paths';
 import { voiceComponents } from './voice-components';
 import { languagePackComponents } from './language-pack-components';
 import { llamaCudaComponent } from './llama-cuda';
+import { cudaTtsComponent } from './cuda-tts';
 import type {
   OptionalComponent,
   ComponentArtifact,
@@ -213,6 +214,7 @@ export const CATALOG: OptionalComponent[] = [
   tesseract,
   orpheus,
   llamaCudaComponent(),
+  cudaTtsComponent(),
   ...voiceComponents(),
   ...languagePackComponents(),
 ];

@@ -129,6 +129,9 @@ export class SetupDownloadService {
   // ── Runner ─────────────────────────────────────────────────────────────────
 
   private needsEngine(id: string): boolean {
+    // CUDA TTS pip-installs PyTorch into the bundled env, so the env must be
+    // unpacked first (same gating as voices/language packs that spawn its python).
+    if (id === 'cuda-tts') return true;
     const kind = this.components.components().find((c) => c.component.id === id)?.component.kind;
     return kind === 'tts-model' || kind === 'language-pack';
   }

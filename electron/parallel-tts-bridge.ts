@@ -67,6 +67,24 @@ function writeWorkerLog(line: string): void {
 }
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import * as manifestService from './manifest-service';
+import { isCudaTtsInstalled } from './components/cuda-tts';
+
+/**
+ * Map a UI device ('gpu'|'mps'|'cpu') to e2a's CLI device (CUDA/MPS/CPU).
+ *
+ * There is no device picker in the main flow — config.device defaults to 'cpu'
+ * everywhere. Installing the GPU TTS pack (cuda-tts) overlays CUDA PyTorch into
+ * the env AND is the user's explicit opt-in to GPU, so when it's present we
+ * upgrade those default-CPU jobs to CUDA. (Streaming already auto-detects via
+ * torch.cuda.is_available; this brings the job path in line.) An explicit 'gpu'
+ * or 'mps' choice is always honored as-is.
+ */
+function resolveTtsDeviceArg(uiDevice: string): string {
+  const mapped = ({ gpu: 'CUDA', mps: 'MPS', cpu: 'CPU' } as Record<string, string>)[uiDevice]
+    || uiDevice.toUpperCase();
+  if (mapped === 'CPU' && isCudaTtsInstalled()) return 'CUDA';
+  return mapped;
+}
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 
 /**
@@ -1690,9 +1708,9 @@ export async function prepareSession(
     sessionDirForReading = sessionDir;
   }
 
-  // Map UI device names to e2a CLI device names (app.py expects uppercase)
-  const deviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
-  const deviceArg = deviceMap[settings.device] || settings.device.toUpperCase();
+  // Map UI device names to e2a CLI device names (app.py expects uppercase);
+  // upgrades default-CPU to CUDA when the GPU TTS pack is installed.
+  const deviceArg = resolveTtsDeviceArg(settings.device);
 
   const args = [
     ...pythonInvocation(settings.ttsEngine).args,
@@ -1993,9 +2011,9 @@ function startWorker(
   if (useLightweightWorker) {
     // Use worker.py - lightweight entry point with minimal imports
     const workerPath = path.join(getDefaultE2aPath(), 'worker.py');
-    // worker.py argparser expects uppercase device names: CPU, MPS, CUDA
-    const deviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
-    const deviceArg = deviceMap[settings.device] || settings.device.toUpperCase();
+    // worker.py argparser expects uppercase device names: CPU, MPS, CUDA;
+    // upgrades default-CPU to CUDA when the GPU TTS pack is installed.
+    const deviceArg = resolveTtsDeviceArg(settings.device);
     args = [
       ...pythonInvocation(settings.ttsEngine).args,
       workerPath,
@@ -2042,9 +2060,9 @@ function startWorker(
   } else {
     // Use app.py with --worker_mode - full imports but same functionality
     const appPath = path.join(getDefaultE2aPath(), 'app.py');
-    // Map UI device names to e2a CLI device names (app.py expects uppercase)
-    const appDeviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
-    const appDeviceArg = appDeviceMap[settings.device] || settings.device.toUpperCase();
+    // Map UI device names to e2a CLI device names (app.py expects uppercase);
+    // upgrades default-CPU to CUDA when the GPU TTS pack is installed.
+    const appDeviceArg = resolveTtsDeviceArg(settings.device);
     args = [
       ...pythonInvocation(settings.ttsEngine).args,
       appPath,

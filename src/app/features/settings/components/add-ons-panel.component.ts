@@ -66,11 +66,14 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
               </div>
             </div>
 
-            <!-- Detected-GPU explainer for the CUDA acceleration pack -->
-            @if (status.component.id === 'llama-cuda' && status.state !== 'incompatible' && gpuName(); as gpu) {
+            <!-- Detected-GPU explainer for the CUDA acceleration packs -->
+            @if (isCudaPack(status.component.id) && status.state !== 'incompatible' && gpuName(); as gpu) {
               <div class="gpu-explainer">
                 <span class="gpu-spark">⚡</span>
-                We found your <strong>{{ gpu }}</strong> — add GPU acceleration to run on-device AI cleanup much faster.
+                We found your <strong>{{ gpu }}</strong> —
+                {{ status.component.id === 'cuda-tts'
+                   ? 'add GPU acceleration to generate audiobook narration much faster.'
+                   : 'add GPU acceleration to run on-device AI cleanup much faster.' }}
               </div>
             }
 
@@ -554,6 +557,11 @@ export class AddOnsPanelComponent implements OnInit {
       .filter(c => c.component.acquisition.includes('managed'))
       .map(c => c.component.id)),
   );
+
+  /** The CUDA download-on-demand packs (llama LLM + XTTS PyTorch). */
+  isCudaPack(id: string): boolean {
+    return id === 'llama-cuda' || id === 'cuda-tts';
+  }
 
   /** The detected GPU name, for the CUDA pack's explainer line. */
   readonly gpuName = computed(() => {
