@@ -381,7 +381,9 @@ import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
                   </div>
                 </div>
 
-                <!-- Streaming Engine -->
+                <!-- Streaming Engine: parallel workers only help on macOS; on
+                     CUDA/NVIDIA the engine serializes to 1 worker, so hide it. -->
+                @if (isMac()) {
                 <div class="settings-group">
                   <h4>Streaming Engine</h4>
 
@@ -413,6 +415,7 @@ import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
                     </div>
                   </div>
                 </div>
+                }
 
                 <div class="save-section">
                   <desktop-button variant="primary" size="md" (click)="saveTtsServer()" [disabled]="!ttsServerDirty() || ttsApiSaving()">
@@ -1832,6 +1835,10 @@ export class SettingsComponent implements OnInit {
   readonly wslVerifying = signal(false);
   readonly wslSaving = signal(false);
   readonly isWindows = signal(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('win'));
+  // Parallel XTTS workers only help on macOS (CPU/MPS). On CUDA/NVIDIA the engine
+  // serializes to 1 worker — extra workers just contend for the GPU — so the
+  // setting is hidden off-Mac.
+  readonly isMac = signal(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac'));
 
   // Combine built-in and plugin sections
   readonly allSections = computed(() => {

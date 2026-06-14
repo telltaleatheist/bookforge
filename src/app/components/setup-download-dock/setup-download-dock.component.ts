@@ -1,4 +1,4 @@
-import { Component, computed, inject, ChangeDetectionStrategy } from '@angular/core';
+import { Component, computed, inject, signal, HostListener, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 
 import { SetupDownloadService } from '../../core/services/setup-download.service';
@@ -18,10 +18,11 @@ import { ComponentService } from '../../core/services/component.service';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (svc.visible()) {
-      <div class="dock" [class.expanded]="svc.expanded()">
-        <!-- Header / collapsed pill -->
-        <button class="dock-head" (click)="svc.expanded() ? svc.collapse() : svc.expand()"
-                [title]="svc.expanded() ? 'Collapse' : 'Expand downloads'">
+      <div class="dock" [class.expanded]="svc.expanded()" [class.dragging]="dragging()"
+           [style.right.px]="pos().right" [style.bottom.px]="pos().bottom">
+        <!-- Header / collapsed pill — also the drag handle -->
+        <button class="dock-head" (pointerdown)="onDragStart($event)" (click)="onHeadClick()"
+                [title]="svc.expanded() ? 'Collapse (drag to move)' : 'Expand downloads (drag to move)'">
           @if (svc.phase() === 'running') {
             <span class="dock-spinner"></span>
           } @else if (allDone()) {
@@ -79,8 +80,6 @@ import { ComponentService } from '../../core/services/component.service';
   styles: [`
     .dock {
       position: fixed;
-      right: 16px;
-      bottom: 16px;
       z-index: 9000;
       width: 300px;
       max-width: calc(100vw - 32px);
@@ -106,6 +105,9 @@ import { ComponentService } from '../../core/services/component.service';
       text-align: left;
     }
     .dock-head:hover { background: var(--bg-hover, rgba(255,255,255,0.05)); }
+    .dock-head { cursor: grab; touch-action: none; }
+    .dock.dragging .dock-head { cursor: grabbing; }
+    .dock.dragging { user-select: none; }
 
     .dock-title { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .dock-chevron { color: var(--text-tertiary, #888); flex-shrink: 0; }
@@ -169,6 +171,46 @@ import { ComponentService } from '../../core/services/component.service';
 export class SetupDownloadDockComponent {
   readonly svc = inject(SetupDownloadService);
   private readonly components = inject(ComponentService);
+
+  // Draggable position (distance from the bottom-right corner, px).
+  readonly pos = signal({ right: 16, bottom: 16 });
+  readonly dragging = signal(false);
+  private dragOrigin = { x: 0, y: 0, right: 16, bottom: 16 };
+  private moved = false;
+
+  onDragStart(event: PointerEvent): void {
+    this.dragging.set(true);
+    this.moved = false;
+    const p = this.pos();
+    this.dragOrigin = { x: event.clientX, y: event.clientY, right: p.right, bottom: p.bottom };
+  }
+
+  @HostListener('document:pointermove', ['$event'])
+  onPointerMove(event: PointerEvent): void {
+    if (!this.dragging()) return;
+    const dx = event.clientX - this.dragOrigin.x;
+    const dy = event.clientY - this.dragOrigin.y;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) this.moved = true;
+    // Anchored bottom-right, so dragging right/down DECREASES the offsets.
+    const maxRight = Math.max(0, window.innerWidth - 80);
+    const maxBottom = Math.max(0, window.innerHeight - 60);
+    this.pos.set({
+      right: Math.min(maxRight, Math.max(0, this.dragOrigin.right - dx)),
+      bottom: Math.min(maxBottom, Math.max(0, this.dragOrigin.bottom - dy)),
+    });
+  }
+
+  @HostListener('document:pointerup')
+  onPointerUp(): void {
+    this.dragging.set(false);
+  }
+
+  /** A click that wasn't a drag toggles expand/collapse. */
+  onHeadClick(): void {
+    if (this.moved) { this.moved = false; return; }
+    if (this.svc.expanded()) this.svc.collapse();
+    else this.svc.expand();
+  }
 
   /** All batch items finished successfully. */
   readonly allDone = computed(() =>

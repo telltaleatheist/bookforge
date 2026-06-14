@@ -24,6 +24,9 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
       <div class="panel-header">
         <h4>Translation</h4>
         <p>Translate to English (auto-detects source language).</p>
+        <button type="button" class="add-langs-btn" (click)="openLanguages()">
+          + Add more languages
+        </button>
       </div>
 
       <!-- Workflow Note -->
@@ -160,6 +163,19 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
         font-size: 0.8125rem;
         color: var(--text-secondary);
       }
+    }
+
+    .add-langs-btn {
+      margin-top: 0.5rem;
+      padding: 0.25rem 0.6rem;
+      font-size: 0.75rem;
+      background: transparent;
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      color: var(--accent);
+      cursor: pointer;
+
+      &:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: var(--accent); }
     }
 
     .workflow-note {
@@ -518,6 +534,11 @@ export class TranslationPanelComponent implements OnInit {
 
   goToSettings(): void {
     this.router.navigate(['/settings']);
+  }
+
+  /** Jump to Settings → Languages to download more source-language packs. */
+  openLanguages(): void {
+    this.router.navigate(['/settings'], { queryParams: { section: 'languages' } });
   }
 
   async addToQueue(): Promise<void> {
