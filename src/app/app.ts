@@ -256,6 +256,14 @@ export class App implements OnInit {
       icon: '\u{2699}', // Gear emoji
       label: 'Settings',
       route: '/settings'
+    },
+    {
+      // Reopen the guided setup (AI, voices, language packs, optional tools) to
+      // add or remove components without digging through the Settings panels.
+      id: 'setup',
+      icon: '\u{1F9F0}', // Toolbox emoji
+      label: 'Setup',
+      route: '/setup'
     }
     // AI Setup is reached from Settings → AI and from first-run onboarding /
     // the cleanup-page overlay — intentionally not a top-level nav item.
