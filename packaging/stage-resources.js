@@ -238,23 +238,19 @@ if (seedModels) {
     });
   }
 
-  // Stanza sentence-segmentation models for the seed languages. Defaults to the
-  // common language-learning set (English, German, Spanish) so those work
-  // offline out of the box; override with BOOKFORGE_SEED_STANZA="en,de,fr,…".
-  // NOTE: stanza loads with REUSE_RESOURCES (no auto-download), so a language not
-  // bundled here will NOT silently fetch — it must be added to this list and be
-  // present in the source models/stanza dir at stage time.
-  const seedLangs = (process.env.BOOKFORGE_SEED_STANZA || 'en,de,es')
+  // Stanza language packs: seed ONLY English (the universal source language and
+  // the TTS segmentation default), so a fresh install can clean/narrate English
+  // offline. Every OTHER language is a user download via Settings → Languages
+  // (download_model.py --engine stanza → models/stanza/<lang>). Override the seed
+  // set with BOOKFORGE_SEED_STANZA="en,de,…" if a build needs more.
+  const seedLangs = (process.env.BOOKFORGE_SEED_STANZA || 'en')
     .split(',').map((s) => s.trim()).filter(Boolean);
   const stanzaSrc = path.join(e2aSource, 'models', 'stanza');
   const stanzaDest = path.join(snapshotDest, 'models', 'stanza');
   // e2a's pipeline loads ONLY processors='tokenize,ner,mwt' (lib/core.py), and
-  // the default NER (ontonotes-ww-multi_charlm) pulls a pretrain + forward/
-  // backward charlm. So ship just those processor dirs + the dependency closure
-  // and drop the rest of the full pack (default.zip, depparse, pos, lemma,
-  // constituency, sentiment) — ~0.9 GB saved on the English pack alone. A
-  // language not in year_to_decades_languages never loads stanza, but the same
-  // minimal set is correct for every seeded lang.
+  // the default NER pulls a pretrain + forward/backward charlm. Ship just those
+  // processor dirs + the dependency closure; drop the rest of the full pack
+  // (default.zip, depparse, pos, lemma, constituency, sentiment) — ~0.9 GB saved.
   const STANZA_KEEP = new Set([
     'tokenize', 'mwt', 'ner', 'pretrain', 'forward_charlm', 'backward_charlm',
   ]);
@@ -270,8 +266,7 @@ if (seedModels) {
           mode: CLONE,
           // Keep only the processor dirs the pipeline actually loads + their
           // dependency models. (Strip the Windows \\?\ prefix first, or the
-          // relative-path test silently passes everything — see the snapshot
-          // filter above.)
+          // relative-path test silently passes everything.)
           filter: (src) => {
             const rel = path.relative(s, stripNamespacePrefix(src));
             if (!rel) return true; // the lang dir root itself
