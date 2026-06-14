@@ -263,13 +263,6 @@ export class App implements OnInit {
 
   ngOnInit() {
     this.themeService.initializeTheme();
-
-    // TEMP (dev): always land on the guided first-run setup at startup so we can
-    // iterate on it without resetting onboarding state. Remove once the flow is
-    // finalized — normal behavior routes to /setup only from onboarding complete.
-    if (!this.isStandaloneWindow()) {
-      void this.router.navigate(['/setup']);
-    }
   }
 
   async onOnboardingComplete(): Promise<void> {
