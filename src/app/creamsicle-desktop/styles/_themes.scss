@@ -40,6 +40,20 @@ $cyan-900: #164e63;
   --accent-danger: #{$error-500};
   --bg-hover: rgba(24, 23, 21, 0.04);
 
+  // Legacy --color-* names used by many feature components (buttons, modals).
+  // Undefined before, they resolved to nothing — e.g. the Import button was a
+  // transparent box with white text, invisible on a light surface. Map them onto
+  // the canonical palette so they work in both themes.
+  --color-primary: var(--accent);
+  --color-primary-hover: var(--accent-hover);
+  --color-primary-bg: var(--accent-subtle);
+  --color-accent: var(--accent);
+  --color-error: var(--accent-danger);
+  --color-danger: var(--accent-danger);
+  --color-error-bg: color-mix(in srgb, var(--accent-danger) 12%, transparent);
+  --color-info: var(--accent);
+  --color-info-bg: var(--accent-subtle);
+
   // -------------------------------------------------------------------------
   // Background Layers
   // -------------------------------------------------------------------------
@@ -158,6 +172,17 @@ $cyan-900: #164e63;
   --accent-primary: #{$cyan-400};
   --accent-danger: #f87171;
   --bg-hover: rgba(255, 255, 255, 0.05);
+
+  // Legacy --color-* names (see light theme) mapped onto the dark palette.
+  --color-primary: var(--accent);
+  --color-primary-hover: var(--accent-hover);
+  --color-primary-bg: var(--accent-subtle);
+  --color-accent: var(--accent);
+  --color-error: var(--accent-danger);
+  --color-danger: var(--accent-danger);
+  --color-error-bg: color-mix(in srgb, var(--accent-danger) 12%, transparent);
+  --color-info: var(--accent);
+  --color-info-bg: var(--accent-subtle);
 
   // -------------------------------------------------------------------------
   // Background Layers

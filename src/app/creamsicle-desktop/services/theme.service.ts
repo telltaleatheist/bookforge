@@ -10,8 +10,11 @@ export class DesktopThemeService {
   private readonly STORAGE_KEY = 'creamsicle-desktop-theme';
   private readonly SIZE_STORAGE_KEY = 'creamsicle-desktop-ui-size';
 
-  currentTheme = signal<DesktopTheme>('system');
-  resolvedTheme = signal<'light' | 'dark'>('light');
+  // Dark by default — the app's UI is designed dark-first, and several controls
+  // are only fully legible there. A returning user's saved choice (incl. 'system'
+  // or 'light') still wins via initializeTheme().
+  currentTheme = signal<DesktopTheme>('dark');
+  resolvedTheme = signal<'light' | 'dark'>('dark');
   uiSize = signal<UiSize>('large');
 
   private mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
