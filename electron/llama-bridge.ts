@@ -37,6 +37,7 @@ export interface LocalModelInfo {
   url: string;
   sizeGB: number;
   minRAM: number;        // GB of (V)RAM the quant comfortably needs
+  layers: number;        // transformer block count — for VRAM-aware partial GPU offload
   description: string;
   downloaded: boolean;   // filled in by listModels()
   isActive: boolean;     // filled in by listModels()
@@ -55,6 +56,7 @@ const COGITO_MODELS: CatalogEntry[] = [
     url: `${HF}/deepcogito_cogito-v1-preview-llama-3B-GGUF/resolve/main/deepcogito_cogito-v1-preview-llama-3B-Q4_K_M.gguf`,
     sizeGB: 2.24,
     minRAM: 4,
+    layers: 28,
     description: 'Lightweight and fast. Works on most GPUs (4GB+) or CPU.',
   },
   {
@@ -64,6 +66,7 @@ const COGITO_MODELS: CatalogEntry[] = [
     url: `${HF}/deepcogito_cogito-v1-preview-llama-8B-GGUF/resolve/main/deepcogito_cogito-v1-preview-llama-8B-Q4_K_M.gguf`,
     sizeGB: 4.92,
     minRAM: 6,
+    layers: 32,
     description: 'Good balance of quality and speed. Great on 6GB+ GPU.',
   },
   {
@@ -73,6 +76,7 @@ const COGITO_MODELS: CatalogEntry[] = [
     url: `${HF}/deepcogito_cogito-v1-preview-qwen-14B-GGUF/resolve/main/deepcogito_cogito-v1-preview-qwen-14B-Q4_K_M.gguf`,
     sizeGB: 8.99,
     minRAM: 10,
+    layers: 48,
     description: 'Higher quality results. Runs on 10GB+ GPU or 16GB+ RAM.',
   },
   {
@@ -82,6 +86,7 @@ const COGITO_MODELS: CatalogEntry[] = [
     url: `${HF}/deepcogito_cogito-v1-preview-qwen-32B-GGUF/resolve/main/deepcogito_cogito-v1-preview-qwen-32B-Q4_K_M.gguf`,
     sizeGB: 19.85,
     minRAM: 24,
+    layers: 64,
     description: 'Best quality. Needs a 24GB+ GPU or a 32GB+ unified-memory Mac.',
   },
 ];
@@ -441,13 +446,52 @@ class LlamaServer {
     }
   }
 
-  private spawnServer(binary: string, modelPath: string, modelId: string): Promise<void> {
+  /**
+   * Decide how many transformer layers to offload to the GPU.
+   *
+   * Blindly passing `-ngl 99` (offload everything) is the AI-cleanup bug on small
+   * GPUs: a model larger than VRAM doesn't error — NVIDIA's "CUDA sysmem fallback"
+   * silently spills the overflow into system RAM over PCIe, so the model "loads"
+   * but generation crawls and returns EMPTY text (cleanup then no-ops / errors).
+   * Instead, offload only as many layers as actually fit in VRAM and run the rest
+   * on the CPU. Apple Silicon shares memory with Metal, so it still offloads all.
+   */
+  private async computeNgl(modelId: string): Promise<{ ngl: number; note: string }> {
+    if (process.platform === 'darwin') return { ngl: 99, note: 'Metal (unified memory): full offload' };
+
+    const info = await systemInfo();
+    if (!info.cuda || !info.vramGB || info.vramGB < 4) {
+      return { ngl: 0, note: 'no usable GPU → CPU' };
+    }
+
+    const entry = COGITO_MODELS.find((m) => m.id === modelId);
+    const sizeGB = entry?.sizeGB ?? 0;
+    const layers = entry?.layers ?? 0;
+    const vram = info.vramGB;
+    const HEADROOM_GB = 1.5; // display + KV cache (8K ctx) + compute buffers
+    const budget = vram - HEADROOM_GB;
+
+    if (sizeGB > 0 && sizeGB <= budget) {
+      return { ngl: 99, note: `full offload (${sizeGB}GB fits in ${vram}GB VRAM)` };
+    }
+    if (layers > 0 && budget > 0 && sizeGB > 0) {
+      const n = Math.max(0, Math.min(layers, Math.floor(layers * (budget / sizeGB))));
+      if (n >= layers) return { ngl: 99, note: 'full offload' };
+      if (n <= 0) return { ngl: 0, note: `${sizeGB}GB model too big for ${vram}GB VRAM → CPU` };
+      return { ngl: n, note: `partial offload ${n}/${layers} layers (${sizeGB}GB model, ${vram}GB VRAM)` };
+    }
+    return { ngl: 0, note: `model exceeds ${vram}GB VRAM budget → CPU` };
+  }
+
+  private async spawnServer(binary: string, modelPath: string, modelId: string): Promise<void> {
+    const { ngl, note } = await this.computeNgl(modelId);
+    console.log(`[llama] GPU offload for ${modelId}: -ngl ${ngl} (${note})`);
     return new Promise<void>((resolve, reject) => {
       const args = [
         '-m', modelPath,
         '--port', String(this.port),
         '-c', '8192',          // context window
-        '-ngl', '99',          // offload all layers to GPU/Metal where present
+        '-ngl', String(ngl),   // VRAM-aware offload (see computeNgl) — avoids OOM-to-sysmem
         '--threads', '4',
       ];
 
@@ -573,9 +617,18 @@ class LlamaServer {
       if (!res.ok) {
         throw new Error(`llama-server HTTP ${res.status}`);
       }
-      const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-      const text = data.choices?.[0]?.message?.content ?? '';
-      if (!text) throw new Error('llama-server returned no text');
+      const data = await res.json() as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }> };
+      const choice = data.choices?.[0];
+      const text = choice?.message?.content ?? '';
+      if (!text) {
+        // Empty output despite a 200 is the classic VRAM-overflow symptom: the
+        // model spilled into shared system memory and generated nothing usable.
+        const reason = choice?.finish_reason ? ` (finish_reason: ${choice.finish_reason})` : '';
+        throw new Error(
+          `The local AI model produced no text${reason}. This usually means the model is too large ` +
+          `for your GPU — pick a smaller Cogito model in AI Setup (its recommendation fits your hardware).`,
+        );
+      }
       this.touch();
       return text;
     } catch (err) {
