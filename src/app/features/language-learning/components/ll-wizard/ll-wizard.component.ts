@@ -435,33 +435,8 @@ interface SourceStage {
                 <span class="value">{{ getLanguageName(detectedSourceLang()) }}</span>
               </div>
 
-              <!-- Language packs needed for the selected languages → inline gate,
-                   the translation analog of the cleanup step's AI layover. -->
-              @if (missingLanguagePacks().length > 0) {
-                <div class="lang-gate">
-                  <div class="lang-gate-head">
-                    <span class="lang-gate-icon">🌍</span>
-                    <div>
-                      <h4>Language packs needed</h4>
-                      <p>Cleanup &amp; translation segment text per language. These languages don’t have a segmentation pack yet — download them so processing works offline.</p>
-                    </div>
-                  </div>
-                  <div class="lang-gate-list">
-                    @for (lang of missingLanguagePacks(); track lang.code) {
-                      <div class="lang-gate-row">
-                        <span class="lang-gate-name">{{ lang.name }}</span>
-                        @if (lang.installing) {
-                          <div class="lang-gate-progress"><div class="lang-gate-bar" [style.width.%]="lang.pct"></div></div>
-                          <button class="lang-gate-btn ghost" (click)="langPacks.cancel(lang.code)">Cancel</button>
-                        } @else {
-                          <button class="lang-gate-btn" [disabled]="langPacks.isBusy(lang.code)" (click)="langPacks.install(lang.code)">Download</button>
-                        }
-                      </div>
-                    }
-                  </div>
-                  <button class="lang-gate-link" (click)="openLanguageSettings()">Manage all languages…</button>
-                </div>
-              }
+              <!-- Translation here is the AI's job and needs no Stanza pack — the
+                   segmentation-pack gate lives on the TTS step (narration). -->
 
               @if (translateMode() === 'sentence') {
                 <!-- Target Language Multi-Select Grid -->
@@ -555,6 +530,35 @@ interface SourceStage {
                   Configure voice synthesis for each language. Each row becomes a separate TTS job.
                 }
               </p>
+
+              <!-- Stanza segmentation packs for the NARRATION languages. Translation
+                   itself is the AI's job (no stanza); sentence segmentation for TTS
+                   needs the pack. Only genuinely-missing packs appear here. -->
+              @if (missingTtsLanguagePacks().length > 0) {
+                <div class="lang-gate">
+                  <div class="lang-gate-head">
+                    <span class="lang-gate-icon">🌍</span>
+                    <div>
+                      <h4>Language pack needed for narration</h4>
+                      <p>TTS splits text into sentences per language using a Stanza pack. Download the pack(s) for the language(s) you’re narrating so it works offline.</p>
+                    </div>
+                  </div>
+                  <div class="lang-gate-list">
+                    @for (lang of missingTtsLanguagePacks(); track lang.code) {
+                      <div class="lang-gate-row">
+                        <span class="lang-gate-name">{{ lang.name }}</span>
+                        @if (lang.installing) {
+                          <div class="lang-gate-progress"><div class="lang-gate-bar" [style.width.%]="lang.pct"></div></div>
+                          <button class="lang-gate-btn ghost" (click)="langPacks.cancel(lang.code)">Cancel</button>
+                        } @else {
+                          <button class="lang-gate-btn" [disabled]="langPacks.isBusy(lang.code)" (click)="langPacks.install(lang.code)">Download</button>
+                        }
+                      </div>
+                    }
+                  </div>
+                  <button class="lang-gate-link" (click)="openLanguageSettings()">Manage all languages…</button>
+                </div>
+              }
 
               <!-- Continue / New Toggle -->
               <div class="config-section">
@@ -2435,19 +2439,23 @@ export class LLWizardComponent implements OnInit {
   protected readonly langPacks = inject(LanguagePackService);
 
   /**
-   * Languages the Translate step needs a Stanza pack for (source + selected
-   * targets) that aren't installed yet. Drives the inline language gate — the
-   * translation analog of the cleanup step's "AI isn't set up" layover.
+   * Languages the TTS step needs a Stanza segmentation pack for, that aren't
+   * installed yet. TTS narrates per language and segments text with Stanza;
+   * translation itself is the AI's job and needs no pack, so this gate lives on
+   * the TTS step (whole-book: the narration language; sentence: each row's
+   * language). Installed packs (bundled OR downloaded) are skipped, so an
+   * already-present pack is never re-prompted.
    */
-  readonly missingLanguagePacks = computed(() => {
+  readonly missingTtsLanguagePacks = computed(() => {
     if (!this.langPacks.checkedOnce()) return [];
     const needed = new Set<string>();
-    const src = this.detectedSourceLang();
-    if (src) needed.add(src);
     if (this.translateMode() === 'sentence') {
-      for (const c of this.targetLangs()) needed.add(c);
-    } else if (this.monoTargetLang()) {
-      needed.add(this.monoTargetLang());
+      for (const row of this.ttsLanguageRows()) {
+        if (row.language) needed.add(row.language);
+      }
+    } else {
+      const lang = this.monoTtsLanguage();
+      if (lang) needed.add(lang);
     }
     const out: { code: string; name: string; installing: boolean; pct: number }[] = [];
     for (const code of needed) {
