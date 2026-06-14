@@ -110,14 +110,18 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  AppData, LocalData, Library, KeptMsg: String;
+  AppData, LocalData, Logs, Library, KeptMsg: String;
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
 
-  AppData   := ExpandConstant('{userappdata}\{#MyAppName}');
-  LocalData := ExpandConstant('{localappdata}\{#MyAppName}');
-  Library   := ExpandConstant('{userdocs}\{#MyAppName}');
+  { Electron's userData uses the package name ("bookforge-app"), NOT the product
+    name — that's where models/engine/components/settings live. The file logger
+    uses a separate "BookForgeApp" folder. The user's library is Documents\BookForge. }
+  AppData   := ExpandConstant('{userappdata}\bookforge-app');
+  LocalData := ExpandConstant('{localappdata}\bookforge-app');
+  Logs      := ExpandConstant('{userappdata}\BookForgeApp');
+  Library   := ExpandConstant('{userdocs}\BookForge');
 
   if DirExists(Library) then
     KeptMsg := 'Your audiobook library (your imported books, projects, and finished audiobooks) will be KEPT at:' + #13#10 + Library
@@ -131,5 +135,6 @@ begin
   begin
     RemoveTreeIfExists(AppData);
     RemoveTreeIfExists(LocalData);
+    RemoveTreeIfExists(Logs);
   end;
 end;

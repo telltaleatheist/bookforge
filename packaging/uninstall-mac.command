@@ -14,13 +14,15 @@
 
 set -u
 
+# Electron's userData uses the package name ("bookforge-app"), not the product
+# name; the file logger uses "BookForgeApp". The .app bundle is "BookForge".
 APP="/Applications/BookForge.app"
-SUPPORT="$HOME/Library/Application Support/BookForge"
-CACHE1="$HOME/Library/Caches/BookForge"
+SUPPORT="$HOME/Library/Application Support/bookforge-app"
+CACHE1="$HOME/Library/Caches/bookforge-app"
 CACHE2="$HOME/Library/Caches/com.bookforge.app"
 PREFS="$HOME/Library/Preferences/com.bookforge.app.plist"
 STATE="$HOME/Library/Saved Application State/com.bookforge.app.savedState"
-LOGS="$HOME/Library/Logs/BookForge"
+LOGS="$HOME/Library/Logs/BookForgeApp"
 LIBRARY="$HOME/Documents/BookForge"
 
 TARGETS=("$APP" "$SUPPORT" "$CACHE1" "$CACHE2" "$PREFS" "$STATE" "$LOGS")

@@ -1848,6 +1848,23 @@ function setupIpcHandlers(): void {
         fsSync.rmSync(p, { recursive: true, force: true });
       } catch { /* in-use file (logs/leveldb) — best effort; uninstaller mops up */ }
     }
+
+    // Also remove the file-logger dir (a separate "BookForgeApp" folder, not
+    // userData) and any Local-appdata cache.
+    const extras: string[] = [];
+    if (process.platform === 'win32') {
+      extras.push(path.join(app.getPath('appData'), 'BookForgeApp'));
+      if (process.env.LOCALAPPDATA) extras.push(path.join(process.env.LOCALAPPDATA, 'bookforge-app'));
+    } else if (process.platform === 'darwin') {
+      extras.push(path.join(app.getPath('home'), 'Library', 'Logs', 'BookForgeApp'));
+    }
+    for (const p of extras) {
+      try {
+        freedBytes += dirSizeBytes(p);
+        fsSync.rmSync(p, { recursive: true, force: true });
+      } catch { /* best effort */ }
+    }
+
     return { ok: true, freedBytes, userData, platform: process.platform };
   });
 
