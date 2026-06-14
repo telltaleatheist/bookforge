@@ -118,10 +118,10 @@ interface StreamCue {
             @if (author()) {
               <span class="header-author">{{ author() }}</span>
             }
-            @if (isGenerating()) {
-              <span class="generating-indicator">Generating…</span>
-            } @else if (serverLoading()) {
-              <span class="generating-indicator">{{ warmupLabel() }}</span>
+            @if (playStatus(); as st) {
+              <span class="status-pill" [class]="'status-pill ' + st.kind">
+                <span class="status-spinner"></span>{{ st.text }}
+              </span>
             }
           </div>
           <div class="header-right">
@@ -260,12 +260,12 @@ interface StreamCue {
             <button class="bar-btn" (click)="skipSentence(-1)" [disabled]="currentGlobalIndex() === 0" title="Previous sentence">⏮</button>
             <button
               class="bar-btn bar-btn-play"
-              [class.loading]="serverLoading() && !isPlaying()"
+              [class.loading]="transportBusy()"
               (click)="isPlaying() ? pause() : onPlayClicked()"
               [disabled]="chaptersLoading()"
-              [title]="serverLoading() && !isPlaying() ? 'Loading the voice model — playback starts once it finishes' : (isPlaying() ? 'Pause' : 'Play')"
+              [title]="transportBusy() ? (isBuffering() ? 'Buffering audio…' : 'Loading the voice model — playback starts once it finishes') : (isPlaying() ? 'Pause' : 'Play')"
             >
-              @if (serverLoading() && !isPlaying()) {
+              @if (transportBusy()) {
                 <span class="play-spinner"></span>
               } @else {
                 <span class="play-icon">{{ isPlaying() ? '⏸' : '▶' }}</span>
@@ -273,7 +273,7 @@ interface StreamCue {
             </button>
             <button class="bar-btn" (click)="skipSentence(1)" [disabled]="currentGlobalIndex() >= allCues().length - 1" title="Next sentence">⏭</button>
             <span class="buffer-ring-wrap" [title]="bufferTitle()">
-              <span class="buffer-ring" [style.background]="bufferRingBg()"></span>
+              <span class="buffer-ring" [class.buffering]="isBuffering()" [style.background]="bufferRingBg()"></span>
             </span>
           </div>
           <div class="speed-group">
@@ -484,13 +484,46 @@ interface StreamCue {
       content: '— ';
     }
 
-    .generating-indicator {
-      font-size: 11px;
-      color: var(--accent-primary);
-      margin-left: 10px;
-      animation: pulse 1s infinite;
+    /* Prominent playback-status pill (loading model / buffering / generating). */
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin-left: 12px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      vertical-align: middle;
+      color: #fff;
+      background: var(--accent, var(--accent-primary));
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent, var(--accent-primary)) 60%, transparent);
+      animation: statusPulse 1.6s ease-out infinite;
+    }
+    .status-pill.buffering {
+      background: #f59e0b;
+      box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.6);
+      animation: statusPulseAmber 1.6s ease-out infinite;
+    }
+    .status-spinner {
+      width: 11px;
+      height: 11px;
+      border: 2px solid rgba(255, 255, 255, 0.45);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
     }
 
+    @keyframes statusPulse {
+      0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent, var(--accent-primary)) 55%, transparent); }
+      70%  { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent, var(--accent-primary)) 0%, transparent); }
+      100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent, var(--accent-primary)) 0%, transparent); }
+    }
+    @keyframes statusPulseAmber {
+      0%   { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.55); }
+      70%  { box-shadow: 0 0 0 7px rgba(245, 158, 11, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+    }
     @keyframes pulse {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.5; }
@@ -956,6 +989,9 @@ interface StreamCue {
       mask: radial-gradient(circle, transparent 4.5px, #000 5px);
       transition: background 0.3s linear;
     }
+    .buffer-ring.buffering {
+      animation: pulse 1s ease-in-out infinite;
+    }
 
     .bar-btn {
       width: 28px;
@@ -1217,6 +1253,22 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   readonly isGenerating = signal(false);
   readonly selectedVoice = signal<string>('ScarlettJohansson');
   readonly selectedSpeed = signal<number>(1.25);
+
+  /** Audio playback is stalled waiting for buffer (initial fill or an underrun). */
+  readonly isBuffering = computed(() => this.playbackState() === 'buffering');
+
+  /** The single most relevant "please wait" status, shown prominently in the header. */
+  readonly playStatus = computed<{ text: string; kind: 'loading' | 'buffering' | 'generating' } | null>(() => {
+    if (this.serverLoading()) return { text: this.warmupLabel(), kind: 'loading' };
+    if (this.isBuffering()) return { text: 'Buffering…', kind: 'buffering' };
+    if (this.isGenerating()) return { text: 'Generating…', kind: 'generating' };
+    return null;
+  });
+
+  /** Spinner in the transport whenever we can't actually play yet (loading or buffering). */
+  readonly transportBusy = computed(() =>
+    this.isBuffering() || (this.serverLoading() && !this.isPlaying()),
+  );
 
   // The engine is spawning workers ('starting') or loading the voice model into
   // memory ('warming'). In both states it CANNOT generate yet, even though the

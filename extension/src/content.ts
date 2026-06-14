@@ -570,6 +570,9 @@ function renderBar(ui: UiState): void {
   barEls.rewind.disabled = p.position <= 0.3;
   barEls.forward.disabled = headroom <= (p.totalKnown ? 0.6 : 5.2);
   barEls.status.textContent = statusText(ui);
+  // Make working states (connecting / starting engine / buffering) obvious — a
+  // prominent amber pill with a spinner instead of subtle grey text.
+  barEls.status.classList.toggle('bfr-working', LOADING_STATES.has(p.state));
   const speedHeld = speedThumbHeld || Date.now() < speedHoldUntil;
   if (!speedHeld && Number(barEls.speed.value) !== p.rate) {
     barEls.speed.value = String(p.rate);
