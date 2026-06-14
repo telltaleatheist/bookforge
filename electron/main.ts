@@ -1778,6 +1778,24 @@ function setupIpcHandlers(): void {
     return { confirmed: result.response === 1 };
   });
 
+  // Native single-button message box — the app's replacement for window.alert().
+  ipcMain.handle('dialog:message', async (_event, options: {
+    title?: string;
+    message: string;
+    detail?: string;
+    type?: 'none' | 'info' | 'error' | 'question' | 'warning';
+  }) => {
+    if (!mainWindow) return;
+    await dialog.showMessageBox(mainWindow, {
+      type: options.type || 'info',
+      title: options.title || 'BookForge',
+      message: options.message,
+      detail: options.detail,
+      buttons: ['OK'],
+      defaultId: 0,
+    });
+  });
+
   // Projects folder management
   // Library folder structure - uses module-level getLibraryRoot()
 
@@ -4301,10 +4319,10 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('tts-stream:set-workers', async (_event, count: number) => {
+  ipcMain.handle('tts-stream:set-worker-config', async (_event, updates: { enabled?: boolean; count?: number }) => {
     try {
       const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      return { success: true, data: xttsWorkerPool.setStreamCpuWorkers(count) };
+      return { success: true, data: xttsWorkerPool.setStreamWorkerConfig(updates) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

@@ -475,7 +475,10 @@ export class SentenceAlignmentComponent implements OnInit, OnDestroy {
     // Validation: require at least 1 pair
     const nonEmptyPairs = this.pairs().filter(p => p.source.trim() && p.target.trim());
     if (nonEmptyPairs.length === 0) {
-      alert('At least one sentence pair is required.');
+      const message = 'At least one sentence pair is required.';
+      const dlg = (window as any).electron?.dialog;
+      if (dlg?.message) await dlg.message({ type: 'warning', message });
+      else alert(message);
       return;
     }
 

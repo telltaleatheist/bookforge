@@ -54,6 +54,7 @@
       details.engine summary::before { content: '▸ '; }
       details.engine[open] summary::before { content: '▾ '; }
       .field { margin: 10px 0 6px; }
+      .field.hidden { display: none; }
       .field label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 12px; opacity: 0.85; }
       .field select, .field input[type="number"] {
         width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px;
@@ -95,7 +96,7 @@
       <div class="field">
         <label for="workers">CPU workers</label>
         <div class="wrow">
-          <input id="workers" type="number" min="1" max="8" step="1" />
+          <input id="workers" type="number" min="1" max="4" step="1" />
           <button id="applyEngine">Restart to apply</button>
         </div>
         <div class="note" id="engineNote"></div>

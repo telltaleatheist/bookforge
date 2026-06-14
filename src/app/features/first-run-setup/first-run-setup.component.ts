@@ -6,6 +6,7 @@ import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 import { VoicesPanelComponent } from '../settings/components/voices-panel.component';
 import { LanguagesPanelComponent } from '../settings/components/languages-panel.component';
 import { AddOnsPanelComponent } from '../settings/components/add-ons-panel.component';
+import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
 import { AiService } from '../../core/services/ai.service';
 import { RuntimeService } from '../../core/services/runtime.service';
 import { ComponentService } from '../../core/services/component.service';
@@ -31,7 +32,8 @@ interface SetupStep {
     AiSetupWizardComponent,
     VoicesPanelComponent,
     LanguagesPanelComponent,
-    AddOnsPanelComponent
+    AddOnsPanelComponent,
+    MultiWorkerToggleComponent
   ],
   template: `
     <div class="setup-page">
@@ -120,6 +122,9 @@ interface SetupStep {
               <app-languages-panel [selectionMode]="true" />
             }
             @case ('tools') {
+              <div class="mw-setup-block">
+                <app-multi-worker-toggle />
+              </div>
               <app-add-ons-panel [selectionMode]="true" />
             }
             @case ('download') {
@@ -406,6 +411,12 @@ interface SetupStep {
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
+    }
+
+    .mw-setup-block {
+      padding-bottom: 16px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border-subtle, #2c2c2c);
     }
 
     .review { display: flex; flex-direction: column; gap: 12px; }

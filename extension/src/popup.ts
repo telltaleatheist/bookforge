@@ -117,18 +117,21 @@ function renderEngine(): void {
   if (sig !== voicesSig) { voicesSig = sig; buildVoiceOptions(voices); }
 
   const cuda = config?.device === 'cuda';
+  // Multiple workers are an opt-in capability set inside BookForge. When off (or
+  // on CUDA, where it's moot), the worker control is hidden — there's nothing to
+  // tune, the engine runs a single worker.
+  const tunable = !!config && config.enabled && !cuda;
   if (config) {
     workersEl.min = String(config.minWorkers);
     workersEl.max = String(config.maxWorkers);
-    // On CUDA the count is fixed at 1 (the GPU serializes decode), so show the
-    // effective count, not the editable CPU pref. Don't stomp a value being typed.
     if (document.activeElement !== workersEl) {
-      workersEl.value = String(cuda ? config.deviceWorkers : config.cpuWorkers);
+      workersEl.value = String(tunable ? config.count : config.deviceWorkers);
     }
   }
-  // CUDA has no tunable worker count — disable the field and the restart-to-apply.
-  workersEl.disabled = !config || cuda;
-  applyEngineBtn.disabled = !connected || !config || restarting || cuda;
+  workersEl.disabled = !tunable;
+  // Hide the whole worker row when there's nothing to tune.
+  workersEl.closest('.field')?.classList.toggle('hidden', !!config && !tunable);
+  applyEngineBtn.disabled = !connected || !tunable || restarting;
   voiceEl.disabled = !connected;
 
   if (restarting) {
@@ -142,7 +145,9 @@ function renderEngine(): void {
   setNote(
     cuda
       ? `${device}: one worker (the GPU serializes decode). ${active}.`
-      : `${device}: ${config.cpuWorkers} configured, ${active}. Range ${config.minWorkers}–${config.maxWorkers}. More is faster but uses more memory.`,
+      : !config.enabled
+        ? `${device}: single worker. ${active}. Enable multiple workers in BookForge if your machine benefits (mainly Apple Silicon).`
+        : `${device}: ${config.count} configured, ${active}. Range ${config.minWorkers}–${config.maxWorkers}. More is faster but uses more memory.`,
     ''
   );
 }
@@ -164,7 +169,7 @@ voiceEl.addEventListener('change', () => {
 applyEngineBtn.addEventListener('click', () => {
   const config = snapshot?.config;
   const min = config?.minWorkers ?? 1;
-  const max = config?.maxWorkers ?? 8;
+  const max = config?.maxWorkers ?? 4;
   const cpuWorkers = Math.min(max, Math.max(min, Math.round(Number(workersEl.value) || min)));
   workersEl.value = String(cpuWorkers);
   restarting = true;

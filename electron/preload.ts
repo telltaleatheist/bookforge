@@ -899,6 +899,12 @@ export interface ElectronAPI {
       cancelLabel?: string;
       type?: 'none' | 'info' | 'error' | 'question' | 'warning';
     }) => Promise<{ confirmed: boolean }>;
+    message: (options: {
+      title?: string;
+      message: string;
+      detail?: string;
+      type?: 'none' | 'info' | 'error' | 'question' | 'warning';
+    }) => Promise<void>;
   };
   projects: {
     ensureFolder: () => Promise<{ success: boolean; path?: string; error?: string }>;
@@ -1400,8 +1406,8 @@ export interface ElectronAPI {
     configure: (updates: { port?: number; host?: string }) => Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }>;
   };
   ttsStream: {
-    getWorkerConfig: () => Promise<{ success: boolean; data?: { cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number }; error?: string }>;
-    setWorkers: (count: number) => Promise<{ success: boolean; data?: { cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number }; error?: string }>;
+    getWorkerConfig: () => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; deviceWorkers: number; activeWorkers: number }; error?: string }>;
+    setWorkerConfig: (updates: { enabled?: boolean; count?: number }) => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; deviceWorkers: number; activeWorkers: number }; error?: string }>;
   };
   components: {
     list: () => Promise<ComponentStatus[]>;
@@ -2263,6 +2269,13 @@ const electronAPI: ElectronAPI = {
       type?: 'none' | 'info' | 'error' | 'question' | 'warning';
     }) =>
       ipcRenderer.invoke('dialog:confirm', options),
+    message: (options: {
+      title?: string;
+      message: string;
+      detail?: string;
+      type?: 'none' | 'info' | 'error' | 'question' | 'warning';
+    }) =>
+      ipcRenderer.invoke('dialog:message', options),
   },
   projects: {
     ensureFolder: () =>
@@ -2798,8 +2811,8 @@ const electronAPI: ElectronAPI = {
   ttsStream: {
     getWorkerConfig: () =>
       ipcRenderer.invoke('tts-stream:get-worker-config'),
-    setWorkers: (count: number) =>
-      ipcRenderer.invoke('tts-stream:set-workers', count),
+    setWorkerConfig: (updates: { enabled?: boolean; count?: number }) =>
+      ipcRenderer.invoke('tts-stream:set-worker-config', updates),
   },
   components: {
     list: () =>

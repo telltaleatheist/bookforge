@@ -24,19 +24,24 @@ export interface SpeakSettings {
 }
 
 /**
- * The server's tunable engine topology. `cpuWorkers` is the only knob (CUDA always
- * runs one worker — autoregressive decode serializes on the GPU). Worker-count
- * changes are persisted server-side and take effect on the next engine start, so
- * the client pairs them with an `engine.restart` to apply them now.
+ * The server's tunable engine topology. Multiple workers are an opt-in capability
+ * (`enabled`) the user turns on inside BookForge — when off, the engine always
+ * runs one worker. When on, `count` (1–4) is the knob; CUDA still runs one worker
+ * regardless (autoregressive decode serializes on the GPU). Worker-count changes
+ * are persisted server-side and take effect on the next engine start, so the
+ * client pairs them with an `engine.restart` to apply them now.
  */
 export interface ServerConfig {
-  cpuWorkers: number;
-  defaultCpuWorkers: number;
+  /** Multi-worker capability toggle, set inside BookForge (off ⇒ always 1 worker) */
+  enabled: boolean;
+  /** The chosen 1–4 count (remembered even while disabled) */
+  count: number;
+  defaultCount: number;
   minWorkers: number;
   maxWorkers: number;
   /** null until the engine first probes torch (non-mac); mac is always 'cpu' */
   device: 'cpu' | 'cuda' | null;
-  /** workers the active device will actually run: cpuWorkers on CPU, 1 on CUDA
+  /** workers the active device will actually run: count on CPU when enabled, else 1
    *  (the GPU serializes autoregressive decode). The knob is moot on CUDA. */
   deviceWorkers: number;
   /** workers currently alive — 0 when the engine is stopped */

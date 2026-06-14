@@ -11,11 +11,12 @@ import { AddOnsPanelComponent } from './components/add-ons-panel.component';
 import { VoicesPanelComponent } from './components/voices-panel.component';
 import { LanguagesPanelComponent } from './components/languages-panel.component';
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
+import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
 
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -381,41 +382,18 @@ import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
                   </div>
                 </div>
 
-                <!-- Streaming Engine: parallel workers only help on macOS; on
-                     CUDA/NVIDIA the engine serializes to 1 worker, so hide it. -->
-                @if (isMac()) {
+                <!-- Streaming Engine: multiple workers are a rare opt-in (only
+                     help on shared-memory Apple Silicon). The toggle persists
+                     itself and applies on the next engine start. -->
                 <div class="settings-group">
                   <h4>Streaming Engine</h4>
-
-                  <div class="field-row">
-                    <div class="field-info">
-                      <label class="field-label">XTTS Workers</label>
-                      <p class="field-description">
-                        Parallel TTS processes (~5 GB RAM each, default {{ ttsWorkerConfig()?.defaultCpuWorkers ?? 4 }}).
-                        Shared by all streaming playback — the Listen window, the browser extension, everything.
-                        Applies the next time the engine starts.
-                        @if (ttsWorkerConfig()?.device === 'cuda') {
-                          <strong>This machine runs on a CUDA GPU, which always uses 1 worker — this setting has no effect here.</strong>
-                        }
-                        @if ((ttsWorkerConfig()?.activeWorkers ?? 0) > 0 && ttsWorkerConfig()?.activeWorkers !== ttsWorkerConfig()?.cpuWorkers && ttsWorkerConfig()?.device !== 'cuda') {
-                          <strong>Engine is currently running with {{ ttsWorkerConfig()?.activeWorkers }} — stop and restart it to apply.</strong>
-                        }
-                      </p>
-                    </div>
-                    <div class="field-control">
-                      <input
-                        type="number"
-                        class="number-input"
-                        [value]="ttsWorkersView()"
-                        [min]="ttsWorkerConfig()?.minWorkers ?? 1"
-                        [max]="ttsWorkerConfig()?.maxWorkers ?? 8"
-                        (change)="updateTtsWorkers(+$any($event.target).value)"
-                        [disabled]="ttsApiSaving()"
-                      />
-                    </div>
-                  </div>
+                  <p class="field-description">
+                    Worker count is shared by all streaming playback — the Listen
+                    window, the browser extension, everything — and applies the next
+                    time the engine starts.
+                  </p>
+                  <app-multi-worker-toggle />
                 </div>
-                }
 
                 <div class="save-section">
                   <desktop-button variant="primary" size="md" (click)="saveTtsServer()" [disabled]="!ttsServerDirty() || ttsApiSaving()">
@@ -425,7 +403,7 @@ import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
                     <desktop-button variant="ghost" size="md" (click)="discardTtsServer()" [disabled]="ttsApiSaving()">
                       Discard
                     </desktop-button>
-                    <span class="unsaved-hint">Saving restarts the server; worker changes apply on next engine start</span>
+                    <span class="unsaved-hint">Saving restarts the server</span>
                   }
                 </div>
 
@@ -1783,22 +1761,17 @@ export class SettingsComponent implements OnInit {
   readonly ttsApiViewPort = computed(() => this.ttsApiDraft()?.port ?? this.ttsApiStatus()?.port ?? 8766);
   readonly ttsApiViewHost = computed(() => this.ttsApiDraft()?.host ?? this.ttsApiStatus()?.host ?? '127.0.0.1');
 
-  // Stream engine worker count (persisted main-process side in tts-stream.json)
-  readonly ttsWorkerConfig = signal<{ cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number } | null>(null);
-  readonly ttsWorkersDraft = signal<number | null>(null);
-  readonly ttsWorkersView = computed(() => this.ttsWorkersDraft() ?? this.ttsWorkerConfig()?.cpuWorkers ?? 4);
+  // The worker count is owned by <app-multi-worker-toggle> (WorkerConfigService),
+  // which persists itself immediately — so it's not part of this section's Save.
 
-  // Combined dirty flag for the TTS Server section's Save button
+  // Dirty flag for the TTS Server section's Save button (port/host only)
   readonly ttsServerDirty = computed(() => {
     const status = this.ttsApiStatus();
     const apiDraft = this.ttsApiDraft();
-    const apiChanged = !!apiDraft && (
+    return !!apiDraft && (
       (apiDraft.port !== undefined && apiDraft.port !== status?.port) ||
       (apiDraft.host !== undefined && apiDraft.host !== status?.host)
     );
-    const workersDraft = this.ttsWorkersDraft();
-    const workersChanged = workersDraft !== null && workersDraft !== this.ttsWorkerConfig()?.cpuWorkers;
-    return apiChanged || workersChanged;
   });
 
   // Tools section state. toolPathsConfig is the saved config; pending edits go
@@ -1863,7 +1836,7 @@ export class SettingsComponent implements OnInit {
     this.refreshBookshelfStatus();
     // Check TTS API server status
     this.refreshTtsApiStatus();
-    this.refreshTtsWorkerConfig();
+    // Worker config is owned by WorkerConfigService (via app-multi-worker-toggle)
     // Load tool paths
     this.refreshToolPaths();
     // Detect WSL on Windows
@@ -2235,18 +2208,6 @@ export class SettingsComponent implements OnInit {
           return;
         }
       }
-
-      // Worker count → applies on next engine start
-      const workers = this.ttsWorkersDraft();
-      if (workers !== null && workers !== this.ttsWorkerConfig()?.cpuWorkers) {
-        const result = await this.electronService.ttsStreamSetWorkers(workers);
-        if (result.success && result.data) {
-          this.ttsWorkerConfig.set(result.data);
-          this.ttsWorkersDraft.set(null);
-        } else {
-          this.ttsApiError.set(result.error || 'Failed to save worker count');
-        }
-      }
     } catch (err) {
       this.ttsApiError.set(err instanceof Error ? err.message : 'Failed to save TTS server settings');
     } finally {
@@ -2256,7 +2217,6 @@ export class SettingsComponent implements OnInit {
 
   discardTtsServer(): void {
     this.ttsApiDraft.set(null);
-    this.ttsWorkersDraft.set(null);
     this.ttsApiError.set(null);
   }
 
@@ -2267,25 +2227,6 @@ export class SettingsComponent implements OnInit {
     this.ttsApiCopied.set(true);
     if (this.ttsApiCopiedTimer) clearTimeout(this.ttsApiCopiedTimer);
     this.ttsApiCopiedTimer = setTimeout(() => this.ttsApiCopied.set(false), 2000);
-  }
-
-  async refreshTtsWorkerConfig(): Promise<void> {
-    try {
-      const result = await this.electronService.ttsStreamWorkerConfig();
-      if (result.success && result.data) {
-        this.ttsWorkerConfig.set(result.data);
-      }
-    } catch (err) {
-      console.error('Failed to get stream worker config:', err);
-    }
-  }
-
-  updateTtsWorkers(count: number): void {
-    const cfg = this.ttsWorkerConfig();
-    const min = cfg?.minWorkers ?? 1;
-    const max = cfg?.maxWorkers ?? 8;
-    if (!Number.isFinite(count) || count < min || count > max) return;
-    this.ttsWorkersDraft.set(count);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

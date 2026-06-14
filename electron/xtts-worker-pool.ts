@@ -91,58 +91,81 @@ const E2A_PATH = getDefaultE2aPath();
 // - CUDA: decode is autoregressive and serializes on the one GPU, so extra
 //   workers just fight over it and cost ~4 GB VRAM each. One worker
 //   saturates the device.
-const CPU_NUM_WORKERS = 4;
 const CUDA_NUM_WORKERS = 1;
 const THREADS_PER_WORKER = 4;
 
-// User override for the CPU worker count (Settings → TTS Server). Persisted in
-// userData/tts-stream.json. CUDA always runs 1 worker — the GPU serializes
-// autoregressive decode, so extra workers only cost VRAM. Changes apply the
-// next time the engine starts; a running pool is never resized.
+// Multi-worker is an opt-in capability (Settings → TTS Server, and first-run).
+// Parallel TTS workers each load their own model copy (~5 GB RAM) and only help
+// on shared-memory Apple Silicon — on a GPU the engine serializes to 1 worker,
+// and on most CPUs extra workers just oversubscribe the cores. So it's OFF by
+// default; when enabled, `count` (1–4) is the per-machine choice. Persisted in
+// userData/tts-stream.json. Changes apply the next time the engine starts; a
+// running pool is never resized. CUDA always runs 1 worker regardless.
 const MIN_CPU_WORKERS = 1;
-const MAX_CPU_WORKERS = 8;
-let configuredCpuWorkers: number | null = null;
+const MAX_CPU_WORKERS = 4;
+const DEFAULT_CPU_WORKERS = 2;
+
+interface PersistedWorkerCfg { enabled: boolean; count: number; }
+let workerCfg: PersistedWorkerCfg | null = null;
 
 function streamConfigPath(): string {
   return path.join(app.getPath('userData'), 'tts-stream.json');
 }
 
-function clampCpuWorkers(n: number): number {
+function clampCount(n: number): number {
   return Math.min(MAX_CPU_WORKERS, Math.max(MIN_CPU_WORKERS, Math.round(n)));
 }
 
-function cpuWorkerCount(): number {
-  if (configuredCpuWorkers === null) {
-    let n = CPU_NUM_WORKERS;
+function loadWorkerCfg(): PersistedWorkerCfg {
+  if (workerCfg === null) {
+    let enabled = false;
+    let count = DEFAULT_CPU_WORKERS;
     try {
       const cfg = JSON.parse(fs.readFileSync(streamConfigPath(), 'utf-8'));
-      if (typeof cfg.cpuWorkers === 'number') n = cfg.cpuWorkers;
+      if (typeof cfg.enabled === 'boolean') {
+        enabled = cfg.enabled;
+        if (typeof cfg.count === 'number') count = cfg.count;
+      } else if (typeof cfg.cpuWorkers === 'number') {
+        // Migrate the legacy { cpuWorkers } config from before multi-worker was
+        // opt-in: a value >1 means the user had deliberately raised it.
+        count = cfg.cpuWorkers;
+        enabled = cfg.cpuWorkers > 1;
+      }
     } catch {
-      // No config yet — default topology
+      // No config yet — single-worker default
     }
-    configuredCpuWorkers = clampCpuWorkers(n);
+    workerCfg = { enabled, count: clampCount(count) };
   }
-  return configuredCpuWorkers;
+  return workerCfg;
+}
+
+function cpuWorkerCount(): number {
+  const cfg = loadWorkerCfg();
+  return cfg.enabled ? clampCount(cfg.count) : 1;
 }
 
 export interface StreamWorkerConfig {
-  /** Configured worker count for CPU mode (the only tunable) */
-  cpuWorkers: number;
-  defaultCpuWorkers: number;
+  /** Multi-worker capability toggle (off ⇒ always 1 CPU worker) */
+  enabled: boolean;
+  /** The chosen 1–4 count (kept even when disabled, so the slider remembers it) */
+  count: number;
+  defaultCount: number;
   minWorkers: number;
   maxWorkers: number;
   /** null until the first engine start probes torch (non-mac) */
   device: 'cpu' | 'cuda' | null;
-  /** Workers the active device will actually run (cpuWorkers on CPU, 1 on CUDA) */
+  /** Workers the active device will actually run (count on CPU when enabled, else 1) */
   deviceWorkers: number;
   /** Workers currently alive — 0 when the engine is stopped */
   activeWorkers: number;
 }
 
 export function getStreamWorkerConfig(): StreamWorkerConfig {
+  const cfg = loadWorkerCfg();
   return {
-    cpuWorkers: cpuWorkerCount(),
-    defaultCpuWorkers: CPU_NUM_WORKERS,
+    enabled: cfg.enabled,
+    count: cfg.count,
+    defaultCount: DEFAULT_CPU_WORKERS,
     minWorkers: MIN_CPU_WORKERS,
     maxWorkers: MAX_CPU_WORKERS,
     device: detectedDevice,
@@ -151,10 +174,13 @@ export function getStreamWorkerConfig(): StreamWorkerConfig {
   };
 }
 
-export function setStreamCpuWorkers(n: number): StreamWorkerConfig {
-  configuredCpuWorkers = clampCpuWorkers(n);
-  fs.writeFileSync(streamConfigPath(), JSON.stringify({ cpuWorkers: configuredCpuWorkers }, null, 2));
-  console.log(`[XTTS Pool] CPU worker count set to ${configuredCpuWorkers} (applies on next engine start)`);
+export function setStreamWorkerConfig(updates: { enabled?: boolean; count?: number }): StreamWorkerConfig {
+  const cfg = loadWorkerCfg();
+  if (typeof updates.enabled === 'boolean') cfg.enabled = updates.enabled;
+  if (typeof updates.count === 'number') cfg.count = clampCount(updates.count);
+  workerCfg = cfg;
+  fs.writeFileSync(streamConfigPath(), JSON.stringify(cfg, null, 2));
+  console.log(`[XTTS Pool] Worker config: enabled=${cfg.enabled}, count=${cfg.count} (applies on next engine start)`);
   return getStreamWorkerConfig();
 }
 
@@ -994,5 +1020,5 @@ export const xttsWorkerPool = {
   getLastVoice,
   onEngineState,
   getStreamWorkerConfig,
-  setStreamCpuWorkers
+  setStreamWorkerConfig
 };

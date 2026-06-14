@@ -406,9 +406,7 @@ export class TtsApiServer {
    * resized live), so this is the "save settings" path; engine.restart applies it.
    */
   private async handleConfigSet(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
-    if (typeof msg.cpuWorkers === 'number') {
-      xttsWorkerPool.setStreamCpuWorkers(msg.cpuWorkers);
-    }
+    this.applyClientWorkerCount(msg);
     // A running engine can swap voices live; a stopped one just remembers it for
     // the next start (the client passes it again on engine.restart/start).
     if (typeof msg.voice === 'string' && msg.voice && xttsWorkerPool.getEngineState() === 'running') {
@@ -427,9 +425,7 @@ export class TtsApiServer {
    * clears it) so a resident server stays resident after the restart.
    */
   private async handleRestart(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
-    if (typeof msg.cpuWorkers === 'number') {
-      xttsWorkerPool.setStreamCpuWorkers(msg.cpuWorkers);
-    }
+    this.applyClientWorkerCount(msg);
     const wasService = xttsWorkerPool.isServiceMode();
     const voice = typeof msg.voice === 'string' && msg.voice ? msg.voice : undefined;
 
@@ -442,6 +438,17 @@ export class TtsApiServer {
     }
     // status carries the new topology (activeWorkers reflects the resized pool).
     this.send(ws, { type: 'status', ...this.statusPayload() });
+  }
+
+  /**
+   * Apply a worker count sent by an external client (browser extension), but
+   * only when the app has enabled the multi-worker capability — the gate is an
+   * app-level decision, so a client can pick a count within it, not turn it on.
+   */
+  private applyClientWorkerCount(msg: Record<string, unknown>): void {
+    if (typeof msg.cpuWorkers !== 'number') return;
+    if (!xttsWorkerPool.getStreamWorkerConfig().enabled) return;
+    xttsWorkerPool.setStreamWorkerConfig({ count: msg.cpuWorkers });
   }
 
   /** Engine state + voices + topology, shared by hello/status. */

@@ -30,6 +30,7 @@ import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig } from '../.
 import { EpubResolverService } from '../../services/epub-resolver.service';
 import { AiService } from '../../../../core/services/ai.service';
 import { LanguagePackService } from '../../../../core/services/language-pack.service';
+import { WorkerConfigService } from '../../../../core/services/worker-config.service';
 import {
   SUPPORTED_LANGUAGES,
   TtsLanguageRow,
@@ -643,18 +644,20 @@ interface SourceStage {
                 </div>
               </div>
 
-              <!-- Parallel Workers (XTTS only) -->
-              @if (ttsEngine() === 'xtts') {
+              <!-- Parallel Workers (XTTS only) — shown only when the user has
+                   enabled the multi-worker capability in Settings / first-run.
+                   Defaults to the global count; can be overridden for this job. -->
+              @if (ttsEngine() === 'xtts' && workerCfg.enabled()) {
                 <div class="config-section">
                   <label class="field-label">Parallel Workers</label>
                   <div class="worker-options">
                     @for (count of [1, 2, 3, 4]; track count) {
-                      <button class="worker-btn" [class.selected]="ttsWorkers() === count" (click)="ttsWorkers.set(count)">
+                      <button class="worker-btn" [class.selected]="ttsWorkers() === count" (click)="setTtsWorkers(count)">
                         {{ count }}
                       </button>
                     }
                   </div>
-                  <span class="hint">More workers = faster, but uses ~5GB RAM each</span>
+                  <span class="hint">More workers = faster, but uses ~5GB RAM each. Default from Settings.</span>
                 </div>
               }
 
@@ -2437,6 +2440,7 @@ export class LLWizardComponent implements OnInit {
   // Gates the AI Cleanup step behind a "set up an AI" layover when none configured.
   protected readonly ai = inject(AiService);
   protected readonly langPacks = inject(LanguagePackService);
+  protected readonly workerCfg = inject(WorkerConfigService);
 
   /**
    * Languages the TTS step needs a Stanza segmentation pack for, that aren't
@@ -2721,6 +2725,12 @@ export class LLWizardComponent implements OnInit {
   readonly ttsEngine = signal<'xtts' | 'orpheus'>('xtts');
   readonly ttsDevice = signal<'cpu' | 'mps' | 'gpu'>('cpu');
   readonly ttsWorkers = signal(2);
+  /** Once the user picks a worker count here, stop re-syncing it from the global. */
+  private workerCountTouched = false;
+  /** What jobs actually use: the picked count only when multi-worker is on, else 1. */
+  readonly effectiveTtsWorkers = computed(() =>
+    this.ttsEngine() === 'xtts' && this.workerCfg.enabled() ? this.ttsWorkers() : 1,
+  );
   readonly ttsTestMode = signal(false);
   readonly ttsTestSentences = signal(10);
   readonly ttsLanguageRows = signal<TtsLanguageRow[]>([]);
@@ -2943,6 +2953,16 @@ export class LLWizardComponent implements OnInit {
       const dir = this.effectiveProjectDir();
       this.refreshTrigger();  // re-scan stages when the host bumps this (after delete/reset)
       if (dir) this.scanProjectEpubs();
+    });
+
+    // Seed the pipeline's worker count from the global multi-worker setting once
+    // it loads, so it "defaults to whatever they have in Settings" — until the
+    // user picks a different count here.
+    effect(() => {
+      const cfg = this.workerCfg.config();
+      if (cfg && !this.workerCountTouched && this.ttsEngine() === 'xtts') {
+        this.ttsWorkers.set(this.workerCfg.effectiveCount());
+      }
     });
 
     // Sync TTS language rows when target languages change (bilingual pipeline only)
@@ -3495,6 +3515,29 @@ export class LLWizardComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────
   // TTS
   // ─────────────────────────────────────────────────────────────────────────
+
+  /** User picked a worker count for this job — stop auto-syncing from the global. */
+  async setTtsWorkers(count: number): Promise<void> {
+    // On a CUDA machine the GPU serializes decode, so >1 worker only contends.
+    // Confirm with a native dialog before accepting it here.
+    if (count > 1 && this.workerCfg.isCudaMachine()) {
+      const { confirmed } = await this.electronService.showConfirmDialog({
+        type: 'warning',
+        title: 'Multiple workers won’t help on this GPU',
+        message: 'Your NVIDIA GPU runs TTS decode one step at a time.',
+        detail: `Using ${count} workers on a CUDA GPU just makes them compete for the GPU (and costs ~5 GB RAM each) without generating any faster. Use ${count} anyway?`,
+        confirmLabel: `Use ${count}`,
+        cancelLabel: 'Keep 1',
+      });
+      if (!confirmed) {
+        this.workerCountTouched = true;
+        this.ttsWorkers.set(1);
+        return;
+      }
+    }
+    this.workerCountTouched = true;
+    this.ttsWorkers.set(count);
+  }
 
   selectTtsEngine(engine: 'xtts' | 'orpheus'): void {
     this.ttsEngine.set(engine);
@@ -4149,7 +4192,7 @@ export class LLWizardComponent implements OnInit {
               language: session.language,
               useParallel: true,
               parallelMode: 'sentences',
-              parallelWorkers: this.ttsWorkers(),
+              parallelWorkers: this.effectiveTtsWorkers(),
               skipAssembly: true,
               sentencePerParagraph: true,
               skipHeadings: true,
@@ -4267,7 +4310,7 @@ export class LLWizardComponent implements OnInit {
                 voice: targetRow.voice,
                 speed: targetRow.speed,
                 device: this.ttsDevice(),
-                workerCount: this.ttsWorkers(),
+                workerCount: this.effectiveTtsWorkers(),
                 outputDir: '',
               },
               assemblyConfig: {
@@ -4308,7 +4351,7 @@ export class LLWizardComponent implements OnInit {
               enableTextSplitting: true,
               useParallel: this.ttsEngine() === 'xtts',
               parallelMode: 'sentences',
-              parallelWorkers: this.ttsWorkers(),
+              parallelWorkers: this.effectiveTtsWorkers(),
               sentencePerParagraph: true,
               skipHeadings: true,
               testMode: this.ttsTestMode(),
@@ -4606,7 +4649,7 @@ export class LLWizardComponent implements OnInit {
               type: 'tts-conversion',
               useParallel: true,
               parallelMode: 'sentences',
-              parallelWorkers: this.ttsEngine() === 'xtts' ? this.ttsWorkers() : 1,
+              parallelWorkers: this.effectiveTtsWorkers(),
               outputDir,
               skipAssembly,
             },
@@ -4640,7 +4683,7 @@ export class LLWizardComponent implements OnInit {
             enableTextSplitting: true,
             useParallel: true,
             parallelMode: 'sentences',
-            parallelWorkers: this.ttsEngine() === 'xtts' ? this.ttsWorkers() : 1,
+            parallelWorkers: this.effectiveTtsWorkers(),
             testMode: this.ttsTestMode(),
             testSentences: this.ttsTestSentences(),
             outputDir,

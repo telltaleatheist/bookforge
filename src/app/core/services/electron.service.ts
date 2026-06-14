@@ -33,6 +33,20 @@ export interface StreamSchedulerEvent {
   error?: string;
 }
 
+/** Multi-worker capability + topology for the streaming TTS engine. */
+export interface StreamWorkerConfig {
+  /** Multi-worker capability toggle (off ⇒ always 1 CPU worker) */
+  enabled: boolean;
+  /** The chosen 1–4 count (kept even when disabled, so the slider remembers it) */
+  count: number;
+  defaultCount: number;
+  minWorkers: number;
+  maxWorkers: number;
+  device: 'cpu' | 'cuda' | null;
+  deviceWorkers: number;
+  activeWorkers: number;
+}
+
 // Chapter structure for TOC extraction and chapter marking
 export interface Chapter {
   id: string;
@@ -2211,6 +2225,22 @@ export class ElectronService {
     return { confirmed: confirm(options.message) };
   }
 
+  /**
+   * Show a native single-button message box (the app's replacement for the
+   * browser's alert()). Falls back to alert() only outside Electron.
+   */
+  async showMessageDialog(options: {
+    message: string;
+    title?: string;
+    detail?: string;
+    type?: 'none' | 'info' | 'error' | 'question' | 'warning';
+  }): Promise<void> {
+    if (this.isElectron) {
+      return (window as any).electron.dialog.message(options);
+    }
+    alert(options.detail ? `${options.message}\n\n${options.detail}` : options.message);
+  }
+
   async writeTextFile(filePath: string, content: string): Promise<{
     success: boolean;
     error?: string;
@@ -2479,16 +2509,16 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ttsStreamWorkerConfig(): Promise<{ success: boolean; data?: { cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number }; error?: string }> {
+  async ttsStreamWorkerConfig(): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.ttsStream.getWorkerConfig();
     }
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ttsStreamSetWorkers(count: number): Promise<{ success: boolean; data?: { cpuWorkers: number; defaultCpuWorkers: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; activeWorkers: number }; error?: string }> {
+  async ttsStreamSetWorkerConfig(updates: { enabled?: boolean; count?: number }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.ttsStream.setWorkers(count);
+      return (window as any).electron.ttsStream.setWorkerConfig(updates);
     }
     return { success: false, error: 'Not running in Electron' };
   }
