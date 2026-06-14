@@ -77,8 +77,27 @@ const AUTH_TIMEOUT_MS = 10_000;
 const PROTOCOL_VERSION = 1;
 const DEFAULT_VOICE = 'ScarlettJohansson';
 
+// The BookForge Reader extension's pinned id (from its manifest "key"). A
+// browser stamps every WebSocket with an Origin header that page JavaScript
+// cannot forge, so a connection from this exact origin is provably our
+// extension — it's authorised WITHOUT a token, which is why users never paste
+// one. Any other origin (a random website opening ws://localhost) still needs
+// the shared token. NOTE: a non-browser client (curl, native code) can send any
+// Origin, so on LAN (host 0.0.0.0) this is weaker than the token — but local
+// native malware could read the token file anyway, so for the real threat (a
+// drive-by webpage) origin-pinning is the right gate. Keep in sync with
+// extension/static/manifest.json "key".
+const ALLOWED_EXTENSION_ID = 'cjplggiaioccjfpagkgddldgaemggllc';
+
+function isTrustedOrigin(origin: string | undefined): boolean {
+  return origin === `chrome-extension://${ALLOWED_EXTENSION_ID}`;
+}
+
 interface ClientState {
   authed: boolean;
+  /** True when the connection's Origin is our pinned extension — authorised
+   *  without a token (the browser sets Origin and pages can't forge it). */
+  originTrusted: boolean;
   /** requestIds of this client's in-flight speaks (the playing block plus any
    *  read-ahead blocks it prefetched concurrently). */
   activeRequestIds: Set<string | number>;
@@ -150,7 +169,7 @@ export class TtsApiServer {
         res.end(JSON.stringify({ service: 'bookforge-tts', version: PROTOCOL_VERSION }));
       });
       this.wss = new WebSocketServer({ server: this.httpServer });
-      this.wss.on('connection', (ws) => this.handleConnection(ws));
+      this.wss.on('connection', (ws, req) => this.handleConnection(ws, req));
       this.httpServer.once('error', reject);
       this.httpServer.listen(config.port, config.host, () => {
         this.httpServer!.removeListener('error', reject);
@@ -216,8 +235,12 @@ export class TtsApiServer {
   // Connection handling
   // ───────────────────────────────────────────────────────────────────────────
 
-  private handleConnection(ws: WebSocket): void {
-    const state: ClientState = { authed: false, activeRequestIds: new Set() };
+  private handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
+    const state: ClientState = {
+      authed: false,
+      originTrusted: isTrustedOrigin(req.headers.origin),
+      activeRequestIds: new Set()
+    };
     this.clients.set(ws, state);
 
     const authTimer = setTimeout(() => {
@@ -257,8 +280,10 @@ export class TtsApiServer {
     const action = msg.action;
 
     if (action === 'hello') {
-      if (!this.tokenMatches(msg.token)) {
-        ws.close(4401, 'invalid token');
+      // Our pinned extension is trusted by Origin and needs no token; any other
+      // client (LAN device, script) must present the shared token.
+      if (!state.originTrusted && !this.tokenMatches(msg.token)) {
+        ws.close(4401, 'unauthorized');
         return;
       }
       state.authed = true;

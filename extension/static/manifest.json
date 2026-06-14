@@ -3,6 +3,7 @@
   "name": "BookForge Reader",
   "version": "0.1.0",
   "description": "Read web pages aloud through BookForge's local streaming TTS engine.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxsawuQdMZOU8G0bQ5fcAq1qIFGyrkC+CQhEXkZbYHoOXLKaNs7ebsqA85V3r90orC820evBRF6p6YNqrXedNRrIudSlyMFC0+Orn9KuKW0LUeYdkDl+QaTsUUjy3yBTnuvqKpWgGppqud8zvOP7ihjRda1XopFKbJjZS9rLowZizujy48SsXYqPAsegq8SsJ+P2Xk/1ipTMaAon3417FJVT9HWWuhKdyYTGWbsLUGxbZp3bKdJPvKlkG+B9WrN6lq3nAnUXBmP+HyAMk1DdrVZH3r6aKhvB05zfFtcWb4YDCOoZP/6xhGHxc+z6c7QZM9UBydLjVGNvlwi2Y8IK1SwIDAQAB",
   "minimum_chrome_version": "116",
   "action": { "default_title": "BookForge Reader", "default_popup": "popup.html" },
   "background": { "service_worker": "background.js" },

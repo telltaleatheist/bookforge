@@ -276,7 +276,9 @@ async function ensureConnected(): Promise<void> {
 
   connectPromise = (async () => {
     const settings = await getSettings();
-    if (!settings.token) throw new Error('NO_TOKEN');
+    // No token required for the default localhost connection: BookForge trusts
+    // this extension by its (forge-proof) Origin. A token is only needed for a
+    // LAN server (host other than 127.0.0.1); send it when present, else ''.
     const url = `ws://${settings.host}:${settings.port}`;
 
     await new Promise<void>((resolve, reject) => {

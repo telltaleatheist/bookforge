@@ -4,6 +4,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const watch = process.argv.includes('--watch');
+// Distribution build: do NOT bake this machine's local TTS token into dist. Each
+// user's BookForge generates its own random token, so a baked one would leak ours
+// and wouldn't match theirs anyway — they paste their own in Options. Used by
+// `npm run package` to produce a zip that's correct for everyone.
+const dist = process.argv.includes('--dist');
 
 rmSync('dist', { recursive: true, force: true });
 mkdirSync('dist', { recursive: true });
@@ -25,14 +30,18 @@ function appConfigDir() {
 }
 
 const baked = { token: '', host: '127.0.0.1', port: 8766 };
-try {
-  const cfg = JSON.parse(readFileSync(join(appConfigDir(), 'tts-api.json'), 'utf8'));
-  if (cfg.token) baked.token = String(cfg.token);
-  if (cfg.host) baked.host = String(cfg.host);
-  if (cfg.port) baked.port = Number(cfg.port);
-  console.log(`[build] baked TTS token from tts-api.json (${baked.host}:${baked.port})`);
-} catch {
-  console.log('[build] no tts-api.json found — shipping without a default token (enter it in Options)');
+if (dist) {
+  console.log('[build] --dist: shipping WITHOUT a baked token (each user enters their own in Options)');
+} else {
+  try {
+    const cfg = JSON.parse(readFileSync(join(appConfigDir(), 'tts-api.json'), 'utf8'));
+    if (cfg.token) baked.token = String(cfg.token);
+    if (cfg.host) baked.host = String(cfg.host);
+    if (cfg.port) baked.port = Number(cfg.port);
+    console.log(`[build] baked TTS token from tts-api.json (${baked.host}:${baked.port})`);
+  } catch {
+    console.log('[build] no tts-api.json found — shipping without a default token (enter it in Options)');
+  }
 }
 
 const options = {

@@ -5,8 +5,10 @@
   "description": "Chrome extension that reads web pages aloud through BookForge's local streaming TTS server.",
   "scripts": {
     "build": "node build.mjs",
+    "build:dist": "node build.mjs --dist",
     "watch": "node build.mjs --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "package": "node build.mjs --dist && node package.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.270",

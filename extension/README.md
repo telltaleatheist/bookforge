@@ -15,21 +15,44 @@ that for the wire protocol. The design notes for this extension live in
 ```bash
 cd extension
 npm install
-npm run build       # bundles src/ → dist/ and copies static/ → dist/
+npm run build       # bundles src/ → dist/ and copies static/ → dist/ (dev: bakes local token)
+npm run build:dist  # same, but WITHOUT baking a token (for distribution)
 npm run typecheck   # tsc --noEmit (esbuild doesn't type-check)
 npm run watch       # rebuild on change (restart it if you edit static/)
+npm run package     # build:dist + zip → bookforge-reader-<version>.zip
 ```
+
+## Auth (no token for local use)
+
+The extension has a pinned identity (a `key` in `manifest.json` → a stable
+extension id). BookForge's TTS API trusts a WebSocket whose **Origin** is exactly
+this extension — a value the browser sets and webpages cannot forge — so a
+**local** connection needs no token. A token is only required for a **LAN**
+server (host other than `127.0.0.1`), entered in Options. The private key for the
+id lives in `.crx-key.pem` (git-ignored) and is only needed to pack a `.crx`
+later.
 
 ## Install (unpacked)
 
-1. Launch BookForge at least once so it generates its token at
-   `~/Library/Application Support/bookforge-app/tts-api.json` (macOS) or
-   `%APPDATA%/bookforge-app/tts-api.json` (Windows).
+1. Launch BookForge at least once (so the TTS API server is running).
 2. In Chrome: `chrome://extensions` → enable **Developer mode** → **Load
    unpacked** → select `extension/dist`.
-3. Open the extension's **Options**, paste the `token` value from that file, and
-   click **Test connection** (with BookForge running) to confirm and to load the
-   voice list.
+3. Click the toolbar icon → **Start TTS server**. No token to paste — it just
+   connects. (Only enter a token in Options when pointing at a LAN server.)
+
+## Distribute
+
+`npm run package` produces `bookforge-reader-<version>.zip`, whose contents sit
+inside a `bookforge-reader/` folder. Hand that zip out; recipients:
+
+1. Unzip it.
+2. `chrome://extensions` → **Developer mode** → **Load unpacked** → pick the
+   unzipped `bookforge-reader/` folder.
+
+Chrome cannot install a `.zip` (or a self-hosted `.crx`) by drag-drop — "Load
+unpacked" is the sideload path. The only one-click install is publishing to the
+Chrome Web Store (for that, re-zip the **dist/ contents at the archive root**,
+not under a wrapper folder).
 
 ## Use
 

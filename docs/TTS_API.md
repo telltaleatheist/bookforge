@@ -17,12 +17,24 @@ BookForge (an Electron desktop app) runs a WebSocket server that fronts a pool o
 |---|---|
 | URL | `ws://127.0.0.1:8766` (port/host configurable in BookForge) |
 | Transport | WebSocket, JSON text frames only |
-| Auth | Shared token, sent in the first message (see below) |
+| Auth | Trusted Origin (browser extension) **or** shared token (see below) |
 | Detection probe | Plain HTTP `GET http://127.0.0.1:8766/` returns `{"service":"bookforge-tts","version":1}` |
 | Audio format | Base64-encoded PCM16 (signed 16-bit little-endian), **24,000 Hz, mono** |
 | Protocol version | 1 (echoed in the `hello` reply) |
 
 The server only runs while the BookForge app is open. The HTTP probe is the cheap way to show "BookForge not running" vs "connected" in the extension UI.
+
+### Auth: trusted Origin, with a token fallback
+
+The official BookForge Reader extension has a **pinned identity** (a `key` in its
+`manifest.json` → a fixed extension id). The browser stamps every WebSocket with
+an `Origin` header that page JavaScript cannot forge, so a connection whose Origin
+is exactly `chrome-extension://<pinned-id>` is provably that extension and is
+authorised **without a token** — this is why users never paste one for local use.
+Any other client (a LAN device, a script, a different extension) must present the
+shared token. (Caveat: a non-browser client can send any Origin header, so on a
+LAN-exposed server the token is the stronger gate; for the realistic threat — a
+drive-by webpage opening `ws://localhost` — Origin-pinning blocks it outright.)
 
 ### Token
 
@@ -37,9 +49,9 @@ File shape: `{"port": 8766, "host": "127.0.0.1", "token": "<base64url string>"}`
 
 The easiest way for the user to get it is **BookForge → Settings → TTS API**, which shows the token with a Copy button (plus the port and a LAN-access toggle).
 
-The extension should have an options page where the user pastes the token (and optionally a host/port for the LAN case). Defaults: host `127.0.0.1`, port `8766`. Store in `chrome.storage.local`.
+The official extension needs no token locally (trusted by Origin). The options page still accepts a token + host/port for the LAN case. Defaults: host `127.0.0.1`, port `8766`. Store in `chrome.storage.local`.
 
-A wrong or missing token gets the socket closed with code **4401**. The server also closes 4401 if any action is sent before a successful `hello`, or if `hello` doesn't arrive within 10 seconds of connecting.
+An untrusted origin with a wrong or missing token gets the socket closed with code **4401**. The server also closes 4401 if any action is sent before a successful `hello`, or if `hello` doesn't arrive within 10 seconds of connecting.
 
 ## Protocol
 
@@ -48,7 +60,7 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 ### Client → server
 
 ```jsonc
-{"action": "hello", "token": "<token>"}            // REQUIRED first message
+{"action": "hello", "token": "<token>"}            // REQUIRED first message; token optional from the trusted extension origin
 
 {"action": "status"}                               // poll engine status
 

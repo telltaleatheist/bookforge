@@ -52,15 +52,17 @@
         <input id="port" type="number" placeholder="8766" />
       </div>
     </div>
-    <p class="hint">Leave host as <code>127.0.0.1</code> for a local BookForge. To listen to another
-      machine on your network, set that machine's BookForge server to listen on <code>0.0.0.0</code>,
-      then enter its IP and the same token here. (Automatic discovery of servers on the network is
-      planned for a later release.)</p>
+    <p class="hint">Leave host as <code>127.0.0.1</code> for a local BookForge — no token needed, it
+      just works. To listen to another machine on your network, set that machine's BookForge server to
+      listen on <code>0.0.0.0</code>, then enter its IP below and the token from that machine. (Automatic
+      discovery of servers on the network is planned for a later release.)</p>
 
     <div class="field">
-      <label for="token">Token</label>
-      <input id="token" type="password" placeholder="paste the token from tts-api.json" />
-      <p class="hint">Found in BookForge's config (launch the app once to generate it):<br />
+      <label for="token">Token <span style="font-weight:400;opacity:0.6">— only for LAN servers</span></label>
+      <input id="token" type="password" placeholder="leave blank for a local BookForge" />
+      <p class="hint">A local BookForge needs <strong>no token</strong> — this extension is trusted
+        automatically. Only fill this in when connecting to BookForge on <em>another</em> machine; find
+        it in that machine's config:<br />
         macOS: <code>~/Library/Application Support/bookforge-app/tts-api.json</code><br />
         Windows: <code>%APPDATA%/bookforge-app/tts-api.json</code></p>
     </div>
