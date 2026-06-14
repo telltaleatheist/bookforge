@@ -1,7 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { ElectronService } from './electron.service';
 
-export type TtsServerState = 'stopped' | 'starting' | 'running';
+export type TtsServerState = 'stopped' | 'starting' | 'warming' | 'running';
 
 /**
  * Global state of the stream TTS engine ("the TTS server").
@@ -22,10 +22,25 @@ export class TtsServerService {
   readonly state = signal<TtsServerState>('stopped');
   readonly serviceMode = signal(false);
 
+  /**
+   * Warm-up progress (0–100) while the voice model loads into memory after the
+   * worker process boots — null when no warm-up is in flight. The worker reports
+   * 'ready' the moment Python starts, but the ~1.8 GB checkpoint loads lazily on
+   * the first voice load; this tracks that gap so the UI can show a real bar.
+   */
+  readonly warmupPct = signal<number | null>(null);
+
   constructor() {
     this.electronService.onTtsServiceState(s => {
       this.state.set(s.state);
       this.serviceMode.set(s.serviceMode);
+      // Clear the warm-up bar once the engine is fully warm or has stopped.
+      if (s.state === 'running' || s.state === 'stopped') {
+        this.warmupPct.set(null);
+      }
+    });
+    this.electronService.onTtsWarmup(d => {
+      this.warmupPct.set(d.pct >= 100 ? null : d.pct);
     });
     void this.refresh();
     // Slow polling fallback in case a broadcast is ever missed

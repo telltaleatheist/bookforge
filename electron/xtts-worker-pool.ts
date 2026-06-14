@@ -194,11 +194,17 @@ let startSessionPromise: Promise<{ success: boolean; voices?: string[]; error?: 
 // Last voice the user listened with — used to warm the service on start
 let lastVoice: string | null = null;
 
-export type EngineState = 'stopped' | 'starting' | 'running';
+export type EngineState = 'stopped' | 'starting' | 'warming' | 'running';
 
 export function getEngineState(): EngineState {
   if (startingSession) return 'starting';
-  return isSessionActive() ? 'running' : 'stopped';
+  if (!isSessionActive()) return 'stopped';
+  // Workers are up, but a worker reports 'ready' as soon as its Python process
+  // boots — the heavy XTTS checkpoint (~1.8 GB) is only loaded lazily on the
+  // first load_voice(). So "ready to generate" means a voice is actually warm
+  // (currentVoice set), not merely that the subprocess is alive. Until then the
+  // engine is 'warming', so no UI shows green / enables play prematurely.
+  return currentVoice ? 'running' : 'warming';
 }
 
 export function isServiceMode(): boolean {
@@ -235,6 +241,31 @@ function broadcastServiceState(): void {
       console.error('[XTTS Pool] Engine state listener failed:', err);
     }
   }
+}
+
+// Warm-up progress (checkpoint load + first voice latents). The workers emit
+// status lines during load_voice(); we map them to a coarse but honest percent
+// and push it to every window, so the play screen can show a real progress bar
+// during the ~minute model load instead of a frozen, already-"green" button.
+let warmupPct = 0;
+
+function warmupPctFor(message?: string): number | null {
+  if (!message) return null;
+  if (message.includes('Loading XTTS model')) return 15;
+  if (message === 'Model loaded') return 70;
+  if (message.startsWith('Loading voice')) return 85;
+  if (message.startsWith('Voice loaded')) return 100;
+  return null;
+}
+
+function reportWarmup(message?: string): void {
+  const pct = warmupPctFor(message);
+  if (pct === null) return;
+  // Monotonic within one warm cycle so the bar never jumps backwards when
+  // several CPU workers report the same phase out of order.
+  if (pct < warmupPct) return;
+  warmupPct = pct;
+  broadcast('tts-service:warmup', { pct, message });
 }
 
 function touchActivity(): void {
@@ -506,6 +537,9 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
 
   console.log(`[XTTS Pool] Loading voice ${voice} on ${workers.length} workers...`);
 
+  // New warm cycle: progress restarts from 0 so the bar reflects this load.
+  warmupPct = 0;
+
   // Load voice on all workers in parallel
   const loadPromises = workers.map(worker => loadVoiceOnWorker(worker, descriptor));
   const results = await Promise.all(loadPromises);
@@ -514,6 +548,10 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
   if (allSuccess) {
     currentVoice = voice;
     lastVoice = voice;
+    // Model is now in memory: warm-up done, engine flips warming → running.
+    warmupPct = 100;
+    broadcast('tts-service:warmup', { pct: 100, message: 'Ready' });
+    broadcastServiceState();
     return { success: true };
   } else {
     const errors = results.filter(r => !r.success).map(r => r.error);
@@ -889,6 +927,12 @@ function sendToWorker(worker: Worker, command: Record<string, unknown>): void {
 function handleWorkerResponse(worker: Worker, response: XTTSResponse): void {
   if (response.type !== 'chunk') {
     console.log(`[XTTS Pool ${worker.id}] Response:`, response.type, response.message || '');
+  }
+
+  if (response.type === 'status') {
+    // Phase updates during the checkpoint load — drive the warm-up progress bar.
+    reportWarmup(response.message);
+    return;
   }
 
   if (response.type === 'loaded' && worker.pendingRequest?.sentenceIndex === -1) {

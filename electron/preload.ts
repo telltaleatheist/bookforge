@@ -1391,8 +1391,9 @@ export interface ElectronAPI {
   ttsService: {
     start: (voice?: string) => Promise<{ success: boolean; voices?: string[]; error?: string }>;
     stop: () => Promise<{ success: boolean; error?: string }>;
-    status: () => Promise<{ success: boolean; state?: 'stopped' | 'starting' | 'running'; serviceMode?: boolean; error?: string }>;
-    onState: (callback: (state: { state: 'stopped' | 'starting' | 'running'; serviceMode: boolean }) => void) => () => void;
+    status: () => Promise<{ success: boolean; state?: 'stopped' | 'starting' | 'warming' | 'running'; serviceMode?: boolean; error?: string }>;
+    onState: (callback: (state: { state: 'stopped' | 'starting' | 'warming' | 'running'; serviceMode: boolean }) => void) => () => void;
+    onWarmup: (callback: (data: { pct: number; message?: string }) => void) => () => void;
   };
   ttsApi: {
     status: () => Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }>;
@@ -2773,11 +2774,18 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('tts-service:stop'),
     status: () =>
       ipcRenderer.invoke('tts-service:status'),
-    onState: (callback: (state: { state: 'stopped' | 'starting' | 'running'; serviceMode: boolean }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { state: 'stopped' | 'starting' | 'running'; serviceMode: boolean }) => callback(data);
+    onState: (callback: (state: { state: 'stopped' | 'starting' | 'warming' | 'running'; serviceMode: boolean }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { state: 'stopped' | 'starting' | 'warming' | 'running'; serviceMode: boolean }) => callback(data);
       ipcRenderer.on('tts-service:state', listener);
       return () => {
         ipcRenderer.removeListener('tts-service:state', listener);
+      };
+    },
+    onWarmup: (callback: (data: { pct: number; message?: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { pct: number; message?: string }) => callback(data);
+      ipcRenderer.on('tts-service:warmup', listener);
+      return () => {
+        ipcRenderer.removeListener('tts-service:warmup', listener);
       };
     },
   },

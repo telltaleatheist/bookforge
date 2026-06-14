@@ -81,7 +81,7 @@ export interface NavRailItem {
         <button
           class="service-btn"
           [class.running]="ttsServer.state() === 'running'"
-          [class.starting]="ttsServer.state() === 'starting'"
+          [class.starting]="ttsServer.state() === 'starting' || ttsServer.state() === 'warming'"
           (click)="toggleTtsServer()"
           [title]="ttsServerTitle()"
         >
@@ -90,6 +90,10 @@ export interface NavRailItem {
             @switch (ttsServer.state()) {
               @case ('running') { TTS On }
               @case ('starting') { Starting… }
+              @case ('warming') {
+                @if (ttsServer.warmupPct() !== null) { Warming {{ ttsServer.warmupPct() }}% }
+                @else { Warming… }
+              }
               @default { TTS Server }
             }
           </span>
@@ -337,7 +341,8 @@ export class NavRailComponent {
   ttsServerTitle(): string {
     switch (this.ttsServer.state()) {
       case 'running': return 'TTS server is running (~5 GB RAM/worker). Click to shut it down.';
-      case 'starting': return 'TTS server is starting (loading models). Click to cancel.';
+      case 'starting': return 'TTS server is starting (spawning workers). Click to cancel.';
+      case 'warming': return 'TTS server is loading the voice model into memory — it can generate once this finishes. Click to cancel.';
       default: return 'Start the TTS server: instant streaming playback, and external clients (e.g. a browser extension) can connect.';
     }
   }

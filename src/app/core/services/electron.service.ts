@@ -2370,16 +2370,24 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ttsServiceStatus(): Promise<{ success: boolean; state?: 'stopped' | 'starting' | 'running'; serviceMode?: boolean; error?: string }> {
+  async ttsServiceStatus(): Promise<{ success: boolean; state?: 'stopped' | 'starting' | 'warming' | 'running'; serviceMode?: boolean; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.ttsService.status();
     }
     return { success: false, error: 'Not running in Electron' };
   }
 
-  onTtsServiceState(callback: (state: { state: 'stopped' | 'starting' | 'running'; serviceMode: boolean }) => void): () => void {
+  onTtsServiceState(callback: (state: { state: 'stopped' | 'starting' | 'warming' | 'running'; serviceMode: boolean }) => void): () => void {
     if (this.isElectron) {
       return (window as any).electron.ttsService.onState(callback);
+    }
+    return () => {};
+  }
+
+  /** Warm-up progress (0–100) while the voice model loads into memory. */
+  onTtsWarmup(callback: (data: { pct: number; message?: string }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.ttsService.onWarmup(callback);
     }
     return () => {};
   }

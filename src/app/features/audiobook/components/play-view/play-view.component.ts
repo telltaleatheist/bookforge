@@ -66,6 +66,12 @@ interface StreamCue {
             <div class="loading-spinner"></div>
             <h3>{{ loadingTitle() }}</h3>
             <p class="loading-message">{{ loadingMessage() }}</p>
+            @if (!loadingError() && ttsServer.warmupPct() !== null) {
+              <div class="warmup-bar">
+                <div class="warmup-fill" [style.width.%]="ttsServer.warmupPct()"></div>
+              </div>
+              <p class="warmup-meta">{{ ttsServer.warmupPct() }}% · {{ warmElapsed() }}s elapsed</p>
+            }
             @if (loadingError()) {
               <p class="loading-error">{{ loadingError() }}</p>
               <desktop-button variant="secondary" (click)="dismissError()">
@@ -114,6 +120,8 @@ interface StreamCue {
             }
             @if (isGenerating()) {
               <span class="generating-indicator">Generating…</span>
+            } @else if (serverLoading()) {
+              <span class="generating-indicator">{{ warmupLabel() }}</span>
             }
           </div>
           <div class="header-right">
@@ -135,13 +143,18 @@ interface StreamCue {
             <button
               class="btn-server"
               [class.running]="ttsServer.state() === 'running'"
-              [disabled]="ttsServer.state() === 'starting'"
+              [class.warming]="ttsServer.state() === 'warming'"
+              [disabled]="ttsServer.state() === 'starting' || ttsServer.state() === 'warming'"
               (click)="toggleServer()"
               [title]="ttsServer.state() === 'running' ? 'Shut down the TTS server' : 'Start the TTS server and keep it running (survives closing this window)'"
             >
               @switch (ttsServer.state()) {
                 @case ('running') { ⏻ Quit server }
                 @case ('starting') { Starting… }
+                @case ('warming') {
+                  @if (ttsServer.warmupPct() !== null) { Loading model {{ ttsServer.warmupPct() }}% }
+                  @else { Loading model… }
+                }
                 @default { ⏻ Start server }
               }
             </button>
@@ -245,8 +258,18 @@ interface StreamCue {
         <div class="controls-row">
           <div class="transport-group">
             <button class="bar-btn" (click)="skipSentence(-1)" [disabled]="currentGlobalIndex() === 0" title="Previous sentence">⏮</button>
-            <button class="bar-btn bar-btn-play" (click)="isPlaying() ? pause() : onPlayClicked()" [disabled]="chaptersLoading()" [title]="isPlaying() ? 'Pause' : 'Play'">
-              <span class="play-icon">{{ isPlaying() ? '⏸' : '▶' }}</span>
+            <button
+              class="bar-btn bar-btn-play"
+              [class.loading]="serverLoading() && !isPlaying()"
+              (click)="isPlaying() ? pause() : onPlayClicked()"
+              [disabled]="chaptersLoading()"
+              [title]="serverLoading() && !isPlaying() ? 'Loading the voice model — playback starts once it finishes' : (isPlaying() ? 'Pause' : 'Play')"
+            >
+              @if (serverLoading() && !isPlaying()) {
+                <span class="play-spinner"></span>
+              } @else {
+                <span class="play-icon">{{ isPlaying() ? '⏸' : '▶' }}</span>
+              }
             </button>
             <button class="bar-btn" (click)="skipSentence(1)" [disabled]="currentGlobalIndex() >= allCues().length - 1" title="Next sentence">⏭</button>
             <span class="buffer-ring-wrap" [title]="bufferTitle()">
@@ -360,6 +383,30 @@ interface StreamCue {
       margin: 16px 0;
       color: var(--accent-danger);
       font-size: 13px;
+    }
+
+    /* Warm-up progress: the model load that happens after the worker boots. */
+    .warmup-bar {
+      width: 100%;
+      height: 6px;
+      margin: 16px 0 6px;
+      background: var(--bg-sunken, rgba(127, 127, 127, 0.2));
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .warmup-fill {
+      height: 100%;
+      background: var(--accent, var(--accent-primary));
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+
+    .warmup-meta {
+      margin: 0;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
     }
 
     @keyframes spin {
@@ -498,6 +545,12 @@ interface StreamCue {
       border-color: color-mix(in srgb, #22c55e 50%, transparent);
       background: color-mix(in srgb, #22c55e 10%, transparent);
       color: #22c55e;
+    }
+
+    .btn-server.warming {
+      border-color: color-mix(in srgb, #f59e0b 50%, transparent);
+      background: color-mix(in srgb, #f59e0b 10%, transparent);
+      color: #f59e0b;
     }
 
     .btn-server:disabled {
@@ -950,6 +1003,21 @@ interface StreamCue {
       filter: brightness(1.1);
     }
 
+    .bar-btn-play.loading {
+      cursor: wait;
+    }
+
+    /* Spinner shown inside the play button while the voice model loads, so the
+       transport itself signals "not ready yet" instead of a misleading ▶. */
+    .play-spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
     .speed-group {
       position: absolute;
       right: 0;
@@ -1150,6 +1218,24 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   readonly selectedVoice = signal<string>('ScarlettJohansson');
   readonly selectedSpeed = signal<number>(1.25);
 
+  // The engine is spawning workers ('starting') or loading the voice model into
+  // memory ('warming'). In both states it CANNOT generate yet, even though the
+  // worker process is alive — so the play button must show a loading state, not
+  // a ready ▶. Drives the spinner + header hint.
+  readonly serverLoading = computed(() => {
+    const s = this.ttsServer.state();
+    return s === 'warming' || s === 'starting';
+  });
+  /** Seconds since the current warm-up started (shown in the loading modal). */
+  readonly warmElapsed = signal(0);
+  private warmTimer?: ReturnType<typeof setInterval>;
+
+  /** Header hint while the engine is loading (with live percent when known). */
+  readonly warmupLabel = computed(() => {
+    const pct = this.ttsServer.warmupPct();
+    return pct !== null ? `Loading voice model ${pct}%…` : 'Loading voice model…';
+  });
+
   // Buffer-health ring: fills clockwise as decoded audio accumulates ahead of the
   // playhead. Scaled to the scheduler's 45s in-app lookahead window, so a full ring
   // means the generation window is topped up (no underrun risk); also full once
@@ -1293,6 +1379,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.stopStreaming();
     this.audioPlayer.destroy();
     if (this.bookmarkStatusTimer) clearTimeout(this.bookmarkStatusTimer);
+    this.stopWarmTimer();
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1309,6 +1396,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.loadingMessage.set('Initializing...');
     this.loadingError.set(null);
     this.sessionState.set('starting');
+    this.startWarmTimer();
 
     try {
       // Start the Python process
@@ -1324,8 +1412,10 @@ export class PlayViewComponent implements OnInit, OnDestroy {
         throw new Error(startResult.error || 'Failed to start session');
       }
 
-      // Load the voice model
-      this.loadingMessage.set('Loading voice model (this may take a minute)...');
+      // Load the voice model into memory. This is the slow part — the worker
+      // reports "ready" the instant Python boots, but the ~1.8 GB checkpoint
+      // only loads here, so the warm-up progress bar tracks this step.
+      this.loadingMessage.set('Loading the voice model into memory (first time is slowest)…');
       const voiceResult = await this.electronService.playLoadVoice(this.selectedVoice());
 
       if (attempt !== this.startAttempt) {
@@ -1339,6 +1429,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       // Ready!
       this.sessionState.set('ready');
       this.showLoadingModal.set(false);
+      this.stopWarmTimer();
 
     } catch (error) {
       if (attempt !== this.startAttempt) return; // cancelled — already handled
@@ -1346,6 +1437,25 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       this.loadingError.set(message);
       this.loadingMessage.set('Failed to start TTS engine');
       this.sessionState.set('error');
+      this.stopWarmTimer();
+    }
+  }
+
+  /** Start ticking the warm-up elapsed counter shown in the loading modal. */
+  private startWarmTimer() {
+    this.warmElapsed.set(0);
+    const t0 = Date.now();
+    this.stopWarmTimer();
+    this.warmTimer = setInterval(
+      () => this.warmElapsed.set(Math.round((Date.now() - t0) / 1000)),
+      250,
+    );
+  }
+
+  private stopWarmTimer() {
+    if (this.warmTimer) {
+      clearInterval(this.warmTimer);
+      this.warmTimer = undefined;
     }
   }
 
@@ -1355,6 +1465,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.showLoadingModal.set(false);
     this.loadingError.set(null);
     this.sessionState.set('inactive');
+    this.stopWarmTimer();
     try {
       await this.electronService.playEndSession();
     } catch { /* nothing was running yet */ }
@@ -1364,6 +1475,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.showLoadingModal.set(false);
     this.loadingError.set(null);
     this.sessionState.set('inactive');
+    this.stopWarmTimer();
   }
 
   /**
