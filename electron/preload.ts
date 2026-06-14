@@ -1406,8 +1406,8 @@ export interface ElectronAPI {
     configure: (updates: { port?: number; host?: string }) => Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }>;
   };
   ttsStream: {
-    getWorkerConfig: () => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; deviceWorkers: number; activeWorkers: number }; error?: string }>;
-    setWorkerConfig: (updates: { enabled?: boolean; count?: number }) => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; device: 'cpu' | 'cuda' | null; deviceWorkers: number; activeWorkers: number }; error?: string }>;
+    getWorkerConfig: () => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; devicePref: 'auto' | 'cpu' | 'gpu'; device: 'cpu' | 'cuda' | null; deviceWorkers: number; activeWorkers: number }; error?: string }>;
+    setWorkerConfig: (updates: { enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' }) => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; devicePref: 'auto' | 'cpu' | 'gpu'; device: 'cpu' | 'cuda' | null; deviceWorkers: number; activeWorkers: number }; error?: string }>;
   };
   components: {
     list: () => Promise<ComponentStatus[]>;
@@ -2811,7 +2811,7 @@ const electronAPI: ElectronAPI = {
   ttsStream: {
     getWorkerConfig: () =>
       ipcRenderer.invoke('tts-stream:get-worker-config'),
-    setWorkerConfig: (updates: { enabled?: boolean; count?: number }) =>
+    setWorkerConfig: (updates: { enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' }) =>
       ipcRenderer.invoke('tts-stream:set-worker-config', updates),
   },
   components: {

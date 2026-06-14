@@ -171,10 +171,16 @@ class XTTSStreamServer:
         self.current_voice = None
         self.gpt_cond_latent = None
         self.speaker_embedding = None
-        # CUDA when available (Windows/Linux NVIDIA boxes). On Mac this lands
-        # on CPU deliberately - MPS causes memory pressure without any XTTS
-        # speedup, so it is never selected.
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # Device selection honors the BookForge preference (XTTS_DEVICE) over raw
+        # availability: 'cpu' forces CPU even on a CUDA box (e.g. to free VRAM),
+        # 'gpu'/'cuda' use CUDA when present, 'auto' (default) picks CUDA if
+        # available. On Mac this lands on CPU deliberately — MPS causes memory
+        # pressure without any XTTS speedup, so it is never selected.
+        device_pref = os.environ.get('XTTS_DEVICE', 'auto').lower()
+        if device_pref == 'cpu':
+            self.device = 'cpu'
+        else:
+            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.generations_since_cleanup = 0
         # Which checkpoint is loaded, keyed by "repo|sub". The base XTTS-v2
         # model serves the whole cloned voice library, so switching among those

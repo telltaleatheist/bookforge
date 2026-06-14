@@ -12,6 +12,8 @@ import { VoicesPanelComponent } from './components/voices-panel.component';
 import { LanguagesPanelComponent } from './components/languages-panel.component';
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
+import { WorkerConfigService } from '../../core/services/worker-config.service';
+import { ComponentService } from '../../core/services/component.service';
 
 @Component({
   selector: 'app-settings',
@@ -380,6 +382,36 @@ import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle
                       </label>
                     </div>
                   </div>
+                </div>
+
+                <!-- Generation device: CPU vs NVIDIA GPU for streaming playback.
+                     GPU needs the downloadable CUDA pack (offered right here). -->
+                <div class="settings-group">
+                  <h4>Generation Device</h4>
+                  <p class="field-description">
+                    Where streaming playback generates audio. <strong>GPU</strong> (NVIDIA/CUDA)
+                    is much faster but needs the GPU acceleration pack below; <strong>CPU</strong>
+                    works everywhere and frees your VRAM. <strong>Auto</strong> uses the GPU when
+                    it's available. Applies the next time the engine starts.
+                  </p>
+                  <div class="worker-options">
+                    <button class="worker-btn" [class.selected]="workerCfg.devicePref() === 'auto'" (click)="setStreamDevice('auto')">Auto</button>
+                    <button class="worker-btn" [class.selected]="workerCfg.devicePref() === 'cpu'" (click)="setStreamDevice('cpu')">CPU</button>
+                    <button
+                      class="worker-btn"
+                      [class.selected]="workerCfg.devicePref() === 'gpu'"
+                      [disabled]="!workerCfg.isCudaMachine()"
+                      [title]="workerCfg.isCudaMachine() ? 'Generate on your NVIDIA GPU' : 'No NVIDIA GPU detected'"
+                      (click)="setStreamDevice('gpu')"
+                    >GPU</button>
+                  </div>
+                  @if (workerCfg.devicePref() === 'gpu' && !gpuPackInstalled()) {
+                    <span class="hint warn-text">GPU selected, but the GPU acceleration pack isn't installed yet — download it below, then restart the engine.</span>
+                  }
+
+                  <!-- GPU acceleration download (CUDA PyTorch + llama), reused
+                       from the Add-ons panel so it stays one implementation. -->
+                  <app-add-ons-panel [onlyGpu]="true" />
                 </div>
 
                 <!-- Streaming Engine: multiple workers are a rare opt-in (only
@@ -1037,6 +1069,47 @@ import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle
 
     .field-control {
       flex-shrink: 0;
+    }
+
+    // Device picker (Generation Device group)
+    .worker-options {
+      display: flex;
+      gap: 8px;
+      margin: 4px 0 6px;
+    }
+    .worker-btn {
+      min-width: 56px;
+      padding: 6px 12px;
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      background: var(--bg-surface, var(--surface-1));
+      color: var(--text-secondary);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .worker-btn:hover:not(:disabled) {
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+    }
+    .worker-btn.selected {
+      background: var(--accent, var(--accent-primary));
+      border-color: var(--accent, var(--accent-primary));
+      color: #1a1a1a;
+    }
+    .worker-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .hint {
+      display: block;
+      font-size: var(--ui-font-sm);
+      color: var(--text-tertiary);
+      margin-top: 2px;
+    }
+    .hint.warn-text {
+      color: #f59e0b;
     }
 
     // Toggle switch
@@ -1709,8 +1782,18 @@ export class SettingsComponent implements OnInit {
   private readonly pluginService = inject(PluginService);
   private readonly electronService = inject(ElectronService);
   private readonly libraryService = inject(LibraryService);
+  protected readonly workerCfg = inject(WorkerConfigService);
+  private readonly componentService = inject(ComponentService);
 
   readonly selectedSection = signal('library');
+
+  /** True once the GPU acceleration pack (CUDA PyTorch) is installed. */
+  readonly gpuPackInstalled = computed(() => this.componentService.isInstalled('cuda-tts'));
+
+  /** Set the streaming engine's device preference (applies on next engine start). */
+  setStreamDevice(pref: 'auto' | 'cpu' | 'gpu'): void {
+    void this.workerCfg.setDevicePref(pref);
+  }
 
   // Library section state
   readonly savedLibraryPath = computed(() => this.libraryService.libraryPath() || '~/Documents/BookForge');

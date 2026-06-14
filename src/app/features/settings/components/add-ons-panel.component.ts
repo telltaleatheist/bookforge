@@ -544,10 +544,16 @@ export class AddOnsPanelComponent implements OnInit {
    *  the batch runner; external tools keep Locate. Settings uses inline mode. */
   readonly selectionMode = input(false);
 
-  /** Tools/runtimes only — TTS voices and language packs live in their own panels. */
+  /** When true, show ONLY the GPU/CUDA acceleration packs (for embedding in the
+   *  TTS Server settings, where the device choice lives). */
+  readonly onlyGpu = input(false);
+
+  /** Tools/runtimes only — TTS voices and language packs live in their own panels.
+   *  With onlyGpu, narrow further to the CUDA acceleration packs. */
   readonly addOns = computed(() =>
     this.svc.components().filter(
-      s => s.component.kind !== 'tts-model' && s.component.kind !== 'language-pack',
+      s => s.component.kind !== 'tts-model' && s.component.kind !== 'language-pack' &&
+        (!this.onlyGpu() || this.isCudaPack(s.component.id)),
     ),
   );
 

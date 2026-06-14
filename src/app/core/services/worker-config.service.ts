@@ -130,4 +130,14 @@ export class WorkerConfigService {
       this.config.set(result.data);
     }
   }
+
+  /** Streaming-engine device preference ('auto' | 'cpu' | 'gpu'). */
+  readonly devicePref = computed(() => this.config()?.devicePref ?? 'auto');
+
+  async setDevicePref(devicePref: 'auto' | 'cpu' | 'gpu'): Promise<void> {
+    const result = await this.electron.ttsStreamSetWorkerConfig({ devicePref });
+    if (result.success && result.data) {
+      this.config.set(result.data);
+    }
+  }
 }

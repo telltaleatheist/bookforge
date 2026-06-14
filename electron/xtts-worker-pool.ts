@@ -105,7 +105,13 @@ const MIN_CPU_WORKERS = 1;
 const MAX_CPU_WORKERS = 4;
 const DEFAULT_CPU_WORKERS = 2;
 
-interface PersistedWorkerCfg { enabled: boolean; count: number; }
+// Which device the streaming engine runs XTTS on. 'auto' = torch.cuda.is_available()
+// (CUDA when present, else CPU). 'cpu'/'gpu' force it — so a user with a GPU can
+// still run on CPU (e.g. to free VRAM), and a CPU-only machine never tries CUDA.
+// macOS ignores this and always runs CPU (MPS gives no XTTS speedup).
+export type DevicePref = 'auto' | 'cpu' | 'gpu';
+
+interface PersistedWorkerCfg { enabled: boolean; count: number; devicePref: DevicePref; }
 let workerCfg: PersistedWorkerCfg | null = null;
 
 function streamConfigPath(): string {
@@ -120,8 +126,12 @@ function loadWorkerCfg(): PersistedWorkerCfg {
   if (workerCfg === null) {
     let enabled = false;
     let count = DEFAULT_CPU_WORKERS;
+    let devicePref: DevicePref = 'auto';
     try {
       const cfg = JSON.parse(fs.readFileSync(streamConfigPath(), 'utf-8'));
+      if (cfg.devicePref === 'cpu' || cfg.devicePref === 'gpu' || cfg.devicePref === 'auto') {
+        devicePref = cfg.devicePref;
+      }
       if (typeof cfg.enabled === 'boolean') {
         enabled = cfg.enabled;
         if (typeof cfg.count === 'number') count = cfg.count;
@@ -132,11 +142,16 @@ function loadWorkerCfg(): PersistedWorkerCfg {
         enabled = cfg.cpuWorkers > 1;
       }
     } catch {
-      // No config yet — single-worker default
+      // No config yet — single-worker, auto-device default
     }
-    workerCfg = { enabled, count: clampCount(count) };
+    workerCfg = { enabled, count: clampCount(count), devicePref };
   }
   return workerCfg;
+}
+
+/** XTTS_DEVICE env value handed to each worker, from the device preference. */
+function deviceEnvValue(): DevicePref {
+  return loadWorkerCfg().devicePref;
 }
 
 function cpuWorkerCount(): number {
@@ -152,6 +167,8 @@ export interface StreamWorkerConfig {
   defaultCount: number;
   minWorkers: number;
   maxWorkers: number;
+  /** User's device preference for the streaming engine */
+  devicePref: DevicePref;
   /** null until the first engine start probes torch (non-mac) */
   device: 'cpu' | 'cuda' | null;
   /** Workers the active device will actually run (count on CPU when enabled, else 1) */
@@ -168,16 +185,23 @@ export function getStreamWorkerConfig(): StreamWorkerConfig {
     defaultCount: DEFAULT_CPU_WORKERS,
     minWorkers: MIN_CPU_WORKERS,
     maxWorkers: MAX_CPU_WORKERS,
+    devicePref: cfg.devicePref,
     device: detectedDevice,
     deviceWorkers: targetWorkerCount(),
     activeWorkers: workers.filter(w => w.isReady).length
   };
 }
 
-export function setStreamWorkerConfig(updates: { enabled?: boolean; count?: number }): StreamWorkerConfig {
+export function setStreamWorkerConfig(updates: { enabled?: boolean; count?: number; devicePref?: DevicePref }): StreamWorkerConfig {
   const cfg = loadWorkerCfg();
   if (typeof updates.enabled === 'boolean') cfg.enabled = updates.enabled;
   if (typeof updates.count === 'number') cfg.count = clampCount(updates.count);
+  if (updates.devicePref && updates.devicePref !== cfg.devicePref) {
+    cfg.devicePref = updates.devicePref;
+    // Force a re-probe on next start so the worker reports the forced device and
+    // the pool picks the right topology (macOS is always CPU, never re-probed).
+    if (process.platform !== 'darwin') detectedDevice = null;
+  }
   workerCfg = cfg;
   fs.writeFileSync(streamConfigPath(), JSON.stringify(cfg, null, 2));
   console.log(`[XTTS Pool] Worker config: enabled=${cfg.enabled}, count=${cfg.count} (applies on next engine start)`);
@@ -437,6 +461,9 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
           PYTHONUNBUFFERED: '1',
           PYTHONIOENCODING: 'utf-8',
           EBOOK2AUDIOBOOK_PATH: E2A_PATH,
+          // Device preference: 'auto' | 'cpu' | 'gpu' — xtts_stream.py honors it
+          // over torch.cuda.is_available() so a GPU box can still run on CPU.
+          XTTS_DEVICE: deviceEnvValue(),
           XTTS_THREADS: String(THREADS_PER_WORKER),
           OMP_NUM_THREADS: String(THREADS_PER_WORKER),
           MKL_NUM_THREADS: String(THREADS_PER_WORKER)
