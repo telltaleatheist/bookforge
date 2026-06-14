@@ -1,4 +1,4 @@
-import { Injectable, computed, signal } from '@angular/core';
+import { Injectable, computed, effect, signal } from '@angular/core';
 
 export type RuntimeReadyState = 'preparing' | 'ready' | 'error';
 
@@ -6,6 +6,25 @@ export interface RuntimeStatus {
   state: RuntimeReadyState;
   message: string;
   error?: string;
+}
+
+/**
+ * Map a discrete runtime-setup stage message to a coarse 0–100 percent for the
+ * first-run progress UI. The main process reports named stages, not real
+ * percentages, so these are best-effort checkpoints; {@link RuntimeService}
+ * clamps the result monotonically so out-of-order messages never jump it back.
+ */
+function setupPercentFor(message: string, ready: boolean): number {
+  if (ready) return 100;
+  const m = (message || '').toLowerCase();
+  if (m.includes('ready')) return 100;
+  if (m.includes('conda-unpack') || m.includes('fixing environment')) return 80;
+  if (m.includes('extracting')) return 55;
+  if (m.includes('voices')) return 40;
+  if (m.includes('models')) return 30;
+  if (m.includes('audiobook engine') || m.includes('installing the bundled')) return 20;
+  if (m.includes('setting up') || m.includes('starting')) return 10;
+  return 12;
 }
 
 /**
@@ -38,6 +57,15 @@ export class RuntimeService {
     return s.state === 'error' ? s : null;
   });
 
+  // Coarse 0–100 setup progress for the first-run UI (bottom bar + finish page).
+  // Derived from the discrete stage message and clamped monotonically so it only
+  // ever advances; the floor is bumped by an effect in the constructor.
+  private readonly _rawProgress = computed(() =>
+    setupPercentFor(this._status().message, this.ready())
+  );
+  private readonly _progressFloor = signal(0);
+  readonly setupProgress = computed(() => Math.max(this._rawProgress(), this._progressFloor()));
+
   private unsubscribe?: () => void;
 
   /**
@@ -61,6 +89,13 @@ export class RuntimeService {
   }
 
   constructor() {
+    // Monotonic floor: stage messages can arrive slightly out of order, but the
+    // progress bar should only ever advance.
+    effect(() => {
+      const p = this._rawProgress();
+      if (p > this._progressFloor()) this._progressFloor.set(p);
+    });
+
     const api = (window as unknown as { electron?: { runtime?: RuntimeBridge } }).electron?.runtime;
     if (!api) {
       // Not running under Electron (web preview) — nothing to set up.

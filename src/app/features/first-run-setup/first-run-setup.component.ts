@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed } from '@angular/core';
+import { Component, inject, signal, computed, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 
@@ -57,6 +57,28 @@ interface SetupStep {
           </div>
         </header>
 
+        @if (finishing()) {
+          <!-- Finishing view: the user hit Done/Finish but the engine is still
+               unpacking. Sit here with prominent progress; the effect navigates
+               to Studio automatically once it's ready. Back returns to configuring. -->
+          <div class="finishing">
+            <span class="engine-spinner big"></span>
+            <h2>Finishing setup…</h2>
+            <p class="finishing-sub">
+              The audiobook engine is still getting ready. BookForge will open
+              automatically the moment it’s done — you don’t need to wait here.
+            </p>
+            <div class="finish-bar">
+              <div class="finish-bar-fill" [style.width.%]="runtime.setupProgress()"></div>
+            </div>
+            <p class="finish-stage">{{ runtime.status().message }} · {{ runtime.setupProgress() }}%</p>
+          </div>
+          <footer class="card-foot">
+            <button type="button" class="btn ghost" (click)="back()">Back to settings</button>
+            <div class="spacer"></div>
+            <span class="finishing-hint"><span class="engine-spinner"></span> Opening when ready…</span>
+          </footer>
+        } @else {
         <!-- Non-blocking runtime status: the engine unpacks in the background
              while the user configures. Voice/language downloads light up when
              it's ready (see ComponentService gate). -->
@@ -158,6 +180,7 @@ interface SetupStep {
             }
           }
         </footer>
+        }
       </div>
     </div>
   `,
@@ -281,6 +304,62 @@ interface SetupStep {
       animation: engineSpin 0.8s linear infinite;
     }
     @keyframes engineSpin { to { transform: rotate(360deg); } }
+
+    /* Prominent "finishing — engine still preparing" view. */
+    .finishing {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 12px;
+      padding: 40px 32px 28px;
+    }
+    .engine-spinner.big {
+      width: 32px;
+      height: 32px;
+      border-width: 3px;
+    }
+    .finishing h2 {
+      margin: 4px 0 0;
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary, #f0f0f0);
+    }
+    .finishing-sub {
+      margin: 0;
+      max-width: 440px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-secondary, #9a9a9a);
+    }
+    .finish-bar {
+      width: 100%;
+      max-width: 420px;
+      height: 8px;
+      margin-top: 8px;
+      border-radius: 999px;
+      background: var(--border-default, #333);
+      overflow: hidden;
+    }
+    .finish-bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--accent);
+      transition: width 0.6s ease;
+    }
+    .finish-stage {
+      margin: 0;
+      font-size: 12px;
+      color: var(--text-tertiary, #888);
+      font-variant-numeric: tabular-nums;
+    }
+    .finishing-hint {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-secondary, #9a9a9a);
+    }
 
     .step-head {
       padding: 18px 24px 10px;
@@ -446,7 +525,29 @@ export class FirstRunSetupComponent {
   protected readonly active = computed(() => this.steps[this.currentStep()]);
   protected readonly isLast = computed(() => this.currentStep() === this.steps.length - 1);
 
+  // The user finished/skipped setup but the engine is still unpacking. We sit on
+  // the last page showing prominent progress instead of dropping them onto a
+  // half-ready home; the effect below sends them to Studio the moment it's ready.
+  protected readonly finishing = signal(false);
+  // Whether the deferred finish should also kick off the selected downloads.
+  private pendingDownloads = false;
+
+  constructor() {
+    // Auto-advance to the home page once the engine finishes preparing, if the
+    // user already asked to finish (hit Done/Finish while it was still working).
+    effect(() => {
+      if (this.finishing() && this.runtime.ready()) {
+        this.finishing.set(false);
+        this.leaveForStudio(this.pendingDownloads);
+        this.pendingDownloads = false;
+      }
+    });
+  }
+
   back(): void {
+    // Backing out of the "finishing" wait returns to configuring — let the user
+    // revisit earlier steps while the engine keeps preparing in the background.
+    if (this.finishing()) this.finishing.set(false);
     if (this.currentStep() > 0) {
       this.currentStep.update(s => s - 1);
     }
@@ -462,14 +563,31 @@ export class FirstRunSetupComponent {
   }
 
   /** Kick off the selected batch (runs in the background) and head to Studio.
-   *  The dock collapses to the corner so the user sees it shrink as they leave. */
+   *  If the engine is still unpacking, wait on the last page first (the effect
+   *  above leaves once it's ready) — downloads need the runtime anyway. */
   finishWithDownloads(): void {
-    void this.sel.start();
-    this.sel.collapse();
-    void this.router.navigate(['/studio']);
+    if (!this.runtime.ready()) { this.enterFinishing(true); return; }
+    this.leaveForStudio(true);
   }
 
   complete(): void {
+    if (!this.runtime.ready()) { this.enterFinishing(false); return; }
+    this.leaveForStudio(false);
+  }
+
+  /** Sit on the last page with prominent progress until the engine is ready. */
+  private enterFinishing(withDownloads: boolean): void {
+    this.pendingDownloads = withDownloads;
+    this.currentStep.set(this.steps.length - 1);
+    this.finishing.set(true);
+  }
+
+  /** Actually leave for Studio, optionally starting the selected downloads. */
+  private leaveForStudio(withDownloads: boolean): void {
+    if (withDownloads) {
+      void this.sel.start();
+      this.sel.collapse();
+    }
     void this.router.navigate(['/studio']);
   }
 

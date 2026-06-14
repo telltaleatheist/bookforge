@@ -1,4 +1,4 @@
-import { Component, OnInit, inject, computed, signal, effect } from '@angular/core';
+import { Component, OnInit, inject, computed, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterOutlet } from '@angular/router';
 import {
@@ -12,25 +12,6 @@ import { SetupDownloadDockComponent } from './components/setup-download-dock/set
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
 import { AiService } from './core/services/ai.service';
-
-/**
- * Map a discrete runtime-setup stage message to a coarse 0–100 percent for the
- * first-run progress bar. The main process reports named stages, not real
- * percentages, so these are best-effort checkpoints; the caller clamps the
- * result monotonically so out-of-order messages never make the bar jump back.
- */
-function setupPercentFor(message: string, ready: boolean): number {
-  if (ready) return 100;
-  const m = (message || '').toLowerCase();
-  if (m.includes('ready')) return 100;
-  if (m.includes('conda-unpack') || m.includes('fixing environment')) return 80;
-  if (m.includes('extracting')) return 55;
-  if (m.includes('voices')) return 40;
-  if (m.includes('models')) return 30;
-  if (m.includes('audiobook engine') || m.includes('installing the bundled')) return 20;
-  if (m.includes('setting up') || m.includes('starting')) return 10;
-  return 12;
-}
 
 @Component({
   selector: 'app-root',
@@ -115,12 +96,12 @@ function setupPercentFor(message: string, ready: boolean): number {
     @if (setupPreparing()) {
       <div class="setup-progress" role="status" aria-live="polite">
         <div class="setup-progress-track">
-          <div class="setup-progress-fill" [style.width.%]="setupProgress()"></div>
+          <div class="setup-progress-fill" [style.width.%]="runtime.setupProgress()"></div>
         </div>
         <div class="setup-progress-label">
           <span class="setup-progress-spinner"></span>
           <span class="setup-progress-text">Setting up the audiobook engine — {{ runtime.status().message }}</span>
-          <span class="setup-progress-pct">{{ setupProgress() }}%</span>
+          <span class="setup-progress-pct">{{ runtime.setupProgress() }}%</span>
         </div>
       </div>
     }
@@ -309,10 +290,6 @@ export class App implements OnInit {
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
 
-  // Current route (hash) mirrored into a signal so the "stay on /setup during
-  // prep" redirect re-evaluates on navigation — kept in sync from Router events.
-  private readonly currentUrl = signal('');
-
   // The full-screen overlay now blocks ONLY on a setup ERROR (needs attention).
   // During the normal first-run unpack we no longer black out the app — instead
   // we keep the user on the guided Setup page (something to do) and show a slim
@@ -323,42 +300,15 @@ export class App implements OnInit {
   });
 
   // True while the bundled runtime is still unpacking, the library is configured
-  // (past onboarding), and this isn't a standalone popup. Drives the bottom
-  // progress bar AND the "stay on /setup" redirect in the constructor — the
-  // engine isn't usable until 'ready', so we keep the user occupied on Setup
-  // rather than dumping them onto a half-ready home screen.
+  // (past onboarding), and this isn't a standalone popup. Drives the slim bottom
+  // progress bar — an ambient indicator while the user moves around the app. The
+  // guided Setup page shows its own prominent progress + auto-advances home when
+  // the user finishes before the engine is ready (FirstRunSetupComponent).
   readonly setupPreparing = computed(() =>
     this.runtime.preparing()
     && this.libraryService.isConfigured()
     && !this.isStandaloneWindow()
   );
-
-  // Coarse 0–100 progress for the setup bar. The main process reports discrete
-  // stages (no real %), so we map each known stage to a target and clamp the
-  // result monotonically (never goes backwards); _progressFloor is bumped by an
-  // effect in the constructor.
-  private readonly _progressFloor = signal(0);
-  private readonly _rawProgress = computed(() =>
-    setupPercentFor(this.runtime.status().message, this.runtime.ready())
-  );
-  readonly setupProgress = computed(() => Math.max(this._rawProgress(), this._progressFloor()));
-
-  constructor() {
-    // Monotonic floor: stage messages can arrive slightly out of order, but the
-    // bar should only ever advance.
-    effect(() => {
-      const p = this._rawProgress();
-      if (p > this._progressFloor()) this._progressFloor.set(p);
-    });
-    // Keep the user on the guided Setup page while the engine unpacks, so they
-    // have something to do (AI keys, browsing voices) instead of a blank wait —
-    // and so they never reach a half-ready engine. Stops once it's ready.
-    effect(() => {
-      if (this.setupPreparing() && !this.currentUrl().startsWith('/setup')) {
-        void this.router.navigate(['/setup']);
-      }
-    });
-  }
 
   dismissSetup(): void {
     this.setupDismissed.set(true);
@@ -395,9 +345,10 @@ export class App implements OnInit {
     {
       // Reopen the guided setup (AI, voices, language packs, optional tools) to
       // add or remove components without digging through the Settings panels.
+      // Labelled "Configuration" in the rail; the first-run flow is still "setup".
       id: 'setup',
       icon: '\u{1F9F0}', // Toolbox emoji
-      label: 'Setup',
+      label: 'Configuration',
       route: '/setup'
     }
     // AI Setup is reached from Settings → AI and from first-run onboarding /
@@ -406,12 +357,6 @@ export class App implements OnInit {
 
   ngOnInit() {
     this.themeService.initializeTheme();
-
-    // Mirror the active route into a signal so the prep-time redirect effect
-    // re-evaluates on navigation (leaving /setup while the runtime is still
-    // unpacking should pull the user back to Setup).
-    this.currentUrl.set(this.router.url);
-    this.router.events.subscribe(() => this.currentUrl.set(this.router.url));
   }
 
   async onOnboardingComplete(): Promise<void> {
