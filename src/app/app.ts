@@ -1,4 +1,4 @@
-import { Component, OnInit, inject, computed, signal } from '@angular/core';
+import { Component, OnInit, inject, computed, signal, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterOutlet } from '@angular/router';
 import {
@@ -12,6 +12,8 @@ import { SetupDownloadDockComponent } from './components/setup-download-dock/set
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
 import { AiService } from './core/services/ai.service';
+import { ElectronService } from './core/services/electron.service';
+import { StudioService } from './features/studio/services/studio.service';
 
 @Component({
   selector: 'app-root',
@@ -46,8 +48,11 @@ import { AiService } from './core/services/ai.service';
       </div>
     }
 
-    <!-- Onboarding wizard (shown on first launch) -->
-    @if (!libraryService.isConfigured() && !libraryService.loading()) {
+    <!-- Onboarding wizard (shown on first launch). Latched open via showOnboarding
+         so it survives the moment the library is created (which flips isConfigured
+         true) — otherwise the wizard would vanish on its "ready" step before the
+         user hits Finish, skipping the guided /setup navigation. -->
+    @if (showOnboarding()) {
       <app-onboarding (complete)="onOnboardingComplete()" />
     }
 
@@ -286,9 +291,24 @@ export class App implements OnInit {
   readonly runtime = inject(RuntimeService);
   private readonly router = inject(Router);
   private readonly ai = inject(AiService);
+  private readonly electron = inject(ElectronService);
+  private readonly studio = inject(StudioService);
 
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
+
+  // Onboarding visibility, latched. Creating the library flips isConfigured true
+  // mid-wizard (on the "ready" step), so we can't gate the wizard on isConfigured
+  // directly or it unmounts before Finish → the /setup navigation never fires.
+  // The effect below turns it on once when needed; onOnboardingComplete turns it off.
+  readonly showOnboarding = signal(false);
+  private readonly onboardingGate = effect(() => {
+    if (this.libraryService.loading()) return;
+    if (!this.libraryService.isConfigured() && !this.onboardingDone) {
+      this.showOnboarding.set(true);
+    }
+  });
+  private onboardingDone = false;
 
   // The full-screen overlay now blocks ONLY on a setup ERROR (needs attention).
   // During the normal first-run unpack we no longer black out the app — instead
@@ -360,9 +380,27 @@ export class App implements OnInit {
   }
 
   async onOnboardingComplete(): Promise<void> {
-    // First run: after the library is set, walk the user through the guided
-    // setup (AI → voices → language packs → optional tools → home).
+    // Close the wizard for good, then walk the user through the guided setup
+    // (AI → voices → language packs → optional tools → home).
+    this.onboardingDone = true;
+    this.showOnboarding.set(false);
+    void this.seedDefaultBook();
     await this.ai.refresh();
     void this.router.navigate(['/setup']);
+  }
+
+  /** First run only: copy the bundled public-domain book into the fresh library
+   *  so Studio isn't empty. Best-effort — never blocks setup. */
+  private async seedDefaultBook(): Promise<void> {
+    const KEY = 'bookforge-seed-book-added';
+    if (localStorage.getItem(KEY)) return;
+    localStorage.setItem(KEY, '1'); // mark first so a failure can't re-seed in a loop
+    try {
+      const path = await this.electron.getSeedBookPath();
+      if (!path) return;
+      await this.studio.addBook(path);
+    } catch (err) {
+      console.warn('[App] Seeding the default book failed:', err);
+    }
   }
 }

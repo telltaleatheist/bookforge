@@ -605,9 +605,9 @@ interface SourceStage {
               </div>
 
               <!-- Parallel Workers (XTTS only) — shown only when the user has
-                   enabled the multi-worker capability in Settings / first-run.
-                   Defaults to the global count; can be overridden for this job. -->
-              @if (ttsEngine() === 'xtts' && workerCfg.enabled()) {
+                   enabled the multi-worker capability AND the job won't run on the
+                   GPU (CUDA serializes to one worker, so parallel does nothing). -->
+              @if (ttsEngine() === 'xtts' && workerCfg.enabled() && !ttsUsesGpu()) {
                 <div class="config-section">
                   <label class="field-label">Parallel Workers</label>
                   <div class="worker-options">
@@ -2655,9 +2655,20 @@ export class LLWizardComponent implements OnInit {
   readonly ttsWorkers = signal(2);
   /** Once the user picks a worker count here, stop re-syncing it from the global. */
   private workerCountTouched = false;
-  /** What jobs actually use: the picked count only when multi-worker is on, else 1. */
+  /**
+   * Will this TTS job actually run on the GPU? Either the device is set to GPU, or
+   * the CUDA pack is installed (the job path auto-upgrades CPU→CUDA then). On the
+   * GPU the engine serializes to one worker, so parallel workers are pointless —
+   * hide the control and force 1 there.
+   */
+  readonly ttsUsesGpu = computed(() =>
+    this.ttsDevice() === 'gpu' || this.componentService.isInstalled('cuda-tts'),
+  );
+  /** What jobs actually use: the picked count only when multi-worker helps, else 1. */
   readonly effectiveTtsWorkers = computed(() =>
-    this.ttsEngine() === 'xtts' && this.workerCfg.enabled() ? this.ttsWorkers() : 1,
+    this.ttsEngine() === 'xtts' && this.workerCfg.enabled() && !this.ttsUsesGpu()
+      ? this.ttsWorkers()
+      : 1,
   );
   readonly ttsLanguageRows = signal<TtsLanguageRow[]>([]);
   readonly continueTts = signal(false);

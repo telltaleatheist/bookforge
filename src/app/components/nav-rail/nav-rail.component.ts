@@ -4,6 +4,7 @@ import { Router, NavigationEnd } from '@angular/router';
 import { filter } from 'rxjs/operators';
 import { TtsServerService } from '../../core/services/tts-server.service';
 import { BookshelfServerService } from '../../core/services/bookshelf-server.service';
+import { DesktopThemeService } from '../../creamsicle-desktop/services/theme.service';
 
 // Global log capture
 const capturedLogs: string[] = [];
@@ -100,6 +101,10 @@ export interface NavRailItem {
           @if (ttsServer.state() === 'running') {
             <span class="service-dot"></span>
           }
+        </button>
+        <button class="debug-btn" (click)="themeService.toggleTheme()" [title]="themeTitle()">
+          <span class="nav-icon">{{ themeIcon() }}</span>
+          <span class="nav-label">{{ themeLabel() }}</span>
         </button>
         <button class="debug-btn" (click)="saveLogs()" title="Save debug logs">
           <span class="nav-icon">🐛</span>
@@ -296,6 +301,26 @@ export class NavRailComponent {
   private readonly router = inject(Router);
   readonly ttsServer = inject(TtsServerService);
   readonly bookshelf = inject(BookshelfServerService);
+  readonly themeService = inject(DesktopThemeService);
+
+  // Theme toggle (cycles dark → light → system). Icon/label reflect the choice.
+  readonly themeIcon = computed(() => {
+    switch (this.themeService.currentTheme()) {
+      case 'light': return '☀️';
+      case 'dark': return '🌙';
+      default: return '🖥️';
+    }
+  });
+  readonly themeLabel = computed(() => {
+    switch (this.themeService.currentTheme()) {
+      case 'light': return 'Light';
+      case 'dark': return 'Dark';
+      default: return 'Auto';
+    }
+  });
+  readonly themeTitle = computed(() =>
+    `Theme: ${this.themeLabel()} — click to switch (Dark → Light → Auto)`,
+  );
 
   // Navigation items are provided by the host (see app.ts navItems).
   readonly items = input<NavRailItem[]>([]);

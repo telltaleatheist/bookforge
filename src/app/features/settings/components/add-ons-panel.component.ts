@@ -145,6 +145,16 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
                 @default {
                   <!-- available / error → offer acquisition actions -->
                   @if (canLocate(status.component)) {
+                    @if (svc.hasInstaller(status.component.id)) {
+                      <desktop-button
+                        variant="primary"
+                        size="sm"
+                        (click)="svc.runInstaller(status.component.id)"
+                        [disabled]="svc.isBusy(status.component.id)"
+                      >
+                        {{ svc.isBusy(status.component.id) ? 'Downloading…' : 'Download & Install' }}
+                      </desktop-button>
+                    }
                     <desktop-button
                       variant="ghost"
                       size="sm"
@@ -153,7 +163,8 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
                     >
                       {{ svc.isBusy(status.component.id) ? 'Searching…' : 'Locate…' }}
                     </desktop-button>
-                    @if (status.component.externalHelpUrl) {
+                    <!-- Only fall back to "how to install" when we can't fetch it. -->
+                    @if (status.component.externalHelpUrl && !svc.hasInstaller(status.component.id)) {
                       <a class="help-link" href="#" (click)="openHelp($event, status.component.externalHelpUrl!)">
                         How to install
                       </a>

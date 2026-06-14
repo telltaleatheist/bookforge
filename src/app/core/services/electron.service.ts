@@ -2243,6 +2243,14 @@ export class ElectronService {
     alert(options.detail ? `${options.message}\n\n${options.detail}` : options.message);
   }
 
+  /** Path to the bundled default book to seed on first run, or null if not shipped. */
+  async getSeedBookPath(): Promise<string | null> {
+    if (this.isElectron) {
+      return (window as any).electron.library.seedBookPath();
+    }
+    return null;
+  }
+
   async writeTextFile(filePath: string, content: string): Promise<{
     success: boolean;
     error?: string;
@@ -3519,6 +3527,18 @@ export class ElectronService {
         return (window as any).electron.components.install(id);
       }
       return Promise.reject(new Error('Not running in Electron'));
+    },
+    runInstaller: (id: string): Promise<InstallResult> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.runInstaller(id);
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    installers: (): Promise<{ ids: string[]; notes: Record<string, string | null> }> => {
+      if (this.isElectron) {
+        return (window as any).electron.components.installers();
+      }
+      return Promise.resolve({ ids: [], notes: {} });
     },
     cancel: (id: string): Promise<void> => {
       if (this.isElectron) {

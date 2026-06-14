@@ -21,7 +21,7 @@ import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
-import { componentManager } from './components/component-manager';
+import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
 import { systemProbe } from './components/system-probe';
 
 let mainWindow: BrowserWindow | null = null;
@@ -1794,6 +1794,20 @@ function setupIpcHandlers(): void {
       buttons: ['OK'],
       defaultId: 0,
     });
+  });
+
+  // Path to the bundled default book (public-domain "The Mysterious Stranger"),
+  // seeded into the library on first run. null if it isn't shipped (dev without
+  // the file, or stripped builds).
+  ipcMain.handle('app:seed-book-path', () => {
+    const candidates = [
+      path.join((process as { resourcesPath?: string }).resourcesPath || '', 'seed-books', 'the-mysterious-stranger.epub'),
+      path.join(__dirname, '..', '..', 'packaging', 'seed-books', 'the-mysterious-stranger.epub'),
+    ];
+    for (const p of candidates) {
+      try { if (fsSync.existsSync(p)) return p; } catch { /* try next */ }
+    }
+    return null;
   });
 
   // Projects folder management
@@ -4364,6 +4378,23 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('components:cancel', async (_event, id: string) => {
     return componentManager.cancel(id);
+  });
+
+  // External tools (Calibre/Tesseract): download the right OS installer + launch
+  // it. Progress rides the same components:progress channel as managed installs.
+  ipcMain.handle('components:run-installer', async (event, id: string) => {
+    return runExternalInstaller(id, (p) => {
+      event.sender.send('components:progress', p);
+    });
+  });
+
+  // Which components have a downloadable installer for this OS (+ any post-launch
+  // note), so the renderer can show "Download & Install" instead of instructions.
+  ipcMain.handle('components:installers', async () => {
+    const ids = listInstallableIds();
+    const notes: Record<string, string | null> = {};
+    for (const id of ids) notes[id] = installerNote(id);
+    return { ids, notes };
   });
 
   ipcMain.handle('components:uninstall', async (_event, id: string) => {

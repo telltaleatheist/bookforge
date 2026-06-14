@@ -925,6 +925,7 @@ export interface ElectronAPI {
     }>;
   };
   library: {
+    seedBookPath: () => Promise<string | null>;
     importFile: (sourcePath: string) => Promise<{
       success: boolean;
       libraryPath?: string;
@@ -1416,6 +1417,8 @@ export interface ElectronAPI {
     detectExternal: (id: string) => Promise<string | null>;
     setExternalPath: (id: string, path: string) => Promise<ComponentStatus>;
     install: (id: string) => Promise<InstallResult>;
+    runInstaller: (id: string) => Promise<InstallResult>;
+    installers: () => Promise<{ ids: string[]; notes: Record<string, string | null> }>;
     cancel: (id: string) => Promise<void>;
     uninstall: (id: string) => Promise<void>;
     onProgress: (callback: (p: InstallProgress) => void) => () => void;
@@ -2300,6 +2303,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('projects:migrate-all'),
   },
   library: {
+    seedBookPath: () =>
+      ipcRenderer.invoke('app:seed-book-path') as Promise<string | null>,
     importFile: (sourcePath: string) =>
       ipcRenderer.invoke('library:import-file', sourcePath),
     resolveSource: (options: { libraryPath?: string; sourcePath?: string; fileHash?: string; sourceName?: string }) =>
@@ -2827,6 +2832,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('components:set-path', id, path),
     install: (id: string) =>
       ipcRenderer.invoke('components:install', id),
+    runInstaller: (id: string) =>
+      ipcRenderer.invoke('components:run-installer', id),
+    installers: () =>
+      ipcRenderer.invoke('components:installers') as Promise<{ ids: string[]; notes: Record<string, string | null> }>,
     cancel: (id: string) =>
       ipcRenderer.invoke('components:cancel', id),
     uninstall: (id: string) =>
