@@ -147,7 +147,7 @@ function robustRmDir(dir) {
 
 console.log(`[stage-resources] e2a source:  ${e2aSource}`);
 console.log(`[stage-resources] env tarball: ${tarballSource}`);
-console.log(`[stage-resources] models:      ${includeModels ? 'INCLUDED (offline build)' : seedModels ? 'SEED (base XTTS + Scarlett + English stanza)' : 'excluded'}`);
+console.log(`[stage-resources] models:      ${includeModels ? 'INCLUDED (offline build)' : seedModels ? `SEED (${process.platform === 'darwin' ? 'base XTTS + ' : ''}Scarlett + English stanza)` : 'excluded'}`);
 
 fs.mkdirSync(resourcesDir, { recursive: true });
 
@@ -230,12 +230,24 @@ if (seedModels) {
   // electron/xtts-voices.ts + voice-components.ts). Bundling it makes the stock
   // "XTTS Default" voice AND every reference-clip "Voice Library" clone work out
   // of the box — cloning needs the base weights + speakers_xtts.pth. Without it,
-  // only the bundled fine-tune (Scarlett) would work until the user downloads it.
-  console.log(`[stage-resources] seeding base XTTS-v2 model via: ${seedPyCmd}`);
-  execSync(
-    `${seedPyCmd} -m bookforge_ext.download_model --engine xtts --repo coqui/XTTS-v2 --files config.json model.pth vocab.json speakers_xtts.pth --cache-dir "${seedCache}"`,
-    { cwd: e2aSource, stdio: 'inherit' }
-  );
+  // only the bundled fine-tune (Scarlett) works until the user downloads it.
+  //
+  // PLATFORM SPLIT: bundle it on macOS only. On Windows the seed installer must
+  // fit Inno's ~4.2 GB single-file cap, and the base adds ~1.9 GB — so Windows
+  // ships it as a download-on-demand component (`xtts-base`) instead. (The shared
+  // .seed-cache may still hold the base from a Mac build; the copy loop below
+  // skips it when not bundling.)
+  const BASE_REPO_DIR = 'models--coqui--XTTS-v2';
+  const seedBase = process.platform === 'darwin';
+  if (seedBase) {
+    console.log(`[stage-resources] seeding base XTTS-v2 model via: ${seedPyCmd}`);
+    execSync(
+      `${seedPyCmd} -m bookforge_ext.download_model --engine xtts --repo coqui/XTTS-v2 --files config.json model.pth vocab.json speakers_xtts.pth --cache-dir "${seedCache}"`,
+      { cwd: e2aSource, stdio: 'inherit' }
+    );
+  } else {
+    console.log('[stage-resources] base XTTS-v2 NOT bundled on this platform — download-on-demand (xtts-base)');
+  }
 
   // Premium bundled voice (fine-tune). Both land in the same seed cache and are
   // copied into the snapshot together below.
@@ -245,6 +257,9 @@ if (seedModels) {
     { cwd: e2aSource, stdio: 'inherit' }
   );
   for (const entry of fs.readdirSync(seedCache)) {
+    // Don't ship the base model on platforms that aren't bundling it, even if a
+    // prior (Mac) build left it in the shared seed cache.
+    if (!seedBase && entry === BASE_REPO_DIR) continue;
     // verbatimSymlinks: keep the HF cache's relative blob symlinks intact (else
     // they'd dereference into full copies).
     fs.cpSync(path.join(seedCache, entry), path.join(ttsDest, entry), {
