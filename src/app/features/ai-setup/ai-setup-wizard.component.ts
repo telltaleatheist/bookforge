@@ -6,6 +6,7 @@ import { Router } from '@angular/router';
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
 import { AiService, LocalModel, LocalSystemInfo, LocalModelProgress } from '../../core/services/ai.service';
 import { SettingsService } from '../../core/services/settings.service';
+import { ElectronService } from '../../core/services/electron.service';
 
 /**
  * AI Setup wizard (WS2). One page, three sources of AI for OCR cleanup:
@@ -69,14 +70,18 @@ import { SettingsService } from '../../core/services/settings.service';
 
           <div class="models">
             @for (m of models(); track m.id) {
-              <div class="model" [class.active]="m.isActive">
+              <div class="model" [class.active]="m.isActive" [class.too-big]="!m.fits">
                 <div class="model-info">
                   <div class="model-name">
                     {{ m.name }}
                     @if (m.recommended) { <span class="badge rec">Recommended</span> }
                     @if (m.isActive) { <span class="badge active">In use</span> }
+                    @if (!m.fits) { <span class="badge warn">Large for your hardware</span> }
                   </div>
                   <div class="model-meta">{{ m.sizeGB }} GB · needs ~{{ m.minRAM }} GB RAM · {{ m.description }}</div>
+                  @if (!m.fits) {
+                    <div class="model-warn">⚠ Bigger than this machine can fully fit — it’ll run partly on the CPU and be slow. You can still use it.</div>
+                  }
 
                   @if (progressFor(m.id); as p) {
                     <div class="progress">
@@ -243,6 +248,11 @@ import { SettingsService } from '../../core/services/settings.service';
       padding: 0.75rem; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-subtle);
     }
     .model.active { border-color: var(--accent); }
+    /* Models too big for this machine: dimmed but still usable. */
+    .model.too-big { opacity: 0.6; }
+    .model.too-big:hover { opacity: 0.85; }
+    .model-warn { color: #f59e0b; font-size: 0.74rem; margin-top: 0.25rem; }
+    .badge.warn { background: color-mix(in srgb, #f59e0b 20%, transparent); color: #f59e0b; }
     .model-info { flex: 1; min-width: 0; }
     .model-name { color: var(--text-primary); font-weight: 600; font-size: 0.9rem; display: flex; align-items: center; gap: 0.5rem; }
     .model-meta { color: var(--text-secondary); font-size: 0.78rem; margin-top: 0.2rem; }
@@ -284,6 +294,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   readonly ai = inject(AiService);
   private readonly settings = inject(SettingsService);
   private readonly router = inject(Router);
+  private readonly electron = inject(ElectronService);
 
   readonly models = signal<LocalModel[]>([]);
   readonly sysInfo = signal<LocalSystemInfo | null>(null);
@@ -377,7 +388,23 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     return this.models().find((m) => m.id === id)?.name ?? id;
   }
 
+  /** Warn (but don't block) before committing to a model too big for this machine. */
+  private async confirmIfTooBig(id: string, verb: string): Promise<boolean> {
+    const m = this.models().find((x) => x.id === id);
+    if (!m || m.fits) return true;
+    const { confirmed } = await this.electron.showConfirmDialog({
+      type: 'warning',
+      title: `${m.name} is large for your hardware`,
+      message: `${m.name} needs about ${m.minRAM} GB but this machine has less to spare.`,
+      detail: 'It will still work, but it runs partly on the CPU and will be noticeably slower. The model marked "Recommended" fits your hardware and runs fast.',
+      confirmLabel: `${verb} anyway`,
+      cancelLabel: 'Cancel',
+    });
+    return confirmed;
+  }
+
   async download(id: string): Promise<void> {
+    if (!(await this.confirmIfTooBig(id, 'Download'))) return;
     // Seed an immediate 0% bar so the UI reacts before the first progress tick.
     this._progress.update((m) => ({ ...m, [id]: { modelId: id, pct: 0, receivedBytes: 0, totalBytes: 0, phase: 'download' } }));
     await this.ai.downloadModel(id);
@@ -388,6 +415,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   }
 
   async useModel(id: string): Promise<void> {
+    if (!(await this.confirmIfTooBig(id, 'Use'))) return;
     await this.ai.setActiveModel(id);
     this.setProvider('local');
     await this.reload();

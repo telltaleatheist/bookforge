@@ -42,9 +42,10 @@ export interface LocalModelInfo {
   downloaded: boolean;   // filled in by listModels()
   isActive: boolean;     // filled in by listModels()
   recommended: boolean;  // filled in by listModels() from the current machine
+  fits: boolean;         // filled in by listModels(): runs fully/fast on this machine (minRAM ≤ effectiveGB)
 }
 
-type CatalogEntry = Omit<LocalModelInfo, 'downloaded' | 'isActive' | 'recommended'>;
+type CatalogEntry = Omit<LocalModelInfo, 'downloaded' | 'isActive' | 'recommended' | 'fits'>;
 
 const HF = 'https://huggingface.co/bartowski';
 
@@ -249,6 +250,9 @@ async function listModels(): Promise<LocalModelInfo[]> {
     downloaded: isDownloaded(m),
     isActive: m.id === activeId,
     recommended: m.id === info.recommendedModelId,
+    // Runs fully on this machine (fast). Bigger models still download/run, but
+    // partly on CPU and slowly — the UI dims them and warns.
+    fits: m.minRAM <= info.effectiveGB,
   }));
 }
 

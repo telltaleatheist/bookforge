@@ -26,6 +26,9 @@ export interface LocalModel {
   downloaded: boolean;
   isActive: boolean;
   recommended: boolean;
+  /** Runs fully/fast on this machine (minRAM ≤ effectiveGB). Bigger ones still
+   *  work, but partly on CPU and slowly — the UI dims and warns about them. */
+  fits: boolean;
 }
 
 export interface LocalSystemInfo {
