@@ -12,6 +12,8 @@ import { SetupDownloadDockComponent } from './components/setup-download-dock/set
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
 import { AiService } from './core/services/ai.service';
+import { ElectronService } from './core/services/electron.service';
+import { StudioService } from './features/studio/services/studio.service';
 
 @Component({
   selector: 'app-root',
@@ -289,6 +291,8 @@ export class App implements OnInit {
   readonly runtime = inject(RuntimeService);
   private readonly router = inject(Router);
   private readonly ai = inject(AiService);
+  private readonly electron = inject(ElectronService);
+  private readonly studio = inject(StudioService);
 
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
@@ -380,7 +384,23 @@ export class App implements OnInit {
     // (AI → voices → language packs → optional tools → home).
     this.onboardingDone = true;
     this.showOnboarding.set(false);
+    void this.seedDefaultBook();
     await this.ai.refresh();
     void this.router.navigate(['/setup']);
+  }
+
+  /** First run only: copy the bundled public-domain book into the fresh library
+   *  so Studio isn't empty. Best-effort — never blocks setup. */
+  private async seedDefaultBook(): Promise<void> {
+    const KEY = 'bookforge-seed-book-added';
+    if (localStorage.getItem(KEY)) return;
+    localStorage.setItem(KEY, '1'); // mark first so a failure can't re-seed in a loop
+    try {
+      const path = await this.electron.getSeedBookPath();
+      if (!path) return;
+      await this.studio.addBook(path);
+    } catch (err) {
+      console.warn('[App] Seeding the default book failed:', err);
+    }
   }
 }

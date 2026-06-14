@@ -2243,6 +2243,14 @@ export class ElectronService {
     alert(options.detail ? `${options.message}\n\n${options.detail}` : options.message);
   }
 
+  /** Path to the bundled default book to seed on first run, or null if not shipped. */
+  async getSeedBookPath(): Promise<string | null> {
+    if (this.isElectron) {
+      return (window as any).electron.library.seedBookPath();
+    }
+    return null;
+  }
+
   async writeTextFile(filePath: string, content: string): Promise<{
     success: boolean;
     error?: string;

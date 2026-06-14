@@ -925,6 +925,7 @@ export interface ElectronAPI {
     }>;
   };
   library: {
+    seedBookPath: () => Promise<string | null>;
     importFile: (sourcePath: string) => Promise<{
       success: boolean;
       libraryPath?: string;
@@ -2300,6 +2301,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('projects:migrate-all'),
   },
   library: {
+    seedBookPath: () =>
+      ipcRenderer.invoke('app:seed-book-path') as Promise<string | null>,
     importFile: (sourcePath: string) =>
       ipcRenderer.invoke('library:import-file', sourcePath),
     resolveSource: (options: { libraryPath?: string; sourcePath?: string; fileHash?: string; sourceName?: string }) =>

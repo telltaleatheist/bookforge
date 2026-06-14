@@ -1796,6 +1796,20 @@ function setupIpcHandlers(): void {
     });
   });
 
+  // Path to the bundled default book (public-domain "The Mysterious Stranger"),
+  // seeded into the library on first run. null if it isn't shipped (dev without
+  // the file, or stripped builds).
+  ipcMain.handle('app:seed-book-path', () => {
+    const candidates = [
+      path.join((process as { resourcesPath?: string }).resourcesPath || '', 'seed-books', 'the-mysterious-stranger.epub'),
+      path.join(__dirname, '..', '..', 'packaging', 'seed-books', 'the-mysterious-stranger.epub'),
+    ];
+    for (const p of candidates) {
+      try { if (fsSync.existsSync(p)) return p; } catch { /* try next */ }
+    }
+    return null;
+  });
+
   // Projects folder management
   // Library folder structure - uses module-level getLibraryRoot()
 

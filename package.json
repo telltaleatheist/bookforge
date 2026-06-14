@@ -132,6 +132,10 @@
         {
           "from": "resources/e2a",
           "to": "e2a"
+        },
+        {
+          "from": "packaging/seed-books",
+          "to": "seed-books"
         }
       ]
     },
@@ -159,6 +163,10 @@
         {
           "from": "resources/e2a",
           "to": "e2a"
+        },
+        {
+          "from": "packaging/seed-books",
+          "to": "seed-books"
         }
       ]
     },
