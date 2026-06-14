@@ -89,18 +89,17 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
-{ ────────────────────────────────────────────────────────────────────────────
-  Full uninstall of OUR data. The default uninstaller only removes {app} (the
-  program). All the heavy runtime data BookForge downloads — the unpacked Python
-  engine, voice & AI models, Stanza language packs, GPU components, caches, and
-  settings — lives in the per-user Electron userData (%APPDATA%\BookForge, plus
-  %LOCALAPPDATA%\BookForge caches), which it never touches. We delete that here
-  so uninstalling reclaims all the disk it used.
-
-  We deliberately DO NOT touch the user's audiobook library (Documents\BookForge:
-  their imported ebooks, projects, and finished audiobooks) — those are their own
-  files, not ours. The dialog tells them so.
-  ──────────────────────────────────────────────────────────────────────────── }
+// Full uninstall of OUR data. The default uninstaller only removes the program.
+// All the heavy runtime data BookForge downloads — the unpacked Python engine,
+// voice & AI models, Stanza language packs, GPU components, caches, and settings
+// — lives in the per-user Electron userData, which it never touches. We delete
+// that here so uninstalling reclaims all the disk it used.
+//
+// We deliberately DO NOT touch the user's audiobook library (Documents\BookForge:
+// their imported ebooks, projects, and finished audiobooks) — those are their own
+// files, not ours. The dialog tells them so.
+// (Note: Pascal { } comments end at the first '}', so '//' is used here to keep
+// path examples with braces from breaking the compile.)
 
 procedure RemoveTreeIfExists(const Dir: String);
 begin
@@ -115,9 +114,9 @@ begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
 
-  { Electron's userData uses the package name ("bookforge-app"), NOT the product
-    name — that's where models/engine/components/settings live. The file logger
-    uses a separate "BookForgeApp" folder. The user's library is Documents\BookForge. }
+  // Electron's userData uses the package name ("bookforge-app"), NOT the product
+  // name — that's where models/engine/components/settings live. The file logger
+  // uses a separate "BookForgeApp" folder. The user's library is Documents\BookForge.
   AppData   := ExpandConstant('{userappdata}\bookforge-app');
   LocalData := ExpandConstant('{localappdata}\bookforge-app');
   Logs      := ExpandConstant('{userappdata}\BookForgeApp');
