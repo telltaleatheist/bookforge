@@ -195,6 +195,7 @@ export interface NavRailItem {
       display: flex;
       flex-direction: column;
       align-items: center;
+      gap: 4px; // keep the green "running" highlights from touching when both on
     }
 
     .service-btn {
