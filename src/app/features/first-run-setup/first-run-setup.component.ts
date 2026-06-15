@@ -203,11 +203,12 @@ interface SetupStep {
     .setup-card {
       width: 100%;
       max-width: 720px;
-      /* Fixed height (viewport-derived, so it's identical on every step) keeps
-         the Back / Skip / Next footer in the exact same spot the whole way
-         through — the user can click straight from start to finish without
-         chasing the buttons. The body flexes to absorb per-step size changes. */
-      height: min(760px, calc(100vh - 64px));
+      /* Fill the window (minus the page's 32px top/bottom padding) so the card
+         reaches near the bottom instead of stopping partway. The height is
+         viewport-derived, so it's identical on every step — the Back / Skip /
+         Next footer stays in the exact same spot the whole way through, and the
+         body (flex: 1, overflow-y: auto) absorbs per-step size changes. */
+      height: calc(100vh - 64px);
       background: var(--bg-elevated, #242424);
       border: 1px solid var(--border-default, #333);
       border-radius: 12px;
