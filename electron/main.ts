@@ -4484,6 +4484,17 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Voices selectable for full-audiobook generation — installed voices only, so
+  // every option works even though BookForge no longer bundles every clip.
+  ipcMain.handle('voices:list-audiobook', async () => {
+    try {
+      const { getAudiobookVoiceOptions } = await import('./components/installed-voices.js');
+      return { success: true, data: await getAudiobookVoiceOptions() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Pick a checkpoint folder, validate it, and register it as a custom voice.
   ipcMain.handle('custom-voices:add', async () => {
     try {

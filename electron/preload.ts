@@ -1182,6 +1182,8 @@ export interface ElectronAPI {
     list: () => Promise<{ success: boolean; data?: Array<{ id: string; name: string; checkpointDir: string; refPath: string }>; error?: string }>;
     add: () => Promise<{ success: boolean; voice?: { id: string; name: string; checkpointDir: string; refPath: string }; canceled?: boolean; error?: string }>;
     remove: (id: string) => Promise<{ success: boolean; error?: string }>;
+    /** Installed voices selectable for full-audiobook generation (value/label). */
+    listAudiobook: () => Promise<{ success: boolean; data?: Array<{ value: string; label: string }>; error?: string }>;
   };
   toolPaths: {
     getConfig: () => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
@@ -2527,6 +2529,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('custom-voices:add'),
     remove: (id: string) =>
       ipcRenderer.invoke('custom-voices:remove', id),
+    listAudiobook: () =>
+      ipcRenderer.invoke('voices:list-audiobook'),
   },
   toolPaths: {
     getConfig: () =>

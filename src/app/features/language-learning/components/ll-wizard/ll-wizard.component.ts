@@ -2688,18 +2688,14 @@ export class LLWizardComponent implements OnInit {
     this.monoTranslationActive() ? this.monoTargetLang() : this.detectedSourceLang());
   readonly partialTtsSessions = signal<{ language: string; completedSentences: number; totalSentences: number; sessionDir: string; sentencesDir: string }[]>([]);
 
-  // Voice options
-  readonly xttsVoices = [
+  // Voices selectable for audiobook generation, loaded from the main process
+  // (installed voices only — Default XTTS + installed fine-tuned/downloaded +
+  // user custom — so every option actually works). Seeded with the always-present
+  // bundled voice so the dropdown is never empty before the async load resolves.
+  readonly xttsVoiceOptions = signal<{ value: string; label: string }[]>([
     { value: 'ScarlettJohansson', label: 'Scarlett Johansson' },
-    { value: 'DavidAttenborough', label: 'David Attenborough' },
-    { value: 'BobRoss', label: 'Bob Ross' },
-    { value: 'MorganFreeman', label: 'Morgan Freeman' },
     { value: 'internal', label: 'Default XTTS' },
-  ];
-
-  // User-added custom XTTS voices (own fine-tuned checkpoints). Their `value` is
-  // the voice id; the TTS bridge detects it and routes through --custom_model.
-  readonly customXttsVoices = signal<{ value: string; label: string }[]>([]);
+  ]);
 
   readonly orpheusVoices = [
     { value: 'tara', label: 'Tara (Female)' },
@@ -2935,7 +2931,7 @@ export class LLWizardComponent implements OnInit {
     await this.checkOllamaConnection();
     await this.loadLocalModels();
     this.normalizeAiSelections();
-    await this.loadCustomVoices();
+    await this.loadXttsVoiceOptions();
     // EPUBs are scanned by the bfpPath effect — await a tick for it to complete
     await this.scanProjectEpubs();
     this.scanAvailableSessions();
@@ -3511,26 +3507,29 @@ export class LLWizardComponent implements OnInit {
     );
   }
 
-  /** Load user-added custom XTTS voices into the picker (alongside the catalog). */
-  private async loadCustomVoices(): Promise<void> {
+  /**
+   * Load the audiobook voice picker from the main process — installed voices
+   * only (Default XTTS + installed fine-tuned/downloaded + user custom), so every
+   * option works. Replaces the old hardcoded list, which could offer voices whose
+   * reference clip was no longer bundled.
+   */
+  private async loadXttsVoiceOptions(): Promise<void> {
     try {
       const api = (window as any).electron?.customVoices;
-      if (!api?.list) return;
-      const res = await api.list();
-      if (res?.success && Array.isArray(res.data)) {
-        this.customXttsVoices.set(
-          res.data.map((v: { id: string; name: string }) => ({ value: v.id, label: `${v.name} (custom)` }))
-        );
+      if (!api?.listAudiobook) return;
+      const res = await api.listAudiobook();
+      if (res?.success && Array.isArray(res.data) && res.data.length > 0) {
+        this.xttsVoiceOptions.set(res.data);
       }
     } catch {
-      /* no custom voices available */
+      /* keep the seeded default options */
     }
   }
 
   getVoicesForEngine(): { value: string; label: string }[] {
     return this.ttsEngine() === 'orpheus'
       ? this.orpheusVoices
-      : [...this.xttsVoices, ...this.customXttsVoices()];
+      : this.xttsVoiceOptions();
   }
 
   /**

@@ -1,4 +1,4 @@
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 
 import { SettingsService, PipelineDefaults } from '../../../core/services/settings.service';
@@ -79,7 +79,7 @@ interface Opt { value: string; label: string; }
           <label class="pd-label">Voice</label>
           <div class="pd-controls">
             <select class="pd-select" [value]="d().ttsVoice" (change)="set({ ttsVoice: $any($event.target).value })">
-              @for (v of xttsVoices; track v.value) {
+              @for (v of xttsVoices(); track v.value) {
                 <option [value]="v.value" [selected]="v.value === d().ttsVoice">{{ v.label }}</option>
               }
             </select>
@@ -148,6 +148,24 @@ export class PipelineDefaultsPanelComponent {
 
   readonly d = computed<PipelineDefaults>(() => this.settings.getPipelineDefaults());
 
+  constructor() {
+    void this.loadXttsVoices();
+  }
+
+  /** Load installed audiobook voices into the default-voice picker. */
+  private async loadXttsVoices(): Promise<void> {
+    try {
+      const api = (window as any).electron?.customVoices;
+      if (!api?.listAudiobook) return;
+      const res = await api.listAudiobook();
+      if (res?.success && Array.isArray(res.data) && res.data.length > 0) {
+        this.xttsVoices.set(res.data);
+      }
+    } catch {
+      /* keep the seeded default options */
+    }
+  }
+
   readonly providers: { value: AIProvider; label: string }[] = [
     { value: 'ollama', label: 'Ollama' },
     { value: 'claude', label: 'Claude' },
@@ -161,13 +179,13 @@ export class PipelineDefaultsPanelComponent {
     { key: 'translate', label: 'Translation' },
   ];
 
-  readonly xttsVoices: Opt[] = [
+  // Installed audiobook voices, loaded from the main process so the default-voice
+  // picker only offers voices that actually work. Seeded with the always-present
+  // bundled voice so the select is never empty before the async load resolves.
+  readonly xttsVoices = signal<Opt[]>([
     { value: 'ScarlettJohansson', label: 'Scarlett Johansson' },
-    { value: 'DavidAttenborough', label: 'David Attenborough' },
-    { value: 'BobRoss', label: 'Bob Ross' },
-    { value: 'MorganFreeman', label: 'Morgan Freeman' },
     { value: 'internal', label: 'Default XTTS' },
-  ];
+  ]);
 
   modelsFor(provider: AIProvider): Opt[] {
     switch (provider) {

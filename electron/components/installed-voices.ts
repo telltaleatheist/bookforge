@@ -17,7 +17,7 @@
  * in component-manager here introduces no import cycle.
  */
 
-import { FINE_TUNED, getStreamVoices } from '../xtts-voices';
+import { FINE_TUNED, getStreamVoices, StreamVoice } from '../xtts-voices';
 import { componentManager } from './component-manager';
 
 const BASE_COMPONENT_ID = 'xtts-base';
@@ -46,4 +46,33 @@ export async function getInstalledVoiceIds(): Promise<string[]> {
       installedComponents.has(componentForVoice(v.id, fineTunedIds))
     )
     .map((v) => v.id);
+}
+
+/** Installed voices as full descriptors (same filter as getInstalledVoiceIds). */
+export async function getInstalledVoices(): Promise<StreamVoice[]> {
+  const installed = new Set(await getInstalledVoiceIds());
+  return getStreamVoices().filter((v) => installed.has(v.id));
+}
+
+/**
+ * Voices selectable for FULL-AUDIOBOOK generation, as picker options. Only
+ * installed voices are returned (so every option actually works — this is what
+ * lets BookForge ship without bundling every reference clip):
+ *  - 'internal' (Default XTTS) when the base model is installed,
+ *  - installed fine-tuned voices (bundled Scarlett + downloaded catalog voices),
+ *  - user-added custom voices.
+ * Voice-Library clones are intentionally excluded (e2a has no preset for them).
+ * Built in the main process so the renderer needs no voice/install knowledge.
+ */
+export async function getAudiobookVoiceOptions(): Promise<{ value: string; label: string }[]> {
+  const voices = await getInstalledVoices();
+  const opts: { value: string; label: string }[] = [];
+  for (const v of voices) {
+    if (v.id === '__default__') {
+      opts.push({ value: 'internal', label: 'Default XTTS' });
+    } else if (v.group === 'Fine-tuned' || v.group === 'Your Voices') {
+      opts.push({ value: v.id, label: v.name });
+    }
+  }
+  return opts;
 }
