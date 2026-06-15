@@ -92,6 +92,38 @@ def _year_to_words(y, lang):
         return str(y)
 
 
+# Unicode punctuation XTTS handles poorly → ASCII equivalents the model was
+# trained on. Smart quotes, dashes and ellipsis become plain forms.
+_PUNCT_MAP = {
+    '‘': "'", '’': "'", '‚': "'", '‛': "'",   # single quotes
+    '“': '"', '”': '"', '„': '"', '‟': '"',   # double quotes
+    '–': '-', '—': '-', '―': '-', '−': '-',   # en/em/minus dashes
+    '…': '...',                                              # ellipsis
+    ' ': ' ', ' ': ' ', ' ': ' ',                 # non-breaking/thin spaces
+}
+_PUNCT_TABLE = {ord(k): v for k, v in _PUNCT_MAP.items()}
+
+
+def clean_text_for_tts(text):
+    """Defuse punctuation that makes XTTS's autoregressive decoder stop early or
+    mis-read. XTTS predicts an end-of-speech token, and dense/nested punctuation
+    (square brackets, stacked quotes like \"'…'\") reliably trips it into cutting
+    a sentence short. We keep the words but simplify the punctuation around them:
+      - normalize smart quotes / dashes / ellipsis to ASCII
+      - drop bracket characters, KEEPING their contents:
+          '[radical-traditional (rad-trad)]' -> 'radical-traditional (rad-trad)'
+      - collapse stacked quotes:  \"'word'\"  ->  \"word\"
+      - tidy whitespace
+    None of this changes what is spoken — quotes/brackets aren't voiced anyway."""
+    if not text:
+        return text
+    text = text.translate(_PUNCT_TABLE)
+    text = re.sub(r'[\[\]{}<>]', '', text)              # drop brackets, keep contents
+    text = re.sub(r'["\']{2,}', lambda m: m.group(0)[0], text)  # collapse stacked quotes
+    text = re.sub(r'\s{2,}', ' ', text).strip()
+    return text
+
+
 def normalize_for_tts(text, language='en'):
     """Convert numbers, currency, percentages, ordinals, and years to words so
     XTTS reads them naturally. Best-effort and order-sensitive (currency/percent
@@ -420,7 +452,9 @@ class XTTSStreamServer:
                         top_p=float(top_p),
                         repetition_penalty=float(repetition_penalty),
                         speed=float(speed),
-                        enable_text_splitting=False
+                        # Let XTTS split over-long text at sentence/clause limits
+                        # so the decoder doesn't truncate it (short text → no-op).
+                        enable_text_splitting=True
                     )
                     audio_data = result.get('wav')
                     if isinstance(audio_data, torch.Tensor):
@@ -475,7 +509,8 @@ class XTTSStreamServer:
                         top_p=float(top_p),
                         repetition_penalty=float(repetition_penalty),
                         speed=float(speed),
-                        enable_text_splitting=False,
+                        # Split over-long text so the decoder doesn't truncate it.
+                        enable_text_splitting=True,
                         stream_chunk_size=20,
                     )
                     for chunk in stream:
@@ -550,7 +585,9 @@ class XTTSStreamServer:
                         continue
 
                     language = request.get('language', 'en')
-                    # Numbers/currency/dates → words so XTTS reads them naturally.
+                    # Simplify punctuation XTTS chokes on (brackets, stacked quotes
+                    # → early cut-offs), then numbers/currency/dates → words.
+                    text = clean_text_for_tts(text)
                     text = normalize_for_tts(text, language)
 
                     kwargs = dict(
