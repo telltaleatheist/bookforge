@@ -144,16 +144,17 @@ interface StreamCue {
               class="btn-server"
               [class.running]="ttsServer.state() === 'running'"
               [class.warming]="ttsServer.state() === 'warming'"
-              [disabled]="ttsServer.state() === 'starting' || ttsServer.state() === 'warming'"
               (click)="toggleServer()"
-              [title]="ttsServer.state() === 'running' ? 'Shut down the TTS server' : 'Start the TTS server and keep it running (survives closing this window)'"
+              [title]="ttsServer.state() === 'stopped'
+                ? 'Start the TTS server and keep it running (survives closing this window)'
+                : (ttsServer.state() === 'running' ? 'Shut down the TTS server' : 'Cancel — stop the TTS server')"
             >
               @switch (ttsServer.state()) {
                 @case ('running') { ⏻ Quit server }
-                @case ('starting') { Starting… }
+                @case ('starting') { ✕ Cancel }
                 @case ('warming') {
-                  @if (ttsServer.warmupPct() !== null) { Loading model {{ ttsServer.warmupPct() }}% }
-                  @else { Loading model… }
+                  @if (ttsServer.warmupPct() !== null) { ✕ Cancel ({{ ttsServer.warmupPct() }}%) }
+                  @else { ✕ Cancel }
                 }
                 @default { ⏻ Start server }
               }
@@ -1535,12 +1536,15 @@ export class PlayViewComponent implements OnInit, OnDestroy {
    * pins the engine as a resident service — it survives closing this window.
    */
   async toggleServer() {
-    if (this.ttsServer.state() === 'running') {
+    // Stopped → start. Any other state (running, OR still starting/warming) →
+    // stop. Stopping mid-warmup must cancel instantly so the user isn't stuck
+    // waiting ~2 min for the model load to finish before they can kill it.
+    if (this.ttsServer.state() === 'stopped') {
+      await this.ttsServer.start(this.selectedVoice());
+    } else {
       this.stop();
       this.sessionState.set('inactive');
       await this.ttsServer.stop();
-    } else if (this.ttsServer.state() === 'stopped') {
-      await this.ttsServer.start(this.selectedVoice());
     }
   }
 

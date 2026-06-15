@@ -537,6 +537,14 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
         console.log(`[XTTS Pool ${id}] Process exited with code:`, code);
         workers = workers.filter(w => w.id !== id);
 
+        // If the worker is killed before it ever reports 'ready' (e.g. the user
+        // cancels during startup/warm-up), resolve the start promise now instead
+        // of leaving doStartSession() blocked on the 60s timeout. No-op if the
+        // worker already became ready (the promise is settled).
+        if (!worker.isReady) {
+          resolve({ success: false, error: 'Worker stopped during startup' });
+        }
+
         if (worker.pendingRequest) {
           if (worker.pendingRequest.resolveStream) {
             worker.pendingRequest.resolveStream({ success: false, error: 'Worker died' });
@@ -887,6 +895,10 @@ export function stop(): void {
 export async function endSession(): Promise<void> {
   console.log('[XTTS Pool] Ending session...');
   stopIdleWatch();
+  // Cancel any in-flight startup: clearing this flips getEngineState() to
+  // 'stopped' immediately (the broadcast below) so the UI turns off at once,
+  // even if the user hit stop while a worker was still spawning/warming.
+  startingSession = false;
   drainWorkerWaiters();
   const hadWorkers = workers.length > 0;
 

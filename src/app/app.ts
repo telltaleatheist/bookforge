@@ -389,16 +389,21 @@ export class App implements OnInit {
     void this.router.navigate(['/setup']);
   }
 
-  /** First run only: copy the bundled public-domain book into the fresh library
-   *  so Studio isn't empty. Best-effort — never blocks setup. */
+  /** First run only: copy the bundled public-domain book OUT of app resources and
+   *  INTO the chosen library, set up as the user's first book. Best-effort — never
+   *  blocks setup. The "done" flag is only set once the book is actually imported,
+   *  so a transient failure can still seed on a later attempt (and a build that
+   *  ships no seed book never burns the flag). */
   private async seedDefaultBook(): Promise<void> {
     const KEY = 'bookforge-seed-book-added';
     if (localStorage.getItem(KEY)) return;
-    localStorage.setItem(KEY, '1'); // mark first so a failure can't re-seed in a loop
     try {
       const path = await this.electron.getSeedBookPath();
-      if (!path) return;
-      await this.studio.addBook(path);
+      if (!path) return; // no bundled book (dev / not shipped) — leave the flag unset
+      const result = await this.studio.addBook(path);
+      if (result?.success) {
+        localStorage.setItem(KEY, '1'); // only mark once it's really in the library
+      }
     } catch (err) {
       console.warn('[App] Seeding the default book failed:', err);
     }
