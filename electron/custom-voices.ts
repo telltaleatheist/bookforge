@@ -29,6 +29,10 @@ export interface CustomVoice {
   name: string;           // display name
   checkpointDir: string;  // absolute folder holding config.json/model.pth/vocab.json
   refPath: string;        // absolute path to the reference .wav (for conditioning latents)
+  // 'user' = a folder the user added (default). 'catalog' = a voice downloaded
+  // from the remote catalog, registered here so it rides the same player /
+  // audiobook rails (localCheckpointDir + --custom_model) as user voices.
+  source?: 'user' | 'catalog';
 }
 
 // The three checkpoint files an XTTS fine-tune must ship, plus we require a
@@ -147,6 +151,23 @@ export function addCustomVoiceFromFolder(
   return { success: true, voice };
 }
 
+/**
+ * Register a voice downloaded from the remote catalog so it works in the player
+ * and full-audiobook generation via the same rails as user voices. The
+ * checkpoint + reference clip live where the downloader put them (e2a's HF
+ * cache); we just record the paths. Idempotent: re-downloading replaces the
+ * record. The id is the catalog voice id (== HF folder), so it matches the
+ * component id and the player/queue voice id with no translation.
+ */
+export function registerDownloadedVoice(args: {
+  id: string; name: string; checkpointDir: string; refPath: string;
+}): CustomVoice {
+  const voice: CustomVoice = { ...args, source: 'catalog' };
+  const next = readRegistry().filter((v) => v.id !== args.id);
+  writeRegistry([...next, voice]);
+  return voice;
+}
+
 /** Forget a custom voice (does not delete the user's files). */
 export function removeCustomVoice(id: string): { success: boolean } {
   const next = readRegistry().filter((v) => v.id !== id);
@@ -188,12 +209,17 @@ function stagingRootFor(_id: string): string {
  */
 function linkOrCopy(src: string, dest: string): void {
   if (fs.existsSync(dest)) return;
+  // Downloaded voices live in e2a's HF cache, where snapshot files are SYMLINKS
+  // into blobs/. Hardlinking the symlink would copy a dangling relative link, so
+  // resolve to the real blob first; for ordinary user files realpath is a no-op.
+  let real = src;
+  try { real = fs.realpathSync(src); } catch { /* use src as-is */ }
   try {
-    fs.linkSync(src, dest);
+    fs.linkSync(real, dest);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return;
     // EXDEV (cross-device) or a filesystem without hardlinks → copy.
-    fs.copyFileSync(src, dest);
+    fs.copyFileSync(real, dest);
   }
 }
 
@@ -226,8 +252,14 @@ export function ensureCustomVoiceStaged(id: string): CustomVoiceE2aArgs | null {
   }
 }
 
-/** True when `id` names a registered custom voice (vs a catalog fine-tune). */
+/** True when `id` names a registered custom voice (user-added OR downloaded). */
 export function isCustomVoiceId(id: string | undefined | null): boolean {
   if (!id) return false;
   return listCustomVoices().some((v) => v.id === id);
+}
+
+/** True when `id` names a registered voice downloaded from the catalog. */
+export function isDownloadedVoiceId(id: string | undefined | null): boolean {
+  if (!id) return false;
+  return listCustomVoices().some((v) => v.id === id && v.source === 'catalog');
 }

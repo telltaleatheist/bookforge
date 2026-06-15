@@ -13,7 +13,7 @@ import type { CatalogData } from './catalog-types';
 
 export const BUNDLED_CATALOG: CatalogData = {
   "schemaVersion": 1,
-  "generatedAt": "2026-06-15T16:34:18Z",
+  "generatedAt": "2026-06-15T17:27:02Z",
   "generator": "bookforge-catalog-indexer/1.0",
   "sources": {
     "voices": "huggingface:drewThomasson/fineTunedTTSModels/xtts-v2",
@@ -36,7 +36,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868641513,
+      "ref": "AiExplained_24khz.wav",
+      "sizeBytes": 1869211831,
       "mirrored": false
     },
     {
@@ -51,7 +52,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288156,
+      "ref": "ASMRCuteDragon_24000.wav",
+      "sizeBytes": 1868198794,
       "mirrored": false
     },
     {
@@ -66,7 +68,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287964,
+      "ref": "AsmrRacoon_24000.wav",
+      "sizeBytes": 1866164362,
       "mirrored": false
     },
     {
@@ -81,7 +84,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288156,
+      "ref": "Awkwafina_24000.wav",
+      "sizeBytes": 1864865674,
       "mirrored": false
     },
     {
@@ -96,7 +100,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868641513,
+      "ref": "BobOdenkirk_24khz.wav",
+      "sizeBytes": 1869763831,
       "mirrored": false
     },
     {
@@ -111,7 +116,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868641641,
+      "ref": "BobRoss_24khz.wav",
+      "sizeBytes": 1868821239,
       "mirrored": false
     },
     {
@@ -126,7 +132,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287964,
+      "ref": "BrinaPalencia_24000.wav",
+      "sizeBytes": 1864768042,
       "mirrored": false
     },
     {
@@ -141,7 +148,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868642025,
+      "ref": "BryanCranston_24khz.wav",
+      "sizeBytes": 1870985943,
       "mirrored": false
     },
     {
@@ -156,7 +164,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287900,
+      "ref": "BadCartmanSouthPark_24000.wav",
+      "sizeBytes": 1864747818,
       "mirrored": false
     },
     {
@@ -171,7 +180,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868641513,
+      "ref": "DavidAttenborough_24khz.wav",
+      "sizeBytes": 1869788791,
       "mirrored": true
     },
     {
@@ -186,7 +196,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868641641,
+      "ref": "DeathPussInBoots_24khz.wav",
+      "sizeBytes": 1868992119,
       "mirrored": false
     },
     {
@@ -201,7 +212,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287900,
+      "ref": "DermotCrowley_24000.wav",
+      "sizeBytes": 1864815978,
       "mirrored": false
     },
     {
@@ -216,7 +228,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288156,
+      "ref": "EvaSeymour_24000.wav",
+      "sizeBytes": 1864928556,
       "mirrored": false
     },
     {
@@ -231,7 +244,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868641513,
+      "ref": "GhostMW2_24khz.wav",
+      "sizeBytes": 1868748151,
       "mirrored": false
     },
     {
@@ -246,7 +260,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288028,
+      "ref": "GideonOfnirEldenRing_24000.wav",
+      "sizeBytes": 1865008106,
       "mirrored": false
     },
     {
@@ -261,7 +276,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287900,
+      "ref": "JillRedfield_24000.wav",
+      "sizeBytes": 1864864938,
       "mirrored": false
     },
     {
@@ -276,7 +292,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868641513,
+      "ref": "JohnButlerASMR_24khz.wav",
+      "sizeBytes": 1869799351,
       "mirrored": false
     },
     {
@@ -291,7 +308,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287900,
+      "ref": "ref.wav",
+      "sizeBytes": 1866186858,
       "mirrored": false
     },
     {
@@ -306,7 +324,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868641513,
+      "ref": "JohnMulaney_24khz.wav",
+      "sizeBytes": 1869499831,
       "mirrored": false
     },
     {
@@ -321,7 +340,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288028,
+      "ref": "JuliaWhenlan_24000.wav",
+      "sizeBytes": 1865008106,
       "mirrored": false
     },
     {
@@ -336,7 +356,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287900,
+      "ref": "LeeHorsley_24000.wav",
+      "sizeBytes": 1864825578,
       "mirrored": false
     },
     {
@@ -351,7 +372,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287964,
+      "ref": "MelinaEldenRing_24000.wav",
+      "sizeBytes": 1876518922,
       "mirrored": false
     },
     {
@@ -366,7 +388,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287900,
+      "ref": "MorganFreeman_24khz.wav",
+      "sizeBytes": 1864840938,
       "mirrored": true
     },
     {
@@ -381,7 +404,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288028,
+      "ref": "NeilGaiman_24000.wav",
+      "sizeBytes": 1865228426,
       "mirrored": true
     },
     {
@@ -396,7 +420,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288156,
+      "ref": "PeterGriffinFamilyGuy_24000.wav",
+      "sizeBytes": 1865779114,
       "mirrored": false
     },
     {
@@ -411,7 +436,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288156,
+      "ref": "RafeBeckley_24000.wav",
+      "sizeBytes": 1865778154,
       "mirrored": false
     },
     {
@@ -426,7 +452,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868641513,
+      "ref": "RainyDayHeadSpace_24khz.wav",
+      "sizeBytes": 1868927671,
       "mirrored": false
     },
     {
@@ -441,7 +468,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287900,
+      "ref": "RayPorter_24000.wav",
+      "sizeBytes": 1864973418,
       "mirrored": true
     },
     {
@@ -456,7 +484,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288156,
+      "ref": "RelaxForAWhile_24000.wav",
+      "sizeBytes": 1864760554,
       "mirrored": false
     },
     {
@@ -471,7 +500,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287900,
+      "ref": "RosamundPike_24000.wav",
+      "sizeBytes": 1865275818,
       "mirrored": true
     },
     {
@@ -486,7 +516,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287900,
+      "ref": "ScarlettJohansson_24000.wav",
+      "sizeBytes": 1864767978,
       "mirrored": true
     },
     {
@@ -501,7 +532,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288156,
+      "ref": "SladeTeenTitans_24000.wav",
+      "sizeBytes": 1864481194,
       "mirrored": false
     },
     {
@@ -516,7 +548,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 5595256491,
+      "ref": "SubZeroMKX_24000.wav",
+      "sizeBytes": 5595403929,
       "mirrored": false
     },
     {
@@ -531,7 +564,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287900,
+      "ref": "TheBrain_24000.wav",
+      "sizeBytes": 1864574698,
       "mirrored": false
     },
     {
@@ -546,7 +580,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864287964,
+      "ref": "StanleyParable_24000.wav",
+      "sizeBytes": 1864822762,
       "mirrored": false
     },
     {
@@ -561,7 +596,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288156,
+      "ref": "Top15s_24000.wav",
+      "sizeBytes": 1865164234,
       "mirrored": false
     },
     {
@@ -576,7 +612,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1864288028,
+      "ref": "vincent_24khz.wav",
+      "sizeBytes": 1864668170,
       "mirrored": false
     },
     {
@@ -591,7 +628,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868641513,
+      "ref": "WhisperSalemASMR_24khz.wav",
+      "sizeBytes": 1868945911,
       "mirrored": false
     },
     {
@@ -606,7 +644,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 1868641641,
+      "ref": "ref.wav",
+      "sizeBytes": 1868909847,
       "mirrored": false
     },
     {
@@ -621,7 +660,8 @@ export const BUNDLED_CATALOG: CatalogData = {
         "model.pth",
         "vocab.json"
       ],
-      "sizeBytes": 5608292520,
+      "ref": "ref.wav",
+      "sizeBytes": 5608706806,
       "mirrored": false
     }
   ],

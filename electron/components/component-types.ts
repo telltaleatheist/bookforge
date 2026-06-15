@@ -133,8 +133,10 @@ export interface OptionalComponent {
   installTarget?: 'components' | 'e2a-hf-cache';
   /** kind 'tts-model' only: the HuggingFace coordinates the download helper
    *  resolves. `sub` is the repo sub-path ('xtts-v2/eng/<Voice>/'); `files` are
-   *  the checkpoint files to fetch (config.json, model.pth, vocab.json). */
-  hf?: { repo: string; sub: string; files: string[] };
+   *  the checkpoint files to fetch (config.json, model.pth, vocab.json); `ref`
+   *  is the reference clip filename fetched alongside so the voice is
+   *  self-contained (no bundled clip needed). */
+  hf?: { repo: string; sub: string; files: string[]; ref?: string };
   /** kind 'language-pack' only: the Stanza language to fetch. `code` is the
    *  ISO 639-1 code stanza.download() expects ('en', 'de', 'ko'); it lands in
    *  e2a's models/stanza/<code>/ where the segmentation pipeline reads it. */

@@ -59,10 +59,41 @@ STANZA_MANIFEST = (
     f"/resources_{STANZA_VERSION}.json"
 )
 
-# The three files the XTTS engine needs from a fine-tuned voice folder. ref.wav
-# is intentionally excluded — it's a local reference clip the engine supplies,
-# not part of the download (mirrors download_model.py's dl_files filter).
+# The three checkpoint files the XTTS engine needs from a fine-tuned voice
+# folder. A reference clip is downloaded ALONGSIDE these (see pick_ref) so a
+# downloaded voice is self-contained — no reliance on a bundled clip.
 VOICE_FILES = ("config.json", "model.pth", "vocab.json")
+
+# .wav names that are demos/training material, not a clean reference clip.
+_BAD_REF_HINTS = ("generated_example", "_generated", "training", "dataset",
+                  "converted", "example")
+
+
+def pick_ref(voice_id, file_names):
+    """Choose the best reference .wav from a voice folder's files. XTTS clones a
+    voice from a short reference clip; we prefer a clean 24 kHz take, then a bare
+    ref.wav, then the voice-named clip, then lower sample rates. Returns the
+    filename, or None if the folder has no usable clip (the voice is then
+    skipped — it can't be downloaded into a working state without a reference)."""
+    vid = voice_id.lower()
+    wavs = [f for f in file_names if f.lower().endswith(".wav")]
+    clean = [w for w in wavs if not any(b in w.lower() for b in _BAD_REF_HINTS)]
+    candidates = clean or wavs  # fall back to any wav only if nothing cleaner
+
+    def score(w):
+        wl = w.lower()
+        if wl == f"{vid}_24khz.wav": return 0
+        if wl == f"{vid}_24000.wav": return 1
+        if wl == "ref.wav": return 2
+        if wl == f"{vid}.wav": return 3
+        if wl == f"{vid}_22khz.wav": return 4
+        if wl == f"{vid}_16000.wav": return 5
+        if "24khz" in wl or "24000" in wl: return 6
+        if wl.startswith("ref"): return 7
+        return 8
+
+    candidates.sort(key=lambda w: (score(w), len(w)))
+    return candidates[0] if candidates else None
 
 # ── Output / mirror layout (Triton) ─────────────────────────────────────────
 MIRROR_DOCROOT = "/home/owenmorgan/web/owenmorgan.com/public_html/bookforge"
@@ -171,7 +202,12 @@ def build_voices(curation):
         if missing:
             skipped.append(f"{lang}/{voice} (missing {','.join(missing)})")
             continue
-        size = sum(files.get(f, 0) for f in VOICE_FILES)
+        # VERIFY: must have a usable reference clip to download with the model.
+        ref = pick_ref(voice, files.keys())
+        if not ref:
+            skipped.append(f"{lang}/{voice} (no reference .wav)")
+            continue
+        size = sum(files.get(f, 0) for f in VOICE_FILES) + files.get(ref, 0)
         voices.append({
             "id": voice,                       # == HF folder == engine preset id
             "name": rename.get(voice) or humanize(voice),
@@ -180,6 +216,7 @@ def build_voices(curation):
             "repo": VOICES_REPO,
             "sub": f"{VOICES_ROOT}/{lang}/{voice}/",
             "files": list(VOICE_FILES),
+            "ref": ref,                        # reference clip filename in the folder
             "sizeBytes": size,
             "mirrored": voice in mirrored,
         })

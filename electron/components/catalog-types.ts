@@ -15,8 +15,9 @@ export interface CatalogVoice {
   engine: string;    // 'xtts'
   repo: string;      // HF repo id
   sub: string;       // HF sub-path, e.g. 'xtts-v2/eng/ScarlettJohansson/'
-  files: string[];   // files to download (config.json, model.pth, vocab.json)
-  sizeBytes: number; // sum of `files`
+  files: string[];   // checkpoint files to download (config.json, model.pth, vocab.json)
+  ref: string;       // reference clip filename in the folder, downloaded with the model
+  sizeBytes: number; // sum of `files` + `ref`
   mirrored: boolean; // present on the owenmorgan.com mirror fallback
 }
 

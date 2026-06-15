@@ -1,22 +1,19 @@
 /**
  * Downloadable TTS voices as optional components.
  *
- * BookForge bundles exactly one voice (Scarlett Johansson). The other curated
- * fine-tuned voices are managed `tts-model` components: a one-click download
- * fetches the checkpoint into e2a's HF cache (kind 'tts-model', installTarget
- * 'e2a-hf-cache'), where the XTTS engine finds it with no special-casing.
+ * BookForge bundles exactly one voice (Scarlett Johansson). Every other voice is
+ * a managed `tts-model` component sourced from the remote catalog
+ * (CatalogService): a one-click download fetches the checkpoint AND its reference
+ * clip into e2a's HF cache (kind 'tts-model', installTarget 'e2a-hf-cache'). The
+ * voice is then registered so both the streaming player and full-audiobook
+ * generation can use it (see component-manager.fetchTtsModel → registration).
  *
- * The catalog is derived from electron/xtts-voices.ts (the single source of
- * truth) so the player dropdown and the Settings → Voices list never diverge.
+ * The list comes from the catalog, so new voices added on HuggingFace appear
+ * automatically after the daily catalog refresh — nothing is hardcoded here.
  */
 
-import {
-  FINE_TUNED,
-  FINE_TUNED_REPO,
-  FINE_TUNED_FILES,
-  FINE_TUNED_APPROX_BYTES,
-  BASE_REPO,
-} from '../xtts-voices';
+import { BASE_REPO } from '../xtts-voices';
+import { catalogService } from './catalog-service';
 import type { OptionalComponent } from './component-types';
 
 // The base XTTS-v2 model: repo-root files (note speakers_xtts.pth, which the
@@ -45,21 +42,31 @@ function baseModelComponent(): OptionalComponent {
   };
 }
 
-/** Build the downloadable voice catalog: base model + each fine-tuned voice. */
+/** Human label for a voice's language code (catalog langs are eng/deu/rus/…). */
+function langLabel(code: string): string {
+  const map: Record<string, string> = {
+    eng: 'English', deu: 'German', rus: 'Russian', spa: 'Spanish',
+    fra: 'French', ita: 'Italian', por: 'Portuguese',
+  };
+  return map[code] || code;
+}
+
+/** Build the downloadable voice catalog: base model + every catalog voice. */
 export function voiceComponents(): OptionalComponent[] {
-  const voices = FINE_TUNED.map((v) => {
-    const who = v.gender === 'female' ? 'female' : 'male';
+  const voices = catalogService.voices().map((v) => {
+    const gb = (v.sizeBytes / 1_000_000_000).toFixed(1);
     return {
       id: v.id,
       name: v.name,
-      description: `Premium fine-tuned XTTS voice (English, ${who}). ~1.7 GB download.`,
+      description: `Fine-tuned XTTS voice (${langLabel(v.lang)}). ~${gb} GB download.`,
       kind: 'tts-model',
       acquisition: ['managed'],
       installTarget: 'e2a-hf-cache',
-      sizeBytes: FINE_TUNED_APPROX_BYTES,
+      sizeBytes: v.sizeBytes,
       requirements: { gpu: 'none' },
       artifacts: [],
-      hf: { repo: FINE_TUNED_REPO, sub: v.sub, files: FINE_TUNED_FILES },
+      // The reference clip rides along so a downloaded voice is self-contained.
+      hf: { repo: v.repo, sub: v.sub, files: v.files, ref: v.ref },
       verify: { kind: 'path-exists' },
       version: '',
       entryPath: '', // set to the downloaded model.pth at install time

@@ -128,12 +128,16 @@ function walkWavs(dir: string): string[] {
   return out;
 }
 
-/** User-added custom voices as catalog entries (loaded from a local folder). */
+/**
+ * Registered voices loaded from a local folder: user-added ones ('Your Voices')
+ * and voices downloaded from the catalog ('Fine-tuned'). Both load their
+ * checkpoint from the local folder (no HF fetch) and clone their own clip.
+ */
 function customStreamVoices(): StreamVoice[] {
   return listCustomVoices().map((v) => ({
     id: v.id,
     name: v.name,
-    group: 'Your Voices',
+    group: v.source === 'catalog' ? 'Fine-tuned' : 'Your Voices',
     repo: '',
     sub: '',
     refPath: v.refPath,
@@ -142,9 +146,15 @@ function customStreamVoices(): StreamVoice[] {
 }
 
 export function getStreamVoices(): StreamVoice[] {
-  // Custom voices are appended fresh every call (cheap) so a just-added voice
-  // shows up immediately; only the folder scan below is cached.
-  return [...getScannedStreamVoices(), ...customStreamVoices()];
+  // Registered voices are rebuilt fresh every call (cheap) so a just-added or
+  // just-downloaded voice shows up immediately; only the folder scan is cached.
+  const custom = customStreamVoices();
+  const customIds = new Set(custom.map((v) => v.id));
+  // A downloaded catalog voice supersedes its bundled-clip scan entry (same id):
+  // drop the scanned one so it isn't listed twice and so it loads from the local
+  // checkpoint instead of re-fetching from HuggingFace.
+  const scanned = getScannedStreamVoices().filter((v) => !customIds.has(v.id));
+  return [...scanned, ...custom];
 }
 
 function getScannedStreamVoices(): StreamVoice[] {

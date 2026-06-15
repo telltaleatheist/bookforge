@@ -22,6 +22,7 @@ import { getExternalInstaller, installableExternalIds, ExternalInstaller } from 
 import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
 import { CUDA_TTS_ID, installCudaTts, isCudaTtsInstalled, uninstallCudaTts, cudaTtsMarkerPath } from './cuda-tts';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
+import { registerDownloadedVoice, removeCustomVoice, isDownloadedVoiceId } from '../custom-voices';
 import type {
   IComponentManager,
   OptionalComponent,
@@ -462,6 +463,9 @@ async function fetchTtsModel(
     '--repo', component.hf.repo,
     '--sub', component.hf.sub,
     '--files', ...component.hf.files,
+    // Catalog voices carry a reference clip fetched alongside the checkpoint so
+    // the downloaded voice is self-contained (the base model has none).
+    ...(component.hf.ref ? ['--ref', component.hf.ref] : []),
     '--bf-progress',
   ];
 
@@ -537,23 +541,36 @@ async function fetchTtsModel(
         return finish({ id, ok: false, error: msg });
       }
       let parsed: { ok?: boolean; error?: string; files?: Record<string, string>;
-                    subDir?: string; snapshotDir?: string } | null = null;
+                    subDir?: string; snapshotDir?: string; ref?: string } | null = null;
       try { parsed = finalJson ? JSON.parse(finalJson) : null; } catch { /* keep null */ }
 
       if (code === 0 && parsed?.ok && parsed.files) {
         const entryPath = parsed.files[modelFileOf(component.hf!.files)]
           || Object.values(parsed.files).find((p) => p.endsWith('.pth'))
           || Object.values(parsed.files)[0];
+        const subDir = parsed.subDir || parsed.snapshotDir || path.dirname(entryPath);
         const record: InstalledRecord = {
           id,
           version: component.version,
           source: 'managed',
-          path: parsed.subDir || parsed.snapshotDir || path.dirname(entryPath),
+          path: subDir,
           entryPath,
           bytes: component.sizeBytes || undefined,
           installedAt: new Date().toISOString(),
         };
         putRecord(record);
+        // A downloaded catalog voice (checkpoint + ref clip now on disk) is
+        // registered so the player and full-audiobook generation use it via the
+        // same rails as a user voice — no bundled clip or e2a preset needed.
+        if (component.hf!.ref && parsed.ref) {
+          try {
+            registerDownloadedVoice({
+              id, name: component.name, checkpointDir: subDir, refPath: parsed.ref,
+            });
+          } catch (err) {
+            console.warn(`[COMPONENTS] ${id}: voice registration failed:`, err);
+          }
+        }
         emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
         return finish({ id, ok: true, record });
       }
@@ -956,6 +973,12 @@ async function uninstall(id: string): Promise<void> {
     dropRecord(id);
     console.log(`[COMPONENTS] ${id}: reverted GPU TTS overlay`);
     return;
+  }
+
+  // A downloaded catalog voice is also registered as a voice — forget that
+  // registration (and its staged e2a layout) so it stops appearing in pickers.
+  if (isDownloadedVoiceId(id)) {
+    try { removeCustomVoice(id); } catch { /* best-effort */ }
   }
 
   if (record.source === 'managed') {
