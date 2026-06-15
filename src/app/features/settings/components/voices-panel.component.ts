@@ -95,15 +95,12 @@ interface CustomVoice {
 
           @if (selectionMode()) {
             @if (status.state === 'installed') {
-              <span class="vr-ready" title="Already installed">✓</span>
+              <span class="vr-ready" title="Already installed">✓ Installed</span>
             } @else {
               <span class="vr-size">{{ isBase ? '~1.9 GB' : '1.7 GB' }}</span>
-              <input
-                type="checkbox"
-                class="vr-check"
-                tabindex="-1"
-                [checked]="sel.isSelected(status.component.id)"
-              />
+              @if (sel.isSelected(status.component.id)) {
+                <span class="vr-pick" aria-hidden="true">✓</span>
+              }
             }
           } @else if (status.state === 'installing' && status.progress; as prog) {
             <div class="vr-progress">
@@ -262,13 +259,22 @@ interface CustomVoice {
 
       &:hover { background: var(--bg-elevated); }
       &:last-child { border-bottom: none; }
-      /* Whole-row click target in selection mode; the box lights up when picked. */
-      &.selectable { cursor: pointer; border-radius: $radius-sm; }
-      &.selected {
-        background: color-mix(in srgb, var(--accent) 14%, transparent);
-        box-shadow: inset 2px 0 0 var(--accent);
+      /* Selection mode: each row is its own full box that lights up entirely when
+         picked (like the pipeline's source-stage boxes), so the whole card is the
+         toggle — no separate checkbox. */
+      &.selectable {
+        cursor: pointer;
+        border: 1px solid var(--border-default);
+        border-radius: 8px;
+        margin-bottom: 6px;
+        transition: all 0.12s ease;
       }
-      &.selected:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+      &.selectable:hover { background: var(--bg-elevated); border-color: var(--text-tertiary); }
+      &.selected, &.selected:hover {
+        background: color-mix(in srgb, var(--accent) 16%, transparent);
+        border-color: var(--accent);
+      }
+      &.selected .vr-name { color: var(--accent); font-weight: $font-weight-medium; }
     }
 
     .select-all-bar {
@@ -306,8 +312,8 @@ interface CustomVoice {
       white-space: nowrap;
     }
 
-    /* pointer-events:none → clicks fall through to the whole-row handler. */
-    .vr-check { flex-shrink: 0; width: 16px; height: 16px; accent-color: var(--accent); pointer-events: none; }
+    /* Selected indicator (whole box is the toggle — no checkbox). */
+    .vr-pick { flex-shrink: 0; color: var(--accent); font-weight: 700; font-size: var(--ui-font-sm); }
 
     .vr-progress {
       flex: 0 0 80px;

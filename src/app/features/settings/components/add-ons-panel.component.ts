@@ -61,7 +61,13 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
 
       <div class="component-list">
         @for (status of addOns(); track status.component.id) {
-          <div class="component-card" [class.incompatible]="status.state === 'incompatible'">
+          <div
+            class="component-card"
+            [class.incompatible]="status.state === 'incompatible'"
+            [class.selectable]="selectionMode() && isDownloadable(status.component) && status.state !== 'installed'"
+            [class.selected]="selectionMode() && isDownloadable(status.component) && sel.isSelected(status.component.id)"
+            (click)="onCardSelectClick(status)"
+          >
             <div class="component-head">
               <div class="component-meta">
                 <h4 class="component-name">{{ status.component.name }}</h4>
@@ -182,14 +188,13 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
                   @if (isManaged(status.component)) {
                     @if (selectionMode()) {
                       @if (isDownloadable(status.component)) {
-                        <label class="select-check">
-                          <input
-                            type="checkbox"
-                            [checked]="sel.isSelected(status.component.id)"
-                            (change)="sel.toggle(status.component.id)"
-                          />
-                          Add to downloads
-                        </label>
+                        <span class="select-check">
+                          @if (sel.isSelected(status.component.id)) {
+                            <span class="sc-pick" aria-hidden="true">✓</span> Added
+                          } @else {
+                            Add to downloads
+                          }
+                        </span>
                       }
                     } @else {
                       <desktop-button
@@ -333,6 +338,15 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
       &.incompatible {
         opacity: 0.7;
       }
+      /* Selection mode: the whole card is the toggle and lights up entirely when
+         picked (matches the voices/languages/pipeline boxes). */
+      &.selectable { cursor: pointer; transition: all 0.12s ease; }
+      &.selectable:hover { border-color: var(--text-tertiary); }
+      &.selected, &.selected:hover {
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
+        border-color: var(--accent);
+      }
+      &.selected .component-name { color: var(--accent); }
     }
 
     .component-head {
@@ -452,16 +466,16 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
       &.installed-note { color: var(--success); }
     }
 
+    /* Label only — the whole card is the click target, so this is non-interactive. */
     .select-check {
       display: inline-flex;
       align-items: center;
       gap: var(--ui-spacing-sm);
       font-size: var(--ui-font-sm);
       color: var(--text-secondary);
-      cursor: pointer;
-
-      input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+      pointer-events: none;
     }
+    .sc-pick { color: var(--accent); font-weight: 700; }
 
     .help-link {
       font-size: var(--ui-font-sm);
@@ -627,6 +641,13 @@ export class AddOnsPanelComponent implements OnInit {
   readonly selectedHereCount = computed(() =>
     this.selectableAddOnIds().filter((id) => this.sel.isSelected(id)).length,
   );
+
+  /** Whole-card toggle in selection mode (downloadable packs only). */
+  onCardSelectClick(status: ComponentStatus): void {
+    if (this.selectionMode() && status.state !== 'installed' && this.isDownloadable(status.component)) {
+      this.sel.toggle(status.component.id);
+    }
+  }
 
   /** Select-all / Deselect-all over the downloadable add-ons shown here. */
   toggleSelectAll(): void {
