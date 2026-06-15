@@ -116,10 +116,25 @@ interface Opt { value: string; label: string; }
           </div>
         </div>
       </section>
+
+      <div class="pd-save">
+        <button class="pd-save-btn" (click)="save()" [disabled]="!dirty() || saving()">
+          {{ saving() ? 'Saving…' : (dirty() ? 'Save changes' : 'Saved') }}
+        </button>
+        @if (dirty()) { <span class="pd-unsaved">You have unsaved changes</span> }
+      </div>
     </div>
   `,
   styles: [`
     .pd { display: flex; flex-direction: column; gap: 20px; max-width: 640px; }
+    .pd-save { display: flex; align-items: center; gap: 12px; padding-top: 4px; }
+    .pd-save-btn {
+      padding: 8px 18px; border-radius: 7px; border: 1px solid transparent;
+      background: var(--accent, var(--accent-primary)); color: #1a1a1a;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .pd-save-btn:disabled { opacity: 0.5; cursor: default; }
+    .pd-unsaved { font-size: 12px; color: var(--text-secondary); }
     .pd-intro { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
     .pd-group { display: flex; flex-direction: column; gap: 12px; }
     .pd-group h4 { margin: 0; font-size: 13px; font-weight: 700; color: var(--text-primary); }
@@ -149,7 +164,13 @@ interface Opt { value: string; label: string; }
 export class PipelineDefaultsPanelComponent {
   private readonly settings = inject(SettingsService);
 
-  readonly d = computed<PipelineDefaults>(() => this.settings.getPipelineDefaults());
+  // Draft edits live here and are applied to settings ONLY when the user clicks
+  // Save — no auto-save on change. `saved` is the last-persisted snapshot so we
+  // can show a dirty state and a working Save button.
+  readonly d = signal<PipelineDefaults>(this.settings.getPipelineDefaults());
+  private readonly saved = signal<PipelineDefaults>(this.settings.getPipelineDefaults());
+  readonly dirty = computed(() => JSON.stringify(this.d()) !== JSON.stringify(this.saved()));
+  readonly saving = signal(false);
 
   // Mac GPU = MPS (Metal); CUDA is Windows/Linux only — show the right one.
   readonly isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
@@ -213,17 +234,23 @@ export class PipelineDefaultsPanelComponent {
   setProvider(role: 'cleanup' | 'simplify' | 'translate', provider: AIProvider): void {
     // Reset the model to the new provider's first option (or '' for local).
     const first = this.modelsFor(provider)[0]?.value ?? '';
-    this.settings.updatePipelineDefaults({
-      [`${role}Provider`]: provider,
-      [`${role}Model`]: first,
-    } as Partial<PipelineDefaults>);
+    this.d.update((v) => ({ ...v, [`${role}Provider`]: provider, [`${role}Model`]: first }) as PipelineDefaults);
   }
 
   setModel(role: 'cleanup' | 'simplify' | 'translate', model: string): void {
-    this.settings.updatePipelineDefaults({ [`${role}Model`]: model } as Partial<PipelineDefaults>);
+    this.d.update((v) => ({ ...v, [`${role}Model`]: model }) as PipelineDefaults);
   }
 
+  /** Update the DRAFT only — nothing persists until Save. */
   set(updates: Partial<PipelineDefaults>): void {
-    this.settings.updatePipelineDefaults(updates);
+    this.d.update((v) => ({ ...v, ...updates }));
+  }
+
+  /** Persist the draft as the new Pipeline Defaults. */
+  save(): void {
+    this.saving.set(true);
+    this.settings.setPipelineDefaults(this.d());
+    this.saved.set(this.d());
+    this.saving.set(false);
   }
 }
