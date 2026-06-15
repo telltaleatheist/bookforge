@@ -69,9 +69,12 @@ interface Opt { value: string; label: string; }
         <div class="pd-row">
           <label class="pd-label">Processing device</label>
           <div class="pd-btns">
-            <button class="pd-btn" [class.selected]="d().ttsDevice === 'cpu'" (click)="set({ ttsDevice: 'cpu' })">CPU</button>
-            <button class="pd-btn" [class.selected]="d().ttsDevice === 'mps'" (click)="set({ ttsDevice: 'mps' })">MPS</button>
-            <button class="pd-btn" [class.selected]="d().ttsDevice === 'gpu'" (click)="set({ ttsDevice: 'gpu' })">GPU</button>
+            <button class="pd-btn" [class.selected]="d().ttsDevice === 'cpu'" (click)="set({ ttsDevice: 'cpu' })">CPU{{ isMac ? ' (recommended)' : '' }}</button>
+            @if (isMac) {
+              <button class="pd-btn" [class.selected]="d().ttsDevice === 'mps'" (click)="set({ ttsDevice: 'mps' })">GPU (MPS)</button>
+            } @else {
+              <button class="pd-btn" [class.selected]="d().ttsDevice === 'gpu'" (click)="set({ ttsDevice: 'gpu' })">GPU (CUDA)</button>
+            }
           </div>
         </div>
 
@@ -147,6 +150,9 @@ export class PipelineDefaultsPanelComponent {
   private readonly settings = inject(SettingsService);
 
   readonly d = computed<PipelineDefaults>(() => this.settings.getPipelineDefaults());
+
+  // Mac GPU = MPS (Metal); CUDA is Windows/Linux only — show the right one.
+  readonly isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
 
   constructor() {
     void this.loadXttsVoices();

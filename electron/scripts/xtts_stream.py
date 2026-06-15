@@ -274,14 +274,23 @@ class XTTSStreamServer:
         self.gpt_cond_latent = None
         self.speaker_embedding = None
         # Device selection honors the BookForge preference (XTTS_DEVICE) over raw
-        # availability: 'cpu' forces CPU even on a CUDA box (e.g. to free VRAM),
-        # 'gpu'/'cuda' use CUDA when present, 'auto' (default) picks CUDA if
-        # available. On Mac this lands on CPU deliberately — MPS causes memory
-        # pressure without any XTTS speedup, so it is never selected.
+        # availability:
+        #   'cpu'       → CPU, even on a CUDA/MPS box (e.g. to free VRAM)
+        #   'mps'       → Apple-Silicon GPU when available (explicit opt-in)
+        #   'gpu'/'cuda'→ CUDA when present
+        #   'auto'      → CUDA if available, else CPU
+        # CPU stays the recommended DEFAULT on Mac (MPS gives no XTTS speedup and
+        # adds unified-memory pressure), but an explicit 'mps' choice is honored
+        # rather than silently downgraded to CPU — 'auto' still never auto-picks MPS.
         device_pref = os.environ.get('XTTS_DEVICE', 'auto').lower()
+        mps_ok = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
         if device_pref == 'cpu':
             self.device = 'cpu'
-        else:
+        elif device_pref == 'mps':
+            self.device = 'mps' if mps_ok else 'cpu'
+        elif device_pref in ('gpu', 'cuda'):
+            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        else:  # 'auto'
             self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.generations_since_cleanup = 0
         # Which checkpoint is loaded, keyed by "repo|sub". The base XTTS-v2

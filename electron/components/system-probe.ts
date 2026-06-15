@@ -266,6 +266,11 @@ function evaluate(component: OptionalComponent, prof: SystemProfile): Compatibil
     if (!cudaOk && !appleAlt) {
       if (condaEnvAcceptsAppleSilicon) {
         reasons.push('Requires an NVIDIA CUDA GPU or Apple Silicon.');
+      } else if (prof.appleSilicon) {
+        // A CUDA-only accelerator pack on Apple Silicon. The Mac isn't GPU-less —
+        // it just uses Metal (MPS) instead of CUDA — so say so, rather than imply
+        // "no GPU here". MPS is a device choice in TTS settings, not a download.
+        reasons.push('For NVIDIA CUDA GPUs only — not needed on your Apple-Silicon Mac, which has its own GPU acceleration (Metal/MPS).');
       } else {
         reasons.push('Requires an NVIDIA CUDA GPU.');
       }

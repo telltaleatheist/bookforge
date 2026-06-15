@@ -592,15 +592,19 @@ interface SourceStage {
                 <div class="provider-buttons">
                   <button class="provider-btn" [class.selected]="ttsDevice() === 'cpu'" (click)="ttsDevice.set('cpu')">
                     <span class="provider-name">CPU</span>
+                    @if (isMac) { <span class="provider-status">Recommended</span> }
                   </button>
-                  <button class="provider-btn" [class.selected]="ttsDevice() === 'mps'" (click)="ttsDevice.set('mps')">
-                    <span class="provider-name">MPS</span>
-                    <span class="provider-status">Apple Silicon</span>
-                  </button>
-                  <button class="provider-btn" [class.selected]="ttsDevice() === 'gpu'" (click)="ttsDevice.set('gpu')">
-                    <span class="provider-name">GPU</span>
-                    <span class="provider-status">CUDA</span>
-                  </button>
+                  @if (isMac) {
+                    <button class="provider-btn" [class.selected]="ttsDevice() === 'mps'" (click)="ttsDevice.set('mps')">
+                      <span class="provider-name">GPU</span>
+                      <span class="provider-status">Apple Silicon (MPS)</span>
+                    </button>
+                  } @else {
+                    <button class="provider-btn" [class.selected]="ttsDevice() === 'gpu'" (click)="ttsDevice.set('gpu')">
+                      <span class="provider-name">GPU</span>
+                      <span class="provider-status">CUDA</span>
+                    </button>
+                  }
                 </div>
               </div>
 
@@ -2652,17 +2656,21 @@ export class LLWizardComponent implements OnInit {
 
   readonly ttsEngine = signal<'xtts' | 'orpheus'>('xtts');
   readonly ttsDevice = signal<'cpu' | 'mps' | 'gpu'>('cpu');
+  // Mac GPU acceleration is MPS (Metal); CUDA is Windows/Linux only — so the
+  // device picker offers the right GPU per platform instead of a dead button.
+  readonly isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
   readonly ttsWorkers = signal(2);
   /** Once the user picks a worker count here, stop re-syncing it from the global. */
   private workerCountTouched = false;
   /**
-   * Will this TTS job actually run on the GPU? Either the device is set to GPU, or
-   * the CUDA pack is installed (the job path auto-upgrades CPU→CUDA then). On the
-   * GPU the engine serializes to one worker, so parallel workers are pointless —
-   * hide the control and force 1 there.
+   * Will this TTS job actually run on the GPU? The device is set to a GPU (CUDA
+   * 'gpu' or Apple-Silicon 'mps'), or the CUDA pack is installed (the job path
+   * auto-upgrades CPU→CUDA then). On a single GPU the engine serializes to one
+   * worker — and extra MPS workers each load a model and spike unified memory —
+   * so parallel workers are pointless: hide the control and force 1 there.
    */
   readonly ttsUsesGpu = computed(() =>
-    this.ttsDevice() === 'gpu' || this.componentService.isInstalled('cuda-tts'),
+    this.ttsDevice() === 'gpu' || this.ttsDevice() === 'mps' || this.componentService.isInstalled('cuda-tts'),
   );
   /** What jobs actually use: the picked count only when multi-worker helps, else 1. */
   readonly effectiveTtsWorkers = computed(() =>
