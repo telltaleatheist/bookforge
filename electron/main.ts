@@ -9895,7 +9895,25 @@ protocol.registerSchemesAsPrivileged([
   }
 ]);
 
+// Single-instance lock: a second launch must NOT run while the first is doing
+// the first-run runtime unpack — two processes extracting/copying into the same
+// userData/runtime dir is a prime cause of a corrupted install. The second
+// instance just focuses the existing window and exits.
+const isPrimaryInstance = app.requestSingleInstanceLock();
+if (isPrimaryInstance) {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 app.whenReady().then(async () => {
+  if (!isPrimaryInstance) {
+    app.quit();
+    return;
+  }
   // Initialize rolling logger
   await initializeLoggers();
   const logger = getMainLogger();
