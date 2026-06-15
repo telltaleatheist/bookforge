@@ -414,8 +414,15 @@ async function doEnsureBundledE2a(onProgress?: (message: string) => void): Promi
 
   // Pass 1 — code: overwrite so snapshot updates land. models/ and voices/
   // are excluded here; they get merge semantics below.
+  //
+  // ASYNC copy (fs.promises.cp), NOT fs.cpSync: this runs in the Electron MAIN
+  // process, and a synchronous multi-GB copy blocks its event loop for the whole
+  // duration — which starves every IPC reply the renderer is waiting on, so the
+  // first-run UI freezes / becomes "very slow to respond" (worst on Windows NTFS,
+  // where COPYFILE_FICLONE falls back to a full byte copy). The async form yields
+  // between files, keeping IPC — and the UI — responsive while it copies.
   const skipTopLevel = new Set(['models', 'voices', E2A_SNAPSHOT_STAMP]);
-  fs.cpSync(snapshotDir, runtimeDir, {
+  await fs.promises.cp(snapshotDir, runtimeDir, {
     recursive: true,
     force: true,
     mode: CLONE_MODE,
@@ -438,7 +445,9 @@ async function doEnsureBundledE2a(onProgress?: (message: string) => void): Promi
     const src = path.join(snapshotDir, sub);
     if (!fs.existsSync(src)) continue;
     onProgress?.(sub === 'models' ? 'Installing bundled TTS models…' : 'Installing bundled voices…');
-    fs.cpSync(src, path.join(runtimeDir, sub), {
+    // Async copy (see pass 1) — keeps the main-process event loop / IPC alive so
+    // the setup UI stays responsive while the (potentially large) assets copy.
+    await fs.promises.cp(src, path.join(runtimeDir, sub), {
       recursive: true,
       force: false,
       errorOnExist: false,

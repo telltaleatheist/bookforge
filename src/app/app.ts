@@ -7,13 +7,9 @@ import {
   DesktopThemeService
 } from './creamsicle-desktop';
 import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.component';
-import { OnboardingComponent } from './components/onboarding/onboarding.component';
 import { SetupDownloadDockComponent } from './components/setup-download-dock/setup-download-dock.component';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
-import { AiService } from './core/services/ai.service';
-import { ElectronService } from './core/services/electron.service';
-import { StudioService } from './features/studio/services/studio.service';
 
 @Component({
   selector: 'app-root',
@@ -24,7 +20,6 @@ import { StudioService } from './features/studio/services/studio.service';
     WindowChromeComponent,
     StatusBarComponent,
     NavRailComponent,
-    OnboardingComponent,
     SetupDownloadDockComponent
   ],
   template: `
@@ -48,13 +43,9 @@ import { StudioService } from './features/studio/services/studio.service';
       </div>
     }
 
-    <!-- Onboarding wizard (shown on first launch). Latched open via showOnboarding
-         so it survives the moment the library is created (which flips isConfigured
-         true) — otherwise the wizard would vanish on its "ready" step before the
-         user hits Finish, skipping the guided /setup navigation. -->
-    @if (showOnboarding()) {
-      <app-onboarding (complete)="onOnboardingComplete()" />
-    }
+    <!-- First launch has no separate onboarding modal anymore: the guided Setup
+         page (/setup) owns the whole first run, with the library-location picker
+         as its first step. The first-run gate below routes there. -->
 
     <div class="app-container" [attr.data-theme]="themeService.resolvedTheme()">
       <desktop-window
@@ -290,40 +281,27 @@ export class App implements OnInit {
   readonly libraryService = inject(LibraryService);
   readonly runtime = inject(RuntimeService);
   private readonly router = inject(Router);
-  private readonly ai = inject(AiService);
-  private readonly electron = inject(ElectronService);
-  private readonly studio = inject(StudioService);
 
   // Lets the user dismiss the setup overlay (only reachable in the error state).
   private readonly setupDismissed = signal(false);
 
-  // Onboarding visibility, latched. Creating the library flips isConfigured true
-  // mid-wizard (on the "ready" step), so we can't gate the wizard on isConfigured
-  // directly or it unmounts before Finish → the /setup navigation never fires.
-  // The effect below turns it on once when needed; onOnboardingComplete turns it off.
-  readonly showOnboarding = signal(false);
-  private readonly onboardingGate = effect(() => {
-    if (this.libraryService.loading()) return;
-    if (!this.libraryService.isConfigured() && !this.onboardingDone) {
-      this.showOnboarding.set(true);
-    }
-  });
-  private onboardingDone = false;
-
-  // Environment-based first-run: when the bundled engine was created from scratch
-  // this launch (fresh install / post-"Remove all data"), the guided setup was
-  // never done for THIS install — even if a stale localStorage onboarding flag
-  // survived an uninstall and makes the app look "configured". Route to /setup
-  // instead of dumping the user on the home screen with an unset-up engine. The
-  // no-library case is handled by onboardingGate (onboarding → /setup); this
-  // covers the stale-flag case where onboarding was wrongly skipped.
+  // First-run routing. The guided Setup page (/setup) is now the entire first-run
+  // experience — its first step is the library-location picker (no separate
+  // onboarding modal). Route there when:
+  //   • no library is configured yet (true first run), or
+  //   • the library looks configured but the bundled engine was created from
+  //     scratch this launch (fresh install whose localStorage onboarding flag
+  //     survived an uninstall) — setup was never really done for THIS install.
   private firstRunRouted = false;
   private readonly firstRunGate = effect(() => {
     if (this.firstRunRouted) return;
-    if (!this.runtime.freshInstall()) return;
     if (this.isStandaloneWindow() || this.libraryService.loading()) return;
-    if (this.showOnboarding()) return;              // onboarding owns this case
-    if (this.libraryService.isConfigured()) {
+    if (!this.libraryService.isConfigured()) {
+      this.firstRunRouted = true;
+      void this.router.navigate(['/setup']);
+      return;
+    }
+    if (this.runtime.freshInstall()) {
       this.firstRunRouted = true;
       void this.router.navigate(['/setup']);
     }
@@ -396,35 +374,5 @@ export class App implements OnInit {
 
   ngOnInit() {
     this.themeService.initializeTheme();
-  }
-
-  async onOnboardingComplete(): Promise<void> {
-    // Close the wizard for good, then walk the user through the guided setup
-    // (AI → voices → language packs → optional tools → home).
-    this.onboardingDone = true;
-    this.showOnboarding.set(false);
-    void this.seedDefaultBook();
-    await this.ai.refresh();
-    void this.router.navigate(['/setup']);
-  }
-
-  /** First run only: copy the bundled public-domain book OUT of app resources and
-   *  INTO the chosen library, set up as the user's first book. Best-effort — never
-   *  blocks setup. The "done" flag is only set once the book is actually imported,
-   *  so a transient failure can still seed on a later attempt (and a build that
-   *  ships no seed book never burns the flag). */
-  private async seedDefaultBook(): Promise<void> {
-    const KEY = 'bookforge-seed-book-added';
-    if (localStorage.getItem(KEY)) return;
-    try {
-      const path = await this.electron.getSeedBookPath();
-      if (!path) return; // no bundled book (dev / not shipped) — leave the flag unset
-      const result = await this.studio.addBook(path);
-      if (result?.success) {
-        localStorage.setItem(KEY, '1'); // only mark once it's really in the library
-      }
-    } catch (err) {
-      console.warn('[App] Seeding the default book failed:', err);
-    }
   }
 }

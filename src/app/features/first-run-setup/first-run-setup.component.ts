@@ -11,9 +11,12 @@ import { AiService } from '../../core/services/ai.service';
 import { RuntimeService } from '../../core/services/runtime.service';
 import { ComponentService } from '../../core/services/component.service';
 import { SetupDownloadService } from '../../core/services/setup-download.service';
+import { LibraryService } from '../../core/services/library.service';
+import { ElectronService } from '../../core/services/electron.service';
+import { StudioService } from '../studio/services/studio.service';
 
 interface SetupStep {
-  id: 'ai' | 'voices' | 'languages' | 'tools' | 'download';
+  id: 'library' | 'ai' | 'voices' | 'languages' | 'tools' | 'download';
   title: string;
   subtitle: string;
 }
@@ -41,7 +44,22 @@ interface SetupStep {
         <header class="card-head">
           <div class="head-row">
             <h1>Set up BookForge</h1>
-            <button type="button" class="skip-all" (click)="complete()">Skip setup</button>
+            <div class="head-right">
+              <!-- Engine status as a compact inline pill (not a full-width banner
+                   repeated on every step) — declutters the body. -->
+              <span class="engine-pill" [class.ready]="runtime.ready()">
+                @if (runtime.ready()) {
+                  <span class="engine-check">&#10003;</span> Engine ready
+                } @else {
+                  <span class="engine-spinner"></span> Engine setting up…
+                }
+              </span>
+              <!-- No "Skip setup" on the library step: a library must be chosen
+                   before the rest of the app works. -->
+              @if (active().id !== 'library') {
+                <button type="button" class="skip-all" (click)="complete()">Skip setup</button>
+              }
+            </div>
           </div>
 
           <!-- Step indicator -->
@@ -81,21 +99,6 @@ interface SetupStep {
             <span class="finishing-hint"><span class="engine-spinner"></span> Opening when ready…</span>
           </footer>
         } @else {
-        <!-- Non-blocking runtime status: the engine unpacks in the background
-             while the user configures. Voice/language downloads light up when
-             it's ready (see ComponentService gate). -->
-        @if (!runtime.ready()) {
-          <div class="engine-banner preparing">
-            <span class="engine-spinner"></span>
-            <span>Audiobook engine is still setting up — keep going; voice &amp; language downloads will start as soon as it’s ready.</span>
-          </div>
-        } @else {
-          <div class="engine-banner ready">
-            <span class="engine-check">&#10003;</span>
-            <span>Audiobook engine ready.</span>
-          </div>
-        }
-
         <!-- Per-step heading -->
         <div class="step-head">
           <h2>{{ active().title }}</h2>
@@ -112,6 +115,40 @@ interface SetupStep {
         <!-- Embedded panel body -->
         <div class="step-body">
           @switch (active().id) {
+            @case ('library') {
+              <div class="library-step">
+                @if (libraryError()) {
+                  <div class="library-error">{{ libraryError() }}</div>
+                }
+                <button
+                  type="button"
+                  class="lib-option"
+                  [class.selected]="libOption() === 'default'"
+                  (click)="selectLibOption('default')"
+                >
+                  <span class="lib-icon">&#127968;</span>
+                  <div class="lib-text">
+                    <strong>Use the default folder</strong>
+                    <span class="lib-path">Documents / BookForge</span>
+                  </div>
+                  @if (libOption() === 'default') { <span class="lib-pick">&#10003;</span> }
+                </button>
+
+                <button
+                  type="button"
+                  class="lib-option"
+                  [class.selected]="libOption() === 'custom'"
+                  (click)="browseForLibrary()"
+                >
+                  <span class="lib-icon">&#128193;</span>
+                  <div class="lib-text">
+                    <strong>Choose a custom folder</strong>
+                    <span class="lib-path">{{ customLibPath() || 'Select a folder…' }}</span>
+                  </div>
+                  @if (libOption() === 'custom') { <span class="lib-pick">&#10003;</span> }
+                </button>
+              </div>
+            }
             @case ('ai') {
               <app-ai-setup-wizard [embedded]="true" />
             }
@@ -160,10 +197,24 @@ interface SetupStep {
 
         <!-- Footer controls -->
         <footer class="card-foot">
+          @if (active().id === 'library') {
+            <!-- The library is a one-way gate: a folder must be chosen before the
+                 rest of setup (and the app) is usable, so this step has only a
+                 Continue button that creates the library and advances. -->
+            <div class="spacer"></div>
+            <button
+              type="button"
+              class="btn primary"
+              [disabled]="!canContinueLibrary() || creatingLibrary()"
+              (click)="createLibraryAndAdvance()"
+            >
+              {{ creatingLibrary() ? 'Setting up…' : 'Continue' }}
+            </button>
+          } @else {
           <button
             type="button"
             class="btn ghost"
-            [disabled]="currentStep() === 0"
+            [disabled]="currentStep() <= 1"
             (click)="back()"
           >
             Back
@@ -183,6 +234,7 @@ interface SetupStep {
             } @else {
               <button type="button" class="btn primary" (click)="complete()">Finish</button>
             }
+          }
           }
         </footer>
         }
@@ -289,25 +341,29 @@ interface SetupStep {
       background: var(--accent);
     }
 
-    .engine-banner {
+    .head-right {
       display: flex;
       align-items: center;
-      gap: 10px;
-      margin: 0 0 16px;
-      padding: 10px 14px;
-      border-radius: 8px;
-      font-size: 0.8rem;
-      line-height: 1.4;
+      gap: 12px;
     }
-    .engine-banner.preparing {
+
+    /* Compact engine-status pill in the header — replaces the old full-width
+       banner that repeated on every step. */
+    .engine-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      white-space: nowrap;
       background: color-mix(in srgb, var(--accent) 10%, transparent);
       border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border-default));
       color: var(--text-secondary);
     }
-    .engine-banner.ready {
-      background: color-mix(in srgb, #22c55e 10%, transparent);
-      border: 1px solid color-mix(in srgb, #22c55e 30%, var(--border-default));
-      color: var(--text-secondary);
+    .engine-pill.ready {
+      background: color-mix(in srgb, #22c55e 12%, transparent);
+      border-color: color-mix(in srgb, #22c55e 35%, var(--border-default));
     }
     .engine-check { color: #22c55e; font-weight: 700; }
     .engine-spinner {
@@ -452,6 +508,50 @@ interface SetupStep {
       color: var(--accent);
     }
 
+    /* Library step: full-box options that light up on click, matching the
+       voice/language selection boxes elsewhere in setup. */
+    .library-step { display: flex; flex-direction: column; gap: 10px; }
+    .library-error {
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      background: color-mix(in srgb, var(--color-danger, #e06c75) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--color-danger, #e06c75) 40%, transparent);
+      color: var(--color-danger, #e06c75);
+    }
+    .lib-option {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      width: 100%;
+      text-align: left;
+      padding: 14px 16px;
+      border: 1px solid var(--border-default, #333);
+      border-radius: 10px;
+      background: transparent;
+      color: var(--text-primary, #f0f0f0);
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .lib-option:hover { border-color: var(--text-tertiary, #888); }
+    .lib-option.selected {
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+      border-color: var(--accent);
+    }
+    .lib-icon { font-size: 22px; flex: 0 0 auto; }
+    .lib-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+    .lib-text strong { font-size: 14px; font-weight: 600; }
+    .lib-path {
+      font-size: 12px;
+      color: var(--text-secondary, #9a9a9a);
+      font-family: var(--font-mono, monospace);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .lib-option.selected .lib-text strong { color: var(--accent); }
+    .lib-pick { flex: 0 0 auto; color: var(--accent); font-weight: 700; font-size: 16px; }
+
     .card-foot {
       display: flex;
       align-items: center;
@@ -501,6 +601,23 @@ export class FirstRunSetupComponent {
   protected runtime = inject(RuntimeService);
   private components = inject(ComponentService);
   protected sel = inject(SetupDownloadService);
+  private library = inject(LibraryService);
+  private electron = inject(ElectronService);
+  private studio = inject(StudioService);
+
+  // ── Library step (first run) ───────────────────────────────────────────────
+  // The picker that used to live in the separate onboarding modal now opens setup
+  // as step 0, so library choice + engine setup + the rest happen as one flow.
+  protected readonly libOption = signal<'default' | 'custom'>('default');
+  protected readonly customLibPath = signal('');
+  protected readonly creatingLibrary = signal(false);
+  protected readonly libraryError = signal('');
+
+  /** Continue is enabled once a usable choice exists (default always is; a
+   *  custom folder must be picked first). */
+  protected readonly canContinueLibrary = computed(
+    () => this.libOption() === 'default' || !!this.customLibPath(),
+  );
 
   /** The catalog statuses for every checked component (for the review list). */
   protected readonly selectedStatuses = computed(() => {
@@ -517,6 +634,12 @@ export class FirstRunSetupComponent {
   );
 
   protected readonly steps: SetupStep[] = [
+    {
+      id: 'library',
+      title: 'Choose your library',
+      subtitle:
+        'Pick where BookForge keeps your books, projects, and finished audiobooks. You can use the default folder or choose your own — these are your files and stay put if you ever uninstall.'
+    },
     {
       id: 'ai',
       title: 'Set up AI',
@@ -617,6 +740,66 @@ export class FirstRunSetupComponent {
       this.sel.collapse();
     }
     void this.router.navigate(['/studio']);
+  }
+
+  // ── Library step actions ────────────────────────────────────────────────────
+
+  selectLibOption(opt: 'default' | 'custom'): void {
+    this.libraryError.set('');
+    this.libOption.set(opt);
+  }
+
+  async browseForLibrary(): Promise<void> {
+    const result = await this.electron.openFolderDialog();
+    if (result.success && result.folderPath) {
+      this.customLibPath.set(result.folderPath);
+      this.libOption.set('custom');
+      this.libraryError.set('');
+    }
+  }
+
+  /** Create/confirm the chosen library, seed the first book + refresh AI, then
+   *  advance to the rest of setup. The only way past the (one-way) library step. */
+  async createLibraryAndAdvance(): Promise<void> {
+    if (this.creatingLibrary()) return;
+    this.creatingLibrary.set(true);
+    this.libraryError.set('');
+    try {
+      const result =
+        this.libOption() === 'default'
+          ? await this.library.useDefaultLibrary()
+          : await this.library.setLibraryPath(this.customLibPath());
+      if (!result.success) {
+        this.libraryError.set(result.error || 'Could not set up the library folder.');
+        return;
+      }
+      // Best-effort, non-blocking: drop the bundled book into the new library and
+      // refresh AI availability so the AI step reflects reality.
+      void this.seedDefaultBook();
+      await this.ai.refresh();
+      this.currentStep.update((s) => s + 1);
+    } catch (err) {
+      this.libraryError.set((err as Error).message);
+    } finally {
+      this.creatingLibrary.set(false);
+    }
+  }
+
+  /** First run only: copy the bundled public-domain book OUT of app resources and
+   *  INTO the chosen library as the user's first book. The "done" flag is set only
+   *  after the book is actually imported, so a transient failure can still seed on
+   *  a later attempt (and a build shipping no seed book never burns the flag). */
+  private async seedDefaultBook(): Promise<void> {
+    const KEY = 'bookforge-seed-book-added';
+    if (localStorage.getItem(KEY)) return;
+    try {
+      const path = await this.electron.getSeedBookPath();
+      if (!path) return; // no bundled book (dev / not shipped)
+      const result = await this.studio.addBook(path);
+      if (result?.success) localStorage.setItem(KEY, '1');
+    } catch (err) {
+      console.warn('[Setup] Seeding the default book failed:', err);
+    }
   }
 
   formatBytes(bytes: number): string {

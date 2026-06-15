@@ -50,7 +50,7 @@ import { SetupDownloadService } from '../../../core/services/setup-download.serv
         </div>
       }
 
-      <div class="lang-scroll">
+      <div class="lang-scroll" [class.no-cap]="selectionMode()">
         @if (installedLangs().length > 0) {
           <div class="group">
             <div class="group-head">Installed <span class="group-count">{{ installedLangs().length }}</span></div>
@@ -168,6 +168,11 @@ import { SetupDownloadService } from '../../../core/services/setup-download.serv
       scrollbar-gutter: stable;
       padding-right: var(--ui-spacing-sm);
     }
+    /* In first-run setup the panel sits inside the setup card's own scroll area
+       (.step-body). The 460px cap there left the list filling only half the panel
+       with a redundant inner scrollbar — let it grow to fill and let the card
+       scroll instead. */
+    .lang-scroll.no-cap { max-height: none; overflow-y: visible; }
 
     .select-all-bar {
       display: flex; align-items: center; gap: var(--ui-spacing-md);
