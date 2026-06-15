@@ -1801,11 +1801,18 @@ export class StudioComponent implements OnInit, OnDestroy {
     const ids = this.contextMenuSelectedIds.length > 1
       ? this.contextMenuSelectedIds
       : [this.contextMenuItem.id];
+    const failures: string[] = [];
     for (const id of ids) {
       const result = await this.studioService.deleteItem(id);
-      if (result.success && this.selectedItemId() === id) {
-        this.selectedItemId.set(null);
+      if (result.success) {
+        if (this.selectedItemId() === id) this.selectedItemId.set(null);
+      } else {
+        failures.push(result.error || 'Unknown error');
       }
+    }
+    if (failures.length > 0) {
+      // Surface the failure instead of silently leaving the folder on disk.
+      this.exportStatus.set(`Couldn't delete ${failures.length} item${failures.length > 1 ? 's' : ''}: ${failures[0]}`);
     }
     this.hideContextMenu();
   }

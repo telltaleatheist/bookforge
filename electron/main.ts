@@ -5633,6 +5633,58 @@ function setupIpcHandlers(): void {
       const filename = path.basename(epubSourcePath);
       const ext = path.extname(filename).toLowerCase();
 
+      // ── Duplicate guard ──────────────────────────────────────────────────
+      // Never import the same source file twice. Compare a content hash against
+      // every existing project's stored source.fileHash; for older projects that
+      // predate hashing, fall back to hashing their source file only when its
+      // size matches (cheap — avoids re-hashing the whole library each import).
+      const sha256File = (p: string): Promise<string> => new Promise((resolve, reject) => {
+        const h = crypto.createHash('sha256');
+        const stream = fsSync.createReadStream(p);
+        stream.on('error', reject);
+        stream.on('data', (d) => h.update(d));
+        stream.on('end', () => resolve(h.digest('hex')));
+      });
+      const importHash = await sha256File(epubSourcePath);
+      const importSize = (await fs.stat(epubSourcePath)).size;
+      {
+        const existingFolder = getProjectsFolder();
+        let names: string[] = [];
+        try { names = await fs.readdir(existingFolder); } catch { /* no projects yet */ }
+        for (const name of names) {
+          const dir = path.join(existingFolder, name);
+          let mf: any;
+          try { mf = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json'), 'utf-8')); }
+          catch { continue; }
+          let match = false;
+          if (mf.source?.fileHash) {
+            match = mf.source.fileHash === importHash;
+          } else {
+            try {
+              const srcDir = path.join(dir, 'source');
+              const orig = (await fs.readdir(srcDir)).find((f) => f.startsWith('original.'));
+              if (orig) {
+                const st = await fs.stat(path.join(srcDir, orig));
+                if (st.size === importSize) {
+                  match = (await sha256File(path.join(srcDir, orig))) === importHash;
+                }
+              }
+            } catch { /* unreadable project — skip */ }
+          }
+          if (match) {
+            const dupTitle = mf.metadata?.title || name;
+            console.log(`[audiobook:import] Duplicate of existing project "${name}" — skipping import`);
+            return {
+              success: false,
+              duplicate: true,
+              existingProjectId: name,
+              existingTitle: dupTitle,
+              error: `“${dupTitle}” is already in your library — skipped to avoid a duplicate.`,
+            };
+          }
+        }
+      }
+
       let title: string;
       let author: string;
       let authorFileAs: string | undefined;
@@ -5748,6 +5800,7 @@ function setupIpcHandlers(): void {
         source: {
           type: sourceType,
           originalFilename: filename,
+          fileHash: importHash,
           deletedBlockIds: []
         },
         metadata: {
