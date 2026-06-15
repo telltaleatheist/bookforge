@@ -194,21 +194,26 @@ interface SetupStep {
       display: flex;
       justify-content: center;
       align-items: flex-start;
-      padding: 32px 16px;
-      min-height: 100%;
+      /* Bottom padding clears the app shell's fixed first-run progress bar
+         (position:fixed; bottom:0) so the card's footer is never hidden behind it. */
+      padding: 24px 16px 84px;
+      height: 100%;
       box-sizing: border-box;
+      overflow: hidden;
       background: var(--bg-base, #1a1a1a);
     }
 
     .setup-card {
       width: 100%;
       max-width: 720px;
-      /* Fill the window (minus the page's 32px top/bottom padding) so the card
-         reaches near the bottom instead of stopping partway. The height is
-         viewport-derived, so it's identical on every step — the Back / Skip /
-         Next footer stays in the exact same spot the whole way through, and the
+      /* Fill the actual content area (the router outlet), NOT the whole viewport:
+         the setup page renders inside the app shell (titlebar + status bar + the
+         fixed bottom progress bar), so 100vh overran the bottom and hid the Next
+         button. height:100% of .setup-page (minus its padding) keeps the Back /
+         Skip / Next footer pinned just above the progress bar on every step; the
          body (flex: 1, overflow-y: auto) absorbs per-step size changes. */
-      height: calc(100vh - 64px);
+      height: 100%;
+      max-height: 100%;
       background: var(--bg-elevated, #242424);
       border: 1px solid var(--border-default, #333);
       border-radius: 12px;
