@@ -9918,6 +9918,16 @@ app.whenReady().then(async () => {
   const logger = getMainLogger();
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
 
+  // Load the downloadable-component catalog (voices + language packs): seed from
+  // the embedded bundle, load any cached catalog, and kick off a background
+  // refresh from the catalog server. Non-blocking — never delays the window.
+  try {
+    const { catalogService } = await import('./components/catalog-service.js');
+    await catalogService.init();
+  } catch (err) {
+    logger.warn('Catalog init failed', { error: (err as Error).message });
+  }
+
   // Clean up stale temp folders from previous sessions (Syncthing compatibility)
   try {
     const { cleanupStaleTempFolders } = await import('./parallel-tts-bridge.js');

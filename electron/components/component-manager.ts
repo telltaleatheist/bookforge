@@ -15,7 +15,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execSync } from 'child_process';
 import { app, shell } from 'electron';
 
-import { CATALOG, getComponent } from './component-catalog';
+import { getCatalog, getComponent } from './component-catalog';
 import { systemProbe } from './system-probe';
 import { downloadAndExtract, downloadFile } from './downloader';
 import { getExternalInstaller, installableExternalIds, ExternalInstaller } from './external-installers';
@@ -1119,7 +1119,7 @@ async function buildStatus(
 async function listStatus(): Promise<ComponentStatus[]> {
   const profile = await systemProbe.profile();
   const out: ComponentStatus[] = [];
-  for (const component of CATALOG) {
+  for (const component of getCatalog()) {
     out.push(await buildStatus(component, profile));
   }
   return out;

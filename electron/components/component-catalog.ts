@@ -209,16 +209,22 @@ const orpheus: OptionalComponent = {
 // Catalog
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const CATALOG: OptionalComponent[] = [
-  calibre,
-  tesseract,
-  orpheus,
-  llamaCudaComponent(),
-  cudaTtsComponent(),
-  ...voiceComponents(),
-  ...languagePackComponents(),
-];
+// Built fresh on every call so it reflects the latest catalog snapshot: the
+// voice and language-pack entries come from CatalogService, which swaps in the
+// live catalog after its background network refresh. The static entries
+// (calibre, tesseract, orpheus, GPU packs) never change.
+export function getCatalog(): OptionalComponent[] {
+  return [
+    calibre,
+    tesseract,
+    orpheus,
+    llamaCudaComponent(),
+    cudaTtsComponent(),
+    ...voiceComponents(),
+    ...languagePackComponents(),
+  ];
+}
 
 export function getComponent(id: string): OptionalComponent | undefined {
-  return CATALOG.find((c) => c.id === id);
+  return getCatalog().find((c) => c.id === id);
 }

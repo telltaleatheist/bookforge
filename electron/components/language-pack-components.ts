@@ -13,92 +13,28 @@
  */
 
 import type { OptionalComponent } from './component-types';
+import { catalogService } from './catalog-service';
 
 // Approximate per-pack download size for the UI. The true size is reported by
 // the download helper's BF_PROGRESS lines, so this is only a headline estimate.
 const STANZA_APPROX_BYTES = 250_000_000;
 
 /**
- * The Stanza languages BookForge can download, keyed by ISO 639-1 code. Sorted
- * alphabetically by English name.
- *
- * Only languages with an actual sentence-segmentation (tokenize) model are
- * listed. Stanza's manifest also contains a few "phantom" languages that have a
- * lang_name but ship ONLY character language models (no tokenize package) —
- * Bengali (bn), Malayalam (ml), Sinhala (si). `stanza.download()` raises
- * KeyError('packages') for those, so they'd fail deterministically; they're
- * intentionally excluded. (Audited against Stanza 1.10.x: 3 of 67.)
+ * The Stanza languages BookForge can download come from the remote catalog
+ * (CatalogService), generated from the Stanza resources manifest. The indexer
+ * already filters to languages with a real `tokenize` (segmenter) model, so the
+ * "phantom" languages that ship only character LMs (Bengali, Malayalam, Odia,
+ * Sinhala) — which crash `stanza.download()` with KeyError('packages') — are
+ * excluded at the source. Until the first network refresh, CatalogService serves
+ * the bundled snapshot, so this is never empty.
  */
-export const STANZA_LANGUAGES: { code: string; name: string }[] = [
-  { code: 'sq', name: 'Albanian' },
-  { code: 'ar', name: 'Arabic' },
-  { code: 'hy', name: 'Armenian' },
-  { code: 'af', name: 'Afrikaans' },
-  { code: 'eu', name: 'Basque' },
-  { code: 'be', name: 'Belarusian' },
-  { code: 'bg', name: 'Bulgarian' },
-  { code: 'my', name: 'Burmese' },
-  { code: 'ca', name: 'Catalan' },
-  { code: 'zh-hans', name: 'Chinese (Simplified)' },
-  { code: 'zh-hant', name: 'Chinese (Traditional)' },
-  { code: 'hr', name: 'Croatian' },
-  { code: 'cs', name: 'Czech' },
-  { code: 'da', name: 'Danish' },
-  { code: 'nl', name: 'Dutch' },
-  { code: 'en', name: 'English' },
-  { code: 'et', name: 'Estonian' },
-  { code: 'fi', name: 'Finnish' },
-  { code: 'fr', name: 'French' },
-  { code: 'gl', name: 'Galician' },
-  { code: 'ka', name: 'Georgian' },
-  { code: 'de', name: 'German' },
-  { code: 'el', name: 'Greek' },
-  { code: 'he', name: 'Hebrew' },
-  { code: 'hi', name: 'Hindi' },
-  { code: 'hu', name: 'Hungarian' },
-  { code: 'is', name: 'Icelandic' },
-  { code: 'id', name: 'Indonesian' },
-  { code: 'ga', name: 'Irish' },
-  { code: 'it', name: 'Italian' },
-  { code: 'ja', name: 'Japanese' },
-  { code: 'kk', name: 'Kazakh' },
-  { code: 'ko', name: 'Korean' },
-  { code: 'ky', name: 'Kyrgyz' },
-  { code: 'la', name: 'Latin' },
-  { code: 'lv', name: 'Latvian' },
-  { code: 'lt', name: 'Lithuanian' },
-  { code: 'mt', name: 'Maltese' },
-  { code: 'mr', name: 'Marathi' },
-  { code: 'nb', name: 'Norwegian Bokmål' },
-  { code: 'nn', name: 'Norwegian Nynorsk' },
-  { code: 'fa', name: 'Persian' },
-  { code: 'pl', name: 'Polish' },
-  { code: 'pt', name: 'Portuguese' },
-  { code: 'ro', name: 'Romanian' },
-  { code: 'ru', name: 'Russian' },
-  { code: 'sa', name: 'Sanskrit' },
-  { code: 'gd', name: 'Scottish Gaelic' },
-  { code: 'sr', name: 'Serbian' },
-  { code: 'sd', name: 'Sindhi' },
-  { code: 'sk', name: 'Slovak' },
-  { code: 'sl', name: 'Slovenian' },
-  { code: 'es', name: 'Spanish' },
-  { code: 'sv', name: 'Swedish' },
-  { code: 'ta', name: 'Tamil' },
-  { code: 'te', name: 'Telugu' },
-  { code: 'th', name: 'Thai' },
-  { code: 'tr', name: 'Turkish' },
-  { code: 'uk', name: 'Ukrainian' },
-  { code: 'ur', name: 'Urdu' },
-  { code: 'ug', name: 'Uyghur' },
-  { code: 'vi', name: 'Vietnamese' },
-  { code: 'cy', name: 'Welsh' },
-  { code: 'wo', name: 'Wolof' },
-];
+export function stanzaLanguages(): { code: string; name: string }[] {
+  return catalogService.languages().map((l) => ({ code: l.code, name: l.name }));
+}
 
 /** Build the downloadable language-pack catalog: one component per language. */
 export function languagePackComponents(): OptionalComponent[] {
-  return STANZA_LANGUAGES.map((lang) => {
+  return stanzaLanguages().map((lang) => {
     return {
       id: `stanza-${lang.code}`,
       name: `${lang.name} Language Pack`,

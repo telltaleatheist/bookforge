@@ -1,0 +1,1260 @@
+/**
+ * Bundled catalog snapshot — the OFFLINE FALLBACK for the downloadable voice &
+ * language-pack lists. Embedded as TypeScript (not JSON) so it compiles into the
+ * main-process bundle with no copy step and is ALWAYS available synchronously at
+ * startup, even with no network and no cached catalog.
+ *
+ * Generated from https://owenmorgan.com/bookforge/catalog.json. To refresh this
+ * fallback, re-run the generator note in tools/catalog-indexer/README.md or just
+ * let CatalogService fetch the live catalog at runtime (it supersedes this).
+ * DO NOT hand-edit — regenerate.
+ */
+import type { CatalogData } from './catalog-types';
+
+export const BUNDLED_CATALOG: CatalogData = {
+  "schemaVersion": 1,
+  "generatedAt": "2026-06-15T16:34:18Z",
+  "generator": "bookforge-catalog-indexer/1.0",
+  "sources": {
+    "voices": "huggingface:drewThomasson/fineTunedTTSModels/xtts-v2",
+    "languages": "stanza-resources:resources_1.10.0.json"
+  },
+  "counts": {
+    "voices": 40,
+    "languages": 90
+  },
+  "voices": [
+    {
+      "id": "AiExplained",
+      "name": "AI Explained",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/AiExplained/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868641513,
+      "mirrored": false
+    },
+    {
+      "id": "ASMRCuteDragon",
+      "name": "ASMR Cute Dragon",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/ASMRCuteDragon/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288156,
+      "mirrored": false
+    },
+    {
+      "id": "AsmrRacoon",
+      "name": "ASMR Raccoon",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/AsmrRacoon/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287964,
+      "mirrored": false
+    },
+    {
+      "id": "Awkwafina",
+      "name": "Awkwafina",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/Awkwafina/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288156,
+      "mirrored": false
+    },
+    {
+      "id": "BobOdenkirk",
+      "name": "Bob Odenkirk",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/BobOdenkirk/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868641513,
+      "mirrored": false
+    },
+    {
+      "id": "BobRoss",
+      "name": "Bob Ross",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/BobRoss/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868641641,
+      "mirrored": false
+    },
+    {
+      "id": "BrinaPalencia",
+      "name": "Brina Palencia",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/BrinaPalencia/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287964,
+      "mirrored": false
+    },
+    {
+      "id": "BryanCranston",
+      "name": "Bryan Cranston",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/BryanCranston/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868642025,
+      "mirrored": false
+    },
+    {
+      "id": "BadCartmanSouthPark",
+      "name": "Cartman (South Park)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/BadCartmanSouthPark/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287900,
+      "mirrored": false
+    },
+    {
+      "id": "DavidAttenborough",
+      "name": "David Attenborough",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/DavidAttenborough/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868641513,
+      "mirrored": true
+    },
+    {
+      "id": "DeathPussInBoots",
+      "name": "Death Puss in Boots",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/DeathPussInBoots/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868641641,
+      "mirrored": false
+    },
+    {
+      "id": "DermotCrowley",
+      "name": "Dermot Crowley",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/DermotCrowley/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287900,
+      "mirrored": false
+    },
+    {
+      "id": "EvaSeymour",
+      "name": "Eva Seymour",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/EvaSeymour/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288156,
+      "mirrored": false
+    },
+    {
+      "id": "GhostMW2",
+      "name": "Ghost (MW2)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/GhostMW2/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868641513,
+      "mirrored": false
+    },
+    {
+      "id": "GideonOfnirEldenRing",
+      "name": "Gideon Ofnir (Elden Ring)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/GideonOfnirEldenRing/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288028,
+      "mirrored": false
+    },
+    {
+      "id": "JillRedfield",
+      "name": "Jill Redfield",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/JillRedfield/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287900,
+      "mirrored": false
+    },
+    {
+      "id": "JohnButlerASMR",
+      "name": "John Butler ASMR",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/JohnButlerASMR/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868641513,
+      "mirrored": false
+    },
+    {
+      "id": "JohnGreen",
+      "name": "John Green",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/JohnGreen/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287900,
+      "mirrored": false
+    },
+    {
+      "id": "JohnMulaney",
+      "name": "John Mulaney",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/JohnMulaney/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868641513,
+      "mirrored": false
+    },
+    {
+      "id": "JuliaWhenlan",
+      "name": "Julia Whenlan",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/JuliaWhenlan/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288028,
+      "mirrored": false
+    },
+    {
+      "id": "LeeHorsley",
+      "name": "Lee Horsley",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/LeeHorsley/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287900,
+      "mirrored": false
+    },
+    {
+      "id": "MelinaEldenRing",
+      "name": "Melina (Elden Ring)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/MelinaEldenRing/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287964,
+      "mirrored": false
+    },
+    {
+      "id": "MorganFreeman",
+      "name": "Morgan Freeman",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/MorganFreeman/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287900,
+      "mirrored": true
+    },
+    {
+      "id": "NeilGaiman",
+      "name": "Neil Gaiman",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/NeilGaiman/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288028,
+      "mirrored": true
+    },
+    {
+      "id": "PeterGriffinFamilyGuy",
+      "name": "Peter Griffin (Family Guy)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/PeterGriffinFamilyGuy/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288156,
+      "mirrored": false
+    },
+    {
+      "id": "RafeBeckley",
+      "name": "Rafe Beckley",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/RafeBeckley/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288156,
+      "mirrored": false
+    },
+    {
+      "id": "RainyDayHeadSpace",
+      "name": "Rainy Day Headspace",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/RainyDayHeadSpace/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868641513,
+      "mirrored": false
+    },
+    {
+      "id": "RayPorter",
+      "name": "Ray Porter",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/RayPorter/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287900,
+      "mirrored": true
+    },
+    {
+      "id": "RelaxForAWhile",
+      "name": "Relax For A While",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/RelaxForAWhile/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288156,
+      "mirrored": false
+    },
+    {
+      "id": "RosamundPike",
+      "name": "Rosamund Pike",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/RosamundPike/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287900,
+      "mirrored": true
+    },
+    {
+      "id": "ScarlettJohansson",
+      "name": "Scarlett Johansson",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/ScarlettJohansson/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287900,
+      "mirrored": true
+    },
+    {
+      "id": "SladeTeenTitans",
+      "name": "Slade (Teen Titans)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/SladeTeenTitans/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288156,
+      "mirrored": false
+    },
+    {
+      "id": "SubZeroMKX",
+      "name": "Sub-Zero (MKX)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/SubZeroMKX/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 5595256491,
+      "mirrored": false
+    },
+    {
+      "id": "TheBrain",
+      "name": "The Brain",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/TheBrain/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287900,
+      "mirrored": false
+    },
+    {
+      "id": "StanleyParable",
+      "name": "The Narrator (Stanley Parable)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/StanleyParable/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864287964,
+      "mirrored": false
+    },
+    {
+      "id": "Top15s",
+      "name": "Top15s",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/Top15s/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288156,
+      "mirrored": false
+    },
+    {
+      "id": "vincent",
+      "name": "vincent",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/vincent/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1864288028,
+      "mirrored": false
+    },
+    {
+      "id": "WhisperSalemASMR",
+      "name": "Whisper Salem ASMR",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/WhisperSalemASMR/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868641513,
+      "mirrored": false
+    },
+    {
+      "id": "JuliaCasper",
+      "name": "Julia Casper",
+      "lang": "deu",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/deu/JuliaCasper/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 1868641641,
+      "mirrored": false
+    },
+    {
+      "id": "Konishev",
+      "name": "Konishev",
+      "lang": "rus",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/rus/Konishev/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "sizeBytes": 5608292520,
+      "mirrored": false
+    }
+  ],
+  "languages": [
+    {
+      "code": "af",
+      "name": "Afrikaans",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "sq",
+      "name": "Albanian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "grc",
+      "name": "Ancient Greek",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "hbo",
+      "name": "Ancient Hebrew",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ar",
+      "name": "Arabic",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": true
+    },
+    {
+      "code": "hy",
+      "name": "Armenian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "eu",
+      "name": "Basque",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "be",
+      "name": "Belarusian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "bg",
+      "name": "Bulgarian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "bxr",
+      "name": "Buryat",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ca",
+      "name": "Catalan",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "xcl",
+      "name": "Classical Armenian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "lzh",
+      "name": "Classical Chinese",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "cop",
+      "name": "Coptic",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "hr",
+      "name": "Croatian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "cs",
+      "name": "Czech",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "da",
+      "name": "Danish",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "nl",
+      "name": "Dutch",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "en",
+      "name": "English",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "myv",
+      "name": "Erzya",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "et",
+      "name": "Estonian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "fo",
+      "name": "Faroese",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "fi",
+      "name": "Finnish",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "fr",
+      "name": "French",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": true
+    },
+    {
+      "code": "gl",
+      "name": "Galician",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ka",
+      "name": "Georgian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "de",
+      "name": "German",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": true
+    },
+    {
+      "code": "got",
+      "name": "Gothic",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "el",
+      "name": "Greek",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "he",
+      "name": "Hebrew",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "hi",
+      "name": "Hindi",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "hu",
+      "name": "Hungarian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "is",
+      "name": "Icelandic",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "id",
+      "name": "Indonesian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ga",
+      "name": "Irish",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "it",
+      "name": "Italian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": true
+    },
+    {
+      "code": "ja",
+      "name": "Japanese",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": true
+    },
+    {
+      "code": "kk",
+      "name": "Kazakh",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "kpv",
+      "name": "Komi Zyrian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ko",
+      "name": "Korean",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": true
+    },
+    {
+      "code": "kmr",
+      "name": "Kurmanji",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ky",
+      "name": "Kyrgyz",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "la",
+      "name": "Latin",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "lv",
+      "name": "Latvian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "lij",
+      "name": "Ligurian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "lt",
+      "name": "Lithuanian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "nds",
+      "name": "Low Saxon",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "qaf",
+      "name": "Maghrebi Arabic French",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "mt",
+      "name": "Maltese",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "gv",
+      "name": "Manx",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "mr",
+      "name": "Marathi",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "my",
+      "name": "Myanmar",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "pcm",
+      "name": "Naija",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "sme",
+      "name": "North Sami",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "nb",
+      "name": "Norwegian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "nn",
+      "name": "Norwegian Nynorsk",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "cu",
+      "name": "Old Church Slavonic",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "orv",
+      "name": "Old East Slavic",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ang",
+      "name": "Old English",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "fro",
+      "name": "Old French",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ota",
+      "name": "Ottoman Turkish",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "fa",
+      "name": "Persian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "pl",
+      "name": "Polish",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "qpm",
+      "name": "Pomak",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "pt",
+      "name": "Portuguese",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": true
+    },
+    {
+      "code": "ro",
+      "name": "Romanian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ru",
+      "name": "Russian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": true
+    },
+    {
+      "code": "sa",
+      "name": "Sanskrit",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "gd",
+      "name": "Scottish Gaelic",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "sr",
+      "name": "Serbian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "zh-hans",
+      "name": "Simplified Chinese",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": true
+    },
+    {
+      "code": "sd",
+      "name": "Sindhi",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "sk",
+      "name": "Slovak",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "sl",
+      "name": "Slovenian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "es",
+      "name": "Spanish",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": true
+    },
+    {
+      "code": "sv",
+      "name": "Swedish",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ta",
+      "name": "Tamil",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "te",
+      "name": "Telugu",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "th",
+      "name": "Thai",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "zh-hant",
+      "name": "Traditional Chinese",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "tr",
+      "name": "Turkish",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "qtd",
+      "name": "Turkish German",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "uk",
+      "name": "Ukrainian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "hsb",
+      "name": "Upper Sorbian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ur",
+      "name": "Urdu",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "ug",
+      "name": "Uyghur",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "vi",
+      "name": "Vietnamese",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "cy",
+      "name": "Welsh",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "hyw",
+      "name": "Western Armenian",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    },
+    {
+      "code": "wo",
+      "name": "Wolof",
+      "engine": "stanza",
+      "sizeBytes": null,
+      "mirrored": false
+    }
+  ]
+};
