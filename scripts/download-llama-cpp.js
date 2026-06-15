@@ -316,7 +316,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+// Exit explicitly on success — download/extract child handles can keep the event
+// loop alive and stall the package build's && chain (same fix as download-mupdf).
+main().then(() => process.exit(0)).catch((err) => {
   console.error(`\n[llama] FAILED: ${err.message}\n`);
   process.exit(1);
 });

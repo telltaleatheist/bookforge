@@ -303,4 +303,8 @@ async function main() {
   }
 }
 
-main();
+// Exit explicitly on success: the make/mutool child processes can leave a
+// lingering libuv handle that keeps the event loop alive, so the script would
+// otherwise hang after "setup complete!" and stall the package build's && chain
+// (download:llama never starts). Error paths already process.exit(1) inside main.
+main().then(() => process.exit(0));
