@@ -76,3 +76,7 @@ packaging/.seed-cache-speakers/
 
 # llama.cpp prebuilt download cache (reused across builds; staged into resources/bin)
 .llama-build/
+
+# mupdf download/build scratch (scripts/download-mupdf.js TEMP_DIR; auto-removed
+# on success, but left behind — thousands of files — if a build is interrupted)
+.mupdf-build/
