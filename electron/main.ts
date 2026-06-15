@@ -10060,16 +10060,20 @@ app.whenReady().then(async () => {
     const { ensureBundledEnv, ensureBundledE2a, bundledRuntimeReady, getBundledEnvDir, hasBundledEnvTarball } =
       await import('./e2a-env-bootstrap.js');
 
-    // Fresh-install / post-reset detection, tied to the ENVIRONMENT (not lingering
-    // localStorage): the bundled env had to be created from scratch because its dir
-    // was absent. True after a clean install or "Remove all data"; false on a normal
-    // app update (env dir exists, only the snapshot is refreshed) and in dev (no
-    // tarball). The renderer uses this to show first-run setup instead of trusting a
-    // stale onboarding flag that can survive an uninstall.
-    runtimeWasFresh = hasBundledEnvTarball() && !fsSync.existsSync(getBundledEnvDir());
+    // Needs-setup detection tied to whether the environment is actually COMPLETE,
+    // not merely whether its directory exists. bundledRuntimeReady() validates the
+    // env/e2a ready-markers against the bundled tarball + snapshot, so a half-
+    // unpacked or stale env (dir present, marker missing/mismatched) STILL counts
+    // as needing setup — the renderer then shows the guided Setup page instead of
+    // dropping the user into Studio with a half-ready engine. Using mere directory
+    // existence here was the bug: a lingering env dir (like a lingering onboarding
+    // flag) made the app look set up when it wasn't. False in dev (no tarball) and
+    // on a normal up-to-date launch.
+    const runtimeReady = bundledRuntimeReady();
+    runtimeWasFresh = !runtimeReady;
 
     // Nothing to unpack (dev, or already current) → ready immediately, no overlay.
-    if (bundledRuntimeReady()) {
+    if (runtimeReady) {
       setRuntimeStatus({ state: 'ready', message: 'Ready' });
     } else {
       setRuntimeStatus({ state: 'preparing', message: 'Setting up the audiobook engine…' });
