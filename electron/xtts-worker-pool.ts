@@ -106,10 +106,11 @@ const MAX_CPU_WORKERS = 4;
 const DEFAULT_CPU_WORKERS = 2;
 
 // Which device the streaming engine runs XTTS on. 'auto' = torch.cuda.is_available()
-// (CUDA when present, else CPU). 'cpu'/'gpu' force it — so a user with a GPU can
-// still run on CPU (e.g. to free VRAM), and a CPU-only machine never tries CUDA.
-// macOS ignores this and always runs CPU (MPS gives no XTTS speedup).
-export type DevicePref = 'auto' | 'cpu' | 'gpu';
+// (CUDA when present, else CPU). 'cpu'/'gpu'/'mps' force it — so a user with a GPU
+// can still run on CPU (e.g. to free VRAM), a CPU-only machine never tries CUDA,
+// and a Mac user can opt into Apple-Silicon GPU (MPS). CPU stays the recommended
+// default on Mac (MPS gives no XTTS speedup), but it's an explicit choice now.
+export type DevicePref = 'auto' | 'cpu' | 'gpu' | 'mps';
 
 interface PersistedWorkerCfg { enabled: boolean; count: number; devicePref: DevicePref; }
 let workerCfg: PersistedWorkerCfg | null = null;
@@ -129,7 +130,7 @@ function loadWorkerCfg(): PersistedWorkerCfg {
     let devicePref: DevicePref = 'auto';
     try {
       const cfg = JSON.parse(fs.readFileSync(streamConfigPath(), 'utf-8'));
-      if (cfg.devicePref === 'cpu' || cfg.devicePref === 'gpu' || cfg.devicePref === 'auto') {
+      if (['cpu', 'gpu', 'mps', 'auto'].includes(cfg.devicePref)) {
         devicePref = cfg.devicePref;
       }
       if (typeof cfg.enabled === 'boolean') {
@@ -169,8 +170,8 @@ export interface StreamWorkerConfig {
   maxWorkers: number;
   /** User's device preference for the streaming engine */
   devicePref: DevicePref;
-  /** null until the first engine start probes torch (non-mac) */
-  device: 'cpu' | 'cuda' | null;
+  /** null until the first engine start probes torch */
+  device: 'cpu' | 'cuda' | 'mps' | null;
   /** Workers the active device will actually run (count on CPU when enabled, else 1) */
   deviceWorkers: number;
   /** Workers currently alive — 0 when the engine is stopped */
@@ -198,9 +199,10 @@ export function setStreamWorkerConfig(updates: { enabled?: boolean; count?: numb
   if (typeof updates.count === 'number') cfg.count = clampCount(updates.count);
   if (updates.devicePref && updates.devicePref !== cfg.devicePref) {
     cfg.devicePref = updates.devicePref;
-    // Force a re-probe on next start so the worker reports the forced device and
-    // the pool picks the right topology (macOS is always CPU, never re-probed).
-    if (process.platform !== 'darwin') detectedDevice = null;
+    // Force a re-probe on next start so the worker reports the chosen device and
+    // the pool picks the right topology. macOS now re-probes for an MPS choice;
+    // for CPU/auto it stays pinned to CPU (no probe needed — it's never CUDA).
+    detectedDevice = (process.platform === 'darwin' && cfg.devicePref !== 'mps') ? 'cpu' : null;
   }
   workerCfg = cfg;
   fs.writeFileSync(streamConfigPath(), JSON.stringify(cfg, null, 2));
@@ -208,16 +210,18 @@ export function setStreamWorkerConfig(updates: { enabled?: boolean; count?: numb
   return getStreamWorkerConfig();
 }
 
-// Device the Python workers run XTTS on, reported in the first worker's
-// 'ready' message (torch.cuda.is_available() in xtts_stream.py). macOS never
-// has CUDA and deliberately runs XTTS on CPU (MPS gives no speedup), so only
-// Windows/Linux need the worker-0 probe. Cached for the rest of the app run
-// so later sessions spawn the whole pool in one wave.
-let detectedDevice: 'cuda' | 'cpu' | null =
-  process.platform === 'darwin' ? 'cpu' : null;
+// Device the Python workers run XTTS on, reported in the first worker's 'ready'
+// message (xtts_stream.py honors XTTS_DEVICE). macOS has no CUDA and defaults to
+// CPU, so for a CPU/auto choice it's pre-set (no probe — spawn the whole pool in
+// one wave); an explicit MPS choice (or any non-mac start) probes worker-0 so the
+// reported device is real. Cached for the rest of the app run.
+let detectedDevice: 'cuda' | 'cpu' | 'mps' | null =
+  (process.platform === 'darwin' && loadWorkerCfg().devicePref !== 'mps') ? 'cpu' : null;
 
 function targetWorkerCount(): number {
-  return detectedDevice === 'cuda' ? CUDA_NUM_WORKERS : cpuWorkerCount();
+  // CUDA and MPS are single GPUs: one worker saturates them, and extra workers
+  // each load a model copy (VRAM / unified-memory pressure). Only CPU parallels.
+  return (detectedDevice === 'cuda' || detectedDevice === 'mps') ? CUDA_NUM_WORKERS : cpuWorkerCount();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -509,8 +513,8 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
             if (response.type === 'ready') {
               worker.isReady = true;
               // The worker reports which device torch picked - this decides
-              // the pool topology (1 worker on CUDA, CPU_NUM_WORKERS on CPU)
-              if (response.device === 'cuda' || response.device === 'cpu') {
+              // the pool topology (1 worker on CUDA/MPS, CPU_NUM_WORKERS on CPU)
+              if (response.device === 'cuda' || response.device === 'cpu' || response.device === 'mps') {
                 if (detectedDevice !== null && detectedDevice !== response.device) {
                   console.warn(`[XTTS Pool ${id}] Device mismatch: expected ${detectedDevice}, got ${response.device}`);
                 }

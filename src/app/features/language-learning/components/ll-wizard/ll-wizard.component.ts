@@ -4018,6 +4018,15 @@ export class LLWizardComponent implements OnInit {
   async addToQueue(): Promise<void> {
     if (this.getTotalJobCount() === 0) return;
 
+    // Remember the user's TTS picks as the new Pipeline Defaults, so the next job
+    // (and the next book) starts from what they last chose — device included.
+    this.settingsService.updatePipelineDefaults({
+      ttsEngine: this.ttsEngine(),
+      ttsDevice: this.ttsDevice(),
+      ttsVoice: this.monoTtsVoice(),
+      ttsSpeed: this.monoTtsSpeed(),
+    });
+
     const projectDir = this.effectiveProjectDir();
     if (!projectDir) {
       console.error('[LLWizard] No project directory available');

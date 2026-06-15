@@ -398,29 +398,47 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                 <div class="settings-group">
                   <h4>Generation Device</h4>
                   <p class="field-description">
-                    Where streaming playback generates audio. <strong>GPU</strong> (NVIDIA/CUDA)
-                    is much faster but needs the GPU acceleration pack below; <strong>CPU</strong>
-                    works everywhere and frees your VRAM. <strong>Auto</strong> uses the GPU when
-                    it's available. Applies the next time the engine starts.
+                    Where streaming playback generates audio. <strong>CPU</strong> works
+                    everywhere and frees memory.
+                    @if (isMac()) {
+                      <strong>GPU (MPS)</strong> uses the Apple-Silicon GPU — it's a real
+                      choice, though CPU is usually better for XTTS on Mac.
+                    } @else {
+                      <strong>GPU</strong> (NVIDIA/CUDA) is much faster but needs the GPU
+                      acceleration pack below. <strong>Auto</strong> uses the GPU when it's
+                      available.
+                    }
+                    Applies the next time the engine starts.
                   </p>
                   <div class="worker-options">
                     <button class="worker-btn" [class.selected]="workerCfg.devicePref() === 'auto'" (click)="setStreamDevice('auto')">Auto</button>
                     <button class="worker-btn" [class.selected]="workerCfg.devicePref() === 'cpu'" (click)="setStreamDevice('cpu')">CPU</button>
-                    <button
-                      class="worker-btn"
-                      [class.selected]="workerCfg.devicePref() === 'gpu'"
-                      [disabled]="!workerCfg.isCudaMachine()"
-                      [title]="workerCfg.isCudaMachine() ? 'Generate on your NVIDIA GPU' : 'No NVIDIA GPU detected'"
-                      (click)="setStreamDevice('gpu')"
-                    >GPU</button>
+                    @if (isMac()) {
+                      <button
+                        class="worker-btn"
+                        [class.selected]="workerCfg.devicePref() === 'mps'"
+                        title="Generate on the Apple-Silicon GPU (Metal/MPS)"
+                        (click)="setStreamDevice('mps')"
+                      >GPU (MPS)</button>
+                    } @else {
+                      <button
+                        class="worker-btn"
+                        [class.selected]="workerCfg.devicePref() === 'gpu'"
+                        [disabled]="!workerCfg.isCudaMachine()"
+                        [title]="workerCfg.isCudaMachine() ? 'Generate on your NVIDIA GPU' : 'No NVIDIA GPU detected'"
+                        (click)="setStreamDevice('gpu')"
+                      >GPU</button>
+                    }
                   </div>
-                  @if (workerCfg.devicePref() === 'gpu' && !gpuPackInstalled()) {
+                  @if (!isMac() && workerCfg.devicePref() === 'gpu' && !gpuPackInstalled()) {
                     <span class="hint warn-text">GPU selected, but the GPU acceleration pack isn't installed yet — download it below, then restart the engine.</span>
                   }
 
-                  <!-- GPU acceleration download (CUDA PyTorch + llama), reused
-                       from the Add-ons panel so it stays one implementation. -->
-                  <app-add-ons-panel [onlyGpu]="true" />
+                  <!-- CUDA acceleration download (NVIDIA only) — not applicable on
+                       Apple Silicon, whose GPU (MPS) needs no download. -->
+                  @if (!isMac()) {
+                    <app-add-ons-panel [onlyGpu]="true" />
+                  }
                 </div>
 
                 <!-- Streaming Engine: multiple workers are a rare opt-in (only
@@ -1803,7 +1821,7 @@ export class SettingsComponent implements OnInit {
   readonly gpuPackInstalled = computed(() => this.componentService.isInstalled('cuda-tts'));
 
   /** Set the streaming engine's device preference (applies on next engine start). */
-  setStreamDevice(pref: 'auto' | 'cpu' | 'gpu'): void {
+  setStreamDevice(pref: 'auto' | 'cpu' | 'gpu' | 'mps'): void {
     void this.workerCfg.setDevicePref(pref);
   }
 

@@ -43,8 +43,8 @@ export interface StreamWorkerConfig {
   minWorkers: number;
   maxWorkers: number;
   /** User's device preference for the streaming engine */
-  devicePref: 'auto' | 'cpu' | 'gpu';
-  device: 'cpu' | 'cuda' | null;
+  devicePref: 'auto' | 'cpu' | 'gpu' | 'mps';
+  device: 'cpu' | 'cuda' | 'mps' | null;
   deviceWorkers: number;
   activeWorkers: number;
 }
@@ -2535,7 +2535,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ttsStreamSetWorkerConfig(updates: { enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
+  async ttsStreamSetWorkerConfig(updates: { enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps' }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.ttsStream.setWorkerConfig(updates);
     }
