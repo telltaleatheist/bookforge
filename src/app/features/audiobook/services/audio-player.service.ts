@@ -51,6 +51,10 @@ export class AudioPlayerService {
 
   private static readonly REBUILD_SECONDS = 8;
   private static readonly SCHEDULE_AHEAD_SECONDS = 60;
+  // First-start cushion: wait for ~2 sentences before playing, or this much
+  // buffered audio if one sentence is long (so we don't stall on a huge sentence).
+  private static readonly START_MIN_SENTENCES = 2;
+  private static readonly START_MIN_SECONDS = 6;
 
   // Reactive state
   readonly playbackState = signal<PlaybackState>('idle');
@@ -324,9 +328,15 @@ export class AudioPlayerService {
 
     let ready: boolean;
     if (!this.started) {
-      const firstSentenceComplete = this.expectedNext > this.startIndex;
+      // Hold for a small cushion before the first note so a quick first sentence
+      // doesn't start then immediately underrun while the next one generates:
+      // wait for ~2 sentences, OR enough buffered audio (covers a long single
+      // sentence), OR generation outpacing playback, OR the whole clip is ready.
+      const sentencesReady = this.expectedNext - this.startIndex;
+      const enoughSentences = sentencesReady >= AudioPlayerService.START_MIN_SENTENCES;
+      const enoughAudio = buffered >= AudioPlayerService.START_MIN_SECONDS;
       const outpacingPlayback = this.generationRate() > 1.1 && buffered >= 1.0;
-      ready = firstSentenceComplete || outpacingPlayback || this.generationDone;
+      ready = enoughSentences || enoughAudio || outpacingPlayback || this.generationDone;
     } else {
       // Mid-stream underrun: rebuild real headroom before resuming
       ready = buffered >= AudioPlayerService.REBUILD_SECONDS || this.generationDone;

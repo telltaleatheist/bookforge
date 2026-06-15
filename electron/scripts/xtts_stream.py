@@ -21,6 +21,7 @@ Protocol (one JSON object per line):
 import json
 import sys
 import os
+import re
 import base64
 import gc
 from contextlib import nullcontext
@@ -31,6 +32,107 @@ import psutil
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
+
+# ── Text normalization for TTS ───────────────────────────────────────────────
+# The streaming path hands text straight to XTTS, which reads raw digits/symbols
+# poorly ("$5.50", "1995", "50%"). The audiobook (e2a) path normalizes via
+# num2words; mirror the common cases here so streaming sounds the same. Guarded:
+# if num2words isn't importable we pass text through unchanged.
+try:
+    from num2words import num2words as _num2words
+    _HAS_NUM2WORDS = True
+except Exception:
+    _HAS_NUM2WORDS = False
+
+
+def _to_words(n, lang):
+    try:
+        return _num2words(int(n), lang=lang)
+    except Exception:
+        return str(n)
+
+
+def _num_phrase(token, lang):
+    """A plain number, possibly with thousands separators and/or a decimal part."""
+    token = token.replace(',', '')
+    try:
+        if '.' in token:
+            intpart, frac = token.split('.', 1)
+            words = _num2words(int(intpart or '0'), lang=lang)
+            digits = ' '.join(_num2words(int(d), lang=lang) for d in frac)
+            return f"{words} point {digits}"
+        return _num2words(int(token), lang=lang)
+    except Exception:
+        return token
+
+
+def _ordinal(n, lang):
+    try:
+        return _num2words(int(n), lang=lang, to='ordinal')
+    except Exception:
+        return str(n)
+
+
+def _year_to_words(y, lang):
+    """Read 4-digit years naturally: 1995 → 'nineteen ninety-five', 2000 →
+    'two thousand', 2010 → 'twenty ten'. Non-English falls back to cardinal."""
+    if lang != 'en':
+        return _to_words(y, lang)
+    try:
+        if 2000 <= y <= 2009:
+            return f"two thousand {_to_words(y % 100, lang)}" if y % 100 else "two thousand"
+        if 1100 <= y <= 1999 or 2010 <= y <= 2099:
+            hi, lo = divmod(y, 100)
+            if lo == 0:
+                return f"{_to_words(hi, lang)} hundred"
+            lo_words = _to_words(lo, lang) if lo >= 10 else f"oh {_to_words(lo, lang)}"
+            return f"{_to_words(hi, lang)} {lo_words}"
+        return _to_words(y, lang)
+    except Exception:
+        return str(y)
+
+
+def normalize_for_tts(text, language='en'):
+    """Convert numbers, currency, percentages, ordinals, and years to words so
+    XTTS reads them naturally. Best-effort and order-sensitive (currency/percent
+    before bare numbers). Abbreviations (Dr./Mr./acronyms) are handled upstream."""
+    if not _HAS_NUM2WORDS or not text:
+        return text
+    lang = (language or 'en').split('-')[0].lower()
+    s = text
+
+    # Currency: $1,234.56 → "one thousand ... dollars and fifty-six cents"
+    def _money(m):
+        whole = m.group(1).replace(',', '')
+        cents = m.group(2)
+        try:
+            dollars = int(whole)
+            out = f"{_to_words(dollars, lang)} dollar" + ('' if dollars == 1 else 's')
+            if cents:
+                c = int(cents.ljust(2, '0')[:2])
+                if c:
+                    out += f" and {_to_words(c, lang)} cent" + ('' if c == 1 else 's')
+            return out
+        except Exception:
+            return m.group(0)
+    s = re.sub(r'\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?', _money, s)
+
+    # Percent: 50% → "fifty percent"
+    s = re.sub(r'(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s?%',
+               lambda m: f"{_num_phrase(m.group(1), lang)} percent", s)
+
+    # Ordinals: 1st, 2nd, 21st → "first", "second", "twenty-first"
+    s = re.sub(r'\b(\d+)(?:st|nd|rd|th)\b', lambda m: _ordinal(m.group(1), lang), s)
+
+    # Bare 4-digit years (no separators) → year style
+    s = re.sub(r'(?<![\d,.])(1[1-9]\d{2}|20\d{2})(?![\d,.])',
+               lambda m: _year_to_words(int(m.group(1)), lang), s)
+
+    # Any remaining numbers (with thousands separators and/or decimals)
+    s = re.sub(r'\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?',
+               lambda m: _num_phrase(m.group(0), lang), s)
+
+    return s
 
 # XTTS GPT decode is sequential (token-by-token) and gains nothing past ~4
 # threads. Pinning lets multiple workers share the P-cores without contention:
@@ -438,9 +540,13 @@ class XTTSStreamServer:
                         send_response('error', {'message': 'No text provided'})
                         continue
 
+                    language = request.get('language', 'en')
+                    # Numbers/currency/dates → words so XTTS reads them naturally.
+                    text = normalize_for_tts(text, language)
+
                     kwargs = dict(
                         text=text,
-                        language=request.get('language', 'en'),
+                        language=language,
                         speed=request.get('speed', 1.0),
                         temperature=request.get('temperature', 0.75),
                         top_p=request.get('top_p', 0.85),

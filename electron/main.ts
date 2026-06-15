@@ -9356,21 +9356,10 @@ function setupIpcHandlers(): void {
 
     listenWindow.on('closed', () => {
       listenWindows.delete(projectPath);
-      // Last listen window gone → the stream engine has no possible consumer.
-      // Exception: service mode pins the engine alive for external clients.
-      if (listenWindows.size === 0) {
-        void (async () => {
-          try {
-            const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-            if (xttsWorkerPool.isSessionActive() && !xttsWorkerPool.isServiceMode()) {
-              console.log('[MAIN] Last listen window closed — ending stream TTS session');
-              await xttsWorkerPool.endSession();
-            }
-          } catch (err) {
-            console.error('[MAIN] Failed to end stream TTS session:', err);
-          }
-        })();
-      }
+      // Closing the player no longer shuts the engine down — the user asked it to
+      // stay warm so reopening (or the browser extension) plays instantly without
+      // a cold start. The engine is stopped explicitly via the TTS toggle in the
+      // nav rail (or on app quit), not by closing a window.
     });
 
     listenWindow.webContents.on('did-finish-load', () => {

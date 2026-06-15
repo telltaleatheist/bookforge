@@ -15,11 +15,12 @@ import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle
 import { WorkerConfigService } from '../../core/services/worker-config.service';
 import { ComponentService } from '../../core/services/component.service';
 import { PipelineDefaultsPanelComponent } from './components/pipeline-defaults-panel.component';
+import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RemoveAllDataComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -136,6 +137,10 @@ import { PipelineDefaultsPanelComponent } from './components/pipeline-defaults-p
                     ~/Documents/BookForge/cache/ - Page render cache (machine-local, not synced)
                   </p>
                 </div>
+
+                <!-- In-app uninstall, surfaced on the first settings page so it's
+                     easy to find (esp. macOS, which has no uninstaller script). -->
+                <app-remove-all-data />
               </div>
             } @else if (section.id === 'storage') {
               <!-- Storage section has custom UI -->
@@ -179,31 +184,7 @@ import { PipelineDefaultsPanelComponent } from './components/pipeline-defaults-p
                 }
 
                 <!-- Full uninstall of OUR data (keeps the user's library/books). -->
-                <div class="storage-item">
-                  <div class="storage-info">
-                    <h3>Remove all BookForge data</h3>
-                    <p>
-                      Deletes everything BookForge downloaded — the audiobook engine, voice &amp; AI
-                      models, language packs, GPU components, caches, and settings. <strong>Your
-                      library and books are kept</strong> (they’re your files, not ours).
-                      @if (isMac()) {
-                        To finish uninstalling afterward, quit BookForge and drag it from Applications to the Trash.
-                      } @else {
-                        To finish uninstalling afterward, quit BookForge and run the Windows uninstaller.
-                      }
-                    </p>
-                  </div>
-                  <div class="storage-actions">
-                    <desktop-button
-                      variant="danger"
-                      size="sm"
-                      (click)="removeAllData()"
-                      [disabled]="removingData()"
-                    >
-                      {{ removingData() ? 'Removing…' : 'Remove All Data' }}
-                    </desktop-button>
-                  </div>
-                </div>
+                <app-remove-all-data />
               </div>
             } @else if (section.id === 'ai') {
               <!-- AI Configuration — the AI Setup wizard, embedded (supersedes the old provider-card UI) -->
@@ -1842,7 +1823,6 @@ export class SettingsComponent implements OnInit {
   readonly totalCacheSize = signal(0);
   readonly cacheLoading = signal(false);
   readonly clearCacheStatus = signal<{ success: boolean; message: string } | null>(null);
-  readonly removingData = signal(false);
 
   // Bookshelf Server section state — edits buffered in bookshelfDraft until Save.
   readonly savedBookshelfConfig = computed(() => this.settingsService.getBookshelfConfig());
@@ -2071,41 +2051,6 @@ export class SettingsComponent implements OnInit {
       });
     } finally {
       this.cacheLoading.set(false);
-    }
-  }
-
-  /** Wipe all of BookForge's downloaded data (keeps the user's library), then
-   *  tell them how to finish removing the app itself. */
-  async removeAllData(): Promise<void> {
-    const { confirmed } = await this.electronService.showConfirmDialog({
-      type: 'warning',
-      title: 'Remove all BookForge data?',
-      message: 'This deletes everything BookForge downloaded — the audiobook engine, voice & AI models, language packs, GPU components, caches, and settings.',
-      detail: 'Your audiobook library and books are kept — those are your files. This cannot be undone.',
-      confirmLabel: 'Remove all data',
-      cancelLabel: 'Cancel',
-    });
-    if (!confirmed) return;
-
-    this.removingData.set(true);
-    this.clearCacheStatus.set(null);
-    try {
-      const result = await this.electronService.removeAllData();
-      const freed = result?.freedBytes ? ` (${this.formatBytes(result.freedBytes)} freed)` : '';
-      const finishStep = this.isMac()
-        ? 'To finish, quit BookForge and drag it from your Applications folder to the Trash.'
-        : 'To finish, quit BookForge and run the uninstaller (Windows Settings → Apps → BookForge).';
-      await this.electronService.showMessageDialog({
-        type: 'info',
-        title: 'BookForge data removed',
-        message: `All BookForge data has been removed${freed}.`,
-        detail: `${finishStep}\n\nYour library and books were left untouched.`,
-      });
-      this.totalCacheSize.set(0);
-    } catch (err) {
-      this.clearCacheStatus.set({ success: false, message: `Failed to remove data: ${err}` });
-    } finally {
-      this.removingData.set(false);
     }
   }
 

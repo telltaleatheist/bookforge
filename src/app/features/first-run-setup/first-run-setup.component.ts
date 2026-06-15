@@ -7,6 +7,7 @@ import { VoicesPanelComponent } from '../settings/components/voices-panel.compon
 import { LanguagesPanelComponent } from '../settings/components/languages-panel.component';
 import { AddOnsPanelComponent } from '../settings/components/add-ons-panel.component';
 import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
+import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 import { AiService } from '../../core/services/ai.service';
 import { RuntimeService } from '../../core/services/runtime.service';
 import { ComponentService } from '../../core/services/component.service';
@@ -33,7 +34,8 @@ interface SetupStep {
     VoicesPanelComponent,
     LanguagesPanelComponent,
     AddOnsPanelComponent,
-    MultiWorkerToggleComponent
+    MultiWorkerToggleComponent,
+    RemoveAllDataComponent
   ],
   template: `
     <div class="setup-page">
@@ -157,6 +159,14 @@ interface SetupStep {
             }
           }
         </div>
+
+        <!-- In-app uninstall, surfaced on the first Configuration page so it's
+             easy to find (esp. macOS, which has no uninstaller script). -->
+        @if (currentStep() === 0) {
+          <div class="setup-danger">
+            <app-remove-all-data />
+          </div>
+        }
 
         <!-- Footer controls -->
         <footer class="card-foot">
@@ -414,6 +424,8 @@ interface SetupStep {
       /* Reserve the scrollbar gutter so it never sits over the row checkboxes. */
       scrollbar-gutter: stable;
     }
+
+    .setup-danger { padding: 0 24px 16px; }
 
     .mw-setup-block {
       padding-bottom: 16px;

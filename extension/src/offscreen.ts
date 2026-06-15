@@ -818,7 +818,7 @@ function afterData(): void {
     const ready =
       session.generationDone ||                                                    // whole clip ready (short text)
       session.seconds >= START_MIN_SECONDS ||                                       // long single sentence — don't wait forever
-      (session.appendCursor >= 1 && session.seconds >= STARTUP_LEAD_SECONDS);       // first sentence done + warmup cushion
+      (session.appendCursor >= 2 && session.seconds >= STARTUP_LEAD_SECONDS);       // ~2 sentences buffered → cushion before the first note
     if (ready) startPlayback();
     broadcast();
     return;
