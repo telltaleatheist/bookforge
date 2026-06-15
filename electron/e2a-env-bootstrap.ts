@@ -19,7 +19,7 @@
  */
 
 import { app } from 'electron';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -158,6 +158,72 @@ function run(command: string, args: string[], opts: { cwd?: string } = {}): Prom
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Corruption-resistant runtime setup
+//
+// First-run unpack is the #1 source of a broken install (interrupted extract, a
+// killed app mid-conda-unpack, antivirus quarantining a DLL, a second instance
+// racing the same dir). The defenses below make a half-built runtime impossible
+// to "go live", and let the app self-heal a corrupt one on the next launch:
+//   • build into a temp dir, smoke-test it, then ATOMICALLY rename it into place
+//   • on startup, verify a "ready" env actually runs; if not, erase + rebuild
+//   • Windows-safe removal (rename-to-trash + retried delete) so locks can't wedge
+// ─────────────────────────────────────────────────────────────────────────────
+
+function runtimeRoot(): string {
+  return path.join(app.getPath('userData'), 'runtime');
+}
+
+/**
+ * Remove a directory tree, tolerating Windows file locks. Renaming the dir out of
+ * the way first frees its name immediately (so a fresh build can take it) even if
+ * a stray handle delays the actual delete; the rename target is then deleted
+ * best-effort. Falls back to a retried in-place delete if the rename can't run.
+ */
+function removeDirRobust(dir: string): void {
+  if (!fs.existsSync(dir)) return;
+  const trash = `${dir}.trash-${Date.now()}`;
+  try {
+    fs.renameSync(dir, trash);
+    try { fs.rmSync(trash, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+    catch { /* a held file delays it — swept on a later run */ }
+    return;
+  } catch {
+    // Rename failed (e.g. a handle on the dir itself) — try a retried delete.
+  }
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+}
+
+/** Sweep leftover temp/trash dirs from interrupted prior runs (best-effort). */
+function sweepStale(baseDir: string): void {
+  const parent = path.dirname(baseDir);
+  const base = path.basename(baseDir);
+  try {
+    for (const name of fs.readdirSync(parent)) {
+      if (name.startsWith(`${base}.tmp-`) || name.startsWith(`${base}.trash-`)) {
+        try { fs.rmSync(path.join(parent, name), { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }); }
+        catch { /* ignore */ }
+      }
+    }
+  } catch { /* parent missing — nothing to sweep */ }
+}
+
+/**
+ * Fast integrity check: the relocated interpreter must actually start. Catches
+ * the common Windows corruption (missing python3xx.dll / VCRUNTIME, a truncated
+ * extract) that the size+mtime marker can't see. Cheap (~a few hundred ms).
+ */
+function smokeTestEnv(envDir: string): boolean {
+  const python = relocatablePythonPath(envDir);
+  if (!fs.existsSync(python)) return false;
+  try {
+    const res = spawnSync(python, ['--version'], { timeout: 30000, windowsHide: true, cwd: envDir });
+    return res.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * First-run setup: extract the shipped env tarball under userData and run its
  * conda-unpack. Idempotent — returns immediately when the env is already
@@ -167,39 +233,73 @@ function run(command: string, args: string[], opts: { cwd?: string } = {}): Prom
  * conda-unpack must be invoked through the env's own python: its shebang is
  * `#!/usr/bin/env python`, and a clean target machine has no python on PATH.
  */
+let envEnsureInFlight: Promise<string | null> | null = null;
+
 export async function ensureBundledEnv(onProgress?: (message: string) => void): Promise<string | null> {
   const override = process.env.BOOKFORGE_E2A_ENV;
   if (override && override.trim()) return getActiveBundledEnvPath();
-
   if (!hasBundledEnvTarball()) return null;
 
+  // Never run two builds at once (atomic publish makes it safe, but it's wasteful).
+  if (envEnsureInFlight) return envEnsureInFlight;
+  envEnsureInFlight = doEnsureBundledEnv(onProgress).finally(() => { envEnsureInFlight = null; });
+  return envEnsureInFlight;
+}
+
+async function doEnsureBundledEnv(onProgress?: (message: string) => void): Promise<string | null> {
   const envDir = getBundledEnvDir();
-  if (envIsReady(envDir)) return envDir;
+
+  // Healthy AND verified → nothing to do. A marker-ready env that fails its
+  // self-test is corrupt (the classic "set up but doesn't work") — rebuild it.
+  if (envIsReady(envDir)) {
+    if (smokeTestEnv(envDir)) return envDir;
+    console.warn('[E2A-ENV] Env is marked ready but failed its self-test — rebuilding (corruption).');
+    onProgress?.('Repairing a corrupted text-to-speech runtime…');
+  } else if (fs.existsSync(envDir)) {
+    console.warn('[E2A-ENV] Env present but incomplete — rebuilding.');
+  }
+
+  fs.mkdirSync(runtimeRoot(), { recursive: true });
+  sweepStale(envDir);
 
   const tarball = getBundledEnvTarballPath();
-  console.log(`[E2A-ENV] Unpacking bundled Python env: ${tarball} -> ${envDir}`);
+  const tempDir = `${envDir}.tmp-${process.pid}-${Date.now()}`;
+  console.log(`[E2A-ENV] Building bundled Python env: ${tarball} -> ${tempDir}`);
   onProgress?.('Preparing the bundled text-to-speech runtime (one-time setup)…');
+  removeDirRobust(tempDir);
+  fs.mkdirSync(tempDir, { recursive: true });
 
-  // A stale or partial unpack is never reusable — start clean.
-  fs.rmSync(envDir, { recursive: true, force: true });
-  fs.mkdirSync(envDir, { recursive: true });
+  try {
+    // bsdtar ships with macOS and with Windows 10 1803+ (System32\tar.exe).
+    onProgress?.('Extracting Python environment…');
+    await run('tar', ['-xzf', tarball, '-C', tempDir]);
 
-  // bsdtar ships with macOS and with Windows 10 1803+ (System32\tar.exe).
-  onProgress?.('Extracting Python environment…');
-  await run('tar', ['-xzf', tarball, '-C', envDir]);
+    onProgress?.('Fixing environment paths (conda-unpack)…');
+    const python = relocatablePythonPath(tempDir);
+    const condaUnpack = process.platform === 'win32'
+      ? path.join(tempDir, 'Scripts', 'conda-unpack-script.py')
+      : path.join(tempDir, 'bin', 'conda-unpack');
+    await run(python, [condaUnpack], { cwd: tempDir });
 
-  onProgress?.('Fixing environment paths (conda-unpack)…');
-  const python = relocatablePythonPath(envDir);
-  const condaUnpack = process.platform === 'win32'
-    ? path.join(envDir, 'Scripts', 'conda-unpack-script.py')
-    : path.join(envDir, 'bin', 'conda-unpack');
-  await run(python, [condaUnpack], { cwd: envDir });
+    // Verify the build BEFORE it can go live.
+    onProgress?.('Verifying the runtime…');
+    if (!smokeTestEnv(tempDir)) {
+      throw new Error('The unpacked Python runtime failed its self-test (the interpreter would not start).');
+    }
 
-  const identity = currentTarballIdentity();
-  fs.writeFileSync(markerPath(envDir), JSON.stringify(identity), 'utf-8');
-  console.log('[E2A-ENV] Bundled Python env ready:', envDir);
-  onProgress?.('Text-to-speech runtime ready.');
-  return envDir;
+    // Mark complete inside the temp dir, then ATOMICALLY publish it: the live
+    // env only ever appears as a fully-built, verified, marked tree.
+    fs.writeFileSync(markerPath(tempDir), JSON.stringify(currentTarballIdentity()), 'utf-8');
+    removeDirRobust(envDir);            // clear any stale/corrupt live dir (frees the name)
+    fs.renameSync(tempDir, envDir);     // atomic on the same volume
+
+    console.log('[E2A-ENV] Bundled Python env ready:', envDir);
+    onProgress?.('Text-to-speech runtime ready.');
+    return envDir;
+  } catch (err) {
+    removeDirRobust(tempDir);           // never leave a half-built temp behind
+    throw err;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -290,15 +390,26 @@ const CLONE_MODE = fs.constants.COPYFILE_FICLONE;
  * immediately when the runtime copy matches the shipped snapshot. Returns the
  * runtime dir, or null when this build ships no snapshot (dev).
  */
+let e2aEnsureInFlight: Promise<string | null> | null = null;
+
 export async function ensureBundledE2a(onProgress?: (message: string) => void): Promise<string | null> {
   if (!hasBundledE2aSnapshot()) return null;
+  if (e2aEnsureInFlight) return e2aEnsureInFlight;
+  e2aEnsureInFlight = doEnsureBundledE2a(onProgress).finally(() => { e2aEnsureInFlight = null; });
+  return e2aEnsureInFlight;
+}
 
+async function doEnsureBundledE2a(onProgress?: (message: string) => void): Promise<string | null> {
   const snapshotDir = getBundledE2aSnapshotDir();
   const runtimeDir = getRuntimeE2aDir();
   if (e2aIsReady(runtimeDir)) return runtimeDir;
 
   console.log(`[E2A-CODE] Installing bundled e2a: ${snapshotDir} -> ${runtimeDir}`);
   onProgress?.('Installing the bundled audiobook engine…');
+  // In-place (to preserve downloaded models/voices on update). The marker is
+  // written last, so an interrupted copy never reads as ready and is re-laid
+  // (pass-1 force-overwrites the code) on the next run.
+  fs.mkdirSync(runtimeRoot(), { recursive: true });
   fs.mkdirSync(runtimeDir, { recursive: true });
 
   // Pass 1 — code: overwrite so snapshot updates land. models/ and voices/
