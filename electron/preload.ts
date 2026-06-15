@@ -1176,6 +1176,7 @@ export interface ElectronAPI {
     getStatus: () => Promise<{ success: boolean; data?: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }; error?: string }>;
     onStatus: (callback: (status: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }) => void) => () => void;
     usingBundledEnv: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
+    isFreshInstall: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
   };
   customVoices: {
     list: () => Promise<{ success: boolean; data?: Array<{ id: string; name: string; checkpointDir: string; refPath: string }>; error?: string }>;
@@ -2516,6 +2517,8 @@ const electronAPI: ElectronAPI = {
     },
     usingBundledEnv: () =>
       ipcRenderer.invoke('runtime:using-bundled-env'),
+    isFreshInstall: () =>
+      ipcRenderer.invoke('runtime:is-fresh-install'),
   },
   customVoices: {
     list: () =>

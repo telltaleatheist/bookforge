@@ -21,6 +21,13 @@ const STANZA_APPROX_BYTES = 250_000_000;
 /**
  * The Stanza languages BookForge can download, keyed by ISO 639-1 code. Sorted
  * alphabetically by English name.
+ *
+ * Only languages with an actual sentence-segmentation (tokenize) model are
+ * listed. Stanza's manifest also contains a few "phantom" languages that have a
+ * lang_name but ship ONLY character language models (no tokenize package) —
+ * Bengali (bn), Malayalam (ml), Sinhala (si). `stanza.download()` raises
+ * KeyError('packages') for those, so they'd fail deterministically; they're
+ * intentionally excluded. (Audited against Stanza 1.10.x: 3 of 67.)
  */
 export const STANZA_LANGUAGES: { code: string; name: string }[] = [
   { code: 'sq', name: 'Albanian' },
@@ -29,7 +36,6 @@ export const STANZA_LANGUAGES: { code: string; name: string }[] = [
   { code: 'af', name: 'Afrikaans' },
   { code: 'eu', name: 'Basque' },
   { code: 'be', name: 'Belarusian' },
-  { code: 'bn', name: 'Bengali' },
   { code: 'bg', name: 'Bulgarian' },
   { code: 'my', name: 'Burmese' },
   { code: 'ca', name: 'Catalan' },
@@ -61,7 +67,6 @@ export const STANZA_LANGUAGES: { code: string; name: string }[] = [
   { code: 'la', name: 'Latin' },
   { code: 'lv', name: 'Latvian' },
   { code: 'lt', name: 'Lithuanian' },
-  { code: 'ml', name: 'Malayalam' },
   { code: 'mt', name: 'Maltese' },
   { code: 'mr', name: 'Marathi' },
   { code: 'nb', name: 'Norwegian Bokmål' },
@@ -75,7 +80,6 @@ export const STANZA_LANGUAGES: { code: string; name: string }[] = [
   { code: 'gd', name: 'Scottish Gaelic' },
   { code: 'sr', name: 'Serbian' },
   { code: 'sd', name: 'Sindhi' },
-  { code: 'si', name: 'Sinhala' },
   { code: 'sk', name: 'Slovak' },
   { code: 'sl', name: 'Slovenian' },
   { code: 'es', name: 'Spanish' },

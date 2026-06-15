@@ -47,6 +47,13 @@ export class RuntimeService {
   // case (the initial query resolves within a few ms).
   private readonly _initialized = signal(false);
 
+  // True when the bundled environment was created from scratch this launch — a
+  // fresh install or post-"Remove all data". Tied to the ENVIRONMENT (the env dir
+  // was absent), NOT lingering localStorage, so the shell can show first-run setup
+  // even when a stale onboarding flag survived an uninstall. Loaded once at boot.
+  private readonly _freshInstall = signal(false);
+  readonly freshInstall = this._freshInstall.asReadonly();
+
   readonly status = this._status.asReadonly();
   readonly ready = computed(() => this._initialized() && this._status().state === 'ready');
   readonly preparing = computed(() => this._initialized() && this._status().state === 'preparing');
@@ -104,6 +111,11 @@ export class RuntimeService {
       return;
     }
 
+    // Was this a fresh install / post-reset? (env created from scratch)
+    api.isFreshInstall?.().then((res) => {
+      if (res?.success && res.data === true) this._freshInstall.set(true);
+    }).catch(() => { /* default false */ });
+
     // Sync the current state first (events may have fired before we subscribed),
     // then listen for pushes. Mark initialized either way so a failed query
     // can't permanently gate the app.
@@ -126,4 +138,5 @@ interface RuntimeBridge {
   getStatus: () => Promise<{ success: boolean; data?: RuntimeStatus; error?: string }>;
   onStatus: (callback: (status: RuntimeStatus) => void) => () => void;
   usingBundledEnv: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
+  isFreshInstall?: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
 }

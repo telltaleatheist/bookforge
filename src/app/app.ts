@@ -310,6 +310,25 @@ export class App implements OnInit {
   });
   private onboardingDone = false;
 
+  // Environment-based first-run: when the bundled engine was created from scratch
+  // this launch (fresh install / post-"Remove all data"), the guided setup was
+  // never done for THIS install — even if a stale localStorage onboarding flag
+  // survived an uninstall and makes the app look "configured". Route to /setup
+  // instead of dumping the user on the home screen with an unset-up engine. The
+  // no-library case is handled by onboardingGate (onboarding → /setup); this
+  // covers the stale-flag case where onboarding was wrongly skipped.
+  private firstRunRouted = false;
+  private readonly firstRunGate = effect(() => {
+    if (this.firstRunRouted) return;
+    if (!this.runtime.freshInstall()) return;
+    if (this.isStandaloneWindow() || this.libraryService.loading()) return;
+    if (this.showOnboarding()) return;              // onboarding owns this case
+    if (this.libraryService.isConfigured()) {
+      this.firstRunRouted = true;
+      void this.router.navigate(['/setup']);
+    }
+  });
+
   // The full-screen overlay now blocks ONLY on a setup ERROR (needs attention).
   // During the normal first-run unpack we no longer black out the app — instead
   // we keep the user on the guided Setup page (something to do) and show a slim

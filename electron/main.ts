@@ -39,6 +39,9 @@ export interface RuntimeStatus {
   error?: string;
 }
 let runtimeStatus: RuntimeStatus = { state: 'preparing', message: 'Starting the audiobook engine…' };
+// True when the bundled environment had to be unpacked from scratch this launch
+// (fresh install or post-"Remove all data"). Set in the first-run setup block.
+let runtimeWasFresh = false;
 
 function setRuntimeStatus(next: RuntimeStatus): void {
   runtimeStatus = next;
@@ -3894,6 +3897,13 @@ function setupIpcHandlers(): void {
   // listens for `runtime:status` pushes.
   ipcMain.handle('runtime:get-status', async () => {
     return { success: true, data: runtimeStatus };
+  });
+
+  // Whether the bundled environment was created from scratch this launch (fresh
+  // install / post-reset). The renderer uses this — not lingering localStorage —
+  // to decide whether to show first-run setup.
+  ipcMain.handle('runtime:is-fresh-install', async () => {
+    return { success: true, data: runtimeWasFresh };
   });
 
   // Whether spawns use the bundled relocatable env (packaged) vs a conda env
@@ -10026,8 +10036,16 @@ app.whenReady().then(async () => {
   // until the runtime is actually usable. The TTS API server start is folded in
   // here so external clients (browser extension) never hit a half-ready runtime.
   void (async () => {
-    const { ensureBundledEnv, ensureBundledE2a, bundledRuntimeReady } =
+    const { ensureBundledEnv, ensureBundledE2a, bundledRuntimeReady, getBundledEnvDir, hasBundledEnvTarball } =
       await import('./e2a-env-bootstrap.js');
+
+    // Fresh-install / post-reset detection, tied to the ENVIRONMENT (not lingering
+    // localStorage): the bundled env had to be created from scratch because its dir
+    // was absent. True after a clean install or "Remove all data"; false on a normal
+    // app update (env dir exists, only the snapshot is refreshed) and in dev (no
+    // tarball). The renderer uses this to show first-run setup instead of trusting a
+    // stale onboarding flag that can survive an uninstall.
+    runtimeWasFresh = hasBundledEnvTarball() && !fsSync.existsSync(getBundledEnvDir());
 
     // Nothing to unpack (dev, or already current) → ready immediately, no overlay.
     if (bundledRuntimeReady()) {

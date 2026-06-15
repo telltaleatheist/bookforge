@@ -214,6 +214,18 @@ export class LibraryService {
   }
 
   /**
+   * Clear the saved library/onboarding config (full reset). Called from the
+   * in-app uninstall ("Remove all data") so the next launch is a true first run —
+   * the localStorage leveldb is locked while the app runs, so the main-process
+   * wipe can't reliably delete it; clearing it from the renderer here does.
+   */
+  clearStoredConfig(): void {
+    try { localStorage.removeItem(this.STORAGE_KEY); } catch { /* ignore */ }
+    this._libraryPath.set(null);
+    this._onboardingComplete.set(false);
+  }
+
+  /**
    * Set the library path and mark onboarding as complete
    */
   async setLibraryPath(path: string): Promise<{ success: boolean; error?: string }> {

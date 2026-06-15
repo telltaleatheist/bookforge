@@ -1,6 +1,7 @@
 import { Component, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ElectronService } from '../core/services/electron.service';
+import { LibraryService } from '../core/services/library.service';
 
 /**
  * Reusable "Remove all BookForge data" danger zone. The in-app uninstall —
@@ -68,6 +69,7 @@ import { ElectronService } from '../core/services/electron.service';
 })
 export class RemoveAllDataComponent {
   private readonly electron = inject(ElectronService);
+  private readonly library = inject(LibraryService);
 
   readonly isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
   readonly removing = signal(false);
@@ -87,6 +89,10 @@ export class RemoveAllDataComponent {
 
     this.removing.set(true);
     this.status.set(null);
+    // Clear the renderer-held library/onboarding config first — the main-process
+    // wipe can't delete the locked Local Storage leveldb, so without this a stale
+    // "onboarding complete" flag survives and the next launch skips first-run setup.
+    this.library.clearStoredConfig();
     try {
       const result = await this.electron.removeAllData();
       const freed = result?.freedBytes ? ` (${this.formatBytes(result.freedBytes)} freed)` : '';
