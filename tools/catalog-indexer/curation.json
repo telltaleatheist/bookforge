@@ -1,0 +1,32 @@
+{
+  "_comment": "Hand-maintained curation for the voice catalog. The indexer auto-discovers every voice from HuggingFace; this file only (a) hides junk / typo-duplicate folders via voiceDeny, and (b) overrides display names that the CamelCase humanizer can't get right. Languages are NOT curated here — they come straight from the Stanza manifest's lang_name. To add or remove a voice from the published catalog, edit voiceDeny and rerun build_catalog.py.",
+
+  "voiceDeny": [
+    "JhonButlerASMR",
+    "JhonMulaney",
+    "DeathPuss&Boots"
+  ],
+  "_voiceDenyNotes": {
+    "JhonButlerASMR": "typo duplicate of JohnButlerASMR",
+    "JhonMulaney": "typo duplicate of JohnMulaney",
+    "DeathPuss&Boots": "duplicate of DeathPussInBoots; '&' also breaks URLs"
+  },
+
+  "voiceRename": {
+    "AiExplained": "AI Explained",
+    "AsmrRacoon": "ASMR Raccoon",
+    "ASMRCuteDragon": "ASMR Cute Dragon",
+    "BadCartmanSouthPark": "Cartman (South Park)",
+    "DeathPussInBoots": "Death Puss in Boots",
+    "GhostMW2": "Ghost (MW2)",
+    "GideonOfnirEldenRing": "Gideon Ofnir (Elden Ring)",
+    "JohnButlerASMR": "John Butler ASMR",
+    "MelinaEldenRing": "Melina (Elden Ring)",
+    "PeterGriffinFamilyGuy": "Peter Griffin (Family Guy)",
+    "RainyDayHeadSpace": "Rainy Day Headspace",
+    "SladeTeenTitans": "Slade (Teen Titans)",
+    "StanleyParable": "The Narrator (Stanley Parable)",
+    "SubZeroMKX": "Sub-Zero (MKX)",
+    "WhisperSalemASMR": "Whisper Salem ASMR"
+  }
+}
