@@ -2,8 +2,8 @@
  * Rolling Logger
  *
  * Platform-aware file logger with automatic rotation:
- * - Mac: ~/Library/Logs/BookForgeApp/
- * - Windows: %APPDATA%/BookForgeApp/logs/
+ * - Mac: ~/Library/Logs/BookForge/
+ * - Windows: %APPDATA%/BookForge/logs/
  *
  * Rotation policy:
  * - At 2MB, current log moves to .backup
@@ -51,15 +51,15 @@ class RollingLogger {
     const platform = os.platform();
 
     if (platform === 'darwin') {
-      // macOS: ~/Library/Logs/BookForgeApp/
-      return path.join(os.homedir(), 'Library', 'Logs', 'BookForgeApp');
+      // macOS: ~/Library/Logs/BookForge/
+      return path.join(os.homedir(), 'Library', 'Logs', 'BookForge');
     } else if (platform === 'win32') {
-      // Windows: %APPDATA%/BookForgeApp/logs/
+      // Windows: %APPDATA%/BookForge/logs/
       const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-      return path.join(appData, 'BookForgeApp', 'logs');
+      return path.join(appData, 'BookForge', 'logs');
     } else {
-      // Linux/other: ~/.local/share/BookForgeApp/logs/
-      return path.join(os.homedir(), '.local', 'share', 'BookForgeApp', 'logs');
+      // Linux/other: ~/.local/share/BookForge/logs/
+      return path.join(os.homedir(), '.local', 'share', 'BookForge', 'logs');
     }
   }
 

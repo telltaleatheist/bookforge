@@ -45,12 +45,12 @@ function initWorkerLog(libraryPath: string): void {
     let logsDir: string;
     const platform = os.platform();
     if (platform === 'darwin') {
-      logsDir = path.join(os.homedir(), 'Library', 'Logs', 'BookForgeApp');
+      logsDir = path.join(os.homedir(), 'Library', 'Logs', 'BookForge');
     } else if (platform === 'win32') {
       const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-      logsDir = path.join(appData, 'BookForgeApp', 'logs');
+      logsDir = path.join(appData, 'BookForge', 'logs');
     } else {
-      logsDir = path.join(os.homedir(), '.local', 'share', 'BookForgeApp', 'logs');
+      logsDir = path.join(os.homedir(), '.local', 'share', 'BookForge', 'logs');
     }
     fsSync.mkdirSync(logsDir, { recursive: true });
     workerLogPath = path.join(logsDir, 'worker-output.log');

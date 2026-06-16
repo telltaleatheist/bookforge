@@ -24,6 +24,14 @@ import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
 import { systemProbe } from './components/system-probe';
 
+// Normalize the app's data directory. Electron derives userData from the app
+// name, which defaults to package.json `name` ("bookforge-app") — inconsistent
+// with the product ("BookForge") and the logger dir, which made uninstall /
+// "remove all data" target the wrong folder. Pin it to "BookForge" so EVERYTHING
+// (env, settings, localStorage, logs, caches) lives under one predictable folder.
+// MUST run before the first app.getPath('userData') (next at line ~225).
+app.setName('BookForge');
+
 let mainWindow: BrowserWindow | null = null;
 
 // First-run runtime readiness. Packaged builds unpack the bundled Python env +
@@ -1934,14 +1942,22 @@ function setupIpcHandlers(): void {
       } catch { /* in-use file (logs/leveldb) — best effort; uninstaller mops up */ }
     }
 
-    // Also remove the file-logger dir (a separate "BookForgeApp" folder, not
-    // userData) and any Local-appdata cache.
+    // Clean up locations OUTSIDE userData: the macOS logs dir (convention puts it
+    // in ~/Library/Logs, not Application Support), updater caches, and any
+    // PRE-NORMALIZATION dirs left by an upgrade (old "bookforge-app" userData and
+    // "BookForgeApp" logs). On Windows the logs now live inside userData, so the
+    // loop above already removed them.
     const extras: string[] = [];
     if (process.platform === 'win32') {
-      extras.push(path.join(app.getPath('appData'), 'BookForgeApp'));
-      if (process.env.LOCALAPPDATA) extras.push(path.join(process.env.LOCALAPPDATA, 'bookforge-app'));
+      extras.push(path.join(app.getPath('appData'), 'BookForgeApp'));   // old logs dir
+      extras.push(path.join(app.getPath('appData'), 'bookforge-app'));  // old userData
+      if (process.env.LOCALAPPDATA) {
+        extras.push(path.join(process.env.LOCALAPPDATA, 'bookforge-app'));
+        extras.push(path.join(process.env.LOCALAPPDATA, 'BookForge-updater'));
+      }
     } else if (process.platform === 'darwin') {
-      extras.push(path.join(app.getPath('home'), 'Library', 'Logs', 'BookForgeApp'));
+      extras.push(path.join(app.getPath('home'), 'Library', 'Logs', 'BookForge'));
+      extras.push(path.join(app.getPath('home'), 'Library', 'Logs', 'BookForgeApp')); // old logs
     }
     for (const p of extras) {
       try {

@@ -103,6 +103,9 @@
     ],
     "icon": "bookforge-icon.png",
     "compression": "store",
+    "nsis": {
+      "include": "packaging/installer.nsh"
+    },
     "dmg": {
       "format": "ULFO",
       "writeUpdateInfo": false
