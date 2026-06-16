@@ -1956,8 +1956,13 @@ function setupIpcHandlers(): void {
         extras.push(path.join(process.env.LOCALAPPDATA, 'BookForge-updater'));
       }
     } else if (process.platform === 'darwin') {
-      extras.push(path.join(app.getPath('home'), 'Library', 'Logs', 'BookForge'));
-      extras.push(path.join(app.getPath('home'), 'Library', 'Logs', 'BookForgeApp')); // old logs
+      const home = app.getPath('home');
+      extras.push(path.join(home, 'Library', 'Logs', 'BookForge'));
+      extras.push(path.join(home, 'Library', 'Logs', 'BookForgeApp')); // old logs
+      // Old pre-normalization userData (named after package "bookforge-app"), now
+      // orphaned by app.setName('BookForge') — same cleanup Windows does.
+      extras.push(path.join(app.getPath('appData'), 'bookforge-app'));
+      extras.push(path.join(home, 'Library', 'Caches', 'BookForge-updater'));
     }
     for (const p of extras) {
       try {

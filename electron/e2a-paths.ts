@@ -10,6 +10,7 @@
  * 3. Calling setE2aPath() / setCondaPath() programmatically
  */
 
+import { app } from 'electron';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -31,6 +32,7 @@ import {
   getActiveBundledEnvPath,
   relocatablePythonPath,
   relocatableEnvBinDirs,
+  hasManagedEnv,
 } from './e2a-env-bootstrap';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -215,6 +217,20 @@ function resolveCondaEnv(
   // BOOKFORGE_E2A_ENV override exists precisely to force this path in dev.
   const bundled = getActiveBundledEnvPath();
   if (bundled) return { kind: 'relocatable', path: bundled };
+
+  // A packaged install that SHIPS a managed env must use ONLY that env — never a
+  // machine-local conda env. Falling back to a developer's "ebook2audiobook" conda
+  // env made fresh installs look already set up on dev machines while being broken
+  // on real users' machines (no conda). No fallback: if the managed env isn't ready
+  // here, that's a bug to surface, not paper over. (The first-run setup downloads
+  // and verifies it; TTS work is gated on runtime.ready, so this never trips in the
+  // normal flow.)
+  if (app.isPackaged && hasManagedEnv()) {
+    throw new Error(
+      'The bundled Python runtime is not installed yet. It downloads during first-run ' +
+      'setup — a packaged build never uses a system conda environment.'
+    );
+  }
 
   if (fs.existsSync(envPath)) return { kind: 'prefix', path: envPath };
 
