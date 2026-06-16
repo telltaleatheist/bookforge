@@ -126,10 +126,6 @@
           "filter": ["*.dylib"]
         },
         {
-          "from": "resources/e2a-env.tar.gz",
-          "to": "e2a-env.tar.gz"
-        },
-        {
           "from": "resources/e2a",
           "to": "e2a"
         },
@@ -155,10 +151,6 @@
           "from": "resources/bin",
           "to": "bin",
           "filter": ["*.dll"]
-        },
-        {
-          "from": "resources/e2a-env.tar.gz",
-          "to": "e2a-env.tar.gz"
         },
         {
           "from": "resources/e2a",

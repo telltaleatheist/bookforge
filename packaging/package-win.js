@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * One-command Windows packaging → Inno Setup installer.
+ * One-command Windows packaging → NSIS installer.
  *
  * Wraps the whole win build so `npm run package:win-x64` just works: it resolves
  * the two environment inputs the staging step needs (the ebook2audiobook
- * checkout and the python used to seed the default voice), then runs the same
- * pipeline as the old package:win-inno script. Produces release/BookForge-Setup-*.exe
- * via Inno Setup — NOT the deprecated NSIS target.
+ * checkout and the python used to seed the default voice), then runs the build
+ * pipeline. Produces the NSIS installer in release/ ("BookForge Setup <ver>.exe")
+ * using the `build.win.target: nsis` config in package.json.
  *
  * Env overrides (auto-detected when unset):
  *   EBOOK2AUDIOBOOK_PATH   the e2a checkout (default: sibling ../ebook2audiobook)
@@ -70,15 +70,16 @@ const env = {
 console.log('[package-win] EBOOK2AUDIOBOOK_PATH =', e2aPath);
 console.log('[package-win] BOOKFORGE_SEED_PYTHON =', seedPython || '(default: conda run -n ebook2audiobook python)');
 
-// ── Pipeline (same steps as the former package:win-inno) ────────────────────
+// ── Pipeline ─────────────────────────────────────────────────────────────────
+// The final step builds the NSIS installer directly (build.win.target = nsis),
+// replacing the former --dir + Inno Setup steps.
 const steps = [
   'npm run download:mupdf',
   'npm run download:llama',
   'npm run stage:packaging:seed',
   'npm run build:electron',
   'npm run build:prod',
-  'npx electron-builder --win --x64 --dir',
-  'node packaging/build-inno.js',
+  'npx electron-builder --win --x64',
 ];
 
 for (const cmd of steps) {
@@ -90,4 +91,4 @@ for (const cmd of steps) {
   }
 }
 
-console.log('\n[package-win] Done — installer in release/ (BookForge-Setup-*.exe).');
+console.log('\n[package-win] Done — NSIS installer in release/ ("BookForge Setup *.exe").');

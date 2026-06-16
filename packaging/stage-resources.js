@@ -55,18 +55,12 @@ function platformTag() {
   throw new Error(`Unsupported build platform: ${platform}-${arch}`);
 }
 
-const tarballSource = path.join(repoRoot, 'packaging', 'artifacts', `e2a-env-${platformTag()}.tar.gz`);
-
 // ── Validate inputs (fail loud, no silent fallbacks) ─────────────────────────
+//
+// The Python env is no longer staged/bundled — it's downloaded from a GitHub
+// release on first run (see electron/e2a-env-bootstrap.ts). Only the e2a code
+// snapshot is validated and staged here.
 
-if (!fs.existsSync(tarballSource)) {
-  console.error(
-    `[stage-resources] Missing env tarball: ${tarballSource}\n` +
-    `Pack it first:\n` +
-    `  conda run -n base conda-pack -n ebook2audiobook -o ${tarballSource} --n-threads -1`
-  );
-  process.exit(1);
-}
 if (!fs.existsSync(path.join(e2aSource, 'app.py')) || !fs.existsSync(path.join(e2aSource, 'lib'))) {
   console.error(
     `[stage-resources] "${e2aSource}" does not look like an ebook2audiobook checkout ` +
@@ -176,16 +170,9 @@ function robustRmDir(dir) {
 }
 
 console.log(`[stage-resources] e2a source:  ${e2aSource}`);
-console.log(`[stage-resources] env tarball: ${tarballSource}`);
 console.log(`[stage-resources] models:      ${includeModels ? 'INCLUDED (offline build)' : seedModels ? 'SEED (Scarlett + base speakers_xtts.pth + English stanza)' : 'excluded'}`);
 
 fs.mkdirSync(resourcesDir, { recursive: true });
-
-// Env tarball
-const tarballDest = path.join(resourcesDir, 'e2a-env.tar.gz');
-fs.rmSync(tarballDest, { force: true });
-fs.copyFileSync(tarballSource, tarballDest, CLONE);
-console.log(`[stage-resources] staged ${path.relative(repoRoot, tarballDest)} (${(fs.statSync(tarballDest).size / 1e9).toFixed(2)} GB)`);
 
 // e2a snapshot — always rebuilt from scratch so deletions in the source
 // propagate (a stale snapshot must never ship).

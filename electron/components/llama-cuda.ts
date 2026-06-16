@@ -24,7 +24,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { downloadFile, extractArchive } from './downloader';
+import { downloadFile, extractArchive, sha256File } from './downloader';
 import type { OptionalComponent, InstallProgress } from './component-types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -37,10 +37,37 @@ const LLAMA_CPP_VERSION = 'b7482';
 const WIN_CUDA_TAG = '12.4';
 
 const GH_REL = `https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_VERSION}`;
-const MIRROR = 'https://owenmorgan.com/bookforge/llama';
+// BookForge release mirror. The two zips were uploaded under different release
+// tags, so each has its own full URL rather than a shared base path.
+const BF_REL = 'https://github.com/telltaleatheist/bookforge/releases/download';
+const OWEN_MIRROR = 'https://owenmorgan.com/bookforge/llama';
 
 const BUILD_ZIP = `llama-${LLAMA_CPP_VERSION}-bin-win-cuda-${WIN_CUDA_TAG}-x64.zip`;
 const CUDART_ZIP = `cudart-llama-bin-win-cuda-${WIN_CUDA_TAG}-x64.zip`;
+
+// sha256 of each zip — identical across upstream and both mirrors (byte-for-byte
+// the same files). A download whose hash doesn't match is treated as a failed
+// source and the next source is tried.
+const BUILD_SHA256 = '18a52829b58666825fc31563bd10cc9fce793c7668d39710a87898a09cfe2dee';
+const CUDART_SHA256 = '8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6';
+
+// Ordered download sources for a given zip: upstream llama.cpp → BookForge
+// release mirror → owenmorgan.com mirror.
+function sourcesFor(fileName: string): string[] {
+  if (fileName === BUILD_ZIP) {
+    return [`${GH_REL}/${BUILD_ZIP}`, `${BF_REL}/llama/${BUILD_ZIP}`, `${OWEN_MIRROR}/${BUILD_ZIP}`];
+  }
+  if (fileName === CUDART_ZIP) {
+    return [`${GH_REL}/${CUDART_ZIP}`, `${BF_REL}/windows/${CUDART_ZIP}`, `${OWEN_MIRROR}/${CUDART_ZIP}`];
+  }
+  return [`${GH_REL}/${fileName}`, `${OWEN_MIRROR}/${fileName}`];
+}
+
+function expectedSha(fileName: string): string {
+  if (fileName === BUILD_ZIP) return BUILD_SHA256;
+  if (fileName === CUDART_ZIP) return CUDART_SHA256;
+  return '';
+}
 
 // Exact content-lengths of the two zips (verified against the b7482 release and
 // the mirror). Used for combined download progress + the disk pre-check.
@@ -195,16 +222,31 @@ async function downloadZipWithFallback(
     });
   };
 
-  try {
-    await downloadFile(`${GH_REL}/${fileName}`, archivePath, LLAMA_CUDA_ID, onProgress, signal);
-    return;
-  } catch (err) {
-    if (signal.aborted) throw err;
-    console.warn(
-      `[COMPONENTS] llama-cuda: upstream ${fileName} failed (${err instanceof Error ? err.message : err}); trying mirror`
-    );
+  const want = expectedSha(fileName);
+  let lastErr: unknown = null;
+
+  for (const url of sourcesFor(fileName)) {
+    if (signal.aborted) throw new Error('Install cancelled');
+    try {
+      await downloadFile(url, archivePath, LLAMA_CUDA_ID, onProgress, signal);
+      if (want) {
+        const got = await sha256File(archivePath);
+        if (got.toLowerCase() !== want.toLowerCase()) {
+          throw new Error(`checksum mismatch (expected ${want}, got ${got})`);
+        }
+      }
+      return; // this source succeeded and verified
+    } catch (err) {
+      if (signal.aborted) throw err;
+      lastErr = err;
+      console.warn(
+        `[COMPONENTS] llama-cuda: ${url} failed (${err instanceof Error ? err.message : err}); trying next source`
+      );
+    }
   }
-  await downloadFile(`${MIRROR}/${fileName}`, archivePath, LLAMA_CUDA_ID, onProgress, signal);
+  throw new Error(
+    `All download sources failed for ${fileName}: ${lastErr instanceof Error ? lastErr.message : lastErr}`
+  );
 }
 
 /**

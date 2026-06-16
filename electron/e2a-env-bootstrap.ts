@@ -1,21 +1,27 @@
 /**
- * Bundled relocatable Python environment (conda-pack).
+ * Relocatable Python environment (conda-pack), downloaded on first run.
  *
- * Packaged builds ship the frozen `ebook2audiobook` conda env as a conda-pack
- * tarball in the app's resources (built from packaging/env/*.yml, packed to
- * packaging/artifacts/e2a-env-<platform>.tar.gz, shipped as
- * resources/e2a-env.tar.gz). On first run the tarball is extracted to a
- * writable folder under userData and the env's `conda-unpack` script rewrites
- * the prefix paths baked in at pack time. From then on every e2a spawn invokes
- * the env's python directly — no conda on the target machine.
+ * The frozen `ebook2audiobook` conda env is built per-platform (from
+ * packaging/env/*.yml), packed with conda-pack, and published as a GitHub
+ * release asset (see ENV_RELEASES). It is NO LONGER bundled in the installer —
+ * on first run a packaged build downloads the platform's tarball, verifies its
+ * sha256, extracts it under userData, and runs the env's `conda-unpack` script
+ * to rewrite the prefix paths baked in at pack time. From then on every e2a
+ * spawn invokes the env's python directly — no conda on the target machine.
+ *
+ * Readiness is keyed on ENV_VERSION + the artifact sha256 (recorded in the
+ * ready-marker): bumping ENV_VERSION or publishing a new tarball forces a
+ * re-download + re-unpack. The downloaded tarball is cached under userData
+ * across retries, then deleted once a build succeeds to reclaim its ~1.8 GB.
  *
  * Resolution (getActiveBundledEnvPath):
  *   1. BOOKFORGE_E2A_ENV — points at an already-unpacked relocatable env.
  *      Lets dev builds exercise the relocatable code path without packaging.
  *      Set but invalid → throw (a configured override must not be ignored).
  *   2. The unpacked env under userData, when its ready-marker matches the
- *      shipped tarball (size + mtime — a new tarball forces a re-unpack).
- *   3. null — no bundled env; callers fall back to conda-based resolution.
+ *      current ENV_VERSION + sha256.
+ *   3. null — no managed env for this platform (or dev); callers fall back to
+ *      conda-based resolution.
  */
 
 import { app } from 'electron';
@@ -23,17 +29,50 @@ import { spawn, spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
+import { downloadFile, sha256File } from './components/downloader';
+
 const TARBALL_NAME = 'e2a-env.tar.gz';
 const READY_MARKER = '.bookforge-env-ready.json';
 const E2A_SNAPSHOT_STAMP = '.bookforge-e2a-snapshot.json';
 const E2A_READY_MARKER = '.bookforge-e2a-ready.json';
 
-export function getBundledEnvTarballPath(): string {
-  return path.join(process.resourcesPath, TARBALL_NAME);
+// Bump whenever a new env tarball is published: an installed env whose marker
+// records a different version (or sha256) is torn down and rebuilt on launch.
+const ENV_VERSION = '2026.06.16';
+
+interface EnvRelease {
+  url: string;
+  sha256: string;
+  bytes: number;
+}
+
+// Per-platform conda-pack tarballs, published as GitHub release assets. A
+// platform/arch with no entry has no managed env — callers fall back to conda.
+const ENV_RELEASES: Record<string, EnvRelease> = {
+  'win32-x64': {
+    url: 'https://github.com/telltaleatheist/bookforge/releases/download/environment/e2a-env-windows-x64.tar.gz',
+    sha256: 'ece7471e90a529ed192958ce1eb205a4145061e3bbb1e14721acaf92983d0090',
+    bytes: 1842123032,
+  },
+  'darwin-arm64': {
+    url: 'https://github.com/telltaleatheist/bookforge/releases/download/mac/e2a-env-macos-arm64.tar.gz',
+    sha256: '6840385831777babe7ecb7b6c8636c84fa0ebf5a6f223dd480579f57d67dacc4',
+    bytes: 1676391339,
+  },
+};
+
+/** The env release artifact for this platform/arch, or null if none exists. */
+function envReleaseForThisPlatform(): EnvRelease | null {
+  return ENV_RELEASES[`${process.platform}-${process.arch}`] ?? null;
 }
 
 export function getBundledEnvDir(): string {
   return path.join(app.getPath('userData'), 'runtime', 'e2a-env');
+}
+
+/** Where the env tarball downloads to — cached across retries, deleted on success. */
+function envTarballCachePath(): string {
+  return path.join(runtimeRoot(), TARBALL_NAME);
 }
 
 /** Direct python executable inside a relocatable env (no conda involved). */
@@ -76,35 +115,32 @@ export function relocatableBinaryPath(envDir: string, name: string): string | nu
 }
 
 interface ReadyMarker {
-  tarballSize: number;
-  tarballMtimeMs: number;
+  version: string;
+  sha256: string;
 }
 
 function markerPath(envDir: string): string {
   return path.join(envDir, READY_MARKER);
 }
 
-function currentTarballIdentity(): ReadyMarker | null {
-  try {
-    const st = fs.statSync(getBundledEnvTarballPath());
-    return { tarballSize: st.size, tarballMtimeMs: st.mtimeMs };
-  } catch {
-    return null;
-  }
+/** The ready-marker an unpack should write for the current platform, or null. */
+function expectedMarker(): ReadyMarker | null {
+  const release = envReleaseForThisPlatform();
+  return release ? { version: ENV_VERSION, sha256: release.sha256 } : null;
 }
 
 function envIsReady(envDir: string): boolean {
   try {
     const marker: ReadyMarker = JSON.parse(fs.readFileSync(markerPath(envDir), 'utf-8'));
-    const tarball = currentTarballIdentity();
-    if (!tarball) {
-      // No tarball to compare against (e.g. dev run pointing userData at an old
-      // unpack) — an unpacked env with a marker is trusted as-is.
+    const expected = expectedMarker();
+    if (!expected) {
+      // No managed env for this platform (e.g. a dev override unpack) — an
+      // unpacked env with a marker is trusted as-is if the interpreter exists.
       return fs.existsSync(relocatablePythonPath(envDir));
     }
     return (
-      marker.tarballSize === tarball.tarballSize &&
-      marker.tarballMtimeMs === tarball.tarballMtimeMs &&
+      marker.version === expected.version &&
+      marker.sha256 === expected.sha256 &&
       fs.existsSync(relocatablePythonPath(envDir))
     );
   } catch {
@@ -140,9 +176,9 @@ export function getActiveBundledEnvPath(): string | null {
   return null;
 }
 
-/** Whether this build ships a bundled env tarball (packaged installs do). */
-export function hasBundledEnvTarball(): boolean {
-  return fs.existsSync(getBundledEnvTarballPath());
+/** Whether a managed env exists for this platform (i.e. there's one to download). */
+export function hasManagedEnv(): boolean {
+  return envReleaseForThisPlatform() !== null;
 }
 
 function run(command: string, args: string[], opts: { cwd?: string } = {}): Promise<void> {
@@ -238,7 +274,10 @@ let envEnsureInFlight: Promise<string | null> | null = null;
 export async function ensureBundledEnv(onProgress?: (message: string) => void): Promise<string | null> {
   const override = process.env.BOOKFORGE_E2A_ENV;
   if (override && override.trim()) return getActiveBundledEnvPath();
-  if (!hasBundledEnvTarball()) return null;
+  // Dev runs from the live conda env, never a download/unpack. (A locally-built
+  // packaged app sharing this userData dir is what exercises the relocatable path.)
+  if (!app.isPackaged) return null;
+  if (!hasManagedEnv()) return null;
 
   // Never run two builds at once (atomic publish makes it safe, but it's wasteful).
   if (envEnsureInFlight) return envEnsureInFlight;
@@ -246,7 +285,70 @@ export async function ensureBundledEnv(onProgress?: (message: string) => void): 
   return envEnsureInFlight;
 }
 
+/**
+ * Download the env tarball into destPath, relaying byte progress as setup
+ * messages. Uses the shared component downloader (redirects + progress).
+ */
+async function downloadEnvTarball(
+  release: EnvRelease,
+  destPath: string,
+  onProgress?: (message: string) => void,
+): Promise<void> {
+  const mb = (n?: number) => (n != null ? Math.round(n / 1_000_000) : 0);
+  let lastPct = -1;
+  await downloadFile(release.url, destPath, 'e2a-env', (p) => {
+    if (typeof p.pct === 'number' && p.pct !== lastPct) {
+      lastPct = p.pct;
+      const detail = p.totalBytes
+        ? ` ${p.pct}% (${mb(p.receivedBytes)} / ${mb(p.totalBytes)} MB)`
+        : '';
+      onProgress?.(`Downloading the text-to-speech runtime…${detail}`);
+    }
+  });
+}
+
+/**
+ * Ensure a sha256-verified env tarball is present at the cache path and return
+ * it. A cached tarball from a prior run (interrupted during unpack) is reused
+ * after a checksum re-check rather than re-downloading ~1.8 GB; a corrupt or
+ * mismatched one is discarded and re-fetched. Throws if freshly downloaded bytes
+ * don't match the expected sha256.
+ */
+async function ensureTarballDownloaded(
+  release: EnvRelease,
+  onProgress?: (message: string) => void,
+): Promise<string> {
+  const cache = envTarballCachePath();
+
+  if (fs.existsSync(cache)) {
+    onProgress?.('Checking the downloaded runtime…');
+    try {
+      const got = await sha256File(cache);
+      if (got.toLowerCase() === release.sha256.toLowerCase()) return cache;
+      console.warn('[E2A-ENV] Cached env tarball checksum mismatch — re-downloading.');
+    } catch {
+      /* unreadable — re-download */
+    }
+    try { fs.rmSync(cache, { force: true }); } catch { /* ignore */ }
+  }
+
+  await downloadEnvTarball(release, cache, onProgress);
+
+  onProgress?.('Verifying the download…');
+  const got = await sha256File(cache);
+  if (got.toLowerCase() !== release.sha256.toLowerCase()) {
+    try { fs.rmSync(cache, { force: true }); } catch { /* ignore */ }
+    throw new Error(
+      `Downloaded env checksum mismatch (expected ${release.sha256}, got ${got}). The download was corrupt.`
+    );
+  }
+  return cache;
+}
+
 async function doEnsureBundledEnv(onProgress?: (message: string) => void): Promise<string | null> {
+  const release = envReleaseForThisPlatform();
+  if (!release) return null;
+
   const envDir = getBundledEnvDir();
 
   // Healthy AND verified → nothing to do. A marker-ready env that fails its
@@ -262,10 +364,12 @@ async function doEnsureBundledEnv(onProgress?: (message: string) => void): Promi
   fs.mkdirSync(runtimeRoot(), { recursive: true });
   sweepStale(envDir);
 
-  const tarball = getBundledEnvTarballPath();
+  // Fetch (or reuse a cached) sha256-verified tarball before building.
+  const tarball = await ensureTarballDownloaded(release, onProgress);
+
   const tempDir = `${envDir}.tmp-${process.pid}-${Date.now()}`;
-  console.log(`[E2A-ENV] Building bundled Python env: ${tarball} -> ${tempDir}`);
-  onProgress?.('Preparing the bundled text-to-speech runtime (one-time setup)…');
+  console.log(`[E2A-ENV] Building Python env: ${tarball} -> ${tempDir}`);
+  onProgress?.('Preparing the text-to-speech runtime (one-time setup)…');
   removeDirRobust(tempDir);
   fs.mkdirSync(tempDir, { recursive: true });
 
@@ -289,15 +393,23 @@ async function doEnsureBundledEnv(onProgress?: (message: string) => void): Promi
 
     // Mark complete inside the temp dir, then ATOMICALLY publish it: the live
     // env only ever appears as a fully-built, verified, marked tree.
-    fs.writeFileSync(markerPath(tempDir), JSON.stringify(currentTarballIdentity()), 'utf-8');
+    fs.writeFileSync(
+      markerPath(tempDir),
+      JSON.stringify({ version: ENV_VERSION, sha256: release.sha256 } satisfies ReadyMarker),
+      'utf-8',
+    );
     removeDirRobust(envDir);            // clear any stale/corrupt live dir (frees the name)
     fs.renameSync(tempDir, envDir);     // atomic on the same volume
 
-    console.log('[E2A-ENV] Bundled Python env ready:', envDir);
+    // Build succeeded — the cached download is no longer needed; reclaim ~1.8 GB.
+    try { fs.rmSync(tarball, { force: true }); } catch { /* ignore */ }
+
+    console.log('[E2A-ENV] Python env ready:', envDir);
     onProgress?.('Text-to-speech runtime ready.');
     return envDir;
   } catch (err) {
     removeDirRobust(tempDir);           // never leave a half-built temp behind
+    // Keep the verified tarball cached so a retry doesn't re-download ~1.8 GB.
     throw err;
   }
 }
@@ -376,7 +488,7 @@ export function hasBundledE2aSnapshot(): boolean {
  * current. Used to decide up front whether to show the first-run setup overlay.
  */
 export function bundledRuntimeReady(): boolean {
-  const envNeedsSetup = hasBundledEnvTarball() && !envIsReady(getBundledEnvDir());
+  const envNeedsSetup = app.isPackaged && hasManagedEnv() && !envIsReady(getBundledEnvDir());
   const e2aNeedsSetup = hasBundledE2aSnapshot() && !e2aIsReady(getRuntimeE2aDir());
   return !envNeedsSetup && !e2aNeedsSetup;
 }

@@ -10057,7 +10057,7 @@ app.whenReady().then(async () => {
   // until the runtime is actually usable. The TTS API server start is folded in
   // here so external clients (browser extension) never hit a half-ready runtime.
   void (async () => {
-    const { ensureBundledEnv, ensureBundledE2a, bundledRuntimeReady, getBundledEnvDir, hasBundledEnvTarball } =
+    const { ensureBundledEnv, ensureBundledE2a, bundledRuntimeReady } =
       await import('./e2a-env-bootstrap.js');
 
     // Needs-setup detection tied to whether the environment is actually COMPLETE,
