@@ -43,7 +43,7 @@ interface SetupStep {
       <div class="setup-card">
         <header class="card-head">
           <div class="head-row">
-            <h1>Set up BookForge</h1>
+            <h1>{{ firstRun() ? 'Set up BookForge' : 'Configuration' }}</h1>
             <div class="head-right">
               <!-- Engine status as a compact inline pill (not a full-width banner
                    repeated on every step) — declutters the body. -->
@@ -54,10 +54,10 @@ interface SetupStep {
                   <span class="engine-spinner"></span> Engine setting up…
                 }
               </span>
-              <!-- No "Skip setup" on the library step: a library must be chosen
-                   before the rest of the app works. -->
-              @if (active().id !== 'library') {
-                <button type="button" class="skip-all" (click)="complete()">Skip setup</button>
+              <!-- First run is mandatory — no skip. Reopened later as
+                   "Configuration" it gets a close (X) instead. -->
+              @if (!firstRun()) {
+                <button type="button" class="close-x" (click)="closeConfig()" aria-label="Close" title="Close">&#10005;</button>
               }
             </div>
           </div>
@@ -293,18 +293,19 @@ interface SetupStep {
       color: var(--text-primary, #f0f0f0);
     }
 
-    .skip-all {
+    .close-x {
       background: none;
       border: none;
       color: var(--text-secondary, #9a9a9a);
-      font-size: 13px;
+      font-size: 16px;
+      line-height: 1;
       cursor: pointer;
-      padding: 4px 6px;
+      padding: 4px 8px;
       border-radius: 6px;
     }
-    .skip-all:hover {
+    .close-x:hover {
       color: var(--text-primary, #f0f0f0);
-      text-decoration: underline;
+      background: color-mix(in srgb, var(--text-secondary, #9a9a9a) 14%, transparent);
     }
 
     .steps-indicator {
@@ -676,6 +677,10 @@ export class FirstRunSetupComponent {
   protected readonly active = computed(() => this.steps[this.currentStep()]);
   protected readonly isLast = computed(() => this.currentStep() === this.steps.length - 1);
 
+  /** First-run (mandatory setup) vs reopened later as "Configuration" (closable).
+   *  Tied to whether the env was created fresh this launch. */
+  protected readonly firstRun = computed(() => this.runtime.freshInstall());
+
   // The user finished/skipped setup but the engine is still unpacking. We sit on
   // the last page showing prominent progress instead of dropping them onto a
   // half-ready home; the effect below sends them to Studio the moment it's ready.
@@ -724,6 +729,11 @@ export class FirstRunSetupComponent {
   complete(): void {
     if (!this.runtime.ready()) { this.enterFinishing(false); return; }
     this.leaveForStudio(false);
+  }
+
+  /** Configuration mode (not first run): close the page and return to the app. */
+  closeConfig(): void {
+    void this.router.navigate(['/studio']);
   }
 
   /** Sit on the last page with prominent progress until the engine is ready. */

@@ -15,16 +15,25 @@ export interface RuntimeStatus {
  * clamps the result monotonically so out-of-order messages never jump it back.
  */
 function setupPercentFor(message: string, ready: boolean): number {
+  // ONLY the real ready flag is 100. Per-step "…ready." messages (env, e2a) must
+  // map to their phase, never 100 — otherwise the monotonic floor locks the bar
+  // at 100 while later phases (voice / language pack) are still downloading and
+  // the page looks frozen. Ordered to match the first-run "update" sequence:
+  // e2a code → env (download + unpack) → default voice → English pack.
   if (ready) return 100;
   const m = (message || '').toLowerCase();
-  if (m.includes('ready')) return 100;
-  if (m.includes('conda-unpack') || m.includes('fixing environment')) return 80;
-  if (m.includes('extracting')) return 55;
-  if (m.includes('voices')) return 40;
-  if (m.includes('models')) return 30;
-  if (m.includes('audiobook engine') || m.includes('installing the bundled')) return 20;
-  if (m.includes('setting up') || m.includes('starting')) return 10;
-  return 12;
+  if (m.includes('english language pack')) {
+    return m.includes('installing') ? 96 : m.includes('verifying') ? 92 : 86;
+  }
+  if (m.includes('johansson voice') || (m.includes('voice') && m.includes('downloading'))) {
+    return m.includes('installing') ? 80 : m.includes('verifying') ? 76 : 58;
+  }
+  if (m.includes('conda-unpack') || m.includes('fixing environment')) return 50;
+  if (m.includes('extracting')) return 45;
+  if (m.includes('text-to-speech runtime')) return 30; // env download / prepare / ready
+  if (m.includes('audiobook engine') || m.includes('installing the bundled') || m.includes('bundled')) return 12;
+  if (m.includes('updating') || m.includes('setting up') || m.includes('starting') || m.includes('choose your library')) return 6;
+  return 8;
 }
 
 /**

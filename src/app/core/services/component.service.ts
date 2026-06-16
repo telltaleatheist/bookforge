@@ -75,18 +75,27 @@ export class ComponentService {
   /** Reload the catalog list + system profile from the main process. */
   async refresh(): Promise<void> {
     this.loading.set(true);
+    this.error.set(null);
+    // Populate each piece AS IT RESOLVES rather than gating all on Promise.all.
+    // The component LIST (which drives the voice/add-on UI) is fast, but the
+    // system PROBE (nvidia-smi / disk) can take many seconds — worst during the
+    // busy first-run download window. Decoupling means voices render the moment
+    // the list returns instead of waiting behind the probe. The probe + installer
+    // hints fill in independently and their failure is non-fatal to the list.
+    const listP = this.electron.components.list()
+      .then((list) => this.components.set(list))
+      .catch((err) => { this.error.set(this.toMessage(err, 'Failed to load add-ons')); });
+    const probeP = this.electron.components.probe()
+      .then((profile) => this.profile.set(profile))
+      .catch(() => { /* probe failure is non-fatal — the list still renders */ });
+    const instP = this.electron.components.installers()
+      .then((installers) => {
+        this.installerIds.set(new Set(installers.ids));
+        this.installerNotes.set(installers.notes);
+      })
+      .catch(() => { /* installer hints are optional */ });
     try {
-      const [list, profile, installers] = await Promise.all([
-        this.electron.components.list(),
-        this.electron.components.probe(),
-        this.electron.components.installers(),
-      ]);
-      this.components.set(list);
-      this.profile.set(profile);
-      this.installerIds.set(new Set(installers.ids));
-      this.installerNotes.set(installers.notes);
-    } catch (err) {
-      this.error.set(this.toMessage(err, 'Failed to load add-ons'));
+      await Promise.all([listP, probeP, instP]);
     } finally {
       this.loading.set(false);
     }
@@ -139,7 +148,12 @@ export class ComponentService {
    * UI on availability without each triggering its own round-trip.
    */
   ensureLoaded(): Promise<void> {
-    if (!this.loadPromise) this.loadPromise = this.refresh();
+    // Re-fetch if nothing has loaded yet, or the previous attempt errored (e.g.
+    // the list IPC failed during the busy first-run window). Otherwise a cached
+    // failed/empty load would leave the panel permanently blank with no retry.
+    if (!this.loadPromise || (this.error() && !this.loading())) {
+      this.loadPromise = this.refresh();
+    }
     return this.loadPromise;
   }
 

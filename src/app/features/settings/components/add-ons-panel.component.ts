@@ -1,4 +1,4 @@
-import { Component, inject, input, computed, signal, ChangeDetectionStrategy, OnInit } from '@angular/core';
+import { Component, inject, input, computed, signal, effect, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
@@ -103,12 +103,10 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
               }
             }
 
-            <!-- Resolved entry path for installed components -->
-            @if (status.state === 'installed' && status.installed?.entryPath) {
-              <div class="entry-path">
-                <span class="entry-label">{{ status.installed?.source === 'external' ? 'Found at' : 'Installed at' }}</span>
-                <code class="entry-value">{{ status.installed?.entryPath }}</code>
-              </div>
+            <!-- Resolved entry path: settings only (hidden during first-run setup to
+                 declutter), shown compact + truncated with the full path on hover. -->
+            @if (status.state === 'installed' && status.installed?.entryPath && !selectionMode()) {
+              <code class="entry-path" [title]="status.installed?.entryPath ?? ''">{{ status.installed?.entryPath }}</code>
             }
 
             <!-- Live install progress -->
@@ -410,22 +408,17 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
       li { margin: 2px 0; }
     }
 
+    /* Compact, single-line, truncated — full path on hover (title). No "Found at"
+       label and not shown in setup, so it never clutters the card. */
     .entry-path {
-      display: flex;
-      align-items: baseline;
-      gap: var(--ui-spacing-sm);
-      font-size: var(--ui-font-xs);
-    }
-
-    .entry-label {
-      color: var(--text-tertiary);
-      flex-shrink: 0;
-    }
-
-    .entry-value {
+      display: block;
+      max-width: 100%;
       font-family: monospace;
-      color: var(--text-secondary);
-      word-break: break-all;
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .install-progress {
@@ -522,14 +515,15 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
       &.error { background: var(--error-bg); color: var(--error); }
     }
 
+    /* Plain explainer line — NOT a colored box-in-a-box (the card itself carries
+       the selected/colored state). Keeps the card from looking cluttered. */
     .gpu-explainer {
       display: flex;
       align-items: center;
       gap: var(--ui-spacing-sm);
-      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
-      background: color-mix(in srgb, var(--accent) 12%, transparent);
-      border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-      border-radius: $radius-md;
+      padding: 0;
+      background: transparent;
+      border: none;
       font-size: var(--ui-font-sm);
       color: var(--text-secondary);
 
@@ -614,6 +608,24 @@ export class AddOnsPanelComponent implements OnInit {
   /** The CUDA download-on-demand packs (llama LLM + XTTS PyTorch). */
   isCudaPack(id: string): boolean {
     return id === 'llama-cuda' || id === 'cuda-tts';
+  }
+
+  // First run: pre-check GPU acceleration when the machine qualifies — the user
+  // unchecks it if they don't want it. One-shot (won't fight a manual deselect),
+  // selection mode only.
+  private autoSelectedGpu = false;
+  constructor() {
+    effect(() => {
+      if (!this.selectionMode() || this.autoSelectedGpu) return;
+      const ids = this.addOns()
+        .filter((s) => this.isCudaPack(s.component.id)
+          && s.state !== 'incompatible' && s.state !== 'installed'
+          && this.isDownloadable(s.component))
+        .map((s) => s.component.id);
+      if (ids.length === 0) return; // not loaded yet, or machine doesn't qualify
+      this.autoSelectedGpu = true;
+      this.sel.selectMany(ids);
+    });
   }
 
   /** The detected GPU name, for the CUDA pack's explainer line. */
