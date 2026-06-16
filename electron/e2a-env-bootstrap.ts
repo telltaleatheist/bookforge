@@ -481,16 +481,166 @@ export function hasBundledE2aSnapshot(): boolean {
   return fs.existsSync(path.join(getBundledE2aSnapshotDir(), E2A_SNAPSHOT_STAMP));
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// First-run runtime assets (default voice + English language pack)
+//
+// These are NOT bundled in the installer. They're published as GitHub release
+// archives whose internal layout mirrors the e2a runtime's models/ tree, so they
+// extract straight into getRuntimeE2aDir() and land exactly where the bundled
+// seed used to put them. Platform-independent (model weights + JSON + audio), so
+// one archive each serves Windows and macOS. Downloaded as part of the first-run
+// "update" alongside the Python env. Other voices/languages stay optional and
+// download on demand through the component system (HuggingFace / Stanford).
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface RuntimeAsset {
+  id: string;       // marker + cache filename
+  label: string;    // human label for progress messages
+  url: string;
+  sha256: string;
+  bytes: number;
+  version: string;  // bump (with a new archive) to force a re-download + re-extract
+}
+
+const RUNTIME_ASSETS: Record<string, RuntimeAsset> = {
+  'default-voice': {
+    id: 'default-voice',
+    label: 'Scarlett Johansson voice',
+    url: 'https://github.com/telltaleatheist/bookforge/releases/download/voice-model/default-voice-johansson.tar.gz',
+    sha256: 'dc300f068b62442c95f0ccab3f84224983a402b2c7bbb178b0de4f05f860c959',
+    bytes: 1738859112,
+    version: '2026.06.16',
+  },
+  'stanza-en': {
+    id: 'stanza-en',
+    label: 'English language pack',
+    url: 'https://github.com/telltaleatheist/bookforge/releases/download/stanzas/stanza-en.tar.gz',
+    sha256: 'cf3a83493d8c0b426524bb5d000c77d2b52ed2261e8f8dfcb5021ec8bd00825f',
+    bytes: 197028208,
+    version: '2026.06.16',
+  },
+};
+
+/** Per-asset ready-marker, kept inside the e2a runtime so it's torn down with it. */
+function assetMarkerPath(id: string): string {
+  return path.join(getRuntimeE2aDir(), `.bookforge-asset-${id}.json`);
+}
+
+function runtimeAssetReady(asset: RuntimeAsset): boolean {
+  try {
+    const m = JSON.parse(fs.readFileSync(assetMarkerPath(asset.id), 'utf-8'));
+    return m.version === asset.version && m.sha256 === asset.sha256;
+  } catch {
+    return false;
+  }
+}
+
+const assetEnsureInFlight: Record<string, Promise<void> | undefined> = {};
+
+async function doEnsureRuntimeAsset(
+  asset: RuntimeAsset,
+  onProgress?: (message: string) => void,
+): Promise<void> {
+  const e2aDir = getRuntimeE2aDir();
+  // The asset's models/ subtree extracts into the e2a runtime root. ensureBundledE2a
+  // normally creates this first; mkdir defensively in case ordering changes.
+  fs.mkdirSync(e2aDir, { recursive: true });
+  fs.mkdirSync(runtimeRoot(), { recursive: true });
+
+  const cache = path.join(runtimeRoot(), `${asset.id}.tar.gz`);
+
+  // Reuse a cached, verified archive from an interrupted prior run rather than
+  // re-downloading; discard a corrupt/mismatched one.
+  let haveValid = false;
+  if (fs.existsSync(cache)) {
+    onProgress?.(`Checking the downloaded ${asset.label}…`);
+    try {
+      const got = await sha256File(cache);
+      haveValid = got.toLowerCase() === asset.sha256.toLowerCase();
+    } catch {
+      /* unreadable — re-download */
+    }
+    if (!haveValid) { try { fs.rmSync(cache, { force: true }); } catch { /* ignore */ } }
+  }
+
+  if (!haveValid) {
+    const mb = (n?: number) => (n != null ? Math.round(n / 1_000_000) : 0);
+    let lastPct = -1;
+    await downloadFile(asset.url, cache, `asset-${asset.id}`, (p) => {
+      if (typeof p.pct === 'number' && p.pct !== lastPct) {
+        lastPct = p.pct;
+        const detail = p.totalBytes
+          ? ` ${p.pct}% (${mb(p.receivedBytes)} / ${mb(p.totalBytes)} MB)`
+          : '';
+        onProgress?.(`Downloading the ${asset.label}…${detail}`);
+      }
+    });
+    onProgress?.(`Verifying the ${asset.label}…`);
+    const got = await sha256File(cache);
+    if (got.toLowerCase() !== asset.sha256.toLowerCase()) {
+      try { fs.rmSync(cache, { force: true }); } catch { /* ignore */ }
+      throw new Error(
+        `Downloaded ${asset.label} checksum mismatch (expected ${asset.sha256}, got ${got}). The download was corrupt.`
+      );
+    }
+  }
+
+  onProgress?.(`Installing the ${asset.label}…`);
+  await run('tar', ['-xzf', cache, '-C', e2aDir]);
+
+  fs.writeFileSync(
+    assetMarkerPath(asset.id),
+    JSON.stringify({ version: asset.version, sha256: asset.sha256 }),
+    'utf-8',
+  );
+  // Reclaim the cached archive once installed.
+  try { fs.rmSync(cache, { force: true }); } catch { /* ignore */ }
+}
+
+function ensureRuntimeAsset(
+  asset: RuntimeAsset,
+  onProgress?: (message: string) => void,
+): Promise<void> {
+  if (!app.isPackaged) return Promise.resolve(); // dev uses the live e2a checkout's models
+  if (runtimeAssetReady(asset)) return Promise.resolve();
+  const existing = assetEnsureInFlight[asset.id];
+  if (existing) return existing;
+  const p = doEnsureRuntimeAsset(asset, onProgress).finally(() => { assetEnsureInFlight[asset.id] = undefined; });
+  assetEnsureInFlight[asset.id] = p;
+  return p;
+}
+
+/** Download + install the default Scarlett Johansson voice (+ XTTS base) if missing. */
+export function ensureDefaultVoice(onProgress?: (message: string) => void): Promise<void> {
+  return ensureRuntimeAsset(RUNTIME_ASSETS['default-voice'], onProgress);
+}
+
+/** Download + install the English Stanza language pack if missing. */
+export function ensureEnglishStanza(onProgress?: (message: string) => void): Promise<void> {
+  return ensureRuntimeAsset(RUNTIME_ASSETS['stanza-en'], onProgress);
+}
+
+/** Whether the mandatory first-run runtime assets are installed (true in dev). */
+export function defaultRuntimeAssetsReady(): boolean {
+  if (!app.isPackaged) return true;
+  return (
+    runtimeAssetReady(RUNTIME_ASSETS['default-voice']) &&
+    runtimeAssetReady(RUNTIME_ASSETS['stanza-en'])
+  );
+}
+
 /**
- * Whether the bundled runtime needs no further unpacking — i.e. there's nothing
- * for ensureBundledEnv/ensureBundledE2a to do. True in dev (no tarball/snapshot
- * ships) and on a packaged install whose env + e2a are already unpacked and
- * current. Used to decide up front whether to show the first-run setup overlay.
+ * Whether the bundled runtime needs no further setup — i.e. there's nothing for
+ * the first-run "update" (ensureBundledEnv/ensureBundledE2a/ensureDefaultVoice/
+ * ensureEnglishStanza) to do. True in dev (nothing ships/downloads) and on a
+ * packaged install whose env + e2a + default voice + English pack are all current.
+ * Used to decide up front whether to show the first-run setup overlay.
  */
 export function bundledRuntimeReady(): boolean {
   const envNeedsSetup = app.isPackaged && hasManagedEnv() && !envIsReady(getBundledEnvDir());
   const e2aNeedsSetup = hasBundledE2aSnapshot() && !e2aIsReady(getRuntimeE2aDir());
-  return !envNeedsSetup && !e2aNeedsSetup;
+  const assetsNeedSetup = app.isPackaged && !defaultRuntimeAssetsReady();
+  return !envNeedsSetup && !e2aNeedsSetup && !assetsNeedSetup;
 }
 
 // Clone-on-write where the filesystem supports it (APFS/ReFS), full copy

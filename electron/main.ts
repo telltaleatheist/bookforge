@@ -62,6 +62,88 @@ async function refreshTtsApiVoices(): Promise<void> {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// First-run "update": download + install the mandatory runtime components
+// (Python env, default voice, English language pack) in the background, then
+// start the TTS API server. Gated behind the library-location step so the user
+// can quit before any large download begins; triggered from startup (when a
+// library is already set) and from the library:set-root handler (first run).
+// Idempotent — the ensure* calls are no-ops once their assets are installed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let runtimeSetupInFlight: Promise<void> | null = null;
+let runtimeSetupDone = false;
+let ttsApiStarted = false;
+
+async function startTtsApiServerOnce(): Promise<void> {
+  if (ttsApiStarted) return;
+  ttsApiStarted = true;
+  try {
+    const { ttsApiServer } = await import('./tts-api-server.js');
+    const status = await ttsApiServer.start(app.getPath('userData'));
+    console.log(`[Startup] TTS API server on port ${status.port} (host ${status.host})`);
+  } catch (err) {
+    ttsApiStarted = false; // allow a later retry
+    console.error('[Startup] TTS API server failed to start:', err);
+  }
+}
+
+async function doRuntimeSetup(): Promise<boolean> {
+  const { ensureBundledEnv, ensureBundledE2a, ensureDefaultVoice, ensureEnglishStanza } =
+    await import('./e2a-env-bootstrap.js');
+
+  const logger = getMainLogger();
+  const emit = (message: string) => {
+    logger.info(message);
+    setRuntimeStatus({ state: 'preparing', message });
+  };
+
+  setRuntimeStatus({ state: 'preparing', message: 'Updating BookForge — installing components…' });
+
+  // Independent steps: a failure in one must not block the others; the first
+  // error is surfaced at the end. Order matters — the e2a code snapshot creates
+  // the runtime dir the voice + language pack extract into.
+  let firstError: string | null = null;
+  const step = async (label: string, fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (err) {
+      const message = (err as Error).message;
+      if (firstError === null) firstError = message;
+      logger.error(`${label} failed`, { error: message });
+    }
+  };
+
+  await step('Bundled e2a code setup', () => ensureBundledE2a(emit));
+  await step('Python env setup', () => ensureBundledEnv(emit));
+  await step('Default voice setup', () => ensureDefaultVoice(emit));
+  await step('English language pack setup', () => ensureEnglishStanza(emit));
+
+  if (firstError) {
+    setRuntimeStatus({ state: 'error', message: 'Setup of the audiobook engine failed.', error: firstError });
+    return false;
+  }
+
+  setRuntimeStatus({ state: 'ready', message: 'Ready' });
+  await startTtsApiServerOnce();
+  return true;
+}
+
+/**
+ * Kick off the first-run "update" (idempotent). Safe to call from startup (when a
+ * library is already set) and from library:set-root (first run). Resets on failure
+ * so a re-trigger retries; succeeds once and then no-ops.
+ */
+function startRuntimeSetup(): Promise<void> {
+  if (runtimeSetupDone) return Promise.resolve();
+  if (runtimeSetupInFlight) return runtimeSetupInFlight;
+  runtimeSetupInFlight = doRuntimeSetup()
+    .then((ok) => { if (ok) runtimeSetupDone = true; })
+    .catch((err) => { getMainLogger().error('Runtime setup crashed', { error: (err as Error).message }); })
+    .finally(() => { runtimeSetupInFlight = null; });
+  return runtimeSetupInFlight;
+}
+
 // Suppress benign mupdf WASM FinalizationRegistry errors.
 // These fire asynchronously during GC when mupdf tries to free stale page/pixmap/annotation
 // objects. They don't affect functionality — the resources are already freed by mupdf internally.
@@ -1897,6 +1979,11 @@ function setupIpcHandlers(): void {
     // scanned book/ebook lists — drop those so it serves the new library on the
     // next request instead of the previous location.
     bookshelfServer.invalidateCache();
+    // Now that a library location is set, begin the first-run "update": download +
+    // install the mandatory runtime components (env + default voice + English pack)
+    // in the background. Idempotent — a no-op once installed; skipped when the
+    // library is being cleared (null).
+    if (libraryPath) void startRuntimeSetup();
     return { success: true };
   });
 
@@ -10057,78 +10144,35 @@ app.whenReady().then(async () => {
   // until the runtime is actually usable. The TTS API server start is folded in
   // here so external clients (browser extension) never hit a half-ready runtime.
   void (async () => {
-    const { ensureBundledEnv, ensureBundledE2a, bundledRuntimeReady } =
-      await import('./e2a-env-bootstrap.js');
+    const { bundledRuntimeReady } = await import('./e2a-env-bootstrap.js');
 
-    // Needs-setup detection tied to whether the environment is actually COMPLETE,
-    // not merely whether its directory exists. bundledRuntimeReady() validates the
-    // env/e2a ready-markers against the bundled tarball + snapshot, so a half-
-    // unpacked or stale env (dir present, marker missing/mismatched) STILL counts
-    // as needing setup — the renderer then shows the guided Setup page instead of
-    // dropping the user into Studio with a half-ready engine. Using mere directory
-    // existence here was the bug: a lingering env dir (like a lingering onboarding
-    // flag) made the app look set up when it wasn't. False in dev (no tarball) and
-    // on a normal up-to-date launch.
+    // bundledRuntimeReady() validates EVERY mandatory piece (Python env + e2a code
+    // snapshot + default voice + English language pack) against its ready-marker,
+    // so a half-installed or version-stale runtime STILL counts as needing setup.
+    // runtimeWasFresh drives the renderer's guided first-run Setup page. False in
+    // dev (nothing ships/downloads) and on a normal up-to-date launch.
     const runtimeReady = bundledRuntimeReady();
     runtimeWasFresh = !runtimeReady;
 
-    // Nothing to unpack (dev, or already current) → ready immediately, no overlay.
     if (runtimeReady) {
+      // Already fully installed (returning launch) → ready immediately; still bring
+      // up the TTS API server (startRuntimeSetup's ensure* calls are no-ops here).
       setRuntimeStatus({ state: 'ready', message: 'Ready' });
+      void startRuntimeSetup();
+      return;
+    }
+
+    // Not fully set up. Only begin downloading once the user has chosen a library
+    // location, so they can quit before any large download starts. If a library is
+    // already persisted (returning user mid-setup, or an env/asset version bump),
+    // run the update now; otherwise the library:set-root handler kicks it off.
+    if (loadPersistedLibraryRoot()) {
+      void startRuntimeSetup();
     } else {
-      setRuntimeStatus({ state: 'preparing', message: 'Setting up the audiobook engine…' });
-    }
-
-    const emit = (message: string) => {
-      logger.info(message);
-      setRuntimeStatus({ state: 'preparing', message });
-    };
-
-    // Independent try blocks: the e2a code snapshot and the Python env unpack are
-    // unrelated, so a failure in one must NOT block the other (a single bad file
-    // in the snapshot copy previously left the bundled env unpacked → conda
-    // fallback for everything).
-    let firstError: string | null = null;
-    try {
-      const e2aDir = await ensureBundledE2a(emit);
-      if (e2aDir) {
-        logger.info('Bundled e2a code ready', { e2aDir });
-      }
-    } catch (err) {
-      firstError = (err as Error).message;
-      logger.error('Bundled e2a code setup failed', { error: firstError });
-    }
-    try {
-      const envDir = await ensureBundledEnv(emit);
-      if (envDir) {
-        logger.info('Bundled Python env ready', { envDir });
-      }
-    } catch (err) {
-      const message = (err as Error).message;
-      firstError = firstError ?? message;
-      logger.error('Bundled Python env setup failed', { error: message });
-    }
-
-    if (firstError) {
       setRuntimeStatus({
-        state: 'error',
-        message: 'Setup of the audiobook engine failed.',
-        error: firstError,
+        state: 'preparing',
+        message: 'Choose your library location to finish setting up BookForge.',
       });
-    } else {
-      setRuntimeStatus({ state: 'ready', message: 'Ready' });
-    }
-
-    // TTS API server: WebSocket front door for external clients (browser
-    // extension). Started only after the runtime unpack window so a connecting
-    // client never spawns a worker against a half-ready runtime. Always on —
-    // binds localhost-only unless configured for LAN.
-    try {
-      const { ttsApiServer } = await import('./tts-api-server.js');
-      const status = await ttsApiServer.start(app.getPath('userData'));
-      console.log(`[Startup] TTS API server on port ${status.port} (host ${status.host})`);
-    } catch (err) {
-      console.error('[Startup] TTS API server failed to start:', err);
     }
   })();
 
@@ -10158,9 +10202,9 @@ app.whenReady().then(async () => {
     mainWindow?.webContents.send('queue:remote-control', action);
   });
 
-  // NOTE: the TTS API server is started inside the runtime-bootstrap IIFE above,
-  // gated behind the first-run unpack so external clients never hit a half-ready
-  // runtime.
+  // NOTE: the TTS API server is started by startRuntimeSetup() (the first-run
+  // "update"), gated behind the library-location step so external clients never
+  // hit a half-ready runtime.
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Window management: Cmd+W hides, Cmd+Q double-press to quit

@@ -38,6 +38,12 @@ const includeModels = args.includes('--models');
 // --seed: barebones build — bundle ONLY the default voice (ScarlettJohansson)
 // + stanza, not the full 26 GB models/. Every other voice downloads on demand.
 const seedModels = args.includes('--seed') && !includeModels;
+// Seed-model bundling is OFF by default: the default voice (ScarlettJohansson)
+// and English stanza now download on first run (electron/e2a-env-bootstrap.ts →
+// ensureDefaultVoice / ensureEnglishStanza), so the default installer ships
+// neither (~2 GB smaller). Set BOOKFORGE_BUNDLE_SEED_MODELS=1 to build a
+// fully-offline installer that bundles the curated slice instead.
+const bundleSeedModels = seedModels && process.env.BOOKFORGE_BUNDLE_SEED_MODELS === '1';
 const e2aFlagIdx = args.indexOf('--e2a');
 const e2aSource =
   (e2aFlagIdx !== -1 && args[e2aFlagIdx + 1]) ||
@@ -170,7 +176,7 @@ function robustRmDir(dir) {
 }
 
 console.log(`[stage-resources] e2a source:  ${e2aSource}`);
-console.log(`[stage-resources] models:      ${includeModels ? 'INCLUDED (offline build)' : seedModels ? 'SEED (Scarlett + base speakers_xtts.pth + English stanza)' : 'excluded'}`);
+console.log(`[stage-resources] models:      ${includeModels ? 'INCLUDED (offline build)' : bundleSeedModels ? 'SEED-OFFLINE (speakers + Scarlett + English stanza)' : seedModels ? 'download on first run (default voice + English stanza)' : 'excluded'}`);
 
 fs.mkdirSync(resourcesDir, { recursive: true });
 
@@ -248,7 +254,7 @@ fs.writeFileSync(
 // voice to init), the ScarlettJohansson voice, and the English stanza pack. Every
 // other voice/model — including the full base XTTS model — downloads on demand
 // into the app's data folder at runtime.
-if (seedModels) {
+if (bundleSeedModels) {
   // Build the voice checkpoint in a PERSISTENT staging cache (idempotent — a
   // second build is instant), then clone-on-write it into the snapshot. The
   // helper writes the exact HF-cache layout the XTTS engine reads.
