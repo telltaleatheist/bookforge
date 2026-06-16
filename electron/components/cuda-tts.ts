@@ -60,9 +60,9 @@ const MARKER = '.bookforge-cuda-tts.json';
 export function cudaTtsComponent(): OptionalComponent {
   return {
     id: CUDA_TTS_ID,
-    name: 'GPU Acceleration (TTS)',
+    name: 'Faster Voice Narration',
     description:
-      'NVIDIA CUDA build of PyTorch for the voice engine. Runs audiobook narration on your GPU instead of the CPU — dramatically faster. ~2.7 GB download (~7 GB on disk).',
+      'Uses your NVIDIA graphics card to generate the audiobook narration much faster than the processor. ~2.7 GB download (~7 GB on disk).',
     kind: 'binary',
     acquisition: ['managed'],
     sizeBytes: TOTAL_BYTES,

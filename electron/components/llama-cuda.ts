@@ -104,9 +104,9 @@ const VCRUNTIME_DLLS = [
 export function llamaCudaComponent(): OptionalComponent {
   return {
     id: LLAMA_CUDA_ID,
-    name: 'GPU Acceleration (CUDA)',
+    name: 'Faster AI Text Cleanup',
     description:
-      'NVIDIA CUDA build of the local AI engine. Runs on-device AI text cleanup on your GPU instead of the CPU — dramatically faster. ~570 MB download (~1 GB on disk).',
+      'Uses your NVIDIA graphics card to clean up book text with on-device AI much faster than the processor. ~570 MB download (~1 GB on disk).',
     kind: 'binary',
     acquisition: ['managed'],
     sizeBytes: TOTAL_BYTES,
