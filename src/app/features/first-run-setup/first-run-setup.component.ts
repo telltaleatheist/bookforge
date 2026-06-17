@@ -173,15 +173,15 @@ interface SetupStep {
               <div class="review">
                 @if (sel.count() === 0) {
                   <p class="review-empty">
-                    Nothing selected yet. Go back to check the voices, languages, or GPU
-                    acceleration you want — or finish now and grab them anytime from Settings.
+                    You’re all set — nothing extra selected. You can add voices, languages, or
+                    GPU acceleration anytime from Settings. Click Done to start using BookForge.
                   </p>
                 } @else {
                   <p class="review-intro">
-                    Ready to download <strong>{{ sel.count() }}</strong>
-                    item{{ sel.count() === 1 ? '' : 's' }} (about {{ formatBytes(selTotalBytes()) }}).
-                    They download one at a time so your connection isn’t overloaded — keep using
-                    BookForge while they run.
+                    <strong>{{ sel.count() }}</strong> add-on{{ sel.count() === 1 ? '' : 's' }}
+                    ({{ formatBytes(selTotalBytes()) }}) {{ sel.count() === 1 ? 'is' : 'are' }} already
+                    downloading — one at a time so your connection isn’t overloaded. Track them in the
+                    corner ↘; you can leave now and they keep running.
                   </p>
                   <ul class="review-list">
                     @for (s of selectedStatuses(); track s.component.id) {
@@ -191,9 +191,6 @@ interface SetupStep {
                       </li>
                     }
                   </ul>
-                  @if (sel.phase() !== 'idle') {
-                    <p class="review-started">Downloads started — track progress in the corner ↘</p>
-                  }
                 }
               </div>
             }
@@ -229,16 +226,11 @@ interface SetupStep {
             <button type="button" class="btn ghost" (click)="next()">Skip</button>
             <button type="button" class="btn primary" (click)="next()">Next</button>
           } @else {
-            <button type="button" class="btn ghost" (click)="complete()">
-              Finish without downloading
+            <!-- Add-ons already started downloading as the user advanced; the last
+                 page is just an acknowledgement. -->
+            <button type="button" class="btn primary" (click)="complete()">
+              {{ runtime.ready() ? 'Done' : 'Finish' }}
             </button>
-            @if (sel.count() > 0) {
-              <button type="button" class="btn primary" (click)="finishWithDownloads()">
-                Start {{ sel.count() }} download{{ sel.count() === 1 ? '' : 's' }} &amp; finish
-              </button>
-            } @else {
-              <button type="button" class="btn primary" (click)="complete()">Finish</button>
-            }
           }
           }
         </footer>
@@ -699,17 +691,15 @@ export class FirstRunSetupComponent {
   // the last page showing prominent progress instead of dropping them onto a
   // half-ready home; the effect below sends them to Studio the moment it's ready.
   protected readonly finishing = signal(false);
-  // Whether the deferred finish should also kick off the selected downloads.
-  private pendingDownloads = false;
 
   constructor() {
     // Auto-advance to the home page once the engine finishes preparing, if the
-    // user already asked to finish (hit Done/Finish while it was still working).
+    // user already hit Finish while it was still working. Selected add-ons are
+    // already downloading in the corner (queued on each step) — nothing to start here.
     effect(() => {
       if (this.finishing() && this.runtime.ready()) {
         this.finishing.set(false);
-        this.leaveForStudio(this.pendingDownloads);
-        this.pendingDownloads = false;
+        this.leaveForStudio();
       }
     });
   }
@@ -723,8 +713,11 @@ export class FirstRunSetupComponent {
     }
   }
 
-  /** Next / Skip / Finish — advance, or complete on the last step. */
+  /** Next / Skip / Finish — advance, or complete on the last step. Leaving a step
+   *  immediately queues that step's selected add-ons (they download in the corner),
+   *  so by the last page everything is already in flight. */
   next(): void {
+    this.sel.enqueueSelected();
     if (this.isLast()) {
       this.complete();
     } else {
@@ -732,17 +725,13 @@ export class FirstRunSetupComponent {
     }
   }
 
-  /** Kick off the selected batch (runs in the background) and head to Studio.
-   *  If the engine is still unpacking, wait on the last page first (the effect
-   *  above leaves once it's ready) — downloads need the runtime anyway. */
-  finishWithDownloads(): void {
-    if (!this.runtime.ready()) { this.enterFinishing(true); return; }
-    this.leaveForStudio(true);
-  }
-
+  /** Finish: head to Studio. Selected add-ons are already downloading in the
+   *  corner; if the engine itself is still preparing, wait on the last page first
+   *  (the effect above leaves once it's ready). */
   complete(): void {
-    if (!this.runtime.ready()) { this.enterFinishing(false); return; }
-    this.leaveForStudio(false);
+    this.sel.enqueueSelected(); // catch anything picked on the final step
+    if (!this.runtime.ready()) { this.enterFinishing(); return; }
+    this.leaveForStudio();
   }
 
   /** Configuration mode (not first run): close the page and return to the app. */
@@ -751,18 +740,14 @@ export class FirstRunSetupComponent {
   }
 
   /** Sit on the last page with prominent progress until the engine is ready. */
-  private enterFinishing(withDownloads: boolean): void {
-    this.pendingDownloads = withDownloads;
+  private enterFinishing(): void {
     this.currentStep.set(this.steps.length - 1);
     this.finishing.set(true);
   }
 
-  /** Actually leave for Studio, optionally starting the selected downloads. */
-  private leaveForStudio(withDownloads: boolean): void {
-    if (withDownloads) {
-      void this.sel.start();
-      this.sel.collapse();
-    }
+  /** Leave for Studio. The add-on queue keeps running in the corner dock. */
+  private leaveForStudio(): void {
+    this.sel.collapse(); // tuck the (still-running) queue into the corner
     void this.router.navigate(['/studio']);
   }
 

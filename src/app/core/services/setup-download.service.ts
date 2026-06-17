@@ -161,50 +161,83 @@ export class SetupDownloadService {
     return kind === 'tts-model' || kind === 'language-pack';
   }
 
-  /** Run the selected batch sequentially. Safe to call once per batch. */
-  async start(): Promise<void> {
-    if (this.phase() === 'running') return;
+  private draining = false;
 
-    const ids = this.pending();
-    this.order.set(ids);
-    this.doneIds.set(new Set());
-    this.failed.set({});
-    this.dismissed.set(false);
-    this.expanded.set(true);
+  /**
+   * Queue the current selection's not-yet-installed items and ensure the runner
+   * is draining the queue. Idempotent and INCREMENTAL — called on each setup
+   * "Next", so a step's picks start downloading the moment you leave it; newly
+   * added items join the live queue without restarting it.
+   */
+  enqueueSelected(): void {
+    const queued = new Set(this.order());
+    const additions = this.pending().filter((id) => !queued.has(id));
+    if (additions.length > 0) {
+      this.order.update((o) => [...o, ...additions]);
+      this.dismissed.set(false);
+      this.expanded.set(true);
+    }
     this.cancelled = false;
+    void this.drain();
+  }
 
-    if (ids.length === 0) {
-      this.phase.set('done');
-      return;
-    }
+  /** Back-compat alias: start the current selection downloading now. */
+  start(): void {
+    this.enqueueSelected();
+  }
 
-    this.phase.set('running');
-    for (const id of ids) {
-      if (this.cancelled) break;
-      if (!this.selected().has(id)) continue; // unchecked while waiting → skip
+  /** The next queued item still worth installing, or null when the queue is dry. */
+  private nextToRun(): string | null {
+    return (
+      this.order().find(
+        (id) =>
+          !this.cancelled &&
+          this.selected().has(id) &&
+          !this.doneIds().has(id) &&
+          !this.failed()[id] &&
+          !this.components.isInstalled(id),
+      ) ?? null
+    );
+  }
 
-      this.currentId.set(id);
+  /**
+   * Drain the queue sequentially (one componentService.install at a time so the
+   * connection isn't overloaded). Re-reads the order each step, so items
+   * enqueued mid-run are picked up. Only one drain runs at a time.
+   */
+  private async drain(): Promise<void> {
+    if (this.draining) return;
+    this.draining = true;
+    if (this.order().length > 0) this.phase.set('running');
+    try {
+      let id: string | null;
+      while ((id = this.nextToRun()) !== null) {
+        const curId: string = id;
+        this.currentId.set(curId);
 
-      // Voices / language packs spawn the bundled python — wait for the engine.
-      if (this.needsEngine(id)) {
-        await this.runtime.whenReady();
-      }
-      if (this.cancelled || !this.selected().has(id)) {
+        // Voices / language packs spawn the bundled python — wait for the engine.
+        if (this.needsEngine(curId)) {
+          await this.runtime.whenReady();
+        }
+        if (this.cancelled || !this.selected().has(curId)) {
+          this.currentId.set(null);
+          continue;
+        }
+
+        await this.components.install(curId);
+
+        if (this.components.isInstalled(curId)) {
+          this.doneIds.update((s) => new Set(s).add(curId));
+        } else if (!this.cancelled) {
+          this.failed.update((f) => ({ ...f, [curId]: this.components.error() || 'Download failed' }));
+        }
         this.currentId.set(null);
-        continue;
       }
-
-      await this.components.install(id);
-
-      if (this.components.isInstalled(id)) {
-        this.doneIds.update((s) => new Set(s).add(id));
-      } else if (!this.cancelled) {
-        this.failed.update((f) => ({ ...f, [id]: this.components.error() || 'Download failed' }));
-      }
+    } finally {
+      this.currentId.set(null);
+      this.draining = false;
+      this.phase.set('done');
     }
-
-    this.currentId.set(null);
-    this.phase.set('done');
   }
 
   /** Stop the whole batch: cancel the in-flight download and drop the queue. */
