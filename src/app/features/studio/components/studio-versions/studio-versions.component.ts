@@ -1,4 +1,4 @@
-import { Component, inject, input, output, signal, computed, effect } from '@angular/core';
+import { Component, inject, input, output, signal, computed, effect, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
@@ -179,7 +179,15 @@ export class StudioVersionsComponent {
   });
 
   constructor() {
-    effect(() => { this.bfpPath(); this.refreshTrigger(); void this.load(); });
+    // Only react to project/refresh changes. load() reads comparing() (to close an
+    // open compare on item switch); without untracked() that read makes this effect
+    // depend on comparing, so starting a compare would instantly re-run load() and
+    // close it again — the compare view would never appear.
+    effect(() => {
+      this.bfpPath();
+      this.refreshTrigger();
+      untracked(() => void this.load());
+    });
   }
 
   isEpub(v: VersionRow): boolean { return (v.extension || '').toLowerCase() === 'epub'; }
