@@ -286,22 +286,21 @@ function blockText(el: HTMLElement): string {
  * Play from a block (or a partial start, when clicked mid-paragraph) through the
  * rest of the page, skipping excluded blocks. The queue + prefetch auto-advance.
  */
-function playFrom(startId: string, firstPartial?: { text: string; range: Range }): void {
+function playFrom(startId: string, startChar = 0): void {
   const startIdx = blocks.findIndex((b) => b.id === startId);
   if (startIdx < 0) return;
 
-  const items: { blockId: string; text: string; label: string }[] = [];
+  const items: { blockId: string; text: string; label: string; startChar?: number }[] = [];
   for (let i = startIdx; i < blocks.length; i++) {
     const b = blocks[i];
     if (excluded.has(b.id)) continue;
-    if (i === startIdx && firstPartial) {
-      const id = `start-${++selCounter}`;
-      selRanges.set(id, firstPartial.range);
-      items.push({ blockId: id, text: firstPartial.text, label: preview(firstPartial.text) });
-    } else {
-      const text = blockText(b.el);
-      if (text) items.push({ blockId: b.id, text, label: preview(text) });
-    }
+    const text = blockText(b.el);
+    if (!text) continue;
+    // The start block always carries its full text (so it's cacheable and matches
+    // any existing cache entry); a mid-paragraph click rides along as startChar,
+    // resolved to a sentence and reached by seeking the buffer instead of re-TTS.
+    if (i === startIdx && startChar > 0) items.push({ blockId: b.id, text, label: preview(text), startChar });
+    else items.push({ blockId: b.id, text, label: preview(text) });
   }
   if (!items.length) return;
 
@@ -356,9 +355,14 @@ function onDocClick(e: MouseEvent): void {
   if (!hit || excluded.has(hit.id)) return;
 
   const caret = caretRangeAt(e.clientX, e.clientY);
-  const partial = caret ? partialFromCaret(caret, hit.el) : null;
+  const suffix = caret ? suffixFromCaret(caret, hit.el) : null;
   stop(e);
-  playFrom(hit.id, partial ?? undefined);
+  // The suffix from the clicked word to the block end, measured against the full
+  // block text, gives the char offset where playback should start. Offscreen maps
+  // that to a sentence boundary and seeks the buffered/cached audio there.
+  const full = blockText(hit.el);
+  const startChar = suffix ? Math.max(0, full.length - suffix.length) : 0;
+  playFrom(hit.id, startChar);
 }
 
 function caretRangeAt(x: number, y: number): Range | null {
@@ -374,8 +378,9 @@ function caretRangeAt(x: number, y: number): Range | null {
   return r;
 }
 
-/** A range from the start of the clicked word to the end of the block, plus its text. */
-function partialFromCaret(caret: Range, el: HTMLElement): { text: string; range: Range } | null {
+/** The text from the start of the clicked word to the end of the block. Its length
+ *  against the full block text gives the char offset where playback should begin. */
+function suffixFromCaret(caret: Range, el: HTMLElement): string | null {
   try {
     const node = caret.startContainer;
     let offset = caret.startOffset;
@@ -387,8 +392,7 @@ function partialFromCaret(caret: Range, el: HTMLElement): { text: string; range:
     range.setStart(node, offset);
     range.setEnd(el, el.childNodes.length);
     const text = range.toString().replace(/\s+/g, ' ').trim();
-    if (!text) return null;
-    return { text, range };
+    return text || null;
   } catch {
     return null;
   }

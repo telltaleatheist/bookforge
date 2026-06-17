@@ -60,6 +60,10 @@ export interface QueueItem {
   /** present for page-block items, so their button can be highlighted */
   tabId?: number;
   blockId?: string;
+  /** char offset into `text` where playback should begin (clicked mid-block);
+   *  resolved to a sentence boundary at play time so buffered/cached audio is
+   *  reused via a seek instead of re-synthesizing a partial. */
+  startChar?: number;
 }
 
 /** Authoritative state, broadcast by the offscreen document. */
@@ -102,13 +106,15 @@ export interface BlockCmd {
   source: ItemSource;
 }
 
-/** "Play from here to the end of the page": an ordered run of blocks (the start
- *  block, or a partial start when the user clicks mid-paragraph, then the rest). */
+/** "Play from here to the end of the page": an ordered run of blocks. The start
+ *  block always carries its FULL text (so it stays cacheable / matches an existing
+ *  cache entry); a mid-paragraph click is conveyed via `startChar`, resolved to a
+ *  sentence boundary at play time and reached by seeking the buffer, not re-TTS. */
 export interface PlayFromCmd {
   target: 'background';
   cmd: 'play-from';
   source: ItemSource;
-  items: { blockId: string; text: string; label: string }[];
+  items: { blockId: string; text: string; label: string; startChar?: number }[];
 }
 
 /** Drop a block from the running queue (the user excluded it, e.g. an ad). */

@@ -249,6 +249,11 @@ let preState: 'connecting' | 'starting-engine' | 'buffering' = 'connecting';
 let stallSince: number | null = null;
 let finishedSent = false;
 let lastReportedSentence = -1;
+// When the user clicks mid-block, the fraction (0..1) into the block where playback
+// should begin. Resolved to a sentence boundary once that sentence is buffered, so
+// the existing/cached audio is reached by a seek rather than re-synthesized. null
+// for a normal start-at-top read.
+let pendingStartFraction: number | null = null;
 let playSeq = 0;
 let reqCounter = 0;
 const cacheKeyByRequest = new Map<string, string>();
@@ -436,9 +441,34 @@ function playNow(item: QueueItem): void {
 /** Replace the queue with an ordered run (block → end of page) and start it. */
 function playSequence(items: QueueItem[]): void {
   if (items.length === 0) return;
-  current = items[0];
+  const first = items[0];
+  // Clicking back into the block already playing (its audio is in the live session,
+  // not yet the cache): reuse that buffer — seek to the clicked sentence instead of
+  // cancelling generation and re-synthesizing it.
+  if (current && current.id === first.id && session && !errorMsg && current.text === first.text) {
+    upcoming = items.slice(1);
+    const fraction = first.startChar ? Math.min(1, first.startChar / Math.max(1, first.text.length)) : 0;
+    if (started) seekWithinCurrent(fraction);
+    else { pendingStartFraction = fraction > 0 ? fraction : null; afterData(); }
+    fillPrefetch();
+    broadcast();
+    return;
+  }
+  current = first;
   upcoming = items.slice(1);
   startCurrent(true);
+}
+
+/** Reposition playback within the live session to the sentence at `fraction` of the
+ *  block, reusing the already-generated audio (no TTS). Falls back to a proportional
+ *  seek when the targeted sentence hasn't drained yet (e.g. a forward click). */
+function seekWithinCurrent(fraction: number): void {
+  if (!session) return;
+  const aligned = sentenceStartSecondsFor(fraction);
+  const target = Math.max(0, Math.min(session.seconds, aligned ?? fraction * session.seconds));
+  if (target > blobBytes / BYTES_PER_SECOND) loadBlob(target);
+  else { try { audio.currentTime = target; } catch { /* ignore */ } }
+  broadcast();
 }
 
 function enqueue(item: QueueItem): void {
@@ -549,6 +579,7 @@ function resetPlayer(): void {
   blobBytes = 0;
   finishedSent = false;
   lastReportedSentence = -1;
+  pendingStartFraction = null;
   stallSince = null;
   errorMsg = null;
   if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = null; }
@@ -711,6 +742,7 @@ function adoptPrefetchFor(item: QueueItem): boolean {
   blobBytes = 0;
   finishedSent = false;
   lastReportedSentence = -1;
+  pendingStartFraction = null; // adopted read-ahead blocks always start at the top
   stallSince = null;
   errorMsg = null;
   readyAhead.delete(item.id); // now playing — no longer "ahead"
@@ -743,6 +775,9 @@ async function startCurrent(preempt: boolean): Promise<void> {
   resetPlayer();
   if (preempt) { dropAllPrefetch(); readyAhead.clear(); } // fresh run — old read-ahead is stale
   readyAhead.delete(item.id); // becoming current — no longer "ahead"
+  // A mid-block click asks playback to begin partway in; remember it as a fraction
+  // so we can land on a sentence boundary in the (possibly cached) buffer.
+  pendingStartFraction = item.startChar && item.text.length ? Math.min(1, item.startChar / item.text.length) : null;
   rate = (await getSettings()).rate;
   if (seq !== playSeq) return;
 
@@ -815,6 +850,15 @@ function connectErrorMessage(code: string): string {
 function afterData(): void {
   if (!session) return;
   if (!started) {
+    // Mid-block click: hold until the targeted sentence has buffered, then begin
+    // there. Falls back to the top only if generation finished without resolving
+    // it (e.g. an empty/failed segmentation).
+    if (pendingStartFraction != null) {
+      if (targetStartSeconds() != null) startPlayback();
+      else if (session.generationDone) { pendingStartFraction = null; startPlayback(); }
+      broadcast();
+      return;
+    }
     const ready =
       session.generationDone ||                                                    // whole clip ready (short text)
       session.seconds >= START_MIN_SECONDS ||                                       // long single sentence — don't wait forever
@@ -825,6 +869,43 @@ function afterData(): void {
   }
   if (audio.ended) resumeIfReady();
   broadcast();
+}
+
+/**
+ * Resolve pendingStartFraction to the playback time at the start of the targeted
+ * sentence, or null if that sentence hasn't buffered yet (so the caller keeps
+ * waiting). The fraction is mapped over the cumulative character length of the
+ * session's sentences, so it lands on a sentence boundary even when the server's
+ * text length differs slightly from the DOM text the click was measured against.
+ */
+function targetStartSeconds(): number | null {
+  return pendingStartFraction == null ? null : sentenceStartSecondsFor(pendingStartFraction);
+}
+
+/**
+ * The playback time at the start of the sentence containing `fraction` (0..1) of
+ * the block, or null if that sentence hasn't buffered yet. The fraction is mapped
+ * over the cumulative character length of the session's sentences, so it lands on
+ * a sentence boundary even when the server's text length differs slightly from the
+ * DOM text the click was measured against.
+ */
+function sentenceStartSecondsFor(fraction: number): number | null {
+  if (!session) return null;
+  const sents = session.sentences;
+  if (sents.length === 0) return null; // segmentation not announced yet
+  let total = 0;
+  for (const s of sents) total += s.length;
+  if (total === 0) return 0;
+  const want = fraction * total;
+  let acc = 0;
+  let idx = 0;
+  for (let i = 0; i < sents.length; i++) {
+    if (want < acc + sents[i].length) { idx = i; break; }
+    acc += sents[i].length;
+    idx = i;
+  }
+  if (idx >= session.appendCursor) return null; // targeted sentence not buffered yet
+  return session.boundaries[idx] / BYTES_PER_SECOND;
 }
 
 /**
@@ -845,7 +926,9 @@ function resumeIfReady(): void {
 function startPlayback(): void {
   if (!session) return;
   started = true;
-  loadBlob(0);
+  const at = targetStartSeconds() ?? 0; // mid-block click seeks the buffer; normal read starts at 0
+  pendingStartFraction = null;
+  loadBlob(at);
 }
 
 function loadBlob(atSeconds: number, exact = false): void {
