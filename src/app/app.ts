@@ -8,6 +8,7 @@ import {
 } from './creamsicle-desktop';
 import { NavRailComponent, NavRailItem } from './components/nav-rail/nav-rail.component';
 import { SetupDownloadDockComponent } from './components/setup-download-dock/setup-download-dock.component';
+import { UpdateBannerComponent } from './components/update-banner/update-banner.component';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
 
@@ -20,7 +21,8 @@ import { RuntimeService } from './core/services/runtime.service';
     WindowChromeComponent,
     StatusBarComponent,
     NavRailComponent,
-    SetupDownloadDockComponent
+    SetupDownloadDockComponent,
+    UpdateBannerComponent
   ],
   template: `
     <!-- First-run setup overlay: blocks ONLY on a setup ERROR (needs attention).
@@ -85,6 +87,9 @@ import { RuntimeService } from './core/services/runtime.service';
     <!-- Persistent download-progress widget: survives navigation away from
          first-run setup so the batch keeps running, visible in a corner. -->
     <app-setup-download-dock />
+
+    <!-- App self-update toast: "update ready — restart to apply" (and download progress). -->
+    <app-update-banner />
 
     <!-- First-run engine setup: slim progress bar pinned to the bottom while the
          bundled runtime unpacks. The user is kept on the Setup page (redirect in

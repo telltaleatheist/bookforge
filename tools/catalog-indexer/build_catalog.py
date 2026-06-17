@@ -109,6 +109,16 @@ CURATION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "curati
 SCHEMA_VERSION = 1
 GENERATOR = "bookforge-catalog-indexer/1.0"
 
+# manifest.json (schemaVersion 2) is a SUPERSET of catalog.json: the same voices/languages
+# PLUS the three update tiers (launcher / code / components). The voices/languages come from
+# upstream here (cron); the launcher/code/components come from releases.json, which is written
+# only by the build machine's publish step (packaging/publish-release.js). Reading it here and
+# voices there keeps the two writers race-free.
+MANIFEST_SCHEMA_VERSION = 2
+APP_NAME = "bookforge"
+DEFAULT_MANIFEST_OUT = os.path.join(MIRROR_DOCROOT, "manifest.json")
+DEFAULT_RELEASES = os.path.join(MIRROR_DOCROOT, "releases.json")
+
 # Sanity floors — if a build produces fewer than these, something is wrong
 # upstream; abort rather than publish a degraded catalog.
 MIN_VOICES = 20
@@ -268,6 +278,39 @@ def _load_curation():
         return {}
 
 
+def _load_releases(path):
+    """Release data (launcher/code/components) maintained by the publish step. Absent until the
+    first release is published — in which case manifest.json is simply not (re)written."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return None
+
+
+def build_manifest(catalog, releases, now):
+    """Assemble manifest.json (v2) = catalog content + the release tiers from releases.json.
+    Pure (no I/O) so it's unit-testable without hitting upstream."""
+    return {
+        "schemaVersion": MANIFEST_SCHEMA_VERSION,
+        "app": APP_NAME,
+        "generatedAt": now or "1970-01-01T00:00:00Z",
+        "generator": GENERATOR,
+        "launcher": releases.get("launcher", {"version": "0.0.0", "platforms": {}}),
+        "code": releases["code"],
+        "components": releases.get("components", []),
+        "sources": catalog["sources"],
+        "counts": catalog["counts"],
+        "voices": catalog["voices"],
+        "languages": catalog["languages"],
+    }
+
+
+def _releases_has_code(releases):
+    code = (releases or {}).get("code") or {}
+    return bool(code.get("version") and code.get("url"))
+
+
 def _atomic_write(path, text):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -278,6 +321,8 @@ def _atomic_write(path, text):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--manifest-out", default=DEFAULT_MANIFEST_OUT)
+    ap.add_argument("--releases", default=DEFAULT_RELEASES)
     ap.add_argument("--dry-run", action="store_true")
     # generatedAt is injected by the caller (cron passes UTC) so the script is
     # reproducible and testable; falls back to a fixed placeholder if absent.
@@ -316,13 +361,31 @@ def main():
         f"[catalog] languages: {len(languages)} published, "
         f"phantoms excluded: {phantoms}\n")
 
+    # Assemble manifest.json (superset) if release data is available.
+    releases = _load_releases(args.releases)
+    manifest_text = None
+    if _releases_has_code(releases):
+        manifest = build_manifest(catalog, releases, args.now)
+        manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    else:
+        sys.stderr.write(
+            f"[catalog] no/incomplete releases.json at {args.releases}; "
+            f"manifest.json not written (catalog.json still published)\n")
+
     if args.dry_run:
         sys.stdout.write(text)
+        if manifest_text:
+            sys.stderr.write("[catalog] --- manifest.json (dry-run) below ---\n")
+            sys.stdout.write(manifest_text)
         return 0
 
     _atomic_write(args.out, text)
     sys.stderr.write(f"[catalog] wrote {args.out} "
                      f"({len(text)} bytes)\n")
+    if manifest_text:
+        _atomic_write(args.manifest_out, manifest_text)
+        sys.stderr.write(f"[catalog] wrote {args.manifest_out} "
+                         f"({len(manifest_text)} bytes)\n")
     return 0
 
 
