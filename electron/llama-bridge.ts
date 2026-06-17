@@ -25,6 +25,7 @@ import { downloadFile } from './components/downloader';
 import { systemProbe } from './components/system-probe';
 import { componentManager } from './components/component-manager';
 import { LLAMA_CUDA_ID } from './components/llama-cuda';
+import { getManagedBinaryPath } from './update/managed-bins';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Catalog (Cogito GGUFs — bartowski quants on HuggingFace, direct resolve URLs)
@@ -162,6 +163,12 @@ function resolveBinary(): string | null {
     const cudaEntry = componentManager.resolveEntry(LLAMA_CUDA_ID);
     if (cudaEntry) return cudaEntry;
   }
+
+  // A managed (server-pushed, auto-updated) llama-server, if installed, ranks above the bundled
+  // resources/bin copy so binary updates we publish take effect. The Windows CUDA pack above
+  // still wins when present.
+  const managed = getManagedBinaryPath('llama-server');
+  if (managed) return managed;
 
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
   const isWin = process.platform === 'win32';

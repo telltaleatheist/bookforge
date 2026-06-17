@@ -15,6 +15,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { getManagedBinaryPath } from './update/managed-bins';
 
 const execAsync = promisify(exec);
 
@@ -160,6 +161,14 @@ export class MutoolBridge {
     }
 
     const paths: string[] = [];
+
+    // A managed (server-pushed, auto-updated) mutool, if installed, ranks above the bundled
+    // resources/bin copy so binary updates we publish take effect. It still goes through the
+    // same access + `-v` verification below, so a broken managed install falls back cleanly.
+    const managed = getManagedBinaryPath('mutool');
+    if (managed) {
+      paths.push(managed);
+    }
 
     if (isWin) {
       paths.push(
