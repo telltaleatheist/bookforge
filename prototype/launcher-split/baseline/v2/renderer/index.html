@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>BookForge launcher prototype</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        font: 14px/1.5 -apple-system, system-ui, sans-serif;
+        margin: 0; padding: 28px; background: #1a1a1d; color: #eee;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      .sub { color: #999; margin: 0 0 20px; }
+      .badge { display: inline-block; padding: 2px 10px; border-radius: 999px;
+               font-weight: 600; color: #111; }
+      table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+      td { padding: 6px 10px; border-bottom: 1px solid #2c2c30; vertical-align: top; }
+      td.k { color: #9aa; width: 180px; }
+      .ok { color: #4ade80; font-weight: 600; }
+      .bad { color: #f87171; font-weight: 600; }
+      code { background: #2c2c30; padding: 1px 5px; border-radius: 4px; }
+      pre { white-space: pre-wrap; word-break: break-all; }
+    </style>
+  </head>
+  <body>
+    <h1>BookForge launcher prototype</h1>
+    <p class="sub">Renderer loaded from the userData code bundle, not the .app.</p>
+    <div id="root"></div>
+    <script>
+      const info = JSON.parse(decodeURIComponent(location.search.slice(1)));
+      const native = info.native || {};
+      const row = (k, v) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`;
+      document.getElementById('root').innerHTML = `
+        <span class="badge" style="background:${info.accent}">code bundle ${info.bundleVersion}</span>
+        <span style="color:#999"> &nbsp;${info.channel}</span>
+        <table>
+          ${row('Loaded from (bundleDir)', `<code>${info.bundleDir}</code>`)}
+          ${row('Renderer self-located', `<code>${info.rendererSelfLocated}</code>`)}
+          ${row('Electron', info.electron)}
+          ${row('Node', info.node)}
+          ${row('Node ABI (process.versions.modules)', info.abiModules)}
+          ${row('better-sqlite3 (native)', native.ok
+              ? `<span class="ok">OK</span> — sqlite ${native.sqlite}`
+              : `<span class="bad">FAILED</span><pre>${native.error || ''}</pre>`)}
+        </table>`;
+    </script>
+  </body>
+</html>

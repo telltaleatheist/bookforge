@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { app } from 'electron';
 import { getActiveBundledEnvPath, getActiveBundledE2aPath, relocatableBinaryPath } from './e2a-env-bootstrap';
+import { getManagedBinaryPath } from './update/managed-bins';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -321,6 +322,13 @@ export function getFfmpegPath(): string {
   // 2. Check environment variable
   if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
     return process.env.FFMPEG_PATH;
+  }
+
+  // 2.5. A managed (server-pushed, auto-updated) ffmpeg, if installed. Ranks above the bundled
+  // env so binary updates we publish actually take effect; explicit config/env above still win.
+  const managed = getManagedBinaryPath('ffmpeg');
+  if (managed) {
+    return managed;
   }
 
   // 3. Bundled relocatable env (packaged builds / BOOKFORGE_E2A_ENV override).

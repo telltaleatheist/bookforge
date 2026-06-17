@@ -23,6 +23,9 @@ import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
 import { systemProbe } from './components/system-probe';
+import { markBootOk } from './launcher/boot-state';
+import { checkAndStageCodeUpdate, getCodeUpdateStatus } from './update/code-updater';
+import { listManagedComponents, checkComponentUpdates, installComponent } from './update/component-updater';
 
 // Normalize the app's data directory. Electron derives userData from the app
 // name, which defaults to package.json `name` ("bookforge-app") — inconsistent
@@ -617,11 +620,18 @@ async function atomicWriteFile(filePath: string, content: string): Promise<void>
 
 const isDev = !app.isPackaged;
 
+// Root of the app code bundle — the directory that contains dist/ (and bookforge-icon.png).
+// Derived from __dirname (dist/electron -> code root) instead of Electron's app.getAppPath()
+// so the app self-locates when its code bundle is loaded from userData by the launcher (see
+// the app-update-system design). In the current monolithic build this resolves identically to
+// app.getAppPath() in both dev and packaged (asar) layouts.
+const codeRoot = path.join(__dirname, '..', '..');
+
 function createWindow(): void {
   // Get icon path - in dev it's in project root, in prod it's in app resources
   const iconPath = isDev
     ? path.join(__dirname, '..', '..', 'bookforge-icon.png')  // dist/electron -> project root
-    : path.join(app.getAppPath(), 'bookforge-icon.png');
+    : path.join(codeRoot, 'bookforge-icon.png');
 
   mainWindow = new BrowserWindow({
     width: 2100,
@@ -663,8 +673,8 @@ function createWindow(): void {
     mainWindow.loadURL('http://localhost:4250');
     // mainWindow.webContents.openDevTools();  // Uncomment to debug
   } else {
-    // Use app.getAppPath() for reliable path resolution in packaged apps
-    const appPath = app.getAppPath();
+    // Use codeRoot for reliable path resolution in packaged apps
+    const appPath = codeRoot;
     const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
 
     mainWindow.loadFile(indexPath).catch(err => {
@@ -681,6 +691,27 @@ function createWindow(): void {
 
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow?.webContents.setZoomLevel(loadZoomLevel());
+    // Confirm this code bundle booted healthily so the launcher won't roll it back next launch.
+    // No-op when running without the launcher (dev, or current monolithic packaged build).
+    markBootOk();
+
+    // Background: check for a newer code bundle and stage it for the next launch. Only under the
+    // packaged launcher (it's a no-op without a pointer). Failures are non-fatal.
+    if (app.isPackaged) {
+      checkAndStageCodeUpdate({
+        onProgress: (s) => mainWindow?.webContents.send('update:code-status', s),
+      }).catch((err) => console.warn('[update] code update check failed:', err));
+
+      // Surface (don't auto-install) available updates for our managed binaries.
+      checkComponentUpdates()
+        .then((updates) => {
+          if (updates.length) {
+            console.log('[update] managed component updates available:', updates.map((u) => `${u.id} ${u.state}`).join(', '));
+            mainWindow?.webContents.send('update:components-available', updates);
+          }
+        })
+        .catch((err) => console.warn('[update] component update check failed:', err));
+    }
   });
 
   mainWindow.on('closed', () => {
@@ -689,6 +720,26 @@ function createWindow(): void {
 }
 
 function setupIpcHandlers(): void {
+  // App self-update (code bundle). The launcher applies a staged update on next launch.
+  ipcMain.handle('update:get-code-status', () => getCodeUpdateStatus());
+  ipcMain.handle('update:check-code', () =>
+    checkAndStageCodeUpdate({
+      onProgress: (s) => mainWindow?.webContents.send('update:code-status', s),
+    })
+  );
+  // Apply a staged update: relaunch so the launcher boots the pending version.
+  ipcMain.handle('update:restart', () => {
+    app.relaunch();
+    app.quit();
+  });
+  // Managed binaries (ffmpeg, yt-dlp, …) — OUR server-hosted, watched components.
+  ipcMain.handle('update:list-components', (_e, force?: boolean) => listManagedComponents(force));
+  ipcMain.handle('update:install-component', (_e, id: string) =>
+    installComponent(id, {
+      onProgress: (s) => mainWindow?.webContents.send('update:component-status', s),
+    })
+  );
+
   // PDF Analyzer handlers — delegated to worker thread via pdf-worker-proxy.
   // Progress events are forwarded to event.sender automatically by the proxy.
   ipcMain.handle('pdf:analyze', async (event, pdfPath: string, maxPages?: number) => {
@@ -9469,7 +9520,7 @@ function setupIpcHandlers(): void {
 
     const iconPath = isDev
       ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
-      : path.join(app.getAppPath(), 'bookforge-icon.png');
+      : path.join(codeRoot, 'bookforge-icon.png');
 
     const listenWindow = new BrowserWindow({
       width: 1100,
@@ -9504,7 +9555,7 @@ function setupIpcHandlers(): void {
     if (isDev) {
       listenWindow.loadURL(`http://localhost:4250/#/listen?project=${encodedPath}`);
     } else {
-      const appPath = app.getAppPath();
+      const appPath = codeRoot;
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       listenWindow.loadFile(indexPath, {
         hash: `/listen?project=${encodedPath}`
@@ -9525,7 +9576,7 @@ function setupIpcHandlers(): void {
     // Get icon path
     const iconPath = isDev
       ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
-      : path.join(app.getAppPath(), 'bookforge-icon.png');
+      : path.join(codeRoot, 'bookforge-icon.png');
 
     // Create new editor window
     const editorWindow = new BrowserWindow({
@@ -9564,7 +9615,7 @@ function setupIpcHandlers(): void {
     if (isDev) {
       editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedPath}${modeParam}`);
     } else {
-      const appPath = app.getAppPath();
+      const appPath = codeRoot;
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       editorWindow.loadFile(indexPath, {
         hash: `/editor?project=${encodedPath}${modeParam}`
@@ -9586,7 +9637,7 @@ function setupIpcHandlers(): void {
       if (isDev) {
         existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
       } else {
-        const appPath = app.getAppPath();
+        const appPath = codeRoot;
         const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
         existingWindow.loadFile(indexPath, {
           hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
@@ -9599,7 +9650,7 @@ function setupIpcHandlers(): void {
     // Get icon path
     const iconPath = isDev
       ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
-      : path.join(app.getAppPath(), 'bookforge-icon.png');
+      : path.join(codeRoot, 'bookforge-icon.png');
 
     // Create new editor window
     const editorWindow = new BrowserWindow({
@@ -9638,7 +9689,7 @@ function setupIpcHandlers(): void {
     if (isDev) {
       editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
     } else {
-      const appPath = app.getAppPath();
+      const appPath = codeRoot;
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       editorWindow.loadFile(indexPath, {
         hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
@@ -10290,7 +10341,7 @@ app.whenReady().then(async () => {
     if (isDev) {
       win.loadURL('http://localhost:4250');
     } else {
-      const appPath = app.getAppPath();
+      const appPath = codeRoot;
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       win.loadFile(indexPath);
     }

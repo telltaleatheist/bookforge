@@ -3,7 +3,7 @@
   "productName": "BookForge",
   "version": "0.1.0",
   "description": "BookForge - Audiobook production pipeline",
-  "main": "dist/electron/main.js",
+  "main": "dist/electron/launcher/bootstrap.js",
   "private": true,
   "scripts": {
     "ng": "ng",

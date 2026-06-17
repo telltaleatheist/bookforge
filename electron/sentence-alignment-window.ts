@@ -96,7 +96,8 @@ export async function openAlignmentWindow(
     if (isDev) {
       alignmentWindow.loadURL('http://localhost:4250/#/alignment');
     } else {
-      alignmentWindow.loadFile(path.join(app.getAppPath(), 'dist', 'renderer', 'browser', 'index.html'), {
+      // Self-locating: dist/electron -> code root (see codeRoot in main.ts / app-update design).
+      alignmentWindow.loadFile(path.join(__dirname, '..', '..', 'dist', 'renderer', 'browser', 'index.html'), {
         hash: '/alignment'
       });
     }
