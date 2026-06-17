@@ -87,13 +87,13 @@ interface CustomVoice {
             <p class="empty-hint">No voices match “{{ filter() }}”.</p>
           }
           @for (status of filteredVoices(); track status.component.id) {
-            <ng-container *ngTemplateOutlet="row; context: { $implicit: status, isBase: false }"></ng-container>
+            <ng-container *ngTemplateOutlet="row; context: { $implicit: status, isBase: false, isDefault: status.component.id === defaultVoiceId }"></ng-container>
           }
         </div>
       }
 
       <!-- One compact row, shared by the base pack + every voice. -->
-      <ng-template #row let-status let-isBase="isBase">
+      <ng-template #row let-status let-isBase="isBase" let-isDefault="isDefault">
         <div
           class="voice-row"
           [class.is-installed]="status.state === 'installed'"
@@ -119,13 +119,19 @@ interface CustomVoice {
             <span class="vr-pct">{{ prog.pct || 0 }}%</span>
             <button class="vr-btn ghost" (click)="svc.cancel(status.component.id)" title="Cancel">✕</button>
           } @else if (status.state === 'installed') {
-            <span class="vr-ready" title="Installed">✓</span>
-            <button
-              class="vr-btn ghost"
-              (click)="svc.remove(status.component.id)"
-              [disabled]="svc.isBusy(status.component.id)"
-              title="Remove download"
-            >Remove</button>
+            @if (isDefault) {
+              <!-- The bundled default voice is mandatory — show it as installed
+                   but offer no Remove (deleting it would break the default). -->
+              <span class="vr-ready" title="Bundled default voice — always available">✓ Default</span>
+            } @else {
+              <span class="vr-ready" title="Installed">✓</span>
+              <button
+                class="vr-btn ghost"
+                (click)="svc.remove(status.component.id)"
+                [disabled]="svc.isBusy(status.component.id)"
+                title="Remove download"
+              >Remove</button>
+            }
           } @else {
             <span class="vr-size">{{ isBase ? '~1.9 GB' : '1.7 GB' }}</span>
             <button
@@ -452,10 +458,23 @@ export class VoicesPanelComponent implements OnInit {
     this.voices().find((s) => s.component.id === 'xtts-base') ?? null,
   );
 
-  /** Premium fine-tuned voices (everything except the base), name-filtered. */
+  /** The bundled default voice (Scarlett). It lives in the component registry so
+   *  it's detectable + appears in the narration picker, but it's auto-installed,
+   *  not a manual download — so first-run selection mode hides it from the
+   *  optional list. Settings still shows it (as installed) for transparency. */
+  private static readonly DEFAULT_VOICE_ID = 'ScarlettJohansson';
+  /** Same id, exposed for the row template's default-voice special-casing. */
+  readonly defaultVoiceId = VoicesPanelComponent.DEFAULT_VOICE_ID;
+
+  /** Premium fine-tuned voices (everything except the base), name-filtered.
+   *  In first-run selection mode the auto-installed default voice is hidden — it
+   *  isn't an optional pick. In Settings it stays visible (shown as installed). */
   readonly filteredVoices = computed(() => {
     const q = this.filter().trim().toLowerCase();
-    const list = this.voices().filter((s) => s.component.id !== 'xtts-base');
+    let list = this.voices().filter((s) => s.component.id !== 'xtts-base');
+    if (this.selectionMode()) {
+      list = list.filter((s) => s.component.id !== VoicesPanelComponent.DEFAULT_VOICE_ID);
+    }
     if (!q) return list;
     return list.filter((s) => s.component.name.toLowerCase().includes(q));
   });

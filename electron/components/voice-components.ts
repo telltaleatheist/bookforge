@@ -23,9 +23,11 @@ const BASE_FILES = ['config.json', 'model.pth', 'vocab.json', 'speakers_xtts.pth
 const BASE_APPROX_BYTES = 1_870_000_000;
 
 // The default voice (Scarlett Johansson) installs automatically as part of the
-// MANDATORY first-run download (electron/e2a-env-bootstrap.ts → ensureDefaultVoice),
-// so it must never appear as an optional/pickable voice — it's always present.
-const DEFAULT_VOICE_ID = 'ScarlettJohansson';
+// MANDATORY first-run download (electron/e2a-env-bootstrap.ts → ensureDefaultVoice).
+// It stays in the registry (below) for detection + the narration picker; the
+// renderer hides it from the OPTIONAL-download lists. Its id is exported so the
+// renderer and main share one source of truth.
+export const DEFAULT_VOICE_ID = 'ScarlettJohansson';
 
 /** The base XTTS-v2 model as a downloadable "Default voice pack" component. */
 function baseModelComponent(): OptionalComponent {
@@ -56,10 +58,16 @@ function langLabel(code: string): string {
   return map[code] || code;
 }
 
-/** Build the downloadable voice catalog: base model + every catalog voice. */
+/** Build the downloadable voice catalog: base model + every catalog voice.
+ *
+ * The default voice (Scarlett) STAYS in this list: it's the canonical component
+ * registry, so install-detection (component-manager.listStatus) and the
+ * conversion voice picker both need it present. It's bundled/auto-installed, not
+ * a manual download — the UI hides it from the optional-download lists (see
+ * voices-panel's selection mode) rather than dropping it from the registry, which
+ * would make it undetectable and absent from the narration picker. */
 export function voiceComponents(): OptionalComponent[] {
   const voices = catalogService.voices()
-    .filter((v) => v.id !== DEFAULT_VOICE_ID) // default voice is mandatory, not optional
     .map((v) => {
     const gb = (v.sizeBytes / 1_000_000_000).toFixed(1);
     return {
