@@ -173,6 +173,9 @@ import { SetupDownloadService } from '../../../core/services/setup-download.serv
        with a redundant inner scrollbar — let it grow to fill and let the card
        scroll instead. */
     .lang-scroll.no-cap { max-height: none; overflow-y: visible; }
+    /* In first-run setup the panel scrolls with the card (no inner scroll), so a
+       sticky group header would float mid-card on top of the rows. Pin it inline. */
+    .lang-scroll.no-cap .group-head { position: static; }
 
     .select-all-bar {
       display: flex; align-items: center; gap: var(--ui-spacing-md);

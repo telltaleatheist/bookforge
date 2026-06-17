@@ -40,7 +40,7 @@ interface SetupStep {
   ],
   template: `
     <div class="setup-page">
-      <div class="setup-card">
+      <div class="setup-card" [class.compact]="isLast() || finishing()">
         <header class="card-head">
           <div class="head-row">
             <h1>{{ firstRun() ? 'Set up BookForge' : 'Configuration' }}</h1>
@@ -272,6 +272,15 @@ interface SetupStep {
       display: flex;
       flex-direction: column;
       overflow: hidden;
+    }
+
+    /* Last step (Review & download) / finishing view have little content, so
+       shrink to fit and vertically center instead of stretching to full height
+       with the footer pinned far below an ocean of empty space. */
+    .setup-card.compact {
+      height: auto;
+      margin-top: auto;
+      margin-bottom: auto;
     }
 
     .card-head {

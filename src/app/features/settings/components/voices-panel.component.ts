@@ -47,7 +47,10 @@ interface CustomVoice {
         <div class="status-message error">{{ err }}</div>
       }
       @if (svc.loading() && voices().length === 0) {
-        <p class="loading-hint">Loading voices…</p>
+        <div class="loading-state">
+          <span class="spinner"></span>
+          <span>Loading premium voices…</span>
+        </div>
       }
 
       @if (selectionMode() && selectableVoiceIds().length > 0) {
@@ -59,28 +62,35 @@ interface CustomVoice {
         </div>
       }
 
-      <!-- Default voice pack (base XTTS) — unlocks the stock voice + every
-           reference-clip clone, so it's pinned at the top in its own group. -->
-      @if (basePack(); as base) {
+      <!-- While the catalog is still loading (empty), show ONLY the loading state
+           above — never the "no voices match" empty group, which falsely implies
+           there are none. -->
+      @if (voices().length > 0 || !svc.loading()) {
+        <!-- Default voice pack (base XTTS) — unlocks the stock voice + every
+             reference-clip clone, so it's pinned at the top in its own group. -->
+        @if (basePack(); as base) {
+          <div class="group">
+            <div class="group-head">Default</div>
+            <ng-container *ngTemplateOutlet="row; context: { $implicit: base, isBase: true }"></ng-container>
+          </div>
+        }
+
+        <!-- Premium fine-tuned voices -->
         <div class="group">
-          <div class="group-head">Default</div>
-          <ng-container *ngTemplateOutlet="row; context: { $implicit: base, isBase: true }"></ng-container>
+          <div class="group-head">
+            Premium voices
+            <span class="group-count">{{ filteredVoices().length }}</span>
+          </div>
+          <!-- Only when the user has actually typed a filter — never "No voices
+               match ''" on an empty/loading list. -->
+          @if (filteredVoices().length === 0 && filter()) {
+            <p class="empty-hint">No voices match “{{ filter() }}”.</p>
+          }
+          @for (status of filteredVoices(); track status.component.id) {
+            <ng-container *ngTemplateOutlet="row; context: { $implicit: status, isBase: false }"></ng-container>
+          }
         </div>
       }
-
-      <!-- Premium fine-tuned voices -->
-      <div class="group">
-        <div class="group-head">
-          Premium voices
-          <span class="group-count">{{ filteredVoices().length }}</span>
-        </div>
-        @if (filteredVoices().length === 0) {
-          <p class="empty-hint">No voices match “{{ filter() }}”.</p>
-        }
-        @for (status of filteredVoices(); track status.component.id) {
-          <ng-container *ngTemplateOutlet="row; context: { $implicit: status, isBase: false }"></ng-container>
-        }
-      </div>
 
       <!-- One compact row, shared by the base pack + every voice. -->
       <ng-template #row let-status let-isBase="isBase">
@@ -221,6 +231,28 @@ interface CustomVoice {
       padding: var(--ui-spacing-sm) 0;
       margin: 0;
     }
+
+    /* Prominent loading state — shown while the catalog loads so the page never
+       reads as "no voices" before the list arrives. */
+    .loading-state {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--ui-spacing-sm);
+      padding: 28px 0;
+      color: var(--text-secondary);
+      font-size: var(--ui-font-sm);
+    }
+    .spinner {
+      width: 16px;
+      height: 16px;
+      flex: 0 0 auto;
+      border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: vp-spin 0.8s linear infinite;
+    }
+    @keyframes vp-spin { to { transform: rotate(360deg); } }
 
     .group {
       display: flex;
