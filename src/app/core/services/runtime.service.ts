@@ -76,8 +76,12 @@ export class RuntimeService {
 
   /** Human ETA for the first-run mandatory download, or null when not downloading. */
   readonly downloadEtaLabel = computed(() => {
-    const d = this._status().download;
+    const s = this._status();
+    const d = s.download;
     if (!d) return null;
+    // Only while ACTIVELY downloading — during extract/conda-unpack there are no
+    // new bytes, so the byte ETA would freeze; fall back to the live stage message.
+    if (!/downloading/i.test(s.message)) return null;
     if (d.etaSeconds == null) return 'estimating time remaining…';
     if (d.etaSeconds < 60) return 'less than a minute remaining';
     const m = Math.round(d.etaSeconds / 60);

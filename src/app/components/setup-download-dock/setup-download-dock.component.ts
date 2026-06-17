@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 
 import { SetupDownloadService } from '../../core/services/setup-download.service';
 import { ComponentService } from '../../core/services/component.service';
+import { RuntimeService } from '../../core/services/runtime.service';
 
 /**
  * Dockable download-progress widget, mounted in the app shell so it survives
@@ -44,6 +45,16 @@ import { ComponentService } from '../../core/services/component.service';
         <!-- Expanded item list -->
         @if (svc.expanded()) {
           <div class="dock-body">
+            <!-- The engine setup itself, pinned on top: queued add-ons wait on it
+                 (they need the bundled python), so showing its live progress
+                 explains the wait and that it's moving. -->
+            @if (engineSetup(); as eng) {
+              <div class="dock-item engine-row" data-status="downloading">
+                <span class="di-name" [title]="eng.label">⚙ {{ eng.label }}</span>
+                <div class="di-bar"><div class="di-fill" [style.width.%]="eng.pct"></div></div>
+                <span class="di-pct">{{ eng.pct }}%</span>
+              </div>
+            }
             @for (id of svc.order(); track id) {
               <div class="dock-item" [attr.data-status]="svc.statusOf(id)">
                 <span class="di-name" [title]="nameOf(id)">{{ nameOf(id) }}</span>
@@ -141,6 +152,12 @@ import { ComponentService } from '../../core/services/component.service';
       padding: 5px 12px;
       min-height: 28px;
     }
+    /* The pinned engine-setup row. */
+    .engine-row {
+      background: color-mix(in srgb, var(--accent) 9%, transparent);
+      border-bottom: 1px solid var(--border-subtle, #2c2c2c);
+    }
+    .engine-row .di-name { font-weight: 600; }
     .di-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .di-bar { flex: 0 0 60px; height: 4px; background: var(--bg-sunken, #1a1a1a); border-radius: 2px; overflow: hidden; }
     .di-fill { height: 100%; background: var(--accent); transition: width 0.2s ease; }
@@ -171,6 +188,20 @@ import { ComponentService } from '../../core/services/component.service';
 export class SetupDownloadDockComponent {
   readonly svc = inject(SetupDownloadService);
   private readonly components = inject(ComponentService);
+  protected readonly runtime = inject(RuntimeService);
+
+  /**
+   * The bundled-engine setup as a top line item. While it's still downloading /
+   * unpacking, the queued add-ons can't start (voices/packs/GPU need its python),
+   * so surfacing its live progress explains the wait and shows it's progressing.
+   */
+  readonly engineSetup = computed(() => {
+    if (this.runtime.ready() || !this.runtime.preparing()) return null;
+    return {
+      pct: this.runtime.setupProgress(),
+      label: this.runtime.status().message || 'Setting up the audiobook engine…',
+    };
+  });
 
   // Draggable position (distance from the bottom-right corner, px).
   readonly pos = signal({ right: 16, bottom: 16 });
@@ -223,6 +254,9 @@ export class SetupDownloadDockComponent {
   headline(): string {
     const total = this.svc.order().length;
     const done = this.svc.doneCount();
+    if (this.engineSetup()) {
+      return total > 0 ? `Setting up engine · ${total} queued` : 'Setting up engine…';
+    }
     if (this.svc.phase() === 'running') return `Downloading ${done}/${total}…`;
     const failed = Object.keys(this.svc.failed()).length;
     if (failed > 0) return `${done}/${total} done · ${failed} failed`;

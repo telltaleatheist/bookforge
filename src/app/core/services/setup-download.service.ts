@@ -213,17 +213,18 @@ export class SetupDownloadService {
       let id: string | null;
       while ((id = this.nextToRun()) !== null) {
         const curId: string = id;
-        this.currentId.set(curId);
 
-        // Voices / language packs spawn the bundled python — wait for the engine.
+        // Voices / language packs / CUDA-TTS spawn the bundled python — wait for
+        // the engine to finish setting up BEFORE marking the item active, so it
+        // shows "Queued" (not a stuck "downloading 0%") while the engine unpacks.
         if (this.needsEngine(curId)) {
           await this.runtime.whenReady();
         }
         if (this.cancelled || !this.selected().has(curId)) {
-          this.currentId.set(null);
           continue;
         }
 
+        this.currentId.set(curId);
         await this.components.install(curId);
 
         if (this.components.isInstalled(curId)) {
