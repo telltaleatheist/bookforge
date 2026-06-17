@@ -3,10 +3,10 @@
 ; Adds two things the default electron-builder NSIS installer doesn't:
 ;   1. A Start-menu "Uninstall BookForge" shortcut, so a user can remove the app
 ;      by typing "uninstall bookforge" in the Start menu (not just Add/Remove).
-;   2. An uninstall-time prompt to ALSO wipe all app data — the downloaded
-;      audiobook engine, voices, language packs, caches, and settings. These live
-;      under %APPDATA%\bookforge-app (the Electron userData dir, named after the
-;      app's package name — NOT the product name, which is the usual gotcha).
+;   2. A DELIBERATE uninstall wipes all app data — the downloaded audiobook engine,
+;      voices, language packs, caches, and settings (under %APPDATA%\BookForge).
+;      An UPGRADE (reinstalling over an existing version) runs the old uninstaller
+;      SILENTLY, which we detect with IfSilent and SKIP, so upgrades keep data.
 ;      The user's BOOKS live in their own library folder and are never touched.
 
 !macro customInstall
@@ -15,11 +15,11 @@
 !macroend
 
 !macro customUnInstall
-  ; Default to KEEP data on a silent uninstall (/SD IDNO) so an unattended remove
-  ; never nukes someone's downloads/settings without asking.
-  MessageBox MB_YESNO|MB_ICONQUESTION \
-    "Also remove all BookForge data?$\n$\nThis deletes the downloaded audiobook engine, voices, language packs, and settings (several GB). Your books in your library folder are NOT affected." \
-    /SD IDNO IDYES bf_removeData IDNO bf_keepData
+  ; A real uninstall removes ALL app data (the user chose to remove the app, so
+  ; take its data too — no prompt). The SILENT auto-uninstall electron-builder
+  ; runs during an UPGRADE is skipped, so reinstalling over a version never loses
+  ; downloads/settings. IfSilent → keep; interactive → wipe.
+  IfSilent bf_keepData bf_removeData
   bf_removeData:
     ; Normalized location (everything lives here now), plus pre-normalization dirs.
     RMDir /r "$APPDATA\BookForge"
