@@ -83,15 +83,20 @@ interface SetupStep {
                to Studio automatically once it's ready. Back returns to configuring. -->
           <div class="finishing">
             <span class="engine-spinner big"></span>
-            <h2>Finishing setup…</h2>
+            <h2>This will take a while…</h2>
             <p class="finishing-sub">
-              The audiobook engine is still getting ready. BookForge will open
-              automatically the moment it’s done — you don’t need to wait here.
+              We’re downloading the audiobook engine, the default voice, and the
+              English language pack. BookForge will open automatically the moment
+              it’s done — you don’t need to wait here.
             </p>
             <div class="finish-bar">
               <div class="finish-bar-fill" [style.width.%]="runtime.setupProgress()"></div>
             </div>
-            <p class="finish-stage">{{ runtime.status().message }} · {{ runtime.setupProgress() }}%</p>
+            @if (runtime.downloadEtaLabel(); as eta) {
+              <p class="finish-stage">{{ runtime.downloadSizeLabel() }} · {{ eta }}</p>
+            } @else {
+              <p class="finish-stage">{{ runtime.status().message }} · {{ runtime.setupProgress() }}%</p>
+            }
           </div>
           <footer class="card-foot">
             <button type="button" class="btn ghost" (click)="back()">Back to settings</button>

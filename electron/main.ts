@@ -45,6 +45,8 @@ export interface RuntimeStatus {
   state: RuntimeReadyState;
   message: string;
   error?: string;
+  // Live mandatory-download progress during first-run setup (for the ETA UI).
+  download?: { downloadedBytes: number; totalBytes: number; etaSeconds: number | null };
 }
 let runtimeStatus: RuntimeStatus = { state: 'preparing', message: 'Starting the audiobook engine…' };
 // True when the bundled environment had to be unpacked from scratch this launch
@@ -97,13 +99,16 @@ async function startTtsApiServerOnce(): Promise<void> {
 }
 
 async function doRuntimeSetup(): Promise<boolean> {
-  const { ensureBundledEnv, ensureBundledE2a, ensureDefaultVoice, ensureEnglishStanza } =
-    await import('./e2a-env-bootstrap.js');
+  const {
+    ensureBundledEnv, ensureBundledE2a, ensureDefaultVoice, ensureEnglishStanza,
+    beginSetupDownload, setupDownloadProgress,
+  } = await import('./e2a-env-bootstrap.js');
 
   const logger = getMainLogger();
+  beginSetupDownload();
   const emit = (message: string) => {
     logger.info(message);
-    setRuntimeStatus({ state: 'preparing', message });
+    setRuntimeStatus({ state: 'preparing', message, download: setupDownloadProgress() ?? undefined });
   };
 
   setRuntimeStatus({ state: 'preparing', message: 'Updating BookForge — installing components…' });

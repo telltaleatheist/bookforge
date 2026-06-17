@@ -6,6 +6,7 @@ export interface RuntimeStatus {
   state: RuntimeReadyState;
   message: string;
   error?: string;
+  download?: { downloadedBytes: number; totalBytes: number; etaSeconds: number | null };
 }
 
 /**
@@ -71,6 +72,24 @@ export class RuntimeService {
     if (!this._initialized()) return null;
     const s = this._status();
     return s.state === 'error' ? s : null;
+  });
+
+  /** Human ETA for the first-run mandatory download, or null when not downloading. */
+  readonly downloadEtaLabel = computed(() => {
+    const d = this._status().download;
+    if (!d) return null;
+    if (d.etaSeconds == null) return 'estimating time remaining…';
+    if (d.etaSeconds < 60) return 'less than a minute remaining';
+    const m = Math.round(d.etaSeconds / 60);
+    return `about ${m} minute${m === 1 ? '' : 's'} remaining`;
+  });
+
+  /** "1.2 / 3.8 GB" downloaded label, or null when not downloading. */
+  readonly downloadSizeLabel = computed(() => {
+    const d = this._status().download;
+    if (!d) return null;
+    const gb = (n: number) => (n / 1e9).toFixed(1);
+    return `${gb(d.downloadedBytes)} / ${gb(d.totalBytes)} GB`;
   });
 
   // Coarse 0–100 setup progress for the first-run UI (bottom bar + finish page).

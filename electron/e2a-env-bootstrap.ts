@@ -289,6 +289,58 @@ export async function ensureBundledEnv(onProgress?: (message: string) => void): 
  * Download the env tarball into destPath, relaying byte progress as setup
  * messages. Uses the shared component downloader (redirects + progress).
  */
+// ─────────────────────────────────────────────────────────────────────────────
+// First-run download progress → setup ETA
+//
+// The mandatory download is a known size (env + default voice + English pack),
+// so a live speed measurement (bytes ÷ elapsed) gives a usable "about N min
+// left". Phases run sequentially: each download feeds dlReport(); dlComplete()
+// banks a phase's bytes when its download finishes. Download-only accounting —
+// the extract/conda-unpack tail isn't byte-measured (the UI shows "finishing").
+// ─────────────────────────────────────────────────────────────────────────────
+
+let dlTotalBytes = 0;
+let dlCompletedBytes = 0; // bytes from phases whose download finished
+let dlCurrentBytes = 0;   // bytes received in the active phase
+let dlStartMs = 0;
+
+/** Reset + size the mandatory-download tracker. Call once before the update. */
+export function beginSetupDownload(): void {
+  const env = envReleaseForThisPlatform();
+  const envBytes = env ? env.bytes : 0;
+  dlTotalBytes = envBytes + RUNTIME_ASSETS['default-voice'].bytes + RUNTIME_ASSETS['stanza-en'].bytes;
+  dlCompletedBytes = 0;
+  dlCurrentBytes = 0;
+  dlStartMs = Date.now();
+}
+
+function dlReport(received: number): void {
+  if (dlStartMs !== 0) dlCurrentBytes = received;
+}
+function dlComplete(phaseBytes: number): void {
+  if (dlStartMs === 0) return;
+  dlCompletedBytes += phaseBytes;
+  dlCurrentBytes = 0;
+}
+
+export interface SetupDownload {
+  downloadedBytes: number;
+  totalBytes: number;
+  etaSeconds: number | null;
+}
+
+/** Live mandatory-download progress + ETA, or null when none is in flight. */
+export function setupDownloadProgress(): SetupDownload | null {
+  if (dlTotalBytes <= 0 || dlStartMs === 0) return null;
+  const downloadedBytes = Math.min(dlCompletedBytes + dlCurrentBytes, dlTotalBytes);
+  const elapsed = (Date.now() - dlStartMs) / 1000;
+  // Warm up before trusting the speed — early samples are noisy.
+  const speed = elapsed > 3 && downloadedBytes > 0 ? downloadedBytes / elapsed : 0;
+  const remaining = Math.max(0, dlTotalBytes - downloadedBytes);
+  const etaSeconds = speed > 0 ? Math.round(remaining / speed) : null;
+  return { downloadedBytes, totalBytes: dlTotalBytes, etaSeconds };
+}
+
 async function downloadEnvTarball(
   release: EnvRelease,
   destPath: string,
@@ -297,6 +349,7 @@ async function downloadEnvTarball(
   const mb = (n?: number) => (n != null ? Math.round(n / 1_000_000) : 0);
   let lastPct = -1;
   await downloadFile(release.url, destPath, 'e2a-env', (p) => {
+    dlReport(p.receivedBytes ?? 0);
     if (typeof p.pct === 'number' && p.pct !== lastPct) {
       lastPct = p.pct;
       const detail = p.totalBytes
@@ -366,6 +419,7 @@ async function doEnsureBundledEnv(onProgress?: (message: string) => void): Promi
 
   // Fetch (or reuse a cached) sha256-verified tarball before building.
   const tarball = await ensureTarballDownloaded(release, onProgress);
+  dlComplete(release.bytes); // env bytes are in — later phases accumulate on top
 
   const tempDir = `${envDir}.tmp-${process.pid}-${Date.now()}`;
   console.log(`[E2A-ENV] Building Python env: ${tarball} -> ${tempDir}`);
@@ -567,6 +621,7 @@ async function doEnsureRuntimeAsset(
     const mb = (n?: number) => (n != null ? Math.round(n / 1_000_000) : 0);
     let lastPct = -1;
     await downloadFile(asset.url, cache, `asset-${asset.id}`, (p) => {
+      dlReport(p.receivedBytes ?? 0);
       if (typeof p.pct === 'number' && p.pct !== lastPct) {
         lastPct = p.pct;
         const detail = p.totalBytes
@@ -585,6 +640,7 @@ async function doEnsureRuntimeAsset(
     }
   }
 
+  dlComplete(asset.bytes); // this asset's bytes are in (downloaded or cached)
   onProgress?.(`Installing the ${asset.label}…`);
   await run('tar', ['-xzf', cache, '-C', e2aDir]);
 
