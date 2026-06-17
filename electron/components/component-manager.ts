@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { spawn, spawnSync, execSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { app, shell } from 'electron';
 
 import { getCatalog, getComponent } from './component-catalog';
@@ -125,25 +125,32 @@ function currentPlatform(): Platform {
   return 'linux';
 }
 
-/** PATH lookup via which/where. Returns the first resolved path, or null. */
-function lookupOnPath(commandName: string): string | null {
-  try {
+/**
+ * PATH lookup via which/where — ASYNC (spawn, not execSync) so it never blocks
+ * the main-process event loop. The old blocking execSync (8 s timeout each), run
+ * across the external tools on a fresh install, was the bulk of the first-run
+ * "components" load that froze the setup UI for ~15 s.
+ */
+function lookupOnPath(commandName: string): Promise<string | null> {
+  return new Promise((resolve) => {
     const cmd = os.platform() === 'win32' ? 'where' : 'which';
-    const out = execSync(`${cmd} ${commandName}`, {
-      encoding: 'utf8',
-      timeout: 8000,
-      windowsHide: true,
-    }).trim();
-    if (out) {
-      const first = out.split('\n')[0].trim();
-      if (first && fs.existsSync(first)) {
-        return first;
-      }
+    let settled = false;
+    let out = '';
+    const done = (val: string | null) => { if (!settled) { settled = true; resolve(val); } };
+    try {
+      const child = spawn(cmd, [commandName], { windowsHide: true });
+      const timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } done(null); }, 8000);
+      child.stdout?.on('data', (d) => { out += d.toString(); });
+      child.on('error', () => { clearTimeout(timer); done(null); });
+      child.on('close', () => {
+        clearTimeout(timer);
+        const first = out.split('\n')[0]?.trim();
+        done(first && fs.existsSync(first) ? first : null);
+      });
+    } catch {
+      done(null);
     }
-  } catch {
-    // not on PATH
-  }
-  return null;
+  });
 }
 
 /**
@@ -171,7 +178,7 @@ async function detectExternal(id: string): Promise<string | null> {
   // 2. PATH lookup of command names.
   if (spec.commandNames) {
     for (const name of spec.commandNames) {
-      const found = lookupOnPath(name);
+      const found = await lookupOnPath(name);
       if (found) {
         console.log(`[COMPONENTS] ${id}: found on PATH: ${found}`);
         return found;

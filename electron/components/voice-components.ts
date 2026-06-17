@@ -22,6 +22,11 @@ import type { OptionalComponent } from './component-types';
 const BASE_FILES = ['config.json', 'model.pth', 'vocab.json', 'speakers_xtts.pth'];
 const BASE_APPROX_BYTES = 1_870_000_000;
 
+// The default voice (Scarlett Johansson) installs automatically as part of the
+// MANDATORY first-run download (electron/e2a-env-bootstrap.ts → ensureDefaultVoice),
+// so it must never appear as an optional/pickable voice — it's always present.
+const DEFAULT_VOICE_ID = 'ScarlettJohansson';
+
 /** The base XTTS-v2 model as a downloadable "Default voice pack" component. */
 function baseModelComponent(): OptionalComponent {
   return {
@@ -53,7 +58,9 @@ function langLabel(code: string): string {
 
 /** Build the downloadable voice catalog: base model + every catalog voice. */
 export function voiceComponents(): OptionalComponent[] {
-  const voices = catalogService.voices().map((v) => {
+  const voices = catalogService.voices()
+    .filter((v) => v.id !== DEFAULT_VOICE_ID) // default voice is mandatory, not optional
+    .map((v) => {
     const gb = (v.sizeBytes / 1_000_000_000).toFixed(1);
     return {
       id: v.id,
