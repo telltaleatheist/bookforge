@@ -118,7 +118,8 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
         text: it.text,
         source: c.source,
         tabId,
-        blockId: it.blockId
+        blockId: it.blockId,
+        ...(it.startChar ? { startChar: it.startChar } : {})
       }));
       console.log('[BFR] play-from', items.length, 'blocks from tab', tabId);
       void sendToOffscreen({ target: 'offscreen', cmd: 'play-sequence', items });
