@@ -2,6 +2,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 
 import { SettingsService, PipelineDefaults } from '../../../core/services/settings.service';
+import { ComponentService } from '../../../core/services/component.service';
 import {
   AIProvider,
   OLLAMA_MODELS,
@@ -68,13 +69,17 @@ interface Opt { value: string; label: string; }
 
         <div class="pd-row">
           <label class="pd-label">Processing device</label>
-          <div class="pd-btns">
-            <button class="pd-btn" [class.selected]="d().ttsDevice === 'cpu'" (click)="set({ ttsDevice: 'cpu' })">CPU{{ isMac ? ' (recommended)' : '' }}</button>
-            @if (isMac) {
-              <button class="pd-btn" [class.selected]="d().ttsDevice === 'mps'" (click)="set({ ttsDevice: 'mps' })">GPU (MPS)</button>
-            } @else {
-              <button class="pd-btn" [class.selected]="d().ttsDevice === 'gpu'" (click)="set({ ttsDevice: 'gpu' })">GPU (CUDA)</button>
-            }
+          <div class="pd-controls pd-device">
+            <div class="pd-btns">
+              <button class="pd-btn" [class.selected]="d().ttsDevice === 'auto'" (click)="set({ ttsDevice: 'auto' })">Auto</button>
+              <button class="pd-btn" [class.selected]="d().ttsDevice === 'cpu'" (click)="set({ ttsDevice: 'cpu' })">CPU</button>
+              @if (isMac) {
+                <button class="pd-btn" [class.selected]="d().ttsDevice === 'mps'" (click)="set({ ttsDevice: 'mps' })">GPU (MPS)</button>
+              } @else {
+                <button class="pd-btn" [class.selected]="d().ttsDevice === 'gpu'" (click)="set({ ttsDevice: 'gpu' })">GPU (CUDA)</button>
+              }
+            </div>
+            <span class="pd-hint">{{ deviceHint() }}</span>
           </div>
         </div>
 
@@ -147,6 +152,8 @@ interface Opt { value: string; label: string; }
       color: var(--text-primary); font-size: 13px;
     }
     .pd-select:disabled { opacity: 0.5; }
+    .pd-device { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .pd-hint { font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
     .pd-btns { display: flex; gap: 8px; }
     .pd-btn {
       min-width: 64px; padding: 6px 12px; border-radius: 6px;
@@ -163,6 +170,7 @@ interface Opt { value: string; label: string; }
 })
 export class PipelineDefaultsPanelComponent {
   private readonly settings = inject(SettingsService);
+  private readonly components = inject(ComponentService);
 
   // Draft edits live here and are applied to settings ONLY when the user clicks
   // Save — no auto-save on change. `saved` is the last-persisted snapshot so we
@@ -174,6 +182,25 @@ export class PipelineDefaultsPanelComponent {
 
   // Mac GPU = MPS (Metal); CUDA is Windows/Linux only — show the right one.
   readonly isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
+
+  /** What the chosen device actually runs on — surfaces 'auto' transparently and
+   *  warns when an explicit GPU choice can't run without the GPU pack. */
+  readonly deviceHint = computed(() => {
+    const dev = this.d().ttsDevice;
+    const gpuPack = this.components.isInstalled('cuda-tts');
+    if (dev === 'auto') {
+      if (this.isMac) return 'Runs on your Mac’s GPU (Metal/MPS).';
+      return gpuPack
+        ? 'Runs on your NVIDIA GPU (CUDA) — fastest.'
+        : 'Runs on CPU. Install “Faster Voice Narration” in Add-ons to use your GPU.';
+    }
+    if (dev === 'cpu') return 'Always runs on CPU (slower, no GPU needed).';
+    if (dev === 'mps') return 'Runs on your Mac’s GPU (Metal/MPS).';
+    // explicit gpu (CUDA)
+    return gpuPack
+      ? 'Runs on your NVIDIA GPU (CUDA).'
+      : '⚠ Requires the “Faster Voice Narration” GPU pack — install it in Add-ons, or conversions will fail.';
+  });
 
   constructor() {
     void this.loadXttsVoices();

@@ -590,9 +590,12 @@ interface SourceStage {
               <div class="config-section">
                 <label class="field-label">Processing Device</label>
                 <div class="provider-buttons">
+                  <button class="provider-btn" [class.selected]="ttsDevice() === 'auto'" (click)="ttsDevice.set('auto')">
+                    <span class="provider-name">Auto</span>
+                    <span class="provider-status">Best available</span>
+                  </button>
                   <button class="provider-btn" [class.selected]="ttsDevice() === 'cpu'" (click)="ttsDevice.set('cpu')">
                     <span class="provider-name">CPU</span>
-                    @if (isMac) { <span class="provider-status">Recommended</span> }
                   </button>
                   @if (isMac) {
                     <button class="provider-btn" [class.selected]="ttsDevice() === 'mps'" (click)="ttsDevice.set('mps')">
@@ -606,6 +609,7 @@ interface SourceStage {
                     </button>
                   }
                 </div>
+                <p class="device-hint">{{ deviceHint() }}</p>
               </div>
 
               <!-- Parallel Workers (XTTS only) — shown only when the user has
@@ -1073,7 +1077,7 @@ interface SourceStage {
                     <div class="review-card-content">
                       <div class="review-row">
                         <span class="review-label">Engine:</span>
-                        <span class="review-value">{{ ttsEngine().toUpperCase() }} / {{ ttsDevice().toUpperCase() }}</span>
+                        <span class="review-value">{{ ttsEngine().toUpperCase() }} / {{ reviewDeviceLabel() }}</span>
                       </div>
                       @if (pipelineMode() === 'mono') {
                         <div class="review-row">
@@ -1460,6 +1464,12 @@ interface SourceStage {
       margin-top: 16px;
     }
 
+    .device-hint {
+      margin: 8px 0 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--text-secondary);
+    }
     .field-label {
       display: block;
       font-size: 11px;
@@ -2655,7 +2665,7 @@ export class LLWizardComponent implements OnInit {
   // ─────────────────────────────────────────────────────────────────────────
 
   readonly ttsEngine = signal<'xtts' | 'orpheus'>('xtts');
-  readonly ttsDevice = signal<'cpu' | 'mps' | 'gpu'>('cpu');
+  readonly ttsDevice = signal<'auto' | 'cpu' | 'mps' | 'gpu'>('auto');
   // Mac GPU acceleration is MPS (Metal); CUDA is Windows/Linux only — so the
   // device picker offers the right GPU per platform instead of a dead button.
   readonly isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
@@ -2663,15 +2673,49 @@ export class LLWizardComponent implements OnInit {
   /** Once the user picks a worker count here, stop re-syncing it from the global. */
   private workerCountTouched = false;
   /**
-   * Will this TTS job actually run on the GPU? The device is set to a GPU (CUDA
-   * 'gpu' or Apple-Silicon 'mps'), or the CUDA pack is installed (the job path
-   * auto-upgrades CPU→CUDA then). On a single GPU the engine serializes to one
-   * worker — and extra MPS workers each load a model and spike unified memory —
-   * so parallel workers are pointless: hide the control and force 1 there.
+   * The device the job will ACTUALLY run on, resolving 'auto' the same way the
+   * main process does: CUDA when the GPU pack is present, MPS on Apple Silicon,
+   * else CPU. Explicit choices are honored exactly (CPU stays CPU even with the
+   * pack installed). Drives the worker-count logic and the review label.
    */
-  readonly ttsUsesGpu = computed(() =>
-    this.ttsDevice() === 'gpu' || this.ttsDevice() === 'mps' || this.componentService.isInstalled('cuda-tts'),
-  );
+  readonly resolvedTtsDevice = computed<'cpu' | 'mps' | 'gpu'>(() => {
+    const d = this.ttsDevice();
+    if (d === 'gpu' || d === 'mps' || d === 'cpu') return d;
+    // auto → best available
+    if (this.componentService.isInstalled('cuda-tts')) return 'gpu';
+    if (this.isMac) return 'mps';
+    return 'cpu';
+  });
+  /**
+   * Will this TTS job actually run on the GPU? On a single GPU the engine
+   * serializes to one worker — and extra MPS workers each load a model and spike
+   * unified memory — so parallel workers are pointless: hide the control and
+   * force 1 there. Explicit CPU is never GPU, even with the pack installed.
+   */
+  readonly ttsUsesGpu = computed(() => this.resolvedTtsDevice() !== 'cpu');
+  /** Review-step device label — shows what the run actually uses, e.g.
+   *  "AUTO (CUDA)" or just "CPU", so the summary never claims CPU while CUDA runs. */
+  readonly reviewDeviceLabel = computed(() => {
+    const resolved = { cpu: 'CPU', mps: 'GPU (MPS)', gpu: 'GPU (CUDA)' }[this.resolvedTtsDevice()];
+    return this.ttsDevice() === 'auto' ? `AUTO (${resolved})` : resolved;
+  });
+  /** Inline hint under the device picker — surfaces what 'auto' resolves to and
+   *  warns when an explicit GPU choice can't run without the pack. */
+  readonly deviceHint = computed(() => {
+    const d = this.ttsDevice();
+    const gpuPack = this.componentService.isInstalled('cuda-tts');
+    if (d === 'auto') {
+      if (this.isMac) return 'Runs on your Mac’s GPU (Metal/MPS).';
+      return gpuPack
+        ? 'Runs on your NVIDIA GPU (CUDA) — fastest.'
+        : 'Runs on CPU. Install “Faster Voice Narration” in Settings → Add-ons to use your GPU.';
+    }
+    if (d === 'cpu') return 'Always runs on CPU (slower, no GPU needed).';
+    if (d === 'mps') return 'Runs on your Mac’s GPU (Metal/MPS).';
+    return gpuPack
+      ? 'Runs on your NVIDIA GPU (CUDA).'
+      : '⚠ Needs the “Faster Voice Narration” GPU pack (Settings → Add-ons), or the conversion will fail.';
+  });
   /** What jobs actually use: the picked count only when multi-worker helps, else 1. */
   readonly effectiveTtsWorkers = computed(() =>
     this.ttsEngine() === 'xtts' && this.workerCfg.enabled() && !this.ttsUsesGpu()

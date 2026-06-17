@@ -12,6 +12,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as logger from './audiobook-logger';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from './e2a-paths';
+import { isCudaTtsInstalled } from './components/cuda-tts';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -68,7 +69,7 @@ function killProcessTree(process: ChildProcess, label: string): void {
 export type ConversionPhase = 'preparing' | 'converting' | 'merging' | 'complete' | 'error';
 
 export interface TTSSettings {
-  device: 'gpu' | 'mps' | 'cpu';
+  device: 'auto' | 'gpu' | 'mps' | 'cpu';
   language: string;
   ttsEngine: string;        // e.g., 'xtts'
   fineTuned: string;        // voice model e.g., 'ScarlettJohansson'
@@ -311,13 +312,20 @@ export async function startConversion(
   // Build command arguments - matching BookForge's _build_tts_command
   const appPath = path.join(getDefaultE2aPath(), 'app.py');
 
-  // Map UI device names to e2a CLI device names
-  const deviceMap: Record<string, string> = {
-    'gpu': 'CUDA',
-    'mps': 'MPS',
-    'cpu': 'CPU'
-  };
-  const deviceArg = deviceMap[settings.device] || settings.device.toUpperCase();
+  // Map UI device names to e2a CLI device names. 'auto' resolves to the best
+  // device present (CUDA when the GPU pack is installed, MPS on Apple Silicon,
+  // else CPU); explicit choices are honored exactly.
+  let deviceArg: string;
+  if (settings.device === 'auto') {
+    deviceArg = isCudaTtsInstalled()
+      ? 'CUDA'
+      : process.platform === 'darwin' && process.arch === 'arm64'
+        ? 'MPS'
+        : 'CPU';
+  } else {
+    deviceArg = ({ gpu: 'CUDA', mps: 'MPS', cpu: 'CPU' } as Record<string, string>)[settings.device]
+      || settings.device.toUpperCase();
+  }
 
   const args = [
     appPath,

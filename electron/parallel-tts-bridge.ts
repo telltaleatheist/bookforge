@@ -70,20 +70,41 @@ import * as manifestService from './manifest-service';
 import { isCudaTtsInstalled } from './components/cuda-tts';
 
 /**
- * Map a UI device ('gpu'|'mps'|'cpu') to e2a's CLI device (CUDA/MPS/CPU).
+ * Map a UI device ('auto'|'gpu'|'mps'|'cpu') to e2a's CLI device (CUDA/MPS/CPU).
  *
- * There is no device picker in the main flow — config.device defaults to 'cpu'
- * everywhere. Installing the GPU TTS pack (cuda-tts) overlays CUDA PyTorch into
- * the env AND is the user's explicit opt-in to GPU, so when it's present we
- * upgrade those default-CPU jobs to CUDA. (Streaming already auto-detects via
- * torch.cuda.is_available; this brings the job path in line.) An explicit 'gpu'
- * or 'mps' choice is always honored as-is.
+ * 'auto' is the explicit default and resolves TRANSPARENTLY to the best device
+ * present — CUDA when the GPU pack (cuda-tts) is installed, Metal (MPS) on Apple
+ * Silicon, otherwise CPU. This is a stated "auto" choice the UI surfaces, NOT a
+ * hidden upgrade. An explicit 'cpu' / 'gpu' / 'mps' choice is honored EXACTLY as
+ * set — no silent override (a user who picks CPU gets CPU). When an explicit
+ * 'gpu' can't actually run (no GPU pack), the job fails loudly with guidance via
+ * {@link assertDeviceUsable} rather than quietly downgrading.
  */
 function resolveTtsDeviceArg(uiDevice: string): string {
-  const mapped = ({ gpu: 'CUDA', mps: 'MPS', cpu: 'CPU' } as Record<string, string>)[uiDevice]
+  if (uiDevice === 'auto') {
+    if (isCudaTtsInstalled()) return 'CUDA';
+    if (process.platform === 'darwin' && process.arch === 'arm64') return 'MPS';
+    return 'CPU';
+  }
+  return ({ gpu: 'CUDA', mps: 'MPS', cpu: 'CPU' } as Record<string, string>)[uiDevice]
     || uiDevice.toUpperCase();
-  if (mapped === 'CPU' && isCudaTtsInstalled()) return 'CUDA';
-  return mapped;
+}
+
+/**
+ * Guard against an unrunnable device choice BEFORE spawning workers, so the user
+ * gets a clear reason instead of a deep torch/CUDA crash or a silent CPU
+ * downgrade. Only an EXPLICIT 'gpu' without the GPU pack is unrunnable — 'auto'
+ * already resolves to CPU when no pack is present, and 'mps'/'cpu' are always
+ * available on their platforms.
+ */
+function assertDeviceUsable(uiDevice: string, resolved: string): void {
+  if (uiDevice === 'gpu' && resolved === 'CUDA' && !isCudaTtsInstalled()) {
+    throw new Error(
+      'GPU (CUDA) is selected but the "Faster Voice Narration" GPU pack is not installed, ' +
+      'so PyTorch has no CUDA support. Install it in Settings → Add-ons, or switch the ' +
+      'processing device to CPU (or Auto) in Settings → Pipeline Defaults.'
+    );
+  }
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 
@@ -1189,7 +1210,7 @@ export interface ParallelConversionConfig {
 }
 
 export interface ParallelTtsSettings {
-  device: 'gpu' | 'mps' | 'cpu';
+  device: 'auto' | 'gpu' | 'mps' | 'cpu';
   language: string;
   ttsEngine: string;
   fineTuned: string;
@@ -1708,9 +1729,13 @@ export async function prepareSession(
     sessionDirForReading = sessionDir;
   }
 
-  // Map UI device names to e2a CLI device names (app.py expects uppercase);
-  // upgrades default-CPU to CUDA when the GPU TTS pack is installed.
+  // Map UI device names to e2a CLI device names (app.py expects uppercase).
+  // 'auto' → best present device; explicit cpu/gpu/mps honored exactly. Guard an
+  // unrunnable explicit 'gpu' (no GPU pack) here so the user gets a clear reason
+  // up front instead of a deep CUDA crash mid-conversion.
   const deviceArg = resolveTtsDeviceArg(settings.device);
+  assertDeviceUsable(settings.device, deviceArg);
+  console.log(`[PARALLEL-TTS] Device: requested='${settings.device}' → running on ${deviceArg}`);
 
   const args = [
     ...pythonInvocation(settings.ttsEngine).args,
@@ -2593,9 +2618,10 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   const appPath = path.join(getDefaultE2aPath(), 'app.py');
   const settings = config.settings;
 
-  // Map UI device names to e2a CLI device names (app.py expects uppercase)
-  const asmDeviceMap: Record<string, string> = { 'gpu': 'CUDA', 'mps': 'MPS', 'cpu': 'CPU' };
-  const asmDeviceArg = asmDeviceMap[settings.device] || settings.device.toUpperCase();
+  // Map UI device names to e2a CLI device names (app.py expects uppercase).
+  // Same resolver as the worker/prep paths so 'auto' resolves identically and
+  // assembly runs on the same device the audio was synthesized on.
+  const asmDeviceArg = resolveTtsDeviceArg(settings.device);
 
   const args = [
     ...pythonInvocation(settings.ttsEngine).args,

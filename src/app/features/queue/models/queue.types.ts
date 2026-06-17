@@ -137,7 +137,10 @@ export interface OcrCleanupConfig {
 // TTS Conversion job configuration
 export interface TtsConversionConfig {
   type: 'tts-conversion';
-  device: 'gpu' | 'mps' | 'cpu';
+  // 'auto' (default) resolves in the main process to the best device present —
+  // CUDA when the GPU pack is installed, MPS on Apple Silicon, else CPU. Explicit
+  // choices are honored exactly.
+  device: 'auto' | 'gpu' | 'mps' | 'cpu';
   language: string;
   ttsEngine: string;        // e.g., 'xtts'
   fineTuned: string;        // voice model e.g., 'ScarlettJohansson'

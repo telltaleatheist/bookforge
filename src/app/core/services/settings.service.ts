@@ -20,7 +20,12 @@ export interface PipelineDefaults {
   simplifyProvider: AIProvider; simplifyModel: string;
   translateProvider: AIProvider; translateModel: string;
   ttsEngine: 'xtts' | 'orpheus';
-  ttsDevice: 'cpu' | 'mps' | 'gpu';
+  /**
+   * Processing device. 'auto' (the default) runs on the best device present —
+   * CUDA when the GPU pack is installed, Metal (MPS) on Apple Silicon, else CPU.
+   * An explicit choice is honored exactly (pick CPU and it runs on CPU).
+   */
+  ttsDevice: 'auto' | 'cpu' | 'mps' | 'gpu';
   ttsVoice: string;
   ttsSpeed: number;
   ttsTemperature: number;
@@ -34,7 +39,7 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
   simplifyProvider: 'ollama', simplifyModel: '',
   translateProvider: 'ollama', translateModel: '',
   ttsEngine: 'xtts',
-  ttsDevice: 'cpu',
+  ttsDevice: 'auto',
   ttsVoice: 'ScarlettJohansson',
   ttsSpeed: 1.0,
   ttsTemperature: 0.7,
