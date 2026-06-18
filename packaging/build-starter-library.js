@@ -138,8 +138,14 @@ function main() {
 
   const outFile = path.join(OUT_DIR, `starter-${name}.tar.gz`);
   fs.rmSync(outFile, { force: true });
-  // bsdtar everywhere (build-time is mac/linux here; matches downloader's runtime extraction).
-  execFileSync('tar', ['-czf', outFile, '-C', stage, '.'], { stdio: 'inherit' });
+  // bsdtar everywhere (matches downloader's runtime extraction). On Windows, pin to the OS-bundled
+  // bsdtar (%SystemRoot%\System32\tar.exe): a GNU tar earlier on PATH (e.g. Git for Windows'
+  // usr\bin\tar) treats the "C:\…" archive path as a remote "C" host and aborts.
+  const tarBin =
+    process.platform === 'win32'
+      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+      : 'tar';
+  execFileSync(tarBin, ['-czf', outFile, '-C', stage, '.'], { stdio: 'inherit' });
   fs.rmSync(stage, { recursive: true, force: true });
 
   const bytes = fs.statSync(outFile).size;
