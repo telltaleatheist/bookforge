@@ -2826,7 +2826,7 @@ export class LLWizardComponent implements OnInit {
 
     const local = this.localModels();
     if (local.length > 0) {
-      groups.push({ provider: 'local', label: 'Bundled · offline', models: local });
+      groups.push({ provider: 'local', label: 'Bundled', models: local });
     }
     if (this.ollamaConnected() && this.ollamaModels().length > 0) {
       groups.push({ provider: 'ollama', label: 'Ollama', models: this.ollamaModels() });
