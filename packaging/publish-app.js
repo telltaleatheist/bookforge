@@ -97,10 +97,15 @@ if (DRY) {
 if (!releaseExists) {
   const title = which === 'extension' ? 'BookForge Reader (browser extension)' : `BookForge ${VERSION}`;
   console.log(`\n[publish-app] creating release ${T.tag}…`);
-  execFileSync('gh', ['release', 'create', T.tag, '--repo', REPO,
+  const createArgs = ['release', 'create', T.tag, '--repo', REPO,
     '--title', title,
     '--notes', `BookForge ${which === 'extension' ? 'browser extension' : VERSION}. Unsigned build — SmartScreen / Gatekeeper may warn (false positive). macOS: right-click → Open.`,
-  ], { stdio: 'inherit' });
+  ];
+  // gh marks a brand-new release as "latest" by default. The fixed-tag extension
+  // release must NEVER become "latest" — otherwise it steals it from the app's
+  // v<version> release and 404s every latest/download app link.
+  if (!T.latest) createArgs.push('--latest=false');
+  execFileSync('gh', createArgs, { stdio: 'inherit' });
 }
 
 console.log(`[publish-app] uploading ${T.stable} to ${T.tag}…`);
