@@ -152,7 +152,7 @@ function publishStarter() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   const name = arg('--starter-name', 'the-mysterious-stranger');
   const repo = arg('--repo', process.env.BOOKFORGE_GH_REPO || 'telltaleatheist/bookforge');
-  const tag = arg('--tag', 'library'); // GitHub release that holds the starter tarball
+  const tag = arg('--tag', 'assets'); // single GitHub release that holds all hosted assets
   const publish = has('--publish');
 
   const sidecarPath = path.join(ROOT, 'release', 'starter-library', `starter-${name}.json`);

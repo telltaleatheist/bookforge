@@ -8,7 +8,7 @@
   "starter": {
     "slug": "The_Mysterious_Stranger_-_Mark_Twain_(1916)",
     "name": "the-mysterious-stranger",
-    "url": "https://github.com/telltaleatheist/bookforge/releases/download/library/starter-the-mysterious-stranger.tar.gz",
+    "url": "https://github.com/telltaleatheist/bookforge/releases/download/assets/starter-the-mysterious-stranger.tar.gz",
     "sha256": "13df7688b12f2bd0e07f1080ae51bd83dbac9031d1bc5759d78c5ea164f1f4bb",
     "bytes": 575259277
   }

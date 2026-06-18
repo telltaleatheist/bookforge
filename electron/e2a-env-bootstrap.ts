@@ -50,12 +50,12 @@ interface EnvRelease {
 // platform/arch with no entry has no managed env — callers fall back to conda.
 const ENV_RELEASES: Record<string, EnvRelease> = {
   'win32-x64': {
-    url: 'https://github.com/telltaleatheist/bookforge/releases/download/environment/e2a-env-windows-x64.tar.gz',
+    url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/e2a-env-windows-x64.tar.gz',
     sha256: 'ece7471e90a529ed192958ce1eb205a4145061e3bbb1e14721acaf92983d0090',
     bytes: 1842123032,
   },
   'darwin-arm64': {
-    url: 'https://github.com/telltaleatheist/bookforge/releases/download/mac/e2a-env-macos-arm64.tar.gz',
+    url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/e2a-env-macos-arm64.tar.gz',
     sha256: '6840385831777babe7ecb7b6c8636c84fa0ebf5a6f223dd480579f57d67dacc4',
     bytes: 1676391339,
   },
@@ -561,7 +561,7 @@ const RUNTIME_ASSETS: Record<string, RuntimeAsset> = {
   'default-voice': {
     id: 'default-voice',
     label: 'Scarlett Johansson voice',
-    url: 'https://github.com/telltaleatheist/bookforge/releases/download/voice-model/default-voice-johansson.tar.gz',
+    url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/default-voice-johansson.tar.gz',
     sha256: 'dc300f068b62442c95f0ccab3f84224983a402b2c7bbb178b0de4f05f860c959',
     bytes: 1738859112,
     version: '2026.06.16',
@@ -569,7 +569,7 @@ const RUNTIME_ASSETS: Record<string, RuntimeAsset> = {
   'stanza-en': {
     id: 'stanza-en',
     label: 'English language pack',
-    url: 'https://github.com/telltaleatheist/bookforge/releases/download/stanzas/stanza-en.tar.gz',
+    url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/stanza-en.tar.gz',
     sha256: 'cf3a83493d8c0b426524bb5d000c77d2b52ed2261e8f8dfcb5021ec8bd00825f',
     bytes: 197028208,
     version: '2026.06.16',

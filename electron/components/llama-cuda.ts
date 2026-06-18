@@ -37,8 +37,7 @@ const LLAMA_CPP_VERSION = 'b7482';
 const WIN_CUDA_TAG = '12.4';
 
 const GH_REL = `https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_VERSION}`;
-// BookForge release mirror. The two zips were uploaded under different release
-// tags, so each has its own full URL rather than a shared base path.
+// BookForge release mirror — all hosted assets live under the single 'assets' release tag.
 const BF_REL = 'https://github.com/telltaleatheist/bookforge/releases/download';
 const OWEN_MIRROR = 'https://owenmorgan.com/bookforge/llama';
 
@@ -55,10 +54,10 @@ const CUDART_SHA256 = '8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e
 // release mirror → owenmorgan.com mirror.
 function sourcesFor(fileName: string): string[] {
   if (fileName === BUILD_ZIP) {
-    return [`${GH_REL}/${BUILD_ZIP}`, `${BF_REL}/llama/${BUILD_ZIP}`, `${OWEN_MIRROR}/${BUILD_ZIP}`];
+    return [`${GH_REL}/${BUILD_ZIP}`, `${BF_REL}/assets/${BUILD_ZIP}`, `${OWEN_MIRROR}/${BUILD_ZIP}`];
   }
   if (fileName === CUDART_ZIP) {
-    return [`${GH_REL}/${CUDART_ZIP}`, `${BF_REL}/windows/${CUDART_ZIP}`, `${OWEN_MIRROR}/${CUDART_ZIP}`];
+    return [`${GH_REL}/${CUDART_ZIP}`, `${BF_REL}/assets/${CUDART_ZIP}`, `${OWEN_MIRROR}/${CUDART_ZIP}`];
   }
   return [`${GH_REL}/${fileName}`, `${OWEN_MIRROR}/${fileName}`];
 }
