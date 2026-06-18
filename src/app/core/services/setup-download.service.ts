@@ -169,11 +169,32 @@ export class SetupDownloadService {
    * "Next", so a step's picks start downloading the moment you leave it; newly
    * added items join the live queue without restarting it.
    */
+  /**
+   * Download priority: GPU acceleration packs (llama-cuda, cuda-tts) are
+   * prerequisites for fast AI/TTS, so they download BEFORE optional content (extra
+   * voices, language packs). Lower sorts first. Keyed off the component's GPU
+   * requirement so any future GPU pack is prioritized automatically.
+   */
+  private priorityOf(id: string): number {
+    const comp = this.components.components().find((c) => c.component.id === id)?.component;
+    return comp?.requirements?.gpu ? 0 : 1;
+  }
+
   enqueueSelected(): void {
     const queued = new Set(this.order());
     const additions = this.pending().filter((id) => !queued.has(id));
     if (additions.length > 0) {
-      this.order.update((o) => [...o, ...additions]);
+      this.order.update((o) => {
+        // Append the new picks, then float necessary (GPU) items ahead of optional
+        // ones. Stable within a tier so relative pick order is preserved. The runner
+        // reads order each step, so the next item it starts is the highest-priority
+        // one still queued (an already-in-flight item finishes — no preemption).
+        const all = [...o, ...additions];
+        return all
+          .map((id, i) => ({ id, i }))
+          .sort((a, b) => this.priorityOf(a.id) - this.priorityOf(b.id) || a.i - b.i)
+          .map((x) => x.id);
+      });
       this.dismissed.set(false);
       this.expanded.set(true);
     }
