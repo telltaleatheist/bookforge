@@ -15,19 +15,26 @@
 !macroend
 
 !macro customUnInstall
-  ; A real uninstall removes ALL app data (the user chose to remove the app, so
-  ; take its data too — no prompt). The SILENT auto-uninstall electron-builder
-  ; runs during an UPGRADE is skipped, so reinstalling over a version never loses
-  ; downloads/settings. IfSilent → keep; interactive → wipe.
-  IfSilent bf_keepData bf_removeData
-  bf_removeData:
+  ; A real uninstall removes ALL app data (the user chose to remove the app, so take
+  ; its data too — no prompt). During an UPGRADE, electron-builder runs the OLD
+  ; uninstaller with the --updated flag, so we skip the wipe and downloads/settings
+  ; survive a reinstall-over-version.
+  ;
+  ; We gate on ${isUpdated}, NOT IfSilent. A oneClick uninstaller ALWAYS runs in
+  ; silent mode (see electron-builder templates/nsis/uninstaller.nsh: "one-click
+  ; installer executes uninstall section in the silent mode"), so IfSilent is ALWAYS
+  ; true here and the old IfSilent-based skip wiped NOTHING on a real uninstall.
+  ; ${isUpdated} (set from the --updated flag electron-builder passes only during an
+  ; upgrade) is the reliable signal — it's what electron-builder itself uses to gate
+  ; DELETE_APP_DATA_ON_UNINSTALL.
+  ${ifNot} ${isUpdated}
     ; Normalized location (everything lives here now), plus pre-normalization dirs.
     RMDir /r "$APPDATA\BookForge"
     RMDir /r "$APPDATA\bookforge-app"
     RMDir /r "$APPDATA\BookForgeApp"
     RMDir /r "$LOCALAPPDATA\BookForge-updater"
     RMDir /r "$LOCALAPPDATA\bookforge-app-updater"
-  bf_keepData:
+  ${endIf}
   ; Clean up the Start-menu uninstaller shortcut we created on install.
   Delete "$SMPROGRAMS\Uninstall ${PRODUCT_NAME}.lnk"
 !macroend
