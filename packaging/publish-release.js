@@ -76,7 +76,9 @@ function saveReleases(releases) {
 function printDeploy() {
   console.log('\n[publish] deploy on the server (Triton) to refresh manifest.json:');
   console.log(`  scp ${path.relative(ROOT, RELEASES_PATH)} triton:${SERVER_DOCROOT}/releases.json`);
-  console.log(`  ssh triton 'cd ~/bookforge-catalog-indexer && CATALOG_NOW=$(date -u +%FT%TZ) python3 build_catalog.py'`);
+  // The cron indexer lives in ~/bookforge-catalog (run.sh entrypoint). If build_catalog.py itself
+  // changed, also: scp tools/catalog-indexer/build_catalog.py triton:~/bookforge-catalog/
+  console.log(`  ssh triton 'cd ~/bookforge-catalog && CATALOG_NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ) python3 build_catalog.py'`);
 }
 
 // Publish (or replace) one of OUR managed binaries (ffmpeg, yt-dlp, …).
