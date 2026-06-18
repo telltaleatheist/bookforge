@@ -111,9 +111,16 @@ function main() {
 
   // Archive (tar.gz — created with the `tar` CLI present on macOS/Windows/Linux; the launcher's
   // downloadAndExtract() already handles .tar.gz). `-C` keeps paths bundle-root-relative.
+  // On Windows, pin to the OS-bundled bsdtar (%SystemRoot%\System32\tar.exe): a GNU tar earlier
+  // on PATH (e.g. Git for Windows' usr\bin\tar) treats the "C:\…" archive path as a remote "C"
+  // host and aborts ("Cannot connect to C:"). bsdtar handles drive-letter paths natively.
+  const tarBin =
+    process.platform === 'win32'
+      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+      : 'tar';
   const outFile = path.join(OUT_DIR, `code-${version}.tar.gz`);
   fs.rmSync(outFile, { force: true });
-  execFileSync('tar', ['-czf', outFile, '-C', stageRoot, '.'], { stdio: 'inherit' });
+  execFileSync(tarBin, ['-czf', outFile, '-C', stageRoot, '.'], { stdio: 'inherit' });
   fs.rmSync(stageRoot, { recursive: true, force: true });
 
   const bytes = fs.statSync(outFile).size;

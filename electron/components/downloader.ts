@@ -211,6 +211,24 @@ export function sha256File(filePath: string): Promise<string> {
 // Internal: extraction
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The archiver command to invoke. Extraction here relies on bsdtar semantics: it reads
+ * .zip archives (the win32 zip branch below) and accepts drive-letter paths like "C:\…".
+ * On Windows that archiver is the OS-bundled bsdtar at %SystemRoot%\System32\tar.exe
+ * (present since Win10 1803). We pin to its absolute path rather than resolving "tar" off
+ * PATH, because a GNU tar earlier on PATH (e.g. Git for Windows' usr\bin\tar) would BREAK
+ * this in two ways: it treats "C:\…" as a remote "C" host (the colon = host separator),
+ * and it cannot read zip archives at all. macOS/Linux already provide a suitable tar on
+ * PATH, so there we just use "tar".
+ */
+function tarCmd(): string {
+  if (os.platform() === 'win32') {
+    const sys = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    if (fs.existsSync(sys)) return `"${sys}"`;
+  }
+  return 'tar';
+}
+
 export async function extractArchive(
   archivePath: string,
   destDir: string,
@@ -223,16 +241,17 @@ export async function extractArchive(
   const isZip = lower.endsWith('.zip');
 
   const maxBuffer = 50 * 1024 * 1024;
+  const tar = tarCmd();
 
   if (isTarGz) {
-    await execAsync(`tar -xzf "${archivePath}" -C "${destDir}"`, { maxBuffer });
+    await execAsync(`${tar} -xzf "${archivePath}" -C "${destDir}"`, { maxBuffer });
     return;
   }
 
   if (isZip) {
     if (os.platform() === 'win32') {
-      // Win10+ ships bsdtar, which reads zip files.
-      await execAsync(`tar -xf "${archivePath}" -C "${destDir}"`, { maxBuffer });
+      // Win10+ ships bsdtar, which reads zip files (pinned via tarCmd()).
+      await execAsync(`${tar} -xf "${archivePath}" -C "${destDir}"`, { maxBuffer });
     } else {
       await execAsync(`unzip -q -o "${archivePath}" -d "${destDir}"`, { maxBuffer });
     }
