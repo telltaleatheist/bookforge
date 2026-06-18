@@ -29,7 +29,7 @@ import { spawn, spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
-import { downloadFile, sha256File } from './components/downloader';
+import { downloadFile, sha256File, osTarBin } from './components/downloader';
 
 const TARBALL_NAME = 'e2a-env.tar.gz';
 const READY_MARKER = '.bookforge-env-ready.json';
@@ -428,9 +428,10 @@ async function doEnsureBundledEnv(onProgress?: (message: string) => void): Promi
   fs.mkdirSync(tempDir, { recursive: true });
 
   try {
-    // bsdtar ships with macOS and with Windows 10 1803+ (System32\tar.exe).
+    // bsdtar ships with macOS and with Windows 10 1803+ (System32\tar.exe). Pin to its absolute
+    // path (osTarBin) so a GNU tar earlier on PATH can't misread the "C:\…" drive-letter paths.
     onProgress?.('Extracting Python environment…');
-    await run('tar', ['-xzf', tarball, '-C', tempDir]);
+    await run(osTarBin(), ['-xzf', tarball, '-C', tempDir]);
 
     onProgress?.('Fixing environment paths (conda-unpack)…');
     const python = relocatablePythonPath(tempDir);
@@ -642,7 +643,7 @@ async function doEnsureRuntimeAsset(
 
   dlComplete(asset.bytes); // this asset's bytes are in (downloaded or cached)
   onProgress?.(`Installing the ${asset.label}…`);
-  await run('tar', ['-xzf', cache, '-C', e2aDir]);
+  await run(osTarBin(), ['-xzf', cache, '-C', e2aDir]);
 
   fs.writeFileSync(
     assetMarkerPath(asset.id),

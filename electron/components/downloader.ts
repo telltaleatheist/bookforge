@@ -212,21 +212,30 @@ export function sha256File(filePath: string): Promise<string> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The archiver command to invoke. Extraction here relies on bsdtar semantics: it reads
- * .zip archives (the win32 zip branch below) and accepts drive-letter paths like "C:\…".
- * On Windows that archiver is the OS-bundled bsdtar at %SystemRoot%\System32\tar.exe
- * (present since Win10 1803). We pin to its absolute path rather than resolving "tar" off
- * PATH, because a GNU tar earlier on PATH (e.g. Git for Windows' usr\bin\tar) would BREAK
- * this in two ways: it treats "C:\…" as a remote "C" host (the colon = host separator),
- * and it cannot read zip archives at all. macOS/Linux already provide a suitable tar on
- * PATH, so there we just use "tar".
+ * The archiver binary to invoke — RAW path, no shell quoting (use with execFile/spawn-style
+ * array args). The extraction code relies on bsdtar semantics: it reads .zip archives and
+ * accepts drive-letter paths like "C:\…". On Windows that archiver is the OS-bundled bsdtar at
+ * %SystemRoot%\System32\tar.exe (present since Win10 1803). We pin to its absolute path rather
+ * than resolving "tar" off PATH, because a GNU tar earlier on PATH (e.g. Git for Windows'
+ * usr\bin\tar) would BREAK this in two ways: it treats "C:\…" as a remote "C" host (the colon =
+ * host separator), and it cannot read zip archives at all. macOS/Linux already provide a
+ * suitable tar on PATH, so there we just use "tar".
+ *
+ * Exported as the single source of truth — other tar shell-outs (e2a env extraction) reuse it.
+ * For a string passed to a shell (exec/execAsync), wrap the result in quotes; see tarCmd().
  */
-function tarCmd(): string {
+export function osTarBin(): string {
   if (os.platform() === 'win32') {
     const sys = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
-    if (fs.existsSync(sys)) return `"${sys}"`;
+    if (fs.existsSync(sys)) return sys;
   }
   return 'tar';
+}
+
+/** osTarBin() shell-quoted for interpolation into an exec/execAsync command string. */
+function tarCmd(): string {
+  const bin = osTarBin();
+  return bin === 'tar' ? 'tar' : `"${bin}"`;
 }
 
 export async function extractArchive(

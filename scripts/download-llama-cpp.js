@@ -103,14 +103,28 @@ function downloadFile(url, destPath) {
 
 // ── Extract (bsdtar handles both .tar.gz and .zip on macOS + Windows) ─────────
 
+/**
+ * The tar to invoke, shell-quoted. On Windows, pin to the OS-bundled bsdtar
+ * (%SystemRoot%\System32\tar.exe) so a GNU tar earlier on PATH (e.g. Git for Windows')
+ * can't misread the "C:\…" drive-letter paths or fail to read zips. Mirrors downloader.ts.
+ */
+function tarCmd() {
+  if (process.platform === 'win32') {
+    const sys = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    if (fs.existsSync(sys)) return `"${sys}"`;
+  }
+  return 'tar';
+}
+
 function extract(archivePath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
+  const tar = tarCmd();
   if (archivePath.endsWith('.tar.gz') || archivePath.endsWith('.tgz')) {
-    execSync(`tar -xzf "${archivePath}" -C "${destDir}"`, { stdio: 'pipe' });
+    execSync(`${tar} -xzf "${archivePath}" -C "${destDir}"`, { stdio: 'pipe' });
   } else {
     // bsdtar (the default `tar` on macOS and Windows 10+) extracts zips.
     try {
-      execSync(`tar -xf "${archivePath}" -C "${destDir}"`, { stdio: 'pipe' });
+      execSync(`${tar} -xf "${archivePath}" -C "${destDir}"`, { stdio: 'pipe' });
     } catch {
       // Fallback to unzip where available (Linux/macOS dev hosts).
       execSync(`unzip -q -o "${archivePath}" -d "${destDir}"`, { stdio: 'pipe' });

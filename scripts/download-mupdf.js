@@ -97,14 +97,27 @@ async function downloadFile(url, destPath) {
 }
 
 /**
+ * The tar to invoke, shell-quoted. On Windows, pin to the OS-bundled bsdtar
+ * (%SystemRoot%\System32\tar.exe) so a GNU tar earlier on PATH (e.g. Git for Windows')
+ * can't misread the "C:\…" drive-letter archive/dest paths. Mirrors downloader.ts osTarBin().
+ */
+function tarCmd() {
+  if (process.platform === 'win32') {
+    const sys = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    if (existsSync(sys)) return `"${sys}"`;
+  }
+  return 'tar';
+}
+
+/**
  * Extract tar.gz archive
  */
 async function extractTarGz(archivePath, destDir) {
   log(`Extracting to ${destDir}...`);
   mkdirSync(destDir, { recursive: true });
 
-  // Use system tar command
-  await execAsync(`tar -xzf "${archivePath}" -C "${destDir}"`, {
+  // Use system tar command (pinned to bsdtar on Windows — see tarCmd()).
+  await execAsync(`${tarCmd()} -xzf "${archivePath}" -C "${destDir}"`, {
     maxBuffer: 50 * 1024 * 1024
   });
 }
