@@ -291,24 +291,34 @@ def _load_releases(path):
 def build_manifest(catalog, releases, now):
     """Assemble manifest.json (v2) = catalog content + the release tiers from releases.json.
     Pure (no I/O) so it's unit-testable without hitting upstream."""
-    return {
+    manifest = {
         "schemaVersion": MANIFEST_SCHEMA_VERSION,
         "app": APP_NAME,
         "generatedAt": now or "1970-01-01T00:00:00Z",
         "generator": GENERATOR,
         "launcher": releases.get("launcher", {"version": "0.0.0", "platforms": {}}),
-        "code": releases["code"],
+        "code": releases.get("code", {}),
         "components": releases.get("components", []),
         "sources": catalog["sources"],
         "counts": catalog["counts"],
         "voices": catalog["voices"],
         "languages": catalog["languages"],
     }
+    # Optional one-time starter library (downloaded into an empty library on first run).
+    starter = (releases or {}).get("starter")
+    if starter and starter.get("url"):
+        manifest["starter"] = starter
+    return manifest
 
 
 def _releases_has_code(releases):
     code = (releases or {}).get("code") or {}
     return bool(code.get("version") and code.get("url"))
+
+
+def _releases_has_starter(releases):
+    starter = (releases or {}).get("starter") or {}
+    return bool(starter.get("url") and starter.get("sha256"))
 
 
 def _atomic_write(path, text):
@@ -364,7 +374,7 @@ def main():
     # Assemble manifest.json (superset) if release data is available.
     releases = _load_releases(args.releases)
     manifest_text = None
-    if _releases_has_code(releases):
+    if _releases_has_code(releases) or _releases_has_starter(releases):
         manifest = build_manifest(catalog, releases, args.now)
         manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
     else:

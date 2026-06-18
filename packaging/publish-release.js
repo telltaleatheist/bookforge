@@ -145,8 +145,57 @@ function publishComponent() {
   if (!publish) console.log('\n[publish] dry-run complete. Re-run with --publish to upload to GitHub.\n');
 }
 
+// Publish (or replace) the one-time starter library (a finished sample project).
+function publishStarter() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const name = arg('--starter-name', 'the-mysterious-stranger');
+  const repo = arg('--repo', process.env.BOOKFORGE_GH_REPO || 'telltaleatheist/bookforge');
+  const tag = arg('--tag', 'library'); // GitHub release that holds the starter tarball
+  const publish = has('--publish');
+
+  const sidecarPath = path.join(ROOT, 'release', 'starter-library', `starter-${name}.json`);
+  if (!fs.existsSync(sidecarPath)) {
+    fail(`no sidecar at ${path.relative(ROOT, sidecarPath)} — run "node packaging/build-starter-library.js --name ${name}" first`);
+  }
+  const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+  const tarPath = path.join(ROOT, 'release', 'starter-library', sidecar.file);
+  const url = `https://github.com/${repo}/releases/download/${tag}/${sidecar.file}`;
+
+  const releases = loadReleases(pkg.version);
+  releases.starter = {
+    slug: sidecar.slug,
+    name: sidecar.name,
+    url,
+    sha256: sidecar.sha256,
+    bytes: sidecar.bytes,
+  };
+  saveReleases(releases);
+  console.log(`[publish] updated ${path.relative(ROOT, RELEASES_PATH)} → starter "${sidecar.slug}"`);
+  console.log(`          url:    ${url}`);
+  console.log(`          sha256: ${sidecar.sha256}`);
+  console.log(`          bytes:  ${sidecar.bytes.toLocaleString()}`);
+
+  const ghArgs = ['release', 'upload', tag, tarPath, '--clobber', '--repo', repo];
+  if (publish && fs.existsSync(tarPath)) {
+    console.log(`\n[publish] uploading starter to GitHub release "${tag}"…`);
+    try {
+      execFileSync('gh', ghArgs, { stdio: 'inherit' });
+    } catch (err) {
+      fail(`gh upload failed (${err.message}). Create the release once with:\n  gh release create ${tag} --repo ${repo} --title "Starter library" --notes "Finished sample project"`);
+    }
+    console.log('[publish] starter uploaded.');
+  } else {
+    console.log('\n[publish] DRY-RUN — would upload starter (or it was uploaded by hand):');
+    console.log(`  gh ${ghArgs.join(' ')}`);
+    if (!fs.existsSync(tarPath)) console.log(`  (local tarball ${path.relative(ROOT, tarPath)} not present — release.json updated from sidecar only)`);
+  }
+  printDeploy();
+  if (!publish) console.log('\n[publish] dry-run complete. Re-run with --publish to upload to GitHub.\n');
+}
+
 function main() {
   if (has('--component')) return publishComponent();
+  if (has('--starter')) return publishStarter();
 
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   const version = arg('--version', pkg.version);

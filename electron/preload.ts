@@ -7,6 +7,7 @@ import type {
 } from './components/component-types';
 import type { CodeUpdateStatus } from './update/code-updater';
 import type { ComponentUpdateStatus } from './update/component-updater';
+import type { StarterStatus } from './update/starter-library';
 
 /**
  * Preload script - Exposes safe IPC methods to renderer process
@@ -1439,6 +1440,10 @@ export interface ElectronAPI {
     installComponent: (id: string) => Promise<ComponentUpdateStatus>;
     onComponentStatus: (callback: (s: ComponentUpdateStatus) => void) => () => void;
     onComponentsAvailable: (callback: (list: ComponentUpdateStatus[]) => void) => () => void;
+    // Starter library — finished sample seeded into an empty library on first run.
+    getStarterStatus: () => Promise<StarterStatus>;
+    installStarter: () => Promise<StarterStatus>;
+    onStarterProgress: (callback: (s: StarterStatus) => void) => () => void;
   };
   parallelTts: {
     detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: HardwareRecommendation; error?: string }>;
@@ -2896,6 +2901,15 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('update:components-available', listener);
       return () => {
         ipcRenderer.removeListener('update:components-available', listener);
+      };
+    },
+    getStarterStatus: () => ipcRenderer.invoke('starter-library:status'),
+    installStarter: () => ipcRenderer.invoke('starter-library:install'),
+    onStarterProgress: (callback: (s: StarterStatus) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, s: StarterStatus) => callback(s);
+      ipcRenderer.on('starter-library:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('starter-library:progress', listener);
       };
     },
   },

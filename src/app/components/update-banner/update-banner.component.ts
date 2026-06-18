@@ -25,10 +25,23 @@ interface ComponentUpdateStatus {
   error?: string;
 }
 
+/** Mirrors electron/update/starter-library.ts StarterStatus (renderer-side copy). */
+interface StarterStatus {
+  available: boolean;
+  alreadyPresent: boolean;
+  slug?: string;
+  bytes?: number;
+  installing?: boolean;
+  phase?: 'download' | 'verify' | 'extract';
+  progressPct?: number;
+  error?: string;
+}
+
 /**
  * Floating toast that surfaces app self-updates. The launcher applies a staged update on the
  * NEXT launch (stage-now / boot-next), so the only user action is "Restart". Downloading is shown
  * subtly; "incompatible" tells the user to grab a new BookForge manually (rare, launcher bump).
+ * Also surfaces the one-time first-run starter-library download (the finished sample project).
  *
  * Backed by the update IPC bridged in preload (window.electron.update). Silently inert if the
  * bridge is absent (e.g. running in a browser without Electron).
@@ -96,6 +109,18 @@ interface ComponentUpdateStatus {
               }
             </div>
           }
+        }
+
+        @if (showStarter()) {
+          @if (showCodeUpdate() || actionableComponents().length) { <div class="update-sep"></div> }
+          <div class="update-row">
+            <span class="update-spinner"></span>
+            <span class="update-text">{{ starterLabel() }}</span>
+            <span class="update-pct">{{ starter()?.progressPct ?? 0 }}%</span>
+          </div>
+          <div class="update-track">
+            <div class="update-fill" [style.width.%]="starter()?.progressPct ?? 0"></div>
+          </div>
         }
       </div>
     }
@@ -219,6 +244,7 @@ interface ComponentUpdateStatus {
 export class UpdateBannerComponent implements OnInit, OnDestroy {
   readonly status = signal<CodeUpdateStatus | null>(null);
   readonly components = signal<ComponentUpdateStatus[]>([]);
+  readonly starter = signal<StarterStatus | null>(null);
   /** id -> download percent while a component install is in flight. */
   readonly installing = signal<Record<string, number>>({});
   private readonly dismissedVersion = signal<string | null>(null);
@@ -244,7 +270,22 @@ export class UpdateBannerComponent implements OnInit, OnDestroy {
     this.components().filter((c) => c.state === 'update-available' || c.state === 'not-installed')
   );
 
-  readonly visible = computed(() => this.showCodeUpdate() || this.actionableComponents().length > 0);
+  /** The starter library is actively downloading/extracting (not yet finished, no error). */
+  readonly showStarter = computed(() => {
+    const s = this.starter();
+    return !!s?.installing && !s.error && (s.progressPct ?? 0) < 100;
+  });
+
+  readonly starterLabel = computed(() => {
+    const phase = this.starter()?.phase;
+    if (phase === 'verify') return 'Verifying sample audiobook…';
+    if (phase === 'extract') return 'Unpacking sample audiobook…';
+    return 'Downloading sample audiobook…';
+  });
+
+  readonly visible = computed(
+    () => this.showCodeUpdate() || this.actionableComponents().length > 0 || this.showStarter()
+  );
 
   async ngOnInit(): Promise<void> {
     if (!this.api) return;
@@ -265,6 +306,9 @@ export class UpdateBannerComponent implements OnInit, OnDestroy {
     }
     if (this.api.onComponentStatus) {
       this.unsubs.push(this.api.onComponentStatus((s: ComponentUpdateStatus) => this.onComponentProgress(s)));
+    }
+    if (this.api.onStarterProgress) {
+      this.unsubs.push(this.api.onStarterProgress((s: StarterStatus) => this.starter.set(s)));
     }
   }
 

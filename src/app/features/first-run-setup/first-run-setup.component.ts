@@ -782,9 +782,9 @@ export class FirstRunSetupComponent {
         this.libraryError.set(result.error || 'Could not set up the library folder.');
         return;
       }
-      // Best-effort, non-blocking: drop the bundled book into the new library and
-      // refresh AI availability so the AI step reflects reality.
-      void this.seedDefaultBook();
+      // Best-effort, non-blocking: seed the finished sample project into the new (empty)
+      // library and refresh AI availability so the AI step reflects reality.
+      void this.seedStarterLibrary();
       await this.ai.refresh();
       this.currentStep.update((s) => s + 1);
     } catch (err) {
@@ -794,20 +794,23 @@ export class FirstRunSetupComponent {
     }
   }
 
-  /** First run only: copy the bundled public-domain book OUT of app resources and
-   *  INTO the chosen library as the user's first book. The "done" flag is set only
-   *  after the book is actually imported, so a transient failure can still seed on
-   *  a later attempt (and a build shipping no seed book never burns the flag). */
-  private async seedDefaultBook(): Promise<void> {
-    const KEY = 'bookforge-seed-book-added';
-    if (localStorage.getItem(KEY)) return;
+  /** First run only: seed the finished public-domain sample project ("The Mysterious Stranger")
+   *  into the chosen library — but ONLY when that library is brand-new and empty. The download
+   *  (~550 MB) is verified by sha256 and runs in the background; the globally-mounted update
+   *  banner shows progress. The main-process installer hard-guards on emptiness, so this never
+   *  overwrites an existing library; re-running into an already-seeded library simply no-ops. */
+  private async seedStarterLibrary(): Promise<void> {
     try {
-      const path = await this.electron.getSeedBookPath();
-      if (!path) return; // no bundled book (dev / not shipped)
-      const result = await this.studio.addBook(path);
-      if (result?.success) localStorage.setItem(KEY, '1');
+      const api = (window as unknown as { electron?: { update?: {
+        getStarterStatus?: () => Promise<{ available: boolean; alreadyPresent: boolean }>;
+        installStarter?: () => Promise<unknown>;
+      } } }).electron?.update;
+      if (!api?.getStarterStatus || !api.installStarter) return; // older bridge / web build
+      const status = await api.getStarterStatus();
+      if (!status?.available || status.alreadyPresent) return;   // none advertised, or library not empty
+      void api.installStarter(); // fire-and-forget; progress surfaces in the update banner
     } catch (err) {
-      console.warn('[Setup] Seeding the default book failed:', err);
+      console.warn('[Setup] Seeding the starter library failed:', err);
     }
   }
 

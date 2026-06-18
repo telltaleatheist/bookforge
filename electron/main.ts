@@ -26,6 +26,7 @@ import { systemProbe } from './components/system-probe';
 import { markBootOk } from './launcher/boot-state';
 import { checkAndStageCodeUpdate, getCodeUpdateStatus } from './update/code-updater';
 import { listManagedComponents, checkComponentUpdates, installComponent } from './update/component-updater';
+import { getStarterStatus, installStarterLibrary } from './update/starter-library';
 
 // Normalize the app's data directory. Electron derives userData from the app
 // name, which defaults to package.json `name` ("bookforge-app") — inconsistent
@@ -1957,6 +1958,19 @@ function setupIpcHandlers(): void {
       try { if (fsSync.existsSync(p)) return p; } catch { /* try next */ }
     }
     return null;
+  });
+
+  // Starter library — the finished public-domain sample downloaded ONCE into a brand-new, EMPTY
+  // library on first run. Always operates on the current persisted library root; never overwrites
+  // an existing library (the installer hard-guards on emptiness).
+  ipcMain.handle('starter-library:status', async () => {
+    return getStarterStatus(getLibraryRoot());
+  });
+
+  ipcMain.handle('starter-library:install', async () => {
+    return installStarterLibrary(getLibraryRoot(), {
+      onProgress: (s) => mainWindow?.webContents.send('starter-library:progress', s),
+    });
   });
 
   // Remove ALL of BookForge's data — everything it downloaded/unpacked into the
