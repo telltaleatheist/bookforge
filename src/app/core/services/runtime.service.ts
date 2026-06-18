@@ -103,7 +103,24 @@ export class RuntimeService {
     setupPercentFor(this._status().message, this.ready())
   );
   private readonly _progressFloor = signal(0);
-  readonly setupProgress = computed(() => Math.max(this._rawProgress(), this._progressFloor()));
+  readonly setupProgress = computed(() => {
+    if (this.ready()) return 100;
+    const coarse = Math.max(this._rawProgress(), this._progressFloor());
+    // Prefer REAL progress: the cumulative mandatory-download bytes (env tarball +
+    // default voice + language pack) are a true monotonic signal spanning the whole
+    // first-run. Mapping them across the bulk of the bar makes it track actual
+    // progress instead of parking on a coarse stage step (e.g. conda-unpack's flat
+    // 50%) while bytes flow underneath. The short unmeasured tail (extract /
+    // conda-unpack) just holds wherever the bytes left it — near the end — rather
+    // than mid-bar. downloadedBytes only ever increases, so this never regresses.
+    const d = this._status().download;
+    if (d && d.totalBytes > 0) {
+      const frac = Math.min(1, Math.max(0, d.downloadedBytes / d.totalBytes));
+      const byteBar = Math.round(8 + frac * 88); // 8% (started) → 96% (all bytes in)
+      return Math.max(coarse, byteBar);
+    }
+    return coarse;
+  });
 
   private unsubscribe?: () => void;
 
