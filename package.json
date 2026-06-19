@@ -1,7 +1,7 @@
 {
   "name": "bookforge-app",
   "productName": "BookForge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "BookForge - Audiobook production pipeline",
   "main": "dist/electron/launcher/bootstrap.js",
   "private": true,
@@ -140,7 +140,9 @@
         {
           "from": "resources/bin",
           "to": "bin",
-          "filter": ["*.dylib"]
+          "filter": [
+            "*.dylib"
+          ]
         },
         {
           "from": "resources/e2a",
@@ -167,7 +169,9 @@
         {
           "from": "resources/bin",
           "to": "bin",
-          "filter": ["*.dll"]
+          "filter": [
+            "*.dll"
+          ]
         },
         {
           "from": "resources/e2a",

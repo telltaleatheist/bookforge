@@ -19,6 +19,38 @@ import { Worker } from 'worker_threads';
 import * as path from 'path';
 import * as os from 'os';
 import type { WebContents } from 'electron';
+import { getMainLogger } from './rolling-logger.js';
+
+/**
+ * Thrown when a worker process exits mid-call (e.g. a mupdf WASM out-of-memory
+ * abort, which calls process.exit and kills the whole worker — JS try/catch
+ * can't intercept it). Carries the exit code and is used by call() to decide
+ * whether to respawn a fresh worker and retry once.
+ */
+class WorkerCrashError extends Error {
+  readonly workerCrashed = true;
+  constructor(public readonly exitCode: number | null) {
+    super(`PDF worker exited unexpectedly (code ${exitCode})`);
+    this.name = 'WorkerCrashError';
+  }
+}
+
+/**
+ * Methods that are fully self-contained — they (re)open the document from a
+ * path or take all their inputs as arguments, so they can be safely re-run on a
+ * brand-new worker with a fresh WASM heap. Stateful methods that depend on a
+ * prior call's in-worker state (analyzeText, exportText, getSpans, …) are NOT
+ * here: retrying them on a fresh worker would just fail differently.
+ */
+const RETRYABLE_METHODS = new Set<string>([
+  'analyze',
+  'analyzeQuick',
+  'renderPage',
+  'renderBlankPage',
+  'renderAllPagesToFiles',
+  'renderAllPagesWithPreviews',
+  'renderPages',
+]);
 
 interface PendingCall {
   resolve: (value: any) => void;
@@ -114,17 +146,30 @@ function spawn(label: string, onExit: (w: Worker) => void): Worker {
 
   w.on('error', (err) => {
     console.error(`[pdf-worker-proxy] ${label} error:`, err.message);
+    try { getMainLogger().error(`[pdf-worker-proxy] ${label} error`, { message: err.message, stack: err.stack }); } catch { /* logger unavailable */ }
   });
 
   w.on('exit', (code) => {
     clearIdleTimer();
     if (code !== 0) {
+      // A non-zero exit is almost always a mupdf WASM abort (e.g. out-of-memory
+      // "cannot enlarge memory arrays"), which kills the worker via process.exit
+      // and can't be caught inside the worker. Surface it to the rolling logger
+      // so it's actually diagnosable — console.error alone never reaches the
+      // log file in packaged builds.
+      const pendingMethods = [...pending.values()].filter(p => p.worker === w).length;
       console.error(`[pdf-worker-proxy] ${label} exited with code ${code}`);
+      try {
+        getMainLogger().error(`[pdf-worker-proxy] ${label} exited unexpectedly`, {
+          code,
+          pendingCalls: pendingMethods,
+        });
+      } catch { /* logger unavailable */ }
     }
     // Reject pending calls belonging to this worker only
     for (const [id, entry] of pending) {
       if (entry.worker === w) {
-        entry.reject(new Error(`PDF worker exited unexpectedly (code ${code})`));
+        entry.reject(new WorkerCrashError(code));
         pending.delete(id);
       }
     }
@@ -175,8 +220,27 @@ export function setDefaultSender(sender: WebContents): void {
  * @param args    Positional arguments (will be serialized via structured clone)
  * @param sender  Optional WebContents to receive progress events
  */
-export function call(method: string, args: any[], sender?: WebContents): Promise<any> {
-  return callOn(ensureWorker(), method, args, sender);
+export async function call(method: string, args: any[], sender?: WebContents): Promise<any> {
+  try {
+    return await callOn(ensureWorker(), method, args, sender);
+  } catch (err) {
+    // If the worker crashed (WASM abort, almost always out-of-memory) during a
+    // self-contained call, respawn a fresh worker — and therefore a fresh WASM
+    // heap — and retry exactly once. A long-lived worker's WASM heap only ever
+    // grows, so a fresh one frequently has the headroom the crashed one lacked.
+    if (err instanceof WorkerCrashError && RETRYABLE_METHODS.has(method)) {
+      console.warn(`[pdf-worker-proxy] '${method}' crashed the worker (code ${err.exitCode}); retrying on a fresh worker`);
+      try {
+        getMainLogger().warn(`[pdf-worker-proxy] retrying '${method}' on a fresh worker after crash`, {
+          method,
+          exitCode: err.exitCode,
+        });
+      } catch { /* logger unavailable */ }
+      // The exit handler already nulled `worker`, so ensureWorker() spawns fresh.
+      return await callOn(ensureWorker(), method, args, sender);
+    }
+    throw err;
+  }
 }
 
 /**
