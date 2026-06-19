@@ -26,6 +26,7 @@ import { systemProbe } from './components/system-probe';
 import { componentManager } from './components/component-manager';
 import { LLAMA_CUDA_ID } from './components/llama-cuda';
 import { getManagedBinaryPath } from './update/managed-bins';
+import { migrateLegacyDir } from './shared-paths';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Catalog (Cogito GGUFs — bartowski quants on HuggingFace, direct resolve URLs)
@@ -137,9 +138,11 @@ const GENERATE_TIMEOUT_MS = 300_000; // a long chunk on CPU
 const IDLE_SHUTDOWN_MS = 5 * 60_000;
 
 function getModelsDir(): string {
-  const dir = path.join(app.getPath('userData'), 'llama-models');
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
+  // GGUFs are large and identical across apps, so they live in the OwenMorgan
+  // shared dir and are reused by every OwenMorgan app. A one-time migration
+  // moves any pre-existing per-app models so current installs don't re-download.
+  // active-model.json stores only an id (no absolute paths), so the move is safe.
+  return migrateLegacyDir(path.join(app.getPath('userData'), 'llama-models'), 'llama-models');
 }
 
 function getActiveConfigPath(): string {

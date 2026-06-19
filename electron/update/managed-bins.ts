@@ -12,8 +12,18 @@
 import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
+import { migrateLegacyDir } from '../shared-paths';
 
-export const MANAGED_BINS_DIR = path.join(app.getPath('userData'), 'managed-bins');
+// Managed binaries (ffmpeg, llama-server, yt-dlp, …) are identical across apps,
+// so they live in the OwenMorgan shared dir and are reused by every OwenMorgan
+// app. A one-time migration moves any pre-existing per-app install so current
+// installs don't re-download. Records in state.json may carry pre-migration
+// absolute paths — the resolvers below reconstruct against the CURRENT base
+// (artifacts always live at <base>/<id>/…), so a relocated store still resolves.
+export const MANAGED_BINS_DIR = migrateLegacyDir(
+  path.join(app.getPath('userData'), 'managed-bins'),
+  'managed-bins'
+);
 const STATE_PATH = path.join(MANAGED_BINS_DIR, 'state.json');
 
 export interface InstalledBinary {
@@ -54,14 +64,23 @@ export function getInstalled(id: string): InstalledBinary | null {
 }
 
 export function getManagedBinaryDir(id: string): string | null {
-  const rec = readState()[id];
-  return rec && fs.existsSync(rec.dir) ? rec.dir : null;
+  if (!readState()[id]) return null;
+  // Resolve against the current base rather than the recorded absolute path, so
+  // a store relocated into the shared dir (or a synced state.json) still works.
+  const dir = path.join(MANAGED_BINS_DIR, id);
+  return fs.existsSync(dir) ? dir : null;
 }
 
 /** Absolute path to an installed managed binary's executable, or null if not installed. */
 export function getManagedBinaryPath(id: string): string | null {
   const rec = readState()[id];
-  return rec && fs.existsSync(rec.entryPath) ? rec.entryPath : null;
+  if (!rec) return null;
+  // Recompute from the current base: artifacts live at <base>/<id>/, and the
+  // executable keeps its position within the artifact (rec.entryPath relative
+  // to rec.dir). Robust to the store having moved since it was recorded.
+  const relEntry = path.relative(rec.dir, rec.entryPath);
+  const entryPath = path.join(MANAGED_BINS_DIR, id, relEntry);
+  return fs.existsSync(entryPath) ? entryPath : null;
 }
 
 /** Default executable path within an artifact when the manifest doesn't specify `entry`. */
