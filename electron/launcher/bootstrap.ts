@@ -23,6 +23,7 @@ import {
   bundleDir,
   bundleCodeMain,
   bundleIsComplete,
+  linkBundleNodeModules,
   readPointer,
   writePointer,
 } from './boot-state';
@@ -57,7 +58,8 @@ function copyTreeAsarAware(src: string, dst: string): void {
 /**
  * Copy the baseline code bundle shipped inside the launcher (the .app's dist/ + icon) into
  * userData/app/<version>/. Guarantees a working app on first launch with no network. node_modules
- * is intentionally NOT copied — it stays in the launcher and is resolved via the fallback path.
+ * is NOT copied — instead the bundle gets a symlink to the launcher's real-disk node_modules so
+ * both CJS require (also covered by NODE_PATH) and ESM import() resolve (see linkBundleNodeModules).
  * Staged into a temp dir then renamed so a kill mid-copy never leaves a half-seeded bundle that
  * looks complete.
  */
@@ -70,6 +72,9 @@ function seedBaseline(version: string): void {
   copyTreeAsarAware(path.join(LAUNCHER_ROOT, 'dist'), path.join(staging, 'dist'));
   const icon = path.join(LAUNCHER_ROOT, 'bookforge-icon.png');
   if (fs.existsSync(icon)) fs.writeFileSync(path.join(staging, 'bookforge-icon.png'), fs.readFileSync(icon));
+  // Point the bundle's node_modules at the launcher's real-disk copy so ESM import() resolves
+  // (NODE_PATH only covers CJS require; the ESM resolver can't traverse the asar).
+  linkBundleNodeModules(staging);
   fs.writeFileSync(
     path.join(staging, 'version.json'),
     JSON.stringify({ version, seededFrom: 'launcher-baseline' }, null, 2)

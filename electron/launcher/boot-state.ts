@@ -51,6 +51,30 @@ export function bundleIsComplete(version: string): boolean {
 }
 
 /**
+ * Give a bundle dir (seeded OR self-update-downloaded) a node_modules symlink to the launcher's
+ * real-disk node_modules.
+ *
+ * Dynamic `import()` — used for the ESM-only `mupdf` and other lazy deps — goes through the ESM
+ * resolver, which IGNORES the NODE_PATH fallback the launcher injects AND cannot traverse into an
+ * .asar (both verified: a symlink into app.asar still fails "Cannot find package 'mupdf'"). With
+ * `asarUnpack: ["node_modules/**"]` the deps are extracted to <Resources>/app.asar.unpacked/
+ * node_modules on real disk; symlinking the bundle's node_modules there makes both ESM import() and
+ * CJS require resolve. 'junction' keeps it working on Windows without admin (ignored on macOS/Linux,
+ * which use a plain dir symlink). Best-effort: CJS still resolves via NODE_PATH if this fails.
+ */
+export function linkBundleNodeModules(bundleRootDir: string): void {
+  const real = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules');
+  if (!fs.existsSync(real)) return; // asar-disabled / dev layout — nothing to link
+  const link = path.join(bundleRootDir, 'node_modules');
+  try {
+    fs.rmSync(link, { recursive: true, force: true });
+    fs.symlinkSync(real, link, 'junction');
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
  * Called by the running app once it has booted far enough to be considered healthy (e.g. after
  * the main window finishes loading). Confirms the current bundle as known-good and clears the
  * attempt sentinel so it won't be rolled back next launch. No-op in dev (no pointer).

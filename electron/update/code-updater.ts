@@ -21,6 +21,7 @@ import {
   writePointer,
   bundleDir,
   bundleIsComplete,
+  linkBundleNodeModules,
 } from '../launcher/boot-state';
 import { downloadAndExtract } from '../components/downloader';
 import type { InstallProgress, Platform, Arch } from '../components/component-types';
@@ -149,6 +150,10 @@ async function run(opts?: {
       fs.rmSync(staging, { recursive: true, force: true });
       throw new Error('Downloaded code bundle is missing dist/electron/main.js');
     }
+
+    // A downloaded bundle is pure JS with no node_modules; link it to the launcher's real-disk copy
+    // so ESM import() (mupdf, …) resolves — same as the seed path does. (CJS uses NODE_PATH.)
+    linkBundleNodeModules(staging);
 
     fs.rmSync(finalDir, { recursive: true, force: true });
     fs.renameSync(staging, finalDir);
