@@ -9,10 +9,33 @@
  *         userData/managed-bins/state.json   ({ [id]: InstalledBinary })
  */
 
-import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
+import { workerData } from 'worker_threads';
 import { migrateLegacyDir } from '../shared-paths';
+
+/**
+ * Resolve the userData base dir WITHOUT a static `import { app } from 'electron'`.
+ *
+ * This module is pulled into the pdf-worker thread (pdf-analyzer → mutool-bridge
+ * → here). A worker thread can't access electron's `app`: in a packaged build
+ * the 'electron' module isn't even resolvable, so a static import crashes the
+ * worker at startup ("Cannot find module 'electron'", exit code 1) and every
+ * document fails to load. Resolve electron lazily and, when it's unavailable
+ * (the worker), use the userData path the spawner injects via workerData / env.
+ */
+function resolveUserDataDir(): string {
+  try {
+    // Lazy: present in main/renderer, a bare path string or absent in a worker.
+    const electron = require('electron') as { app?: { getPath(name: string): string } };
+    if (electron && typeof electron === 'object' && electron.app?.getPath) {
+      return electron.app.getPath('userData');
+    }
+  } catch { /* worker thread — electron is not available here */ }
+  const injected = (workerData && workerData.userDataPath) || process.env.BOOKFORGE_USERDATA_DIR;
+  if (injected) return injected;
+  throw new Error('[managed-bins] cannot resolve userData dir (no electron app, no workerData.userDataPath / BOOKFORGE_USERDATA_DIR)');
+}
 
 // Managed binaries (ffmpeg, llama-server, yt-dlp, …) are identical across apps,
 // so they live in the OwenMorgan shared dir and are reused by every OwenMorgan
@@ -21,7 +44,7 @@ import { migrateLegacyDir } from '../shared-paths';
 // absolute paths — the resolvers below reconstruct against the CURRENT base
 // (artifacts always live at <base>/<id>/…), so a relocated store still resolves.
 export const MANAGED_BINS_DIR = migrateLegacyDir(
-  path.join(app.getPath('userData'), 'managed-bins'),
+  path.join(resolveUserDataDir(), 'managed-bins'),
   'managed-bins'
 );
 const STATE_PATH = path.join(MANAGED_BINS_DIR, 'state.json');

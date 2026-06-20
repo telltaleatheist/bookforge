@@ -18,7 +18,7 @@
 import { Worker } from 'worker_threads';
 import * as path from 'path';
 import * as os from 'os';
-import type { WebContents } from 'electron';
+import { app, type WebContents } from 'electron';
 import { getMainLogger } from './rolling-logger.js';
 
 /**
@@ -100,7 +100,11 @@ function resetIdleTimer(): void {
 }
 
 function spawn(label: string, onExit: (w: Worker) => void): Worker {
-  const w = new Worker(workerPath());
+  // Worker threads can't reach electron's `app`, so hand them the userData path
+  // they need (managed-bins resolves binary locations from it). Without this the
+  // worker crashes at startup in packaged builds — 'electron' isn't resolvable
+  // in a worker — and every PDF/EPUB fails with "worker exited (code 1)".
+  const w = new Worker(workerPath(), { workerData: { userDataPath: app.getPath('userData') } });
   console.log(`[pdf-worker-proxy] ${label} started`);
 
   w.on('message', (msg: any) => {

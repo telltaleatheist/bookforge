@@ -1,7 +1,7 @@
 {
   "name": "bookforge-app",
   "productName": "BookForge",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "BookForge - Audiobook production pipeline",
   "main": "dist/electron/launcher/bootstrap.js",
   "private": true,
