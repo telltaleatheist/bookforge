@@ -26,6 +26,7 @@ import {
   readPointer,
   writePointer,
 } from './boot-state';
+import { gt } from '../update/semver';
 
 // __dirname (packaged) = <launcherRoot>/dist/electron/launcher
 const LAUNCHER_ROOT = path.join(__dirname, '..', '..', '..'); // contains dist/, node_modules, icon
@@ -77,6 +78,16 @@ function seedBaseline(version: string): void {
   fs.renameSync(staging, dst); // atomic publish
 }
 
+/**
+ * Did this bundle attempt a boot that never confirmed healthy? (attempt sentinel present, ok
+ * sentinel absent — same signal the rollback path uses.) Used to avoid re-adopting a baked
+ * baseline that crash-loops on startup.
+ */
+function bootFailedBefore(version: string): boolean {
+  const dir = bundleDir(version);
+  return fs.existsSync(path.join(dir, '.boot-attempt')) && !fs.existsSync(path.join(dir, '.boot-ok'));
+}
+
 /** Decide which version to boot, applying a staged update or rolling back a failed one. */
 function resolveBootVersion(): string {
   const baselineVersion = app.getVersion();
@@ -99,6 +110,20 @@ function resolveBootVersion(): string {
       log(`staged ${pointer.pendingVersion} is incomplete; ignoring`);
       pointer = { version: pointer.version, lastGoodVersion: pointer.lastGoodVersion };
     }
+    writePointer(pointer);
+  }
+
+  // Reinstalled a newer .app? The launcher boots the userData bundle, not the code baked into the
+  // .app, so a fresh install of a newer build would otherwise keep running the older pinned bundle
+  // until the in-app updater happened to pull something newer (or userData was wiped by hand). If
+  // the baked baseline is newer than what we'd boot, adopt it — re-seeding from the just-installed
+  // .app so the bundle matches the binary. Runs AFTER the pending flip so a newer published update
+  // still wins; skipped if that exact version already failed a boot here, so a crashing build
+  // can't trap us in a re-adopt → crash → rollback → re-adopt loop.
+  if (gt(baselineVersion, pointer.version) && !bootFailedBefore(baselineVersion)) {
+    log(`baked baseline ${baselineVersion} is newer than pinned ${pointer.version}; adopting it`);
+    seedBaseline(baselineVersion);
+    pointer = { version: baselineVersion, lastGoodVersion: pointer.lastGoodVersion ?? pointer.version };
     writePointer(pointer);
   }
 
