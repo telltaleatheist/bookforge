@@ -80,3 +80,8 @@ packaging/.seed-cache-speakers/
 # mupdf download/build scratch (scripts/download-mupdf.js TEMP_DIR; auto-removed
 # on success, but left behind — thousands of files — if a build is interrupted)
 .mupdf-build/
+
+# ultimate-rvc (XTTS voice-clone experiment) writes its data dir into the cwd it
+# runs from; these RVC training/model artifacts are unrelated to BookForge
+/models/
+/logs/
