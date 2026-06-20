@@ -13,10 +13,41 @@
  * Usage: node packaging/build-dmg.js --mac        (args pass through to electron-builder)
  */
 const { execSync, execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const builderArgs = process.argv.slice(2);
 const isMac = process.platform === 'darwin';
 const MAX_ATTEMPTS = 3;
+
+const RELEASE_DIR = path.resolve(__dirname, '..', 'release');
+const CURRENT_VERSION = require('../package.json').version;
+
+/**
+ * Remove release artifacts (dmg, blockmap, AppleDouble ._ sidecars) from versions OTHER than the
+ * one we're about to build. electron-builder names each dmg BookForge-<version>-arch.dmg, so a bump
+ * leaves the previous version's dmg sitting in release/ — and double-clicking the wrong (stale) one
+ * is an easy way to "install" an old build over a new one. Keep only the current version so the
+ * newest dmg is the only BookForge dmg in the folder.
+ */
+function cleanStaleReleases() {
+  let entries;
+  try { entries = fs.readdirSync(RELEASE_DIR); } catch { return; } // no release/ yet — nothing to clean
+  const removed = [];
+  for (const name of entries) {
+    // Match BookForge-<x.y.z>-... and the macOS ._ AppleDouble sidecar of the same.
+    const m = name.match(/^\._?BookForge-(\d+\.\d+\.\d+)-/) || name.match(/^BookForge-(\d+\.\d+\.\d+)-/);
+    if (!m || m[1] === CURRENT_VERSION) continue;
+    try {
+      fs.rmSync(path.join(RELEASE_DIR, name), { recursive: true, force: true });
+      removed.push(name);
+    } catch { /* best-effort */ }
+  }
+  if (removed.length) {
+    console.log(`[build-dmg] cleaned ${removed.length} stale release artifact(s) (keeping ${CURRENT_VERSION}):`);
+    for (const r of removed) console.log(`  - ${r}`);
+  }
+}
 
 /** Detach any attached BookForge/temp build disk images so hdiutil has room. */
 function detachStaleImages() {
@@ -42,6 +73,8 @@ function detachStaleImages() {
     }
   } catch { /* ignore */ }
 }
+
+cleanStaleReleases();
 
 for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
   detachStaleImages();
