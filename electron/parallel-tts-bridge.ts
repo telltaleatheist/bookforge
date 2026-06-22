@@ -68,6 +68,7 @@ function writeWorkerLog(line: string): void {
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata } from './metadata-tools';
 import * as manifestService from './manifest-service';
 import { isCudaTtsInstalled } from './components/cuda-tts';
+import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 
 /**
  * Map a UI device ('auto'|'gpu'|'mps'|'cpu') to e2a's CLI device (CUDA/MPS/CPU).
@@ -1207,6 +1208,17 @@ export interface ParallelConversionConfig {
   // Is this an article (language learning) vs a book?
   // Articles: copy to BFP audiobook/ only
   isArticle?: boolean;
+  // Optional RVC voice-enhancement pass. When enabled, each rendered TTS sentence
+  // is re-rendered through an RVC voice model (warm-model batch) BEFORE assembly,
+  // and the enhanced set is assembled via e2a's --sentences_dir. The original XTTS
+  // sentences are left cached/untouched so either version can be (re)assembled.
+  rvcEnhancement?: {
+    enabled: boolean;
+    voiceModelName: string;     // urvc model folder name (e.g. 'Sigma Male Narrator')
+    indexRate?: number;         // 0–1; default 0.5
+    protectRate?: number;       // 0–0.5; default 0.5
+    forceIndexRate0?: boolean;  // model ships without a usable .index → convert at index-rate 0
+  };
 }
 
 export interface ParallelTtsSettings {
@@ -1345,6 +1357,9 @@ interface ConversionSession {
   startTime: number;
   cancelled: boolean;
   assemblyProcess: ChildProcess | null;
+  // RVC enhancement: when an enhancement pass runs, the enhanced sentence files
+  // land here and assembly is pointed at them via e2a's --sentences_dir.
+  rvcSentencesDir?: string;
   // Resume job tracking
   isResumeJob?: boolean;
   baselineCompleted?: number;  // Sentences already done before resume started
@@ -2422,6 +2437,57 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       return;
     }
 
+    // RVC voice enhancement (optional): re-render every sentence through an RVC
+    // model with a single warm model load, then assemble the ENHANCED set via
+    // --sentences_dir. The original XTTS sentences stay cached and untouched.
+    if (session.config.rvcEnhancement?.enabled) {
+      const rvc = session.config.rvcEnhancement;
+      const sentencesDir = session.prepInfo?.chaptersDirSentences;
+      if (!sentencesDir) {
+        emitComplete(session, false, undefined, 'RVC enhancement: sentences directory unknown.');
+        activeSessions.delete(session.jobId);
+        return;
+      }
+      const ready = rvcEnhancementReady();
+      if (!ready.ok) {
+        emitComplete(session, false, undefined, `RVC enhancement unavailable: ${ready.reason}`);
+        activeSessions.delete(session.jobId);
+        return;
+      }
+      const rvcOutDir = path.join(path.dirname(sentencesDir), 'sentences_rvc');
+      try {
+        await logger.log('INFO', session.jobId, `RVC enhancement starting (model: ${rvc.voiceModelName})`);
+        await enhanceSentences({
+          sentencesDir,
+          outputDir: rvcOutDir,
+          modelName: rvc.voiceModelName,
+          indexRate: rvc.forceIndexRate0 ? 0 : (rvc.indexRate ?? 0.5),
+          protectRate: rvc.protectRate ?? 0.5,
+          onProgress: (done, total) => {
+            if (!mainWindow) return;
+            const progress: AggregatedProgress = {
+              phase: 'enhancing',
+              totalSentences: session.prepInfo!.totalSentences,
+              completedSentences: session.prepInfo!.totalSentences,
+              completedInSession: session.isResumeJob ? (session.totalMissing || 0) : session.prepInfo!.totalSentences,
+              percentage: 95,
+              activeWorkers: 0,
+              workers: session.workers,
+              estimatedRemaining: 0,
+              message: `Enhancing voice with ${rvc.voiceModelName}… (${done}/${total})`,
+            };
+            mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
+          },
+        });
+        session.rvcSentencesDir = rvcOutDir;
+        await logger.log('INFO', session.jobId, `RVC enhancement complete: ${rvcOutDir}`);
+      } catch (err) {
+        emitComplete(session, false, undefined, `RVC enhancement failed: ${err}`);
+        activeSessions.delete(session.jobId);
+        return;
+      }
+    }
+
     try {
       const outputPath = await runAssembly(session);
       // Mark as success even with partial worker failures if assembly succeeded
@@ -2634,6 +2700,9 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     // Pass --session_dir when session may not be in default e2a tmp location
     // (e.g., cached sessions in BFP audiobook folder)
     ...(prepInfo.sessionDir ? ['--session_dir', prepInfo.sessionDir] : []),
+    // When an RVC enhancement pass ran, assemble the ENHANCED sentence set
+    // (chapter mapping / metadata / VTT still come from the session state).
+    ...(session.rvcSentencesDir ? ['--sentences_dir', session.rvcSentencesDir] : []),
     '--device', asmDeviceArg,
     '--language', settings.language,
     '--tts_engine', settings.ttsEngine,  // Required for session setup even in assembly mode
