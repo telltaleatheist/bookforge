@@ -42,14 +42,14 @@ const RVC_ENV_ARTIFACTS: ComponentArtifact[] = [
     bytes: 755311249,
     condaUnpack: true,
   },
-  // macOS arm64 — same fork, MPS-native. Stub URL until the mac tarball is packed.
+  // macOS arm64 — same fork, MPS-native (no CUDA overlay).
   {
     platform: 'darwin',
     arch: 'arm64',
     gpu: 'none',
-    url: '',
-    sha256: '',
-    bytes: 0,
+    url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-macos-arm64.tar.gz',
+    sha256: '6b23ee7fa6fe3cab3844cf07780cb19d0ebf7966e0fb96947634c1e3509074e6',
+    bytes: 517004471,
     condaUnpack: true,
   },
 ];
