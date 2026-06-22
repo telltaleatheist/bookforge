@@ -3020,11 +3020,24 @@ export class LLWizardComponent implements OnInit {
     if (this.ttsEngine() === 'orpheus' && !this.componentService.isInstalled('orpheus')) {
       this.selectTtsEngine('xtts');
     }
-    await this.ai.refresh();
-    await this.checkOllamaConnection();
-    await this.loadLocalModels();
-    this.normalizeAiSelections();
+    // Load the TTS voice list FIRST and independently — it must never be gated
+    // behind AI/Ollama init. Previously this ran last in the chain, so if Ollama
+    // was down (checkOllamaConnection rejecting) the whole tail was skipped and the
+    // picker kept its 2-voice seed (Scarlett + Default) — the fine-tuned/downloadable
+    // voices like Owen Morgan never appeared.
     await this.loadXttsVoiceOptions();
+
+    // AI/Ollama init is best-effort: a failure here must not abort the rest of
+    // setup (voices already loaded; epubs/sessions/rows still need to run).
+    try {
+      await this.ai.refresh();
+      await this.checkOllamaConnection();
+      await this.loadLocalModels();
+      this.normalizeAiSelections();
+    } catch (err) {
+      console.warn('[LL-WIZARD] AI init failed (non-fatal):', err);
+    }
+
     // EPUBs are scanned by the bfpPath effect — await a tick for it to complete
     await this.scanProjectEpubs();
     this.scanAvailableSessions();
