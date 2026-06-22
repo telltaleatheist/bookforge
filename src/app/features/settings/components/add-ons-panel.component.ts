@@ -2,6 +2,7 @@ import { Component, inject, input, computed, signal, effect, ChangeDetectionStra
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
+import { RvcVoicesService } from '../../../core/services/rvc-voices.service';
 import { SetupDownloadService } from '../../../core/services/setup-download.service';
 import { ComponentStatus, OptionalComponent } from '../../../core/services/electron.service';
 
@@ -246,6 +247,36 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
           </div>
         }
       </div>
+
+      @if (!selectionMode() && rvcEnvInstalled()) {
+        <div class="enh-voices">
+          <h3 class="enh-title">Enhancement Voices</h3>
+          <div class="help-text">
+            <p>Optional RVC voice models that re-render finished narration. Choose one close to your TTS voice — RVC carries the original's content and pitch.</p>
+          </div>
+          @for (v of rvcVoices.voices(); track v.id) {
+            <div class="component-card">
+              <div class="component-info">
+                <div class="component-name">{{ v.label }}</div>
+                <div class="component-desc">
+                  Enhances {{ v.matches }} · {{ formatBytes(v.bytes) }}
+                  @if (rvcVoices.progressOf(v.id); as msg) { · {{ msg }} }
+                </div>
+              </div>
+              <div class="component-actions">
+                @if (v.installed) {
+                  <button class="mini-btn ghost" (click)="rvcVoices.remove(v.id)" [disabled]="rvcVoices.isBusy(v.id)">Remove</button>
+                } @else {
+                  <button class="mini-btn" (click)="rvcVoices.install(v.id)" [disabled]="rvcVoices.isBusy(v.id)">
+                    {{ rvcVoices.isBusy(v.id) ? 'Installing…' : 'Install' }}
+                  </button>
+                }
+              </div>
+            </div>
+          }
+          @if (rvcVoices.error()) { <div class="help-text danger-text">{{ rvcVoices.error() }}</div> }
+        </div>
+      }
 
       @if (!selectionMode()) {
       <div class="section-actions">
@@ -580,6 +611,10 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
 export class AddOnsPanelComponent implements OnInit {
   readonly svc = inject(ComponentService);
   readonly sel = inject(SetupDownloadService);
+  readonly rvcVoices = inject(RvcVoicesService);
+
+  /** The RVC enhancement engine is installed — gates the Enhancement Voices list. */
+  readonly rvcEnvInstalled = computed(() => this.svc.isInstalled('rvc-env'));
 
   /** First-run selection mode: downloadable add-ons (CUDA) become checkboxes for
    *  the batch runner; external tools keep Locate. Settings uses inline mode. */
@@ -724,6 +759,7 @@ export class AddOnsPanelComponent implements OnInit {
 
   ngOnInit(): void {
     this.svc.refresh();
+    void this.rvcVoices.ensureLoaded();
   }
 
   isManaged(component: OptionalComponent): boolean {

@@ -69,6 +69,7 @@ import { getMetadataToolPath, applyMetadata, AudiobookMetadata } from './metadat
 import * as manifestService from './manifest-service';
 import { isCudaTtsInstalled } from './components/cuda-tts';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
+import { getRvcVoiceById } from './rvc-models';
 
 /**
  * Map a UI device ('auto'|'gpu'|'mps'|'cpu') to e2a's CLI device (CUDA/MPS/CPU).
@@ -1214,10 +1215,9 @@ export interface ParallelConversionConfig {
   // sentences are left cached/untouched so either version can be (re)assembled.
   rvcEnhancement?: {
     enabled: boolean;
-    voiceModelName: string;     // urvc model folder name (e.g. 'Sigma Male Narrator')
-    indexRate?: number;         // 0–1; default 0.5
-    protectRate?: number;       // 0–0.5; default 0.5
-    forceIndexRate0?: boolean;  // model ships without a usable .index → convert at index-rate 0
+    voiceId: string;     // enhancement-voice asset id (resolved to model name in the backend)
+    indexRate?: number;  // 0–1; default 0.5
+    protectRate?: number; // 0–0.5; default 0.5
   };
 }
 
@@ -2442,7 +2442,13 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
     // --sentences_dir. The original XTTS sentences stay cached and untouched.
     if (session.config.rvcEnhancement?.enabled) {
       const rvc = session.config.rvcEnhancement;
+      const voice = getRvcVoiceById(rvc.voiceId);
       const sentencesDir = session.prepInfo?.chaptersDirSentences;
+      if (!voice) {
+        emitComplete(session, false, undefined, `RVC enhancement: unknown voice "${rvc.voiceId}".`);
+        activeSessions.delete(session.jobId);
+        return;
+      }
       if (!sentencesDir) {
         emitComplete(session, false, undefined, 'RVC enhancement: sentences directory unknown.');
         activeSessions.delete(session.jobId);
@@ -2456,12 +2462,12 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       }
       const rvcOutDir = path.join(path.dirname(sentencesDir), 'sentences_rvc');
       try {
-        await logger.log('INFO', session.jobId, `RVC enhancement starting (model: ${rvc.voiceModelName})`);
+        await logger.log('INFO', session.jobId, `RVC enhancement starting (voice: ${voice.label}, model: ${voice.modelName})`);
         await enhanceSentences({
           sentencesDir,
           outputDir: rvcOutDir,
-          modelName: rvc.voiceModelName,
-          indexRate: rvc.forceIndexRate0 ? 0 : (rvc.indexRate ?? 0.5),
+          modelName: voice.modelName,
+          indexRate: voice.forceIndexRate0 ? 0 : (rvc.indexRate ?? 0.5),
           protectRate: rvc.protectRate ?? 0.5,
           onProgress: (done, total) => {
             if (!mainWindow) return;
@@ -2474,7 +2480,7 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
               activeWorkers: 0,
               workers: session.workers,
               estimatedRemaining: 0,
-              message: `Enhancing voice with ${rvc.voiceModelName}… (${done}/${total})`,
+              message: `Enhancing voice with ${voice.label}… (${done}/${total})`,
             };
             mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
           },

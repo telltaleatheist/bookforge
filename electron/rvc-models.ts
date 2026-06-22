@@ -95,6 +95,11 @@ export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
   },
 ];
 
+/** Look up an enhancement voice descriptor by its asset id. */
+export function getRvcVoiceById(id: string): RvcVoiceAsset | undefined {
+  return RVC_VOICE_ASSETS.find((v) => v.id === id);
+}
+
 /**
  * The RVC models root — set as URVC_MODELS_DIR when invoking the engine.
  *
