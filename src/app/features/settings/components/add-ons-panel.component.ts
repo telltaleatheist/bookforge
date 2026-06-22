@@ -256,20 +256,41 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
           </div>
           @for (v of rvcVoices.voices(); track v.id) {
             <div class="component-card">
-              <div class="component-info">
-                <div class="component-name">{{ v.label }}</div>
-                <div class="component-desc">
-                  Enhances {{ v.matches }} · {{ formatBytes(v.bytes) }}
-                  @if (rvcVoices.progressOf(v.id); as msg) { · {{ msg }} }
+              <div class="component-head">
+                <div class="component-meta">
+                  <h4 class="component-name">{{ v.label }}</h4>
+                  <p class="component-desc">Enhances {{ v.matches }}</p>
+                </div>
+                <div class="component-badge">
+                  <span class="status-badge"
+                        [ngClass]="v.installed ? 'installed' : (rvcVoices.isBusy(v.id) ? 'installing' : 'available')">
+                    {{ v.installed ? 'Installed' : (rvcVoices.isBusy(v.id) ? 'Installing' : 'Available') }}
+                  </span>
+                  <span class="component-size">{{ formatBytes(v.bytes) }}</span>
                 </div>
               </div>
+
+              <!-- Live install progress — same chrome as the component cards above. -->
+              @if (rvcVoices.isBusy(v.id)) {
+                <div class="install-progress">
+                  <div class="progress-bar">
+                    <div class="progress-fill" [style.width.%]="rvcProgressPct(v.id)"></div>
+                  </div>
+                  <span class="progress-label">{{ rvcVoices.progressOf(v.id) || 'Installing…' }}</span>
+                </div>
+              }
+
               <div class="component-actions">
                 @if (v.installed) {
-                  <button class="mini-btn ghost" (click)="rvcVoices.remove(v.id)" [disabled]="rvcVoices.isBusy(v.id)">Remove</button>
+                  <desktop-button variant="ghost" size="sm"
+                    (click)="rvcVoices.remove(v.id)" [disabled]="rvcVoices.isBusy(v.id)">
+                    Uninstall
+                  </desktop-button>
                 } @else {
-                  <button class="mini-btn" (click)="rvcVoices.install(v.id)" [disabled]="rvcVoices.isBusy(v.id)">
-                    {{ rvcVoices.isBusy(v.id) ? 'Installing…' : 'Install' }}
-                  </button>
+                  <desktop-button variant="primary" size="sm"
+                    (click)="rvcVoices.install(v.id)" [disabled]="rvcVoices.isBusy(v.id)">
+                    {{ rvcVoices.isBusy(v.id) ? 'Downloading…' : 'Download & Install' }}
+                  </desktop-button>
                 }
               </div>
             </div>
@@ -781,6 +802,15 @@ export class AddOnsPanelComponent implements OnInit {
   /** External-mode components can be pointed at via the Locate… picker. */
   canLocate(component: OptionalComponent): boolean {
     return component.acquisition.includes('external');
+  }
+
+  /** Parse the percent out of an RVC voice's progress message ("Downloading … 45%
+   *  (…)") so its card shows a real progress bar like the component cards. 0 when
+   *  there's no percent yet (verify/extract phases) — the label still shows. */
+  rvcProgressPct(id: string): number {
+    const msg = this.rvcVoices.progressOf(id);
+    const m = msg && /(\d+)\s*%/.exec(msg);
+    return m ? Math.min(100, Math.max(0, parseInt(m[1], 10))) : 0;
   }
 
   badgeClass(status: ComponentStatus): string {
