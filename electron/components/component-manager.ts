@@ -374,16 +374,31 @@ function resolveArtifact(
 
 /** Run conda-unpack inside a freshly-extracted conda env. */
 function runCondaUnpack(envRoot: string): void {
-  const unpack =
-    os.platform() === 'win32'
-      ? path.join(envRoot, 'Scripts', 'conda-unpack.exe')
-      : path.join(envRoot, 'bin', 'conda-unpack');
+  if (os.platform() === 'win32') {
+    const unpack = path.join(envRoot, 'Scripts', 'conda-unpack.exe');
+    if (!fs.existsSync(unpack)) {
+      cwarn(`[COMPONENTS] conda-unpack not found at ${unpack}; skipping`);
+      return;
+    }
+    const res = runExecSync(unpack, []);
+    if (!res.ok) throw new Error(`conda-unpack failed: ${res.output}`);
+    return;
+  }
 
+  // POSIX: the conda-unpack script's shebang is `#!/usr/bin/env python`, which
+  // resolves `python` off PATH. The env's own bin is NOT on the app's PATH, and
+  // macOS has no system `python` (only python3), so executing the script directly
+  // fails with "env: python: No such file or directory". Invoke it through the
+  // env's own python so the shebang is bypassed entirely — no PATH dependency.
+  const unpack = path.join(envRoot, 'bin', 'conda-unpack');
+  const py = path.join(envRoot, 'bin', 'python');
   if (!fs.existsSync(unpack)) {
     cwarn(`[COMPONENTS] conda-unpack not found at ${unpack}; skipping`);
     return;
   }
-  const res = runExecSync(unpack, []);
+  const runner = fs.existsSync(py) ? py : unpack; // fall back to the script if no python symlink
+  const args = runner === py ? [unpack] : [];
+  const res = runExecSync(runner, args);
   if (!res.ok) {
     throw new Error(`conda-unpack failed: ${res.output}`);
   }
