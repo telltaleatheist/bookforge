@@ -662,9 +662,12 @@ interface SourceStage {
                     (change)="monoTtsVoice.set($any($event.target).value)"
                   >
                     @for (voice of getVoicesForEngine(); track voice.value) {
-                      <option [value]="voice.value">{{ voice.label }}{{ voice.installed === false ? ' (downloads on use)' : '' }}</option>
+                      <option [value]="voice.value">{{ voice.label }}</option>
                     }
                   </select>
+                  @if (ttsEngine() === 'xtts') {
+                    <a class="download-more-link" (click)="goToVoiceDownloads()">＋ Download more voices…</a>
+                  }
                 </div>
 
                 <!-- Speed -->
@@ -727,7 +730,7 @@ interface SourceStage {
                           }
                         </select>
                       } @else {
-                        <span class="hint">No enhancement voices installed — add one in Settings → Add-ons.</span>
+                        <span class="hint">No enhancement voices installed — add one in Settings → Voice Enhancement.</span>
                       }
                     }
                   </div>
@@ -761,7 +764,7 @@ interface SourceStage {
                         (change)="updateTtsRow(i, 'voice', $any($event.target).value)"
                       >
                         @for (voice of getVoicesForEngine(); track voice.value) {
-                          <option [value]="voice.value">{{ voice.label }}{{ voice.installed === false ? ' (downloads on use)' : '' }}</option>
+                          <option [value]="voice.value">{{ voice.label }}</option>
                         }
                       </select>
 
@@ -1999,6 +2002,15 @@ interface SourceStage {
       color: var(--text-tertiary);
     }
 
+    .download-more-link {
+      display: inline-block;
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--accent);
+      cursor: pointer;
+      &:hover { text-decoration: underline; }
+    }
+
     .custom-instructions {
       width: 100%;
       padding: 8px 10px;
@@ -2785,9 +2797,9 @@ export class LLWizardComponent implements OnInit {
   // (installed voices only — Default XTTS + installed fine-tuned/downloaded +
   // user custom — so every option actually works). Seeded with the always-present
   // bundled voice so the dropdown is never empty before the async load resolves.
-  readonly xttsVoiceOptions = signal<{ value: string; label: string; installed?: boolean }[]>([
-    { value: 'ScarlettJohansson', label: 'Scarlett Johansson', installed: true },
-    { value: 'internal', label: 'Default XTTS', installed: true },
+  readonly xttsVoiceOptions = signal<{ value: string; label: string }[]>([
+    { value: 'internal', label: 'Default XTTS' },
+    { value: 'ScarlettJohansson', label: 'Scarlett Johansson' },
   ]);
 
   readonly orpheusVoices = [
@@ -3635,10 +3647,15 @@ export class LLWizardComponent implements OnInit {
     }
   }
 
-  getVoicesForEngine(): { value: string; label: string; installed?: boolean }[] {
+  getVoicesForEngine(): { value: string; label: string }[] {
     return this.ttsEngine() === 'orpheus'
       ? this.orpheusVoices
       : this.xttsVoiceOptions();
+  }
+
+  /** Open Settings → Voices to download more narration voices. */
+  goToVoiceDownloads(): void {
+    void this.router.navigate(['/settings'], { queryParams: { section: 'add-ons' } });
   }
 
   /**

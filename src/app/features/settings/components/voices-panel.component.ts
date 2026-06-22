@@ -475,8 +475,11 @@ export class VoicesPanelComponent implements OnInit {
     if (this.selectionMode()) {
       list = list.filter((s) => s.component.id !== VoicesPanelComponent.DEFAULT_VOICE_ID);
     }
-    if (!q) return list;
-    return list.filter((s) => s.component.name.toLowerCase().includes(q));
+    if (q) list = list.filter((s) => s.component.name.toLowerCase().includes(q));
+    // Alphabetical by name so every voice sits where you'd expect — no voice is
+    // special-cased to the top (Owen Morgan was appearing out of order because
+    // it's injected ahead of the catalog list).
+    return [...list].sort((a, b) => a.component.name.localeCompare(b.component.name));
   });
 
   /** Not-yet-installed voices currently shown (base + filtered premium) — the

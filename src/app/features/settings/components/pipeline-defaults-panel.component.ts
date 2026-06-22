@@ -119,7 +119,7 @@ interface Opt { value: string; label: string; }
                     }
                   </select>
                 } @else {
-                  <span class="pd-hint">No enhancement voices installed — add one in Settings → Add-ons.</span>
+                  <span class="pd-hint">No enhancement voices installed — add one in Settings → Voice Enhancement.</span>
                 }
               </div>
             </div>
