@@ -79,22 +79,16 @@ export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
     label: 'Sigma Male Narrator',
     modelName: 'Sigma Male Narrator',
     matches: 'a deep male narration voice',
-    url: `${RELEASE_BASE}/rvc-voice-sigma.tar.gz`,
-    sha256: '610140a1cc5114f8a4a84a59014ca98d61a5f9c4715e91b7a8949fecebe12f1c',
-    bytes: 107877125,
-    version: '2026.06.21',
+    // Moved to the owner's HuggingFace alongside Owen Morgan.
+    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/sigma.tar.gz',
+    sha256: '1bd49bd68233c56a977eb65a94f9a1f3aa0f3677c5e03aef4c4442389a877f19',
+    bytes: 107877124,
+    version: '2026.06.22',
   },
-  {
-    id: 'rvc-voice-samantha',
-    label: 'Samantha',
-    modelName: 'Samantha',
-    matches: 'the Scarlett Johansson (default) voice',
-    url: `${RELEASE_BASE}/rvc-voice-samantha.tar.gz`,
-    sha256: '519d6eb1c6dfcaef22621ec088b70051ae18884cb1372abd26670dda9503b9d2',
-    bytes: 51140977,
-    forceIndexRate0: true, // ships .pth only — index is empty upstream
-    version: '2026.06.21',
-  },
+  // NOTE: the "Samantha" (Scarlett Johansson, "Her") RVC model was removed —
+  // it's the actress's actual voice and she has not consented to its use. Do not
+  // re-add it. (The XTTS "Scarlett Johansson" default voice is only NAMED after
+  // her and is NOT her real voice, so it stays.)
 ];
 
 /** Look up an enhancement voice descriptor by its asset id. */
