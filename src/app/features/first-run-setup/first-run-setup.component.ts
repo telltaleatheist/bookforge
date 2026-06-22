@@ -200,10 +200,15 @@ interface SetupStep {
         <!-- Footer controls -->
         <footer class="card-foot">
           @if (active().id === 'library') {
-            <!-- The library is a one-way gate: a folder must be chosen before the
-                 rest of setup (and the app) is usable, so this step has only a
-                 Continue button that creates the library and advances. -->
+            <!-- On a true first run the library is a one-way gate: a folder must be
+                 chosen before the rest of setup is usable, so only Continue (which
+                 creates the library) advances. But when a library already exists
+                 (re-opened from Configuration), let the user keep it and skip past
+                 without re-picking. -->
             <div class="spacer"></div>
+            @if (hasExistingLibrary()) {
+              <button type="button" class="btn ghost" (click)="next()">Keep current library</button>
+            }
             <button
               type="button"
               class="btn primary"
@@ -625,6 +630,11 @@ export class FirstRunSetupComponent {
   protected readonly canContinueLibrary = computed(
     () => this.libOption() === 'default' || !!this.customLibPath(),
   );
+
+  /** A library is already configured (re-entering setup from Configuration, not a
+   *  true first run). The library step is only a one-way gate on first run; when
+   *  one exists the user can keep it and skip straight past, without re-picking. */
+  protected readonly hasExistingLibrary = computed(() => !!this.library.libraryPath());
 
   /** The catalog statuses for every checked component (for the review list). */
   protected readonly selectedStatuses = computed(() => {
