@@ -65,12 +65,14 @@ export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
   {
     id: 'rvc-voice-owen-morgan',
     label: 'Owen Morgan',
-    modelName: 'owen_v2_best',
+    // Definitive Owen Morgan RVC (ep400), hosted on the owner's HuggingFace
+    // alongside the XTTS fine-tune. Tarball extracts to rvc/voice_models/Owen Morgan/.
+    modelName: 'Owen Morgan',
     matches: 'the Owen Morgan fine-tuned XTTS voice',
-    url: `${RELEASE_BASE}/rvc-voice-owen-morgan.tar.gz`,
-    sha256: '7326f4ac5c9008a578f98eb830f8d1ad630cee393fe23faca30a810e71263296',
-    bytes: 80546595,
-    version: '2026.06.21',
+    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/owen-morgan.tar.gz',
+    sha256: '1a446de02c9f322f36a0979a3c135f69ac0436713dc6ce5b7ede9c26da3ed6ec',
+    bytes: 80526382,
+    version: '2026.06.22',
   },
   {
     id: 'rvc-voice-sigma',
