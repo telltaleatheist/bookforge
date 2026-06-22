@@ -2,7 +2,6 @@ import { Component, inject, input, computed, signal, effect, ChangeDetectionStra
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
-import { RvcVoicesService } from '../../../core/services/rvc-voices.service';
 import { SetupDownloadService } from '../../../core/services/setup-download.service';
 import { ComponentStatus, OptionalComponent } from '../../../core/services/electron.service';
 
@@ -248,56 +247,9 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
         }
       </div>
 
-      @if (!selectionMode() && rvcEnvInstalled()) {
-        <div class="enh-voices">
-          <h3 class="enh-title">Enhancement Voices</h3>
-          <div class="help-text">
-            <p>Optional RVC voice models that re-render finished narration. Choose one close to your TTS voice — RVC carries the original's content and pitch.</p>
-          </div>
-          @for (v of rvcVoices.voices(); track v.id) {
-            <div class="component-card">
-              <div class="component-head">
-                <div class="component-meta">
-                  <h4 class="component-name">{{ v.label }}</h4>
-                  <p class="component-desc">Enhances {{ v.matches }}</p>
-                </div>
-                <div class="component-badge">
-                  <span class="status-badge"
-                        [ngClass]="v.installed ? 'installed' : (rvcVoices.isBusy(v.id) ? 'installing' : 'available')">
-                    {{ v.installed ? 'Installed' : (rvcVoices.isBusy(v.id) ? 'Installing' : 'Available') }}
-                  </span>
-                  <span class="component-size">{{ formatBytes(v.bytes) }}</span>
-                </div>
-              </div>
+      <!-- RVC engine + enhancement voices moved to their own Settings → Voice
+           Enhancement screen (app-rvc-enhancement-panel). -->
 
-              <!-- Live install progress — same chrome as the component cards above. -->
-              @if (rvcVoices.isBusy(v.id)) {
-                <div class="install-progress">
-                  <div class="progress-bar">
-                    <div class="progress-fill" [style.width.%]="rvcProgressPct(v.id)"></div>
-                  </div>
-                  <span class="progress-label">{{ rvcVoices.progressOf(v.id) || 'Installing…' }}</span>
-                </div>
-              }
-
-              <div class="component-actions">
-                @if (v.installed) {
-                  <desktop-button variant="ghost" size="sm"
-                    (click)="rvcVoices.remove(v.id)" [disabled]="rvcVoices.isBusy(v.id)">
-                    Uninstall
-                  </desktop-button>
-                } @else {
-                  <desktop-button variant="primary" size="sm"
-                    (click)="rvcVoices.install(v.id)" [disabled]="rvcVoices.isBusy(v.id)">
-                    {{ rvcVoices.isBusy(v.id) ? 'Downloading…' : 'Download & Install' }}
-                  </desktop-button>
-                }
-              </div>
-            </div>
-          }
-          @if (rvcVoices.error()) { <div class="help-text danger-text">{{ rvcVoices.error() }}</div> }
-        </div>
-      }
 
       @if (!selectionMode()) {
       <div class="section-actions">
@@ -632,10 +584,6 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
 export class AddOnsPanelComponent implements OnInit {
   readonly svc = inject(ComponentService);
   readonly sel = inject(SetupDownloadService);
-  readonly rvcVoices = inject(RvcVoicesService);
-
-  /** The RVC enhancement engine is installed — gates the Enhancement Voices list. */
-  readonly rvcEnvInstalled = computed(() => this.svc.isInstalled('rvc-env'));
 
   /** First-run selection mode: downloadable add-ons (CUDA) become checkboxes for
    *  the batch runner; external tools keep Locate. Settings uses inline mode. */
@@ -650,9 +598,9 @@ export class AddOnsPanelComponent implements OnInit {
   readonly addOns = computed(() =>
     this.svc.components().filter(
       s => s.component.kind !== 'tts-model' && s.component.kind !== 'language-pack' &&
-        // cuda-rvc overlays the RVC engine's env — only relevant once that engine
-        // is installed; hide it otherwise so it can't be selected and fail.
-        (s.component.id !== 'cuda-rvc' || this.rvcEnvInstalled()) &&
+        // The RVC engine + its CUDA overlay live on the dedicated Voice Enhancement
+        // screen, not in this general hub.
+        s.component.id !== 'rvc-env' && s.component.id !== 'cuda-rvc' &&
         (!this.onlyGpu() || this.isCudaPack(s.component.id)),
     ),
   );
@@ -785,7 +733,6 @@ export class AddOnsPanelComponent implements OnInit {
 
   ngOnInit(): void {
     this.svc.refresh();
-    void this.rvcVoices.ensureLoaded();
   }
 
   isManaged(component: OptionalComponent): boolean {
@@ -802,15 +749,6 @@ export class AddOnsPanelComponent implements OnInit {
   /** External-mode components can be pointed at via the Locate… picker. */
   canLocate(component: OptionalComponent): boolean {
     return component.acquisition.includes('external');
-  }
-
-  /** Parse the percent out of an RVC voice's progress message ("Downloading … 45%
-   *  (…)") so its card shows a real progress bar like the component cards. 0 when
-   *  there's no percent yet (verify/extract phases) — the label still shows. */
-  rvcProgressPct(id: string): number {
-    const msg = this.rvcVoices.progressOf(id);
-    const m = msg && /(\d+)\s*%/.exec(msg);
-    return m ? Math.min(100, Math.max(0, parseInt(m[1], 10))) : 0;
   }
 
   badgeClass(status: ComponentStatus): string {

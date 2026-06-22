@@ -15,12 +15,13 @@ import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle
 import { WorkerConfigService } from '../../core/services/worker-config.service';
 import { ComponentService } from '../../core/services/component.service';
 import { PipelineDefaultsPanelComponent } from './components/pipeline-defaults-panel.component';
+import { RvcEnhancementPanelComponent } from './components/rvc-enhancement-panel.component';
 import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RemoveAllDataComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, RemoveAllDataComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -788,6 +789,9 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   <app-voices-panel></app-voices-panel>
                 </div>
               </div>
+            } @else if (section.id === 'enhancement') {
+              <!-- Dedicated RVC voice-enhancement screen: engine + voice models. -->
+              <app-rvc-enhancement-panel></app-rvc-enhancement-panel>
             } @else if (section.id === 'languages') {
               <!-- Languages: downloadable Stanza sentence-segmentation packs
                    for cleanup & translation. -->

@@ -245,6 +245,17 @@ export class SettingsService {
         fields: [], // Custom UI (app-add-ons-panel + app-voices-panel)
       },
       {
+        // Dedicated screen for the optional RVC voice-enhancement engine + its
+        // voice models. Sits right after Add-ons & Models (which holds Voices), so
+        // it reads as "voices → enhance those voices". Custom UI
+        // (app-rvc-enhancement-panel).
+        id: 'enhancement',
+        name: 'Voice Enhancement',
+        description: 'Optional RVC engine + voice models that re-render finished narration to smooth synthetic artifacts',
+        icon: '✨',
+        fields: [],
+      },
+      {
         // Downloadable Stanza language packs (sentence-segmentation models) used
         // by AI cleanup & translation. Renders app-languages-panel. Sits right
         // after the Add-ons & Models hub (which holds Voices).
