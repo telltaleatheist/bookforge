@@ -106,7 +106,7 @@ async function startTtsApiServerOnce(): Promise<void> {
 async function doRuntimeSetup(): Promise<boolean> {
   const {
     ensureBundledEnv, ensureBundledE2a, ensureDefaultVoice, ensureEnglishStanza,
-    beginSetupDownload, setupDownloadProgress,
+    ensureLibraryVoices, beginSetupDownload, setupDownloadProgress,
   } = await import('./e2a-env-bootstrap.js');
 
   const logger = getMainLogger();
@@ -144,6 +144,23 @@ async function doRuntimeSetup(): Promise<boolean> {
 
   setRuntimeStatus({ state: 'ready', message: 'Ready' });
   await startTtsApiServerOnce();
+
+  // The Voice Library clips are an OPTIONAL background pull — not bundled in the
+  // installer and not gating readiness. Fire-and-forget after the app is ready;
+  // the library voices appear in the pickers once it lands. A failure is logged
+  // and retried on the next launch (the ready-marker isn't written on failure).
+  void ensureLibraryVoices((message) => logger.info(message))
+    .then(async () => {
+      // New clips on disk — drop the scan cache so they show in the pickers now,
+      // and refresh the TTS API server's exposed voice list.
+      const { invalidateVoiceScanCache } = await import('./xtts-voices.js');
+      invalidateVoiceScanCache();
+      void refreshTtsApiVoices();
+    })
+    .catch((err) => {
+      logger.warn('Voice library download failed (will retry next launch)', { error: (err as Error).message });
+    });
+
   return true;
 }
 

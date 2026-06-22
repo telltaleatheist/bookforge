@@ -104,6 +104,13 @@ export const FINE_TUNED: FineTunedVoice[] = [
 // Cache keyed by voices dir so a library-path change rebuilds the catalog.
 let cache: { dir: string; voices: StreamVoice[] } | null = null;
 
+/** Drop the scanned-voice cache so the next getStreamVoices() re-reads the folder.
+ *  Called after the Voice Library clips finish downloading in the background, so
+ *  the new voices appear in the pickers without an app restart. */
+export function invalidateVoiceScanCache(): void {
+  cache = null;
+}
+
 /** Insert spaces so "BryanCranston" reads as "Bryan Cranston". */
 function prettify(stem: string): string {
   return stem

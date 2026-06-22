@@ -574,6 +574,21 @@ const RUNTIME_ASSETS: Record<string, RuntimeAsset> = {
     bytes: 197028208,
     version: '2026.06.16',
   },
+  // The "Voice Library" reference clips (the generic clips that clone via the base
+  // model — they have no downloadable checkpoint, so unlike catalog voices they
+  // can't ride along with a model download). Pulled instead of bundled so the
+  // installer doesn't carry ~120 MB of clips. NON-mandatory: downloaded in the
+  // background after setup; until it lands the picker just shows fewer library
+  // voices (the default voice + any downloaded catalog voices still work).
+  // Extracts to voices/… in the e2a runtime root.
+  'library-voices': {
+    id: 'library-voices',
+    label: 'voice library',
+    url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/library-voices.tar.gz',
+    sha256: '1832172a92355c7be3d150f275d694d47cb26242e9aeca38f0c0f2e8edbd6e93',
+    bytes: 42618128,
+    version: '2026.06.22',
+  },
 };
 
 /** Per-asset ready-marker, kept inside the e2a runtime so it's torn down with it. */
@@ -677,7 +692,23 @@ export function ensureEnglishStanza(onProgress?: (message: string) => void): Pro
   return ensureRuntimeAsset(RUNTIME_ASSETS['stanza-en'], onProgress);
 }
 
-/** Whether the mandatory first-run runtime assets are installed (true in dev). */
+/**
+ * Download + install the Voice Library reference clips if missing. NON-mandatory:
+ * call it fire-and-forget in the background after setup — never block startup or
+ * gate readiness on it (a failure just means fewer library voices until a retry).
+ */
+export function ensureLibraryVoices(onProgress?: (message: string) => void): Promise<void> {
+  return ensureRuntimeAsset(RUNTIME_ASSETS['library-voices'], onProgress);
+}
+
+/** Whether the Voice Library clips are present (always true in dev). */
+export function libraryVoicesReady(): boolean {
+  if (!app.isPackaged) return true;
+  return runtimeAssetReady(RUNTIME_ASSETS['library-voices']);
+}
+
+/** Whether the mandatory first-run runtime assets are installed (true in dev).
+ *  The voice library is intentionally NOT here — it's an optional background pull. */
 export function defaultRuntimeAssetsReady(): boolean {
   if (!app.isPackaged) return true;
   return (
