@@ -24,6 +24,7 @@ import {
   bundleCodeMain,
   bundleIsComplete,
   linkBundleNodeModules,
+  readBuildId,
   readPointer,
   writePointer,
 } from './boot-state';
@@ -118,15 +119,31 @@ function resolveBootVersion(): string {
     writePointer(pointer);
   }
 
-  // Reinstalled a newer .app? The launcher boots the userData bundle, not the code baked into the
-  // .app, so a fresh install of a newer build would otherwise keep running the older pinned bundle
-  // until the in-app updater happened to pull something newer (or userData was wiped by hand). If
-  // the baked baseline is newer than what we'd boot, adopt it — re-seeding from the just-installed
-  // .app so the bundle matches the binary. Runs AFTER the pending flip so a newer published update
-  // still wins; skipped if that exact version already failed a boot here, so a crashing build
-  // can't trap us in a re-adopt → crash → rollback → re-adopt loop.
-  if (gt(baselineVersion, pointer.version) && !bootFailedBefore(baselineVersion)) {
-    log(`baked baseline ${baselineVersion} is newer than pinned ${pointer.version}; adopting it`);
+  // Reinstalled a different .app? The launcher boots the userData bundle, not the code baked into
+  // the .app, so a fresh install would otherwise keep running the older pinned bundle until the
+  // in-app updater happened to pull something newer (or userData was wiped by hand). Adopt the baked
+  // baseline — re-seeding from the just-installed .app so the bundle matches the binary — when it is
+  // either a NEWER version, or the SAME version but a different BUILD (different build-info buildId).
+  // The build-id case is what makes manual version bumps unnecessary: a rebuild+reinstall at the same
+  // version is still picked up, instead of silently running the previously-seeded bundle. Runs AFTER
+  // the pending flip so a newer published update still wins.
+  //
+  // Crash-loop guards differ by case:
+  //  - newer VERSION: skip if that version already failed a boot here, so a crashing newer build
+  //    can't trap us in re-adopt → crash → rollback → re-adopt. (Reinstall a fixed build to recover.)
+  //  - same-version different BUILD: always give the new build a chance (its buildId differs, so the
+  //    old build's failure markers don't describe it). After seeding, the pinned buildId equals the
+  //    baked one, so it won't re-seed on the next boot — at worst it boots the new build once; a
+  //    fixed reinstall (new buildId) supersedes it.
+  const bakedBuildId = readBuildId(LAUNCHER_ROOT);
+  const pinnedBuildId = readBuildId(bundleDir(pointer.version));
+  const versionFresher = gt(baselineVersion, pointer.version) && !bootFailedBefore(baselineVersion);
+  const buildFresher =
+    baselineVersion === pointer.version && !!bakedBuildId && bakedBuildId !== pinnedBuildId;
+  if (versionFresher || buildFresher) {
+    log(
+      `adopting baked baseline ${baselineVersion} (${buildFresher ? `new build ${bakedBuildId} ≠ ${pinnedBuildId}` : `newer than pinned ${pointer.version}`})`,
+    );
     seedBaseline(baselineVersion);
     pointer = { version: baselineVersion, lastGoodVersion: pointer.lastGoodVersion ?? pointer.version };
     writePointer(pointer);

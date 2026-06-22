@@ -51,6 +51,27 @@ export function bundleIsComplete(version: string): boolean {
 }
 
 /**
+ * The unique build id stamped into a bundle's dist/electron/build-info.json
+ * (written by packaging/stamp-build.js at build time), or null if absent.
+ *
+ * Two builds never share a buildId (it carries a build timestamp), so comparing
+ * the baked .app's buildId against the pinned userData bundle's buildId tells the
+ * launcher whether a freshly-installed .app is actually different — even when the
+ * human-facing version number didn't change. `bundleRoot` is a launcher root or a
+ * userData bundle dir (both hold dist/electron/build-info.json).
+ */
+export function readBuildId(bundleRoot: string): string | null {
+  try {
+    const info = JSON.parse(
+      fs.readFileSync(path.join(bundleRoot, 'dist', 'electron', 'build-info.json'), 'utf8'),
+    );
+    return typeof info.buildId === 'string' && info.buildId ? info.buildId : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Give a bundle dir (seeded OR self-update-downloaded) a node_modules symlink to the launcher's
  * real-disk node_modules.
  *

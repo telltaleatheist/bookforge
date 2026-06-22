@@ -79,7 +79,8 @@ const steps = [
   'npm run stage:packaging:seed',
   'npm run build:electron',
   'npm run build:prod',
-  'npx electron-builder --win --x64',
+  // Auto-version (git commit count) via extraMetadata — no manual package.json bump.
+  `npx electron-builder --win --x64 -c.extraMetadata.version=${require('./app-version').computeVersion()}`,
 ];
 
 for (const cmd of steps) {

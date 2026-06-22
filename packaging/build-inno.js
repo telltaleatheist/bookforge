@@ -21,6 +21,9 @@ const { execFileSync } = require('child_process');
 
 const root = path.join(__dirname, '..');
 const pkg = require(path.join(root, 'package.json'));
+// Auto-derived version (git commit count) — matches the win-unpacked app's baked
+// version and needs no manual package.json bump.
+const appVersion = require('./app-version').computeVersion();
 
 function resolveIscc() {
   const candidates = [
@@ -69,7 +72,7 @@ function main() {
   const size = dirSizeGB(sourceDir);
   console.log(`[inno] ISCC:       ${iscc}`);
   console.log(`[inno] source:     ${sourceDir} (${size} GB)`);
-  console.log(`[inno] output:     ${outputDir}\\BookForge-Setup-${pkg.version}.exe`);
+  console.log(`[inno] output:     ${outputDir}\\BookForge-Setup-${appVersion}.exe`);
   console.log(`[inno] compression:${compression}`);
   console.log(`[inno] layout:     ${spanning ? 'disk spanning (.exe + .bin slices)' : 'single file'}`);
 
@@ -84,7 +87,7 @@ function main() {
   }
 
   const defines = [
-    `/DAppVersion=${pkg.version}`,
+    `/DAppVersion=${appVersion}`,
     `/DSourceDir=${sourceDir}`,
     `/DOutputDir=${outputDir}`,
     `/DCompressionMethod=${compression}`,

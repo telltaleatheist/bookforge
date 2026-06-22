@@ -27,6 +27,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
+const { computeVersion } = require('./app-version');
 
 const ROOT = path.resolve(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
@@ -48,8 +49,10 @@ function sha256(file) {
 }
 
 function main() {
-  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  const version = arg('--version', pkg.version);
+  // Default to the auto-derived version (git commit count) so the published bundle
+  // matches the .app built by build-dmg.js and never needs a manual package.json
+  // bump. An explicit --version still overrides (e.g. to re-cut a specific build).
+  const version = arg('--version', computeVersion());
   const minLauncher = arg('--min-launcher', '>=1.0.0');
 
   // Validate the build is present and complete — no silent partial bundles.

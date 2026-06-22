@@ -15,13 +15,17 @@
 const { execSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { computeVersion } = require('./app-version');
 
 const builderArgs = process.argv.slice(2);
 const isMac = process.platform === 'darwin';
 const MAX_ATTEMPTS = 3;
 
 const RELEASE_DIR = path.resolve(__dirname, '..', 'release');
-const CURRENT_VERSION = require('../package.json').version;
+// Auto-derived (git commit count) so no manual package.json bump is needed — the
+// .app is built at this version via electron-builder's extraMetadata.version, and
+// the dmg is named for it. Matches build-code-bundle.js's version exactly.
+const CURRENT_VERSION = computeVersion();
 
 /**
  * Remove release artifacts (dmg, blockmap, AppleDouble ._ sidecars) from versions OTHER than the
@@ -76,10 +80,16 @@ function detachStaleImages() {
 
 cleanStaleReleases();
 
+// Override the .app version with the auto-derived one WITHOUT mutating package.json
+// (electron-builder bakes extraMetadata into the packaged app.asar's package.json,
+// so app.getVersion() returns this at runtime).
+const versionArg = `-c.extraMetadata.version=${CURRENT_VERSION}`;
+console.log(`[build-dmg] building at auto-version ${CURRENT_VERSION} (no manual bump needed)`);
+
 for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
   detachStaleImages();
   try {
-    execSync(`electron-builder ${builderArgs.join(' ')}`, { stdio: 'inherit' });
+    execSync(`electron-builder ${builderArgs.join(' ')} ${versionArg}`, { stdio: 'inherit' });
     process.exit(0);
   } catch {
     if (attempt === MAX_ATTEMPTS) {

@@ -1,0 +1,42 @@
+#!/usr/bin/env node
+/**
+ * The build version — derived automatically so NO manual package.json bump is ever
+ * needed for packaging or publishing.
+ *
+ *   version = <major>.<minor>.<git-commit-count>
+ *
+ * major.minor come from package.json (bump those only for an intentional headline
+ * release); the patch is `git rev-list --count HEAD`, which increases by one per
+ * commit. So every commit yields a higher, monotonic version — exactly what the
+ * launcher's adopt-if-newer check and the self-updater's gt() comparison already
+ * use, with zero human bookkeeping.
+ *
+ * Falls back to the literal package.json version when git isn't available (e.g. a
+ * source tarball with no .git), so a build never breaks.
+ *
+ * Used by build-dmg.js (electron-builder extraMetadata.version) and
+ * build-code-bundle.js (the published bundle/manifest version) so the packaged
+ * .app and the code bundle always carry the same number.
+ */
+const { execSync } = require('node:child_process');
+const path = require('node:path');
+
+function computeVersion() {
+  const pkg = require(path.resolve(__dirname, '..', 'package.json'));
+  const [major = '0', minor = '0'] = String(pkg.version).split('.');
+  let count;
+  try {
+    count = execSync('git rev-list --count HEAD', { encoding: 'utf8' }).trim();
+  } catch {
+    return String(pkg.version); // no git — use package.json as-is
+  }
+  if (!/^\d+$/.test(count)) return String(pkg.version);
+  return `${major}.${minor}.${count}`;
+}
+
+module.exports = { computeVersion };
+
+// CLI: `node packaging/app-version.js` prints the version (handy for shells/CI).
+if (require.main === module) {
+  process.stdout.write(computeVersion() + '\n');
+}
