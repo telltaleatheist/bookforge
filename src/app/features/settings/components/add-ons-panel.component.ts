@@ -629,6 +629,9 @@ export class AddOnsPanelComponent implements OnInit {
   readonly addOns = computed(() =>
     this.svc.components().filter(
       s => s.component.kind !== 'tts-model' && s.component.kind !== 'language-pack' &&
+        // cuda-rvc overlays the RVC engine's env — only relevant once that engine
+        // is installed; hide it otherwise so it can't be selected and fail.
+        (s.component.id !== 'cuda-rvc' || this.rvcEnvInstalled()) &&
         (!this.onlyGpu() || this.isCudaPack(s.component.id)),
     ),
   );
@@ -640,9 +643,11 @@ export class AddOnsPanelComponent implements OnInit {
       .map(c => c.component.id)),
   );
 
-  /** The CUDA download-on-demand packs (llama LLM + XTTS PyTorch). */
+  /** The CUDA download-on-demand packs (llama LLM + XTTS PyTorch + RVC). Treated
+   *  as one "GPU acceleration" group — co-selected at first run and grouped in
+   *  the GPU-only view, so the user makes a single GPU choice for every phase. */
   isCudaPack(id: string): boolean {
-    return id === 'llama-cuda' || id === 'cuda-tts';
+    return id === 'llama-cuda' || id === 'cuda-tts' || id === 'cuda-rvc';
   }
 
   // First run: pre-check GPU acceleration when the machine qualifies — the user

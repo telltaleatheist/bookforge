@@ -21,6 +21,7 @@ import { downloadAndExtract, downloadFile } from './downloader';
 import { getExternalInstaller, installableExternalIds, ExternalInstaller } from './external-installers';
 import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
 import { CUDA_TTS_ID, installCudaTts, isCudaTtsInstalled, uninstallCudaTts, cudaTtsMarkerPath } from './cuda-tts';
+import { CUDA_RVC_ID, installCudaRvc, isCudaRvcInstalled, uninstallCudaRvc, cudaRvcMarkerPath } from './cuda-rvc';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
 import { registerDownloadedVoice, removeCustomVoice, isDownloadedVoiceId } from '../custom-voices';
 import type {
@@ -759,6 +760,43 @@ async function fetchCudaTts(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CUDA RVC (kind 'binary', id 'cuda-rvc') — overlay GPU PyTorch into the rvc-env
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function fetchCudaRvc(
+  component: OptionalComponent,
+  emit: (p: InstallProgress) => void
+): Promise<InstallResult> {
+  const id = component.id;
+  const controller = new AbortController();
+  inFlight.set(id, { controller, tempDir: null });
+  try {
+    await installCudaRvc(emit, controller.signal);
+    const marker = cudaRvcMarkerPath();
+    const record: InstalledRecord = {
+      id,
+      version: component.version,
+      source: 'managed',
+      path: marker,
+      entryPath: marker,
+      bytes: component.sizeBytes || undefined,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
+    return { id, ok: true, record };
+  } catch (err) {
+    const message = controller.signal.aborted
+      ? 'Install cancelled'
+      : (err instanceof Error ? err.message : String(err));
+    emit({ id, phase: 'error', pct: 0, message });
+    return { id, ok: false, error: message };
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Managed install
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -798,6 +836,12 @@ async function install(
   // download-into-dir — its own branch, same install()/progress contract.
   if (component.id === CUDA_TTS_ID) {
     return fetchCudaTts(component, emit);
+  }
+
+  // CUDA RVC overlays a GPU PyTorch build into the rvc-env (pip), same mechanism
+  // as cuda-tts but targeting the enhancement engine's env.
+  if (component.id === CUDA_RVC_ID) {
+    return fetchCudaRvc(component, emit);
   }
 
   emit({ id, phase: 'resolve', pct: 0, message: 'Resolving artifact…' });
@@ -982,6 +1026,18 @@ async function uninstall(id: string): Promise<void> {
     return;
   }
 
+  // CUDA RVC is the same kind of overlay, in the rvc-env.
+  if (id === CUDA_RVC_ID) {
+    try {
+      uninstallCudaRvc();
+    } catch (err) {
+      console.error(`[COMPONENTS] ${id}: revert RVC env to CPU torch failed:`, err);
+    }
+    dropRecord(id);
+    console.log(`[COMPONENTS] ${id}: reverted GPU RVC overlay`);
+    return;
+  }
+
   // A downloaded catalog voice is also registered as a voice — forget that
   // registration (and its staged e2a layout) so it stops appearing in pickers.
   if (isDownloadedVoiceId(id)) {
@@ -1129,6 +1185,21 @@ async function buildStatus(
     };
     putRecord(record);
     console.log(`[COMPONENTS] ${component.id}: detected CUDA PyTorch overlay in env`);
+  }
+
+  // CUDA RVC: same marker-in-env detection, for the enhancement engine's env.
+  if (!record && component.id === CUDA_RVC_ID && isCudaRvcInstalled()) {
+    const marker = cudaRvcMarkerPath();
+    record = {
+      id: component.id,
+      version: component.version,
+      source: 'managed',
+      path: marker,
+      entryPath: marker,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    console.log(`[COMPONENTS] ${component.id}: detected CUDA PyTorch overlay in RVC env`);
   }
 
   let state: ComponentState;
