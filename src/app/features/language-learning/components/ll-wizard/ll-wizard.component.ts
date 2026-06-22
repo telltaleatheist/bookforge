@@ -730,8 +730,9 @@ interface SourceStage {
                           }
                         </select>
                       } @else {
-                        <span class="hint">No enhancement voices installed — add one in Settings → Voice Enhancement.</span>
+                        <span class="hint">No enhancement voices installed yet.</span>
                       }
+                      <a class="download-more-link" (click)="goToEnhancementDownloads()">＋ Download more enhancement voices…</a>
                     }
                   </div>
                 }
@@ -3656,6 +3657,11 @@ export class LLWizardComponent implements OnInit {
   /** Open Settings → Voices to download more narration voices. */
   goToVoiceDownloads(): void {
     void this.router.navigate(['/settings'], { queryParams: { section: 'add-ons' } });
+  }
+
+  /** Open Settings → Voice Enhancement to download more RVC enhancement voices. */
+  goToEnhancementDownloads(): void {
+    void this.router.navigate(['/settings'], { queryParams: { section: 'enhancement' } });
   }
 
   /**
