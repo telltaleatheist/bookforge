@@ -401,6 +401,18 @@ interface DeskewResult {
  * In browser mode (ng serve without Electron), provides mock implementations
  * for development and testing.
  */
+
+/** Renderer mirror of electron/rvc-models.ts RvcVoiceStatus (keep in sync). */
+export interface RvcVoiceStatus {
+  id: string;
+  label: string;
+  modelName: string;
+  matches: string;
+  bytes: number;
+  installed: boolean;
+  forceIndexRate0: boolean;
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -3564,6 +3576,34 @@ export class ElectronService {
     onProgress: (cb: (p: InstallProgress) => void): () => void => {
       if (this.isElectron) {
         return (window as any).electron.components.onProgress(cb);
+      }
+      return () => {};
+    },
+  };
+
+  /** RVC enhancement voices (Settings → Add-ons + the TTS enhancement step). */
+  readonly rvc = {
+    listVoices: (): Promise<{ voices: RvcVoiceStatus[]; baseReady: boolean }> => {
+      if (this.isElectron) {
+        return (window as any).electron.rvc.listVoices();
+      }
+      return Promise.resolve({ voices: [], baseReady: false });
+    },
+    installVoice: (voiceId: string): Promise<{ ok: boolean; error?: string }> => {
+      if (this.isElectron) {
+        return (window as any).electron.rvc.installVoice(voiceId);
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    removeVoice: (voiceId: string): Promise<{ ok: boolean; error?: string }> => {
+      if (this.isElectron) {
+        return (window as any).electron.rvc.removeVoice(voiceId);
+      }
+      return Promise.reject(new Error('Not running in Electron'));
+    },
+    onVoiceProgress: (cb: (p: { id: string; message: string }) => void): () => void => {
+      if (this.isElectron) {
+        return (window as any).electron.rvc.onVoiceProgress(cb);
       }
       return () => {};
     },
