@@ -661,7 +661,7 @@ interface SourceStage {
                     (change)="monoTtsVoice.set($any($event.target).value)"
                   >
                     @for (voice of getVoicesForEngine(); track voice.value) {
-                      <option [value]="voice.value">{{ voice.label }}</option>
+                      <option [value]="voice.value">{{ voice.label }}{{ voice.installed === false ? ' (downloads on use)' : '' }}</option>
                     }
                   </select>
                 </div>
@@ -730,7 +730,7 @@ interface SourceStage {
                         (change)="updateTtsRow(i, 'voice', $any($event.target).value)"
                       >
                         @for (voice of getVoicesForEngine(); track voice.value) {
-                          <option [value]="voice.value">{{ voice.label }}</option>
+                          <option [value]="voice.value">{{ voice.label }}{{ voice.installed === false ? ' (downloads on use)' : '' }}</option>
                         }
                       </select>
 
@@ -2744,9 +2744,9 @@ export class LLWizardComponent implements OnInit {
   // (installed voices only — Default XTTS + installed fine-tuned/downloaded +
   // user custom — so every option actually works). Seeded with the always-present
   // bundled voice so the dropdown is never empty before the async load resolves.
-  readonly xttsVoiceOptions = signal<{ value: string; label: string }[]>([
-    { value: 'ScarlettJohansson', label: 'Scarlett Johansson' },
-    { value: 'internal', label: 'Default XTTS' },
+  readonly xttsVoiceOptions = signal<{ value: string; label: string; installed?: boolean }[]>([
+    { value: 'ScarlettJohansson', label: 'Scarlett Johansson', installed: true },
+    { value: 'internal', label: 'Default XTTS', installed: true },
   ]);
 
   readonly orpheusVoices = [
@@ -3578,7 +3578,7 @@ export class LLWizardComponent implements OnInit {
     }
   }
 
-  getVoicesForEngine(): { value: string; label: string }[] {
+  getVoicesForEngine(): { value: string; label: string; installed?: boolean }[] {
     return this.ttsEngine() === 'orpheus'
       ? this.orpheusVoices
       : this.xttsVoiceOptions();

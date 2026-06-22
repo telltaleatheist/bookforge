@@ -64,15 +64,44 @@ export async function getInstalledVoices(): Promise<StreamVoice[]> {
  * Voice-Library clones are intentionally excluded (e2a has no preset for them).
  * Built in the main process so the renderer needs no voice/install knowledge.
  */
-export async function getAudiobookVoiceOptions(): Promise<{ value: string; label: string }[]> {
+export interface AudiobookVoiceOption {
+  value: string;
+  label: string;
+  /** False for catalog voices that aren't downloaded yet — selectable, but the
+   *  wizard downloads them on run (ensureSelectedVoicesAvailable). */
+  installed: boolean;
+}
+
+export async function getAudiobookVoiceOptions(): Promise<AudiobookVoiceOption[]> {
+  const opts: AudiobookVoiceOption[] = [];
+  const seen = new Set<string>();
+
+  // 1. Installed voices (work immediately): Default XTTS, bundled/downloaded
+  //    fine-tuned, and user custom voices.
   const voices = await getInstalledVoices();
-  const opts: { value: string; label: string }[] = [];
   for (const v of voices) {
     if (v.id === '__default__') {
-      opts.push({ value: 'internal', label: 'Default XTTS' });
+      opts.push({ value: 'internal', label: 'Default XTTS', installed: true });
+      seen.add('internal');
     } else if (v.group === 'Fine-tuned' || v.group === 'Your Voices') {
-      opts.push({ value: v.id, label: v.name });
+      opts.push({ value: v.id, label: v.name, installed: true });
+      seen.add(v.id);
     }
   }
+
+  // 2. Downloadable fine-tuned voices not yet installed (e.g. Owen Morgan and the
+  //    rest of the catalog) — so they're SELECTABLE in the picker and download on
+  //    run. The option value is the tts-model component id, which is also the
+  //    registered voice id (registerDownloadedVoice uses the component id), so the
+  //    wizard's download-on-run + the TTS job both resolve it.
+  const statuses = await componentManager.listStatus();
+  for (const s of statuses) {
+    if (s.component.kind !== 'tts-model') continue;
+    if (s.component.id === BASE_COMPONENT_ID) continue; // base model isn't a pickable voice
+    if (s.state === 'installed' || seen.has(s.component.id)) continue;
+    opts.push({ value: s.component.id, label: s.component.name, installed: false });
+    seen.add(s.component.id);
+  }
+
   return opts;
 }
