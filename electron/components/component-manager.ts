@@ -39,6 +39,29 @@ import type {
   SystemProfile,
   Platform,
 } from './component-types';
+import { getMainLogger } from '../rolling-logger';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Logging — tee to BOTH the console (dev) AND the rolling file logger, so component
+// install/detection diagnostics survive in ~/Library/Logs/BookForge/bookforge.log.
+// A packaged GUI app discards stdout, so console-only logs were invisible whenever
+// an install silently failed (e.g. the RVC engine). Routed through here, the exact
+// failure — including the stack on a thrown install error — is always on disk.
+// getMainLogger() is lazy and may be pre-init during early detection; guard it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function clog(msg: string, data?: unknown): void {
+  data !== undefined ? console.log(msg, data) : console.log(msg);
+  try { getMainLogger().info(msg, data); } catch { /* logger not ready */ }
+}
+function cwarn(msg: string, data?: unknown): void {
+  data !== undefined ? console.warn(msg, data) : console.warn(msg);
+  try { getMainLogger().warn(msg, data); } catch { /* logger not ready */ }
+}
+function cerror(msg: string, data?: unknown): void {
+  data !== undefined ? console.error(msg, data) : console.error(msg);
+  try { getMainLogger().error(msg, data); } catch { /* logger not ready */ }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Paths + manifest I/O
@@ -67,7 +90,7 @@ function readManifest(): InstalledManifest {
       }
     }
   } catch (err) {
-    console.error('[COMPONENTS] Failed to read installed.json:', err);
+    cerror('[COMPONENTS] Failed to read installed.json:', err);
   }
   return { components: {} };
 }
@@ -82,7 +105,7 @@ function writeManifest(manifest: InstalledManifest): void {
     fs.writeFileSync(tmp, JSON.stringify(manifest, null, 2));
     fs.renameSync(tmp, manifestPath);
   } catch (err) {
-    console.error('[COMPONENTS] Failed to write installed.json:', err);
+    cerror('[COMPONENTS] Failed to write installed.json:', err);
     throw err;
   }
 }
@@ -171,7 +194,7 @@ async function detectExternal(id: string): Promise<string | null> {
   if (spec.envVar && process.env[spec.envVar]) {
     const envPath = process.env[spec.envVar] as string;
     if (fs.existsSync(envPath)) {
-      console.log(`[COMPONENTS] ${id}: found via env ${spec.envVar}: ${envPath}`);
+      clog(`[COMPONENTS] ${id}: found via env ${spec.envVar}: ${envPath}`);
       return envPath;
     }
   }
@@ -181,7 +204,7 @@ async function detectExternal(id: string): Promise<string | null> {
     for (const name of spec.commandNames) {
       const found = await lookupOnPath(name);
       if (found) {
-        console.log(`[COMPONENTS] ${id}: found on PATH: ${found}`);
+        clog(`[COMPONENTS] ${id}: found on PATH: ${found}`);
         return found;
       }
     }
@@ -193,7 +216,7 @@ async function detectExternal(id: string): Promise<string | null> {
       if (cand.platform !== platform) continue;
       try {
         if (fs.existsSync(cand.path)) {
-          console.log(`[COMPONENTS] ${id}: found candidate: ${cand.path}`);
+          clog(`[COMPONENTS] ${id}: found candidate: ${cand.path}`);
           return cand.path;
         }
       } catch {
@@ -312,7 +335,7 @@ async function setExternalPath(id: string, entryPath: string): Promise<Component
     installedAt: new Date().toISOString(),
   };
   putRecord(record);
-  console.log(`[COMPONENTS] ${id}: recorded external install at ${entryPath}`);
+  clog(`[COMPONENTS] ${id}: recorded external install at ${entryPath}`);
 
   const status = await getStatus(id);
   if (!status) {
@@ -357,7 +380,7 @@ function runCondaUnpack(envRoot: string): void {
       : path.join(envRoot, 'bin', 'conda-unpack');
 
   if (!fs.existsSync(unpack)) {
-    console.warn(`[COMPONENTS] conda-unpack not found at ${unpack}; skipping`);
+    cwarn(`[COMPONENTS] conda-unpack not found at ${unpack}; skipping`);
     return;
   }
   const res = runExecSync(unpack, []);
@@ -374,7 +397,7 @@ function chmodEntry(entryPath: string): void {
       fs.chmodSync(entryPath, 0o755);
     }
   } catch (err) {
-    console.warn('[COMPONENTS] chmod +x failed:', err);
+    cwarn('[COMPONENTS] chmod +x failed:', err);
   }
 }
 
@@ -576,7 +599,7 @@ async function fetchTtsModel(
               id, name: component.name, checkpointDir: subDir, refPath: parsed.ref,
             });
           } catch (err) {
-            console.warn(`[COMPONENTS] ${id}: voice registration failed:`, err);
+            cwarn(`[COMPONENTS] ${id}: voice registration failed:`, err);
           }
         }
         emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
@@ -848,8 +871,13 @@ async function install(
 
   const profile = await systemProbe.profile();
   const artifact = resolveArtifact(component, profile);
+  clog(`[COMPONENTS] ${id}: install start`, {
+    platform: profile.platform, arch: profile.arch,
+    url: artifact?.url, bytes: artifact?.bytes, condaUnpack: artifact?.condaUnpack,
+  });
 
   if (!artifact) {
+    cerror(`[COMPONENTS] ${id}: no artifact for ${profile.platform}/${profile.arch}`);
     return {
       id,
       ok: false,
@@ -964,12 +992,19 @@ async function install(
     putRecord(record);
 
     emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
-    console.log(`[COMPONENTS] ${id}: managed install complete at ${finalDir}`);
+    clog(`[COMPONENTS] ${id}: managed install complete at ${finalDir}`);
     return { id, ok: true, record };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     emit({ id, phase: 'error', pct: 0, message });
-    console.error(`[COMPONENTS] ${id}: managed install failed:`, message);
+    // Log the FULL failure to the file — message, the phase that was last emitted,
+    // and the stack — so a silent install failure on a user's machine is diagnosable
+    // from the log instead of vanishing to discarded stdout.
+    cerror(`[COMPONENTS] ${id}: managed install failed: ${message}`, {
+      id,
+      message,
+      stack: err instanceof Error ? err.stack : undefined,
+    });
     return { id, ok: false, error: message };
   } finally {
     // Clean up temp dir if it still exists (rename moves it; failures leave it).
@@ -990,7 +1025,7 @@ async function cancel(id: string): Promise<void> {
   if (!inf) {
     return;
   }
-  console.log(`[COMPONENTS] ${id}: cancelling managed install`);
+  clog(`[COMPONENTS] ${id}: cancelling managed install`);
   inf.controller.abort();
   if (inf.tempDir && fs.existsSync(inf.tempDir)) {
     try {
@@ -1009,7 +1044,7 @@ async function cancel(id: string): Promise<void> {
 async function uninstall(id: string): Promise<void> {
   const record = getRecord(id);
   if (!record) {
-    console.log(`[COMPONENTS] ${id}: nothing to uninstall`);
+    clog(`[COMPONENTS] ${id}: nothing to uninstall`);
     return;
   }
 
@@ -1019,10 +1054,10 @@ async function uninstall(id: string): Promise<void> {
     try {
       uninstallCudaTts();
     } catch (err) {
-      console.error(`[COMPONENTS] ${id}: revert to CPU torch failed:`, err);
+      cerror(`[COMPONENTS] ${id}: revert to CPU torch failed:`, err);
     }
     dropRecord(id);
-    console.log(`[COMPONENTS] ${id}: reverted GPU TTS overlay`);
+    clog(`[COMPONENTS] ${id}: reverted GPU TTS overlay`);
     return;
   }
 
@@ -1031,10 +1066,10 @@ async function uninstall(id: string): Promise<void> {
     try {
       uninstallCudaRvc();
     } catch (err) {
-      console.error(`[COMPONENTS] ${id}: revert RVC env to CPU torch failed:`, err);
+      cerror(`[COMPONENTS] ${id}: revert RVC env to CPU torch failed:`, err);
     }
     dropRecord(id);
-    console.log(`[COMPONENTS] ${id}: reverted GPU RVC overlay`);
+    clog(`[COMPONENTS] ${id}: reverted GPU RVC overlay`);
     return;
   }
 
@@ -1049,9 +1084,9 @@ async function uninstall(id: string): Promise<void> {
     if (fs.existsSync(dir)) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
-        console.log(`[COMPONENTS] ${id}: removed managed install dir ${dir}`);
+        clog(`[COMPONENTS] ${id}: removed managed install dir ${dir}`);
       } catch (err) {
-        console.error(`[COMPONENTS] ${id}: failed to remove install dir:`, err);
+        cerror(`[COMPONENTS] ${id}: failed to remove install dir:`, err);
         throw err;
       }
     }
@@ -1059,7 +1094,7 @@ async function uninstall(id: string): Promise<void> {
   } else {
     // External: drop the record only — NEVER delete the user's own install.
     dropRecord(id);
-    console.log(`[COMPONENTS] ${id}: forgot external install (left on disk)`);
+    clog(`[COMPONENTS] ${id}: forgot external install (left on disk)`);
   }
 }
 
@@ -1115,9 +1150,9 @@ async function buildStatus(
           installedAt: new Date().toISOString(),
         };
         putRecord(record);
-        console.log(`[COMPONENTS] ${component.id}: auto-detected external install at ${detected}`);
+        clog(`[COMPONENTS] ${component.id}: auto-detected external install at ${detected}`);
       } else {
-        console.warn(
+        cwarn(
           `[COMPONENTS] ${component.id}: detected ${detected} but it failed verify: ${verifyResult.output}`
         );
       }
@@ -1126,7 +1161,7 @@ async function buildStatus(
 
   // If we have a record but its entry has vanished, treat it as not installed.
   if (record && !resolveEntry(component.id)) {
-    console.warn(
+    cwarn(
       `[COMPONENTS] ${component.id}: recorded entry missing on disk (${record.entryPath}); dropping record`
     );
     dropRecord(component.id);
@@ -1149,7 +1184,7 @@ async function buildStatus(
         installedAt: new Date().toISOString(),
       };
       putRecord(record);
-      console.log(`[COMPONENTS] ${component.id}: detected TTS model in HF cache at ${found}`);
+      clog(`[COMPONENTS] ${component.id}: detected TTS model in HF cache at ${found}`);
     }
   }
 
@@ -1167,7 +1202,7 @@ async function buildStatus(
         installedAt: new Date().toISOString(),
       };
       putRecord(record);
-      console.log(`[COMPONENTS] ${component.id}: detected Stanza language pack at ${found}`);
+      clog(`[COMPONENTS] ${component.id}: detected Stanza language pack at ${found}`);
     }
   }
 
@@ -1184,7 +1219,7 @@ async function buildStatus(
       installedAt: new Date().toISOString(),
     };
     putRecord(record);
-    console.log(`[COMPONENTS] ${component.id}: detected CUDA PyTorch overlay in env`);
+    clog(`[COMPONENTS] ${component.id}: detected CUDA PyTorch overlay in env`);
   }
 
   // CUDA RVC: same marker-in-env detection, for the enhancement engine's env.
@@ -1199,7 +1234,7 @@ async function buildStatus(
       installedAt: new Date().toISOString(),
     };
     putRecord(record);
-    console.log(`[COMPONENTS] ${component.id}: detected CUDA PyTorch overlay in RVC env`);
+    clog(`[COMPONENTS] ${component.id}: detected CUDA PyTorch overlay in RVC env`);
   }
 
   let state: ComponentState;
