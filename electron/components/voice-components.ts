@@ -49,6 +49,38 @@ function baseModelComponent(): OptionalComponent {
   };
 }
 
+/**
+ * Owen Morgan — a definitive BookForge fine-tuned XTTS voice, hosted on the
+ * owner's HuggingFace (owenmorgan/owen-morgan-bookforge under `xtts/`). Hardcoded
+ * (like the base model) rather than catalog-sourced, so it needs no catalog.json
+ * entry or REPO_ALLOWLIST change. Downloads via the same `tts-model` path as
+ * catalog voices (fetchTtsModel → HF cache → registerDownloadedVoice), so it
+ * works in the player and full-audiobook generation.
+ */
+function owenMorganVoiceComponent(): OptionalComponent {
+  return {
+    id: 'owen-morgan',
+    name: 'Owen Morgan',
+    description: 'Fine-tuned XTTS voice (English). ~1.9 GB download.',
+    kind: 'tts-model',
+    acquisition: ['managed'],
+    installTarget: 'e2a-hf-cache',
+    sizeBytes: 1_870_000_000,
+    requirements: { gpu: 'none' },
+    artifacts: [],
+    // sub MUST end with '/' — the helper builds allow_patterns as `${sub}${file}`.
+    hf: {
+      repo: 'owenmorgan/owen-morgan-bookforge',
+      sub: 'xtts/',
+      files: ['config.json', 'model.pth', 'vocab.json'],
+      ref: 'Owen Morgan.wav',
+    },
+    verify: { kind: 'path-exists' },
+    version: '',
+    entryPath: '',
+  };
+}
+
 /** Human label for a voice's language code (catalog langs are eng/deu/rus/…). */
 function langLabel(code: string): string {
   const map: Record<string, string> = {
@@ -87,5 +119,5 @@ export function voiceComponents(): OptionalComponent[] {
       entryPath: '', // set to the downloaded model.pth at install time
     } satisfies OptionalComponent;
   });
-  return [baseModelComponent(), ...voices];
+  return [baseModelComponent(), owenMorganVoiceComponent(), ...voices];
 }

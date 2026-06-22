@@ -65,34 +65,30 @@ export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
   {
     id: 'rvc-voice-owen-morgan',
     label: 'Owen Morgan',
-    modelName: 'owen_v2_best',
+    // Definitive Owen Morgan RVC (ep400), hosted on the owner's HuggingFace
+    // alongside the XTTS fine-tune. Tarball extracts to rvc/voice_models/Owen Morgan/.
+    modelName: 'Owen Morgan',
     matches: 'the Owen Morgan fine-tuned XTTS voice',
-    url: `${RELEASE_BASE}/rvc-voice-owen-morgan.tar.gz`,
-    sha256: '7326f4ac5c9008a578f98eb830f8d1ad630cee393fe23faca30a810e71263296',
-    bytes: 80546595,
-    version: '2026.06.21',
+    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/owen-morgan.tar.gz',
+    sha256: '1a446de02c9f322f36a0979a3c135f69ac0436713dc6ce5b7ede9c26da3ed6ec',
+    bytes: 80526382,
+    version: '2026.06.22',
   },
   {
     id: 'rvc-voice-sigma',
     label: 'Sigma Male Narrator',
     modelName: 'Sigma Male Narrator',
     matches: 'a deep male narration voice',
-    url: `${RELEASE_BASE}/rvc-voice-sigma.tar.gz`,
-    sha256: '610140a1cc5114f8a4a84a59014ca98d61a5f9c4715e91b7a8949fecebe12f1c',
-    bytes: 107877125,
-    version: '2026.06.21',
+    // Moved to the owner's HuggingFace alongside Owen Morgan.
+    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/sigma.tar.gz',
+    sha256: '1bd49bd68233c56a977eb65a94f9a1f3aa0f3677c5e03aef4c4442389a877f19',
+    bytes: 107877124,
+    version: '2026.06.22',
   },
-  {
-    id: 'rvc-voice-samantha',
-    label: 'Samantha',
-    modelName: 'Samantha',
-    matches: 'the Scarlett Johansson (default) voice',
-    url: `${RELEASE_BASE}/rvc-voice-samantha.tar.gz`,
-    sha256: '519d6eb1c6dfcaef22621ec088b70051ae18884cb1372abd26670dda9503b9d2',
-    bytes: 51140977,
-    forceIndexRate0: true, // ships .pth only — index is empty upstream
-    version: '2026.06.21',
-  },
+  // NOTE: the "Samantha" (Scarlett Johansson, "Her") RVC model was removed —
+  // it's the actress's actual voice and she has not consented to its use. Do not
+  // re-add it. (The XTTS "Scarlett Johansson" default voice is only NAMED after
+  // her and is NOT her real voice, so it stays.)
 ];
 
 /** Look up an enhancement voice descriptor by its asset id. */
