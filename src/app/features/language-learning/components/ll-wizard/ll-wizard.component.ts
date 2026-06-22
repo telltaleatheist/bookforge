@@ -26,6 +26,7 @@ import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { QueueService } from '../../../queue/services/queue.service';
 import { ComponentService } from '../../../../core/services/component.service';
+import { RvcVoicesService } from '../../../../core/services/rvc-voices.service';
 import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
 import { EpubResolverService } from '../../services/epub-resolver.service';
 import { AiService } from '../../../../core/services/ai.service';
@@ -701,6 +702,36 @@ interface SourceStage {
                     </div>
                   }
                 </div>
+
+                <!-- Voice Enhancement (RVC): after narration is rendered, re-render
+                     it through a matching RVC voice to smooth synthetic artifacts.
+                     Runs post-TTS, pre-assembly. Only shown when the engine is installed. -->
+                @if (componentService.isInstalled('rvc-env')) {
+                  <div class="config-section">
+                    <label class="field-label">
+                      <input type="checkbox" [checked]="rvcEnhanceEnabled()"
+                             (change)="rvcEnhanceEnabled.set($any($event.target).checked)" />
+                      Enhance voice (RVC)
+                    </label>
+                    <span class="hint">After narration renders, re-render it through a matching RVC voice to smooth out synthetic artifacts. Pick a voice close to your TTS voice — RVC keeps the original's content &amp; pitch.</span>
+                    @if (rvcEnhanceEnabled()) {
+                      @if (rvcVoices.installedVoices().length > 0) {
+                        <select
+                          class="select-input"
+                          [value]="rvcEnhanceVoiceId()"
+                          (change)="rvcEnhanceVoiceId.set($any($event.target).value)"
+                        >
+                          <option value="">Choose an enhancement voice…</option>
+                          @for (v of rvcVoices.installedVoices(); track v.id) {
+                            <option [value]="v.id">{{ v.label }}</option>
+                          }
+                        </select>
+                      } @else {
+                        <span class="hint">No enhancement voices installed — add one in Settings → Add-ons.</span>
+                      }
+                    }
+                  </div>
+                }
               } @else {
               <!-- Language Rows -->
               <div class="config-section">
@@ -2383,6 +2414,8 @@ export class LLWizardComponent implements OnInit {
   private readonly epubResolver = inject(EpubResolverService);
   // Public for the template: gates optional TTS engines (e.g. Orpheus) on availability.
   protected readonly componentService = inject(ComponentService);
+  // RVC enhancement voices (post-TTS voice-conversion) — install state + list.
+  protected readonly rvcVoices = inject(RvcVoicesService);
   // Gates the AI Cleanup step behind a "set up an AI" layover when none configured.
   protected readonly ai = inject(AiService);
   protected readonly langPacks = inject(LanguagePackService);
@@ -2729,6 +2762,14 @@ export class LLWizardComponent implements OnInit {
   readonly ttsSourceEpub = signal<string>('latest');
   readonly monoTtsVoice = signal('ScarlettJohansson');
   readonly monoTtsSpeed = signal(1.0);
+
+  // RVC voice enhancement (per-run): re-render the finished narration through a
+  // matching RVC voice to smooth synthetic artifacts. Seeded from Pipeline
+  // Defaults and persisted back on submit, so the queue (which reads the defaults
+  // at job time) picks up the per-run choice. Only shown when the RVC engine is
+  // installed.
+  readonly rvcEnhanceEnabled = signal(false);
+  readonly rvcEnhanceVoiceId = signal('');
 
   // Pre-flight voice download status (shown near the Add to Queue button).
   readonly voiceDownloadMsg = signal<string | null>(null);
@@ -3520,6 +3561,9 @@ export class LLWizardComponent implements OnInit {
     this.ttsTemperature.set(d.ttsTemperature);
     this.ttsTopP.set(d.ttsTopP);
     this.generateVideo.set(d.generateVideo);
+    this.rvcEnhanceEnabled.set(d.rvcEnhancementEnabled);
+    this.rvcEnhanceVoiceId.set(d.rvcEnhancementVoiceId);
+    void this.rvcVoices.ensureLoaded();
   }
 
   /** User picked a worker count for this job — stop auto-syncing from the global. */
@@ -4069,6 +4113,11 @@ export class LLWizardComponent implements OnInit {
       ttsDevice: this.ttsDevice(),
       ttsVoice: this.monoTtsVoice(),
       ttsSpeed: this.monoTtsSpeed(),
+      // Per-run RVC enhancement choice — the queue reads these from the defaults at
+      // job time and adds the post-TTS voice-conversion pass. Only meaningful when
+      // a voice is chosen; persist disabled if the user didn't pick one.
+      rvcEnhancementEnabled: this.rvcEnhanceEnabled() && !!this.rvcEnhanceVoiceId(),
+      rvcEnhancementVoiceId: this.rvcEnhanceVoiceId(),
     });
 
     const projectDir = this.effectiveProjectDir();
