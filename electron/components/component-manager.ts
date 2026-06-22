@@ -249,12 +249,13 @@ function envPython(envRoot: string): string {
   return path.join(envRoot, 'bin', 'python');
 }
 
-function runExecSync(cmd: string, args: string[]): VerifyResult {
+function runExecSync(cmd: string, args: string[], opts?: { cwd?: string }): VerifyResult {
   try {
     const res = spawnSync(cmd, args, {
       encoding: 'utf8',
       timeout: 30000,
       windowsHide: true,
+      cwd: opts?.cwd,
     });
     const output = `${res.stdout || ''}${res.stderr || ''}`.trim();
     if (res.error) {
@@ -296,7 +297,12 @@ function runVerify(spec: VerifySpec, entryPath: string): VerifyResult {
       if (!fs.existsSync(py)) {
         return { ok: false, output: `Python not found in env: ${py}` };
       }
-      return runExecSync(py, ['-c', `import ${spec.module}`]);
+      // Run with the env dir as cwd: a package may derive writable paths from
+      // Path.cwd() at import (ultimate_rvc sets BASE_DIR = cwd, then mkdir's
+      // BASE_DIR/"logs"). A GUI app launched from Finder inherits cwd="/", so a
+      // bare import would try to create "/logs" and fail on the read-only root.
+      // The env dir is always writable here (it's the freshly-extracted install).
+      return runExecSync(py, ['-c', `import ${spec.module}`], { cwd: entryPath });
     }
     case 'path-exists': {
       const target = spec.entry ? path.join(entryPath, spec.entry) : entryPath;
