@@ -95,8 +95,16 @@ export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
   },
 ];
 
-/** The RVC models root — set as URVC_MODELS_DIR when invoking the engine. */
+/**
+ * The RVC models root — set as URVC_MODELS_DIR when invoking the engine.
+ *
+ * BOOKFORGE_RVC_MODELS_DIR overrides it so `electron:dev` can point at an
+ * existing models tree (e.g. the repo's `models/`) instead of downloading the
+ * managed assets — mirrors the BOOKFORGE_E2A_ENV dev seam.
+ */
 export function getRvcModelsDir(): string {
+  const override = process.env.BOOKFORGE_RVC_MODELS_DIR?.trim();
+  if (override) return override;
   return path.join(app.getPath('userData'), 'runtime', 'rvc-models');
 }
 
@@ -113,8 +121,28 @@ export function rvcAssetReady(asset: RvcAsset): boolean {
   }
 }
 
+/**
+ * Whether the required base models are usable. Checks the actual files (not just
+ * the download marker) so it's also true for a dev BOOKFORGE_RVC_MODELS_DIR that
+ * was populated outside the managed-download path.
+ */
 export function rvcBaseModelsReady(): boolean {
-  return rvcAssetReady(RVC_BASE_ASSET);
+  if (rvcAssetReady(RVC_BASE_ASSET)) return true;
+  const root = getRvcModelsDir();
+  const contentvec = path.join(root, 'rvc', 'embedders', 'contentvec', 'pytorch_model.bin');
+  const rmvpe = path.join(root, 'rvc', 'predictors', 'rmvpe.pt');
+  return fs.existsSync(contentvec) && fs.existsSync(rmvpe);
+}
+
+/** Whether a voice's model folder is actually present (marker OR files on disk). */
+function rvcVoiceInstalled(v: RvcVoiceAsset): boolean {
+  if (rvcAssetReady(v)) return true;
+  const dir = path.join(getRvcModelsDir(), 'rvc', 'voice_models', v.modelName);
+  try {
+    return fs.existsSync(dir) && fs.readdirSync(dir).some((f) => f.endsWith('.pth'));
+  } catch {
+    return false;
+  }
 }
 
 function run(command: string, args: string[]): Promise<void> {
@@ -229,7 +257,7 @@ export function listRvcVoices(): RvcVoiceStatus[] {
     modelName: v.modelName,
     matches: v.matches,
     bytes: v.bytes,
-    installed: rvcAssetReady(v),
+    installed: rvcVoiceInstalled(v),
     forceIndexRate0: !!v.forceIndexRate0,
   }));
 }

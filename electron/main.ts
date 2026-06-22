@@ -22,6 +22,7 @@ import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
+import { listRvcVoices, ensureRvcVoice, removeRvcVoice, rvcBaseModelsReady } from './rvc-models';
 import { systemProbe } from './components/system-probe';
 import { markBootOk } from './launcher/boot-state';
 import { checkAndStageCodeUpdate, getCodeUpdateStatus } from './update/code-updater';
@@ -4647,6 +4648,36 @@ function setupIpcHandlers(): void {
     const result = await componentManager.uninstall(id);
     void refreshTtsApiVoices();
     return result;
+  });
+
+  // ── RVC enhancement voices ────────────────────────────────────────────────
+  // The rvc-env engine is a normal component (components:* channels). These
+  // manage the downloadable RVC voice models + base models that live under
+  // userData/runtime/rvc-models (see rvc-models.ts), separate from the env so
+  // they survive env updates and install/remove individually.
+  ipcMain.handle('rvc:list-voices', async () => {
+    return { voices: listRvcVoices(), baseReady: rvcBaseModelsReady() };
+  });
+
+  ipcMain.handle('rvc:install-voice', async (event, voiceId: string) => {
+    try {
+      // ensureRvcVoice pulls the required base models first, then the voice.
+      await ensureRvcVoice(voiceId, (message) => {
+        event.sender.send('rvc:voice-progress', { id: voiceId, message });
+      });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('rvc:remove-voice', async (_event, voiceId: string) => {
+    try {
+      removeRvcVoice(voiceId);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
   });
 
   // ─────────────────────────────────────────────────────────────────────────────

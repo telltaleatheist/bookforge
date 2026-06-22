@@ -5,6 +5,7 @@ import type {
   InstallResult,
   InstallProgress,
 } from './components/component-types';
+import type { RvcVoiceStatus } from './rvc-models';
 import type { CodeUpdateStatus } from './update/code-updater';
 import type { ComponentUpdateStatus } from './update/component-updater';
 import type { StarterStatus } from './update/starter-library';
@@ -1429,6 +1430,12 @@ export interface ElectronAPI {
     cancel: (id: string) => Promise<void>;
     uninstall: (id: string) => Promise<void>;
     onProgress: (callback: (p: InstallProgress) => void) => () => void;
+  };
+  rvc: {
+    listVoices: () => Promise<{ voices: RvcVoiceStatus[]; baseReady: boolean }>;
+    installVoice: (voiceId: string) => Promise<{ ok: boolean; error?: string }>;
+    removeVoice: (voiceId: string) => Promise<{ ok: boolean; error?: string }>;
+    onVoiceProgress: (callback: (p: { id: string; message: string }) => void) => () => void;
   };
   update: {
     getCodeStatus: () => Promise<CodeUpdateStatus>;
@@ -2873,6 +2880,21 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('components:progress', listener);
       return () => {
         ipcRenderer.removeListener('components:progress', listener);
+      };
+    },
+  },
+  rvc: {
+    listVoices: () =>
+      ipcRenderer.invoke('rvc:list-voices') as Promise<{ voices: RvcVoiceStatus[]; baseReady: boolean }>,
+    installVoice: (voiceId: string) =>
+      ipcRenderer.invoke('rvc:install-voice', voiceId) as Promise<{ ok: boolean; error?: string }>,
+    removeVoice: (voiceId: string) =>
+      ipcRenderer.invoke('rvc:remove-voice', voiceId) as Promise<{ ok: boolean; error?: string }>,
+    onVoiceProgress: (callback: (p: { id: string; message: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, p: { id: string; message: string }) => callback(p);
+      ipcRenderer.on('rvc:voice-progress', listener);
+      return () => {
+        ipcRenderer.removeListener('rvc:voice-progress', listener);
       };
     },
   },

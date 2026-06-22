@@ -27,8 +27,16 @@ import { RVC_ENV_ID } from './components/rvc-env';
 import { relocatableEnvBinDirs, relocatableBinaryPath } from './e2a-env-bootstrap';
 import { getRvcModelsDir, rvcBaseModelsReady } from './rvc-models';
 
-/** The installed rvc-env root, or null when the engine isn't installed. */
+/**
+ * The rvc-env root, or null when the engine isn't installed.
+ *
+ * BOOKFORGE_RVC_ENV overrides it so `electron:dev` can point at an already-built
+ * env (e.g. the `bookforge-urvc` conda env) instead of installing the managed
+ * component — mirrors the BOOKFORGE_E2A_ENV dev seam.
+ */
 export function getRvcEnvRoot(): string | null {
+  const override = process.env.BOOKFORGE_RVC_ENV?.trim();
+  if (override) return override;
   return componentManager.resolveEntry(RVC_ENV_ID);
 }
 
