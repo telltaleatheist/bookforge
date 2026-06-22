@@ -131,6 +131,20 @@ export function enhanceSentences(opts: EnhanceSentencesOptions): Promise<string>
           TRANSFORMERS_OFFLINE: '1',
           PYTHONUNBUFFERED: '1',
           PYTHONIOENCODING: 'utf-8',
+          // The env bundles THREE OpenMP runtimes (torch, faiss-cpu, scikit-learn
+          // each ship their own libomp). Loading more than one in a process is
+          // unsupported: on macOS it SIGSEGVs in an OpenMP worker-thread barrier
+          // (__kmp_suspend_initialize_thread) the moment conversion spins up its
+          // thread pool — reproduced as exit 139 on the very first sentence, on
+          // BOTH mps and cpu (the device was never the cause). The combination
+          // below is the standard fix: KMP_DUPLICATE_LIB_OK lets the duplicate
+          // runtimes co-load instead of aborting (OMP Error #15), and a single
+          // OpenMP thread removes the cross-runtime barrier that segfaults. RVC
+          // here is per-sentence inference (heavy work is on the torch device),
+          // so serial OpenMP costs little. Set on all platforms — the duplicate
+          // runtimes are bundled the same way on Windows/Linux.
+          KMP_DUPLICATE_LIB_OK: 'TRUE',
+          OMP_NUM_THREADS: '1',
         },
       });
     } catch (err) {
