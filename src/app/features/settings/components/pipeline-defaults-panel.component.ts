@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 
 import { SettingsService, PipelineDefaults } from '../../../core/services/settings.service';
 import { ComponentService } from '../../../core/services/component.service';
+import { RvcVoicesService } from '../../../core/services/rvc-voices.service';
 import {
   AIProvider,
   OLLAMA_MODELS,
@@ -94,6 +95,38 @@ interface Opt { value: string; label: string; }
           </div>
         </div>
 
+        @if (rvcEnvInstalled()) {
+          <div class="pd-row">
+            <label class="pd-label">Voice enhancement</label>
+            <div class="pd-controls">
+              <label class="pd-toggle">
+                <input type="checkbox" [checked]="d().rvcEnhancementEnabled"
+                       (change)="set({ rvcEnhancementEnabled: $any($event.target).checked })" />
+                Re-render narration through an RVC voice (after rendering, before assembly)
+              </label>
+            </div>
+          </div>
+          @if (d().rvcEnhancementEnabled) {
+            <div class="pd-row">
+              <label class="pd-label">Enhancement voice</label>
+              <div class="pd-controls">
+                @if (installedRvcVoices().length > 0) {
+                  <select class="pd-select" [value]="d().rvcEnhancementVoiceId"
+                          (change)="set({ rvcEnhancementVoiceId: $any($event.target).value })">
+                    <option value="" [selected]="!d().rvcEnhancementVoiceId">Choose a voice…</option>
+                    @for (v of installedRvcVoices(); track v.id) {
+                      <option [value]="v.id" [selected]="v.id === d().rvcEnhancementVoiceId">{{ v.label }}</option>
+                    }
+                  </select>
+                } @else {
+                  <span class="pd-hint">No enhancement voices installed — add one in Settings → Add-ons.</span>
+                }
+              </div>
+            </div>
+            <span class="pd-hint">Pick a voice close to the original — RVC carries the original's content &amp; pitch.</span>
+          }
+        }
+
         <div class="pd-row">
           <label class="pd-label">Speed: {{ d().ttsSpeed.toFixed(2) }}x</label>
           <input type="range" min="0.5" max="2" step="0.05" [value]="d().ttsSpeed" (input)="set({ ttsSpeed: +$any($event.target).value })" />
@@ -171,6 +204,12 @@ interface Opt { value: string; label: string; }
 export class PipelineDefaultsPanelComponent {
   private readonly settings = inject(SettingsService);
   private readonly components = inject(ComponentService);
+  private readonly rvcVoices = inject(RvcVoicesService);
+
+  /** The RVC enhancement engine is installed (gates the enhancement controls). */
+  readonly rvcEnvInstalled = computed(() => this.components.isInstalled('rvc-env'));
+  /** Installed enhancement voices, for the picker. */
+  readonly installedRvcVoices = computed(() => this.rvcVoices.voices().filter((v) => v.installed));
 
   // Draft edits live here and are applied to settings ONLY when the user clicks
   // Save — no auto-save on change. `saved` is the last-persisted snapshot so we
@@ -204,6 +243,7 @@ export class PipelineDefaultsPanelComponent {
 
   constructor() {
     void this.loadXttsVoices();
+    void this.rvcVoices.ensureLoaded();
   }
 
   /** Load installed audiobook voices into the default-voice picker. */

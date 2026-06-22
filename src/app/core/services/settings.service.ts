@@ -32,6 +32,10 @@ export interface PipelineDefaults {
   ttsTopP: number;
   /** Assembly output: false = audiobook (M4B), true = video. */
   generateVideo: boolean;
+  /** RVC voice enhancement: re-render finished narration through an RVC model. */
+  rvcEnhancementEnabled: boolean;
+  /** Selected enhancement voice id (RvcVoiceStatus.id), '' = none chosen. */
+  rvcEnhancementVoiceId: string;
 }
 
 export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
@@ -45,6 +49,8 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
   ttsTemperature: 0.7,
   ttsTopP: 0.9,
   generateVideo: false,
+  rvcEnhancementEnabled: false,
+  rvcEnhancementVoiceId: '',
 };
 
 /**

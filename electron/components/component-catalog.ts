@@ -15,6 +15,8 @@ import { voiceComponents } from './voice-components';
 import { languagePackComponents } from './language-pack-components';
 import { llamaCudaComponent } from './llama-cuda';
 import { cudaTtsComponent } from './cuda-tts';
+import { cudaRvcComponent } from './cuda-rvc';
+import { rvcEnvComponent } from './rvc-env';
 import type {
   OptionalComponent,
   ComponentArtifact,
@@ -220,6 +222,8 @@ export function getCatalog(): OptionalComponent[] {
     orpheus,
     llamaCudaComponent(),
     cudaTtsComponent(),
+    cudaRvcComponent(),
+    rvcEnvComponent(),
     ...voiceComponents(),
     ...languagePackComponents(),
   ];

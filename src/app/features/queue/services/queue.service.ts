@@ -2666,7 +2666,16 @@ export class QueueService {
             skipAssembly: config.skipAssembly,
             // Temp folder workflow for Syncthing compatibility
             bfpPath: job.bfpPath,
-            isArticle: !!(job.projectDir && job.projectDir.replace(/\\/g, '/').includes('/language-learning/projects/'))
+            isArticle: !!(job.projectDir && job.projectDir.replace(/\\/g, '/').includes('/language-learning/projects/')),
+            // RVC voice enhancement (post-render, pre-assembly): re-render each
+            // sentence through the chosen enhancement voice, then assemble that set.
+            // Sourced from Pipeline Defaults; the backend resolves the voice id.
+            rvcEnhancement: (() => {
+              const pd = this.settingsService.getPipelineDefaults();
+              return pd.rvcEnhancementEnabled && pd.rvcEnhancementVoiceId
+                ? { enabled: true, voiceId: pd.rvcEnhancementVoiceId }
+                : undefined;
+            })()
           };
 
           // Resume logic — three modes:
