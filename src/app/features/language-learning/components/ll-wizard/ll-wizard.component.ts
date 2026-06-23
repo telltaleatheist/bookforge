@@ -687,34 +687,6 @@ interface SourceStage {
                     </div>
                   }
                 </div>
-
-                <!-- Voice Enhancement (RVC): after narration is rendered, re-render
-                     it through a matching RVC voice to smooth synthetic artifacts.
-                     Runs post-TTS, pre-assembly. Only shown when the engine is installed. -->
-                @if (componentService.isInstalled('rvc-env')) {
-                  <div class="config-section">
-                    <label class="field-label">
-                      <input type="checkbox" [checked]="rvcEnhanceEnabled()"
-                             (change)="rvcEnhanceEnabled.set($any($event.target).checked)" />
-                      Enhance voice (RVC)
-                    </label>
-                    <span class="hint">After narration renders, re-render it through a matching RVC voice to smooth out synthetic artifacts. Pick a voice close to your TTS voice — RVC keeps the original's content &amp; pitch.</span>
-                    @if (rvcEnhanceEnabled()) {
-                      @if (rvcVoices.installedVoices().length > 0) {
-                        <desktop-select
-                          class="select-input"
-                          placeholder="Choose an enhancement voice…"
-                          [options]="rvcVoiceOptions()"
-                          [ngModel]="rvcEnhanceVoiceId()"
-                          (ngModelChange)="rvcEnhanceVoiceId.set($event)"
-                        />
-                      } @else {
-                        <span class="hint">No enhancement voices installed yet.</span>
-                      }
-                      <a class="download-more-link" (click)="goToEnhancementDownloads()">＋ Download more enhancement voices…</a>
-                    }
-                  </div>
-                }
               } @else {
               <!-- Language Rows -->
               <div class="config-section">
@@ -777,6 +749,35 @@ interface SourceStage {
               @if (pipelineMode() === 'mono') {
                 <h3>Enhance &amp; Assemble</h3>
                 <p class="step-desc">Optionally re-render the narration through an RVC voice, then assemble the audio into a finished audiobook (M4B with chapters).</p>
+
+                <!-- Voice Enhancement (RVC): re-render the narration through a matching
+                     RVC voice (post-TTS, pre-assembly) to smooth synthetic artifacts.
+                     Operates on the cached XTTS sentences, so it can be re-run with a
+                     different voice. Only shown when the engine is installed. -->
+                @if (componentService.isInstalled('rvc-env')) {
+                  <div class="config-section">
+                    <label class="field-label">
+                      <input type="checkbox" [checked]="rvcEnhanceEnabled()"
+                             (change)="rvcEnhanceEnabled.set($any($event.target).checked)" />
+                      Enhance voice (RVC)
+                    </label>
+                    <span class="hint">Re-render the narration through a matching RVC voice to smooth out synthetic artifacts. Pick a voice close to your TTS voice — RVC keeps the original's content &amp; pitch.</span>
+                    @if (rvcEnhanceEnabled()) {
+                      @if (rvcVoices.installedVoices().length > 0) {
+                        <desktop-select
+                          class="select-input"
+                          placeholder="Choose an enhancement voice…"
+                          [options]="rvcVoiceOptions()"
+                          [ngModel]="rvcEnhanceVoiceId()"
+                          (ngModelChange)="rvcEnhanceVoiceId.set($event)"
+                        />
+                      } @else {
+                        <span class="hint">No enhancement voices installed yet.</span>
+                      }
+                      <a class="download-more-link" (click)="goToEnhancementDownloads()">＋ Download more enhancement voices…</a>
+                    }
+                  </div>
+                }
 
                 @if (!isStepSkipped('tts')) {
                   <!-- Mode A: TTS is enabled — assembly chains from TTS output -->
