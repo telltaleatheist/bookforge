@@ -34,7 +34,7 @@ export interface PipelineDefaults {
   generateVideo: boolean;
   /** RVC voice enhancement: re-render finished narration through an RVC model. */
   rvcEnhancementEnabled: boolean;
-  /** Selected enhancement voice id (RvcVoiceStatus.id), '' = none chosen. */
+  /** Selected enhancement voice id (rvc-model component id), '' = none chosen. */
   rvcEnhancementVoiceId: string;
 }
 

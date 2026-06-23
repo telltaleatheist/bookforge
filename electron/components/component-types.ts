@@ -32,6 +32,7 @@ export type ComponentKind =
   | 'binary'     // an executable (downloadable archive, or a user's own install)
   | 'conda-env'  // a conda env (conda-pack tarball, or a user's own `conda create`)
   | 'tts-model'  // a HuggingFace TTS voice/model fetched into e2a's HF cache
+  | 'rvc-model'  // an RVC enhancement voice tarball extracted into the rvc-models dir
   | 'language-pack' // a Stanza sentence-segmentation model fetched into e2a's models/stanza
   | 'system';    // provided by the OS (e.g. Apple Vision); nothing to download
 

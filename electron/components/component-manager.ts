@@ -22,6 +22,7 @@ import { getExternalInstaller, installableExternalIds, ExternalInstaller } from 
 import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
 import { CUDA_TTS_ID, installCudaTts, isCudaTtsInstalled, uninstallCudaTts, cudaTtsMarkerPath } from './cuda-tts';
 import { CUDA_RVC_ID, installCudaRvc, isCudaRvcInstalled, uninstallCudaRvc, cudaRvcMarkerPath } from './cuda-rvc';
+import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
 import { registerDownloadedVoice, removeCustomVoice, isDownloadedVoiceId } from '../custom-voices';
 import type {
@@ -34,6 +35,7 @@ import type {
   InstalledRecord,
   InstalledManifest,
   InstallProgress,
+  InstallPhase,
   InstallResult,
   VerifySpec,
   SystemProfile,
@@ -841,6 +843,61 @@ async function fetchCudaRvc(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// RVC enhancement voice (kind 'rvc-model') — download a model tarball and extract
+// it into the rvc-models dir (beside the rvc-env engine), reusing ensureRvcVoice.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function fetchRvcVoice(
+  component: OptionalComponent,
+  emit: (p: InstallProgress) => void
+): Promise<InstallResult> {
+  const id = component.id;
+  // ensureRvcVoice dedups internally; there's no cancellable controller, but we
+  // register an entry so listStatus/cancel see a consistent in-flight map.
+  const controller = new AbortController();
+  inFlight.set(id, { controller, tempDir: null });
+  try {
+    emit({ id, phase: 'download', pct: 0, message: `Downloading ${component.name}…` });
+    await ensureRvcVoice(id, (message) => {
+      // ensureRvcVoice reports human strings like "Downloading X… 45% (…)"; pull
+      // the percent for the bar and map the phase by message content.
+      const m = /(\d+)\s*%/.exec(message);
+      const pct = m ? Math.min(100, Math.max(0, parseInt(m[1], 10))) : 0;
+      const phase: InstallPhase = /verify/i.test(message)
+        ? 'verify'
+        : /install/i.test(message)
+          ? 'extract'
+          : 'download';
+      emit({ id, phase, pct, message });
+    });
+
+    const dir = rvcVoiceModelDir(id) || '';
+    const record: InstalledRecord = {
+      id,
+      version: component.version,
+      source: 'managed',
+      path: dir,
+      entryPath: dir, // the voice model dir; resolveEntry checks it exists
+      bytes: component.sizeBytes || undefined,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
+    clog(`[COMPONENTS] ${id}: RVC voice installed at ${dir}`);
+    return { id, ok: true, record };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    emit({ id, phase: 'error', pct: 0, message });
+    cerror(`[COMPONENTS] ${id}: RVC voice install failed: ${message}`, {
+      id, message, stack: err instanceof Error ? err.stack : undefined,
+    });
+    return { id, ok: false, error: message };
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Managed install
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -874,6 +931,12 @@ async function install(
   // same mechanism as tts-model — different helper branch, same contract.
   if (component.kind === 'language-pack') {
     return fetchLanguagePack(component, emit);
+  }
+
+  // RVC enhancement voices download a model tarball into the rvc-models dir via
+  // ensureRvcVoice — different mechanism (extract-into-dir), same contract.
+  if (component.kind === 'rvc-model') {
+    return fetchRvcVoice(component, emit);
   }
 
   // CUDA TTS overlays a GPU PyTorch build into the runtime env (pip), not a
@@ -1094,6 +1157,19 @@ async function uninstall(id: string): Promise<void> {
     return;
   }
 
+  // RVC voices live in the rvc-models dir (not components/<id>) — delete the
+  // model folder + marker via rvc-models, then drop the record.
+  if (getComponent(id)?.kind === 'rvc-model') {
+    try {
+      removeRvcVoice(id);
+    } catch (err) {
+      cerror(`[COMPONENTS] ${id}: failed to remove RVC voice:`, err);
+    }
+    dropRecord(id);
+    clog(`[COMPONENTS] ${id}: removed RVC voice`);
+    return;
+  }
+
   // A downloaded catalog voice is also registered as a voice — forget that
   // registration (and its staged e2a layout) so it stops appearing in pickers.
   if (isDownloadedVoiceId(id)) {
@@ -1225,6 +1301,24 @@ async function buildStatus(
       putRecord(record);
       clog(`[COMPONENTS] ${component.id}: detected Stanza language pack at ${found}`);
     }
+  }
+
+  // RVC voices: the model folder lives in the rvc-models dir, so an already-
+  // downloaded voice (or one installed via the legacy path) surfaces as Installed
+  // for free, and a record whose folder was deleted out-of-band self-corrects.
+  if (!record && component.kind === 'rvc-model' && isRvcVoiceInstalled(component.id)) {
+    const dir = rvcVoiceModelDir(component.id) || '';
+    record = {
+      id: component.id,
+      version: component.version,
+      source: 'managed',
+      path: dir,
+      entryPath: dir,
+      bytes: component.sizeBytes || undefined,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    clog(`[COMPONENTS] ${component.id}: detected RVC voice at ${dir}`);
   }
 
   // CUDA TTS: the marker lives in the runtime env, so it auto-clears if the env

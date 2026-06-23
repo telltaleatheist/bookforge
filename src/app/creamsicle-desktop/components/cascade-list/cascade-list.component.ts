@@ -74,7 +74,15 @@ export class CascadeListComponent {
   @Input() emptyIcon = '📁';
   @Input() emptyTitle = 'No items';
   @Input() emptyMessage = 'Items will appear here';
-  @Input() contextMenuActions: ContextMenuAction[] = [];
+  // Signal-backed so `defaultContextMenuActions` (a computed) reacts if a parent
+  // changes the actions after first render. A plain @Input would leave it stale.
+  private readonly _contextMenuActions = signal<ContextMenuAction[]>([]);
+  @Input() set contextMenuActions(value: ContextMenuAction[]) {
+    this._contextMenuActions.set(value ?? []);
+  }
+  get contextMenuActions(): ContextMenuAction[] {
+    return this._contextMenuActions();
+  }
 
   // Outputs
   @Output() selectionChanged = new EventEmitter<SelectionChangeEvent>();
@@ -161,7 +169,7 @@ export class CascadeListComponent {
   });
 
   defaultContextMenuActions = computed<ContextMenuAction[]>(() => {
-    if (this.contextMenuActions.length > 0) return this.contextMenuActions;
+    if (this._contextMenuActions().length > 0) return this._contextMenuActions();
 
     const count = this.selectedCount();
     const suffix = count > 1 ? ` (${count})` : '';

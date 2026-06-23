@@ -4,7 +4,6 @@ import { FormsModule } from '@angular/forms';
 
 import { SettingsService, PipelineDefaults } from '../../../core/services/settings.service';
 import { ComponentService } from '../../../core/services/component.service';
-import { RvcVoicesService } from '../../../core/services/rvc-voices.service';
 import {
   AIProvider,
   OLLAMA_MODELS,
@@ -190,12 +189,13 @@ interface Opt { value: string; label: string; }
 export class PipelineDefaultsPanelComponent {
   private readonly settings = inject(SettingsService);
   private readonly components = inject(ComponentService);
-  private readonly rvcVoices = inject(RvcVoicesService);
 
   /** The RVC enhancement engine is installed (gates the enhancement controls). */
   readonly rvcEnvInstalled = computed(() => this.components.isInstalled('rvc-env'));
   /** Installed enhancement voices, for the picker. */
-  readonly installedRvcVoices = computed(() => this.rvcVoices.voices().filter((v) => v.installed));
+  readonly installedRvcVoices = computed(() =>
+    this.components.components().filter((c) => c.component.kind === 'rvc-model' && c.state === 'installed'),
+  );
 
   // Draft edits live here and are applied to settings ONLY when the user clicks
   // Save — no auto-save on change. `saved` is the last-persisted snapshot so we
@@ -229,7 +229,7 @@ export class PipelineDefaultsPanelComponent {
 
   constructor() {
     void this.loadXttsVoices();
-    void this.rvcVoices.ensureLoaded();
+    void this.components.ensureLoaded();
   }
 
   /** Load installed audiobook voices into the default-voice picker. */
@@ -284,7 +284,7 @@ export class PipelineDefaultsPanelComponent {
 
   /** Installed RVC enhancement voice options for the desktop-select. */
   readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
-    this.installedRvcVoices().map((v) => ({ value: v.id, label: v.label })),
+    this.installedRvcVoices().map((c) => ({ value: c.component.id, label: c.component.name })),
   );
 
   modelsFor(provider: AIProvider): Opt[] {

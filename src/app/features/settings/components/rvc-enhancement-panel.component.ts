@@ -2,7 +2,6 @@ import { Component, inject, computed, ChangeDetectionStrategy, OnInit } from '@a
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
-import { RvcVoicesService } from '../../../core/services/rvc-voices.service';
 
 /**
  * Settings → Voice Enhancement.
@@ -14,9 +13,10 @@ import { RvcVoicesService } from '../../../core/services/rvc-voices.service';
  * model to smooth out XTTS vocoder artifacts — it does not generate the narration
  * itself.
  *
- * Engine = the `rvc-env` managed component (ComponentService). Voices = the
- * downloadable RVC models (RvcVoicesService), shown only once the engine is in.
- * Both use the same component-card chrome as the rest of Settings.
+ * Engine = the `rvc-env` managed component; Voices = the downloadable RVC models
+ * (kind 'rvc-model'), shown only once the engine is in. Both are ordinary
+ * ComponentService components, so they share one download path and the same
+ * component-card chrome as the rest of Settings.
  */
 @Component({
   selector: 'app-rvc-enhancement-panel',
@@ -95,43 +95,48 @@ import { RvcVoicesService } from '../../../core/services/rvc-voices.service';
       @if (!engineInstalled()) {
         <p class="muted">Install the engine above to add enhancement voices.</p>
       } @else {
-        @for (v of rvcVoices.voices(); track v.id) {
+        @for (v of voices(); track v.component.id) {
           <div class="component-card">
             <div class="component-head">
               <div class="component-meta">
-                <h4 class="component-name">{{ v.label }}</h4>
-                <p class="component-desc">Enhances {{ v.matches }}</p>
+                <h4 class="component-name">{{ v.component.name }}</h4>
+                <p class="component-desc">{{ v.component.description }}</p>
               </div>
               <div class="component-badge">
-                <span class="status-badge"
-                      [ngClass]="v.installed ? 'installed' : (rvcVoices.isBusy(v.id) ? 'installing' : 'available')">
-                  {{ v.installed ? 'Installed' : (rvcVoices.isBusy(v.id) ? 'Installing' : 'Available') }}
-                </span>
-                <span class="component-size">{{ formatBytes(v.bytes) }}</span>
+                <span class="status-badge" [ngClass]="badgeClass(v.state)">{{ badgeLabel(v.state) }}</span>
+                @if (v.component.sizeBytes > 0) {
+                  <span class="component-size">{{ formatBytes(v.component.sizeBytes) }}</span>
+                }
               </div>
             </div>
 
-            @if (rvcVoices.isBusy(v.id)) {
+            @if (v.state === 'installing' && v.progress; as prog) {
               <div class="install-progress">
-                <div class="progress-bar"><div class="progress-fill" [style.width.%]="progressPct(v.id)"></div></div>
-                <span class="progress-label">{{ rvcVoices.progressOf(v.id) || 'Installing…' }}</span>
+                <div class="progress-bar"><div class="progress-fill" [style.width.%]="prog.pct"></div></div>
+                <span class="progress-label">{{ prog.message || 'Installing…' }}</span>
               </div>
             }
 
             <div class="component-actions">
-              @if (v.installed) {
-                <desktop-button variant="ghost" size="sm"
-                  (click)="rvcVoices.remove(v.id)" [disabled]="rvcVoices.isBusy(v.id)">Uninstall</desktop-button>
-              } @else {
-                <desktop-button variant="primary" size="sm"
-                  (click)="rvcVoices.install(v.id)" [disabled]="rvcVoices.isBusy(v.id)">
-                  {{ rvcVoices.isBusy(v.id) ? 'Downloading…' : 'Download & Install' }}
-                </desktop-button>
+              @switch (v.state) {
+                @case ('installed') {
+                  <desktop-button variant="ghost" size="sm"
+                    (click)="svc.remove(v.component.id)" [disabled]="svc.isBusy(v.component.id)">Uninstall</desktop-button>
+                }
+                @case ('installing') {
+                  <desktop-button variant="ghost" size="sm" (click)="svc.cancel(v.component.id)">Cancel</desktop-button>
+                }
+                @default {
+                  <desktop-button variant="primary" size="sm"
+                    (click)="svc.install(v.component.id)" [disabled]="svc.isBusy(v.component.id)">
+                    {{ svc.isBusy(v.component.id) ? 'Downloading…' : 'Download & Install' }}
+                  </desktop-button>
+                }
               }
             </div>
           </div>
         }
-        @if (rvcVoices.error()) { <p class="muted danger">{{ rvcVoices.error() }}</p> }
+        @if (svc.error()) { <p class="muted danger">{{ svc.error() }}</p> }
       }
     </div>
   `,
@@ -191,7 +196,6 @@ import { RvcVoicesService } from '../../../core/services/rvc-voices.service';
 })
 export class RvcEnhancementPanelComponent implements OnInit {
   readonly svc = inject(ComponentService);
-  readonly rvcVoices = inject(RvcVoicesService);
 
   /** The rvc-env engine component status (or null if not in the catalog here). */
   readonly engine = computed(() =>
@@ -199,16 +203,13 @@ export class RvcEnhancementPanelComponent implements OnInit {
   );
   readonly engineInstalled = computed(() => this.svc.isInstalled('rvc-env'));
 
+  /** All downloadable RVC enhancement voices (kind 'rvc-model'). */
+  readonly voices = computed(() =>
+    this.svc.components().filter((s) => s.component.kind === 'rvc-model'),
+  );
+
   ngOnInit(): void {
     this.svc.ensureLoaded();
-    void this.rvcVoices.ensureLoaded();
-  }
-
-  /** Parse the percent out of an RVC voice progress message for the bar. */
-  progressPct(id: string): number {
-    const msg = this.rvcVoices.progressOf(id);
-    const m = msg && /(\d+)\s*%/.exec(msg);
-    return m ? Math.min(100, Math.max(0, parseInt(m[1], 10))) : 0;
   }
 
   badgeClass(state: string): string {

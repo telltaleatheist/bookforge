@@ -12,6 +12,7 @@ import * as path from 'path';
 
 import { getE2aPath } from '../tool-paths';
 import { voiceComponents } from './voice-components';
+import { rvcVoiceComponents } from './rvc-voice-components';
 import { languagePackComponents } from './language-pack-components';
 import { llamaCudaComponent } from './llama-cuda';
 import { cudaTtsComponent } from './cuda-tts';
@@ -225,6 +226,7 @@ export function getCatalog(): OptionalComponent[] {
     cudaRvcComponent(),
     rvcEnvComponent(),
     ...voiceComponents(),
+    ...rvcVoiceComponents(),
     ...languagePackComponents(),
   ];
 }

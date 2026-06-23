@@ -26,7 +26,6 @@ import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { QueueService } from '../../../queue/services/queue.service';
 import { ComponentService } from '../../../../core/services/component.service';
-import { RvcVoicesService } from '../../../../core/services/rvc-voices.service';
 import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
 import { EpubResolverService } from '../../services/epub-resolver.service';
 import { AiService } from '../../../../core/services/ai.service';
@@ -763,7 +762,7 @@ interface SourceStage {
                     </label>
                     <span class="hint">Re-render the narration through a matching RVC voice to smooth out synthetic artifacts. Pick a voice close to your TTS voice — RVC keeps the original's content &amp; pitch.</span>
                     @if (rvcEnhanceEnabled()) {
-                      @if (rvcVoices.installedVoices().length > 0) {
+                      @if (installedRvcVoices().length > 0) {
                         <desktop-select
                           class="select-input"
                           placeholder="Choose an enhancement voice…"
@@ -2367,10 +2366,9 @@ export class LLWizardComponent implements OnInit {
   private readonly queueService = inject(QueueService);
   private readonly router = inject(Router);
   private readonly epubResolver = inject(EpubResolverService);
-  // Public for the template: gates optional TTS engines (e.g. Orpheus) on availability.
+  // Public for the template: gates optional TTS engines (e.g. Orpheus) on
+  // availability, AND lists installed RVC enhancement voices (kind 'rvc-model').
   protected readonly componentService = inject(ComponentService);
-  // RVC enhancement voices (post-TTS voice-conversion) — install state + list.
-  protected readonly rvcVoices = inject(RvcVoicesService);
   // Gates the AI Cleanup step behind a "set up an AI" layover when none configured.
   protected readonly ai = inject(AiService);
   protected readonly langPacks = inject(LanguagePackService);
@@ -2864,9 +2862,12 @@ export class LLWizardComponent implements OnInit {
     this.getVoicesForEngine().map((v) => ({ value: v.value, label: v.label })),
   );
 
-  /** Installed RVC enhancement voices. */
+  /** Installed RVC enhancement voices (kind 'rvc-model', state installed). */
+  readonly installedRvcVoices = computed(() =>
+    this.componentService.components().filter((c) => c.component.kind === 'rvc-model' && c.state === 'installed'),
+  );
   readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
-    this.rvcVoices.installedVoices().map((v) => ({ value: v.id, label: v.label })),
+    this.installedRvcVoices().map((c) => ({ value: c.component.id, label: c.component.name })),
   );
 
   /** TTS-row language options. */
@@ -3617,7 +3618,7 @@ export class LLWizardComponent implements OnInit {
     this.generateVideo.set(d.generateVideo);
     this.rvcEnhanceEnabled.set(d.rvcEnhancementEnabled);
     this.rvcEnhanceVoiceId.set(d.rvcEnhancementVoiceId);
-    void this.rvcVoices.ensureLoaded();
+    void this.componentService.ensureLoaded();
   }
 
   /** User picked a worker count for this job — stop auto-syncing from the global. */

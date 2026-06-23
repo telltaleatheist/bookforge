@@ -240,27 +240,17 @@ export async function ensureRvcVoice(
   await ensureRvcAsset(voice, onProgress);
 }
 
-export interface RvcVoiceStatus {
-  id: string;
-  label: string;
-  modelName: string;
-  matches: string;
-  bytes: number;
-  installed: boolean;
-  forceIndexRate0: boolean;
+/** Whether an enhancement voice (by asset id) is installed on disk. */
+export function isRvcVoiceInstalled(voiceId: string): boolean {
+  const voice = RVC_VOICE_ASSETS.find((v) => v.id === voiceId);
+  return !!voice && rvcVoiceInstalled(voice);
 }
 
-/** Status of every enhancement voice for the configuration page. */
-export function listRvcVoices(): RvcVoiceStatus[] {
-  return RVC_VOICE_ASSETS.map((v) => ({
-    id: v.id,
-    label: v.label,
-    modelName: v.modelName,
-    matches: v.matches,
-    bytes: v.bytes,
-    installed: rvcVoiceInstalled(v),
-    forceIndexRate0: !!v.forceIndexRate0,
-  }));
+/** Absolute folder a voice's model extracts to (rvc/voice_models/<modelName>). */
+export function rvcVoiceModelDir(voiceId: string): string | null {
+  const voice = RVC_VOICE_ASSETS.find((v) => v.id === voiceId);
+  if (!voice) return null;
+  return path.join(getRvcModelsDir(), 'rvc', 'voice_models', voice.modelName);
 }
 
 /** Remove an installed enhancement voice (its folder + marker). */
