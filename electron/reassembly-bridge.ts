@@ -11,6 +11,8 @@ import * as os from 'os';
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
+import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
+import { getRvcVoiceById } from './rvc-models';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -255,6 +257,11 @@ export interface ReassemblyConfig {
     description?: string;
   };
   excludedChapters: number[];
+  /** Optional RVC voice-enhancement pass run BEFORE assembly: convert the cached
+   *  XTTS sentences through an RVC voice into a tmp dir, then assemble THAT set.
+   *  The cached XTTS sentences are left untouched, so the same session can be
+   *  re-enhanced later with a different voice. voiceId is the RVC asset id. */
+  rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number };
 }
 
 export interface ReassemblyProgress {
@@ -848,6 +855,50 @@ export async function startReassembly(
     }
   }
 
+  // ── Optional RVC voice enhancement (post-TTS, pre-assembly) ──────────────────
+  // Convert the cached XTTS sentences through an RVC voice into a tmp dir, then
+  // assemble THAT set (via e2a's --sentences_dir). The XTTS sentences are never
+  // mutated or cached over, so the same session can be re-enhanced with another
+  // voice later (the standalone-reassembly path is exactly "run RVC on cached
+  // files"). Runs here, not in the TTS job, so it works whether assembly is
+  // chained from TTS or run standalone on a cached session.
+  let rvcSentencesDir: string | null = null;
+  if (config.rvcEnhancement?.voiceId) {
+    const voice = getRvcVoiceById(config.rvcEnhancement.voiceId);
+    if (!voice) {
+      return { success: false, error: `RVC enhancement: unknown voice "${config.rvcEnhancement.voiceId}".` };
+    }
+    const ready = rvcEnhancementReady();
+    if (!ready.ok) {
+      return { success: false, error: `RVC enhancement unavailable: ${ready.reason}` };
+    }
+    const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
+    if (!fs.existsSync(srcSentences)) {
+      return { success: false, error: 'RVC enhancement: cached sentences not found for this session.' };
+    }
+    const tmpDir = path.join(path.dirname(srcSentences), 'sentences_rvc');
+    try {
+      reassemblyLog.info('RVC enhancement starting', { jobId, voice: voice.label, model: voice.modelName });
+      sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: `Enhancing voice with ${voice.label}…` });
+      await enhanceSentences({
+        sentencesDir: srcSentences,
+        outputDir: tmpDir,
+        modelName: voice.modelName,
+        indexRate: voice.forceIndexRate0 ? 0 : (config.rvcEnhancement.indexRate ?? 0.5),
+        protectRate: config.rvcEnhancement.protectRate ?? 0.5,
+        onProgress: (done, total) => sendProgress(mainWindow, jobId, {
+          phase: 'preparing',
+          percentage: total ? Math.round((done / total) * 100) : 0,
+          message: `Enhancing voice with ${voice.label}… (${done}/${total})`,
+        }),
+      });
+      rvcSentencesDir = tmpDir;
+      reassemblyLog.info('RVC enhancement complete', { jobId, dir: tmpDir });
+    } catch (err) {
+      return { success: false, error: `RVC enhancement failed: ${(err as Error).message || err}` };
+    }
+  }
+
   // Create staging directory inside output/ so e2a writes there (same filesystem = atomic rename).
   // Dot-prefix makes Syncthing unlikely to index partial files.
   const stagingDir = path.join(config.outputDir, `.staging-${jobId}`);
@@ -881,7 +932,10 @@ export async function startReassembly(
       '--language', language,
       '--tts_engine', 'xtts',
       '--assemble_only',
-      '--no_split'
+      '--no_split',
+      // When an RVC pass ran, assemble the ENHANCED sentence set from the tmp dir
+      // instead of the cached XTTS sentences.
+      ...(rvcSentencesDir ? ['--sentences_dir', rvcSentencesDir] : []),
     ];
 
     // Note: --output_filename, --title, --author, --cover are not supported by all e2a versions

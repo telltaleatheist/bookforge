@@ -221,6 +221,11 @@ export interface ReassemblyJobConfig {
     description?: string;
   };
   excludedChapters: number[];
+  /** Optional RVC voice enhancement run before assembly: convert the cached XTTS
+   *  sentences through an RVC voice into a tmp dir, then assemble that set. The
+   *  XTTS sentences stay cached so it can be re-run with a different voice.
+   *  voiceId is the RVC asset id; the backend resolves it to the model name. */
+  rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number };
 }
 
 // Bilingual Cleanup job configuration - AI cleanup of extracted text

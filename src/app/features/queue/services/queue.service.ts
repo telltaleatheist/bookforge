@@ -135,6 +135,7 @@ declare global {
           totalChapters?: number;
           metadata: { title: string; author: string; year?: string; coverPath?: string; outputFilename?: string };
           excludedChapters: number[];
+          rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number };
         }) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
       };
@@ -2921,6 +2922,16 @@ export class QueueService {
         // Call the reassembly API
         if (!electron.reassembly) {
           throw new Error('Reassembly not available');
+        }
+
+        // RVC voice enhancement (post-TTS, pre-assembly): the reassembly bridge
+        // converts the cached XTTS sentences through the chosen RVC voice into a
+        // tmp dir and assembles THAT set (e2a --sentences_dir). Sourced from
+        // Pipeline Defaults; the XTTS sentences stay cached so it can be re-run
+        // with a different voice. The backend resolves the asset id → model name.
+        const rvcPd = this.settingsService.getPipelineDefaults();
+        if (rvcPd.rvcEnhancementEnabled && rvcPd.rvcEnhancementVoiceId) {
+          config = { ...config, rvcEnhancement: { voiceId: rvcPd.rvcEnhancementVoiceId } };
         }
 
         const result = await electron.reassembly.startReassembly(job.id, config);
